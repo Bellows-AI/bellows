@@ -183,18 +183,12 @@ export function renderConnections(connections: readonly ConnectionView[]): strin
         .join('\n');
 }
 
-/** One question's state: `pending` splits on whether the board would take an answer right now. */
-function questionState(question: QuestionRecord): string {
-    if (question.status !== 'pending') return question.status;
-    return question.answerable ? 'pending' : 'pending (not answerable)';
-}
-
 /** One question call: id, state, asked time, then each prompt with its options and any recorded answer. */
 export function renderQuestion(question: QuestionRecord): string {
     const answeredNote = question.answeredAt
         ? `  answered ${question.answeredAt} by ${question.answeredBy?.login ?? DASH}`
         : '';
-    const lines = [`${question.id}  ${questionState(question)}  asked ${question.askedAt}${answeredNote}`];
+    const lines = [`${question.id}  ${question.status}  asked ${question.askedAt}${answeredNote}`];
     for (const [index, asked] of question.questions.entries()) {
         lines.push(`  ${index + 1}. [${asked.header}] ${asked.question}`);
         lines.push(`     (${asked.multiSelect ? 'choose any, or free text' : 'choose one, or free text'})`);

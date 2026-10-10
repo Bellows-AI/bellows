@@ -88,7 +88,7 @@ describe('factory job questions', () => {
             answeredBy: { login: 'octocat' },
             answeredAt: '2026-09-29T13:02:00.000Z',
         });
-        const closed = asked({ id: 'toolu_2', answerable: false });
+        const closed = asked({ id: 'toolu_2', status: 'closed', answerable: false });
         const { out, io } = harness(() => threadWith(answered, closed));
 
         await run(['job', 'questions', 'job-1'], io);
@@ -96,7 +96,7 @@ describe('factory job questions', () => {
         const text = out.join('');
         expect(text).toContain('answered 2026-09-29T13:02:00.000Z by octocat');
         expect(text).toContain('answer: sqlite');
-        expect(text).toContain('toolu_2  pending (not answerable)');
+        expect(text).toContain('toolu_2  closed');
     });
 
     it('says so when the task asked nothing, and puts the list in the json envelope', async () => {
@@ -188,6 +188,16 @@ describe('factory job answer', () => {
             expect(err.join('')).toContain(expected);
             expect(calls).toHaveLength(2);
         }
+    });
+
+    it('does not re-send the write when the board fails or goes quiet', async () => {
+        const { err, calls, io } = harness((i) =>
+            i === 0 ? threadWith(asked()) : json({ error: 'unavailable', code: 'UNAVAILABLE' }, 503)
+        );
+
+        expect(await run(['job', 'answer', 'job-1', 'toolu_1', '--answer', 'postgres'], io)).toBe(1);
+        expect(err.join('')).toContain('unavailable');
+        expect(calls).toHaveLength(2);
     });
 
     it('reports the refusal in the json envelope with its code and status', async () => {
