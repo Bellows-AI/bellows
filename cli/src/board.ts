@@ -64,6 +64,38 @@ export interface BoardJobRecord {
     summary: string | null;
     gates: readonly { name: string; status: string }[] | null;
     output: string | null;
+    /** The questions this run's agent asked, oldest first; a list row or an older board has none. */
+    questions?: readonly QuestionRecord[];
+}
+
+/** One option of an asked question. */
+export interface QuestionOption {
+    label: string;
+    description?: string;
+}
+
+/** One prompt of a question: its text is the key its answer is submitted under. */
+export interface AskedPrompt {
+    question: string;
+    header: string;
+    multiSelect: boolean;
+    options: readonly QuestionOption[];
+}
+
+/**
+ * One AskUserQuestion call of one run, as the board's read model serves it. `answerable` is the
+ * board's own verdict on whether an answer would land now; the answer route stays the arbiter.
+ */
+export interface QuestionRecord {
+    id: string;
+    attempt: number;
+    questions: readonly AskedPrompt[];
+    status: string;
+    answerable: boolean;
+    answers: Record<string, string> | null;
+    answeredBy: { login: string } | null;
+    askedAt: string;
+    answeredAt: string | null;
 }
 
 /**
@@ -154,6 +186,11 @@ export interface BoardClient {
     stopJob(id: string): Promise<JobStopped>;
     markDone(id: string): Promise<JobDone>;
     removeJob(id: string): Promise<JobRemoved>;
+    /**
+     * A member's answer to one pending question of run `id` (`questionId` is the agent's tool-use
+     * id), keyed by question text. Never replayed: a repeat is the board's 409 `QUESTION_ANSWERED`.
+     */
+    answerQuestion(id: string, questionId: string, answers: Record<string, string>): Promise<QuestionRecord>;
     /** What the org's GitHub App installation can see (`GET /api/repos`) — read-only, no sync. */
     listRepos(): Promise<VisibleRepos>;
     /** The caller's workspace read (`GET /api/workspace`): synced repos and executor profiles. */
@@ -201,6 +238,8 @@ export interface ConnectionView {
 type Fetch = typeof globalThis.fetch;
 
 export const HTTP_OK = 200;
+/** The board's code for an answer that lost to an earlier one (`ERROR_CODES.QUESTION_ANSWERED`). */
+export const QUESTION_ANSWERED_CODE = 'QUESTION_ANSWERED';
 const MS_PER_SECOND = 1000;
 
 /**
@@ -369,6 +408,14 @@ export function createBoardClient({
                 method: 'POST',
                 headers: authHeaders(),
             })) as JobRemoved;
+        },
+
+        async answerQuestion(id, questionId, answers) {
+            return (await request(at(`${jobPath(id)}/questions/${encodeURIComponent(questionId)}/answer`), {
+                method: 'POST',
+                headers: { ...authHeaders(), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
+                body: JSON.stringify({ answers }),
+            })) as QuestionRecord;
         },
 
         async listRepos() {
