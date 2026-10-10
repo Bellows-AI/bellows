@@ -1,4 +1,13 @@
-import type { BoardJobRecord, JobDone, JobRemoved, JobStopped } from './board.js';
+import type {
+    BoardJobRecord,
+    ConnectionView,
+    JobDone,
+    JobRemoved,
+    JobStopped,
+    QuestionRecord,
+    SkillView,
+} from './board.js';
+import type { ExecutorRow, RepoDiscovery } from './discovery.js';
 
 /**
  * Human renderers for the lifecycle commands. Pure text in, text out — no board access, no console:
@@ -114,4 +123,90 @@ export function renderThread(jobs: readonly BoardJobRecord[]): string {
         lines.push(renderThreadMember(job, index));
     }
     return lines.join('\n');
+}
+
+/** Repo discovery: one row per repo, visible and synced marked, a note when the list may be thin. */
+export function renderRepos(discovery: RepoDiscovery): string {
+    const lines = discovery.repos.map((row) => {
+        const visibility = row.private === null ? DASH : row.private ? 'private' : 'public';
+        return [
+            row.repo,
+            row.visible ? 'visible' : 'not-visible',
+            row.synced ? `synced(${row.syncStatus ?? DASH})` : 'not-synced',
+            visibility,
+            row.defaultBranch ?? DASH,
+        ].join('  ');
+    });
+    if (discovery.error) lines.push(`note: the repository list may be stale — ${discovery.error}`);
+    if (!discovery.workspaceEnabled) lines.push('note: this board has no workspace root, so nothing can be synced');
+    return lines.length === 0 ? 'no repositories visible' : lines.join('\n');
+}
+
+/** Executor discovery: scope, name, type, and the flags a selection cares about. */
+export function renderExecutors(executors: readonly ExecutorRow[]): string {
+    if (executors.length === 0) return 'no executors';
+    return executors
+        .map((row) =>
+            [
+                row.scope,
+                row.name,
+                row.type,
+                row.suspended ? 'suspended' : 'active',
+                ...(row.default ? ['default'] : []),
+            ].join('  ')
+        )
+        .join('\n');
+}
+
+/** Installed skills with what each requires — env NAMES and managed-connection selectors only. */
+export function renderSkills(skills: readonly SkillView[]): string {
+    if (skills.length === 0) return 'no skills installed';
+    return skills
+        .map((skill) => {
+            const needs = [
+                ...skill.requires.tools.map((tool) => `tool:${tool}`),
+                ...skill.requires.connections.map(
+                    (connection) =>
+                        `connection:${connection.name}${connection.selectedBy ? ` (select ${connection.selectedBy})` : ''}`
+                ),
+            ];
+            return `${skill.name}  ${skill.description}${needs.length > 0 ? `  [requires ${needs.join(', ')}]` : ''}`;
+        })
+        .join('\n');
+}
+
+/** Selectable managed connections: the id is what `--jira-connection` takes. */
+export function renderConnections(connections: readonly ConnectionView[]): string {
+    if (connections.length === 0) return 'no connections available';
+    return connections
+        .map((c) => [c.id, c.kind, c.scope, c.access, c.site, c.email, c.createdAt].join('  '))
+        .join('\n');
+}
+
+/** One question call: id, state, asked time, then each prompt with its options and any recorded answer. */
+export function renderQuestion(question: QuestionRecord): string {
+    const answeredNote = question.answeredAt
+        ? `  answered ${question.answeredAt} by ${question.answeredBy?.login ?? DASH}`
+        : '';
+    const lines = [`${question.id}  ${question.status}  asked ${question.askedAt}${answeredNote}`];
+    for (const [index, asked] of question.questions.entries()) {
+        lines.push(`  ${index + 1}. [${asked.header}] ${asked.question}`);
+        lines.push(`     (${asked.multiSelect ? 'choose any, or free text' : 'choose one, or free text'})`);
+        for (const option of asked.options) {
+            lines.push(`     - ${option.label}${option.description ? `: ${option.description}` : ''}`);
+        }
+        const answer = question.answers?.[asked.question];
+        if (answer !== undefined) lines.push(`     answer: ${answer}`);
+    }
+    return lines.join('\n');
+}
+
+/** The question list of a task, oldest first. */
+export function renderQuestions(questions: readonly QuestionRecord[]): string {
+    return questions.length === 0 ? 'no questions' : questions.map(renderQuestion).join('\n\n');
+}
+
+/** The answer's acknowledgement: the state the board left the question in, and its id. */
+export function renderAnswered(question: QuestionRecord): string {
+    return `${question.status} ${question.id}`;
 }

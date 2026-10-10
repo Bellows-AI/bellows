@@ -1,4 +1,13 @@
-import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
+import { CONTENT_TYPE_HEADER, IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAYED_HEADER, JSON_CONTENT_TYPE } from './http.js';
+import {
+    BoardError,
+    createTransport,
+    DEFAULT_READ_RETRIES,
+    DEFAULT_REQUEST_TIMEOUT_MS,
+    MALFORMED_RESPONSE_CODE,
+    realClock,
+} from './transport.js';
+import type { BoardClock } from './transport.js';
 
 /**
  * The board client for the person routes the CLI speaks to: the two reads
@@ -15,28 +24,15 @@ import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
  * the two reads: a write answers 403 with the board's own message, which is surfaced as-is.
  */
 
-/** The status a `BoardError` carries when no answer ever arrived — the board was unreachable. */
-export const NO_RESPONSE_STATUS = 0;
-/** The code of a 2xx answer this client could not read as the shape the route promises. */
-export const MALFORMED_RESPONSE_CODE = 'MALFORMED_RESPONSE';
-
-/** Everything the board refused with: the status, the error code when the body named one. */
-export class BoardError extends Error {
-    readonly status: number;
-    readonly code: string | null;
-
-    constructor(message: string, status: number, code: string | null) {
-        super(message);
-        this.name = 'BoardError';
-        this.status = status;
-        this.code = code;
-    }
-}
-
-/** The 201 body of a create: two fields, the new id and its initial status. */
+/**
+ * The 201 body of a create: the new id and its initial status. `replayed` is not in the body — it
+ * is read off the board's `Idempotency-Replayed` header, and true only when the board recognized
+ * the write's key and answered the task an earlier attempt already made.
+ */
 export interface JobCreated {
     id: string;
     status: string;
+    replayed?: boolean;
 }
 
 /**
@@ -68,6 +64,38 @@ export interface BoardJobRecord {
     summary: string | null;
     gates: readonly { name: string; status: string }[] | null;
     output: string | null;
+    /** The questions this run's agent asked, oldest first; a list row or an older board has none. */
+    questions?: readonly QuestionRecord[];
+}
+
+/** One option of an asked question. */
+export interface QuestionOption {
+    label: string;
+    description?: string;
+}
+
+/** One prompt of a question: its text is the key its answer is submitted under. */
+export interface AskedPrompt {
+    question: string;
+    header: string;
+    multiSelect: boolean;
+    options: readonly QuestionOption[];
+}
+
+/**
+ * One AskUserQuestion call of one run, as the board's read model serves it. `answerable` is the
+ * board's own verdict on whether an answer would land now; the answer route stays the arbiter.
+ */
+export interface QuestionRecord {
+    id: string;
+    attempt: number;
+    questions: readonly AskedPrompt[];
+    status: string;
+    answerable: boolean;
+    answers: Record<string, string> | null;
+    answeredBy: { login: string } | null;
+    askedAt: string;
+    answeredAt: string | null;
 }
 
 /**
@@ -136,6 +164,10 @@ export interface BoardClient {
         executorScope?: 'user' | 'org' | undefined;
         /** The skills the task selects (issue #545); absent selects none. */
         skills?: string[] | undefined;
+        /** Names this logical attempt; a repeat under the same key never makes a second task. */
+        idempotencyKey?: string | undefined;
+        /** The managed Jira connection the task selects; the board authorizes it against the author. */
+        jiraConnection?: string | undefined;
     }): Promise<JobCreated>;
     listJobs(filters: {
         status?: string | undefined;
@@ -150,18 +182,65 @@ export interface BoardClient {
      */
     waitForJob(id: string, timeoutSeconds: number): Promise<JobWait>;
     thread(id: string): Promise<BoardJobRecord[]>;
-    followUp(id: string, command: string): Promise<JobCreated>;
+    followUp(id: string, command: string, idempotencyKey?: string): Promise<JobCreated>;
     stopJob(id: string): Promise<JobStopped>;
     markDone(id: string): Promise<JobDone>;
     removeJob(id: string): Promise<JobRemoved>;
+    /**
+     * A member's answer to one pending question of run `id` (`questionId` is the agent's tool-use
+     * id), keyed by question text. Never replayed: a repeat is the board's 409 `QUESTION_ANSWERED`.
+     */
+    answerQuestion(id: string, questionId: string, answers: Record<string, string>): Promise<QuestionRecord>;
+    /** What the org's GitHub App installation can see (`GET /api/repos`) — read-only, no sync. */
+    listRepos(): Promise<VisibleRepos>;
+    /** The caller's workspace read (`GET /api/workspace`): synced repos and executor profiles. */
+    workspace(): Promise<WorkspaceView>;
+    listSkills(): Promise<SkillView[]>;
+    /** The connections the caller may select: the org's plus their own. Never a credential. */
+    listConnections(): Promise<ConnectionView[]>;
+}
+
+/** The repository picker's read: what a member could choose to check out. */
+export interface VisibleRepos {
+    repos: { owner: string; name: string; private: boolean; defaultBranch: string | null; pushedAt: string | null }[];
+    installation: unknown;
+    meta: { fetchedAt: string | null; error: string | null };
+}
+
+/** The slice of the workspace read discovery shows: synced checkouts and executor selection metadata. */
+export interface WorkspaceView {
+    root: string | null;
+    repos: { owner: string; name: string; status: string; error: string | null }[];
+    executors: { name: string; type: string; suspended?: boolean }[];
+    orgExecutors: { name: string; type: string; suspended?: boolean }[];
+    defaultExecutor: { scope: string; name: string } | null;
+}
+
+export interface SkillView {
+    name: string;
+    description: string;
+    requires: {
+        tools: string[];
+        connections: { name: string; env: string[]; selectedBy: string | null }[];
+    };
+}
+
+export interface ConnectionView {
+    id: string;
+    kind: string;
+    site: string;
+    email: string;
+    access: string;
+    scope: string;
+    createdAt: string;
 }
 
 type Fetch = typeof globalThis.fetch;
 
 export const HTTP_OK = 200;
-
-/** How much of a non-JSON error body is quoted before the message is cut off. */
-const ERROR_BODY_PREVIEW_LENGTH = 200;
+/** The board's code for an answer that lost to an earlier one (`ERROR_CODES.QUESTION_ANSWERED`). */
+export const QUESTION_ANSWERED_CODE = 'QUESTION_ANSWERED';
+const MS_PER_SECOND = 1000;
 
 /**
  * One job's route prefix, with the id ENCODED. The board validates ids as uuids, but routing
@@ -171,12 +250,6 @@ const ERROR_BODY_PREVIEW_LENGTH = 200;
  * so none can be left out.
  */
 const jobPath = (id: string): string => `/api/jobs/${encodeURIComponent(id)}`;
-
-/** A fetch that never got an answer — the board could not be reached at all. */
-function unreachable(url: string, error: unknown): BoardError {
-    const reason = error instanceof Error ? error.message : String(error);
-    return new BoardError(`cannot reach ${url}: ${reason}`, NO_RESPONSE_STATUS, null);
-}
 
 function isWait(value: unknown): value is JobWait {
     if (typeof value !== 'object' || value === null) return false;
@@ -191,30 +264,15 @@ function isWait(value: unknown): value is JobWait {
     );
 }
 
-/**
- * The refusal a non-2xx answer carries: the board's one envelope is `{ error, code }` — the human
- * message is what the board said, and the code rides beside it for scripting. A body that is not
- * JSON keeps the status line with a raw preview, which is the honest message.
- */
-function refusalFrom(path: string, status: number, text: string): { message: string; code: string | null } {
-    let message = `${path} answered ${status}`;
-    if (text) message += `: ${text.slice(0, ERROR_BODY_PREVIEW_LENGTH)}`;
-    let code: string | null = null;
-    try {
-        const body = JSON.parse(text) as { error?: unknown; code?: unknown };
-        if (typeof body.error === 'string') message = body.error;
-        if (typeof body.code === 'string') code = body.code;
-    } catch {
-        // Not JSON — keep the status line.
-    }
-    return { message, code };
-}
-
 export function createBoardClient({
     url,
     token,
     fetch = globalThis.fetch,
     signal,
+    requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    readRetries = DEFAULT_READ_RETRIES,
+    deadlineAt,
+    clock = realClock,
 }: {
     url: string;
     /** The personal access token, when the board requires one. Empty against AUTH_MODE=none. */
@@ -222,6 +280,13 @@ export function createBoardClient({
     fetch?: Fetch | undefined;
     /** Aborts every in-flight request — a local interrupt, which never touches the task. */
     signal?: AbortSignal | undefined;
+    /** One attempt's deadline, headers and body read included. */
+    requestTimeoutMs?: number | undefined;
+    /** How many times a failed READ is re-issued; a write is never replayed. */
+    readRetries?: number | undefined;
+    /** The total wait budget's end on `clock`: no attempt or backoff runs past it (plus a grace). */
+    deadlineAt?: number | undefined;
+    clock?: BoardClock | undefined;
 }): BoardClient {
     const authHeaders = (): Record<string, string> =>
         // Omitted rather than sent empty: a board with no auth would otherwise see a Bearer
@@ -229,26 +294,28 @@ export function createBoardClient({
         // never offered.
         token ? { authorization: `Bearer ${token}` } : {};
 
-    const request = async (path: string, init: RequestInit): Promise<unknown> => {
-        let response: Response;
-        try {
-            response = await fetch(`${url}${path}`, signal ? { ...init, signal } : init);
-        } catch (error) {
-            throw unreachable(url, error);
-        }
-        if (!response.ok) {
-            const refusal = refusalFrom(path, response.status, await response.text());
-            throw new BoardError(refusal.message, response.status, refusal.code);
-        }
-        try {
-            return await response.json();
-        } catch {
-            throw new BoardError(
-                `${path} answered ${response.status} with a body that is not JSON`,
-                response.status,
-                MALFORMED_RESPONSE_CODE
-            );
-        }
+    const { request, remainingMs } = createTransport({
+        url,
+        fetch,
+        signal,
+        requestTimeoutMs,
+        readRetries,
+        deadlineAt,
+        clock,
+    });
+    const at = (path: string) => () => ({ path, holdMs: 0 });
+
+    /** The headers of a write that may carry a key: the key, when one was named. */
+    const keyHeader = (key: string | undefined): Record<string, string> =>
+        key === undefined ? {} : { [IDEMPOTENCY_KEY_HEADER]: key };
+
+    /** A create-shaped write's answer: the body, marked when the board says it was a replay. */
+    const created = async (path: string, init: RequestInit): Promise<JobCreated> => {
+        let replayed = false;
+        const payload = (await request(at(path), init, (response) => {
+            replayed = response.headers.get(IDEMPOTENCY_REPLAYED_HEADER) === 'true';
+        })) as JobCreated;
+        return replayed ? { ...payload, replayed } : payload;
     };
 
     return {
@@ -261,13 +328,17 @@ export function createBoardClient({
                 ...(input.executor !== undefined ? { executor: input.executor } : {}),
                 ...(input.executorScope !== undefined ? { executorScope: input.executorScope } : {}),
                 ...(input.skills !== undefined ? { skills: input.skills } : {}),
+                ...(input.jiraConnection !== undefined ? { jiraConnection: input.jiraConnection } : {}),
             };
-            const payload = (await request('/api/jobs', {
+            return created('/api/jobs', {
                 method: 'POST',
-                headers: { ...authHeaders(), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
+                headers: {
+                    ...authHeaders(),
+                    ...keyHeader(input.idempotencyKey),
+                    [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE,
+                },
                 body: JSON.stringify(body),
-            })) as JobCreated;
-            return payload;
+            });
         },
 
         async listJobs(filters) {
@@ -276,21 +347,29 @@ export function createBoardClient({
             if (filters.limit !== undefined) params.set('limit', String(filters.limit));
             if (filters.repo !== undefined) params.set('repo', filters.repo);
             const query = params.toString();
-            const payload = (await request(`/api/jobs${query ? `?${query}` : ''}`, {
+            const payload = (await request(at(`/api/jobs${query ? `?${query}` : ''}`), {
                 headers: authHeaders(),
             })) as { jobs: BoardJobRecord[] };
             return payload.jobs;
         },
 
         async getJob(id) {
-            return (await request(`${jobPath(id)}`, { headers: authHeaders() })) as BoardJobRecord;
+            return (await request(at(jobPath(id)), { headers: authHeaders() })) as BoardJobRecord;
         },
 
         async waitForJob(id, timeoutSeconds) {
             // The wait is a parameter of the job read, not a route of its own — and only of the
             // job read: the thread read takes no wait parameters at all.
-            const query = new URLSearchParams({ waitFor: 'terminal', timeout: String(timeoutSeconds) });
-            const payload = await request(`${jobPath(id)}?${query}`, { headers: authHeaders() });
+            // The hold is re-derived per attempt: a retry asks for what is left of the budget, not
+            // for the hold the first attempt started with.
+            const target = (retry: boolean) => {
+                const holdSeconds = retry
+                    ? Math.max(1, Math.min(timeoutSeconds, Math.ceil(remainingMs() / MS_PER_SECOND)))
+                    : timeoutSeconds;
+                const query = new URLSearchParams({ waitFor: 'terminal', timeout: String(holdSeconds) });
+                return { path: `${jobPath(id)}?${query}`, holdMs: holdSeconds * MS_PER_SECOND };
+            };
+            const payload = await request(target, { headers: authHeaders() });
             if (!isWait(payload)) {
                 throw new BoardError(`${jobPath(id)} answered a wait with no result`, HTTP_OK, MALFORMED_RESPONSE_CODE);
             }
@@ -298,34 +377,65 @@ export function createBoardClient({
         },
 
         async thread(id) {
-            const payload = (await request(`${jobPath(id)}/thread`, { headers: authHeaders() })) as {
+            const payload = (await request(at(`${jobPath(id)}/thread`), { headers: authHeaders() })) as {
                 jobs: BoardJobRecord[];
             };
             return payload.jobs;
         },
 
-        async followUp(id, command) {
+        async followUp(id, command, idempotencyKey) {
             // The command is the whole body: the repo, the executor and the session are copied
             // from the parent at insert, and sending them here would be a second opinion the
             // board does not ask for.
-            return (await request(`${jobPath(id)}/follow-up`, {
+            return created(`${jobPath(id)}/follow-up`, {
                 method: 'POST',
-                headers: { ...authHeaders(), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
+                headers: { ...authHeaders(), ...keyHeader(idempotencyKey), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
                 body: JSON.stringify({ command }),
-            })) as JobCreated;
+            });
         },
 
         // The three actions take no body, so they send no content-type either.
         async stopJob(id) {
-            return (await request(`${jobPath(id)}/stop`, { method: 'POST', headers: authHeaders() })) as JobStopped;
+            return (await request(at(`${jobPath(id)}/stop`), { method: 'POST', headers: authHeaders() })) as JobStopped;
         },
 
         async markDone(id) {
-            return (await request(`${jobPath(id)}/done`, { method: 'POST', headers: authHeaders() })) as JobDone;
+            return (await request(at(`${jobPath(id)}/done`), { method: 'POST', headers: authHeaders() })) as JobDone;
         },
 
         async removeJob(id) {
-            return (await request(`${jobPath(id)}/remove`, { method: 'POST', headers: authHeaders() })) as JobRemoved;
+            return (await request(at(`${jobPath(id)}/remove`), {
+                method: 'POST',
+                headers: authHeaders(),
+            })) as JobRemoved;
+        },
+
+        async answerQuestion(id, questionId, answers) {
+            return (await request(at(`${jobPath(id)}/questions/${encodeURIComponent(questionId)}/answer`), {
+                method: 'POST',
+                headers: { ...authHeaders(), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
+                body: JSON.stringify({ answers }),
+            })) as QuestionRecord;
+        },
+
+        async listRepos() {
+            return (await request(at('/api/repos'), { headers: authHeaders() })) as VisibleRepos;
+        },
+
+        async workspace() {
+            return (await request(at('/api/workspace'), { headers: authHeaders() })) as WorkspaceView;
+        },
+
+        async listSkills() {
+            const payload = (await request(at('/api/skills'), { headers: authHeaders() })) as { skills: SkillView[] };
+            return payload.skills;
+        },
+
+        async listConnections() {
+            const payload = (await request(at('/api/connections'), { headers: authHeaders() })) as {
+                connections: ConnectionView[];
+            };
+            return payload.connections;
         },
     };
 }

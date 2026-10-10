@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { readFile } from 'node:fs/promises';
+import { text } from 'node:stream/consumers';
 import { run } from './run.js';
 
 // A local interrupt aborts the in-flight request; the command then ends `interrupted`, which is
@@ -10,6 +12,8 @@ process.once('SIGTERM', () => interrupt.abort());
 process.exitCode = await run(process.argv.slice(2), {
     env: process.env,
     signal: interrupt.signal,
-    stdout: (text) => process.stdout.write(text),
-    stderr: (text) => process.stderr.write(text),
+    readFile: (path) => readFile(path, 'utf8'),
+    readStdin: () => text(process.stdin),
+    stdout: (chunk) => process.stdout.write(chunk),
+    stderr: (chunk) => process.stderr.write(chunk),
 });

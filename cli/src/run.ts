@@ -1,15 +1,26 @@
 import { parseArgs } from 'node:util';
-import { BoardError, createBoardClient, HTTP_OK, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS } from './board.js';
-import type { BoardClient, JobWait } from './board.js';
+import { createBoardClient, HTTP_OK, QUESTION_ANSWERED_CODE } from './board.js';
+import type { BoardClient, JobCreated, JobWait, QuestionRecord } from './board.js';
 import { CliConfigError, loadCliConfig } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
 import type { CommandResult, ErrorDetail } from './outcome.js';
+import { executorDiscovery, repoDiscovery } from './discovery.js';
+import { INPUT_OPTIONS, resolveCommandInput, UsageError } from './input.js';
+import type { InputIo } from './input.js';
+import { BoardError, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS, realClock } from './transport.js';
+import type { BoardClock } from './transport.js';
 import {
+    renderAnswered,
+    renderConnections,
     renderCreated,
     renderDone,
+    renderExecutors,
     renderJobDetail,
     renderJobLine,
+    renderQuestions,
     renderRemoved,
+    renderRepos,
+    renderSkills,
     renderStopped,
     renderThread,
 } from './render.js';
@@ -39,20 +50,28 @@ const JSON_FLAG = '--json';
 const END_OF_OPTIONS = '--';
 const JSON_OPTION = { json: { type: 'boolean', default: false } } as const;
 
-export const USAGE = `usage: factory job create <command...> [--repo owner/name] [--executor name] [--executor-scope user|org]
-                          [--skill name]... [--json]
+export const USAGE = `usage: factory job create (<command...> | --file <path> | --stdin) [--repo owner/name] [--executor name] [--executor-scope user|org]
+                          [--skill name]... [--jira-connection <id>] [--idempotency-key <key>] [--json]
        factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
        factory job investigate <id> [--json]
        factory job wait <id> [--timeout <seconds>] [--json]
-       factory job follow-up <id> <command...> [--json]
+       factory job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
+       factory job questions <id> [--json]
+       factory job answer <id> <question-id> --answer <text>... [--json]
        factory job stop <id> [--json]
        factory job done <id> [--json]
        factory job remove <id> --yes [--json]
+       factory repo list [--json]          repositories visible to the board, and which are synced
+       factory executor list [--json]      executor profiles by scope (--executor-scope)
+       factory skill list [--json]         skills a task may select (--skill)
+       factory connection list [--json]    managed connections you may select (--jira-connection)
 
 config:
   FACTORY_URL    the board's base URL (required)
   FACTORY_TOKEN  a personal access token (fat_...) minted from the settings page;
                  omit it against an open (AUTH_MODE=none) board
+  FACTORY_REQUEST_TIMEOUT_S  one request's deadline, headers and body included (default 30)
+  FACTORY_READ_RETRIES       re-issues of a failed read or keyed write, never an unkeyed write (default 3; 0 = off)
 
 exit codes: 0 ok (a wait: the run succeeded), 1 the board refused, 2 usage or configuration,
             3 a wait ran out of budget, 4 the run failed or died, 5 the run was stopped on the
@@ -62,22 +81,30 @@ exit codes: 0 ok (a wait: the run succeeded), 1 the board refused, 2 usage or co
 --json prints one envelope on stdout and nothing on stderr, whatever the outcome:
   { ok, command, outcome, exitCode, data, error }
 
+A question's --answer values go one per prompt, in the order \`job questions\` lists them: an
+option's label, or free text (a multi-select joins its picks with ", "). The board is the
+arbiter: an answer that lost to an earlier one, arrived after the question expired, or whose run
+is no longer waiting is refused (exit 1) and never retried.
+
+--file reads the command from a file and --stdin from standard input, exactly as written
+(newlines and Unicode kept); give one source, never two. An empty or over-long command is
+refused here, before any request.
+
 '--' ends option parsing, so a create command that takes flags of its own can follow it:
-  factory job create --repo owner/name -- npm test --watch`;
+  factory job create --repo owner/name -- npm test --watch
 
-/** An argument problem: the command line, not the board, is what refused. */
-class UsageError extends Error {
-    constructor(message: string) {
-        super(message);
-        this.name = 'UsageError';
-    }
-}
+--idempotency-key names one logical write (8-128 of letters, digits . _ : -). Repeat the SAME
+command with the SAME key to recover a write whose answer never arrived: the board returns the
+task the first attempt made instead of a second one, and a different request under the key is
+refused. A genuinely new task takes a new key. A key is remembered for 24 hours.`;
 
-export interface RunIo {
+export interface RunIo extends InputIo {
     env: NodeJS.ProcessEnv;
     fetch?: typeof globalThis.fetch | undefined;
     /** The clock the wait's budget is measured on — injected so tests spend no real time. */
     now?: (() => number) | undefined;
+    /** The pause between read retries — injected with `now` so tests spend no real time backing off. */
+    sleep?: BoardClock['sleep'] | undefined;
     /** Aborted on a local interrupt: the command ends `interrupted`, the task is left alone. */
     signal?: AbortSignal | undefined;
     stdout(text: string): void;
@@ -112,9 +139,18 @@ function parseWaitTimeout(raw: string | undefined): number {
 }
 
 /** Config and client in one step: every command needs both, and neither takes an argument. */
-function boardFor(io: RunIo): BoardClient {
+function boardFor(io: RunIo, deadlineAt?: number): BoardClient {
     const config = loadCliConfig(io.env);
-    return createBoardClient({ url: config.url, token: config.token, fetch: io.fetch, signal: io.signal });
+    return createBoardClient({
+        url: config.url,
+        token: config.token,
+        fetch: io.fetch,
+        signal: io.signal,
+        requestTimeoutMs: config.requestTimeoutMs,
+        readRetries: config.readRetries,
+        deadlineAt,
+        clock: { now: io.now ?? realClock.now, sleep: io.sleep ?? realClock.sleep },
+    });
 }
 
 /** The one positional every action command takes, and nothing else. */
@@ -146,6 +182,56 @@ function ok(data: unknown, text: string): CommandResult {
     return { outcome: OUTCOME.ok, data, stdout: `${text}\n` };
 }
 
+const IDEMPOTENCY_KEY_OPTION = { 'idempotency-key': { type: 'string' } } as const;
+
+/** The status from which a board failure says nothing about whether the write was applied. */
+const SERVER_ERROR_STATUS = 500;
+
+/**
+ * A write the board may or may not have applied: no answer arrived, the board failed, or its
+ * answer could not be read. The error says so and names how to recover — repeating the command
+ * under the same key is safe, repeating it with none could queue a second task.
+ */
+async function recoverable(write: () => Promise<JobCreated>, key: string | undefined): Promise<JobCreated> {
+    try {
+        return await write();
+    } catch (error) {
+        const uncertain =
+            error instanceof BoardError &&
+            (error.status === NO_RESPONSE_STATUS ||
+                error.status >= SERVER_ERROR_STATUS ||
+                error.code === MALFORMED_RESPONSE_CODE);
+        if (!uncertain) throw error;
+        const hint =
+            key === undefined
+                ? 'the write may have been applied — check the task list before repeating it; pass --idempotency-key so a repeat cannot queue a second task'
+                : `the write may have been applied — repeat the same command with --idempotency-key ${key} to recover its result`;
+        throw new BoardError(`${error.message} (${hint})`, error.status, error.code);
+    }
+}
+
+/** A create-shaped answer: the usual line, and — on stderr, so stdout stays parseable — a replay's note. */
+function createdResult(created: JobCreated): CommandResult {
+    const result = ok(created, renderCreated(created));
+    return created.replayed
+        ? { ...result, stderr: 'replayed: the board already made this task for this idempotency key\n' }
+        : result;
+}
+
+/** The prompt text of a create or follow-up: one resolver, its refusals carry the usage text. */
+async function commandOf(
+    positionals: readonly string[],
+    values: { file?: string | undefined; stdin?: boolean | undefined },
+    io: RunIo
+): Promise<string> {
+    try {
+        return await resolveCommandInput({ positionals, file: values.file, stdin: values.stdin }, io);
+    } catch (error) {
+        if (error instanceof UsageError) throw new UsageError(`${error.message}\n\n${USAGE}`);
+        throw error;
+    }
+}
+
 async function runCreate(args: readonly string[], io: RunIo): Promise<CommandResult> {
     const parsed = parseOrUsage(() =>
         parseArgs({
@@ -153,26 +239,34 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<CommandRes
             allowPositionals: true,
             options: {
                 ...JSON_OPTION,
+                ...INPUT_OPTIONS,
                 repo: { type: 'string' },
                 executor: { type: 'string' },
                 'executor-scope': { type: 'string' },
                 skill: { type: 'string', multiple: true },
+                'jira-connection': { type: 'string' },
+                ...IDEMPOTENCY_KEY_OPTION,
             },
         })
     );
-    const command = parsed.positionals.join(' ').trim();
-    if (!command) {
-        throw new UsageError('a create needs a command\n\n' + USAGE);
-    }
+    const command = await commandOf(parsed.positionals, parsed.values, io);
     const executorScope = parseExecutorScope(parsed.values['executor-scope']);
-    const created = await boardFor(io).createJob({
-        command,
-        repo: parsed.values.repo,
-        executor: parsed.values.executor,
-        executorScope,
-        skills: parsed.values.skill,
-    });
-    return ok(created, renderCreated(created));
+    const key = parsed.values['idempotency-key'];
+    const created = await recoverable(
+        () =>
+            boardFor(io).createJob({
+                command,
+                repo: parsed.values.repo,
+                executor: parsed.values.executor,
+                executorScope,
+                skills: parsed.values.skill,
+                // The board authorizes it against the author; a connection that is not theirs is its 403.
+                jiraConnection: parsed.values['jira-connection'],
+                idempotencyKey: key,
+            }),
+        key
+    );
+    return createdResult(created);
 }
 
 async function runList(args: readonly string[], io: RunIo): Promise<CommandResult> {
@@ -257,10 +351,10 @@ async function runWait(args: readonly string[], io: RunIo): Promise<CommandResul
     }
     const id = parsed.positionals[0]!;
     const total = parseWaitTimeout(parsed.values.timeout);
-    const client = boardFor(io);
     const now = io.now ?? Date.now;
-
+    // The client shares the wait's deadline, so its attempts and backoff cannot outlive the budget.
     const deadline = now() + total * MS_PER_SECOND;
+    const client = boardFor(io, deadline);
     let last: JobWait | null = null;
     for (;;) {
         const remainingMs = deadline - now();
@@ -294,15 +388,72 @@ async function runWait(args: readonly string[], io: RunIo): Promise<CommandResul
 }
 
 async function runFollowUp(args: readonly string[], io: RunIo): Promise<CommandResult> {
-    const parsed = parseOrUsage(() => parseArgs({ args: [...args], allowPositionals: true, options: JSON_OPTION }));
+    const parsed = parseOrUsage(() =>
+        parseArgs({
+            args: [...args],
+            allowPositionals: true,
+            options: { ...JSON_OPTION, ...INPUT_OPTIONS, ...IDEMPOTENCY_KEY_OPTION },
+        })
+    );
     const [id, ...rest] = parsed.positionals;
-    const command = rest.join(' ').trim();
-    if (!id || !command) {
-        throw new UsageError('a follow-up needs a job id and a command\n\n' + USAGE);
+    if (!id) {
+        throw new UsageError('a follow-up needs a job id\n\n' + USAGE);
     }
+    const command = await commandOf(rest, parsed.values, io);
     // Only the command travels: the repo, the executor and the session come from the parent.
-    const created = await boardFor(io).followUp(id, command);
-    return ok(created, renderCreated(created));
+    const key = parsed.values['idempotency-key'];
+    const created = await recoverable(() => boardFor(io).followUp(id, command, key), key);
+    return createdResult(created);
+}
+
+/** Every question the task's runs asked, oldest first — each paired with the run that asked it. */
+async function questionsOf(client: BoardClient, id: string) {
+    const thread = await client.thread(id);
+    return thread.flatMap((job) => (job.questions ?? []).map((question) => ({ jobId: job.id, question })));
+}
+
+async function runQuestions(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const { id } = onlyId(args, 'questions');
+    const questions: QuestionRecord[] = (await questionsOf(boardFor(io), id)).map((entry) => entry.question);
+    return ok({ questions }, renderQuestions(questions));
+}
+
+async function runAnswer(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const parsed = parseOrUsage(() =>
+        parseArgs({
+            args: [...args],
+            allowPositionals: true,
+            options: { ...JSON_OPTION, answer: { type: 'string', multiple: true } },
+        })
+    );
+    const [id, questionId] = parsed.positionals;
+    if (parsed.positionals.length !== 2 || !id || !questionId) {
+        throw new UsageError(`answer needs a job id and a question id\n\n${USAGE}`);
+    }
+    const values = parsed.values.answer ?? [];
+    const client = boardFor(io);
+    const found = (await questionsOf(client, id)).find((entry) => entry.question.id === questionId);
+    if (!found) throw new UsageError(`no question ${questionId} on the task of ${id}`);
+    const prompts = found.question.questions;
+    if (values.length !== prompts.length) {
+        throw new UsageError(
+            `question ${questionId} has ${prompts.length} prompt(s); give one --answer for each, in order (got ${values.length})`
+        );
+    }
+    const answers = Object.fromEntries(prompts.map((prompt, index) => [prompt.question, values[index]!]));
+    try {
+        const answered = await client.answerQuestion(found.jobId, questionId, answers);
+        return ok(answered, renderAnswered(answered));
+    } catch (error) {
+        if (error instanceof BoardError && error.code === QUESTION_ANSWERED_CODE) {
+            throw new BoardError(
+                `${error.message} — run \`factory job questions ${id}\` to see the recorded answer`,
+                error.status,
+                error.code
+            );
+        }
+        throw error;
+    }
 }
 
 async function runStop(args: readonly string[], io: RunIo): Promise<CommandResult> {
@@ -328,15 +479,52 @@ async function runRemove(args: readonly string[], io: RunIo): Promise<CommandRes
     return ok(removed, renderRemoved(removed));
 }
 
+/** A discovery command takes no arguments beyond `--json`, and only reads. */
+function noArguments(args: readonly string[], verb: string): void {
+    const parsed = parseOrUsage(() => parseArgs({ args: [...args], allowPositionals: true, options: JSON_OPTION }));
+    if (parsed.positionals.length > 0) throw new UsageError(`${verb} takes no arguments\n\n${USAGE}`);
+}
+
+async function runRepoList(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    noArguments(args, 'repo list');
+    const client = boardFor(io);
+    const discovery = repoDiscovery(await client.listRepos(), await client.workspace());
+    return ok(discovery, renderRepos(discovery));
+}
+
+async function runExecutorList(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    noArguments(args, 'executor list');
+    const discovery = executorDiscovery(await boardFor(io).workspace());
+    return ok(discovery, renderExecutors(discovery.executors));
+}
+
+async function runSkillList(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    noArguments(args, 'skill list');
+    const skills = await boardFor(io).listSkills();
+    return ok({ skills }, renderSkills(skills));
+}
+
+async function runConnectionList(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    noArguments(args, 'connection list');
+    const connections = await boardFor(io).listConnections();
+    return ok({ connections }, renderConnections(connections));
+}
+
 const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<CommandResult>> = {
-    create: runCreate,
-    list: runList,
-    investigate: runInvestigate,
-    wait: runWait,
-    'follow-up': runFollowUp,
-    stop: runStop,
-    done: runDone,
-    remove: runRemove,
+    'job create': runCreate,
+    'job list': runList,
+    'job investigate': runInvestigate,
+    'job wait': runWait,
+    'job follow-up': runFollowUp,
+    'job questions': runQuestions,
+    'job answer': runAnswer,
+    'job stop': runStop,
+    'job done': runDone,
+    'job remove': runRemove,
+    'repo list': runRepoList,
+    'executor list': runExecutorList,
+    'skill list': runSkillList,
+    'connection list': runConnectionList,
 };
 
 const INTERRUPTED_MESSAGE = 'interrupted — this process stopped; the task on the board was not touched';
@@ -384,9 +572,10 @@ async function dispatch(
     io: RunIo
 ): Promise<{ command: string | null; result: CommandResult }> {
     const [topic, command] = argv;
-    const handler = topic === 'job' && command !== undefined ? COMMANDS[command] : undefined;
+    const key = `${topic} ${command}`;
+    const handler = Object.hasOwn(COMMANDS, key) ? COMMANDS[key] : undefined;
     // A line that names no command reports none, so a parse failure never invents one.
-    const name = handler ? `${topic} ${command}` : null;
+    const name = handler ? key : null;
     try {
         if (!handler) throw new UsageError(USAGE);
         return { command: name, result: await handler(argv.slice(2), io) };
