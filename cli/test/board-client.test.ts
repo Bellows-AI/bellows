@@ -163,6 +163,16 @@ describe('the board client', () => {
         expect(calls[0]!.body).toEqual({ command: 'now add a test' });
     });
 
+    it('posts a retry with no body and the key header', async () => {
+        const { calls, fetch } = recorder(() => json({ id: 'job-3', status: 'queued' }, 201));
+
+        const created = await client(fetch).retry('job-1', 'attempt-0001-abcd');
+
+        expect(created).toEqual({ id: 'job-3', status: 'queued' });
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/retry');
+        expect(calls[0]!.method).toBe('POST');
+    });
+
     it('posts the bodiless lifecycle actions and returns what each one answered', async () => {
         const { calls, fetch } = recorder(
             (index) =>
