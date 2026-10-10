@@ -38,32 +38,18 @@ async function cli(argv: string[], respond: (sent: Sent) => Response) {
 
 const refusal = (status: number, code: string, error: string) => Response.json({ error, code }, { status });
 
-/** A board that accepts a retry as run `run-2` of task `task-1`, and reads it back. */
-const retryBoard =
-    (headers: Record<string, string> = {}) =>
-    (call: Sent) =>
-        call.method === 'POST'
-            ? Response.json({ id: 'run-2', status: 'queued' }, { status: 201, headers })
-            : Response.json({ id: 'run-2', rootJobId: 'task-1', status: 'queued' });
+/** A board that accepts a retry as the new run `run-2`. */
+const retryBoard = () => () => Response.json({ id: 'run-2', status: 'queued' }, { status: 201 });
 
 describe('factory job retry', () => {
-    it('posts a bodiless retry and names the new run and its task', async () => {
+    it('posts a bodiless retry and names the new run, not the one retried', async () => {
         const result = await cli(['job', 'retry', 'run-1', '--json'], retryBoard());
 
         expect(result.code).toBe(0);
-        expect(result.sent[0]).toEqual({
-            url: 'http://board/api/jobs/run-1/retry',
-            method: 'POST',
-            key: null,
-            body: undefined,
-        });
-        expect(result.sent[1]!.url).toBe('http://board/api/jobs/run-2');
-        expect(JSON.parse(result.out).data).toEqual({
-            id: 'run-2',
-            status: 'queued',
-            runId: 'run-2',
-            taskId: 'task-1',
-        });
+        expect(result.sent).toEqual([
+            { url: 'http://board/api/jobs/run-1/retry', method: 'POST', key: null, body: undefined },
+        ]);
+        expect(JSON.parse(result.out).data).toEqual({ id: 'run-2', status: 'queued' });
     });
 
     it('prints the new run on one line, as a create does', async () => {
@@ -72,29 +58,7 @@ describe('factory job retry', () => {
         expect(result.out).toBe('queued run-2\n');
     });
 
-    it('sends the idempotency key and marks a replay, answering the same run', async () => {
-        const result = await cli(
-            ['job', 'retry', 'run-1', '--idempotency-key', KEY, '--json'],
-            retryBoard({ 'idempotency-replayed': 'true' })
-        );
-
-        expect(result.code).toBe(0);
-        expect(result.sent[0]!.key).toBe(KEY);
-        expect(JSON.parse(result.out).data).toMatchObject({ runId: 'run-2', taskId: 'task-1', replayed: true });
-    });
-
-    it('still reports the accepted retry when the task lookup fails', async () => {
-        const result = await cli(['job', 'retry', 'run-1', '--json'], (call) =>
-            call.method === 'POST'
-                ? Response.json({ id: 'run-2', status: 'queued' }, { status: 201 })
-                : refusal(404, 'NOT_FOUND', 'gone')
-        );
-
-        expect(result.code).toBe(0);
-        expect(JSON.parse(result.out).data).toMatchObject({ runId: 'run-2', taskId: null });
-    });
-
-    it("surfaces the board's refusal and never reads a task back", async () => {
+    it("surfaces the board's refusal", async () => {
         const result = await cli(['job', 'retry', 'run-1'], () =>
             refusal(409, 'NOT_FINISHED', 'Task is still running')
         );

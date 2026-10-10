@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type {
     Board,
     BoardJob,
@@ -3943,25 +3943,30 @@ describe('the output pump snapshot', () => {
             report: async () => 'held',
         };
         const state = newJobState();
+        // Only Date is faked: the stamp is Date.now(), and the clock must move between pushes
+        // by the test's say, not the wall clock's. The pump's own sleep stays real.
+        vi.useFakeTimers({ toFake: ['Date'] });
         const pump = watchOutput(rt, job(1), state);
         try {
             expect(pump.snapshot().lastOutputAt).toBeNull();
             expect(pump.snapshot().activity).toBeNull();
 
+            vi.setSystemTime(1_000);
             pump.push('$ npm test');
-            const first = pump.snapshot().lastOutputAt;
-            expect(first).not.toBeNull();
+            expect(pump.snapshot().lastOutputAt).toBe(1_000);
             expect(pump.snapshot().activity).toBe('$ npm test');
 
             // The same tail again — a re-poll, not progress. The stamp must not move.
+            vi.setSystemTime(2_000);
             pump.push('$ npm test');
-            expect(pump.snapshot().lastOutputAt).toBe(first);
+            expect(pump.snapshot().lastOutputAt).toBe(1_000);
 
-            await new Promise((resolve) => setTimeout(resolve, 2));
+            vi.setSystemTime(3_000);
             pump.push('$ npm run lint\n');
-            expect(pump.snapshot().lastOutputAt).toBeGreaterThan(first!);
+            expect(pump.snapshot().lastOutputAt).toBe(3_000);
             expect(pump.snapshot().activity).toBe('$ npm run lint');
         } finally {
+            vi.useRealTimers();
             state.finished = true;
             state.wake();
         }

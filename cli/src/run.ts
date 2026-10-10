@@ -1,6 +1,6 @@
 import { parseArgs } from 'node:util';
-import { createBoardClient, HTTP_OK } from './board.js';
-import type { BoardClient, JobCreated, JobWait } from './board.js';
+import { createBoardClient, HTTP_OK, QUESTION_ANSWERED_CODE } from './board.js';
+import type { BoardClient, JobCreated, JobWait, QuestionRecord } from './board.js';
 import { CliConfigError, loadCliConfig } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
 import type { CommandResult, ErrorDetail } from './outcome.js';
@@ -10,6 +10,7 @@ import type { InputIo } from './input.js';
 import { BoardError, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS, realClock } from './transport.js';
 import type { BoardClock } from './transport.js';
 import {
+    renderAnswered,
     renderConnections,
     renderCreated,
     renderDone,
@@ -17,6 +18,7 @@ import {
     renderExecutors,
     renderJobDetail,
     renderJobLine,
+    renderQuestions,
     renderRemoved,
     renderReopened,
     renderRepos,
@@ -58,6 +60,8 @@ export const USAGE = `usage: factory job create (<command...> | --file <path> | 
        factory job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
        factory job retry <id> [--idempotency-key <key>] [--json]
        factory job edit <id> (<command...> | --file <path> | --stdin) [--json]
+       factory job questions <id> [--json]
+       factory job answer <id> <question-id> --answer <text>... [--json]
        factory job stop <id> [--json]
        factory job done <id> [--json]
        factory job reopen <id> [--json]
@@ -86,6 +90,11 @@ retry queues a fresh attempt of the task's existing command; follow-up queues NE
 edit replaces the command of a queued run you created, in place; the board refuses it once the run
 is claimed. reopen undoes done. The board decides every refusal.
 
+A question's --answer values go one per prompt, in the order \`job questions\` lists them: an
+option's label, or free text (a multi-select joins its picks with ", "). The board is the
+arbiter: an answer that lost to an earlier one, arrived after the question expired, or whose run
+is no longer waiting is refused (exit 1) and never retried.
+
 --file reads the command from a file and --stdin from standard input, exactly as written
 (newlines and Unicode kept); give one source, never two. An empty or over-long command is
 refused here, before any request.
@@ -93,10 +102,13 @@ refused here, before any request.
 '--' ends option parsing, so a create command that takes flags of its own can follow it:
   factory job create --repo owner/name -- npm test --watch
 
+retry re-runs the finished task's own command as a fresh attempt in the same thread; a follow-up
+is the command for NEW instructions.
+
 --idempotency-key names one logical write (8-128 of letters, digits . _ : -). Repeat the SAME
 command with the SAME key to recover a write whose answer never arrived: the board returns the
 task the first attempt made instead of a second one, and a different request under the key is
-refused. A genuinely new task takes a new key. A key is remembered for 24 hours.`;
+refused. A genuinely new task or retry takes a new key. A key is remembered for 24 hours.`;
 
 export interface RunIo extends InputIo {
     env: NodeJS.ProcessEnv;
@@ -406,11 +418,6 @@ async function runFollowUp(args: readonly string[], io: RunIo): Promise<CommandR
     return createdResult(created);
 }
 
-/**
- * A retry names the new run and the task it belongs to. The 201 body carries only the run, so the
- * task (the thread's root) is read off it — best effort, since the write already happened and a
- * failed read must not report it as failed.
- */
 async function runRetry(args: readonly string[], io: RunIo): Promise<CommandResult> {
     const parsed = parseOrUsage(() =>
         parseArgs({ args: [...args], allowPositionals: true, options: { ...JSON_OPTION, ...IDEMPOTENCY_KEY_OPTION } })
@@ -419,13 +426,8 @@ async function runRetry(args: readonly string[], io: RunIo): Promise<CommandResu
         throw new UsageError(`retry needs exactly one job id\n\n${USAGE}`);
     }
     const key = parsed.values['idempotency-key'];
-    const client = boardFor(io);
-    const created = await recoverable(() => client.retryJob(parsed.positionals[0]!, key), key);
-    const taskId = await client.getJob(created.id).then(
-        (job) => job.rootJobId,
-        () => null
-    );
-    return { ...createdResult(created), data: { ...created, runId: created.id, taskId } };
+    const created = await recoverable(() => boardFor(io).retry(parsed.positionals[0]!, key), key);
+    return createdResult(created);
 }
 
 async function runEdit(args: readonly string[], io: RunIo): Promise<CommandResult> {
@@ -445,6 +447,56 @@ async function runReopen(args: readonly string[], io: RunIo): Promise<CommandRes
     const { id } = onlyId(args, 'reopen');
     const reopened = await boardFor(io).reopenJob(id);
     return ok(reopened, renderReopened(reopened));
+}
+
+/** Every question the task's runs asked, oldest first — each paired with the run that asked it. */
+async function questionsOf(client: BoardClient, id: string) {
+    const thread = await client.thread(id);
+    return thread.flatMap((job) => (job.questions ?? []).map((question) => ({ jobId: job.id, question })));
+}
+
+async function runQuestions(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const { id } = onlyId(args, 'questions');
+    const questions: QuestionRecord[] = (await questionsOf(boardFor(io), id)).map((entry) => entry.question);
+    return ok({ questions }, renderQuestions(questions));
+}
+
+async function runAnswer(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const parsed = parseOrUsage(() =>
+        parseArgs({
+            args: [...args],
+            allowPositionals: true,
+            options: { ...JSON_OPTION, answer: { type: 'string', multiple: true } },
+        })
+    );
+    const [id, questionId] = parsed.positionals;
+    if (parsed.positionals.length !== 2 || !id || !questionId) {
+        throw new UsageError(`answer needs a job id and a question id\n\n${USAGE}`);
+    }
+    const values = parsed.values.answer ?? [];
+    const client = boardFor(io);
+    const found = (await questionsOf(client, id)).find((entry) => entry.question.id === questionId);
+    if (!found) throw new UsageError(`no question ${questionId} on the task of ${id}`);
+    const prompts = found.question.questions;
+    if (values.length !== prompts.length) {
+        throw new UsageError(
+            `question ${questionId} has ${prompts.length} prompt(s); give one --answer for each, in order (got ${values.length})`
+        );
+    }
+    const answers = Object.fromEntries(prompts.map((prompt, index) => [prompt.question, values[index]!]));
+    try {
+        const answered = await client.answerQuestion(found.jobId, questionId, answers);
+        return ok(answered, renderAnswered(answered));
+    } catch (error) {
+        if (error instanceof BoardError && error.code === QUESTION_ANSWERED_CODE) {
+            throw new BoardError(
+                `${error.message} — run \`factory job questions ${id}\` to see the recorded answer`,
+                error.status,
+                error.code
+            );
+        }
+        throw error;
+    }
 }
 
 async function runStop(args: readonly string[], io: RunIo): Promise<CommandResult> {
@@ -509,6 +561,8 @@ const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<C
     'job follow-up': runFollowUp,
     'job retry': runRetry,
     'job edit': runEdit,
+    'job questions': runQuestions,
+    'job answer': runAnswer,
     'job stop': runStop,
     'job done': runDone,
     'job reopen': runReopen,

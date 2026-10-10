@@ -276,9 +276,13 @@ const STUB = `#!/bin/sh
 # orphan a process that outlives the whole suite by STUB_SLEEP seconds, and killing without
 # waiting would leave a zombie that is still signalable. The marker is written after the
 # wait, so a test that sees the marker knows the sleep is gone.
+# The kill is KILL, not TERM: the backgrounded sleep is a fork of this shell, carrying this
+# very trap until it execs, and under load a TERM landing in that sliver is swallowed by the
+# copy (dash, measured: ~1 in 7 forwards) — the trap then waits out the whole STUB_SLEEP.
+# KILL cannot be caught, so it ends the sleep whether or not it has exec'd yet.
 # The guard covers a TERM landing before the sleep exists (STUB_SETTLE): an unset pid would
 # make kill and wait no-ops anyway, and an empty "$VAR" is an argument, not nothing.
-trap '[ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null && wait "$SLEEP_PID" 2>/dev/null; echo "$$" > "$STUB_DIR/signaled"; exit 143' TERM
+trap '[ -n "$SLEEP_PID" ] && kill -KILL "$SLEEP_PID" 2>/dev/null && wait "$SLEEP_PID" 2>/dev/null; echo "$$" > "$STUB_DIR/signaled"; exit 143' TERM
 sleep "\${STUB_SETTLE:-0}"
 sleep "\${STUB_SLEEP:-0}" &
 SLEEP_PID=$!
@@ -549,6 +553,63 @@ describe('the entrypoint Jira connector', () => {
                 const child = runEntrypoint(entrypoint, sandbox, { ...partial, JIRA_API: STALE_JIRA_API });
                 expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
                 expect(readFileSync(join(sandbox.bin, 'jira-api'), 'utf8')).toBe('unset');
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
+});
+
+/*
+ * GitHub over https: `gh` reads GITHUB_TOKEN by itself, `git push` does not — without a helper it
+ * asks for a username nobody can type ("could not read Username for 'https://github.com'"). The
+ * helper reads the variable when git asks, so the token is never written into the git config.
+ */
+describe('the entrypoint git credential', () => {
+    const ENTRYPOINTS = ['docker/claude-executor/entrypoint.sh', 'docker/opencode-executor/entrypoint.sh'];
+    const TOKEN = 'ghs_entrypoint-test-token';
+    /** Asks git for a github.com credential as `git push` would; the host's system helpers stay out. */
+    const fill = (home: string, token: string) =>
+        execFileSync('git', ['credential', 'fill'], {
+            input: 'protocol=https\nhost=github.com\n\n',
+            env: {
+                ...process.env,
+                HOME: home,
+                GITHUB_TOKEN: token,
+                GIT_CONFIG_NOSYSTEM: '1',
+                GIT_TERMINAL_PROMPT: '0',
+            },
+            encoding: 'utf8',
+        });
+
+    it.each(ENTRYPOINTS)(
+        '%s answers github.com with GITHUB_TOKEN, read at call time and never stored',
+        async (entrypoint) => {
+            const sandbox = makeSandbox();
+            try {
+                const child = runEntrypoint(entrypoint, sandbox, { GITHUB_TOKEN: TOKEN });
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                const home = sandbox.env.HOME!;
+                expect(fill(home, TOKEN)).toContain(`username=x-access-token\npassword=${TOKEN}\n`);
+                expect(fill(home, 'ghs_refreshed')).toContain('password=ghs_refreshed\n');
+                expect(readFileSync(join(home, '.gitconfig'), 'utf8')).not.toContain(TOKEN);
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it.each(ENTRYPOINTS)(
+        '%s configures no helper without a GITHUB_TOKEN',
+        async (entrypoint) => {
+            const sandbox = makeSandbox();
+            try {
+                const child = runEntrypoint(entrypoint, sandbox, { GITHUB_TOKEN: '' });
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                const gitconfig = join(sandbox.env.HOME!, '.gitconfig');
+                expect(existsSync(gitconfig) ? readFileSync(gitconfig, 'utf8') : '').not.toContain('credential');
             } finally {
                 sandbox.cleanup();
             }

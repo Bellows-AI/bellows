@@ -84,7 +84,10 @@ describe('the stop poller', () => {
 
             expect(code).toBe(0);
             expect(existsSync(marker)).toBe(true);
-            expect(control.seen).toHaveLength(2);
+            // At least two polls: it kept going past `stop: false`. Not exactly two — each fetch aborts
+            // after BELLOWS_CONTROL_POLL_MS, so a reply delayed past 20ms under load is re-polled.
+            // Exiting with the marker written is what proves it stopped once a Stop was raised.
+            expect(control.seen.length).toBeGreaterThanOrEqual(2);
             expect(control.seen.every((call) => call.url === '/control' && call.authorization === 'Bearer tok-1')).toBe(
                 true
             );

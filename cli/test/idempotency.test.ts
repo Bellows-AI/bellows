@@ -45,6 +45,23 @@ describe('--idempotency-key', () => {
         expect(keyless.sent[0]!.key).toBeNull();
     });
 
+    it('sends the key on a retry unchanged, and marks a replay', async () => {
+        const retry = await cli(['job', 'retry', 'job-1', '--idempotency-key', KEY, '--json'], () =>
+            created({ 'idempotency-replayed': 'true' })
+        );
+
+        expect(retry.sent).toEqual([{ url: 'http://board/api/jobs/job-1/retry', key: KEY }]);
+        expect(JSON.parse(retry.out).data).toEqual({ id: 'job-1', status: 'queued', replayed: true });
+    });
+
+    it('surfaces the board refusal of a retry key reused for another request', async () => {
+        const result = await cli(['job', 'retry', 'job-1', '--idempotency-key', KEY], () =>
+            Response.json({ error: 'key reused', code: 'IDEMPOTENCY_KEY_REUSED' }, { status: 409 })
+        );
+        expect(result.code).toBe(1);
+        expect(result.err).toContain('IDEMPOTENCY_KEY_REUSED');
+    });
+
     it('keeps stdout the same on a replay and says so on stderr and in the json data', async () => {
         const replay = await cli(['job', 'create', 'echo hi', '--idempotency-key', KEY], () =>
             created({ 'idempotency-replayed': 'true' })
@@ -119,6 +136,11 @@ describe('--idempotency-key', () => {
 
         it('on a follow-up too', async () => {
             const result = await cli(['job', 'follow-up', 'job-1', 'again', '--idempotency-key', KEY], unreachable);
+            expect(result.err).toContain(`--idempotency-key ${KEY}`);
+        });
+
+        it('on a retry too', async () => {
+            const result = await cli(['job', 'retry', 'job-1', '--idempotency-key', KEY], unreachable);
             expect(result.err).toContain(`--idempotency-key ${KEY}`);
         });
 
