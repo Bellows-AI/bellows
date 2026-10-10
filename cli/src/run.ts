@@ -1,5 +1,5 @@
 import { parseArgs } from 'node:util';
-import { createBoardClient, HTTP_OK } from './board.js';
+import { createBoardClient, HTTP_OK, TASK_SORTS, TASK_STATES } from './board.js';
 import type { BoardClient, JobCreated, JobWait } from './board.js';
 import { CliConfigError, loadCliConfig } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
@@ -20,6 +20,7 @@ import {
     renderRepos,
     renderSkills,
     renderStopped,
+    renderTaskPage,
     renderThread,
 } from './render.js';
 
@@ -38,6 +39,8 @@ import {
 /** The list limit bounds the board itself enforces, mirrored so an obvious typo never round-trips. */
 const LIST_LIMIT_MIN = 1;
 const LIST_LIMIT_MAX = 200;
+/** The task list's own page bound, mirrored from the board. */
+const TASK_LIMIT_MAX = 50;
 
 /** How long one wait holds for by default, and the longest single hold the board allows. */
 const WAIT_TOTAL_DEFAULT_S = 300;
@@ -51,6 +54,8 @@ const JSON_OPTION = { json: { type: 'boolean', default: false } } as const;
 export const USAGE = `usage: factory job create (<command...> | --file <path> | --stdin) [--repo owner/name] [--executor name] [--executor-scope user|org]
                           [--skill name]... [--jira-connection <id>] [--idempotency-key <key>] [--json]
        factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
+       factory task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
+                         [--sort newest|oldest] [--limit <n>] [--cursor <cursor>] [--json]
        factory job investigate <id> [--json]
        factory job wait <id> [--timeout <seconds>] [--json]
        factory job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
@@ -61,6 +66,10 @@ export const USAGE = `usage: factory job create (<command...> | --file <path> | 
        factory executor list [--json]      executor profiles by scope (--executor-scope)
        factory skill list [--json]         skills a task may select (--skill)
        factory connection list [--json]    managed connections you may select (--jira-connection)
+
+'task list' lists logical tasks, one per conversation, with the id of the head run its status describes;
+'job list' lists individual runs. A --cursor is valid only with the filters that printed it; the board
+refuses any other.
 
 config:
   FACTORY_URL    the board's base URL (required)
@@ -110,11 +119,11 @@ function parseOrUsage<T>(parse: () => T): T {
     }
 }
 
-function parseLimit(raw: string | undefined): number | undefined {
+function parseLimit(raw: string | undefined, max = LIST_LIMIT_MAX): number | undefined {
     if (raw === undefined) return undefined;
     const value = Number(raw);
-    if (!Number.isInteger(value) || value < LIST_LIMIT_MIN || value > LIST_LIMIT_MAX) {
-        throw new UsageError(`--limit must be an integer ${LIST_LIMIT_MIN}..${LIST_LIMIT_MAX}, got "${raw}"`);
+    if (!Number.isInteger(value) || value < LIST_LIMIT_MIN || value > max) {
+        throw new UsageError(`--limit must be an integer ${LIST_LIMIT_MIN}..${max}, got "${raw}"`);
     }
     return value;
 }
@@ -279,6 +288,46 @@ async function runList(args: readonly string[], io: RunIo): Promise<CommandResul
         repo: parsed.values.repo,
     });
     return { outcome: OUTCOME.ok, data: { jobs }, stdout: jobs.map((job) => `${renderJobLine(job)}\n`).join('') };
+}
+
+/** A flag whose value is one of a fixed set — a typo is a usage error before any request. */
+function parseChoice<T extends string>(flag: string, raw: string | undefined, allowed: readonly T[]): T | undefined {
+    if (raw === undefined) return undefined;
+    const choice = allowed.find((value) => value === raw);
+    if (choice === undefined) throw new UsageError(`--${flag} must be one of ${allowed.join(', ')}, got "${raw}"`);
+    return choice;
+}
+
+async function runTaskList(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const { values } = parseOrUsage(() =>
+        parseArgs({
+            args: [...args],
+            options: {
+                ...JSON_OPTION,
+                state: { type: 'string' },
+                q: { type: 'string' },
+                author: { type: 'string' },
+                repo: { type: 'string' },
+                sort: { type: 'string' },
+                limit: { type: 'string' },
+                cursor: { type: 'string' },
+            },
+        })
+    );
+    const page = await boardFor(io).listTasks({
+        state: parseChoice('state', values.state, TASK_STATES),
+        q: values.q,
+        author: values.author,
+        repo: values.repo,
+        sort: parseChoice('sort', values.sort, TASK_SORTS),
+        limit: parseLimit(values.limit, TASK_LIMIT_MAX),
+        cursor: values.cursor,
+    });
+    return {
+        outcome: OUTCOME.ok,
+        data: { tasks: page.items, nextCursor: page.nextCursor },
+        stdout: `${renderTaskPage(page)}\n`,
+    };
 }
 
 async function runInvestigate(args: readonly string[], io: RunIo): Promise<CommandResult> {
@@ -454,6 +503,7 @@ async function runConnectionList(args: readonly string[], io: RunIo): Promise<Co
 const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<CommandResult>> = {
     'job create': runCreate,
     'job list': runList,
+    'task list': runTaskList,
     'job investigate': runInvestigate,
     'job wait': runWait,
     'job follow-up': runFollowUp,

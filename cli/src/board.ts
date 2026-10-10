@@ -123,6 +123,35 @@ export interface JobWait {
     job: BoardJobRecord;
 }
 
+/** The board's task states and sorts, copied from `GET /api/tasks` — the CLI imports nothing from the server. */
+export const TASK_STATES = ['attention', 'running', 'review', 'past'] as const;
+export const TASK_SORTS = ['newest', 'oldest'] as const;
+
+/**
+ * One logical task of `GET /api/tasks`. `id` is the task (its root run); `headRunId` is the one
+ * run `status` and `activity` describe — every other run of the thread is history.
+ */
+export interface BoardTaskSummary {
+    id: string;
+    headRunId: string;
+    command: string;
+    status: string;
+    doneAt: string | null;
+    repo: string | null;
+    executor: string | null;
+    author: { login: string } | null;
+    waitReason: string | null;
+    needsAnswer: boolean;
+    createdAt: string;
+    activityAt: string;
+}
+
+/** The slice of the task list answer the CLI shows: the page and its query-bound cursor. */
+export interface BoardTaskPage {
+    items: BoardTaskSummary[];
+    nextCursor: string | null;
+}
+
 export interface BoardClient {
     createJob(input: {
         command: string;
@@ -142,6 +171,16 @@ export interface BoardClient {
         limit?: number | undefined;
         repo?: string | undefined;
     }): Promise<BoardJobRecord[]>;
+    /** One page of logical tasks (`GET /api/tasks`); `cursor` is only valid under the query that minted it. */
+    listTasks(filters: {
+        state?: string | undefined;
+        q?: string | undefined;
+        author?: string | undefined;
+        repo?: string | undefined;
+        sort?: string | undefined;
+        limit?: number | undefined;
+        cursor?: string | undefined;
+    }): Promise<BoardTaskPage>;
     getJob(id: string): Promise<BoardJobRecord>;
     /**
      * One settle long-poll: the board holds the read until the thread's chain head is terminal, an
@@ -312,6 +351,18 @@ export function createBoardClient({
                 headers: authHeaders(),
             })) as { jobs: BoardJobRecord[] };
             return payload.jobs;
+        },
+
+        async listTasks(filters) {
+            const params = new URLSearchParams();
+            for (const [key, value] of Object.entries(filters)) {
+                if (value !== undefined) params.set(key, String(value));
+            }
+            const query = params.toString();
+            const payload = (await request(at(`/api/tasks${query ? `?${query}` : ''}`), {
+                headers: authHeaders(),
+            })) as { page: BoardTaskPage };
+            return payload.page;
         },
 
         async getJob(id) {

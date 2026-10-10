@@ -1,4 +1,12 @@
-import type { BoardJobRecord, ConnectionView, JobDone, JobRemoved, JobStopped, SkillView } from './board.js';
+import type {
+    BoardJobRecord,
+    BoardTaskPage,
+    ConnectionView,
+    JobDone,
+    JobRemoved,
+    JobStopped,
+    SkillView,
+} from './board.js';
 import type { ExecutorRow, RepoDiscovery } from './discovery.js';
 
 /**
@@ -115,6 +123,25 @@ export function renderThread(jobs: readonly BoardJobRecord[]): string {
         lines.push(renderThreadMember(job, index));
     }
     return lines.join('\n');
+}
+
+/**
+ * One task row: the TASK id first (what `task list` is keyed by), then the head run's status and
+ * id — the run the status describes, never a historical one — and the task's own labels.
+ */
+export function renderTaskPage(page: BoardTaskPage): string {
+    const lines = page.items.map((task) =>
+        [
+            task.id,
+            task.status,
+            `head:${task.headRunId}`,
+            task.activityAt,
+            task.repo ?? DASH,
+            commandPreview(task.command),
+        ].join('  ')
+    );
+    if (page.nextCursor !== null) lines.push(`next: --cursor ${page.nextCursor}`);
+    return lines.length === 0 ? 'no tasks' : lines.join('\n');
 }
 
 /** Repo discovery: one row per repo, visible and synced marked, a note when the list may be thin. */
