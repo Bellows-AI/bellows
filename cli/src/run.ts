@@ -13,10 +13,12 @@ import {
     renderConnections,
     renderCreated,
     renderDone,
+    renderEdited,
     renderExecutors,
     renderJobDetail,
     renderJobLine,
     renderRemoved,
+    renderReopened,
     renderRepos,
     renderSkills,
     renderStopped,
@@ -54,8 +56,11 @@ export const USAGE = `usage: factory job create (<command...> | --file <path> | 
        factory job investigate <id> [--json]
        factory job wait <id> [--timeout <seconds>] [--json]
        factory job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
+       factory job retry <id> [--idempotency-key <key>] [--json]
+       factory job edit <id> (<command...> | --file <path> | --stdin) [--json]
        factory job stop <id> [--json]
        factory job done <id> [--json]
+       factory job reopen <id> [--json]
        factory job remove <id> --yes [--json]
        factory repo list [--json]          repositories visible to the board, and which are synced
        factory executor list [--json]      executor profiles by scope (--executor-scope)
@@ -76,6 +81,10 @@ exit codes: 0 ok (a wait: the run succeeded), 1 the board refused, 2 usage or co
 
 --json prints one envelope on stdout and nothing on stderr, whatever the outcome:
   { ok, command, outcome, exitCode, data, error }
+
+retry queues a fresh attempt of the task's existing command; follow-up queues NEW instructions.
+edit replaces the command of a queued run you created, in place; the board refuses it once the run
+is claimed. reopen undoes done. The board decides every refusal.
 
 --file reads the command from a file and --stdin from standard input, exactly as written
 (newlines and Unicode kept); give one source, never two. An empty or over-long command is
@@ -397,6 +406,47 @@ async function runFollowUp(args: readonly string[], io: RunIo): Promise<CommandR
     return createdResult(created);
 }
 
+/**
+ * A retry names the new run and the task it belongs to. The 201 body carries only the run, so the
+ * task (the thread's root) is read off it — best effort, since the write already happened and a
+ * failed read must not report it as failed.
+ */
+async function runRetry(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const parsed = parseOrUsage(() =>
+        parseArgs({ args: [...args], allowPositionals: true, options: { ...JSON_OPTION, ...IDEMPOTENCY_KEY_OPTION } })
+    );
+    if (parsed.positionals.length !== 1) {
+        throw new UsageError(`retry needs exactly one job id\n\n${USAGE}`);
+    }
+    const key = parsed.values['idempotency-key'];
+    const client = boardFor(io);
+    const created = await recoverable(() => client.retryJob(parsed.positionals[0]!, key), key);
+    const taskId = await client.getJob(created.id).then(
+        (job) => job.rootJobId,
+        () => null
+    );
+    return { ...createdResult(created), data: { ...created, runId: created.id, taskId } };
+}
+
+async function runEdit(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const parsed = parseOrUsage(() =>
+        parseArgs({ args: [...args], allowPositionals: true, options: { ...JSON_OPTION, ...INPUT_OPTIONS } })
+    );
+    const [id, ...rest] = parsed.positionals;
+    if (!id) {
+        throw new UsageError('an edit needs a job id\n\n' + USAGE);
+    }
+    const command = await commandOf(rest, parsed.values, io);
+    const edited = await boardFor(io).editJob(id, command);
+    return ok(edited, renderEdited(edited));
+}
+
+async function runReopen(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const { id } = onlyId(args, 'reopen');
+    const reopened = await boardFor(io).reopenJob(id);
+    return ok(reopened, renderReopened(reopened));
+}
+
 async function runStop(args: readonly string[], io: RunIo): Promise<CommandResult> {
     const { id } = onlyId(args, 'stop');
     const stopped = await boardFor(io).stopJob(id);
@@ -457,8 +507,11 @@ const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<C
     'job investigate': runInvestigate,
     'job wait': runWait,
     'job follow-up': runFollowUp,
+    'job retry': runRetry,
+    'job edit': runEdit,
     'job stop': runStop,
     'job done': runDone,
+    'job reopen': runReopen,
     'job remove': runRemove,
     'repo list': runRepoList,
     'executor list': runExecutorList,

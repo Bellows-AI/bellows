@@ -1,4 +1,13 @@
-import type { BoardJobRecord, ConnectionView, JobDone, JobRemoved, JobStopped, SkillView } from './board.js';
+import type {
+    BoardJobRecord,
+    ConnectionView,
+    JobDone,
+    JobEdited,
+    JobRemoved,
+    JobReopened,
+    JobStopped,
+    SkillView,
+} from './board.js';
 import type { ExecutorRow, RepoDiscovery } from './discovery.js';
 
 /**
@@ -35,6 +44,16 @@ export function renderStopped(stopped: JobStopped): string {
 /** The answer to a done: the user's stamp, beside the run's own untouched verdict. */
 export function renderDone(done: JobDone): string {
     return `done ${done.doneAt ?? DASH} ${done.id} (run ${done.status})`;
+}
+
+/** The answer to a reopen: the task is open to a follow-up again. */
+export function renderReopened(reopened: JobReopened): string {
+    return `reopened ${reopened.id}`;
+}
+
+/** The answer to an edit: the run keeps its id and its place in the queue. */
+export function renderEdited(edited: JobEdited): string {
+    return `${edited.status} ${edited.id}`;
 }
 
 /** The answer to a remove. The thread is gone, so the id is all there is left to name. */
