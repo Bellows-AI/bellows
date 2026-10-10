@@ -325,6 +325,13 @@ function artifactPath(id: string, kind: ArtifactKind, page: Record<string, numbe
     return `${jobPath(id)}/${kind}${query ? `?${query}` : ''}`;
 }
 
+function checkedArtifactPage(path: string, payload: unknown): ArtifactPage {
+    if (!isArtifactPage(payload)) {
+        throw new BoardError(`${path} answered with no artifact page`, HTTP_OK, MALFORMED_RESPONSE_CODE);
+    }
+    return payload;
+}
+
 function isArtifactPage(value: unknown): value is ArtifactPage {
     if (typeof value !== 'object' || value === null) return false;
     const page = value as Partial<Record<keyof ArtifactPage, unknown>>;
@@ -458,11 +465,7 @@ export function createBoardClient({
 
         async artifactPage(id, kind, page) {
             const path = artifactPath(id, kind, page);
-            const payload = await request(at(path), { headers: authHeaders() });
-            if (!isArtifactPage(payload)) {
-                throw new BoardError(`${path} answered with no artifact page`, HTTP_OK, MALFORMED_RESPONSE_CODE);
-            }
-            return payload;
+            return checkedArtifactPage(path, await request(at(path), { headers: authHeaders() }));
         },
 
         async activity(id) {
