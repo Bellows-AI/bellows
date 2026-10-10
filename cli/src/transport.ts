@@ -6,10 +6,14 @@
  * Two kinds of failure are told apart, and only one is retried. An authoritative refusal — the
  * board answered, and the answer is a 4xx or a malformed 2xx — is final. An uncertain one — no
  * answer, a stalled header or body, a 408/429/502/503/504 — says nothing about the board's verdict
- * and is worth re-asking, for a read only: a write that got no answer may have been applied, and
- * replaying it is a decision this client does not make. A local interrupt is neither: it ends
- * the request and the backoff at once and never touches the task.
+ * and is worth re-asking, for a read or a KEYED write only: an unkeyed write that got no answer may
+ * have been applied, and replaying it is a decision this client does not make — a write carrying
+ * an `Idempotency-Key` is safe to replay, because the board answers the first attempt's result.
+ * A local interrupt is neither: it ends the request and the backoff at once and never touches the
+ * task.
  */
+
+import { IDEMPOTENCY_KEY_HEADER } from './http.js';
 
 /** The status a `BoardError` carries when no answer ever arrived — the board was unreachable. */
 export const NO_RESPONSE_STATUS = 0;
@@ -54,7 +58,7 @@ export const realClock: BoardClock = {
 };
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-/** Retries after the first attempt, for reads only. */
+/** Retries after the first attempt, for reads and keyed writes only. */
 export const DEFAULT_READ_RETRIES = 3;
 const BACKOFF_BASE_MS = 250;
 const BACKOFF_MAX_MS = 5_000;
@@ -88,7 +92,7 @@ export interface TransportOptions {
     signal: AbortSignal | undefined;
     /** One attempt's deadline, headers and body read included. */
     requestTimeoutMs: number;
-    /** How many times a failed READ is re-issued; a write is never replayed. */
+    /** How many times a failed READ or keyed write is re-issued; an unkeyed write is never replayed. */
     readRetries: number;
     /** The total wait budget's end on `clock`: no retry or backoff runs past it (plus a grace). */
     deadlineAt: number | undefined;
@@ -103,7 +107,12 @@ export interface Target {
 
 export interface Transport {
     /** Issues the request; `target` is asked again, with `retry` set, before every re-issue. */
-    request(target: (retry: boolean) => Target, init: RequestInit): Promise<unknown>;
+    request(
+        target: (retry: boolean) => Target,
+        init: RequestInit,
+        /** Sees the successful response (its headers) before the body is read. */
+        onResponse?: (response: Response) => void
+    ): Promise<unknown>;
     /** What is left of the total budget — infinite when there is none. */
     remainingMs(): number;
 }
@@ -211,7 +220,7 @@ export function createTransport(options: TransportOptions): Transport {
         path: string,
         init: RequestInit,
         timeoutMs: number,
-        isRead: boolean
+        { isRead, onResponse }: { isRead: boolean; onResponse: ((response: Response) => void) | undefined }
     ): Promise<AttemptResult> => {
         const deadline = new AbortController();
         let timedOut = false;
@@ -222,6 +231,7 @@ export function createTransport(options: TransportOptions): Transport {
         const combined = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
         try {
             const response = await options.fetch(`${url}${path}`, { ...init, signal: combined });
+            if (response.ok) onResponse?.(response);
             return await readAnswer(path, response, clock, () => combined.aborted);
         } catch (error) {
             // An interrupt aborts the same fetch a deadline does; the caller's signal tells them apart.
@@ -245,12 +255,14 @@ export function createTransport(options: TransportOptions): Transport {
         return !signal?.aborted;
     };
 
-    const request: Transport['request'] = async (target, init) => {
+    const request: Transport['request'] = async (target, init, onResponse) => {
         const isRead = (init.method ?? 'GET') === 'GET';
-        const attempts = isRead ? options.readRetries + 1 : 1;
+        // A keyed write is safe to replay: the board answers the first attempt's result.
+        const keyed = IDEMPOTENCY_KEY_HEADER in ((init.headers ?? {}) as Record<string, string>);
+        const attempts = isRead || keyed ? options.readRetries + 1 : 1;
         for (let n = 1; ; n++) {
             const { path, holdMs } = target(n > 1);
-            const result = await attempt(path, init, timeoutFor(holdMs, n > 1), isRead);
+            const result = await attempt(path, init, timeoutFor(holdMs, n > 1), { isRead, onResponse });
             if ('payload' in result) return result.payload;
             if (!(await backOff(result, n < attempts, n))) throw result.error;
         }
