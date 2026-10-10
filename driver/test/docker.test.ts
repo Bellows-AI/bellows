@@ -4221,13 +4221,17 @@ describe('publishing the produced work', () => {
 
         let answered = false;
         const syncing = runner.syncCheckout(repoJob, stop.signal).then(() => (answered = true));
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        // Wait for the `docker wait` itself, not a fixed tick: under load the chain up to it is slow.
+        const wait = await vitest.waitFor(() => {
+            const found = calls.find((call) => call.args[0] === 'wait');
+            if (!found) throw new Error('docker wait not issued yet');
+            return found;
+        });
         // Still holding: the queue keeps this sync's place until the container is gone.
         expect(answered).toBe(false);
-        const wait = calls.find((call) => call.args[0] === 'wait');
-        expect(wait?.args).toEqual(['wait', `factory-sync-${repoJob.id}-${repoJob.leaseToken}`]);
-        expect(wait?.options?.timeout).toBeGreaterThan(0);
-        expect(wait?.options?.timeout).toBeLessThanOrEqual(SYNC_DEADLINE_MS);
+        expect(wait.args).toEqual(['wait', `factory-sync-${repoJob.id}-${repoJob.leaseToken}`]);
+        expect(wait.options?.timeout).toBeGreaterThan(0);
+        expect(wait.options?.timeout).toBeLessThanOrEqual(SYNC_DEADLINE_MS);
         exited({ stdout: '0\n' });
         await syncing;
 
