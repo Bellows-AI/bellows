@@ -292,6 +292,14 @@ const MS_PER_SECOND = 1000;
  */
 const jobPath = (id: string): string => `/api/jobs/${encodeURIComponent(id)}`;
 
+/** The task list's query string (with its `?`), omitting every filter that was not given. */
+function taskQuery(filters: Record<string, string | number | undefined>): string {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) if (value !== undefined) params.set(key, String(value));
+    const query = params.toString();
+    return query ? `?${query}` : '';
+}
+
 function isWait(value: unknown): value is JobWait {
     if (typeof value !== 'object' || value === null) return false;
     const wait = value as Partial<Record<keyof JobWait, unknown>>;
@@ -395,15 +403,9 @@ export function createBoardClient({
         },
 
         async listTasks(filters) {
-            const params = new URLSearchParams();
-            for (const [key, value] of Object.entries(filters)) {
-                if (value !== undefined) params.set(key, String(value));
-            }
-            const query = params.toString();
-            const payload = (await request(at(`/api/tasks${query ? `?${query}` : ''}`), {
-                headers: authHeaders(),
-            })) as { page: BoardTaskPage };
-            return payload.page;
+            const query = taskQuery(filters);
+            return ((await request(at(`/api/tasks${query}`), { headers: authHeaders() })) as { page: BoardTaskPage })
+                .page;
         },
 
         async getJob(id) {

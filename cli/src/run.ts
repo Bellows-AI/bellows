@@ -1,5 +1,6 @@
 import { parseArgs } from 'node:util';
-import { createBoardClient, HTTP_OK, QUESTION_ANSWERED_CODE, TASK_SORTS, TASK_STATES } from './board.js';
+import { createBoardClient, HTTP_OK, QUESTION_ANSWERED_CODE } from './board.js';
+import { TASK_LIST_OPTIONS, taskListFilters } from './tasks.js';
 import type { BoardClient, JobCreated, JobWait, QuestionRecord } from './board.js';
 import { CliConfigError, loadCliConfig } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
@@ -41,8 +42,6 @@ import {
 /** The list limit bounds the board itself enforces, mirrored so an obvious typo never round-trips. */
 const LIST_LIMIT_MIN = 1;
 const LIST_LIMIT_MAX = 200;
-/** The task list's own page bound, mirrored from the board. */
-const TASK_LIMIT_MAX = 50;
 
 /** How long one wait holds for by default, and the longest single hold the board allows. */
 const WAIT_TOTAL_DEFAULT_S = 300;
@@ -72,10 +71,7 @@ export const USAGE = `usage: factory job create (<command...> | --file <path> | 
        factory skill list [--json]         skills a task may select (--skill)
        factory connection list [--json]    managed connections you may select (--jira-connection)
 
-'task list' lists logical tasks, one per conversation, with the id of the head run its status describes;
-'job list' lists individual runs. A --cursor is valid only with the filters that printed it; the board
-refuses any other.
-
+'task list' is one row per task plus its head run; 'job list' is per run. A --cursor fits only its own filters.
 config:
   FACTORY_URL    the board's base URL (required)
   FACTORY_TOKEN  a personal access token (fat_...) minted from the settings page;
@@ -132,11 +128,11 @@ function parseOrUsage<T>(parse: () => T): T {
     }
 }
 
-function parseLimit(raw: string | undefined, max = LIST_LIMIT_MAX): number | undefined {
+function parseLimit(raw: string | undefined): number | undefined {
     if (raw === undefined) return undefined;
     const value = Number(raw);
-    if (!Number.isInteger(value) || value < LIST_LIMIT_MIN || value > max) {
-        throw new UsageError(`--limit must be an integer ${LIST_LIMIT_MIN}..${max}, got "${raw}"`);
+    if (!Number.isInteger(value) || value < LIST_LIMIT_MIN || value > LIST_LIMIT_MAX) {
+        throw new UsageError(`--limit must be an integer ${LIST_LIMIT_MIN}..${LIST_LIMIT_MAX}, got "${raw}"`);
     }
     return value;
 }
@@ -303,39 +299,11 @@ async function runList(args: readonly string[], io: RunIo): Promise<CommandResul
     return { outcome: OUTCOME.ok, data: { jobs }, stdout: jobs.map((job) => `${renderJobLine(job)}\n`).join('') };
 }
 
-/** A flag whose value is one of a fixed set — a typo is a usage error before any request. */
-function parseChoice<T extends string>(flag: string, raw: string | undefined, allowed: readonly T[]): T | undefined {
-    if (raw === undefined) return undefined;
-    const choice = allowed.find((value) => value === raw);
-    if (choice === undefined) throw new UsageError(`--${flag} must be one of ${allowed.join(', ')}, got "${raw}"`);
-    return choice;
-}
-
 async function runTaskList(args: readonly string[], io: RunIo): Promise<CommandResult> {
     const { values } = parseOrUsage(() =>
-        parseArgs({
-            args: [...args],
-            options: {
-                ...JSON_OPTION,
-                state: { type: 'string' },
-                q: { type: 'string' },
-                author: { type: 'string' },
-                repo: { type: 'string' },
-                sort: { type: 'string' },
-                limit: { type: 'string' },
-                cursor: { type: 'string' },
-            },
-        })
+        parseArgs({ args: [...args], options: { ...JSON_OPTION, ...TASK_LIST_OPTIONS } })
     );
-    const page = await boardFor(io).listTasks({
-        state: parseChoice('state', values.state, TASK_STATES),
-        q: values.q,
-        author: values.author,
-        repo: values.repo,
-        sort: parseChoice('sort', values.sort, TASK_SORTS),
-        limit: parseLimit(values.limit, TASK_LIMIT_MAX),
-        cursor: values.cursor,
-    });
+    const page = await boardFor(io).listTasks(taskListFilters(values));
     return {
         outcome: OUTCOME.ok,
         data: { tasks: page.items, nextCursor: page.nextCursor },
