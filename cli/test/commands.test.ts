@@ -485,6 +485,47 @@ describe('factory job follow-up', () => {
     });
 });
 
+describe('factory job retry', () => {
+    it('posts a bodiless retry and prints the new queued run', async () => {
+        const { out, calls, io } = harness(ENV, () => json({ id: 'job-3', status: 'queued' }, 201));
+
+        const code = await run(['job', 'retry', 'job-1'], io);
+
+        expect(code).toBe(0);
+        expect(out.join('')).toBe('queued job-3\n');
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/retry');
+        expect(calls[0]!.method).toBe('POST');
+        expect(calls[0]!.body).toBeUndefined();
+    });
+
+    it.each([
+        ['no id', ['job', 'retry']],
+        ['two ids', ['job', 'retry', 'job-1', 'job-2']],
+        ['an unknown flag', ['job', 'retry', 'job-1', '--frob']],
+    ])('is a usage error with %s, making no request', async (_label, argv) => {
+        const { err, calls, io } = harness(ENV, () => json({}));
+
+        expect(await run(argv, io)).toBe(2);
+        expect(err.join('')).not.toBe('');
+        expect(calls).toHaveLength(0);
+    });
+
+    it('surfaces a state refusal from the board', async () => {
+        const { err, io } = harness(ENV, () => json({ error: 'Task is still running', code: 'NOT_FINISHED' }, 409));
+
+        expect(await run(['job', 'retry', 'job-1'], io)).toBe(1);
+        expect(err.join('')).toContain('NOT_FINISHED');
+    });
+
+    it('keeps a refusal machine-readable under --json', async () => {
+        const { out, err, io } = harness(ENV, () => json({ error: 'nope', code: 'FORBIDDEN' }, 403));
+
+        expect(await run(['job', 'retry', 'job-1', '--json'], io)).toBe(1);
+        expect(err).toEqual([]);
+        expect(JSON.parse(out.join('')).ok).toBe(false);
+    });
+});
+
 describe('factory job stop', () => {
     it('reports the settled stop', async () => {
         const { out, calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'stopped' }));
@@ -723,6 +764,7 @@ describe('--json on every outcome', () => {
     it.each([
         ['create', ['job', 'create', '--json', '--', 'npm test'], { id: 'job-1', status: 'queued' }],
         ['follow-up', ['job', 'follow-up', 'job-1', 'again', '--json'], { id: 'job-2', status: 'queued' }],
+        ['retry', ['job', 'retry', 'job-1', '--json'], { id: 'job-3', status: 'queued' }],
         ['stop', ['job', 'stop', 'job-1', '--json'], { id: 'job-1', status: 'stopped' }],
         ['done', ['job', 'done', 'job-1', '--json'], { id: 'job-1', status: 'succeeded', doneAt: null }],
         ['remove', ['job', 'remove', 'job-1', '--yes', '--json'], { id: 'job-1', removed: true }],

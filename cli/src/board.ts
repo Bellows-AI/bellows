@@ -232,6 +232,8 @@ export interface BoardClient {
     ): Promise<ArtifactPage>;
     activity(id: string): Promise<JobActivity>;
     followUp(id: string, command: string, idempotencyKey?: string): Promise<JobCreated>;
+    /** Re-runs the thread head's own command as a fresh attempt; the board takes nothing from a body. */
+    retry(id: string, idempotencyKey?: string): Promise<JobCreated>;
     stopJob(id: string): Promise<JobStopped>;
     markDone(id: string): Promise<JobDone>;
     removeJob(id: string): Promise<JobRemoved>;
@@ -475,6 +477,13 @@ export function createBoardClient({
                 method: 'POST',
                 headers: { ...authHeaders(), ...keyHeader(idempotencyKey), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
                 body: JSON.stringify({ command }),
+            });
+        },
+
+        async retry(id, idempotencyKey) {
+            return created(`${jobPath(id)}/retry`, {
+                method: 'POST',
+                headers: { ...authHeaders(), ...keyHeader(idempotencyKey) },
             });
         },
 

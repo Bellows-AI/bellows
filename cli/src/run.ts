@@ -60,6 +60,7 @@ export const USAGE = `usage: factory job create (<command...> | --file <path> | 
        factory job activity <id> [--json]
        factory job wait <id> [--timeout <seconds>] [--json]
        factory job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
+       factory job retry <id> [--idempotency-key <key>] [--json]
        factory job questions <id> [--json]
        factory job answer <id> <question-id> --answer <text>... [--json]
        factory job stop <id> [--json]
@@ -103,10 +104,13 @@ refused here, before any request.
 '--' ends option parsing, so a create command that takes flags of its own can follow it:
   factory job create --repo owner/name -- npm test --watch
 
+retry re-runs the finished task's own command as a fresh attempt in the same thread; a follow-up
+is the command for NEW instructions.
+
 --idempotency-key names one logical write (8-128 of letters, digits . _ : -). Repeat the SAME
 command with the SAME key to recover a write whose answer never arrived: the board returns the
 task the first attempt made instead of a second one, and a different request under the key is
-refused. A genuinely new task takes a new key. A key is remembered for 24 hours.`;
+refused. A genuinely new task or retry takes a new key. A key is remembered for 24 hours.`;
 
 export interface RunIo extends InputIo {
     env: NodeJS.ProcessEnv;
@@ -443,6 +447,18 @@ async function runFollowUp(args: readonly string[], io: RunIo): Promise<CommandR
     return createdResult(created);
 }
 
+async function runRetry(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const parsed = parseOrUsage(() =>
+        parseArgs({ args: [...args], allowPositionals: true, options: { ...JSON_OPTION, ...IDEMPOTENCY_KEY_OPTION } })
+    );
+    if (parsed.positionals.length !== 1) {
+        throw new UsageError(`retry needs exactly one job id\n\n${USAGE}`);
+    }
+    const key = parsed.values['idempotency-key'];
+    const created = await recoverable(() => boardFor(io).retry(parsed.positionals[0]!, key), key);
+    return createdResult(created);
+}
+
 /** Every question the task's runs asked, oldest first — each paired with the run that asked it. */
 async function questionsOf(client: BoardClient, id: string) {
     const thread = await client.thread(id);
@@ -556,6 +572,7 @@ const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<C
     'job activity': runActivity,
     'job wait': runWait,
     'job follow-up': runFollowUp,
+    'job retry': runRetry,
     'job questions': runQuestions,
     'job answer': runAnswer,
     'job stop': runStop,
