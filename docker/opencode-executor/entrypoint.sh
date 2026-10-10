@@ -23,6 +23,14 @@ if [ -e "$WORKDIR/.git" ]; then
     git config --global --add safe.directory "$WORKDIR" 2>/dev/null || true
 fi
 
+# gh reads GITHUB_TOKEN by itself; git over https does not, and asks for a username nobody can
+# type. The helper reads the variable when git asks, so the token never lands in the git config.
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    git config --global credential.https://github.com.helper \
+        '!f() { if [ "$1" = get ]; then printf "username=x-access-token\npassword=%s\n" "$GITHUB_TOKEN"; fi; }; f' \
+        2>/dev/null || echo "opencode-executor: could not configure the git credential helper" >&2
+fi
+
 # Jira (docs/connections.md): JIRA_API is the board's connector proxy for THIS attempt, never
 # Atlassian itself — the credential stays on the board, which checks the attempt's lease and the
 # task's selected connection on every call. Derived here, never inherited: a stale value would

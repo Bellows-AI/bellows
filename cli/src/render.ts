@@ -6,6 +6,7 @@ import type {
     JobDone,
     JobRemoved,
     JobStopped,
+    QuestionRecord,
     SkillView,
 } from './board.js';
 import type { ExecutorRow, RepoDiscovery } from './discovery.js';
@@ -232,4 +233,32 @@ export function renderConnections(connections: readonly ConnectionView[]): strin
     return connections
         .map((c) => [c.id, c.kind, c.scope, c.access, c.site, c.email, c.createdAt].join('  '))
         .join('\n');
+}
+
+/** One question call: id, state, asked time, then each prompt with its options and any recorded answer. */
+export function renderQuestion(question: QuestionRecord): string {
+    const answeredNote = question.answeredAt
+        ? `  answered ${question.answeredAt} by ${question.answeredBy?.login ?? DASH}`
+        : '';
+    const lines = [`${question.id}  ${question.status}  asked ${question.askedAt}${answeredNote}`];
+    for (const [index, asked] of question.questions.entries()) {
+        lines.push(`  ${index + 1}. [${asked.header}] ${asked.question}`);
+        lines.push(`     (${asked.multiSelect ? 'choose any, or free text' : 'choose one, or free text'})`);
+        for (const option of asked.options) {
+            lines.push(`     - ${option.label}${option.description ? `: ${option.description}` : ''}`);
+        }
+        const answer = question.answers?.[asked.question];
+        if (answer !== undefined) lines.push(`     answer: ${answer}`);
+    }
+    return lines.join('\n');
+}
+
+/** The question list of a task, oldest first. */
+export function renderQuestions(questions: readonly QuestionRecord[]): string {
+    return questions.length === 0 ? 'no questions' : questions.map(renderQuestion).join('\n\n');
+}
+
+/** The answer's acknowledgement: the state the board left the question in, and its id. */
+export function renderAnswered(question: QuestionRecord): string {
+    return `${question.status} ${question.id}`;
 }

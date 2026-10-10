@@ -59,6 +59,14 @@ if [ -e "$WORKDIR/.git" ]; then
     git config --global --add safe.directory "$WORKDIR" 2>/dev/null || true
 fi
 
+# gh reads GITHUB_TOKEN by itself; git over https does not, and asks for a username nobody can
+# type. The helper reads the variable when git asks, so the token never lands in the git config.
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    git config --global credential.https://github.com.helper \
+        '!f() { if [ "$1" = get ]; then printf "username=x-access-token\npassword=%s\n" "$GITHUB_TOKEN"; fi; }; f' \
+        2>/dev/null || echo "claude-executor: could not configure the git credential helper" >&2
+fi
+
 # Workspace trust. An untrusted workspace makes the CLI ignore the checkout's .claude/settings.json
 # ("Ignoring N permissions.allow entries … this workspace has not been trusted"), and nobody can
 # accept the trust dialog in an unattended container. The CLI files trust under the repository's

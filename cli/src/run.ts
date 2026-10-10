@@ -1,7 +1,7 @@
 import { parseArgs } from 'node:util';
-import { createBoardClient, HTTP_OK } from './board.js';
-import type { ArtifactKind, BoardClient, JobCreated, JobWait } from './board.js';
-import { readWholeArtifact } from './artifacts.js';
+import { createBoardClient, HTTP_OK, QUESTION_ANSWERED_CODE } from './board.js';
+import type { ArtifactKind, BoardClient, JobCreated, JobWait, QuestionRecord } from './board.js';
+import { artifactResult } from './artifacts.js';
 import { CliConfigError, loadCliConfig } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
 import type { CommandResult, ErrorDetail } from './outcome.js';
@@ -12,13 +12,14 @@ import { BoardError, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS, realClock } fr
 import type { BoardClock } from './transport.js';
 import {
     renderActivity,
-    renderPageNote,
+    renderAnswered,
     renderConnections,
     renderCreated,
     renderDone,
     renderExecutors,
     renderJobDetail,
     renderJobLine,
+    renderQuestions,
     renderRemoved,
     renderRepos,
     renderSkills,
@@ -59,6 +60,8 @@ export const USAGE = `usage: factory job create (<command...> | --file <path> | 
        factory job activity <id> [--json]
        factory job wait <id> [--timeout <seconds>] [--json]
        factory job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
+       factory job questions <id> [--json]
+       factory job answer <id> <question-id> --answer <text>... [--json]
        factory job stop <id> [--json]
        factory job done <id> [--json]
        factory job remove <id> --yes [--json]
@@ -87,6 +90,11 @@ unless --attempt names one. One call prints one page of characters from --offset
 next --offset); --all walks every page and prints the whole artifact, or fails naming the page that
 could not be read — it never prints a partial artifact as complete. --all takes --limit as its page
 size and no --offset.
+
+A question's --answer values go one per prompt, in the order \`job questions\` lists them: an
+option's label, or free text (a multi-select joins its picks with ", "). The board is the
+arbiter: an answer that lost to an earlier one, arrived after the question expired, or whose run
+is no longer waiting is refused (exit 1) and never retried.
 
 --file reads the command from a file and --stdin from standard input, exactly as written
 (newlines and Unicode kept); give one source, never two. An empty or over-long command is
@@ -300,16 +308,6 @@ async function runInvestigate(args: readonly string[], io: RunIo): Promise<Comma
     return ok({ job, thread }, `${renderJobDetail(job)}\n\n${renderThread(thread)}`);
 }
 
-/** A non-negative (or, with `min` 1, positive) integer flag, refused as usage before any request. */
-function parseCount(raw: string | undefined, flag: string, min: number): number | undefined {
-    if (raw === undefined) return undefined;
-    const value = Number(raw);
-    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < min) {
-        throw new UsageError(`${flag} must be an integer >= ${min}, got "${raw}"`);
-    }
-    return value;
-}
-
 /** `job log` / `job transcript`: one page by default, the whole artifact with `--all`. */
 function artifactCommand(kind: ArtifactKind) {
     return async (args: readonly string[], io: RunIo): Promise<CommandResult> => {
@@ -327,31 +325,7 @@ function artifactCommand(kind: ArtifactKind) {
             })
         );
         if (parsed.positionals.length !== 1) throw new UsageError(`${kind} needs exactly one job id\n\n${USAGE}`);
-        const id = parsed.positionals[0]!;
-        const attempt = parseCount(parsed.values.attempt, '--attempt', 1);
-        const offset = parseCount(parsed.values.offset, '--offset', 0);
-        const limit = parseCount(parsed.values.limit, '--limit', 1);
-        const client = boardFor(io);
-        if (parsed.values.all) {
-            if (offset !== undefined) throw new UsageError('--all reads from the start; drop --offset');
-            const whole = await readWholeArtifact(client, { id, kind, attempt, limit });
-            return {
-                outcome: OUTCOME.ok,
-                data: whole,
-                stdout: whole.content,
-                stderr: whole.truncated
-                    ? `${kind} attempt ${whole.attempt}: the stored artifact was itself truncated at upload\n`
-                    : '',
-            };
-        }
-        const page = await client.artifactPage(id, kind, { attempt, offset, limit });
-        const next = page.offset + page.content.length;
-        return {
-            outcome: OUTCOME.ok,
-            data: { ...page, nextOffset: next < page.totalCharacters ? next : null },
-            stdout: page.content,
-            stderr: renderPageNote(page),
-        };
+        return artifactResult(boardFor(io), kind, parsed.positionals[0]!, parsed.values);
     };
 }
 
@@ -469,6 +443,56 @@ async function runFollowUp(args: readonly string[], io: RunIo): Promise<CommandR
     return createdResult(created);
 }
 
+/** Every question the task's runs asked, oldest first — each paired with the run that asked it. */
+async function questionsOf(client: BoardClient, id: string) {
+    const thread = await client.thread(id);
+    return thread.flatMap((job) => (job.questions ?? []).map((question) => ({ jobId: job.id, question })));
+}
+
+async function runQuestions(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const { id } = onlyId(args, 'questions');
+    const questions: QuestionRecord[] = (await questionsOf(boardFor(io), id)).map((entry) => entry.question);
+    return ok({ questions }, renderQuestions(questions));
+}
+
+async function runAnswer(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const parsed = parseOrUsage(() =>
+        parseArgs({
+            args: [...args],
+            allowPositionals: true,
+            options: { ...JSON_OPTION, answer: { type: 'string', multiple: true } },
+        })
+    );
+    const [id, questionId] = parsed.positionals;
+    if (parsed.positionals.length !== 2 || !id || !questionId) {
+        throw new UsageError(`answer needs a job id and a question id\n\n${USAGE}`);
+    }
+    const values = parsed.values.answer ?? [];
+    const client = boardFor(io);
+    const found = (await questionsOf(client, id)).find((entry) => entry.question.id === questionId);
+    if (!found) throw new UsageError(`no question ${questionId} on the task of ${id}`);
+    const prompts = found.question.questions;
+    if (values.length !== prompts.length) {
+        throw new UsageError(
+            `question ${questionId} has ${prompts.length} prompt(s); give one --answer for each, in order (got ${values.length})`
+        );
+    }
+    const answers = Object.fromEntries(prompts.map((prompt, index) => [prompt.question, values[index]!]));
+    try {
+        const answered = await client.answerQuestion(found.jobId, questionId, answers);
+        return ok(answered, renderAnswered(answered));
+    } catch (error) {
+        if (error instanceof BoardError && error.code === QUESTION_ANSWERED_CODE) {
+            throw new BoardError(
+                `${error.message} — run \`factory job questions ${id}\` to see the recorded answer`,
+                error.status,
+                error.code
+            );
+        }
+        throw error;
+    }
+}
+
 async function runStop(args: readonly string[], io: RunIo): Promise<CommandResult> {
     const { id } = onlyId(args, 'stop');
     const stopped = await boardFor(io).stopJob(id);
@@ -532,6 +556,8 @@ const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<C
     'job activity': runActivity,
     'job wait': runWait,
     'job follow-up': runFollowUp,
+    'job questions': runQuestions,
+    'job answer': runAnswer,
     'job stop': runStop,
     'job done': runDone,
     'job remove': runRemove,

@@ -1,5 +1,9 @@
 import { HTTP_OK } from './board.js';
 import type { ArtifactKind, ArtifactPage, BoardClient } from './board.js';
+import { UsageError } from './input.js';
+import { OUTCOME } from './outcome.js';
+import type { CommandResult } from './outcome.js';
+import { renderPageNote } from './render.js';
 import { BoardError, MALFORMED_RESPONSE_CODE } from './transport.js';
 
 /**
@@ -26,6 +30,42 @@ export interface WholeArtifact {
     totalCharacters: number;
     pages: number;
     content: string;
+}
+
+/** A non-negative (or, with `min` 1, positive) integer flag, refused as usage before any request. */
+function parseCount(raw: string | undefined, flag: string, min: number): number | undefined {
+    if (raw === undefined) return undefined;
+    const value = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < min) {
+        throw new UsageError(`${flag} must be an integer >= ${min}, got "${raw}"`);
+    }
+    return value;
+}
+
+/** `job log` / `job transcript`: one page by default, the whole artifact with `--all`. */
+export async function artifactResult(
+    client: BoardClient,
+    kind: ArtifactKind,
+    id: string,
+    flags: { attempt?: string | undefined; offset?: string | undefined; limit?: string | undefined; all?: boolean }
+): Promise<CommandResult> {
+    const attempt = parseCount(flags.attempt, '--attempt', 1);
+    const offset = parseCount(flags.offset, '--offset', 0);
+    const limit = parseCount(flags.limit, '--limit', 1);
+    if (flags.all) {
+        if (offset !== undefined) throw new UsageError('--all reads from the start; drop --offset');
+        const whole = await readWholeArtifact(client, { id, kind, attempt, limit });
+        const cut = `${kind} attempt ${whole.attempt}: the stored artifact was itself truncated at upload\n`;
+        return { outcome: OUTCOME.ok, data: whole, stdout: whole.content, stderr: whole.truncated ? cut : '' };
+    }
+    const page = await client.artifactPage(id, kind, { attempt, offset, limit });
+    const next = page.offset + page.content.length;
+    return {
+        outcome: OUTCOME.ok,
+        data: { ...page, nextOffset: next < page.totalCharacters ? next : null },
+        stdout: page.content,
+        stderr: renderPageNote(page),
+    };
 }
 
 const malformed = (message: string) => new BoardError(message, HTTP_OK, MALFORMED_RESPONSE_CODE);
