@@ -21,6 +21,7 @@ async function cli(argv: string[], respond: () => Response | Promise<Response>) 
     const code = await run(argv, {
         env: ENV,
         fetch,
+        sleep: async () => undefined,
         stdout: (text) => out.push(text),
         stderr: (text) => err.push(text),
     });
@@ -57,6 +58,28 @@ describe('--idempotency-key', () => {
         );
         expect(JSON.parse(asJson.out).data).toEqual({ id: 'job-1', status: 'queued', replayed: true });
         expect(asJson.err).toBe('');
+    });
+
+    it('re-issues a keyed write the board could not answer, and a replay is marked', async () => {
+        let call = 0;
+        const result = await cli(['job', 'create', 'echo hi', '--idempotency-key', KEY, '--json'], () => {
+            call += 1;
+            return call === 1
+                ? Response.json({ error: 'down', code: 'UNAVAILABLE' }, { status: 503 })
+                : created({ 'idempotency-replayed': 'true' });
+        });
+
+        expect(result.code).toBe(0);
+        expect(result.sent.map((s) => s.key)).toEqual([KEY, KEY]);
+        expect(JSON.parse(result.out).data.replayed).toBe(true);
+    });
+
+    it('never re-issues a write that carries no key', async () => {
+        const result = await cli(['job', 'create', 'echo hi'], () =>
+            Response.json({ error: 'down', code: 'UNAVAILABLE' }, { status: 503 })
+        );
+        expect(result.sent).toHaveLength(1);
+        expect(result.code).not.toBe(0);
     });
 
     it('does not mark a first answer as a replay', async () => {
