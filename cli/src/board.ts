@@ -62,8 +62,62 @@ export interface BoardJobRecord {
     exitCode: number | null;
     failureKind: string | null;
     summary: string | null;
-    gates: readonly { name: string; status: string }[] | null;
+    gates: readonly { name: string; status: string; exitCode?: number | null; output?: string | null }[] | null;
     output: string | null;
+    /** Since when the thread has been parked on its open workflow wait, else null. */
+    waitingSince?: string | null;
+    /** Why the thread's last wait ended, else null. */
+    waitTerminalReason?: string | null;
+    /** The thread's recorded PR, else null — shared by every member of the thread. */
+    publication?: {
+        repo: string;
+        prNumber: number;
+        prUrl: string;
+        headBranch: string;
+        baseBranch: string;
+    } | null;
+    /** What the agent asked during this run, oldest first. */
+    questions?: readonly BoardQuestion[];
+}
+
+/** One AskUserQuestion call of one attempt, as the board's job read carries it. */
+export interface BoardQuestion {
+    id: string;
+    attempt: number;
+    questions: readonly { question: string; header: string }[];
+    status: string;
+    answers: Record<string, string> | null;
+    askedAt: string;
+}
+
+/** The two stored artifacts a run leaves: the full-run log and the agent transcript. */
+export const ARTIFACT_KINDS = ['log', 'transcript'] as const;
+export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
+
+/**
+ * One page of a stored artifact, as `GET /api/jobs/:id/{log,transcript}` answers it. Paging is by
+ * character: `totalCharacters` is the whole stored artifact, `content` the slice at `offset`.
+ * `truncated` is the DRIVER's own cap at upload — the stored artifact is itself incomplete.
+ */
+export interface ArtifactPage {
+    jobId: string;
+    kind: ArtifactKind;
+    attempt: number;
+    truncated: boolean;
+    offset: number;
+    limit: number;
+    totalCharacters: number;
+    content: string;
+}
+
+/** The run-activity read: tokens and edits per bucket of the run's wall clock. */
+export interface JobActivity {
+    jobId: string;
+    sessionId: string | null;
+    from: string | null;
+    to: string | null;
+    bucketMs: number | null;
+    buckets: readonly { start: string; tokens: number; edits: number }[];
 }
 
 /**
@@ -150,6 +204,13 @@ export interface BoardClient {
      */
     waitForJob(id: string, timeoutSeconds: number): Promise<JobWait>;
     thread(id: string): Promise<BoardJobRecord[]>;
+    /** One page of a stored artifact; an absent artifact is the board's 404. */
+    artifactPage(
+        id: string,
+        kind: ArtifactKind,
+        page: { attempt?: number | undefined; offset?: number | undefined; limit?: number | undefined }
+    ): Promise<ArtifactPage>;
+    activity(id: string): Promise<JobActivity>;
     followUp(id: string, command: string, idempotencyKey?: string): Promise<JobCreated>;
     stopJob(id: string): Promise<JobStopped>;
     markDone(id: string): Promise<JobDone>;
@@ -222,6 +283,18 @@ function isWait(value: unknown): value is JobWait {
         typeof wait.headStatus === 'string' &&
         typeof wait.job === 'object' &&
         wait.job !== null
+    );
+}
+
+function isArtifactPage(value: unknown): value is ArtifactPage {
+    if (typeof value !== 'object' || value === null) return false;
+    const page = value as Partial<Record<keyof ArtifactPage, unknown>>;
+    return (
+        typeof page.content === 'string' &&
+        typeof page.attempt === 'number' &&
+        typeof page.offset === 'number' &&
+        typeof page.totalCharacters === 'number' &&
+        typeof page.truncated === 'boolean'
     );
 }
 
@@ -342,6 +415,24 @@ export function createBoardClient({
                 jobs: BoardJobRecord[];
             };
             return payload.jobs;
+        },
+
+        async artifactPage(id, kind, page) {
+            const params = new URLSearchParams();
+            if (page.attempt !== undefined) params.set('attempt', String(page.attempt));
+            if (page.offset !== undefined) params.set('offset', String(page.offset));
+            if (page.limit !== undefined) params.set('limit', String(page.limit));
+            const query = params.toString();
+            const path = `${jobPath(id)}/${kind}${query ? `?${query}` : ''}`;
+            const payload = await request(at(path), { headers: authHeaders() });
+            if (!isArtifactPage(payload)) {
+                throw new BoardError(`${path} answered with no artifact page`, HTTP_OK, MALFORMED_RESPONSE_CODE);
+            }
+            return payload;
+        },
+
+        async activity(id) {
+            return (await request(at(`${jobPath(id)}/activity`), { headers: authHeaders() })) as JobActivity;
         },
 
         async followUp(id, command, idempotencyKey) {

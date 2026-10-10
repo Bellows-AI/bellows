@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { createBoardClient, HTTP_OK } from './board.js';
-import type { BoardClient, JobCreated, JobWait } from './board.js';
+import type { ArtifactKind, BoardClient, JobCreated, JobWait } from './board.js';
+import { readWholeArtifact } from './artifacts.js';
 import { CliConfigError, loadCliConfig } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
 import type { CommandResult, ErrorDetail } from './outcome.js';
@@ -10,6 +11,8 @@ import type { InputIo } from './input.js';
 import { BoardError, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS, realClock } from './transport.js';
 import type { BoardClock } from './transport.js';
 import {
+    renderActivity,
+    renderPageNote,
     renderConnections,
     renderCreated,
     renderDone,
@@ -52,6 +55,8 @@ export const USAGE = `usage: factory job create (<command...> | --file <path> | 
                           [--skill name]... [--jira-connection <id>] [--idempotency-key <key>] [--json]
        factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
        factory job investigate <id> [--json]
+       factory job log|transcript <id> [--attempt <n>] [--offset <n>] [--limit <n>] [--all] [--json]
+       factory job activity <id> [--json]
        factory job wait <id> [--timeout <seconds>] [--json]
        factory job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
        factory job stop <id> [--json]
@@ -76,6 +81,12 @@ exit codes: 0 ok (a wait: the run succeeded), 1 the board refused, 2 usage or co
 
 --json prints one envelope on stdout and nothing on stderr, whatever the outcome:
   { ok, command, outcome, exitCode, data, error }
+
+log and transcript read the STORED artifact (not the output tail investigate shows), newest attempt
+unless --attempt names one. One call prints one page of characters from --offset (stderr names the
+next --offset); --all walks every page and prints the whole artifact, or fails naming the page that
+could not be read — it never prints a partial artifact as complete. --all takes --limit as its page
+size and no --offset.
 
 --file reads the command from a file and --stdin from standard input, exactly as written
 (newlines and Unicode kept); give one source, never two. An empty or over-long command is
@@ -289,6 +300,67 @@ async function runInvestigate(args: readonly string[], io: RunIo): Promise<Comma
     return ok({ job, thread }, `${renderJobDetail(job)}\n\n${renderThread(thread)}`);
 }
 
+/** A non-negative (or, with `min` 1, positive) integer flag, refused as usage before any request. */
+function parseCount(raw: string | undefined, flag: string, min: number): number | undefined {
+    if (raw === undefined) return undefined;
+    const value = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < min) {
+        throw new UsageError(`${flag} must be an integer >= ${min}, got "${raw}"`);
+    }
+    return value;
+}
+
+/** `job log` / `job transcript`: one page by default, the whole artifact with `--all`. */
+function artifactCommand(kind: ArtifactKind) {
+    return async (args: readonly string[], io: RunIo): Promise<CommandResult> => {
+        const parsed = parseOrUsage(() =>
+            parseArgs({
+                args: [...args],
+                allowPositionals: true,
+                options: {
+                    ...JSON_OPTION,
+                    attempt: { type: 'string' },
+                    offset: { type: 'string' },
+                    limit: { type: 'string' },
+                    all: { type: 'boolean', default: false },
+                },
+            })
+        );
+        if (parsed.positionals.length !== 1) throw new UsageError(`${kind} needs exactly one job id\n\n${USAGE}`);
+        const id = parsed.positionals[0]!;
+        const attempt = parseCount(parsed.values.attempt, '--attempt', 1);
+        const offset = parseCount(parsed.values.offset, '--offset', 0);
+        const limit = parseCount(parsed.values.limit, '--limit', 1);
+        const client = boardFor(io);
+        if (parsed.values.all) {
+            if (offset !== undefined) throw new UsageError('--all reads from the start; drop --offset');
+            const whole = await readWholeArtifact(client, { id, kind, attempt, limit });
+            return {
+                outcome: OUTCOME.ok,
+                data: whole,
+                stdout: whole.content,
+                stderr: whole.truncated
+                    ? `${kind} attempt ${whole.attempt}: the stored artifact was itself truncated at upload\n`
+                    : '',
+            };
+        }
+        const page = await client.artifactPage(id, kind, { attempt, offset, limit });
+        const next = page.offset + page.content.length;
+        return {
+            outcome: OUTCOME.ok,
+            data: { ...page, nextOffset: next < page.totalCharacters ? next : null },
+            stdout: page.content,
+            stderr: renderPageNote(page),
+        };
+    };
+}
+
+async function runActivity(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const { id } = onlyId(args, 'activity');
+    const activity = await boardFor(io).activity(id);
+    return ok(activity, renderActivity(activity));
+}
+
 /** What a wait's `data` says: the result, and the task / requested run / head run identities. */
 function waitData(id: string, wait: JobWait, budgetSeconds: number) {
     return {
@@ -455,6 +527,9 @@ const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<C
     'job create': runCreate,
     'job list': runList,
     'job investigate': runInvestigate,
+    'job log': artifactCommand('log'),
+    'job transcript': artifactCommand('transcript'),
+    'job activity': runActivity,
     'job wait': runWait,
     'job follow-up': runFollowUp,
     'job stop': runStop,
