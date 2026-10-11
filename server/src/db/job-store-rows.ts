@@ -89,6 +89,7 @@ export interface JobRow {
  */
 export interface TaskRow {
     id: string;
+    head_id: string;
     command: string;
     repo: string | null;
     executor: string | null;
@@ -213,6 +214,7 @@ export function toJob(orgId: string, hasWorkspaces: boolean, row: JobRow): Job {
 export function toTask(row: TaskRow): TaskSummary {
     return {
         id: row.id,
+        headRunId: row.head_id,
         command: row.command,
         status: row.status,
         cancelRequestedAt: stampOf(row.cancel_requested_at),
@@ -454,7 +456,7 @@ export function publicationColumnsFragment(sql: Sql): Fragment {
 // navigation-preview and page subquery, which read the derived set rather than the tables.
 export function taskPreviewColumnsFragment(sql: Sql): Fragment {
     return sql`
-        id, command, repo, executor, executor_scope, created_at, status, done_at, cancel_requested_at,
+        id, head_id, command, repo, executor, executor_scope, created_at, status, done_at, cancel_requested_at,
         summary, runtime, activity_at, creator_id, creator_login, creator_name, creator_avatar_url,
         wait_reason, waiting_since, wait_terminal_reason, needs_answer
     `;

@@ -1268,6 +1268,8 @@ export type TaskBucket = 'running' | 'review' | 'past';
 export interface TaskSummary {
     /** The root job id — the route target, the same id `GET /api/jobs/:id` answers for. */
     id: string;
+    /** The newest run's id — the run `status` and `activity` describe; every other run of the thread is history. */
+    headRunId: string;
     /** The root command; the UI derives the first-line title from it. */
     command: string;
     /** The newest run's status — the thread's present tense, the sidenav's chainHead rule. */

@@ -232,6 +232,7 @@ describe('memoryTaskList', () => {
         expect(page.items).toHaveLength(1);
         expect(page.items[0]).toEqual({
             id: tid(1),
+            headRunId: tid(11),
             command: 'the opening ask',
             status: 'running',
             cancelRequestedAt: null,
@@ -353,7 +354,7 @@ describe('memoryTaskList', () => {
         const { navigation, page } = memoryTaskList(jobs, filters());
 
         expect(page.items).toHaveLength(1);
-        expect(page.items[0]).toMatchObject({ id: tid(1), status: 'running' });
+        expect(page.items[0]).toMatchObject({ id: tid(1), headRunId: tid(12), status: 'running' });
         expect(navigation.counts).toEqual({ running: 1, review: 0, past: 0 });
     });
 

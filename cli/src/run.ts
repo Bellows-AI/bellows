@@ -1,5 +1,6 @@
 import { parseArgs } from 'node:util';
 import { createBoardClient, HTTP_OK, QUESTION_ANSWERED_CODE } from './board.js';
+import { TASK_LIST_OPTIONS, taskListFilters } from './tasks.js';
 import type { BoardClient, JobCreated, JobWait, QuestionRecord } from './board.js';
 import { CliConfigError, loadCliConfig } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
@@ -24,6 +25,7 @@ import {
     renderRepos,
     renderSkills,
     renderStopped,
+    renderTaskPage,
     renderThread,
 } from './render.js';
 
@@ -55,6 +57,8 @@ const JSON_OPTION = { json: { type: 'boolean', default: false } } as const;
 export const USAGE = `usage: factory job create (<command...> | --file <path> | --stdin) [--repo owner/name] [--executor name] [--executor-scope user|org]
                           [--skill name]... [--jira-connection <id>] [--idempotency-key <key>] [--json]
        factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
+       factory task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
+                         [--sort newest|oldest] [--limit <n>] [--cursor <cursor>] [--json]
        factory job investigate <id> [--json]
        factory job wait <id> [--timeout <seconds>] [--json]
        factory job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
@@ -71,6 +75,7 @@ export const USAGE = `usage: factory job create (<command...> | --file <path> | 
        factory skill list [--json]         skills a task may select (--skill)
        factory connection list [--json]    managed connections you may select (--jira-connection)
 
+'task list' is one row per task plus its head run; 'job list' is per run. A --cursor fits only its own filters.
 config:
   FACTORY_URL    the board's base URL (required)
   FACTORY_TOKEN  a personal access token (fat_...) minted from the settings page;
@@ -300,6 +305,18 @@ async function runList(args: readonly string[], io: RunIo): Promise<CommandResul
         repo: parsed.values.repo,
     });
     return { outcome: OUTCOME.ok, data: { jobs }, stdout: jobs.map((job) => `${renderJobLine(job)}\n`).join('') };
+}
+
+async function runTaskList(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const { values } = parseOrUsage(() =>
+        parseArgs({ args: [...args], options: { ...JSON_OPTION, ...TASK_LIST_OPTIONS } })
+    );
+    const page = await boardFor(io).listTasks(taskListFilters(values));
+    return {
+        outcome: OUTCOME.ok,
+        data: { tasks: page.items, nextCursor: page.nextCursor },
+        stdout: `${renderTaskPage(page)}\n`,
+    };
 }
 
 async function runInvestigate(args: readonly string[], io: RunIo): Promise<CommandResult> {
@@ -556,6 +573,7 @@ async function runConnectionList(args: readonly string[], io: RunIo): Promise<Co
 const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<CommandResult>> = {
     'job create': runCreate,
     'job list': runList,
+    'task list': runTaskList,
     'job investigate': runInvestigate,
     'job wait': runWait,
     'job follow-up': runFollowUp,
