@@ -175,13 +175,17 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
     };
 }
 
-export async function listSummaries(sql: Sql, orgId: string): Promise<BatchSummary[]> {
+export async function listSummaries(sql: Sql, orgId: string, rootJobId?: string): Promise<BatchSummary[]> {
     const rows = await sql<(BatchRow & { task_count: number })[]>`
         select b.id, b.status, b.version, b.title, b.created_by, b.created_at, b.updated_at, b.started_at,
+               b.cancelled_at, b.completed_at,
                (select count(*)::int from batch_task t where t.org_id = b.org_id and t.batch_id = b.id)
                    as task_count
         from batch b
         where b.org_id = ${orgId}
+          and (${rootJobId ?? null}::uuid is null or exists (
+              select 1 from batch_task t
+              where t.org_id = b.org_id and t.batch_id = b.id and t.root_job_id = ${rootJobId ?? null}::uuid))
         order by b.created_at desc, b.id
         limit ${BATCH_LIST_LIMIT}
     `;
@@ -195,6 +199,8 @@ export async function listSummaries(sql: Sql, orgId: string): Promise<BatchSumma
         createdAt: row.created_at.toISOString(),
         updatedAt: row.updated_at.toISOString(),
         startedAt: iso(row.started_at),
+        cancelledAt: iso(row.cancelled_at),
+        completedAt: iso(row.completed_at),
     }));
 }
 

@@ -1,5 +1,6 @@
 import { batchWaitResult, ERROR_CODES, type BatchWaitResult } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { UUID } from '../config.js';
 import {
     BATCH_CREATE,
     BATCH_DRAFT,
@@ -59,10 +60,16 @@ export async function handleCreate(orgs: OrgRegistry, request: FastifyRequest, r
 export async function handleList(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const ctx = await contextOf(orgs, request, reply);
     if (!ctx) return reply;
+    // `?task=<thread id>` is the task page's backlink: the batches that thread backs a task of.
+    // Not a uuid names no thread, so the answer is the empty list rather than a refusal.
+    const { task } = request.query as { task?: unknown };
+    if (task !== undefined && (typeof task !== 'string' || !UUID.test(task))) {
+        return reply.code(HTTP_OK).send({ batches: [] });
+    }
     const batches = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'batch list failed'),
-        () => ctx.store.list()
+        () => ctx.store.list(task)
     );
     if (!batches.ok) return reply;
     return reply.code(HTTP_OK).send({ batches: batches.value });

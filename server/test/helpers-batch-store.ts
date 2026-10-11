@@ -92,8 +92,11 @@ export function memoryBatchStore(): MemoryBatchStore {
         async get(id) {
             return batches.get(id) ?? null;
         },
-        async list() {
-            return [...batches.values()].map((batch) => ({
+        async list(rootJobId) {
+            const matching = [...batches.values()].filter(
+                (batch) => rootJobId === undefined || batch.tasks.some((task) => task.rootJobId === rootJobId)
+            );
+            return matching.map((batch) => ({
                 id: batch.id,
                 title: batch.plan.title,
                 status: batch.status,
@@ -103,6 +106,8 @@ export function memoryBatchStore(): MemoryBatchStore {
                 createdAt: batch.createdAt,
                 updatedAt: batch.updatedAt,
                 startedAt: batch.startedAt,
+                cancelledAt: batch.cancelledAt,
+                completedAt: batch.completedAt,
             }));
         },
         async replace(id, version, plan) {

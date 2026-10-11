@@ -53,12 +53,12 @@ export interface BatchSummary {
     createdAt: string;
     updatedAt: string;
     startedAt: string | null;
+    cancelledAt: string | null;
+    completedAt: string | null;
 }
 
 export interface BatchRecord extends Omit<BatchSummary, 'title' | 'taskCount'> {
     startedBy: string | null;
-    cancelledAt: string | null;
-    completedAt: string | null;
     /** When the frozen time limit ends; null for a draft. */
     deadlineAt: string | null;
     /** When the pass that found the deadline passed fenced the batch, or null. */
@@ -167,7 +167,8 @@ export interface BatchStore {
         idempotency?: BatchIdempotency
     ): Promise<{ id: string; version: number; replayed?: boolean }>;
     get(id: string): Promise<BatchRecord | null>;
-    list(): Promise<BatchSummary[]>;
+    /** `rootJobId` narrows to the batches with a task backed by that thread: the task page's backlink. */
+    list(rootJobId?: string): Promise<BatchSummary[]>;
     /** Replaces the whole draft, bumping its version; conditional on the version the caller last read. */
     replace(
         id: string,

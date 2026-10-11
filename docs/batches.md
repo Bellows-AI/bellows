@@ -27,6 +27,7 @@ gate passes on a human-merged PR or a person's recorded acceptance. No driver or
 | Request envelope, org context, refusals | `server/src/routes/batch-http.ts` | `server/test/routes.batches.test.ts` |
 | Auth wall: human credentials only | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts` |
 | CLI client: `factory batch …`, draft round-trip, wait exit codes | `cli/src/batch.ts`, `batch-commands.ts`, `batch-render.ts` | `cli/test/batch.test.ts` |
+| Web: list, draft composer, monitor, human-gate and task backlink | `web/src/pages/Batch*Page.tsx`, `web/src/panels/Batch*.tsx`, `web/src/api/useBatches.ts`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts`, `e2e/batches.spec.ts` ([design-system/batches.md](design-system/batches.md)) |
 | In-memory store double for the offline route tests | `server/test/helpers-batch-store.ts` | `server/test/routes.batches.test.ts` |
 
 ## Invariants
@@ -104,5 +105,8 @@ gate passes on a human-merged PR or a person's recorded acceptance. No driver or
   `server/test/batch-reconciler.test.ts`.
 - The attempt record carries the target branch always and the source revision only when a
   `revisionOf` resolver is given to `createBatchStore`; the board wires none yet.
+- **The web is a client of these routes, never a scheduler:** it polls the record and presses the
+  same retry, accept and cancel the CLI does, so a batch created in either is operated in the
+  other. `web/src/batch-model.ts`, `e2e/batches.spec.ts`.
 - The routes are registered always and answer `503 BATCHES_UNAVAILABLE` for an org whose runtime
   has no batch store, the way the env and workflow routes do (`server/src/orgs.ts`).
