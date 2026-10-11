@@ -743,6 +743,17 @@ test.describe('the task detail page', () => {
         await expect(dialog.locator('.task-stats-totals').getByText('Agent turns', { exact: true })).toBeVisible();
         await expect(dialog.getByText('Agent turns measured for 1 of 2 runs.')).toBeVisible();
         await expect(dialog.getByRole('row')).toHaveCount(jobs.length + 1);
+        // Each legend swatch wears its own line's color, four apart.
+        const colors = await dialog.evaluate((panel) => {
+            const swatches = [...panel.querySelectorAll('.pulse-legend .pulse-swatch')];
+            const lines = [...panel.querySelectorAll('.pulse-detailed .pulse-line')];
+            return {
+                swatches: swatches.map((s) => getComputedStyle(s).backgroundColor),
+                lines: lines.map((l) => getComputedStyle(l).stroke),
+            };
+        });
+        expect(colors.swatches).toEqual(colors.lines);
+        expect(new Set(colors.swatches).size).toBe(4);
         await page.screenshot({ path: `${SHOTS}/task-detail-stats-modal.png`, fullPage: true });
         await page.keyboard.press('Escape');
         await expect(dialog).toBeHidden();
