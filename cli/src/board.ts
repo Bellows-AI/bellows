@@ -12,8 +12,8 @@ import type { BoardClock } from './transport.js';
 /**
  * The board client for the person routes the CLI speaks to: the two reads
  * (`GET /api/jobs`, `GET /api/jobs/:id[/thread]`, the second doubling as the settle long-poll)
- * and the five writes (`POST /api/jobs` and the `follow-up`, `stop`, `done` and `remove` actions
- * on a job). A plain HTTP client that depends on nothing,
+ * and the writes (`POST /api/jobs`, `PATCH /api/jobs/:id` and the `follow-up`, `retry`, `stop`,
+ * `done`, `reopen` and `remove` actions on a job). A plain HTTP client that depends on nothing,
  * core included — the driver's rule and its reason apply word for word: this is a client of an
  * HTTP board, and importing the server's types would hand a process that needs only `fetch` the
  * whole server dependency tree, plus a build order.
@@ -116,6 +116,19 @@ export interface JobDone {
     doneAt: string | null;
 }
 
+/** The 200 body of a queued-command edit: the same run, still queued, with its new command. */
+export interface JobEdited {
+    id: string;
+    status: string;
+    command: string;
+}
+
+/** The 200 body of a reopen: the done stamp is cleared, so the task takes a follow-up again. */
+export interface JobReopened {
+    id: string;
+    reopened: boolean;
+}
+
 /** The 200 body of a remove. The whole thread is gone; there is nothing left to render. */
 export interface JobRemoved {
     id: string;
@@ -185,7 +198,10 @@ export interface BoardClient {
     followUp(id: string, command: string, idempotencyKey?: string): Promise<JobCreated>;
     /** Re-runs the thread head's own command as a fresh attempt; the board takes nothing from a body. */
     retry(id: string, idempotencyKey?: string): Promise<JobCreated>;
+    /** Replaces a queued run's command in place; the board refuses anything else and any non-author. */
+    editJob(id: string, command: string): Promise<JobEdited>;
     stopJob(id: string): Promise<JobStopped>;
+    reopenJob(id: string): Promise<JobReopened>;
     markDone(id: string): Promise<JobDone>;
     removeJob(id: string): Promise<JobRemoved>;
     /**
@@ -252,6 +268,13 @@ const MS_PER_SECOND = 1000;
  * so none can be left out.
  */
 const jobPath = (id: string): string => `/api/jobs/${encodeURIComponent(id)}`;
+
+/** A queued-command edit's request: the command is the whole body, like a follow-up's. */
+const editInit = (headers: Record<string, string>, command: string): RequestInit => ({
+    method: 'PATCH',
+    headers: { ...headers, [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
+    body: JSON.stringify({ command }),
+});
 
 function isWait(value: unknown): value is JobWait {
     if (typeof value !== 'object' || value === null) return false;
@@ -401,6 +424,17 @@ export function createBoardClient({
                 method: 'POST',
                 headers: { ...authHeaders(), ...keyHeader(idempotencyKey) },
             });
+        },
+
+        async editJob(id, command) {
+            return (await request(at(jobPath(id)), editInit(authHeaders(), command))) as JobEdited;
+        },
+
+        async reopenJob(id) {
+            return (await request(at(`${jobPath(id)}/reopen`), {
+                method: 'POST',
+                headers: authHeaders(),
+            })) as JobReopened;
         },
 
         // The three actions take no body, so they send no content-type either.
