@@ -6,6 +6,9 @@ environment:
            command: "npm test"
          - name: lint
            command: "npm run lint"
+         - name: ui
+           command: "sh scripts/ui-gate.sh"
+           timeout: 45
 
 services:
     - name: postgres
