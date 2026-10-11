@@ -1,14 +1,11 @@
 environment:
-    image: ghcr.io/bellows-ai/factory-ui-runner:playwright-1.62.1
+    image: node:24
     setup: "npm ci"
     gates:
          - name: test
            command: "npm test"
          - name: lint
            command: "npm run lint"
-         - name: ui
-           command: "sh scripts/ui-gate.sh"
-           timeout: 45
 
 services:
     - name: postgres

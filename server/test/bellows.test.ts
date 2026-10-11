@@ -222,12 +222,11 @@ describe('parseBellows: rejects malformed structure', () => {
 describe("parseBellows: this repository's own .bellows.yaml", () => {
     // The yaml library the ci-workflows checks use accepts what this grammar refuses; the real
     // parser is the one the board runs at claim.
-    it('parses under the strict grammar, the ui gate with its own timeout', async () => {
+    it('parses under the strict grammar', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
         expect(parseBellows(text)?.gates).toEqual([
             { name: 'test', command: 'npm test' },
             { name: 'lint', command: 'npm run lint' },
-            { name: 'ui', command: 'sh scripts/ui-gate.sh', timeoutMinutes: 45 },
         ]);
     });
 });
