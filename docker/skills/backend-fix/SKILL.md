@@ -32,7 +32,7 @@ them** — the commands in this skill are placeholders, not literals.
   the failing **integration** test is the repro. Most backend bugs are integration-level; default
   there unless the fault is provably pure.
 - **No coverage means build the harness first, then fix.** Never attempt a fix in a module with no
-  test harness. Build the baseline yourself (Step 4) and continue to the fix in the same run.
+  test harness; Step 4 builds it in the same run.
 - **Business correctness, not shape smoke.** Every list/filter/scope/guard test must assert
   behaviour, not `status === 200` and "an array came back". Seed **both** sides of any predicate
   and assert inclusion *and* exclusion by id. Test boundaries (`N`, `N-1`, `N+1`). Assert exact
@@ -41,18 +41,15 @@ them** — the commands in this skill are placeholders, not literals.
   factory layer; take framework ids from the project's seeded constants.
 - **Surgical changes.** Do not refactor adjacent code while fixing. Match existing style. Touch
   only what the ticket requires. Follow the project's error-handling and logging conventions
-  rather than inventing new ones.
+  rather than inventing new ones. No speculative generalisation.
 - **No throwaway repros in the final suite.** Ticket-named repro files exist only to prove
-  red→green. Once green, fold their assertions into the permanent suites under
-  behaviour-descriptive names and delete the ticket-named files. The merged branch must contain
-  zero files named after the ticket key.
-- **Lint and tests pass locally before *every* push**, including the ones made while addressing
-  review feedback. Never `--no-verify`, never skip a check.
-- **Local review gate before every push.** See [Local review gate](#local-review-gate).
+  red→green (5.9 folds them into the permanent suites). The merged branch must contain zero files
+  named after the ticket key.
+- **Lint and tests pass locally, then the [Local review gate](#local-review-gate), before *every*
+  push** — including the ones made while addressing review feedback. Never `--no-verify`, never
+  skip a check.
 - **CI red is a blocker, not an end state.** After each push, poll the checks and fix the root
   cause until green.
-
----
 
 ## Step 0 — Learn the project
 
@@ -73,8 +70,6 @@ Before touching anything, read the repo's own instructions — `AGENTS.md`, `CLA
 Write nothing down as a plan file. Carry it. **If the repo documents a rule that contradicts this
 skill, the repo wins** — say so and follow the repo.
 
----
-
 ## Step 1 — Get the ticket
 
 Use the **jira** skill. In short: find the in-progress ticket assigned to the current user, or take
@@ -85,8 +80,6 @@ a subtask, read the parent too.
 
 If the ticket is frontend-only, or targets a different service than the one checked out, stop and
 say so rather than fixing the wrong thing.
-
----
 
 ## Step 2 — Locate the module
 
@@ -102,8 +95,6 @@ git log --oneline -15 -- <candidate path>    # who touched this recently, and wh
 Ambiguous after grepping → ask the user to confirm the module before writing code. A module with
 no tests is not ambiguity; that is Step 4.
 
----
-
 ## Step 3 — Assess harness coverage
 
 For the module, check: does a test directory exist with real specs; are there setup helpers that
@@ -111,8 +102,6 @@ build state; is there a fixture/factory layer; for a unit-reproducible fault, is
 unit test file.
 
 No coverage at all → **Step 4**. Some coverage → **Step 5**.
-
----
 
 ## Step 4 — Build the baseline harness (no asking)
 
@@ -132,8 +121,6 @@ Cut the ticket branch first (Step 5.1 logic) so the harness commits land on it, 
 Continue straight to Step 5 (the branch already exists). The baseline spec is where Step 5.9 later
 folds the bug's permanent test.
 
----
-
 ## Step 5 — TDD fix
 
 ### 5.1 Branch
@@ -150,7 +137,7 @@ port block.
 
 From the ticket and its comments, list the preconditions for the bug to manifest — "a record with
 tag X", "an order in status Y", "a role missing permission Z". For each: an existing helper covers
-it, or you add one in 5.3. No hardcoded ids.
+it, or you add one in 5.3.
 
 ### 5.3 Extend the harness with seed helpers
 
@@ -185,8 +172,7 @@ Stage only the repro and the helpers it needed: `<KEY> [test] reproduce <one-lin
 
 ### 5.7 Fix
 
-Minimal edit. Follow the project's error-handling and logging conventions. No adjacent refactors,
-no speculative generalisation.
+Minimal edit, under the surgical-changes practice.
 
 ### 5.8 Verify green
 
@@ -215,9 +201,9 @@ Stage the source fix, the permanent tests, and the deletion of the repro files:
 
 ### 5.12 Local review gate, then push
 
-Run the [Local review gate](#local-review-gate) on the diff about to be pushed. Fix everything
-actionable, re-review until clean, then push. Gate fixes go in a new commit
-(`<KEY> [fix] address local review: <summary>`) — never amend a commit already on the remote.
+Run the [Local review gate](#local-review-gate) on the diff about to be pushed until it is clean,
+then push. Gate fixes are new commits (`<KEY> [fix] address local review: <summary>`) — never amend
+a commit already on the remote.
 
 ### 5.13 Publish the pull request
 
@@ -227,26 +213,21 @@ either lands on the same pull request. Run the relevant declared gates first and
 fail; a failing gate does not stop you from publishing. Finish with the work committed on the task
 branch.
 
----
-
 ## Step 6 — Land the PR (one loop, max 5 iterations)
 
 On the run that fixed the ticket there is nothing to poll; finish at 5.13. On a follow-up run,
 after review feedback arrives, the PR exists and this loop applies. Per iteration:
 
-1. Poll the checks. Red → fix the **root cause** and re-push (each push repeats 5.10 and the review
-   gate). Never bypass a check to make it green.
+1. Poll the checks. Red → fix the **root cause** and re-push. Never bypass a check to make it green.
 2. Read the review feedback — the **review summary** as well as the line comments; the substantive
    objection is often in the summary.
 3. Address each comment under the same rules that got you here: TDD red→green, surgical changes, no
-   hardcoded ids, lint and tests green, review gate before the push.
+   hardcoded ids, and 5.10 plus the review gate before every push.
 4. Reply to each comment saying *what changed and how*, not just the SHA.
 
 Exit when the checks are green and nothing is unaddressed. Hand back early on the 5-iteration cap,
 a contradiction (Step 7), or a blocker outside the diff (infra, secrets, a base-branch conflict
 needing a product decision).
-
----
 
 ## Step 7 — Contradiction: stop and ask
 
@@ -263,15 +244,11 @@ options and their tradeoffs, ask, then resume Step 6 with the answer.
 
 Minor ambiguity you can resolve sensibly is not a contradiction. Resolve it and keep going.
 
----
-
 ## Step 8 — Done
 
 Do not declare done while CI is red. Confirm the final check status, then report: PR URL, CI
 status, what the fix was, whether Step 4 built a harness, how many review iterations it took, and
 anything left unresolved with the reason.
-
----
 
 ## Local review gate
 

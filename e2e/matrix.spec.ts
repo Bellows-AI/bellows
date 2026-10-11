@@ -2,14 +2,13 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import type { Locator, Page, TestInfo } from '@playwright/test';
-import { mockExecutors, withExecutor } from './executor.js';
+import { mockExecutors } from './executor.js';
 import { routeLongTasks } from './fixtures/tasks.js';
 import { failedGateThread, longContentThread, publishedThread, runningThread } from './fixtures/threads.js';
 import {
     COMPOSER_SHOT,
     DASHBOARD_SHOT,
     ENTRY_SHOTS,
-    heading,
     INBOX_SHOT,
     onOpenBoard,
     SETTINGS_SHOTS,
@@ -285,7 +284,10 @@ test.describe('responsive and accessibility matrix (issue 287)', () => {
 
     for (const width of [1440, 390] as const) {
         test(`every dialog contains focus and returns it at ${width}`, async ({ page }) => {
-            describeCheck('dialog focus containment and return', `range, remove, discard, add executor at ${width}`);
+            describeCheck(
+                'dialog focus containment and return',
+                `range, remove, leave guard, add executor at ${width}`
+            );
             test.setTimeout(4 * SLOW);
             await page.setViewportSize({ width, height: 900 });
             await useTheme(page, 'dark');
@@ -316,16 +318,28 @@ test.describe('responsive and accessibility matrix (issue 287)', () => {
                 },
             });
 
-            await withExecutor(page);
-            await page.goto('/tasks/new');
-            await expect(heading(page, 'New task')).toBeVisible(SETTLED);
-            await page.getByLabel('What should the agent do?').fill('a draft worth keeping');
-            const discard = page.locator('.composer').getByRole('button', { name: 'Discard draft' });
+            // A dirty settings editor guards in-app navigation with the one unsaved-changes dialog.
+            await page.goto('/settings/organization');
+            const core = page.locator('section.panel', {
+                has: page.getByRole('heading', { name: 'Core (organization)' }),
+            });
+            await expect(core).toBeVisible(SETTLED);
+            await core.getByRole('button', { name: 'Add variable' }).click();
+            await core
+                .getByLabel(/^Variable \d+ name$/)
+                .last()
+                .fill('E2E_MATRIX_GUARD');
+            // The side nav's Tasks link on a wide screen; the app bar's brand link in the compact shell.
+            const leave = page
+                .getByRole('link', { name: 'Tasks', exact: true })
+                .or(page.getByRole('link', { name: 'Bellows', exact: true }))
+                .filter({ visible: true })
+                .first();
             await containsAndReturns(page, {
-                name: 'composer: discard',
-                trigger: discard,
+                name: 'settings: leave guard',
+                trigger: leave,
                 panel: page.locator('.unsaved'),
-                open: () => discard.click(),
+                open: () => leave.click(),
             });
 
             await page.unrouteAll({ behavior: 'ignoreErrors' });

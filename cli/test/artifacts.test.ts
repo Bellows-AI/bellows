@@ -144,10 +144,17 @@ describe('factory job activity', () => {
             from: '2026-01-01T00:00:00.000Z',
             to: '2026-01-01T00:02:00.000Z',
             bucketMs: 60_000,
-            buckets: [{ start: '2026-01-01T00:00:00.000Z', tokens: 120, edits: 3 }],
+            buckets: [
+                {
+                    start: '2026-01-01T00:00:00.000Z',
+                    tokens: { input: 100, output: 20, cacheRead: 0, cacheCreation: 0 },
+                    edits: 3,
+                },
+            ],
+            totals: { input: 100, output: 20, cacheRead: 0, cacheCreation: 0 },
         };
         const human = await cli(['job', 'activity', 'job-1'], () => json(body));
-        expect(human.out).toContain('tokens 120  edits 3');
+        expect(human.out).toContain('input 100  output 20  cache-read 0  cache-creation 0  edits 3');
 
         const machine = await cli(['job', 'activity', 'job-1', '--json'], () => json(body));
         expect(JSON.parse(machine.out).data).toEqual(body);

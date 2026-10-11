@@ -361,14 +361,14 @@ async function seedThread(jobs: readonly ThreadJob[]) {
         await sql`
             insert into job (org_id, id, root_job_id, parent_job_id, command, status, attempts, max_attempts,
                              claimed_by, session_id, repo, executor, workflow_name, workflow_node, mode, exit_code,
-                             output, summary, gates, runtime, wall_clock_ms, done_at, cancel_requested_at,
-                             created_at, started_at, finished_at)
+                             output, summary, gates, runtime, wall_clock_ms, agent_turns, done_at,
+                             cancel_requested_at, created_at, started_at, finished_at)
             values (${orgId}, ${job.id}, ${job.rootJobId}, ${job.followUpTo}, ${job.command}, ${job.status},
                     ${job.attempts}, ${job.maxAttempts}, ${job.claimedBy}, ${job.sessionId}, ${job.repo},
                     ${job.executor}, ${job.workflowName}, ${job.workflowNode}, ${job.mode}, ${job.exitCode}, ${job.output},
                     ${job.summary}, ${job.gates ? sql.json(job.gates as never) : null},
-                    ${job.runtime ? sql.json(job.runtime as never) : null}, ${job.wallClockMs}, ${job.doneAt},
-                    ${job.cancelRequestedAt}, ${job.createdAt}, ${job.startedAt}, ${job.finishedAt})
+                    ${job.runtime ? sql.json(job.runtime as never) : null}, ${job.wallClockMs},
+                    ${job.agentTurns}, ${job.doneAt}, ${job.cancelRequestedAt}, ${job.createdAt}, ${job.startedAt}, ${job.finishedAt})
             on conflict (org_id, id) do nothing
         `;
     }
@@ -691,6 +691,95 @@ test.describe('the task detail page', () => {
         await expect(page.locator('.task-published')).toContainText('fix/odd');
         await expect(page.locator('a[href^="javascript:"]')).toHaveCount(0);
         await expect(page.locator('.task-published a')).toHaveCount(0);
+    });
+
+    test('the activity pulse opens the Task statistics modal and gives focus back', async ({ page }) => {
+        const problems = watchConsole(page);
+        // Partial data: only the root run reported agent turns, and only the latest run — the one
+        // the sidebar pulse draws — reported tokens.
+        const jobs = authoredBy(followUpThread, await sessionAuthor(page)).map((job, i) => ({
+            ...job,
+            agentTurns: i === 0 ? 4 : null,
+        }));
+        const latest = jobs[jobs.length - 1]!;
+        await routeThread(page, jobs);
+        await page.route('**/api/jobs/*/activity', (route) => {
+            const measured = route.request().url().includes(latest.id);
+            const tokens = { input: 1200, output: 300, cacheRead: 9000, cacheCreation: 50 };
+            const zero = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+            return route.fulfill({
+                json: {
+                    jobId: latest.id,
+                    sessionId: latest.sessionId,
+                    from: latest.startedAt,
+                    to: latest.finishedAt,
+                    bucketMs: 300_000,
+                    buckets: measured
+                        ? [
+                              { start: '2026-09-01T12:00:00.000Z', tokens, edits: 1 },
+                              { start: '2026-09-01T12:05:00.000Z', tokens: zero, edits: 0 },
+                              { start: '2026-09-01T12:10:00.000Z', tokens, edits: 2 },
+                          ]
+                        : [],
+                    totals: measured ? tokens : null,
+                },
+            });
+        });
+        await page.goto(`/tasks/${jobs[0]!.id}`);
+
+        const trigger = page.getByRole('button', { name: /Open task statistics/ });
+        await expect(trigger).toBeVisible();
+        // No bars: the sidebar holds a line chart only.
+        await expect(page.locator('.task-activity .bar-primary')).toHaveCount(0);
+        await expect(trigger.locator('svg polyline')).toHaveCount(4);
+
+        // The panel inside the named dialog: the `dialog` role sits on Headless UI's zero-height
+        // positioning layer, which has no box to be visible.
+        const dialog = page.getByRole('dialog', { name: 'Task statistics' }).locator('.dialog.task-stats');
+        // Enter, Space and click each open it; Escape and Close each shut it and return focus.
+        await trigger.focus();
+        await page.keyboard.press('Enter');
+        await expect(dialog).toBeVisible();
+        await expect(dialog.locator('.task-stats-totals').getByText('Agent turns', { exact: true })).toBeVisible();
+        await expect(dialog.getByText('Agent turns measured for 1 of 2 runs.')).toBeVisible();
+        await expect(dialog.getByRole('row')).toHaveCount(jobs.length + 1);
+        // Each legend swatch wears its own line's color, four apart.
+        const colors = await dialog.evaluate((panel) => {
+            const swatches = [...panel.querySelectorAll('.pulse-legend .pulse-swatch')];
+            const lines = [...panel.querySelectorAll('.pulse-detailed .pulse-line')];
+            return {
+                swatches: swatches.map((s) => getComputedStyle(s).backgroundColor),
+                lines: lines.map((l) => getComputedStyle(l).stroke),
+            };
+        });
+        expect(colors.swatches).toEqual(colors.lines);
+        expect(new Set(colors.swatches).size).toBe(4);
+        await page.screenshot({ path: `${SHOTS}/task-detail-stats-modal.png`, fullPage: true });
+        await page.keyboard.press('Escape');
+        await expect(dialog).toBeHidden();
+        await expect(trigger).toBeFocused();
+
+        await page.keyboard.press('Space');
+        await expect(dialog).toBeVisible();
+        await dialog.getByRole('button', { name: 'Close' }).click();
+        await expect(dialog).toBeHidden();
+        await expect(trigger).toBeFocused();
+
+        await trigger.click();
+        await expect(dialog).toBeVisible();
+        // Focus stays trapped inside: Tab never leaves the dialog.
+        await page.keyboard.press('Tab');
+        await page.keyboard.press('Tab');
+        await page.keyboard.press('Tab');
+        expect(await dialog.evaluate((el) => el.contains(document.activeElement))).toBe(true);
+        await page.keyboard.press('Escape');
+
+        await page.setViewportSize({ width: 360, height: 844 });
+        await trigger.scrollIntoViewIfNeeded();
+        await trigger.click();
+        await expect(dialog).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/task-detail-stats-modal-mobile.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
     });
 
     test('an action that resolves after navigating to another task is ignored', async ({ page }) => {

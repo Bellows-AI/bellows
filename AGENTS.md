@@ -14,6 +14,12 @@ lands its kubernetes counterpart in the same change. A capability that genuinely
 is stated as a limit in `docs/kubernetes.md` and pinned by `driver/test/k8s-docs.test.ts`, never
 left as a refusal message. Touching `driver/`? Ask what it does to `EXECUTOR=kubernetes`.
 
+**Touching the frontend means running the e2e suite.** A change under `web/src` — a component,
+panel, page, style, label or `aria-*` name — or to a payload a panel renders runs
+`npm run verify:ui` before it ships, and every failure is fixed in the same change: the app if it
+regressed, the spec if the UI changed on purpose. CI runs the e2e job only after merge to `main`
+(`.github/workflows/ci.yml`), so a PR never catches it.
+
 ## Read before you touch
 
 | Touching | Read |
@@ -129,6 +135,9 @@ Operational facts behind those:
   webServer whatever `--project` says. `E2E_PORT_BASE` (default 8123) and `E2E_DB_PREFIX` let two
   worktrees run at once — one checkout cannot, since both write `web/dist` and `artifacts/`.
   Screenshots land in `artifacts/ui/`: read them, a passing assertion only says the DOM was right.
+  `e2e/reset-db.mjs` truncates only the seed tables, so memberships pile up across local runs; an
+  auth spec failing on a role or first-member assumption wants `factory_auth_e2e` dropped and
+  recreated, not a spec change. CI's database is new every run.
 - `AUTH_MODE` defaults to `none` (one local org, every route open, the loopback bind is the access
   control). `docker compose` pins `github`, uncontestable by `.env`.
 - `JOB_BOARD_TOKEN` is one shared secret read by both the dashboard and the driver.

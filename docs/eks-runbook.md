@@ -1,7 +1,7 @@
 # EKS runbook — a cloud install, by hand
 
-The cloud twin of [the chart README's kind walkthrough](../charts/factory/README.md#a-local-cluster-end-to-end);
-no lane validates this chart against a cloud cluster. **Last walked 2026-10-01** (EKS
+The cloud twin of [the chart README's kind commands](../charts/factory/README.md#commands); no lane validates this
+chart against a cloud cluster. **Last walked 2026-10-01** (EKS
 `internal-utils`, eu-central-1, v1.34, chart `v0.0.0`, offline entry): steps 2, 3, 4 and 7's
 ingress half held; 1, 6 and 7's job half were not walked.
 
@@ -19,10 +19,9 @@ Reasoning: [docs/kubernetes.md](kubernetes.md), "EKS prerequisites".
 
 ## 2. Storage: EFS under uid 1000
 
-The workspaces claim is `ReadWriteMany`; EBS cannot serve that on EKS. Install the EFS CSI driver
-(its controller needs IRSA), create the file system with one mount target in a subnet in each node
-Availability Zone, then
-a StorageClass, then set `workspaces.storageClass`:
+Prerequisites and the measured access point: [docs/kubernetes.md](kubernetes.md#the-workspaces-volume). Install
+the EFS CSI driver, create the file system with a mount target in each node availability zone, then this
+StorageClass, then set `workspaces.storageClass`:
 
 ```yaml
 provisioner: efs.csi.aws.com
@@ -34,12 +33,7 @@ parameters:
     gid: "1000"
 ```
 
-`uid`/`gid`/`directoryPerms` are not optional: everything writing the claim runs as uid 1000, and
-the driver's `fsGroupPolicy` does not apply `fsGroup` to an RWX NFS mount. Without them the access
-point comes out `root:root` `0700` and sign-in provisioning fails `EACCES`.
-
-**Measured** (2026-09-30, eu-central-1, v1.34): binds in ~16s; the access point reports `Uid 1000`,
-`Gid 1000`, `OwnerUid 1000`, `Permissions 0775`; two pods in different AZs share the `subPath` over `nfs4`.
+Observe: the claim binds (~16s when measured) and sign-in provisioning creates the member tree without `EACCES`.
 
 ## 3. Images: one registry prefix
 
@@ -94,10 +88,26 @@ declared-service pod resolving by its declared name.
 
 ## 7. Exposing the dashboard, and a job end to end
 
-ALB annotations: the chart README's
-[Exposing the dashboard](../charts/factory/README.md#exposing-the-dashboard). The ACM certificate
-and Route53 record are outside the chart; `ingress.hosts` must contain the host of
-`auth.publicUrl` or the render is refused.
+```yaml
+ingress:
+    enabled: true
+    className: alb
+    hosts:
+        - factory.example.com
+    annotations:
+        alb.ingress.kubernetes.io/scheme: internet-facing
+        alb.ingress.kubernetes.io/target-type: ip
+        alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:eu-west-1:…:certificate/…
+        alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+        alb.ingress.kubernetes.io/ssl-redirect: '443'
+        alb.ingress.kubernetes.io/healthcheck-path: /api/health
+auth:
+    publicUrl: https://factory.example.com
+    cookieSecure: 'true'
+```
+
+`listen-ports` needs the HTTP listener or `ssl-redirect` has nothing to redirect. The ACM certificate and Route53
+record are outside the chart; `ingress.hosts` must contain the host of `auth.publicUrl` or the render is refused.
 
 Observe: the ALB provisions, `http://` redirects to `https://`, `/api/health` passes, sign-in
 completes. Then add an executor and queue a task — the runner pod schedules onto the runner node

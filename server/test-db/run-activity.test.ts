@@ -85,11 +85,19 @@ describe.skipIf(!enabled)('runActivity — the per-run telemetry read (issue #33
         expect(buckets).toHaveLength(3);
         expect(buckets[0]).toEqual({
             start: FROM,
-            tokens: 2_500_000 + 100,
+            tokens: { input: 2_000_000, output: 500_000, cacheRead: 100, cacheCreation: 0 },
             edits: 0,
         });
-        expect(buckets[1]).toEqual({ start: '2026-09-22T10:15:00.000Z', tokens: 60, edits: 3 });
-        expect(buckets[2]).toEqual({ start: '2026-09-22T10:30:00.000Z', tokens: 0, edits: 0 });
+        expect(buckets[1]).toEqual({
+            start: '2026-09-22T10:15:00.000Z',
+            tokens: { input: 0, output: 0, cacheRead: 60, cacheCreation: 0 },
+            edits: 3,
+        });
+        expect(buckets[2]).toEqual({
+            start: '2026-09-22T10:30:00.000Z',
+            tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+            edits: 0,
+        });
     });
 
     it('answers empty for a session the pipeline holds nothing about', async () => {

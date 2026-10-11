@@ -48,7 +48,12 @@ export function JiraConnectionsPanel({
             <div className="panel-head">
                 <h2>Jira connection</h2>
                 {canManage ? (
-                    <button type="button" className="primary" disabled={saving} onClick={() => setAdding(true)}>
+                    <button
+                        type="button"
+                        className="primary jira-connection-add"
+                        disabled={saving}
+                        onClick={() => setAdding(true)}
+                    >
                         {ADD_CONNECTION_LABEL}
                     </button>
                 ) : null}

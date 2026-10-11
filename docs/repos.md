@@ -6,7 +6,7 @@ Which repositories an organization sees, where that list comes from, and what it
 | --- | --- | --- |
 | The list itself: fetch, cache, `list()` / `snapshot()` | `server/src/github/repo-source.ts` | `server/test/repo-source.test.ts` |
 | Installation listing | `server/src/github/app-client.ts` | `server/test/github.app-client.test.ts` |
-| Per-org tracked-repo allowlist (`tracked_repo`, 030) | `server/src/db/tracked-repos.ts` | `server/test/repo-source.test.ts` |
+| Per-org tracked-repo allowlist (`tracked_repo`) | `server/src/db/tracked-repos.ts`, `server/migrations/030_signin_selection.sql` | `server/test/repo-source.test.ts` |
 | Credential-less fallback to `session_branch` | `server/src/db/stored-repos.ts` | `server/test/routes.repos.test.ts` |
 | Picker route | `server/src/routes/repos.ts` | `server/test/routes.repos.test.ts` |
 | Personal checkout selection and the 20-repo cap | `server/src/routes/workspace.ts` (`MAX_REPOS_PER_USER`) | `server/test/routes.workspace.test.ts` |

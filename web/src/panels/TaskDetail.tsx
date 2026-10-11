@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { isTerminal, type Job, type ServiceStatus } from '../api/useJobs.js';
-import type { JobActivity } from '../api/useJobActivity.js';
+import type { ThreadActivity } from '../api/useJobActivity.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { RelativeTime } from '../components/RelativeTime.js';
 import { endedOnQuestion, type FollowUpViewer, followUpEligibility, threadPublish } from '../task-outcome.js';
@@ -8,6 +8,9 @@ import { FOLLOW_UP_INPUT_ID, notAuthorMessage } from './TaskHeader.js';
 import { TaskActivity } from './TaskActivity.js';
 import { TaskOutcome } from './TaskOutcome.js';
 import { type OnAnswer, Publication, TaskRun, Verification } from './TaskRun.js';
+
+/** No run's activity has been answered yet — every run reads as loading. */
+const NO_ACTIVITY: ThreadActivity = {};
 
 /** One recorded fact of the task's life: what happened, and the stamp the board holds for it. */
 interface HistoryItem {
@@ -248,8 +251,7 @@ export function TaskDetail({
     sending,
     onFollowUp,
     onAnswer,
-    activity = null,
-    live = false,
+    activity = NO_ACTIVITY,
 }: {
     /** The task's whole chain, oldest first — null until the thread poll lands. */
     jobs: Job[] | null;
@@ -266,12 +268,10 @@ export function TaskDetail({
     /** Answers a run's question; the page refreshes the thread once it settles. */
     onAnswer: OnAnswer;
     /**
-     * The head run's activity payload (issue 339), fetched by the page's hook — the panel
-     * draws what it is handed, and null is "nothing (yet) to chart", drawn as a quiet sentence.
+     * Every run's activity answer (issues 339, 530), fetched by the page's hook — the panel draws
+     * what it is handed, and a run with no answer yet is "loading", never a zero.
      */
-    activity?: JobActivity | null;
-    /** Whether the head run is still going — hatches the chart's in-progress bucket. */
-    live?: boolean;
+    activity?: ThreadActivity;
 }) {
     const outputRef = useRef<HTMLPreElement | null>(null);
 
@@ -336,9 +336,8 @@ export function TaskDetail({
                 </div>
                 <div className="task-support">
                     {services !== null && services.length > 0 ? <Services services={services} /> : null}
-                    {/* The head run's progress over time (issue 339) — one chart, for the run
-                    the reader is looking at, driven by `failure_kind`'s sibling read. */}
-                    <TaskActivity payload={activity} live={live} />
+                    {/* The latest run's pulse and the thread's statistics modal (issue 530). */}
+                    <TaskActivity jobs={jobs} activity={activity} />
                     <RunHistory jobs={jobs} />
                     {gates !== null && gates.length > 0 ? <Verification gates={gates} /> : null}
                     {publish !== null ? <Publication publish={publish} /> : null}

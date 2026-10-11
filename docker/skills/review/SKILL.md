@@ -21,7 +21,7 @@ curl -sf -X POST "$BELLOWS_CONTROL_URL/review" \
     -d '{"key":"security-1","profile":"security"}'
 ```
 
-Commit or leave your work in the tree first: the review covers the tree as it is at this moment.
+Commit or leave your work in the tree first.
 The answer is JSON with `status`, `done`, `verdict` (`clean`, `blockers` or `none`), `findings`,
 `revision` and `approved`. `201` means a new review started; `200` means that key already had one
 and this is it — asking again with the same key never starts a second review, which is also what

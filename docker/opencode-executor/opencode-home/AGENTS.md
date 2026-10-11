@@ -127,5 +127,4 @@ console.log(j.output)})'
 Only gates `.bellows.yaml` declares can run — the request carries a gate NAME, never a command.
 A gate that declares `timeout:` above 10 (minutes) answers 422 and runs only when you finish: do
 not retry it; run its pieces with your own commands instead.
-If `BELLOWS_GATE_URL` is unset there are no gates here: verify with your own commands instead. Do
-not claim a gate passed when it did not.
+If `BELLOWS_GATE_URL` is unset there are no gates here: verify with your own commands instead.

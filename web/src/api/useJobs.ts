@@ -203,6 +203,11 @@ export interface Job {
      */
     wallClockMs: number | null;
     /**
+     * The assistant response cycles in this run's root conversation, as the executor counted them
+     * at close. Null is unmeasured (still running, the read failed, or an older row) — never zero.
+     */
+    agentTurns: number | null;
+    /**
      * The wall clock the task's whole thread has banked — every executed segment of every run,
      * accumulated by the board and served on the thread read and on the grouped terminal rows
      * of the recently-completed view. Null where nothing has accumulated; the head's clock

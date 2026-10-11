@@ -1,97 +1,50 @@
 # Workflows
 
-**Dormant:** no UI offers workflows — no composer selector, no settings page, no nav entry — and
-the board seeds none; the API and the engine still serve one created by hand.
-
-A workflow is a graph of nodes the board walks between verdicts: the driver claims one row, runs it
-and reports one verdict; the board, never the driver, decides the next row. Checkout, gates and
-publish stay driver machinery the graph references by OUTCOME — they are never nodes.
-
-The grammar, the closed key sets and the refusal codes are defined by `workflow-schema.ts`; the
-built-in block list is `workflow-blocks/index.ts`'s registry. Read those, not a table here.
-
-## Where things live
+A workflow is a graph of nodes the board walks between verdicts; the driver runs one row, the board
+decides the next. **Dormant:** no UI offers workflows and none is seeded; the API and engine serve
+one created by hand. Checkout, gates and publish are driver machinery, never nodes ([jobs.md](jobs.md)).
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Definition grammar, the closed key sets, bounded interpolation | `server/src/db/workflow-schema.ts`, `workflow-schema-validate.ts`, `workflow-schema-validate-helper-plans.ts` | `server/test/workflow-schema.test.ts`, `workflow-engine.validation.test.ts` |
-| Launch parameters and the safe regex subset | `server/src/db/workflow-pattern.ts`, `workflow-schema.ts` (`checkWorkflowParams`) | `server/test/workflow-engine.params.test.ts` |
-| The transition engine (pure: thread rows + snapshot + completed run → insert-or-rest) | `server/src/db/workflow-engine.ts` | `server/test/workflow-engine.next-transition.test.ts`, `workflow-engine.walkthrough.test.ts` |
-| The block registry, config resolution, the expansion compiler | `server/src/db/workflow-blocks/index.ts`, `types.ts` | `server/test/workflow-block-compiler.test.ts` |
-| The built-in blocks, one file each | `server/src/db/workflow-blocks/github-review-reconcile.ts`, `merge-conflict-autofix.ts` | `server/test/workflow-block-github-review-reconcile.test.ts`, `workflow-block-merge-conflict-autofix.test.ts` |
-| Durable block waits: the runtime allowlist, the park, the wake sweep, the user poke | `server/src/db/workflow-blocks/runtime.ts`, `server/migrations/038_workflow_round.sql`, `045_workflow_wait_user_control.sql` | `server/test/workflow-block-runtime.test.ts`, `server/test-db/job-store.block-wait.test.ts` |
-| Finishing a wait when a thread leaves the block's scope; the no-publication block-entry guard | `server/src/db/workflow-blocks/runtime-settle.ts` | `server/test/workflow-block-runtime-settle.test.ts` |
-| The PR-lifecycle primitives a wait is built on | `server/src/db/pr-lifecycle-store.ts`, `server/migrations/036_job_pr_lifecycle.sql` | `server/test-db/job-store.block-wait.test.ts` |
-| CRUD, scope visibility, block compilation at create; no seeded workflow, and 057 drops the retired `fix-issue` seed | `server/src/db/workflow-store.ts`, `server/migrations/057_drop_seeded_fix_issue.sql` | `server/test-db/workflow-store.test.ts`, `workflow-store.seeding.test.ts` |
-| The review verdict markers | `server/src/db/workflow-templates.ts` | `server/test/evidence-policy.test.ts` |
-| The engine walkthrough's fixture graph | `server/test/fix-issue-workflow.ts` | `server/test/workflow-engine.walkthrough.test.ts` |
-| Objective mode: an omitted `workflow` is an ordinary claimable job; the stored mode, inherited by follow-ups, retries and successors | `core/src/job-mode.ts`, `server/migrations/051_job_mode.sql`, `052_drop_default_workflow.sql`, `server/src/routes/job-workflow-resolution.ts`, `server/src/db/job-store-actions.ts` | `server/test-db/job-store.objective.test.ts`, `server/test/routes.jobs.test.ts` |
-| CRUD routes and the block catalog | `server/src/routes/workflows.ts` | `server/test/routes.workflows.test.ts` |
-| Launch resolution and the `wait/cancel`, `wait/poke` verbs | `server/src/routes/jobs.ts`, `job-workflow-resolution.ts` | `server/test/routes.jobs.test.ts` |
-| The transition, inside the verdict's transaction | `server/src/db/job-store-worker.ts` (`runWorkflowTransition`) | `server/test-db/job-store.workflow.test.ts` |
-| Rests no edge overrides: `blocked`, `services`, `publish`, `config` (a refused `.bellows.yaml`, `driver/src/loop-run.ts`) (`REST_BY_KIND`, the run's failure kind), `no_progress` (`gate-failed` over `treeChanged: false`) | `server/src/db/workflow-engine.ts`, `job-store-worker.ts` (`transitionContextOf`) | `server/test/workflow-engine.next-transition.test.ts`, `workflow-engine.evidence.test.ts` |
-| The claim's `publish` flag, the gates opt-out, helper-plan resolution, the cancellation fence | `server/src/db/job-store-claim.ts` | `server/test-db/job-store.workflow.test.ts`, `job-store.block-wait.test.ts` |
-| Session policy and the follow-up's primary-session copy | `server/src/db/job-store-actions.ts` | `server/test-db/job-store.workflow.sessions.test.ts` |
-| Columns and the frozen snapshot | `server/migrations/027_workflows.sql`, `030_workflow_params.sql`, `033_job_workflow_name.sql`, `051_job_mode.sql` | `server/test-db/job-store.workflow.frozen-name.test.ts`, `job-store.workflow.params.test.ts` |
-| Stop/done/remove against a workflow thread | `server/src/db/job-store-actions.ts` | `server/test-db/job-store.workflow.control.test.ts` |
-| The `review: true` node flag (what a repository's `policy: review: required` reads as review evidence: the latest review row, succeeded and ending on the clean marker) and the `policy` rest reason | `server/src/db/workflow-schema.ts`, `workflow-schema-validate.ts`, `evidence-policy.ts`, `workflow-engine.ts` (`REST_BY_KIND`) | `server/test/evidence-policy.test.ts`, `workflow-engine.next-transition.test.ts` |
-| A task with no graph reviews through named reviewer profiles instead: their rows count as review evidence (latest review row decides, bound to the revision asked about) | `server/src/db/evidence-policy.ts`, `job-store-evidence.ts`, `job-store-reviews.ts` | `server/test/evidence-policy.test.ts`, `server/test-db/job-store.reviews.test.ts` |
-| The driver's one publish gate | `driver/src/loop-verdict.ts` | `driver/test/loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
-| An agent-less node (`agent: false`): the claim flag, and the loop running pre-helpers, gates and publish with no runner session on both executors; the merge-conflict block's probe concludes `up-to-date`/`rebased` itself and only a conflict reaches an agent | `server/src/db/workflow-schema.ts` (`isAgentlessNode`), `job-store-claim.ts`, `driver/src/loop-agentless.ts`, `loop-run.ts` (`launchRun`), `driver/src/scripts/merge-conflict-probe.cjs` | `server/test/claim-gates-source.test.ts`, `workflow-block-merge-conflict-autofix.test.ts`, `driver/test/loop.test.ts`, `merge-conflict-probe-script.test.ts` |
-| The blocks' driver-side helper scripts | `driver/src/review-helpers.ts`, `driver/src/scripts/merge-conflict-probe.cjs`, `review-collect.cjs`, `review-reply.cjs` | `driver/test/review-helpers.test.ts`, `merge-conflict-probe-script.test.ts`, `scripts.test.ts` |
-| Composer dropdown and the parameter inputs — hidden: the page passes `workflows={null}` | `web/src/pages/TaskComposerPage.tsx`, `web/src/panels/TaskComposer.tsx`, `web/src/components/WorkflowParameterFields.tsx`, `web/src/api/useWorkflows.ts` | `web/test/task-composer.render.test.tsx`, `use-workflows.test.ts`, `e2e/composer.spec.ts` |
-| Management panel and its settings page — unrouted, no nav entry | `web/src/panels/WorkflowsPanel.tsx`, `web/src/pages/SettingsWorkflowsPage.tsx`, `web/src/App.tsx`, `web/src/nav-model.ts` | `web/test/workflows-panel.render.test.tsx`, `settings-pages.render.test.tsx`, `settings.wiring.test.tsx` |
-| A stub workflow walked on a real board and driver | `scripts/test-jobs.sh` (`# workflows`) | — |
-
-The helper transport a block's declared helpers run through, and the master prompt a claim carries,
-are [jobs.md](jobs.md) ("Block-helper steps", "The master prompt").
+| Grammar, closed key sets, refusal codes, interpolation | `server/src/db/workflow-schema.ts`, `workflow-schema-validate.ts`, `workflow-schema-validate-helper-plans.ts` | `server/test/workflow-schema.test.ts`, `workflow-engine.validation.test.ts` |
+| Launch parameters, safe regex subset | `server/src/db/workflow-pattern.ts` | `server/test/workflow-engine.params.test.ts` |
+| Transition engine, rest reasons (`REST_BY_KIND`) | `server/src/db/workflow-engine.ts` | `server/test/workflow-engine.next-transition.test.ts`, `workflow-engine.walkthrough.test.ts`, `workflow-engine.evidence.test.ts` |
+| Block registry and expansion compiler | `server/src/db/workflow-blocks/index.ts`, `types.ts` | `server/test/workflow-block-compiler.test.ts` |
+| Built-in blocks | `server/src/db/workflow-blocks/github-review-reconcile.ts`, `merge-conflict-autofix.ts` | `server/test/workflow-block-github-review-reconcile.test.ts`, `workflow-block-merge-conflict-autofix.test.ts` |
+| Durable waits: park, wake, poke, settle | `server/src/db/workflow-blocks/runtime.ts`, `runtime-settle.ts`, `server/src/db/pr-lifecycle-store.ts` | `server/test/workflow-block-runtime.test.ts`, `workflow-block-runtime-settle.test.ts`, `server/test-db/job-store.block-wait.test.ts` |
+| CRUD, scope, compile at create | `server/src/db/workflow-store.ts`, `server/src/routes/workflows.ts` | `server/test-db/workflow-store.test.ts`, `workflow-store.seeding.test.ts`, `server/test/routes.workflows.test.ts` |
+| Review verdict markers | `server/src/db/workflow-templates.ts` | `server/test/evidence-policy.test.ts` |
+| Launch resolution, `wait/cancel`, `wait/poke` | `server/src/routes/jobs.ts`, `job-workflow-resolution.ts` | `server/test/routes.jobs.test.ts` |
+| Transition inside the verdict transaction | `server/src/db/job-store-worker.ts` | `server/test-db/job-store.workflow.test.ts` |
+| Claim's `publish` flag, helper plans, cancellation fence | `server/src/db/job-store-claim.ts` | `server/test-db/job-store.workflow.test.ts` |
+| Sessions; stop/done/remove on a thread | `server/src/db/job-store-actions.ts` | `server/test-db/job-store.workflow.sessions.test.ts`, `job-store.workflow.control.test.ts` |
+| Columns and the frozen snapshot | `server/migrations/027_workflows.sql`, `030_workflow_params.sql`, `033_job_workflow_name.sql` | `server/test-db/job-store.workflow.frozen-name.test.ts`, `job-store.workflow.params.test.ts` |
+| `review: true` node as review evidence | `server/src/db/evidence-policy.ts` | `server/test/evidence-policy.test.ts` |
+| Agent-less nodes, merge-conflict probe | `driver/src/loop-agentless.ts`, `driver/src/scripts/merge-conflict-probe.cjs` | `driver/test/loop.test.ts`, `merge-conflict-probe-script.test.ts` |
+| Composer and settings UI, hidden and unrouted | `web/src/panels/TaskComposer.tsx`, `web/src/panels/WorkflowsPanel.tsx`, `web/src/api/useWorkflows.ts` | `web/test/task-composer.render.test.tsx`, `workflows-panel.render.test.tsx` |
+| A stub workflow on a real board and driver | `scripts/test-jobs.sh` | — |
 
 ## Invariants
 
-- **What is stored is the EXPANDED graph, never the authored block reference.** `workflow-store.ts`'s
-  `create()`/`update()` run `compileDefinition` after the schema check and re-validate the result;
-  `workflow-engine.ts` and `routes/jobs.ts` read `.prompt` off every node with no `kind` guard, so a
-  stored `block` node would corrupt the first transition into it. Guarded by
-  `server/test-db/workflow-store.test.ts` and `server/test/workflow-block-compiler.test.ts`.
-  Consequence: a `GET` response shows the expansion, and pasting it back is checked against the
-  narrower AUTHORED size cap — re-author the block reference rather than editing an expansion.
-- **`runtime` is never authorable.** It is attached to a compiled node AFTER `validateDefinition`
-  runs, so any authored or pasted definition carrying it refuses `UNKNOWN_KEY` —
-  `server/test/workflow-schema.test.ts`. Deleting the key to get a round trip past that refusal
-  turns a durable wait into an ordinary claimable node.
-- **The resolved definition and its name freeze on the thread's root row at create.** Editing or
-  deleting a workflow changes later tasks, never a running thread; `job.workflow_id` carries no
-  foreign key, because `job` is an audit record.
+- **The stored definition is the expanded graph, never the block reference** — the engine and
+  `server/src/routes/jobs.ts` read `.prompt` off every node unguarded. `server/test-db/workflow-store.test.ts`.
+- **`runtime` is never authorable**: it is attached after validation, so a pasted one refuses
+  `UNKNOWN_KEY` — `server/test/workflow-schema.test.ts`.
+- **The definition and name freeze on the root row at create**; `job.workflow_id` has no foreign key.
   `server/test-db/job-store.workflow.frozen-name.test.ts`.
-- **A task's mode is stored on every row and decided by the root: no `workflow` is `objective`.**
-  An objective thread has no snapshot, node, successor or wait — its verdict is the whole story
-  (`job_mode_node_ck` refuses a node on an objective row). `server/test-db/job-store.objective.test.ts`.
-- **A playbook suggests; only policy enforces.** `docker/skills/backend-fix/SKILL.md` orders an
-  objective task's steps but adds no stage — gates and publication rules are the claim's.
-  `driver/test/executor-images.test.ts` (`optional playbook`). A workflow stays the opt-in for
-  durable approvals and enforced transitions.
-- **Marker absence is a first-class outcome.** A completed node no rule matches rests the thread
-  loudly, output intact — never failed, never silently continued; a bound-exhausted edge rests too
-  rather than falling through. `server/test/workflow-engine.next-transition.test.ts`.
-- **Loop bounds count ROWS for the target node, dead rows included.** There is no loop-counter
-  store — the rows are the audit record. To declare "review x3", give EVERY edge into `review` the
-  same `max`. Same test.
-- **The publish decision rides the claim and is enforced in exactly one place**, `driver/src/loop.ts`;
-  neither transport grew a gate of its own, pinned by `driver/test/docker.test.ts` and `k8s.test.ts`.
-  Absent on an objective-mode claim, which the driver reads as "publish".
-- **A parked durable wait holds no `job` row and no executor lease.** The per-root advisory lock is
-  the only thing preventing two claimers double-waking one round, and the claim-time cancellation
-  fence is what makes a cancel or a PR close win the race against a wake — both asserted directly on
-  `job` row counts in `server/test-db/job-store.block-wait.test.ts`.
-- **`param` is a reserved node name**: prompts reference launch values as `{{param.NAME}}`.
+- **No `workflow` means objective mode on every row** — no snapshot, node or wait.
+  `server/test-db/job-store.objective.test.ts`.
+- **An unmatched completion or an exhausted bound rests the thread**, never fails or falls through;
+  loop bounds count rows for the target node, so every edge into it needs the same `max`.
+  `server/test/workflow-engine.next-transition.test.ts`.
+- **The publish decision rides the claim and is enforced only in `driver/src/loop-verdict.ts`** —
+  `driver/test/docker.test.ts`, `k8s.test.ts`.
+- **A parked wait holds no `job` row and no lease**; the per-root advisory lock and the claim-time
+  cancellation fence prevent a double wake — `server/test-db/job-store.block-wait.test.ts`.
 
 ## Stated limits
 
-- Every declared parameter is REQUIRED at launch; there is no optional parameter.
-- The parameter pattern grammar is a bounded subset — no anchors, lookarounds or backreferences, and
-  a capped ambiguity budget. Refused on any doubt (`workflow-pattern.ts`).
-- A definition with no `publish: true` node reachable from the entry is refused at create.
-- `{{command}}` is the one unbounded substitution; every other one is truncated to its share.
-- Webhook deliveries are the board's only GitHub input — a missed delivery is released by
-  `POST /api/jobs/:id/wait/poke`, never by the board fetching GitHub itself.
-- Neither built-in block merges, closes or auto-merges a pull request.
+- Every declared parameter is required; `param` is a reserved node name.
+- A definition with no reachable `publish: true` node is refused at create.
+- Webhooks are the only GitHub input; a missed delivery is released by `wait/poke`.
+- Neither built-in block merges or closes a pull request.

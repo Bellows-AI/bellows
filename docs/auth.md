@@ -28,8 +28,7 @@ posture: [security.md](security.md) · routes and codes: [api.md](api.md).
   on the next request. `server/src/auth/store.ts`, `server/test-db/auth-store.access-tokens.org.test.ts`.
 - **An org's first materialized membership lands `admin`**, and demoting the last admin is refused
   in the statement (`409 LAST_ADMIN`). `server/src/auth/store.ts`, `server/test/routes.org-members.test.ts`.
-- **`github_user_id` is the identity; `github_login` is a lowercase label** nothing keys on —
-  GitHub frees a renamed login for anyone to claim. `server/src/auth/store.ts`.
+- **`github_user_id` is the identity; `github_login` is a label** nothing keys on. `server/src/auth/store.ts`.
 - **Only the sha-256 is stored** — sessions, both token kinds, the pending sign-in row. And the
   cookie is `SameSite=Lax`, never `Strict`: the callback is a cross-site top-level GET, so
   `Strict` withholds the state cookie and every login fails. `server/src/auth/session.ts`,
@@ -46,15 +45,12 @@ posture: [security.md](security.md) · routes and codes: [api.md](api.md).
   credential and the follow-up/retry author check** — a stored result never answers another
   caller, another org, or a parent that changed hands. `server/src/db/job-store-idempotency.ts`,
   `server/src/db/job-store-actions.ts`, `server/test-db/job-store.idempotency.test.ts`.
-- **The worker credential is one deployment-wide shared secret**, `JOB_BOARD_TOKEN`: constant-time
-  compare, no row, no mint route, fatal at boot in github mode when missing or under 32 characters
-  — so a claim names no org and is offered every org's queue. `server/src/config.ts`.
+- **The worker credential is one deployment-wide shared secret**, `JOB_BOARD_TOKEN` (fatal in github mode when
+  missing or under 32 characters), so a claim names no org and is offered every org's queue. `server/src/config.ts`.
 - **`POST /api/sessions/branch` demands an org-bound credential in github mode** — the runner's
   `x-factory-job-id` + `x-factory-job-lease-token` pair, or a `fat_` token; the deployment-wide
   ingest token does not open it (CWE-862). `server/src/routes/ingest.ts`,
   `server/test/auth.enforcement.test.ts`.
-- **The three GitHub endpoint URLs are an environment-only test seam** — `playwright.config.ts`
-  points them at `e2e/stub-idp.mjs`; a configurable authorize URL in a deployment is phishing.
 
 ## Stated limits
 

@@ -15,6 +15,7 @@ import {
     SUSPENDED_LABEL,
 } from '../web/src/panels/WorkspaceExecutorsPanel.js';
 import { confirmLabel, confirmTitle } from '../web/src/panels/org-executor-confirm.js';
+import { contextChip } from './executor.js';
 
 /**
  * The organization executor row's actions (issue 411): the overflow menu, and the confirmation that
@@ -270,7 +271,7 @@ test('Suspend keeps a personal profile but withholds Make default and the compos
     // The default falls to the first ACTIVE profile; the composer selects it and never offers Alpha.
     await expect(personalRow(page, 'Beta').getByText(/Default/)).toBeVisible();
     await page.goto('/tasks/new');
-    await expect(page.getByLabel('Executor')).toHaveText('Beta');
+    await expect(contextChip(page, 'Executor')).toHaveText('Beta');
 
     // Persists across a reload, configuration and row intact.
     await page.goto('/settings/executors');

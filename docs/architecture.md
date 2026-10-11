@@ -22,7 +22,7 @@ Data flow: agent → OTEL collector → `POST /api/otlp/v1/metrics` → `flatten
 | Read-time aggregation and the cache slot | `server/src/stats-service.ts`, `server/src/cache.ts` | `server/test/routes.stats.get.test.ts` |
 | Telemetry sources (`postgres`/`fixture`/`off`) | `server/src/telemetry/client.ts` | `server/test/telemetry.fixture-client.test.ts` |
 | Installation token, repo listing, repo source | `server/src/github/app-token.ts`, `app-client.ts`, `repo-source.ts` | `server/test/github.app-token.test.ts`, `server/test/repo-source.test.ts` |
-| Range parsing, filtering, bucketing | `core/src/range.ts` (`parseRange` lives in `routes/stats.ts`) | `core/test/range.test.ts` |
+| Range parsing, filtering, bucketing | `core/src/range.ts` (`parseRange` lives in `server/src/routes/stats.ts`) | `core/test/range.test.ts` |
 | The shared payload contract the SPA imports | `core/src/types.ts` | `core/test/metrics.invariants.test.ts` |
 
 Then: [api.md](api.md) · [auth.md](auth.md) · [organizations.md](organizations.md) ·
