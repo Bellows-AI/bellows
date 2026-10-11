@@ -3,6 +3,7 @@ import type { ConsoleMessage, Page } from '@playwright/test';
 import { ADD_LABEL } from '../web/src/workspace/executors.js';
 import {
     addExecutorViaDialog,
+    contextChip,
     countLaunches,
     E2E_EXECUTOR,
     E2E_EXECUTOR_ROW,
@@ -41,8 +42,8 @@ function watchConsole(page: Page): string[] {
  * menu is downward-only (issue 224) and fixed-positioned, so opened near the bottom of a short
  * viewport it lands below the fold.
  */
-async function openSelector(page: Page, label: string) {
-    const trigger = page.getByLabel(label);
+async function openSelector(page: Page, label: 'Repository' | 'Executor') {
+    const trigger = contextChip(page, label);
     await trigger.evaluate((element) => element.scrollIntoView({ block: 'center' }));
     await trigger.click();
 }
@@ -56,8 +57,8 @@ test.describe('the guided task composer', () => {
 
         const composer = page.locator('.composer');
         await expect(composer.getByText('What should the agent do?')).toBeVisible();
-        await expect(composer.getByLabel('Repository')).toBeVisible();
-        await expect(composer.getByLabel('Executor')).toBeVisible();
+        await expect(contextChip(composer, 'Repository')).toBeVisible();
+        await expect(contextChip(composer, 'Executor')).toBeVisible();
         await expect(composer.getByLabel('Reusable workflow')).toHaveCount(0);
         await expect(composer.getByRole('heading', { name: 'Workflow details' })).toHaveCount(0);
 
@@ -91,8 +92,8 @@ test.describe('the guided task composer', () => {
 
         // On a wide screen the chips share one row: same top, left to right.
         const boxes: { x: number; y: number }[] = [];
-        for (const label of ['Repository', 'Executor']) {
-            const box = await page.getByLabel(label).boundingBox();
+        for (const label of ['Repository', 'Executor'] as const) {
+            const box = await contextChip(page, label).boundingBox();
             expect(box).not.toBeNull();
             boxes.push(box!);
         }
@@ -113,10 +114,10 @@ test.describe('the guided task composer', () => {
         await page.goto('/tasks/new');
 
         await expect(page.getByLabel('What should the agent do?')).toBeInViewport({ ratio: 1 });
-        await expect(page.getByLabel('Repository')).toHaveText(`${E2E_REPO.owner}/${E2E_REPO.name}`);
-        await expect(page.getByLabel('Executor')).toHaveText(E2E_EXECUTOR.name);
-        for (const label of ['Repository', 'Executor']) {
-            await expect(page.getByLabel(label)).toBeInViewport({ ratio: 1 });
+        await expect(contextChip(page, 'Repository')).toHaveText(`${E2E_REPO.owner}/${E2E_REPO.name}`);
+        await expect(contextChip(page, 'Executor')).toHaveText(E2E_EXECUTOR.name);
+        for (const label of ['Repository', 'Executor'] as const) {
+            await expect(contextChip(page, label)).toBeInViewport({ ratio: 1 });
         }
         await expect(page.getByRole('button', { name: 'Start task' })).toBeInViewport({ ratio: 1 });
         expect(await page.evaluate(() => window.scrollY)).toBe(0);
@@ -155,7 +156,7 @@ test.describe('the guided task composer', () => {
             ['Repository', `${E2E_REPO.owner}/${E2E_REPO.name}`],
             ['Executor', E2E_EXECUTOR.name],
         ] as const) {
-            const trigger = page.getByLabel(label);
+            const trigger = contextChip(page, label);
             await expect(trigger).toHaveText(value);
             const box = await trigger.boundingBox();
             expect(box).not.toBeNull();
@@ -365,7 +366,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
 
         // Everything as it was left, and the new executor chosen by the composer's own autoselect.
         await expect(prompt(page)).toHaveValue('fix the login crash');
-        await expect(page.getByLabel('Executor')).toHaveText('fresh-executor');
+        await expect(contextChip(page, 'Executor')).toHaveText('fresh-executor');
         await expect(composer.locator('.banner-bad')).toHaveCount(0);
         // Nothing launches on its own: the return only restores.
         expect(launches.bodies).toHaveLength(0);
@@ -415,7 +416,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         ]);
         await expect(page.getByText('You have a task draft in progress.')).toBeVisible();
         await page.getByRole('link', { name: 'Back to new task' }).click();
-        await expect(page.getByLabel('Executor')).toHaveText(E2E_EXECUTOR.name);
+        await expect(contextChip(page, 'Executor')).toHaveText(E2E_EXECUTOR.name);
     });
 
     test('the executor dialog’s credentials detour asks before dropping typing, and keeps the way back', async ({
@@ -479,7 +480,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         const notice = page.locator('.composer-notices');
         await expect(notice).toContainText(`Executor ‘doomed’ is no longer available — ${E2E_EXECUTOR.name} selected.`);
         await expect(prompt(page)).toHaveValue('fix the login crash');
-        await expect(page.getByLabel('Executor')).toHaveText(E2E_EXECUTOR.name);
+        await expect(contextChip(page, 'Executor')).toHaveText(E2E_EXECUTOR.name);
         await page.screenshot({ path: `${SHOTS}/composer-restored-notice.png`, fullPage: true });
         await notice.getByRole('button', { name: 'Dismiss' }).click();
         await expect(notice).toHaveCount(0);
@@ -518,7 +519,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         await page.getByRole('option', { name: 'heavy' }).click();
         await openSelector(page, 'Repository');
         await page.getByRole('option', { name: 'acme/api' }).click();
-        await expect(page.getByLabel('Repository')).toHaveText('acme/api');
+        await expect(contextChip(page, 'Repository')).toHaveText('acme/api');
 
         await page.locator('.sidenav-link', { hasText: 'Settings' }).click();
         await expect(page).toHaveURL(/\/settings$/);
@@ -546,8 +547,8 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         releasePoll();
 
         await expect(prompt(page)).toHaveValue('fix the login crash');
-        await expect(page.getByLabel('Executor')).toHaveText('heavy');
-        await expect(page.getByLabel('Repository')).toHaveText('acme/api');
+        await expect(contextChip(page, 'Executor')).toHaveText('heavy');
+        await expect(contextChip(page, 'Repository')).toHaveText('acme/api');
         await expect(page.locator('.composer-notices')).toHaveCount(0);
         expect(workflowReads).toEqual([]);
         expect(problems.join('\n')).toBe('');
