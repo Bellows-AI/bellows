@@ -5,7 +5,14 @@
 
 import type { Sql, TransactionSql } from 'postgres';
 import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
-import { exists, queueReclaimIfThreadDone, stopRows, workspacePathFor, hasRunningMember } from './job-store-rows.js';
+import {
+    backsBatchTask,
+    exists,
+    queueReclaimIfThreadDone,
+    stopRows,
+    workspacePathFor,
+    hasRunningMember,
+} from './job-store-rows.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
 import { stopReviewsOf } from './job-store-reviews.js';
 import { type IdempotencyInput, replayOf, stampKey } from './job-store-idempotency.js';
@@ -57,25 +64,36 @@ export async function createJobRow(
     createdBy: string | null,
     target: CreateTarget
 ): Promise<CreatedRef | 'purging'> {
-    const { sql, orgId } = ctx;
-    const idem = target.idempotency;
     // One transaction: the checkout-row lock/check and the insert are decided together, which is
     // the whole point — see refuseIfCheckoutPurging.
-    return sql.begin(async (tx) => {
-        // A repeat of a recorded request answers the row it made, before anything else is decided.
-        const replayed = await replayOf(tx, orgId, createdBy, idem);
-        if (replayed) return { id: replayed, replayed: true };
-        if (await refuseIfCheckoutPurging(tx, orgId, createdBy, target.repo)) return 'purging';
-        // id and root_job_id are the SAME uuid, computed once in the select so the column can
-        // be not null from insert — the root's root is itself (022). The workflow triple rides
-        // the same insert when a workflow was named: workflow_id names what the task walks,
-        // workflow_name freezes the resolved record's NAME on the row (033), workflow_node is
-        // the entry the first run carries, the snapshot freezes the graph onto
-        // the root — where every transition decision reads it — and workflow_params freezes the
-        // validated launch values beside it (030). The mode (051) is decided here, once: no
-        // named workflow is objective, and the thread inherits it.
-        const mode = target.workflow ? WORKFLOW_MODE : OBJECTIVE_MODE;
-        const rows = await tx<{ id: string }[]>`
+    return ctx.sql.begin((tx) => insertJobInTx(tx, ctx, { command, createdBy, target }));
+}
+
+/**
+ * createJobRow's body, for a caller that already holds a transaction: the batch scheduler creates
+ * a task's root in the same transaction that records the decision to.
+ */
+export async function insertJobInTx(
+    tx: TransactionSql,
+    ctx: Pick<JobStoreContext, 'sql' | 'orgId'>,
+    { command, createdBy, target }: { command: string; createdBy: string | null; target: CreateTarget }
+): Promise<CreatedRef | 'purging'> {
+    const { sql, orgId } = ctx;
+    const idem = target.idempotency;
+    // A repeat of a recorded request answers the row it made, before anything else is decided.
+    const replayed = await replayOf(tx, orgId, createdBy, idem);
+    if (replayed) return { id: replayed, replayed: true };
+    if (await refuseIfCheckoutPurging(tx, orgId, createdBy, target.repo)) return 'purging';
+    // id and root_job_id are the SAME uuid, computed once in the select so the column can
+    // be not null from insert — the root's root is itself (022). The workflow triple rides
+    // the same insert when a workflow was named: workflow_id names what the task walks,
+    // workflow_name freezes the resolved record's NAME on the row (033), workflow_node is
+    // the entry the first run carries, the snapshot freezes the graph onto
+    // the root — where every transition decision reads it — and workflow_params freezes the
+    // validated launch values beside it (030). The mode (051) is decided here, once: no
+    // named workflow is objective, and the thread inherits it.
+    const mode = target.workflow ? WORKFLOW_MODE : OBJECTIVE_MODE;
+    const rows = await tx<{ id: string }[]>`
             insert into job (
                 org_id, command, created_by, repo, executor, executor_scope, id, root_job_id,
                 workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params, mode,
@@ -93,9 +111,8 @@ export async function createJobRow(
             from (select gen_random_uuid() as x) s
             returning id
         `;
-        await stampKey(tx, orgId, rows[0]!.id, idem);
-        return { id: rows[0]!.id };
-    });
+    await stampKey(tx, orgId, rows[0]!.id, idem);
+    return { id: rows[0]!.id };
 }
 
 /**
@@ -275,27 +292,36 @@ async function followUpRefusalOf(
 export async function createRetryRow(
     sql: Sql,
     input: { orgId: string; id: string; createdBy: string | null; idempotency?: IdempotencyInput | undefined }
-): Promise<CreatedRef | 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging'> {
-    const { orgId, id, createdBy, idempotency: idem } = input;
+): Promise<RetryRowResult> {
     // One transaction for the checkout-row guard and the conditional insert, the same lock both
     // job-insert paths take (refuseIfCheckoutPurging), taken BEFORE the insert.
-    return sql.begin(async (tx) => {
-        // The retry runs in the thread's repo's checkout, so the guard reads the named row's
-        // repo label (a finished row's label never changes) — and the same read resolves the
-        // thread root the advisory lock below is keyed by.
-        const [label] = await tx<{ repo: string | null; root_job_id: string }[]>`
+    return sql.begin((tx) => retryInTx(tx, input));
+}
+
+export type RetryRowResult = CreatedRef | 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging';
+
+/** createRetryRow's body, for a caller that already holds a transaction (the batch scheduler). */
+export async function retryInTx(
+    tx: TransactionSql,
+    input: { orgId: string; id: string; createdBy: string | null; idempotency?: IdempotencyInput | undefined }
+): Promise<RetryRowResult> {
+    const { orgId, id, createdBy, idempotency: idem } = input;
+    // The retry runs in the thread's repo's checkout, so the guard reads the named row's
+    // repo label (a finished row's label never changes) — and the same read resolves the
+    // thread root the advisory lock below is keyed by.
+    const [label] = await tx<{ repo: string | null; root_job_id: string }[]>`
             select repo, root_job_id from job where org_id = ${orgId} and id = ${id}
         `;
-        if (!label) return 'missing';
-        const replayed = await replayOf(tx, orgId, createdBy, idem);
-        if (replayed) return replayedFor(tx, { orgId, parentId: id, createdBy }, replayed);
-        if (await refuseIfCheckoutPurging(tx, orgId, createdBy, label.repo)) return 'purging';
-        // The same per-thread advisory lock the claim, remove, reopen and done take: the
-        // eligibility check and the insert must be atomic with a racing done on ANY member and
-        // with a claim of the head, or a done could commit between the check and the insert and
-        // leave a fresh attempt queued into a closed thread.
-        await tx`select pg_advisory_xact_lock(hashtextextended(${label.root_job_id}::text, 0))`;
-        const rows = await tx<{ id: string }[]>`
+    if (!label) return 'missing';
+    const replayed = await replayOf(tx, orgId, createdBy, idem);
+    if (replayed) return replayedFor(tx, { orgId, parentId: id, createdBy }, replayed);
+    if (await refuseIfCheckoutPurging(tx, orgId, createdBy, label.repo)) return 'purging';
+    // The same per-thread advisory lock the claim, remove, reopen and done take: the
+    // eligibility check and the insert must be atomic with a racing done on ANY member and
+    // with a claim of the head, or a done could commit between the check and the insert and
+    // leave a fresh attempt queued into a closed thread.
+    await tx`select pg_advisory_xact_lock(hashtextextended(${label.root_job_id}::text, 0))`;
+    const rows = await tx<{ id: string }[]>`
             with named as (
                 select id, root_job_id
                 from job
@@ -327,14 +353,13 @@ export async function createRetryRow(
               )
             returning id
         `;
-        if (rows[0]) {
-            await stampKey(tx, orgId, rows[0].id, idem);
-            return { id: rows[0].id };
-        }
-        // Nothing inserted — one of the preconditions failed, and which one decides the answer
-        // the route turns into a status code.
-        return retryRefusalOf(tx, orgId, id, createdBy);
-    });
+    if (rows[0]) {
+        await stampKey(tx, orgId, rows[0].id, idem);
+        return { id: rows[0].id };
+    }
+    // Nothing inserted — one of the preconditions failed, and which one decides the answer
+    // the route turns into a status code.
+    return retryRefusalOf(tx, orgId, id, createdBy);
 }
 
 /**
@@ -432,7 +457,7 @@ export async function markJobDone(
     ctx: JobStoreContext,
     id: string,
     doneBy: string | null
-): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict'> {
+): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict' | 'batch'> {
     const { sql, orgId, hasWorkspaces } = ctx;
     // One transaction, because done is what frees the tree now (issue #47's second half):
     // stamping done_at and queueing the worktree reclaim must be decided together, on the
@@ -453,6 +478,9 @@ export async function markJobDone(
         // could decide against a thread whose done it could not see. It also serializes done
         // against remove and reopen, which row-locking alone never did.
         await tx`select pg_advisory_xact_lock(hashtextextended(${named.root_job_id}::text, 0))`;
+        // A batch task's thread is closed by the batch, never by Done: Done would block the task's
+        // retry and queue the reclaim of the tree that retry runs in.
+        if (await backsBatchTask(tx, orgId, named.root_job_id)) return 'batch';
         // coalesce, not assignment: the second "done" answers the first one's instant,
         // which is what makes the route idempotent rather than silently rewriting history.
         // done_by rides the same rule: the first writer's actor survives a retried click.
@@ -638,6 +666,7 @@ export async function removeJobThread(
             where org_id = ${orgId} and id = ${rootJobId}
         `;
         if (!root) return 'missing';
+        if (await backsBatchTask(tx, orgId, rootJobId)) return 'batch';
 
         // Every member of the thread carries the same root_job_id (022), so the thread is
         // one indexed read. Branching included, should two adjustments ever land on one
@@ -836,6 +865,7 @@ export async function reopenJob(ctx: JobStoreContext, id: string): ReturnType<Jo
             where org_id = ${orgId} and id = ${rootJobId}
         `;
         if (!root) return 'missing';
+        if (await backsBatchTask(tx, orgId, rootJobId)) return 'batch';
         if (root.worktree_reclaimed_at !== null) return 'reclaimed';
 
         // A worker holding a LIVE claim is mid-removal — refuse rather than reopen over a tree

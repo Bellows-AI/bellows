@@ -71,6 +71,8 @@ export interface OrgRegistry {
     list(): Promise<{ id: string; name: string; installationId: string | null }[]>;
     /** Warms every existing org's stats cache, once migrations have landed. */
     warmAll(): Promise<void>;
+    /** One scheduling pass over every org's open batches (docs/batches.md); one org's failure is logged, not thrown. */
+    reconcileBatches(): Promise<void>;
 }
 
 export interface OrgRegistryDeps {
@@ -116,7 +118,6 @@ function buildOrgStores({
     facts: FactsCache;
 } {
     const envVars = createEnvVarStore({ sql, orgId, ready });
-    const batches = createBatchStore({ sql, orgId, ready });
     const connections = createConnectionStore({ sql, orgId, ready });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready });
     const userRepos = createUserRepoStore({ sql, orgId, ready });
@@ -166,6 +167,9 @@ function buildOrgStores({
         // transaction as the verdict (and cancel/remove sweep the thread's waits).
         prs,
     });
+    // Batches (059, 060): dispatch creates task roots in the job table and settles a cancelled
+    // batch through the job store's own stop.
+    const batches = createBatchStore({ sql, orgId, ready, stop: (id, by) => jobs.stop(id, by) });
     // Workflow definitions (027): the process a task walks, stored per scope inside this org.
     const workflows = createWorkflowStore({ sql, orgId, ready });
     return { facts, envVars, batches, connections, userExecutors, userRepos, prs, cloneQueue, purger, jobs, workflows };
@@ -304,6 +308,19 @@ export function createOrgRegistry({
                 (await this.list()).map(async (org) => {
                     const rt = await this.for(org.id);
                     rt?.service.ensureFresh();
+                })
+            );
+        },
+
+        async reconcileBatches() {
+            await ready;
+            await Promise.all(
+                (await this.list()).map(async (org) => {
+                    try {
+                        await (await this.for(org.id))?.batches?.reconcileOpen();
+                    } catch (e) {
+                        console.error(`[batches] reconcile for "${org.id}" failed: ${(e as Error).message}`);
+                    }
                 })
             );
         },

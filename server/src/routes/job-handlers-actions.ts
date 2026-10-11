@@ -152,6 +152,7 @@ export async function handleDone(orgs: OrgRegistry, request: FastifyRequest, rep
     );
     if (!result.ok) return reply;
     if (result.value === 'missing') return notFoundJob(reply);
+    if (result.value === 'batch') return batchThreadRefusal(reply);
     if (result.value === 'conflict') {
         return reply.code(HTTP_CONFLICT).send({ error: 'Task is not finished', code: ERROR_CODES.NOT_FINISHED });
     }
@@ -193,6 +194,13 @@ export async function handleStop(orgs: OrgRegistry, request: FastifyRequest, rep
     return reply.code(HTTP_OK).send({ id, status: 'stopped' });
 }
 
+// A thread that backs a batch task is the batch's history: remove and reopen refuse it (docs/batches.md).
+const batchThreadRefusal = (reply: FastifyReply) =>
+    reply.code(HTTP_CONFLICT).send({
+        error: 'This task is part of a batch — cancel or retry it through the batch',
+        code: ERROR_CODES.BATCH_TASK_THREAD,
+    });
+
 // The user's remove: the thread is gone and a worktree reclaim is queued. Person-gated like every
 // job write here, not just because the driver has no use for it — the board secret deleting the
 // audit rows of jobs it never held would be exactly the thread-read hole again.
@@ -215,6 +223,7 @@ export async function handleRemove(orgs: OrgRegistry, request: FastifyRequest, r
             .code(HTTP_CONFLICT)
             .send({ error: 'The task is still running — stop it first', code: ERROR_CODES.TASK_RUNNING });
     }
+    if (result.value === 'batch') return batchThreadRefusal(reply);
     return reply.code(HTTP_OK).send({ id, removed: true });
 }
 
@@ -274,6 +283,7 @@ export async function handleReopen(orgs: OrgRegistry, request: FastifyRequest, r
     );
     if (!result.ok) return reply;
     if (result.value === 'missing') return notFoundJob(reply);
+    if (result.value === 'batch') return batchThreadRefusal(reply);
     if (result.value === 'not_done') {
         return reply.code(HTTP_CONFLICT).send({ error: 'Task is not done', code: ERROR_CODES.TASK_NOT_DONE });
     }

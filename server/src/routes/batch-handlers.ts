@@ -1,6 +1,13 @@
-import { ERROR_CODES } from '@factory-ai/core';
+import { batchWaitResult, ERROR_CODES, type BatchWaitResult } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { BATCH_CREATE, BATCH_DRAFT, BATCH_START, type BatchIdempotency } from '../db/batch-store.js';
+import {
+    BATCH_CREATE,
+    BATCH_DRAFT,
+    BATCH_START,
+    BATCH_STARTED,
+    type BatchIdempotency,
+    type BatchStore,
+} from '../db/batch-store.js';
 import type { OrgRegistry } from '../orgs.js';
 import { launchChecks } from './batch-launch.js';
 import {
@@ -8,6 +15,7 @@ import {
     contextOf,
     envelopeOf,
     loadBatch,
+    notFoundBatch,
     PLAN_FIELD,
     planOf,
     refuseWrite,
@@ -16,17 +24,20 @@ import {
     versionOf,
     type Context,
 } from './batch-http.js';
-import { guard } from './helpers.js';
+import { bad, guard } from './helpers.js';
+import { validateWaitQuery } from './job-field-validation.js';
 import { guardKeyed, IDEMPOTENCY_REPLAYED_HEADER, idempotencyOf } from './job-idempotency.js';
 import { HTTP_CONFLICT, HTTP_CREATED, HTTP_NOT_FOUND, HTTP_OK } from './job-limits.js';
 
 /** One handler per batch route (docs/batches.md); `batches.ts` registers them. */
 
-/** The operations a stub refuses, as `reason` — each replaced by the issue that implements it. */
-export const BATCH_OPERATION_WAIT = 'wait';
-export const BATCH_OPERATION_RETRY = 'retry';
-export const BATCH_OPERATION_CANCEL = 'cancel';
+/** The operation a stub still refuses, as `reason` — replaced by the issue that implements it. */
 export const BATCH_OPERATION_ACCEPT = 'accept';
+
+/** The wait's answer when the hold's deadline passed with the batch still moving. */
+export const BATCH_WAIT_TIMEOUT = 'timeout';
+/** How often a held wait reconciles and re-reads. */
+export const BATCH_WAIT_POLL_MS = 1000;
 
 const unsupported = (reply: FastifyReply, operation: string) =>
     reply.code(HTTP_CONFLICT).send({
@@ -72,12 +83,111 @@ export async function handleGet(orgs: OrgRegistry, request: FastifyRequest, repl
     if (!ctx) return reply;
     const record = await loadBatch(ctx, request, reply);
     if (!record) return reply;
-    // `waitFor` is the long-poll #579 implements; until then it is refused, not ignored.
-    if ((request.query as { waitFor?: unknown }).waitFor !== undefined) {
-        return unsupported(reply, BATCH_OPERATION_WAIT);
+    // The settle long-poll, shaped like the job's (`?waitFor=terminal&timeout=<s>`): the answer is
+    // `{ result, batch }` — `terminal` (finished, or cancelled with nothing moving), `parked`
+    // (nothing moves without an operator: a failed task, a gate not yet signalled) or `timeout`.
+    const wait = validateWaitQuery(request.query as { waitFor?: unknown; timeout?: unknown });
+    if (!wait.ok) return bad(reply, wait.code, wait.message);
+    if (!wait.value) return reply.code(HTTP_OK).send(record);
+    if (record.status !== BATCH_STARTED) return notStartedConflict(reply);
+
+    const held = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'batch wait failed'),
+        () => holdUntilSettled(ctx.store, record.id, wait.value!.timeoutMs, () => reply.raw.destroyed)
+    );
+    if (!held.ok) return reply;
+    const settled = await loadBatch(ctx, request, reply);
+    if (!settled) return reply;
+    return reply.code(HTTP_OK).send({ result: held.value, batch: settled });
+}
+
+/** Reconciles on every beat, so a batch settles for a waiter whether or not anything else is running. */
+async function holdUntilSettled(
+    store: BatchStore,
+    id: string,
+    timeoutMs: number,
+    gone: () => boolean
+): Promise<BatchWaitResult | typeof BATCH_WAIT_TIMEOUT> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        const progress = await store.reconcile(id);
+        const result = progress && batchWaitResult(progress);
+        if (result) return result;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0 || gone()) return BATCH_WAIT_TIMEOUT;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(BATCH_WAIT_POLL_MS, remaining)));
     }
+}
+
+/** A started batch's retry of one task: the task goes back to the scheduler, which launches it when a slot is free. */
+export async function handleRetry(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const ctx = await contextOf(orgs, request, reply);
+    if (!ctx) return reply;
+    if (!envelopeOf(request, reply, [])) return reply;
+    const id = batchIdOf(request, reply);
+    if (id === null) return reply;
+    const { key } = request.params as { key: string };
+
+    const retried = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'batch task retry failed'),
+        () => ctx.store.retry(id, key)
+    );
+    if (!retried.ok) return reply;
+    const outcome = retried.value;
+    if (outcome.result === 'missing') return notFoundBatch(reply);
+    if (outcome.result === 'no_task') return notFoundTask(reply);
+    if (outcome.result === 'not_started') return notStartedConflict(reply);
+    if (outcome.result === 'cancelled') return cancelledConflict(reply);
+    if (outcome.result === 'not_retryable') {
+        return bad(
+            reply,
+            ERROR_CODES.BATCH_TASK_NOT_RETRYABLE,
+            'Only a failed or stopped task, or one whose gate refused it, in the active stage can be retried',
+            HTTP_CONFLICT
+        );
+    }
+    return answerWithBatch(ctx, request, reply);
+}
+
+/** Fences the batch, then settles its moving tasks through the job store's stop. A repeat answers the same. */
+export async function handleCancel(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const ctx = await contextOf(orgs, request, reply);
+    if (!ctx) return reply;
+    if (!envelopeOf(request, reply, [])) return reply;
+    const id = batchIdOf(request, reply);
+    if (id === null) return reply;
+
+    const cancelled = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'batch cancel failed'),
+        () => ctx.store.cancel(id, ctx.createdBy)
+    );
+    if (!cancelled.ok) return reply;
+    const outcome = cancelled.value;
+    if (outcome.result === 'missing') return notFoundBatch(reply);
+    if (outcome.result === 'not_started') return notStartedConflict(reply);
+    if (outcome.result === 'finished') {
+        return bad(reply, ERROR_CODES.BATCH_FINISHED, 'This batch already finished', HTTP_CONFLICT);
+    }
+    return answerWithBatch(ctx, request, reply);
+}
+
+async function answerWithBatch(ctx: Context, request: FastifyRequest, reply: FastifyReply) {
+    const record = await loadBatch(ctx, request, reply);
+    if (!record) return reply;
     return reply.code(HTTP_OK).send(record);
 }
+
+const notFoundTask = (reply: FastifyReply) =>
+    reply.code(HTTP_NOT_FOUND).send({ error: 'No such task', code: ERROR_CODES.NOT_FOUND });
+
+const notStartedConflict = (reply: FastifyReply) =>
+    bad(reply, ERROR_CODES.BATCH_NOT_STARTED, 'This batch is still a draft; start it first', HTTP_CONFLICT);
+
+const cancelledConflict = (reply: FastifyReply) =>
+    bad(reply, ERROR_CODES.BATCH_CANCELLED, 'This batch was cancelled', HTTP_CONFLICT);
 
 export async function handleReplace(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const ctx = await contextOf(orgs, request, reply);
@@ -166,6 +276,11 @@ export async function handleStart(orgs: OrgRegistry, request: FastifyRequest, re
     );
     if (!started.ok) return reply;
     if (started.value.result !== 'ok') return refuseWrite(reply, started.value);
+    // Start queued nothing; dispatch is the first scheduling pass. A failure here is not the
+    // start's: the batch is frozen and the periodic reconcile launches it.
+    await ctx.store
+        .reconcile(id)
+        .catch((e: unknown) => request.log.error({ err: e }, 'batch dispatch after start failed'));
     const frozen = await loadBatch(ctx, request, reply);
     if (!frozen) return reply;
     if (started.value.replayed) reply.header(IDEMPOTENCY_REPLAYED_HEADER, 'true');

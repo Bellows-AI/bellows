@@ -6,7 +6,7 @@
  */
 
 import type { Sql, TransactionSql } from 'postgres';
-import { queueReclaimIfThreadDone } from './job-store-rows.js';
+import { backsBatchTask, queueReclaimIfThreadDone } from './job-store-rows.js';
 import type { JobStoreContext } from './job-store-types.js';
 
 export type CloseMergedPrResult = { outcome: 'applied' | 'duplicate'; closedRoots: number };
@@ -109,6 +109,8 @@ export async function applyMergeClosureIfMerged(
 async function applyMergeCloseToRoot(tx: TransactionSql, ctx: JobStoreContext, rootJobId: string): Promise<boolean> {
     const { orgId } = ctx;
     await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+    // A batch task's PR merge is the batch's gate to judge, not a Done: the thread stays retryable.
+    if (await backsBatchTask(tx, orgId, rootJobId)) return false;
 
     const [marked] = await tx<{ root_job_id: string }[]>`
         insert into job_merge_close (org_id, root_job_id)

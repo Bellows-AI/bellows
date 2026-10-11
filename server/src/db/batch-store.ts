@@ -8,6 +8,15 @@ import {
     refusalOf,
     writeResolved,
 } from './batch-store-rows.js';
+import {
+    cancelBatch,
+    reconcileBatch,
+    reconcileOpenBatches,
+    retryBatchTask,
+    signalBatchGate,
+    type RevisionOf,
+    type StopThread,
+} from './batch-store-schedule.js';
 import { BATCH_DRAFT, BATCH_STARTED, type BatchStore } from './batch-store-types.js';
 
 export * from './batch-store-types.js';
@@ -23,14 +32,21 @@ export function createBatchStore({
     sql,
     orgId,
     ready,
+    stop,
+    revisionOf,
 }: {
     sql: Sql;
     orgId: string;
     ready?: Promise<unknown>;
+    /** The job store's stop, which settles a cancelled batch's moving tasks. */
+    stop?: StopThread;
+    /** Resolves a target branch's head commit for the attempt record; absent records none. */
+    revisionOf?: RevisionOf;
 }): BatchStore {
     const gate = async () => {
         if (ready) await ready;
     };
+    const deps = { sql, orgId, stop, revisionOf };
 
     return {
         async create(plan, createdBy, idempotency) {
@@ -114,6 +130,31 @@ export function createBatchStore({
                 await stampKey(tx, scope, id);
                 return { result: 'ok' as const };
             });
+        },
+
+        async reconcile(id) {
+            await gate();
+            return reconcileBatch(deps, id);
+        },
+
+        async reconcileOpen() {
+            await gate();
+            return reconcileOpenBatches(deps);
+        },
+
+        async cancel(id, cancelledBy) {
+            await gate();
+            return cancelBatch(deps, id, cancelledBy);
+        },
+
+        async retry(id, taskKey) {
+            await gate();
+            return retryBatchTask(deps, id, taskKey);
+        },
+
+        async signalGate(id, taskKey, signal) {
+            await gate();
+            return signalBatchGate(deps, id, taskKey, signal);
         },
     };
 }
