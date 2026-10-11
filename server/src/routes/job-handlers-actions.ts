@@ -3,7 +3,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
 import { type BoardScanner, storeFor, telemetryFor } from './job-context.js';
-import { pickBucketMs } from '../telemetry/run-activity.js';
+import { pickBucketMs, totalTokens } from '../telemetry/run-activity.js';
 import { followUpRefusal, retryRefusal, waitControlRefusal } from './job-refusals.js';
 import { guardKeyed, idempotencyOf, sendQueued } from './job-idempotency.js';
 import { validateArtifactReadQuery } from './job-field-validation-artifacts.js';
@@ -439,6 +439,7 @@ export async function handleJobActivity(orgs: OrgRegistry, request: FastifyReque
             to: null,
             bucketMs: null,
             buckets: [],
+            totals: null,
         });
     }
     const to = run.finishedAt ?? new Date().toISOString();
@@ -456,6 +457,8 @@ export async function handleJobActivity(orgs: OrgRegistry, request: FastifyReque
         to,
         bucketMs,
         buckets: buckets.value,
+        // Null is "nothing measured" — a run that reported no points — never a zero total.
+        totals: buckets.value.length === 0 ? null : totalTokens(buckets.value),
     });
 }
 

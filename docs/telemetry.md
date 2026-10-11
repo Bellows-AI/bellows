@@ -9,7 +9,7 @@ OTLP ingest from the two executors, the SQL views over it, and the states the re
 | Writes and dedupe | `server/src/telemetry/store.ts` | `server/test-db/telemetry.sql.test.ts` |
 | Read client, `ok`/`empty`/`stale`/`disabled` | `server/src/telemetry/postgres-client.ts`, `client.ts`, `errors.ts` | `server/test/routes.telemetry.test.ts` |
 | Views: `metric_point_used`, `session_source`, `session_branch_slice` | `server/migrations/002_views.repeatable.sql` | `server/test-db/telemetry.sql.test.ts` |
-| Run-activity bucketing (`GET /api/jobs/:id/activity`) | `server/src/telemetry/run-activity.ts` | `server/test/run-activity.test.ts`, `server/test-db/run-activity.test.ts` |
+| Run-activity bucketing and per-type token totals (`GET /api/jobs/:id/activity`); cumulative series difference from their pre-window total, so a follow-up on a shared session never double-counts | `server/src/telemetry/run-activity.ts` | `server/test/run-activity.test.ts`, `server/test-db/run-activity.test.ts` |
 | Executor emission, collector config, branch reporter | `docker/{claude,opencode}-executor/`, `docker/otel-collector.yaml` | `docker/claude-executor/test.sh`, `driver/test/branch-reporter.test.ts` |
 
 Aggregation: [metrics.md](metrics.md). Schema and migration rules: [persistence.md](persistence.md).

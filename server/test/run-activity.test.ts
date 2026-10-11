@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { bucketizeActivity, pickBucketMs } from '../src/telemetry/run-activity.js';
-import type { ActivityPoint } from '../src/telemetry/run-activity.js';
+import { bucketizeActivity, pickBucketMs, totalTokens } from '../src/telemetry/run-activity.js';
+import type { ActivityPoint, TokenTypes } from '../src/telemetry/run-activity.js';
 
 /**
  * The run-activity bucket reduction (issue #339): metric_point rows for ONE session reduced into
@@ -22,6 +22,14 @@ const delta = (over: Partial<ActivityPoint>): ActivityPoint => ({
     agent: 'claude-code',
     value: 1,
     time: FROM,
+    ...over,
+});
+
+const tokens = (over: Partial<TokenTypes> = {}): TokenTypes => ({
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
     ...over,
 });
 
@@ -51,9 +59,44 @@ describe('bucketizeActivity', () => {
             bucketMs: FIFTEEN_MIN,
         });
         expect(buckets).toHaveLength(3);
-        expect(buckets[0]).toEqual({ start: FROM, tokens: 2_500_000, edits: 0 });
-        expect(buckets[1]).toEqual({ start: '2026-09-22T10:15:00.000Z', tokens: 0, edits: 3 });
-        expect(buckets[2]).toEqual({ start: '2026-09-22T10:30:00.000Z', tokens: 0, edits: 0 });
+        expect(buckets[0]).toEqual({ start: FROM, tokens: tokens({ input: 2_000_000, output: 500_000 }), edits: 0 });
+        expect(buckets[1]).toEqual({ start: '2026-09-22T10:15:00.000Z', tokens: tokens(), edits: 3 });
+        expect(buckets[2]).toEqual({ start: '2026-09-22T10:30:00.000Z', tokens: tokens(), edits: 0 });
+    });
+
+    it('keeps the four token types apart', () => {
+        const points: ActivityPoint[] = [
+            delta({ field: 'tokens_input', value: 1 }),
+            delta({ field: 'tokens_output', value: 2 }),
+            delta({ field: 'tokens_cacheRead', value: 3 }),
+            delta({ field: 'tokens_cacheCreation', value: 4 }),
+        ];
+        const [bucket] = bucketizeActivity(points, {
+            from: FROM,
+            to: '2026-09-22T10:10:00.000Z',
+            bucketMs: FIFTEEN_MIN,
+        });
+        expect(bucket!.tokens).toEqual({ input: 1, output: 2, cacheRead: 3, cacheCreation: 4 });
+        expect(totalTokens([bucket!, bucket!])).toEqual({ input: 2, output: 4, cacheRead: 6, cacheCreation: 8 });
+    });
+
+    it('differences a follow-up run from the total its shared session had already reached', () => {
+        // The follow-up shares the session's counters: 500 were reached during the first run, and
+        // only the 120 more it reports are this run's — counting from 0 would double-count 500.
+        const SERIES = { temporality: 'cumulative', startTime: '2026-09-22T09:00:00.000Z', field: 'tokens_input' };
+        const points: ActivityPoint[] = [
+            delta({ ...SERIES, value: 300, time: '2026-09-22T09:30:00.000Z' }),
+            delta({ ...SERIES, value: 500, time: '2026-09-22T09:59:00.000Z' }),
+            delta({ ...SERIES, value: 560, time: '2026-09-22T10:05:00.000Z' }),
+            delta({ ...SERIES, value: 620, time: '2026-09-22T10:20:00.000Z' }),
+        ];
+        const buckets = bucketizeActivity(points, {
+            from: FROM,
+            to: '2026-09-22T10:30:00.000Z',
+            bucketMs: FIFTEEN_MIN,
+        });
+        expect(buckets.map((b) => b.tokens.input)).toEqual([60, 60]);
+        expect(totalTokens(buckets).input).toBe(120);
     });
 
     it('differences cumulative series instead of summing them', () => {
@@ -88,7 +131,7 @@ describe('bucketizeActivity', () => {
             to: '2026-09-22T10:45:00.000Z',
             bucketMs: FIFTEEN_MIN,
         });
-        expect(buckets.map((b) => b.tokens)).toEqual([100, 50, 50]);
+        expect(buckets.map((b) => b.tokens.input)).toEqual([100, 50, 50]);
     });
 
     it('differences each cumulative series separately, so a counter reset starts over', () => {
@@ -115,7 +158,7 @@ describe('bucketizeActivity', () => {
             to: '2026-09-22T10:45:00.000Z',
             bucketMs: FIFTEEN_MIN,
         });
-        expect(buckets.map((b) => b.tokens)).toEqual([100, 0, 40]);
+        expect(buckets.map((b) => b.tokens.output)).toEqual([100, 0, 40]);
     });
 
     it('drops points outside the run window', () => {
@@ -129,12 +172,12 @@ describe('bucketizeActivity', () => {
             to: '2026-09-22T10:30:00.000Z',
             bucketMs: FIFTEEN_MIN,
         });
-        expect(buckets.map((b) => b.tokens)).toEqual([3, 0]);
+        expect(buckets.map((b) => b.tokens.input)).toEqual([3, 0]);
     });
 
     it('seeds every bucket in the window, so a quiet stretch renders as a quiet stretch', () => {
         const buckets = bucketizeActivity([], { from: FROM, to: '2026-09-22T11:00:00.000Z', bucketMs: FIFTEEN_MIN });
         expect(buckets).toHaveLength(4);
-        expect(buckets.every((b) => b.tokens === 0 && b.edits === 0)).toBe(true);
+        expect(buckets.every((b) => totalTokens([b]).input === 0 && b.edits === 0)).toBe(true);
     });
 });

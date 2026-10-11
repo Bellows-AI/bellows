@@ -2,7 +2,7 @@ import { OBJECTIVE_MODE } from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import type { Job, JobQuestion } from '../src/api/useJobs.js';
-import type { JobActivity } from '../src/api/useJobActivity.js';
+import type { ThreadActivity } from '../src/api/useJobActivity.js';
 import type { ComposerDraftInput } from '../src/composer-draft.js';
 import { TaskComposer } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
@@ -42,6 +42,7 @@ export function job(overrides: Partial<Job> = {}): Job {
         startedAt: '2026-09-01T12:00:01.000Z',
         finishedAt: '2026-09-01T12:04:00.000Z',
         wallClockMs: null,
+        agentTurns: null,
         taskWallClockMs: null,
         summary: null,
         failureKind: null,
@@ -142,10 +143,8 @@ export interface DetailArgs {
     sending?: boolean;
     /** Who is looking. The default — no account, and the fixture's null author — is the author. */
     viewer?: FollowUpViewer;
-    /** The head run's activity payload, as the page's hook handed it over; null is "none yet". */
-    activity?: JobActivity | null;
-    /** Whether the head run is still going — hatches the chart's last bucket. */
-    live?: boolean;
+    /** Every run's activity answer by job id, as the page's hook handed it over; absent is "loading". */
+    activity?: ThreadActivity;
 }
 
 /** The AUTH_MODE-agnostic default: a null viewer on a null-author row may follow up. */
@@ -158,8 +157,7 @@ export const renderDetail = ({
     followUpError = null,
     sending = false,
     viewer = ANONYMOUS_VIEWER,
-    activity = null,
-    live = false,
+    activity = {},
 }: DetailArgs = {}) =>
     renderToStaticMarkup(
         // The sessionless branch carries a router Link (Start a new task), so the panel renders
@@ -175,7 +173,6 @@ export const renderDetail = ({
                 onFollowUp={async () => null}
                 onAnswer={async () => ({ state: 'failed', error: 'not wired in this suite' })}
                 activity={activity}
-                live={live}
             />
         </MemoryRouter>
     );

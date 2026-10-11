@@ -180,7 +180,11 @@ export function renderActivity(activity: JobActivity): string {
         return 'no activity: the run never started or reported no session';
     }
     const header = `activity ${activity.from ?? DASH} → ${activity.to ?? DASH} (${(activity.bucketMs ?? 0) / MS_PER_MINUTE} min buckets)`;
-    return [header, ...activity.buckets.map((b) => `${b.start}  tokens ${b.tokens}  edits ${b.edits}`)].join('\n');
+    const rows = activity.buckets.map((b) => {
+        const { input, output, cacheRead, cacheCreation } = b.tokens;
+        return `${b.start}  input ${input}  output ${output}  cache-read ${cacheRead}  cache-creation ${cacheCreation}  edits ${b.edits}`;
+    });
+    return [header, ...rows].join('\n');
 }
 
 /** What a paged artifact read says on stderr: where the page sits, and the exact next offset. */
