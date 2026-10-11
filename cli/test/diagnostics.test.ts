@@ -273,12 +273,12 @@ describe('factory job preflight', () => {
     };
 
     it('passes a ready selection, reading only the workspace when nothing else is selected', async () => {
-        const { code, result, calls } = await preflight(['--repo', 'acme/api']);
+        const { code, result, calls } = await preflight(['--repo', 'acme/api', '--executor', 'mine']);
         expect(code).toBe(0);
         expect(result.data.ready).toBe(true);
         expect(result.data.checks).toEqual([
             { subject: 'repo', name: 'acme/api', status: 'ok', detail: 'synced and ready' },
-            { subject: 'executor', name: null, status: 'ok', detail: 'default: user mine' },
+            { subject: 'executor', name: 'mine', status: 'ok', detail: 'user claude' },
         ]);
         expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(['GET /api/workspace']);
     });
@@ -319,16 +319,21 @@ describe('factory job preflight', () => {
             'executor',
             /no org executor mine/,
         ],
-        ['an uninstalled skill', ['--repo', 'acme/api', '--skill', 'ghost'], 'skill', /not installed/],
+        [
+            'an uninstalled skill',
+            ['--repo', 'acme/api', '--executor', 'mine', '--skill', 'ghost'],
+            'skill',
+            /not installed/,
+        ],
         [
             'a Jira skill with no connection',
-            ['--repo', 'acme/api', '--skill', 'jira'],
+            ['--repo', 'acme/api', '--executor', 'mine', '--skill', 'jira'],
             'skill',
             /pass --jira-connection/,
         ],
         [
             'a connection not available to you',
-            ['--repo', 'acme/api', '--jira-connection', 'other'],
+            ['--repo', 'acme/api', '--executor', 'mine', '--jira-connection', 'other'],
             'connection',
             /no such Jira connection/,
         ],
@@ -343,6 +348,17 @@ describe('factory job preflight', () => {
         expect(result.error.message).toMatch(detail);
     });
 
+    it('blocks when no --executor is named: the board applies no default at create', async () => {
+        const { code, result } = await preflight(['--repo', 'acme/api']);
+        expect(code).toBe(1);
+        expect(result.data.checks[1]).toEqual({
+            subject: 'executor',
+            name: null,
+            status: 'blocked',
+            detail: 'no executor selected: pass --executor (your default is user mine)',
+        });
+    });
+
     it('blocks a suspended default executor when none is named', async () => {
         const { code, result } = await preflight(
             ['--repo', 'acme/api'],
@@ -353,7 +369,7 @@ describe('factory job preflight', () => {
     });
 
     it('leaves an env-connection requirement unverified, not blocked', async () => {
-        const { code, result } = await preflight(['--repo', 'acme/api', '--skill', 'gh']);
+        const { code, result } = await preflight(['--repo', 'acme/api', '--executor', 'mine', '--skill', 'gh']);
         expect(code).toBe(0);
         expect(result.data.checks).toContainEqual({
             subject: 'skill',
@@ -365,7 +381,7 @@ describe('factory job preflight', () => {
 
     it('leaves the repo unverified on a board with workspaces off', async () => {
         const { code, result } = await preflight(
-            [],
+            ['--executor', 'mine'],
             board({ '/api/workspace': () => json(workspace({ root: null, repos: [] })) })
         );
         expect(code).toBe(0);
@@ -389,7 +405,7 @@ describe('factory job preflight', () => {
 
     it('prints one line per check for a person, and says the board rechecks', async () => {
         const { out, err, io } = harness(board());
-        expect(await run(['job', 'preflight', '--repo', 'acme/web'], io)).toBe(1);
+        expect(await run(['job', 'preflight', '--repo', 'acme/web', '--executor', 'mine'], io)).toBe(1);
         expect(out.join('')).toContain('blocked     repo acme/web  acme/web is cloning, not synced yet');
         expect(err.join('')).toContain('the board rechecks at create and at claim');
     });
@@ -410,7 +426,7 @@ describe('factory job preflight', () => {
                     : json({ error: 'acme/api is cloning, not synced yet.', code: 'REPO_NOT_READY' }, 409),
         });
         const first = harness(routes);
-        expect(await run(['job', 'preflight', '--repo', 'acme/api'], first.io)).toBe(0);
+        expect(await run(['job', 'preflight', '--repo', 'acme/api', '--executor', 'mine'], first.io)).toBe(0);
 
         status = 'cloning';
         const launch = harness(routes);
@@ -418,6 +434,6 @@ describe('factory job preflight', () => {
         expect(envelope(launch.out).error).toMatchObject({ code: 'REPO_NOT_READY', status: 409 });
         // Re-running preflight now names the same change the board refused on.
         const again = harness(routes);
-        expect(await run(['job', 'preflight', '--repo', 'acme/api'], again.io)).toBe(1);
+        expect(await run(['job', 'preflight', '--repo', 'acme/api', '--executor', 'mine'], again.io)).toBe(1);
     });
 });

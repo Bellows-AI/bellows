@@ -84,12 +84,15 @@ function repoCheck(repo: string | undefined, workspace: WorkspaceView): Prefligh
 function executorCheck(selection: PreflightSelection, workspace: WorkspaceView): PreflightCheck {
     const { executor } = selection;
     if (executor === undefined) {
+        // The board applies no default at create; `defaultExecutor` is only the web composer's preselection.
         const fallback = workspace.defaultExecutor;
-        if (!fallback) return { subject: 'executor', name: null, status: 'ok', detail: 'the board default' };
-        const profiles = fallback.scope === 'org' ? workspace.orgExecutors : workspace.executors;
-        const suspended = profiles.find((candidate) => candidate.name === fallback.name)?.suspended === true;
-        const detail = `default: ${fallback.scope} ${fallback.name}${suspended ? ' is suspended' : ''}`;
-        return { subject: 'executor', name: null, status: suspended ? 'blocked' : 'ok', detail };
+        const hint = fallback ? ` (your default is ${fallback.scope} ${fallback.name})` : '';
+        return {
+            subject: 'executor',
+            name: null,
+            status: 'blocked',
+            detail: `no executor selected: pass --executor${hint}`,
+        };
     }
     const scope = selection.executorScope ?? 'user';
     const profiles = scope === 'org' ? workspace.orgExecutors : workspace.executors;
