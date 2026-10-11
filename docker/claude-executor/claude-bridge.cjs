@@ -129,6 +129,11 @@ function main() {
     // The CLI can exit before a late write lands; that is the exit handler's to report, not a crash.
     cli.stdin.on('error', () => {});
 
+    // A `result` ends a turn, and closing stdin ends the run — but the CLI still runs the turn a
+    // background subagent's completion queues, and past end of input that turn's permission
+    // requests fail "Stream closed". So stdin stays open while a subagent runs. A background
+    // shell does not count: the CLI kills shells at end of input instead of waiting for them.
+    let subagentsRunning = false;
     let inputOpen = true;
     const send = (message) => {
         if (inputOpen) cli.stdin.write(`${JSON.stringify(message)}\n`);
@@ -152,7 +157,10 @@ function main() {
             return;
         }
         if (!event || typeof event !== 'object') return;
-        if (event.type === 'result') {
+        if (event.type === 'system' && event.subtype === 'background_tasks_changed' && Array.isArray(event.tasks)) {
+            subagentsRunning = event.tasks.some((task) => task?.task_type === 'local_agent');
+        } else if (event.type === 'result') {
+            if (subagentsRunning) return;
             inputOpen = false;
             cli.stdin.end();
         } else if (event.type === 'control_request' && event.request) {
