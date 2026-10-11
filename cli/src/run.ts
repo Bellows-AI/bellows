@@ -2,11 +2,12 @@ import { parseArgs } from 'node:util';
 import { createBoardClient, HTTP_OK, QUESTION_ANSWERED_CODE } from './board.js';
 import { TASK_LIST_OPTIONS, taskListFilters } from './tasks.js';
 import type { BoardClient, JobCreated, JobWait, QuestionRecord } from './board.js';
+import { activityCommand, artifactCommand } from './artifacts.js';
 import { CliConfigError, loadCliConfig } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
 import type { CommandResult, ErrorDetail } from './outcome.js';
 import { executorDiscovery, repoDiscovery } from './discovery.js';
-import { INPUT_OPTIONS, resolveCommandInput, UsageError } from './input.js';
+import { INPUT_OPTIONS, parseOrUsage, resolveCommandInput, UsageError } from './input.js';
 import type { InputIo } from './input.js';
 import { BoardError, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS, realClock } from './transport.js';
 import type { BoardClock } from './transport.js';
@@ -60,6 +61,8 @@ export const USAGE = `usage: factory job create (<command...> | --file <path> | 
        factory task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
                          [--sort newest|oldest] [--limit <n>] [--cursor <cursor>] [--json]
        factory job investigate <id> [--json]
+       factory job log|transcript <id> [--attempt <n>] [--offset <n>] [--limit <n>] [--all] [--json]
+       factory job activity <id> [--json]
        factory job wait <id> [--timeout <seconds>] [--json]
        factory job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
        factory job retry <id> [--idempotency-key <key>] [--json]
@@ -90,6 +93,10 @@ exit codes: 0 ok (a wait: the run succeeded), 1 the board refused, 2 usage or co
 
 --json prints one envelope on stdout and nothing on stderr, whatever the outcome:
   { ok, command, outcome, exitCode, data, error }
+
+log and transcript read the STORED artifact (not investigate's tail), newest attempt unless --attempt
+names one: one page from --offset per call (stderr names the next), or with --all every page, failing
+naming the page that could not be read rather than printing a partial artifact. --all takes no --offset.
 
 retry queues a fresh attempt of the task's existing command; follow-up queues NEW instructions.
 edit replaces the command of a queued run you created, in place; the board refuses it once the run
@@ -126,14 +133,6 @@ export interface RunIo extends InputIo {
     signal?: AbortSignal | undefined;
     stdout(text: string): void;
     stderr(text: string): void;
-}
-
-function parseOrUsage<T>(parse: () => T): T {
-    try {
-        return parse();
-    } catch (error) {
-        throw new UsageError(error instanceof Error ? error.message : String(error));
-    }
 }
 
 function parseLimit(raw: string | undefined): number | undefined {
@@ -575,6 +574,9 @@ const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<C
     'job list': runList,
     'task list': runTaskList,
     'job investigate': runInvestigate,
+    'job log': (args, io) => artifactCommand('log', args, boardFor(io), USAGE),
+    'job transcript': (args, io) => artifactCommand('transcript', args, boardFor(io), USAGE),
+    'job activity': (args, io) => activityCommand(args, boardFor(io), USAGE),
     'job wait': runWait,
     'job follow-up': runFollowUp,
     'job retry': runRetry,

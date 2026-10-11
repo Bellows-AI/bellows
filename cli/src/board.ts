@@ -62,10 +62,52 @@ export interface BoardJobRecord {
     exitCode: number | null;
     failureKind: string | null;
     summary: string | null;
-    gates: readonly { name: string; status: string }[] | null;
+    gates: readonly { name: string; status: string; exitCode?: number | null; output?: string | null }[] | null;
     output: string | null;
+    /** Since when the thread has been parked on its open workflow wait, else null. */
+    waitingSince?: string | null;
+    /** Why the thread's last wait ended, else null. */
+    waitTerminalReason?: string | null;
+    /** The thread's recorded PR, else null — shared by every member of the thread. */
+    publication?: {
+        repo: string;
+        prNumber: number;
+        prUrl: string;
+        headBranch: string;
+        baseBranch: string;
+    } | null;
     /** The questions this run's agent asked, oldest first; a list row or an older board has none. */
     questions?: readonly QuestionRecord[];
+}
+
+/** The two stored artifacts a run leaves: the full-run log and the agent transcript. */
+export const ARTIFACT_KINDS = ['log', 'transcript'] as const;
+export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
+
+/**
+ * One page of a stored artifact, as `GET /api/jobs/:id/{log,transcript}` answers it. Paging is by
+ * character: `totalCharacters` is the whole stored artifact, `content` the slice at `offset`.
+ * `truncated` is the DRIVER's own cap at upload — the stored artifact is itself incomplete.
+ */
+export interface ArtifactPage {
+    jobId: string;
+    kind: ArtifactKind;
+    attempt: number;
+    truncated: boolean;
+    offset: number;
+    limit: number;
+    totalCharacters: number;
+    content: string;
+}
+
+/** The run-activity read: tokens and edits per bucket of the run's wall clock. */
+export interface JobActivity {
+    jobId: string;
+    sessionId: string | null;
+    from: string | null;
+    to: string | null;
+    bucketMs: number | null;
+    buckets: readonly { start: string; tokens: number; edits: number }[];
 }
 
 /** One option of an asked question. */
@@ -234,6 +276,13 @@ export interface BoardClient {
      */
     waitForJob(id: string, timeoutSeconds: number): Promise<JobWait>;
     thread(id: string): Promise<BoardJobRecord[]>;
+    /** One page of a stored artifact; an absent artifact is the board's 404. */
+    artifactPage(
+        id: string,
+        kind: ArtifactKind,
+        page: { attempt?: number | undefined; offset?: number | undefined; limit?: number | undefined }
+    ): Promise<ArtifactPage>;
+    activity(id: string): Promise<JobActivity>;
     followUp(id: string, command: string, idempotencyKey?: string): Promise<JobCreated>;
     /** Re-runs the thread head's own command as a fresh attempt; the board takes nothing from a body. */
     retry(id: string, idempotencyKey?: string): Promise<JobCreated>;
@@ -332,6 +381,62 @@ function isWait(value: unknown): value is JobWait {
         typeof wait.headStatus === 'string' &&
         typeof wait.job === 'object' &&
         wait.job !== null
+    );
+}
+
+/** An artifact read's route, with only the paging parameters that were given. */
+function artifactPath(id: string, kind: ArtifactKind, page: Record<string, number | undefined>): string {
+    const query = new URLSearchParams(
+        Object.entries(page).flatMap(([key, value]): [string, string][] =>
+            value === undefined ? [] : [[key, String(value)]]
+        )
+    ).toString();
+    return `${jobPath(id)}/${kind}${query ? `?${query}` : ''}`;
+}
+
+type ReadRoutes = 'artifactPage' | 'activity' | 'listRepos' | 'workspace' | 'listSkills' | 'listConnections';
+
+/** The plain GET reads, over whatever `get` does to fetch one authenticated path. */
+function readRoutes(get: (path: string) => Promise<unknown>): Pick<BoardClient, ReadRoutes> {
+    return {
+        async listRepos() {
+            return (await get('/api/repos')) as VisibleRepos;
+        },
+        async workspace() {
+            return (await get('/api/workspace')) as WorkspaceView;
+        },
+        async listSkills() {
+            return ((await get('/api/skills')) as { skills: SkillView[] }).skills;
+        },
+        async listConnections() {
+            return ((await get('/api/connections')) as { connections: ConnectionView[] }).connections;
+        },
+        async artifactPage(id, kind, page) {
+            const path = artifactPath(id, kind, page);
+            return checkedArtifactPage(path, await get(path));
+        },
+        async activity(id) {
+            return (await get(`${jobPath(id)}/activity`)) as JobActivity;
+        },
+    };
+}
+
+function checkedArtifactPage(path: string, payload: unknown): ArtifactPage {
+    if (!isArtifactPage(payload)) {
+        throw new BoardError(`${path} answered with no artifact page`, HTTP_OK, MALFORMED_RESPONSE_CODE);
+    }
+    return payload;
+}
+
+function isArtifactPage(value: unknown): value is ArtifactPage {
+    if (typeof value !== 'object' || value === null) return false;
+    const page = value as Partial<Record<keyof ArtifactPage, unknown>>;
+    return (
+        typeof page.content === 'string' &&
+        typeof page.attempt === 'number' &&
+        typeof page.offset === 'number' &&
+        typeof page.totalCharacters === 'number' &&
+        typeof page.truncated === 'boolean'
     );
 }
 
@@ -460,6 +565,8 @@ export function createBoardClient({
             return payload.jobs;
         },
 
+        ...readRoutes((path) => request(at(path), { headers: authHeaders() })),
+
         async followUp(id, command, idempotencyKey) {
             // The command is the whole body: the repo, the executor and the session are copied
             // from the parent at insert, and sending them here would be a second opinion the
@@ -511,26 +618,6 @@ export function createBoardClient({
                 headers: { ...authHeaders(), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
                 body: JSON.stringify({ answers }),
             })) as QuestionRecord;
-        },
-
-        async listRepos() {
-            return (await request(at('/api/repos'), { headers: authHeaders() })) as VisibleRepos;
-        },
-
-        async workspace() {
-            return (await request(at('/api/workspace'), { headers: authHeaders() })) as WorkspaceView;
-        },
-
-        async listSkills() {
-            const payload = (await request(at('/api/skills'), { headers: authHeaders() })) as { skills: SkillView[] };
-            return payload.skills;
-        },
-
-        async listConnections() {
-            const payload = (await request(at('/api/connections'), { headers: authHeaders() })) as {
-                connections: ConnectionView[];
-            };
-            return payload.connections;
         },
     };
 }

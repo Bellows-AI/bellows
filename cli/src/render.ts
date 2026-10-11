@@ -1,7 +1,9 @@
 import type {
+    ArtifactPage,
     BoardJobRecord,
     BoardTaskPage,
     ConnectionView,
+    JobActivity,
     JobDone,
     JobEdited,
     JobRemoved,
@@ -24,6 +26,9 @@ const COMMAND_PREVIEW_LIMIT = 80;
 const OUTPUT_TAIL_LINES = 40;
 /** What every absent field renders as — null is "not there", and that is worth saying. */
 const DASH = '-';
+/** The gate verdict whose own output tail is worth printing. */
+const GATE_FAILED = 'failed';
+const MS_PER_MINUTE = 60_000;
 /** The column every detail field label is padded to, so the values line up. */
 const LABEL_WIDTH = 10;
 
@@ -85,7 +90,40 @@ function outputTail(output: string | null): string[] {
 function outputBlock(output: string | null): string[] {
     const tail = outputTail(output);
     if (tail.length === 0) return [field('output:', DASH)];
-    return ['output:', ...tail.map((line) => `  ${line}`)];
+    // A tail is the end of the stream, never the artifact: say so, and where the whole one is.
+    return ['output: (tail only — `factory job log <id>` reads the full log)', ...tail.map((line) => `  ${line}`)];
+}
+
+/** The gate rows: name, verdict and exit code, and a failed gate's own tail beneath it. */
+function gateLines(job: BoardJobRecord): string[] {
+    const gates = job.gates ?? [];
+    if (gates.length === 0) return [field('gates:', DASH)];
+    return gates.flatMap((gate) => {
+        const exit = gate.exitCode === undefined || gate.exitCode === null ? '' : ` (exit ${gate.exitCode})`;
+        const row = field('gates:', `${gate.name} ${gate.status}${exit}`);
+        const tail = gate.status === GATE_FAILED ? outputTail(gate.output ?? null) : [];
+        return [row, ...tail.map((line) => `  ${line}`)];
+    });
+}
+
+/** The PR the thread published, and why it is waiting or what the agent is asking a person. */
+function evidenceLines(job: BoardJobRecord): string[] {
+    const lines: string[] = [];
+    if (job.publication) {
+        lines.push(
+            field('pr:', `${job.publication.prUrl} (${job.publication.headBranch} → ${job.publication.baseBranch})`)
+        );
+    }
+    if (job.waitReason) lines.push(field('waiting:', `${job.waitReason} since ${job.waitingSince ?? DASH}`));
+    if (job.waitTerminalReason) lines.push(field('wait ended:', job.waitTerminalReason));
+    for (const asked of job.questions ?? []) {
+        for (const question of asked.questions) {
+            const answer = asked.answers?.[question.question];
+            const state = answer === undefined ? asked.status : `answered: ${answer}`;
+            lines.push(field('question:', `${question.question} [${state}]`));
+        }
+    }
+    return lines;
 }
 
 /** The detail read's block: status, command, authorship, timing, session, gates and the tail. */
@@ -109,10 +147,7 @@ export function renderJobDetail(job: BoardJobRecord): string {
         // The run's last words: what was done, beside the command that asked for it.
         field('summary:', job.summary),
     ];
-    const gates = job.gates ?? [];
-    if (gates.length === 0) lines.push(field('gates:', DASH));
-    for (const gate of gates) lines.push(field('gates:', `${gate.name} ${gate.status}`));
-    lines.push(...outputBlock(job.output));
+    lines.push(...evidenceLines(job), ...gateLines(job), ...outputBlock(job.output));
     return lines.join('\n');
 }
 
@@ -136,6 +171,23 @@ export function renderThread(jobs: readonly BoardJobRecord[]): string {
         lines.push(renderThreadMember(job, index));
     }
     return lines.join('\n');
+}
+
+/** The activity read: one row per bucket, or the plain reason there is nothing to chart. */
+export function renderActivity(activity: JobActivity): string {
+    if (activity.sessionId === null || activity.buckets.length === 0) {
+        return 'no activity: the run never started or reported no session';
+    }
+    const header = `activity ${activity.from ?? DASH} → ${activity.to ?? DASH} (${(activity.bucketMs ?? 0) / MS_PER_MINUTE} min buckets)`;
+    return [header, ...activity.buckets.map((b) => `${b.start}  tokens ${b.tokens}  edits ${b.edits}`)].join('\n');
+}
+
+/** What a paged artifact read says on stderr: where the page sits, and the exact next offset. */
+export function renderPageNote(page: ArtifactPage): string {
+    const end = page.offset + page.content.length;
+    const more = end < page.totalCharacters ? `; next page: --offset ${end}` : '; end of artifact';
+    const cut = page.truncated ? '; the stored artifact was itself truncated at upload' : '';
+    return `${page.kind} attempt ${page.attempt}: characters ${page.offset}..${end} of ${page.totalCharacters}${more}${cut}\n`;
 }
 
 /**

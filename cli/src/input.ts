@@ -12,6 +12,15 @@ export class UsageError extends Error {
     }
 }
 
+/** Runs a parse step, turning whatever it throws into a usage error. */
+export function parseOrUsage<T>(parse: () => T): T {
+    try {
+        return parse();
+    } catch (error) {
+        throw new UsageError(error instanceof Error ? error.message : String(error));
+    }
+}
+
 /** The board's command bound (`core/src/limits.ts`), copied because the CLI imports nothing. */
 export const COMMAND_LIMIT = 16_384;
 
