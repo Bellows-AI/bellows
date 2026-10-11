@@ -48,6 +48,13 @@ describe('parseBellows: valid documents', () => {
         expect('timeoutMinutes' in (gate ?? {})).toBe(false);
     });
 
+    it('reads an on-demand gate, and omits onDemand when a gate declares none', () => {
+        expect(parseBellows(`${EXAMPLE}\n           on_demand: true`)?.gates).toEqual([
+            { name: 'test', command: 'npm test', onDemand: true },
+        ]);
+        expect('onDemand' in (parseBellows(EXAMPLE)?.gates[0] ?? {})).toBe(false);
+    });
+
     it.each([
         ['an empty setup', '    setup: ""', /line 3: setup is empty/],
         ['a valueless setup', '    setup:', /line 3: setup takes a value/],
@@ -265,9 +272,15 @@ describe('parseBellows: rejects invalid gates and limits', () => {
         );
     });
 
-    it('names timeout among the gate fields an unknown key is refused against', () => {
+    it.each(['false', 'yes', '""'])('refuses an on_demand of %s — the one value is true', (value) => {
+        expect(() => parseBellows(`${EXAMPLE}\n           on_demand: ${value}`)).toThrow(
+            /line 6: on_demand must be "true"/
+        );
+    });
+
+    it('names timeout and on_demand among the gate fields an unknown key is refused against', () => {
         expect(() => parseBellows(`${EXAMPLE}\n           retries: 2`)).toThrow(
-            /unknown gate field "retries" — only name, command and timeout are read/
+            /unknown gate field "retries" — only name, command, timeout and on_demand are read/
         );
     });
 

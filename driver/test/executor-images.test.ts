@@ -1295,4 +1295,14 @@ describe('the ad-hoc gate limit in the agent instructions', () => {
             expect(text).toMatch(/[Dd]o not retry it/);
         }
     );
+
+    // An `on_demand` gate never runs at the finish: the agent is the only caller it has.
+    it.each(['docker/skills/gates/SKILL.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
+        '%s says an on_demand gate runs only when the agent calls it',
+        (path) => {
+            const text = read(path).replace(/\s+/g, ' ');
+            expect(text).toContain('`on_demand: true`');
+            expect(text).toContain('runs only when you call it');
+        }
+    );
 });

@@ -417,8 +417,10 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
      * heartbeat still beating — settle() has deliberately NOT been called yet, because a test
      * suite can take minutes and it must not outrun the lease it runs under. A run that did not
      * finish cleanly skips them: a gate over work that never happened fires gate-fix for nothing.
+     * A session whose gates are all on demand has no pass: its evidence reads `none`, never `passed`.
      */
-    const gating = gateSession && !outcome.refused && !state.lost ? gateSession : null;
+    const gating =
+        gateSession && gateSession.declared.length > 0 && !outcome.refused && !state.lost ? gateSession : null;
     // The tree is read BEFORE the gates: a gate that writes a non-ignored artifact (a timestamped
     // report) must not read as the agent's progress. Under an evidence policy it is read gated or
     // not: it is the revision the evidence is bound to.

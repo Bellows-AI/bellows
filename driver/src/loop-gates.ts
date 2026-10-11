@@ -20,8 +20,9 @@ const SETUP_FAILED_PREFIX = '[setup failed — the gate did not run]\n';
 
 /**
  * One gated job's live registration: the checkout key its environment is filed under, the token
- * the runner's agent presents to the ad-hoc endpoint, and the gates the job's `.bellows.yaml`
- * declared. Lives from before the agent starts until the run's exit paths have all been walked.
+ * the runner's agent presents to the ad-hoc endpoint, and the gates the end-of-run pass runs —
+ * every gate the job's `.bellows.yaml` declared but the `onDemand` ones, which only the token
+ * reaches. Lives from before the agent starts until the run's exit paths have all been walked.
  * The image and env body the environment was created with ride along so the gates pass can
  * re-acquire — carried, not recomputed, because a body recomputed at gates time would fold in
  * the minted `BELLOWS_GATE_*` lines that only exist after `beginGates` has registered them.
@@ -92,7 +93,8 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
             gates.manager.release(key, job);
             return null;
         }
-        return { key, token, image: job.gates.image, envBody, declared: job.gates.gates };
+        const declared = job.gates.gates.filter((gate) => !gate.onDemand);
+        return { key, token, image: job.gates.image, envBody, declared };
     } catch (e) {
         // The container came up but registration did not. Released — not stopped — so the
         // cooldown owns it and the next turn reuses it, instead of leaking one live

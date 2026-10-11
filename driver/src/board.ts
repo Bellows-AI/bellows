@@ -24,11 +24,15 @@ export interface ServiceStatus {
     hint?: string;
 }
 
-/** One gate a checkout's `.bellows.yaml` declares; `timeoutMinutes` is its own budget, else GATE_TIMEOUT_MS. */
+/**
+ * One gate a checkout's `.bellows.yaml` declares; `timeoutMinutes` is its own budget, else GATE_TIMEOUT_MS.
+ * An `onDemand` gate runs ad hoc only — the end-of-run gates pass skips it.
+ */
 export interface DeclaredGate {
     name: string;
     command: string;
     timeoutMinutes?: number;
+    onDemand?: true;
 }
 
 export interface BoardJob {
