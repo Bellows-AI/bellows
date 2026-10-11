@@ -20,6 +20,8 @@ export const EMPTY_TELEMETRY: TelemetryInput = {
 };
 
 const DEFAULT_TELEMETRY_TTL_MS = 30_000;
+/** loadConfig's default; no test pool is ever opened from it. */
+const DEFAULT_DB_POOL_MAX = 50;
 
 export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     return {
@@ -36,6 +38,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         // Never connected to: the harness injects a telemetry stub directly. It is a literal here
         // because AppConfig requires one, not because anything opens it.
         databaseUrl: 'postgres://factory:factory@127.0.0.1:5432/factory_test',
+        dbPoolMax: DEFAULT_DB_POOL_MAX,
         telemetryTtlMs: DEFAULT_TELEMETRY_TTL_MS,
         workspaceRoot: null,
         // Matches loadConfig's default. Note that this is only what the *config* says: the app is
