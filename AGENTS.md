@@ -135,9 +135,8 @@ Operational facts behind those:
   webServer whatever `--project` says. `E2E_PORT_BASE` (default 8123) and `E2E_DB_PREFIX` let two
   worktrees run at once — one checkout cannot, since both write `web/dist` and `artifacts/`.
   Screenshots land in `artifacts/ui/`: read them, a passing assertion only says the DOM was right.
-  `e2e/reset-db.mjs` truncates only the seed tables, so memberships pile up across local runs; an
-  auth spec failing on a role or first-member assumption wants `factory_auth_e2e` dropped and
-  recreated, not a spec change. CI's database is new every run.
+  `e2e/reset-db.mjs` truncates every table but the migration ledger before each run, so a local
+  run starts where CI's new database does.
 - `AUTH_MODE` defaults to `none` (one local org, every route open, the loopback bind is the access
   control). `docker compose` pins `github`, uncontestable by `.env`.
 - `JOB_BOARD_TOKEN` is one shared secret read by both the dashboard and the driver.
