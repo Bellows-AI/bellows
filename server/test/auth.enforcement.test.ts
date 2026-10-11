@@ -10,6 +10,7 @@ import type { JobStore } from '../src/db/job-store-types.js';
 import type { TelemetryStore } from '../src/telemetry/store.js';
 import type { AppDeps } from '../src/app.js';
 import type { OrgRegistry } from '../src/orgs.js';
+import { batchRoutes } from '../src/routes/batches.js';
 import { jobRoutes } from '../src/routes/jobs.js';
 import { readVersion } from '../src/version.js';
 import type { MemoryAuthStore } from './helpers.js';
@@ -34,6 +35,7 @@ const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
+const HTTP_SERVICE_UNAVAILABLE = 503;
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
@@ -136,6 +138,18 @@ async function build(
  * must stay open or there is nothing to render a sign-in button in; and the worker routes must NOT
  * accept a session, or any member could steal another worker's lease.
  */
+const BATCH_PATHS: readonly (readonly [string, string])[] = [
+    ['POST', '/api/batches'],
+    ['GET', '/api/batches'],
+    ['GET', `/api/batches/${JOB_ID}`],
+    ['PUT', `/api/batches/${JOB_ID}`],
+    ['POST', `/api/batches/${JOB_ID}/validate`],
+    ['POST', `/api/batches/${JOB_ID}/start`],
+    ['POST', `/api/batches/${JOB_ID}/cancel`],
+    ['POST', `/api/batches/${JOB_ID}/tasks/a/retry`],
+    ['POST', `/api/batches/${JOB_ID}/tasks/a/accept`],
+];
+
 const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/health', 'open'],
     // The kubelet's startup probe carries no credential.
@@ -260,6 +274,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/tokens', 'user'],
     ['/api/tokens/org', 'user'],
     [`/api/tokens/${JOB_ID}/revoke`, 'user'],
+    // Batches are a person's: no batch path is a worker route or on the organization-token allowlist.
+    ...BATCH_PATHS.map(([, path]) => [path, 'user'] as [string, string]),
 ];
 
 describe('the route table', () => {
@@ -682,6 +698,67 @@ describe('the two credentials are disjoint: cross-credential refusals', () => {
         // There is no row to be revoked: the secret simply matches or it does not. A deployment
         // rotates by changing the value on both sides.
         expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+    });
+});
+
+describe('the batch routes are a person’s', () => {
+    it('has a row for every route the batch routes register', async () => {
+        const batches = Fastify();
+        const registered = new Set<string>();
+        batches.addHook('onRoute', (route) => {
+            // Fastify auto-registers HEAD beside each GET; the table lists the routes themselves.
+            if (route.method === 'HEAD') return;
+            registered.add(`${route.method} ${route.url.replace(':id', JOB_ID).replace(':key', 'a')}`);
+        });
+        await batches.register(batchRoutes({ orgs: {} as OrgRegistry }));
+        await batches.ready();
+        await batches.close();
+
+        const tabled = BATCH_PATHS.map(([method, path]) => `${method} ${path}`);
+        expect([...registered].sort()).toEqual([...tabled].sort());
+    });
+
+    it.each(BATCH_PATHS)('%s %s refuses the worker token', async (method, url) => {
+        const server = await build(githubAuth(), memoryAuthStore());
+        const response = await server.inject({
+            method: method as 'GET',
+            url,
+            payload: method === 'GET' ? undefined : {},
+            headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+        });
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+    });
+
+    it.each(BATCH_PATHS)('%s %s refuses an organization token with 403', async (method, url) => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+        const response = await server.inject({
+            method: method as 'GET',
+            url,
+            payload: method === 'GET' ? undefined : {},
+            headers: { authorization: `Bearer ${store.seedAccessToken(ORG, 'org')}` },
+        });
+        expect(response.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(response.json().code).toBe('FORBIDDEN');
+    });
+
+    it.each(BATCH_PATHS)('%s %s refuses a request with no credential', async (method, url) => {
+        const server = await build(githubAuth(), memoryAuthStore());
+        const response = await server.inject({
+            method: method as 'GET',
+            url,
+            payload: method === 'GET' ? undefined : {},
+        });
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+    });
+
+    it('lets a signed-in member through the wall', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+        const cookie = await signedIn(store, store.seedMember(ORG, 'octocat'));
+        const response = await server.inject({ method: 'GET', url: '/api/batches', headers: { cookie } });
+        // No batch store behind this registry, so the route's own 503: it got past the hook.
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
     });
 });
 

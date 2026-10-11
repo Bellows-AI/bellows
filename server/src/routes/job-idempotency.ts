@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { IdempotencyKeyReusedError } from '../db/job-store-idempotency.js';
-import type { IdempotencyInput, IdempotentOperation } from '../db/job-store-idempotency.js';
+import type { IdempotentOperation } from '../db/job-store-idempotency.js';
 import { bad, guard } from './helpers.js';
 import { HTTP_CONFLICT, HTTP_CREATED } from './job-limits.js';
 
@@ -37,12 +37,12 @@ function canonical(value: unknown): string {
  * would act on, the target id included — never anything about the caller, which is scope.
  * `ok: false` once a malformed key has been refused on `reply`.
  */
-export function idempotencyOf(
+export function idempotencyOf<Operation extends string = IdempotentOperation>(
     request: FastifyRequest,
     reply: FastifyReply,
-    operation: IdempotentOperation,
+    operation: Operation,
     asked: unknown
-): { ok: true; value: IdempotencyInput | undefined } | { ok: false } {
+): { ok: true; value: { operation: Operation; key: string; fingerprint: string } | undefined } | { ok: false } {
     const raw = request.headers[IDEMPOTENCY_KEY_HEADER];
     if (raw === undefined) return { ok: true, value: undefined };
     if (typeof raw !== 'string' || !KEY_PATTERN.test(raw)) {

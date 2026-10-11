@@ -30,6 +30,9 @@ export function staticRegistry(
         workflows?: OrgRuntime['workflows'];
         prs?: OrgRuntime['prs'];
         envVars?: OrgRuntime['envVars'];
+        batches?: OrgRuntime['batches'];
+        /** The org's own runtime store, when a test needs two orgs that do not share one. */
+        batchesByOrg?: Readonly<Record<string, NonNullable<OrgRuntime['batches']>>>;
         connections?: OrgRuntime['connections'];
         userRepos?: OrgRuntime['userRepos'];
         userExecutors?: OrgRuntime['userExecutors'];
@@ -52,6 +55,7 @@ export function staticRegistry(
         workflows: parts.workflows,
         prs: parts.prs,
         envVars: parts.envVars,
+        batches: parts.batches,
         connections: parts.connections,
         userRepos: parts.userRepos,
         userExecutors: parts.userExecutors,
@@ -63,7 +67,11 @@ export function staticRegistry(
         facts: parts.facts ?? createFactsCache(),
     };
     return {
-        for: async (orgId) => (parts.orgsFor && !parts.orgsFor.includes(orgId) ? null : runtime),
+        for: async (orgId) => {
+            if (parts.orgsFor && !parts.orgsFor.includes(orgId)) return null;
+            const batches = parts.batchesByOrg?.[orgId];
+            return batches ? { ...runtime, orgId, batches } : runtime;
+        },
         list: async () => [{ id: LOCAL_ORG_ID, name: LOCAL_ORG_ID, installationId: null }],
         warmAll: async () => {},
     };
