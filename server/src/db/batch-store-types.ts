@@ -1,4 +1,4 @@
-import type { BatchPlan, GATE_FAILED, GATE_PASSED, ResolvedBatchPlan } from '@factory-ai/core';
+import type { BatchPlan, ResolvedBatchPlan } from '@factory-ai/core';
 
 export const BATCH_DRAFT = 'draft';
 export const BATCH_STARTED = 'started';
@@ -13,6 +13,10 @@ export const DECISION_ADVANCE = 'advance';
 export const DECISION_COMPLETE = 'complete';
 export const DECISION_CANCEL = 'cancel';
 
+/** `batch_acceptance.kind` (061): what made a task's gate pass. */
+export const ACCEPTANCE_ACCEPTED = 'accepted';
+export const ACCEPTANCE_PR_MERGED = 'pr_merged';
+
 export const BATCH_CREATE = 'batch-create';
 export const BATCH_START = 'batch-start';
 export type BatchOperation = typeof BATCH_CREATE | typeof BATCH_START;
@@ -23,7 +27,7 @@ export interface BatchIdempotency {
     fingerprint: string;
 }
 
-/** The per-task state fields: execution and attempt are the scheduler's, gate is signalled, pr is the PR issue's. */
+/** The per-task state fields: execution and attempt are the scheduler's, gate passes on a merged PR or a recorded acceptance, pr is the recorded PR's URL. */
 export interface BatchTaskState {
     key: string;
     stage: string;
@@ -67,25 +71,16 @@ export interface BatchProgress {
     active: number;
 }
 
-/** The gate outcomes a signal may record; `open` is the state before one arrives. */
-export type BatchGateSignal = typeof GATE_PASSED | typeof GATE_FAILED;
-
-/**
- * The explicit interface the durable completion gate is signalled through. The PR policy
- * evaluation (a separate issue) calls it; nothing in dispatch infers a gate from a run's verdict.
- */
-export interface BatchGateSignals {
-    signalGate(id: string, taskKey: string, gate: BatchGateSignal): Promise<BatchGateRefusal | { result: 'ok' }>;
-}
-
-export type BatchGateRefusal =
+export type BatchAcceptRefusal =
     | { result: 'missing' }
     | { result: 'not_started' }
     | { result: 'cancelled' }
     | { result: 'no_task' }
     /** The task's stage already advanced: the accepted outcome is history. */
     | { result: 'settled' }
-    /** No finished successful run to judge: the task is pending, moving or failed. */
+    /** The plan's completion for the task is a merged PR, not a person's acceptance. */
+    | { result: 'not_acceptable' }
+    /** No finished successful run to accept: the task is pending, moving or failed. */
     | { result: 'not_ready' };
 
 export type BatchRetryRefusal =
@@ -109,7 +104,7 @@ export interface BatchStartInput {
     idempotency?: BatchIdempotency | undefined;
 }
 
-export interface BatchStore extends BatchGateSignals {
+export interface BatchStore {
     create(
         plan: BatchPlan,
         createdBy: string | null,
@@ -143,4 +138,6 @@ export interface BatchStore extends BatchGateSignals {
     cancel(id: string, cancelledBy: string | null): Promise<{ result: 'ok'; replayed: boolean } | BatchCancelRefusal>;
     /** Queues a failed, stopped or gate-refused task for another attempt in its own thread. */
     retry(id: string, taskKey: string): Promise<{ result: 'ok' } | BatchRetryRefusal>;
+    /** Records a person's acceptance of a finished `accepted`-completion task, passing its gate. */
+    accept(id: string, taskKey: string, acceptedBy: string | null): Promise<{ result: 'ok' } | BatchAcceptRefusal>;
 }

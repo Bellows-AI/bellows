@@ -299,6 +299,18 @@ describe('resolveBatchPlan and batchExecutionCapability', () => {
         });
     });
 
+    it('refuses a stage whose resolved policy is automerge, whether set on the batch or the stage', () => {
+        const batchWide = resolveBatchPlan(parsed(plan({ policy: 'automerge' })), defaults);
+        expect(batchExecutionCapability(batchWide, defaults)).toMatchObject({ ok: false, reason: 'automerge' });
+        const oneStage = resolveBatchPlan(
+            parsed(plan({ stages: [{ key: 'one', policy: 'automerge', tasks: [task('a')] }] })),
+            defaults
+        );
+        expect(batchExecutionCapability(oneStage, defaults)).toMatchObject({ ok: false, reason: 'automerge' });
+        const human = resolveBatchPlan(parsed(plan({ policy: 'human' })), defaults);
+        expect(batchExecutionCapability(human, defaults)).toEqual({ ok: true });
+    });
+
     it('ignores a declared target no task uses', () => {
         const resolved = resolveBatchPlan(
             parsed(

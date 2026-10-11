@@ -1,4 +1,5 @@
 import {
+    BATCH_COMPLETION_ACCEPTED,
     batchTaskCommand,
     decideSchedule,
     GATE_OPEN,
@@ -16,16 +17,17 @@ import {
     type ScheduleDecision,
 } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
+import { judgeGates } from './batch-store-gates.js';
 import { insertJobInTx, retryInTx } from './job-store-actions.js';
 import {
+    ACCEPTANCE_ACCEPTED,
     BATCH_STARTED,
     DECISION_ADVANCE,
     DECISION_CANCEL,
     DECISION_COMPLETE,
     DECISION_LAUNCH,
     type BatchCancelRefusal,
-    type BatchGateRefusal,
-    type BatchGateSignal,
+    type BatchAcceptRefusal,
     type BatchProgress,
     type BatchRetryRefusal,
 } from './batch-store-types.js';
@@ -271,6 +273,10 @@ async function pass(deps: ScheduleDeps, id: string, revisions: Map<string, strin
         if (!batch || batch.status !== BATCH_STARTED) return null;
         const at = { tx, orgId, id };
         let changed = await syncTasks(tx, orgId, id);
+        // The cancellation fence: a merge observed after cancel or completion passes nothing.
+        if (batch.cancelled_at === null && batch.completed_at === null) {
+            changed = (await judgeGates(tx, orgId, id)) || changed;
+        }
 
         const snapshot = await loadSnapshot(at);
         const cancelled = batch.cancelled_at !== null;
@@ -471,42 +477,71 @@ export async function retryBatchTask(
     return queued;
 }
 
-export async function signalBatchGate(
+interface AcceptTarget {
+    stage_key: string;
+    completion_kind: string;
+    execution: string;
+    gate: string;
+    attempt: number | null;
+}
+
+/** What stands between a person and accepting the task: a refusal, `replay` for a repeat, or the attempt to accept. */
+async function acceptCheck(
+    at: Tx,
+    taskKey: string
+): Promise<BatchAcceptRefusal | { result: 'replay' } | { result: 'accept'; attempt: number }> {
+    const { tx, orgId, id } = at;
+    const [task] = await tx<AcceptTarget[]>`
+        select t.stage_key, t.completion_kind, t.execution, t.gate,
+               (select max(attempt)::int from batch_attempt
+                where org_id = t.org_id and batch_id = t.batch_id and task_key = t.key) as attempt
+        from batch_task t
+        where t.org_id = ${orgId} and t.batch_id = ${id} and t.key = ${taskKey}
+    `;
+    if (!task) return { result: 'no_task' };
+    if (task.completion_kind !== BATCH_COMPLETION_ACCEPTED) return { result: 'not_acceptable' };
+    // A repeat of an acceptance already recorded is the same request, answered the same way.
+    if (task.gate === GATE_PASSED) return { result: 'replay' };
+    const [advanced] = await tx`
+        select 1 from batch_decision
+        where org_id = ${orgId} and batch_id = ${id} and key = ${`${DECISION_ADVANCE}:${task.stage_key}`}
+    `;
+    if (advanced) return { result: 'settled' };
+    // Accepting judges a finished run's result; one that is moving, pending or failed is about
+    // an earlier attempt, or about nothing.
+    if (task.execution !== TASK_SUCCEEDED || task.attempt === null) return { result: 'not_ready' };
+    return { result: 'accept', attempt: task.attempt };
+}
+
+export async function acceptBatchTask(
     deps: ScheduleDeps,
     id: string,
     taskKey: string,
-    gate: BatchGateSignal
-): Promise<{ result: 'ok' } | BatchGateRefusal> {
+    acceptedBy: string | null
+): Promise<{ result: 'ok' } | BatchAcceptRefusal> {
     const { sql, orgId } = deps;
-    const recorded = await sql.begin(async (tx): Promise<{ result: 'ok' } | BatchGateRefusal> => {
+    const recorded = await sql.begin(async (tx): Promise<{ result: 'ok' } | BatchAcceptRefusal> => {
         const batch = await lockBatch(tx, orgId, id);
         if (!batch) return { result: 'missing' };
         if (batch.status !== BATCH_STARTED) return { result: 'not_started' };
         if (batch.cancelled_at !== null) return { result: 'cancelled' };
-        // The judged result must be the current one: fold the thread's head in first, so a run that
-        // just finished is seen as finished.
+        // The accepted result must be the current one: fold the thread's head in first, so a run
+        // that just finished is seen as finished.
         await syncTasks(tx, orgId, id);
-        const [task] = await tx<{ stage_key: string; execution: string; gate: string }[]>`
-            select stage_key, execution, gate from batch_task
-            where org_id = ${orgId} and batch_id = ${id} and key = ${taskKey}
-        `;
-        if (!task) return { result: 'no_task' };
-        const [advanced] = await tx`
-            select 1 from batch_decision
-            where org_id = ${orgId} and batch_id = ${id} and key = ${`${DECISION_ADVANCE}:${task.stage_key}`}
-        `;
-        if (advanced) return { result: 'settled' };
-        // A signal judges a finished run's result. One that arrives while the task is moving (or
-        // pending, or failed) is about an earlier attempt, or about nothing, and would accept the
-        // next result unevaluated. A repeat of the signal already recorded is the same request.
-        if (task.execution !== TASK_SUCCEEDED) return { result: 'not_ready' };
-        if (task.gate === gate) return { result: 'ok' };
+        const check = await acceptCheck({ tx, orgId, id }, taskKey);
+        if (check.result === 'replay') return { result: 'ok' };
+        if (check.result !== 'accept') return check;
         await tx`
-            update batch_task set gate = ${gate}
+            insert into batch_acceptance (org_id, batch_id, task_key, attempt, kind, accepted_by)
+            values (${orgId}, ${id}, ${taskKey}, ${check.attempt}, ${ACCEPTANCE_ACCEPTED}, ${acceptedBy})
+            on conflict do nothing
+        `;
+        await tx`
+            update batch_task set gate = ${GATE_PASSED}, wait_reason = null
             where org_id = ${orgId} and batch_id = ${id} and key = ${taskKey}
         `;
         return { result: 'ok' };
     });
-    if (recorded.result === 'ok' && gate === GATE_PASSED) await reconcileBatch(deps, id);
+    if (recorded.result === 'ok') await reconcileBatch(deps, id);
     return recorded;
 }

@@ -9,11 +9,11 @@ import {
     writeResolved,
 } from './batch-store-rows.js';
 import {
+    acceptBatchTask,
     cancelBatch,
     reconcileBatch,
     reconcileOpenBatches,
     retryBatchTask,
-    signalBatchGate,
     type RevisionOf,
     type StopThread,
 } from './batch-store-schedule.js';
@@ -152,9 +152,9 @@ export function createBatchStore({
             return retryBatchTask(deps, id, taskKey);
         },
 
-        async signalGate(id, taskKey, signal) {
+        async accept(id, taskKey, acceptedBy) {
             await gate();
-            return signalBatchGate(deps, id, taskKey, signal);
+            return acceptBatchTask(deps, id, taskKey, acceptedBy);
         },
     };
 }
