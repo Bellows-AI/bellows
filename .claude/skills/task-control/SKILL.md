@@ -13,8 +13,10 @@ Two surfaces, same board. The CLI (`cli/`, issue #21) covers every verb below an
 swallows `--timeout`, `--json` and `--yes` as its own configuration before the CLI sees them.
 There is no `factory` on PATH either. Plain `curl` is the fallback anywhere else.
 
-The CLI's exit codes: `0` ok, `1` the board refused or was unreachable, `2` usage, `3` the wait
-ended with no terminal row — `3` is not a failure, it means the task is still going.
+The CLI's exit codes: `0` ok (a wait: the run succeeded), `1` the board refused, `2` usage or
+configuration, `3` the wait ran out of budget — `3` is not a failure, it means the task is still
+going — `4` the run failed or died, `5` the run was stopped on the board, `6` the thread is parked
+on a workflow wait, `7` the board was unreachable, `130` interrupted locally.
 
 ## 1. Configure
 
@@ -72,6 +74,11 @@ status: "queued" }`. Refusals worth reading rather than retrying: `400 BAD_COMMA
 
 Keep the returned `id`. Every verb below takes it.
 
+Pass `--idempotency-key <key>` (a fresh one per logical write) on create, follow-up and retry.
+When the answer is lost — exit `7`, or exit `1` with the "may have been applied" hint — repeat the
+same command with the same key: the board returns the task the first attempt made. Never repeat
+an unkeyed create; check the task list instead.
+
 ## 4. Wait
 
 ```bash
@@ -96,7 +103,7 @@ With one exception: **the board also settles the hold on an open PR or review wa
 answer comes back immediately with a `queued` or `running` row. Re-issuing on it is a
 request storm, not a wait. If the answer arrives far sooner than the hold asked for and the row is not
 terminal, the thread is parked on a workflow wait — stop waiting and say so (the CLI's `job wait`
-does this itself, and exits `3`). Nothing the wait can do moves a parked thread.
+does this itself, and exits `6`). Nothing the wait can do moves a parked thread.
 
 Two more details that bite:
 
