@@ -1,4 +1,4 @@
-import { fail, KEY_VALUE, MAX_COMMAND_LENGTH, scalar } from './bellows-grammar.js';
+import { fail, KEY_VALUE, MAX_COMMAND_LENGTH, readTimeoutMinutes, scalar } from './bellows-grammar.js';
 
 /**
  * The `reviewers:` block of `.bellows.yaml` (issue #549): named reviewer profiles an agent may
@@ -24,7 +24,6 @@ export interface ReviewerProfile {
 }
 
 export const REVIEWER_DEFAULT_TIMEOUT_MINUTES = 15;
-const REVIEWER_MAX_TIMEOUT_MINUTES = 120;
 const MAX_REVIEWERS = 8;
 const MAX_CONNECTIONS = 8;
 /** A reviewer profile's name; the review route validates a request's `profile` against the same shape. */
@@ -100,14 +99,6 @@ function readConnections(line: number, raw: string): string[] {
     return names;
 }
 
-function readTimeout(line: number, raw: string): number {
-    const minutes = Number(scalar(line, raw, 'timeout'));
-    if (!Number.isInteger(minutes) || minutes < 1 || minutes > REVIEWER_MAX_TIMEOUT_MINUTES) {
-        fail(line, `timeout is whole minutes, 1 to ${REVIEWER_MAX_TIMEOUT_MINUTES}`);
-    }
-    return minutes;
-}
-
 /** A `- name: <name>` line opening one reviewer item. */
 function startReviewer(block: ReviewersBlock, line: number, indent: number, trimmed: string): void {
     finishReviewer(block);
@@ -129,7 +120,7 @@ function readField(current: RawReviewer, line: number, key: string, raw: string)
         if (raw.length > MAX_COMMAND_LENGTH) fail(line, `instructions is longer than ${MAX_COMMAND_LENGTH} characters`);
         current.instructions = scalar(line, raw, 'instructions');
     } else if (key === 'timeout') {
-        current.timeoutMinutes = readTimeout(line, raw);
+        current.timeoutMinutes = readTimeoutMinutes(line, raw);
     } else if (key === 'connections') {
         current.connections = readConnections(line, raw);
     } else {

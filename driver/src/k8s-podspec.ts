@@ -563,7 +563,8 @@ export const gateEnvSecretName = (job: BoardJob): string => `factory-gate-${hash
  * - The env travels by reference (`envFrom` against the per-run Secret), because the same rule
  *   that keeps claim values out of the runner pod spec keeps them out of a gate pod spec —
  *   anyone who can `get pods` can read one, and the values are member-scoped.
- * - The deadline is the kubelet's: `GATE_TIMEOUT_MS` maps onto `activeDeadlineSeconds`, so a
+ * - The deadline is the kubelet's: the gate's own `timeout:`, else `GATE_TIMEOUT_MS`, maps onto
+ *   `activeDeadlineSeconds` (`gateDeadlineMs`), so a
  *   hung gate dies even if this driver dies first. The driver reads the
  *   `DeadlineExceeded` condition and reports exit 124 — the convention the docker manager's
  *   own timeout kill uses.

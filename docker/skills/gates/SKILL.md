@@ -44,4 +44,7 @@ your own commands instead. Do not guess the URL.
   send an arbitrary command. Read `.bellows.yaml` to see what is declared.
 - Gates can write generated files to the shared workspace. The environment container stays warm —
   run one at any point to check partial progress.
+- A gate whose `.bellows.yaml` entry declares `timeout:` above 10 (minutes) cannot run ad hoc: the
+  call answers 422 and the gate runs only when you finish. Do not retry it; run its pieces (a
+  build, one spec) with your own commands instead.
 - If a declared gate is still failing when you finish, say so plainly; never claim it passed.

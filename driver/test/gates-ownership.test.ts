@@ -140,7 +140,7 @@ describe('gate ownership: ad-hoc cancel races', () => {
             host: '127.0.0.1',
             manager: {
                 acquire: async () => {},
-                runGate: (_k, _n, _c, s) => {
+                runGate: (_k, _n, _c, { signal: s } = {}) => {
                     signal = s;
                     started();
                     return new Promise(() => {}); // a 10-minute suite
@@ -302,7 +302,7 @@ describe('gate ownership: two attempts on one checkout key', () => {
         const manager = createGateManager({ config, cooldownMs: 60_000, execDocker });
         await manager.acquire(KEY, 'node:24', '', { job: JOB(LEASE_A) });
         const cancelA = new AbortController();
-        const gateA = manager.runGate(KEY, 'test', 'npm test', cancelA.signal);
+        const gateA = manager.runGate(KEY, 'test', 'npm test', { signal: cancelA.signal });
         await delay(5);
         await manager.acquire(KEY, 'node:24', '', { job: JOB(LEASE_B) }); // fast path: entry exists
         const gateB = manager.runGate(KEY, 'test', 'npm test');
@@ -404,8 +404,8 @@ describe('gate ownership: docker/kubernetes parity of concurrent runs', () => {
         const m = createKubernetesGateManager({ config: k8sConfig, request, sleep: () => delay(2) });
         await m.acquire(KEY, 'node:24', '', { job: JOB(LEASE_A) });
         const stop = new AbortController();
-        void m.runGate(KEY, 'test', 'npm test', stop.signal).catch(() => undefined); // the orphaned ad-hoc run
-        void m.runGate(KEY, 'test', 'npm test', stop.signal).catch(() => undefined); // the declared gate
+        void m.runGate(KEY, 'test', 'npm test', { signal: stop.signal }).catch(() => undefined); // the orphaned ad-hoc run
+        void m.runGate(KEY, 'test', 'npm test', { signal: stop.signal }).catch(() => undefined); // the declared gate
         await delay(30);
         stop.abort();
 

@@ -9,7 +9,7 @@ Three workflows and no configured secret — the only credential any uses is `gi
 | Tag fold, image matrix, scan gate, manifest, chart publish | `.github/workflows/release-image.yml`, `.trivyignore` | `core/test/ci-workflows.test.ts` |
 | Release command: patch bump, version-only commit, tag, atomic push | `scripts/release.sh`, `VERSION` | `core/test/release-script.test.ts` |
 | The images a release builds | `docker/Dockerfile`, `docker/driver.Dockerfile`, `docker/{claude,opencode}-executor/` | `driver/test/executor-images.test.ts` |
-| UI gate runner image: lockfile-read playwright tag, scan gate, manifest | `docker/ui-runner.Dockerfile`, `.github/workflows/ui-runner-image.yml` | `core/test/ci-workflows.test.ts` |
+| UI gate runner image: lockfile-read playwright tag, scan gate, manifest; the `ui` gate wiring | `docker/ui-runner.Dockerfile`, `.github/workflows/ui-runner-image.yml`, `.bellows.yaml`, `scripts/ui-gate.sh` | `core/test/ci-workflows.test.ts` |
 | Browser-lane databases and ports | `e2e/reset-db.mjs`, `playwright.config.ts` | `core/test/e2e-config.test.ts` |
 
 ## Invariants

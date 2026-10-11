@@ -604,4 +604,43 @@ describe('ui runner image', () => {
         expect(upload.if).toBe('always()');
         expect(upload.with!.category).toContain('matrix.arch');
     });
+
+    // The ui gate (issue #576): `.bellows.yaml` pulls the tag this workflow publishes for the locked
+    // playwright, so a lockfile bump that moves the browser fails here until the gate follows it.
+    interface Bellows {
+        environment: { image: string; setup: string; gates: { name: string; command: string; timeout?: number }[] };
+        services: { name: string; image: string; environment: Record<string, string> }[];
+    }
+    const bellows = () => load<Bellows>('.bellows.yaml');
+
+    it('.bellows.yaml pulls the tag the workflow publishes for the locked playwright', () => {
+        expect(bellows().environment.image).toBe(
+            `ghcr.io/bellows-ai/factory-ui-runner:playwright-${lockedPlaywright()}`
+        );
+    });
+
+    it('keeps the test and lint gates and adds a ui gate with its own timeout', () => {
+        const gates = bellows().environment.gates;
+        expect(gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'ui']);
+        expect(gates[0]).toEqual({ name: 'test', command: 'npm test' });
+        expect(gates[1]).toEqual({ name: 'lint', command: 'npm run lint' });
+        expect(gates[2]).toEqual({ name: 'ui', command: 'sh scripts/ui-gate.sh', timeout: 45 });
+    });
+
+    it('the ui gate creates both databases on the postgres service, builds, then runs verify:ui', () => {
+        const script = read('scripts/ui-gate.sh');
+        const postgres = bellows().services.find((service) => service.name === 'postgres');
+        expect(postgres?.image).toBe('postgres:17');
+        // playwright.config.ts's databaseUrl: factory:factory on E2E_DB_HOST.
+        expect(postgres?.environment).toMatchObject({ POSTGRES_USER: 'factory', POSTGRES_PASSWORD: 'factory' });
+        expect(script).toContain('export PGHOST=postgres PGUSER=factory PGPASSWORD=factory');
+        expect(script).toContain('set -eu');
+        expect(script).toContain('until pg_isready -q; do');
+        expect(script).toContain('for db in factory_e2e factory_auth_e2e; do');
+        expect(script).toContain('createdb "$db"');
+        const build = script.indexOf('\nnpm run build\n');
+        const verify = script.indexOf('\nE2E_DB_HOST=postgres npm run verify:ui\n');
+        expect(build).toBeGreaterThan(-1);
+        expect(verify).toBeGreaterThan(build);
+    });
 });

@@ -2,8 +2,8 @@ import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
-import { keyQueue } from './gates.js';
-import type { GateManager, GateRun } from './gates.js';
+import { gateDeadlineMs, keyQueue } from './gates.js';
+import type { GateManager, GateRun, GateRunOptions } from './gates.js';
 import { deleteJob, deleteSecret, secretsPath } from './k8s-auxspec.js';
 import { readImagePullStatus, readJobPodVerdict, readJobStatus, timedOutOf, unpullableImage } from './k8s-poll.js';
 import type { JobStatusResult } from './k8s-poll.js';
@@ -172,8 +172,9 @@ export function createKubernetesGateManager({
         key: string,
         name: string,
         command: string,
-        signal: AbortSignal | undefined
+        { signal, timeoutMs }: GateRunOptions
     ): Promise<GateRun> => {
+        const deadlineMs = gateDeadlineMs(config, gateTimeoutMs, timeoutMs);
         const entry = entries.get(key);
         if (!entry) throw gateHarness(`no gate environment for ${key}`);
         // The run counter, bumped then read — one statement each, so the increment is not hidden
@@ -201,7 +202,7 @@ export function createKubernetesGateManager({
                     command,
                     run,
                     envSecretName: secretName,
-                    gateTimeoutMs,
+                    gateTimeoutMs: deadlineMs,
                 })
             );
             const refused = refusal(created, 'creating the gate job');
@@ -214,7 +215,7 @@ export function createKubernetesGateManager({
             // gate had nothing to say for itself.
             return {
                 exitCode: timedOut ? TIMEOUT_EXIT_CODE : exitCode,
-                output: timedOut && !output ? `[driver] gate killed after ${gateTimeoutMs}ms` : output,
+                output: timedOut && !output ? `[driver] gate killed after ${deadlineMs}ms` : output,
             };
         } finally {
             signal?.removeEventListener('abort', cancel);
@@ -261,7 +262,7 @@ export function createKubernetesGateManager({
             entries.set(key, { job, image, envBody, secretName, pendingSetup, run });
         },
 
-        runGate(key, name, command, signal) {
+        runGate(key, name, command, { signal, timeoutMs } = {}) {
             if (!entries.has(key)) {
                 return Promise.reject(gateHarness(`no gate environment for ${key}`));
             }
@@ -272,12 +273,12 @@ export function createKubernetesGateManager({
                 // of its own run once before the attempt's first gate.
                 const pending = entries.get(key)?.pendingSetup;
                 if (pending) {
-                    const setupRun = await runGateJob(key, SETUP_JOB_NAME, pending, signal);
+                    const setupRun = await runGateJob(key, SETUP_JOB_NAME, pending, { signal });
                     if (setupRun.exitCode !== 0) return { ...setupRun, setupFailed: true as const };
                     const entry = entries.get(key);
                     if (entry?.pendingSetup === pending) entry.pendingSetup = null;
                 }
-                return runGateJob(key, name, command, signal);
+                return runGateJob(key, name, command, { signal, timeoutMs });
             });
         },
 

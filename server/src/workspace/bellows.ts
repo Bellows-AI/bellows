@@ -14,6 +14,9 @@
  *              - name: test
  *                command: "npm test"
  *
+ * A gate may also carry `timeout: <minutes>` — its own wall-clock budget in place of the driver's
+ * GATE_TIMEOUT_MS (`readTimeoutMinutes`).
+ *
  * `environment:` may also carry `setup: <command>` — run once per gate environment, before its
  * first gate, in the worktree (an install step); its failure is a setup failure, not a gate's.
  *
@@ -40,7 +43,7 @@
 
 import { constants as fsConstants, open as fsOpen } from 'node:fs/promises';
 import { join } from 'node:path';
-import { BellowsError, fail, KEY_VALUE, MAX_COMMAND_LENGTH, scalar } from './bellows-grammar.js';
+import { BellowsError, fail, KEY_VALUE, MAX_COMMAND_LENGTH, readTimeoutMinutes, scalar } from './bellows-grammar.js';
 import {
     consumeReviewerLine,
     finishReviewer,
@@ -55,6 +58,8 @@ export { REVIEWER_DEFAULT_TIMEOUT_MINUTES, type ReviewerProfile } from './bellow
 export interface GateDef {
     readonly name: string;
     readonly command: string;
+    /** The gate's own wall-clock budget; absent, the driver's GATE_TIMEOUT_MS bounds it. */
+    readonly timeoutMinutes?: number;
 }
 
 /** The evidence a repository requires; an absent key requires nothing. */
@@ -100,6 +105,7 @@ function checkName(line: number, name: string): string {
 interface RawGate {
     name?: string;
     command?: string;
+    timeoutMinutes?: number;
 }
 
 interface BellowsState {
@@ -140,7 +146,11 @@ function finishGate(state: BellowsState): void {
     if (state.gates.length >= MAX_GATES) {
         fail(line, `more than ${MAX_GATES} gates`);
     }
-    state.gates.push({ name, command: current.command });
+    state.gates.push({
+        name,
+        command: current.command,
+        ...(current.timeoutMinutes === undefined ? {} : { timeoutMinutes: current.timeoutMinutes }),
+    });
     state.current = null;
 }
 
@@ -208,7 +218,14 @@ function handleGateStart(state: BellowsState, line: number, indent: number, trim
     state.current = { name: scalar(line, match[3], 'name') };
 }
 
-/** A field indented under the currently open gate item (`name:` / `command:`). */
+/** A gate's `command:` — one line, at most MAX_COMMAND_LENGTH characters. */
+function readGateCommand(line: number, raw: string | undefined): string {
+    if (raw === undefined) fail(line, 'command takes a value');
+    if (raw.length > MAX_COMMAND_LENGTH) fail(line, `command is longer than ${MAX_COMMAND_LENGTH} characters`);
+    return scalar(line, raw, 'command');
+}
+
+/** A field indented under the currently open gate item (`name:` / `command:` / `timeout:`). */
 function handleGateField({
     state,
     line,
@@ -231,13 +248,11 @@ function handleGateField({
         if (!hasValue) fail(line, 'name takes a value');
         state.current.name = scalar(line, match[3] ?? '', 'name');
     } else if (key === 'command') {
-        if (!hasValue) fail(line, 'command takes a value');
-        if ((match[3] ?? '').length > MAX_COMMAND_LENGTH) {
-            fail(line, `command is longer than ${MAX_COMMAND_LENGTH} characters`);
-        }
-        state.current.command = scalar(line, match[3] ?? '', 'command');
+        state.current.command = readGateCommand(line, match[3]);
+    } else if (key === 'timeout') {
+        state.current.timeoutMinutes = readTimeoutMinutes(line, match[3] ?? '');
     } else {
-        fail(line, `unknown gate field "${key}" — only name and command are read`);
+        fail(line, `unknown gate field "${key}" — only name, command and timeout are read`);
     }
 }
 

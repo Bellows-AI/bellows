@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseBellows, readGatesFile } from '../src/workspace/bellows.js';
@@ -35,6 +35,17 @@ describe('parseBellows: valid documents', () => {
             setup: 'npm ci',
             gates: [{ name: 'test', command: 'npm test' }],
         });
+    });
+
+    it("reads a gate's timeout in whole minutes", () => {
+        const text = `${EXAMPLE}\n           timeout: 45`;
+        expect(parseBellows(text)?.gates).toEqual([{ name: 'test', command: 'npm test', timeoutMinutes: 45 }]);
+    });
+
+    it('omits timeoutMinutes when a gate declares none', () => {
+        const [gate] = parseBellows(EXAMPLE)?.gates ?? [];
+        expect(gate).toBeDefined();
+        expect('timeoutMinutes' in (gate ?? {})).toBe(false);
     });
 
     it.each([
@@ -208,6 +219,19 @@ describe('parseBellows: rejects malformed structure', () => {
     });
 });
 
+describe("parseBellows: this repository's own .bellows.yaml", () => {
+    // The yaml library the ci-workflows checks use accepts what this grammar refuses; the real
+    // parser is the one the board runs at claim.
+    it('parses under the strict grammar, the ui gate with its own timeout', async () => {
+        const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
+        expect(parseBellows(text)?.gates).toEqual([
+            { name: 'test', command: 'npm test' },
+            { name: 'lint', command: 'npm run lint' },
+            { name: 'ui', command: 'sh scripts/ui-gate.sh', timeoutMinutes: 45 },
+        ]);
+    });
+});
+
 describe('parseBellows: rejects invalid gates and limits', () => {
     const MAX_GATES = 16;
 
@@ -234,6 +258,18 @@ describe('parseBellows: rejects invalid gates and limits', () => {
         expect(() => parseBellows(`${base}        - name: a/b\n          command: x\n`)).toThrow(/name/);
         expect(() => parseBellows(`${base}        - name: -rf\n          command: x\n`)).toThrow(/name/);
         expect(() => parseBellows(`${base}        - name: ''\n          command: x\n`)).toThrow(/name/);
+    });
+
+    it.each(['0', '121', '1.5', 'ten', '""'])('refuses a gate timeout of %s', (value) => {
+        expect(() => parseBellows(`${EXAMPLE}\n           timeout: ${value}`)).toThrow(
+            /line 6: timeout is whole minutes, 1 to 120/
+        );
+    });
+
+    it('names timeout among the gate fields an unknown key is refused against', () => {
+        expect(() => parseBellows(`${EXAMPLE}\n           retries: 2`)).toThrow(
+            /unknown gate field "retries" — only name, command and timeout are read/
+        );
     });
 
     it('rejects duplicate gate names', () => {
