@@ -311,7 +311,7 @@ test.describe('the desktop shell', () => {
                 await page.locator('.appbar-trigger').click();
                 const panel = page.locator('.mobile-nav');
                 await expect(panel).toBeVisible();
-                await expect(panel.locator('.sidenav-link .icon')).toHaveCount(3);
+                await expect(panel.locator('.sidenav-link .icon')).toHaveCount(4);
                 await expect(panel.locator('[aria-current="page"]')).toHaveText('Overview');
                 await expect(panel.locator('.sidenav-count')).toHaveCount(0);
                 await page.screenshot({ path: `${SHOTS}/drawer-settings-${theme}-${width}.png` });

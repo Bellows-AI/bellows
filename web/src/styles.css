@@ -19,5 +19,6 @@
 @import "./styles/regions/settings.css";
 @import "./styles/regions/dashboard.css";
 @import "./styles/regions/entry.css";
+@import "./styles/regions/batches.css";
 @import "./styles/touch-targets.css";
 @import "./styles/platform.css";

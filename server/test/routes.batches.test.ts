@@ -174,6 +174,22 @@ describe('POST /api/batches', () => {
         expect(list.json().batches).toMatchObject([{ id, title: 'Upgrade', status: 'draft', taskCount: 3 }]);
     });
 
+    it('narrows the list to the batches a thread backs a task of (?task=)', async () => {
+        const { call, create, batches } = await setup();
+        const { id } = await create();
+        await create();
+        const thread = '4b1f0c2e-8a6d-4e0f-9a51-0f6a5b1c2d3e';
+        batches.mark(id, 'a', { rootJobId: thread });
+
+        const hit = await call('GET', `/api/batches?task=${thread}`);
+        expect(hit.json().batches.map((batch: { id: string }) => batch.id)).toEqual([id]);
+        const miss = await call('GET', '/api/batches?task=0e9f7d6c-1b2a-4c3d-8e4f-5a6b7c8d9e0f');
+        expect(miss.json().batches).toEqual([]);
+        const notAThread = await call('GET', '/api/batches?task=nope');
+        expect(notAThread.statusCode).toBe(HTTP_OK);
+        expect(notAThread.json().batches).toEqual([]);
+    });
+
     it('refuses an invalid plan with path-addressed issues and writes nothing', async () => {
         const { call, batches } = await setup();
         const response = await call('POST', '/api/batches', {
