@@ -12,6 +12,7 @@ import type {
     QuestionRecord,
     SkillView,
 } from './board.js';
+import type { ConfigSummary, Preflight } from './diagnostics.js';
 import type { ExecutorRow, RepoDiscovery } from './discovery.js';
 
 /**
@@ -293,4 +294,31 @@ export function renderQuestions(questions: readonly QuestionRecord[]): string {
 /** The answer's acknowledgement: the state the board left the question in, and its id. */
 export function renderAnswered(question: QuestionRecord): string {
     return `${question.status} ${question.id}`;
+}
+
+/** `auth status`: where the CLI points, whether a token is set (never its value), and who it acts as. */
+export function renderAuthStatus(status: {
+    config: ConfigSummary;
+    board: { version: string };
+    identity: { login: string; organization: { name: string }; role: string; authMode: string };
+}): string {
+    const { config, board, identity } = status;
+    return [
+        `board    ${config.url} (version ${board.version})`,
+        `token    ${config.token.set ? `set (${config.token.kind})` : 'not set'}`,
+        `requests ${config.requestTimeoutSeconds}s deadline, ${config.readRetries} read retries`,
+        `identity ${identity.login} in ${identity.organization.name} (${identity.role}), board auth ${identity.authMode}`,
+    ].join('\n');
+}
+
+const PREFLIGHT_STATUS_WIDTH = 11;
+
+/** One line per preflight check: its verdict, what it is about, and why. */
+export function renderPreflight(preflight: Preflight): string {
+    return preflight.checks
+        .map((check) => {
+            const subject = check.name === null ? check.subject : `${check.subject} ${check.name}`;
+            return `${check.status.padEnd(PREFLIGHT_STATUS_WIDTH)} ${subject}  ${check.detail}`;
+        })
+        .join('\n');
 }

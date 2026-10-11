@@ -36,7 +36,9 @@ and by the `lint/no-shared-literals.grit` plugin.
 - A route is authenticated unless `requirementFor` (`server/src/auth/plugin.ts`) deliberately
   exempts it — new paths fall through to the walled default. `server/test/auth.enforcement.test.ts`.
 - `GET /api/auth/me` answers `200 { authenticated: false }` anonymously, never `401`: it is what
-  tells the SPA it is signed out. `server/test/auth.oauth.me.test.ts`.
+  tells the SPA it is signed out. A present bearer is still the credential there: a `fat_` answers
+  its user, a bad one is `401`, an `oat_` `403`. `server/test/auth.oauth.me.test.ts`,
+  `server/test/auth.tokens.test.ts`.
 - The job routes register only when `buildApp` is given a job store, the workspace routes only with
   a `userRepos` store; an absent workspace *root* removes neither. `server/src/app.ts`.
 - The organization is the credential's, never a request field — `?org=` only selects among the

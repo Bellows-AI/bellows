@@ -304,7 +304,22 @@ export interface BoardClient {
     listSkills(): Promise<SkillView[]>;
     /** The connections the caller may select: the org's plus their own. Never a credential. */
     listConnections(): Promise<ConnectionView[]>;
+    /** The board's release version (`GET /api/version`), an open route. */
+    version(): Promise<{ version: string }>;
+    /** Who the credential acts as (`GET /api/auth/me`); a bad token is the board's 401, never a guess. */
+    me(): Promise<AuthMe>;
 }
+
+/** The slice of `GET /api/auth/me` the CLI reports — copied, since the CLI imports nothing of the board's. */
+export type AuthMe =
+    | { authenticated: false }
+    | {
+          authenticated: true;
+          user: { id: string; login: string; name: string | null };
+          role: string;
+          organization: { id: string; name: string };
+          mode: string;
+      };
 
 /** The repository picker's read: what a member could choose to check out. */
 export interface VisibleRepos {
@@ -394,7 +409,15 @@ function artifactPath(id: string, kind: ArtifactKind, page: Record<string, numbe
     return `${jobPath(id)}/${kind}${query ? `?${query}` : ''}`;
 }
 
-type ReadRoutes = 'artifactPage' | 'activity' | 'listRepos' | 'workspace' | 'listSkills' | 'listConnections';
+type ReadRoutes =
+    | 'artifactPage'
+    | 'activity'
+    | 'listRepos'
+    | 'workspace'
+    | 'listSkills'
+    | 'listConnections'
+    | 'version'
+    | 'me';
 
 /** The plain GET reads, over whatever `get` does to fetch one authenticated path. */
 function readRoutes(get: (path: string) => Promise<unknown>): Pick<BoardClient, ReadRoutes> {
@@ -410,6 +433,12 @@ function readRoutes(get: (path: string) => Promise<unknown>): Pick<BoardClient, 
         },
         async listConnections() {
             return ((await get('/api/connections')) as { connections: ConnectionView[] }).connections;
+        },
+        async version() {
+            return (await get('/api/version')) as { version: string };
+        },
+        async me() {
+            return (await get('/api/auth/me')) as AuthMe;
         },
         async artifactPage(id, kind, page) {
             const path = artifactPath(id, kind, page);

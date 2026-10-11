@@ -480,6 +480,65 @@ describe('organization access tokens: lifecycle and validation', () => {
     });
 });
 
+describe('GET /api/auth/me under a bearer (the CLI identity read)', () => {
+    it('answers who a personal token acts as, never echoing the token', async () => {
+        const store = memoryAuthStore();
+        const caller = store.seedMember(ORG, 'octocat');
+        const token = store.seedAccessToken(ORG, 'personal', { userId: caller.user.id });
+        const server = await build(githubAuth(), store);
+
+        const response = await server.inject({ method: 'GET', url: '/api/auth/me', headers: bearer(token) });
+
+        expect(response.statusCode).toBe(HTTP_OK);
+        const body = response.json() as {
+            authenticated: boolean;
+            user: { login: string };
+            organization: { id: string };
+        };
+        expect(body.authenticated).toBe(true);
+        expect(body.user.login).toBe('octocat');
+        expect(body.organization.id).toBe(ORG);
+        expect(response.body).not.toContain(token);
+    });
+
+    it('refuses an unknown or malformed personal token with 401, never authenticated:false', async () => {
+        const store = memoryAuthStore();
+        store.seedMember(ORG, 'octocat');
+        const server = await build(githubAuth(), store);
+
+        for (const token of [`${FAT}never-minted`, 'not-a-token']) {
+            const response = await server.inject({ method: 'GET', url: '/api/auth/me', headers: bearer(token) });
+            expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+        }
+    });
+
+    it('refuses an org token with 403, since it names no person', async () => {
+        const store = memoryAuthStore();
+        const token = store.seedAccessToken(ORG, 'org');
+        const server = await build(githubAuth(), store);
+
+        const response = await server.inject({ method: 'GET', url: '/api/auth/me', headers: bearer(token) });
+
+        expect(response.statusCode).toBe(HTTP_FORBIDDEN);
+    });
+
+    it('lets the bearer win over a cookie', async () => {
+        const store = memoryAuthStore();
+        const alice = store.seedMember(ORG, 'alice');
+        const bob = store.seedMember(ORG, 'bob');
+        const token = store.seedAccessToken(ORG, 'personal', { userId: bob.user.id });
+        const server = await build(githubAuth(), store);
+
+        const response = await server.inject({
+            method: 'GET',
+            url: '/api/auth/me',
+            headers: { cookie: await signedIn(store, alice), ...bearer(token) },
+        });
+
+        expect((response.json() as { user: { login: string } }).user.login).toBe('bob');
+    });
+});
+
 describe('AUTH_MODE=none', () => {
     it('ignores access-token bearers, like every credential in that mode', async () => {
         const store = memoryAuthStore();
@@ -494,5 +553,20 @@ describe('AUTH_MODE=none', () => {
         });
 
         expect(response.statusCode).toBe(HTTP_CREATED);
+    });
+
+    it('ignores a bearer on /me and answers the stand-in caller', async () => {
+        const store = memoryAuthStore();
+        store.seedLocalUser('default');
+        const server = await build({ mode: 'none', ingestToken: null }, store);
+
+        const response = await server.inject({
+            method: 'GET',
+            url: '/api/auth/me',
+            headers: bearer(`${FAT}meaningless-here`),
+        });
+
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect((response.json() as { authenticated: boolean }).authenticated).toBe(true);
     });
 });

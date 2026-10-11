@@ -6,11 +6,16 @@ import { activityCommand, artifactCommand } from './artifacts.js';
 import { CliConfigError, loadCliConfig } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
 import type { CommandResult, ErrorDetail } from './outcome.js';
+import { authStatusCommand, preflightCommand } from './diagnose.js';
+import { configSummary } from './diagnostics.js';
 import { executorDiscovery, repoDiscovery } from './discovery.js';
 import { INPUT_OPTIONS, parseOrUsage, resolveCommandInput, UsageError } from './input.js';
 import type { InputIo } from './input.js';
 import { BoardError, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS, realClock } from './transport.js';
 import type { BoardClock } from './transport.js';
+import { SELECTION_OPTIONS, selectionOf } from './selection.js';
+import { USAGE } from './usage.js';
+import { readCliVersion } from './version.js';
 import {
     renderAnswered,
     renderConnections,
@@ -52,75 +57,10 @@ const WAIT_POLL_MAX_S = 60;
 const MS_PER_SECOND = 1000;
 
 const JSON_FLAG = '--json';
+const HELP_FLAGS = ['--help', '-h'];
+const VERSION_ARGS = ['--version', 'version'];
 const END_OF_OPTIONS = '--';
 const JSON_OPTION = { json: { type: 'boolean', default: false } } as const;
-
-export const USAGE = `usage: factory job create (<command...> | --file <path> | --stdin) [--repo owner/name] [--executor name] [--executor-scope user|org]
-                          [--skill name]... [--jira-connection <id>] [--idempotency-key <key>] [--json]
-       factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
-       factory task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
-                         [--sort newest|oldest] [--limit <n>] [--cursor <cursor>] [--json]
-       factory job investigate <id> [--json]
-       factory job log|transcript <id> [--attempt <n>] [--offset <n>] [--limit <n>] [--all] [--json]
-       factory job activity <id> [--json]
-       factory job wait <id> [--timeout <seconds>] [--json]
-       factory job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
-       factory job retry <id> [--idempotency-key <key>] [--json]
-       factory job edit <id> (<command...> | --file <path> | --stdin) [--json]
-       factory job questions <id> [--json]
-       factory job answer <id> <question-id> --answer <text>... [--json]
-       factory job stop <id> [--json]
-       factory job done <id> [--json]
-       factory job reopen <id> [--json]
-       factory job remove <id> --yes [--json]
-       factory repo list [--json]          repositories visible to the board, and which are synced
-       factory executor list [--json]      executor profiles by scope (--executor-scope)
-       factory skill list [--json]         skills a task may select (--skill)
-       factory connection list [--json]    managed connections you may select (--jira-connection)
-
-'task list' is one row per task plus its head run; 'job list' is per run. A --cursor fits only its own filters.
-config:
-  FACTORY_URL    the board's base URL (required)
-  FACTORY_TOKEN  a personal access token (fat_...) minted from the settings page;
-                 omit it against an open (AUTH_MODE=none) board
-  FACTORY_REQUEST_TIMEOUT_S  one request's deadline, headers and body included (default 30)
-  FACTORY_READ_RETRIES       re-issues of a failed read or keyed write, never an unkeyed write (default 3; 0 = off)
-
-exit codes: 0 ok (a wait: the run succeeded), 1 the board refused, 2 usage or configuration,
-            3 a wait ran out of budget, 4 the run failed or died, 5 the run was stopped on the
-            board, 6 the thread is parked on a workflow wait, 7 the board was unreachable,
-            130 interrupted locally
-
---json prints one envelope on stdout and nothing on stderr, whatever the outcome:
-  { ok, command, outcome, exitCode, data, error }
-
-log and transcript read the STORED artifact (not investigate's tail), newest attempt unless --attempt
-names one: one page from --offset per call (stderr names the next), or with --all every page, failing
-naming the page that could not be read rather than printing a partial artifact. --all takes no --offset.
-
-retry queues a fresh attempt of the task's existing command; follow-up queues NEW instructions.
-edit replaces the command of a queued run you created, in place; the board refuses it once the run
-is claimed. reopen undoes done. The board decides every refusal.
-
-A question's --answer values go one per prompt, in the order \`job questions\` lists them: an
-option's label, or free text (a multi-select joins its picks with ", "). The board is the
-arbiter: an answer that lost to an earlier one, arrived after the question expired, or whose run
-is no longer waiting is refused (exit 1) and never retried.
-
---file reads the command from a file and --stdin from standard input, exactly as written
-(newlines and Unicode kept); give one source, never two. An empty or over-long command is
-refused here, before any request.
-
-'--' ends option parsing, so a create command that takes flags of its own can follow it:
-  factory job create --repo owner/name -- npm test --watch
-
-retry re-runs the finished task's own command as a fresh attempt in the same thread; a follow-up
-is the command for NEW instructions.
-
---idempotency-key names one logical write (8-128 of letters, digits . _ : -). Repeat the SAME
-command with the SAME key to recover a write whose answer never arrived: the board returns the
-task the first attempt made instead of a second one, and a different request under the key is
-refused. A genuinely new task or retry takes a new key. A key is remembered for 24 hours.`;
 
 export interface RunIo extends InputIo {
     env: NodeJS.ProcessEnv;
@@ -178,19 +118,6 @@ function onlyId(args: readonly string[], verb: string, options: Record<string, {
         throw new UsageError(`${verb} needs exactly one job id\n\n${USAGE}`);
     }
     return { id: parsed.positionals[0]!, values: parsed.values as { json?: boolean; yes?: boolean } };
-}
-
-/**
- * The scope an executor selection names (issue 391). Absent sends nothing — the board defaults to
- * the author's personal profiles — and anything outside the pair is a usage error before any
- * request, the way a misspelled flag is.
- */
-function parseExecutorScope(raw: string | undefined): 'user' | 'org' | undefined {
-    if (raw === undefined) return undefined;
-    if (raw !== 'user' && raw !== 'org') {
-        throw new UsageError(`--executor-scope must be "user" or "org", got "${raw}"\n\n${USAGE}`);
-    }
-    return raw;
 }
 
 /** A command that did what it was asked: the board's payload, and its one-line rendering. */
@@ -253,33 +180,14 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<CommandRes
         parseArgs({
             args: [...args],
             allowPositionals: true,
-            options: {
-                ...JSON_OPTION,
-                ...INPUT_OPTIONS,
-                repo: { type: 'string' },
-                executor: { type: 'string' },
-                'executor-scope': { type: 'string' },
-                skill: { type: 'string', multiple: true },
-                'jira-connection': { type: 'string' },
-                ...IDEMPOTENCY_KEY_OPTION,
-            },
+            options: { ...JSON_OPTION, ...INPUT_OPTIONS, ...SELECTION_OPTIONS, ...IDEMPOTENCY_KEY_OPTION },
         })
     );
     const command = await commandOf(parsed.positionals, parsed.values, io);
-    const executorScope = parseExecutorScope(parsed.values['executor-scope']);
+    const selection = selectionOf(parsed.values);
     const key = parsed.values['idempotency-key'];
     const created = await recoverable(
-        () =>
-            boardFor(io).createJob({
-                command,
-                repo: parsed.values.repo,
-                executor: parsed.values.executor,
-                executorScope,
-                skills: parsed.values.skill,
-                // The board authorizes it against the author; a connection that is not theirs is its 403.
-                jiraConnection: parsed.values['jira-connection'],
-                idempotencyKey: key,
-            }),
+        () => boardFor(io).createJob({ ...selection, command, idempotencyKey: key }),
         key
     );
     return createdResult(created);
@@ -569,8 +477,15 @@ async function runConnectionList(args: readonly string[], io: RunIo): Promise<Co
     return ok({ connections }, renderConnections(connections));
 }
 
+async function runAuthStatus(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    noArguments(args, 'auth status');
+    const config = configSummary(loadCliConfig(io.env));
+    return authStatusCommand(config, boardFor(io), (error) => failureOf(error, io));
+}
+
 const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<CommandResult>> = {
     'job create': runCreate,
+    'job preflight': (args, io) => preflightCommand(args, () => boardFor(io)),
     'job list': runList,
     'task list': runTaskList,
     'job investigate': runInvestigate,
@@ -591,6 +506,12 @@ const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<C
     'executor list': runExecutorList,
     'skill list': runSkillList,
     'connection list': runConnectionList,
+    'auth status': runAuthStatus,
+    help: async () => ok({ usage: USAGE }, USAGE),
+    version: async () => {
+        const version = readCliVersion();
+        return ok({ version }, `factory ${version}`);
+    },
 };
 
 const INTERRUPTED_MESSAGE = 'interrupted — this process stopped; the task on the board was not touched';
@@ -627,10 +548,20 @@ function failureOf(error: unknown, io: RunIo): CommandResult {
     };
 }
 
+/** The options part of a command line: everything before `--`, which belongs to the task's command. */
+function optionsOf(args: readonly string[]): readonly string[] {
+    const end = args.indexOf(END_OF_OPTIONS);
+    return end === -1 ? args : args.slice(0, end);
+}
+
 /** Whether `--json` was asked for, read before any parsing so a parse failure can still honor it. */
 function wantsJson(args: readonly string[]): boolean {
-    const end = args.indexOf(END_OF_OPTIONS);
-    return (end === -1 ? args : args.slice(0, end)).includes(JSON_FLAG);
+    return optionsOf(args).includes(JSON_FLAG);
+}
+
+/** `help`, or `--help`/`-h` anywhere among the options — answered before any configuration is read. */
+function wantsHelp(args: readonly string[]): boolean {
+    return args[0] === 'help' || optionsOf(args).some((arg) => HELP_FLAGS.includes(arg));
 }
 
 async function dispatch(
@@ -638,7 +569,8 @@ async function dispatch(
     io: RunIo
 ): Promise<{ command: string | null; result: CommandResult }> {
     const [topic, command] = argv;
-    const key = `${topic} ${command}`;
+    // Help and version are answered here, before any configuration is read.
+    const key = wantsHelp(argv) ? 'help' : VERSION_ARGS.includes(topic ?? '') ? 'version' : `${topic} ${command}`;
     const handler = Object.hasOwn(COMMANDS, key) ? COMMANDS[key] : undefined;
     // A line that names no command reports none, so a parse failure never invents one.
     const name = handler ? key : null;

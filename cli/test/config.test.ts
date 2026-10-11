@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { loadCliConfig } from '../src/config.js';
+import { CliConfigError, loadCliConfig } from '../src/config.js';
 
 describe('loadCliConfig', () => {
     it('reads FACTORY_URL and FACTORY_TOKEN, stripping a trailing slash', () => {
@@ -17,6 +17,22 @@ describe('loadCliConfig', () => {
         // `new URL('dashboard:8080')` parses with 'dashboard:' as the scheme; the protocol is
         // checked, not just the parse, or every call would 404 against a value that reads well.
         expect(() => loadCliConfig({ FACTORY_URL: 'dashboard:8080' })).toThrow(/FACTORY_URL/);
+    });
+
+    it('refuses a FACTORY_URL carrying user:password without echoing it', () => {
+        for (const url of ['http://u:hunter2@board', 'ftp://u:hunter2@board']) {
+            const refusal = (() => {
+                try {
+                    loadCliConfig({ FACTORY_URL: url });
+                } catch (error) {
+                    return error as Error;
+                }
+                return null;
+            })();
+            expect(refusal).toBeInstanceOf(CliConfigError);
+            expect(refusal!.message).toMatch(/FACTORY_URL.*FACTORY_TOKEN/);
+            expect(refusal!.message).not.toContain('hunter2');
+        }
     });
 
     it('defaults the request deadline and read retries, and reads both overrides', () => {
