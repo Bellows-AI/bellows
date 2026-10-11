@@ -382,7 +382,8 @@ export function resolveBatchPlan(plan: BatchPlan, defaults: DefaultBranches): Re
 
 export const MULTI_TARGET = 'multi_target';
 export const NON_DEFAULT_BRANCH = 'non_default_branch';
-export const BATCH_UNSUPPORTED_REASONS = [MULTI_TARGET, NON_DEFAULT_BRANCH] as const;
+export const AUTOMERGE = 'automerge';
+export const BATCH_UNSUPPORTED_REASONS = [MULTI_TARGET, NON_DEFAULT_BRANCH, AUTOMERGE] as const;
 export type BatchUnsupportedReason = (typeof BATCH_UNSUPPORTED_REASONS)[number];
 
 export type BatchCapability = { ok: true } | { ok: false; reason: BatchUnsupportedReason; message: string };
@@ -411,6 +412,13 @@ export function batchExecutionCapability(plan: ResolvedBatchPlan, defaults: Defa
             ok: false,
             reason: NON_DEFAULT_BRANCH,
             message: `Tasks run on the repository's default branch for now; "${offDefault.key}" names ${offDefault.branch}`,
+        };
+    }
+    if (plan.stages.some((stage) => stage.policy === AUTOMERGE)) {
+        return {
+            ok: false,
+            reason: AUTOMERGE,
+            message: 'The board does not merge PRs yet; every stage must use the "human" policy',
         };
     }
     return { ok: true };

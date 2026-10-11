@@ -1,7 +1,9 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { resolveBatchPlan, validateBatchPlan, type BatchPlan } from '@factory-ai/core';
+import { randomUUID } from 'node:crypto';
 import { createBatchStore, type BatchStore } from '../src/db/batch-store.js';
+import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
@@ -21,11 +23,13 @@ const db = useTestDb({ orgs: [ORG], users: [{ id: ALICE, githubUserId: 90078, lo
 let sql: Sql;
 let jobs: JobStore;
 let store: BatchStore;
+let prs: PrLifecycleStore;
 
 beforeAll(async () => {
     if (!enabled) return;
     sql = db.sql;
-    jobs = createJobStore({ sql, orgId: ORG });
+    prs = createPrLifecycleStore({ sql, orgId: ORG });
+    jobs = createJobStore({ sql, orgId: ORG, prs });
     store = createBatchStore({ sql, orgId: ORG, stop: (id, by) => jobs.stop(id, by) });
 });
 
@@ -34,6 +38,8 @@ const task = (key: string, extra: Record<string, unknown> = {}) => ({
     objective: `do ${key}`,
     acceptance: `${key} works`,
     verification: 'npm test',
+    // A person's acceptance is the gate these dispatch tests drive; the PR gate has its own block.
+    completion: { kind: 'accepted', condition: 'reviewed' },
     ...extra,
 });
 
@@ -149,7 +155,7 @@ describe.skipIf(!enabled)('batch dispatch', () => {
         expect(await jobCount()).toBe(1);
     });
 
-    it('does not advance on a successful verdict alone; the gate signal does, and the join stage then starts', async () => {
+    it('does not advance on a successful verdict alone; a recorded acceptance does, and the join stage then starts', async () => {
         const id = await frozen(parallelThenJoin());
         await store.reconcile(id);
         let tasks = await stateOf(id);
@@ -162,13 +168,15 @@ describe.skipIf(!enabled)('batch dispatch', () => {
         expect(tasks.j!.execution).toBe('pending');
         expect((await store.get(id))!.activeStage).toBe('build');
 
-        // A manual done is not a gate signal either: the batch's threads refuse it outright.
+        expect(tasks.a!.waitReason).toBe('waiting for acceptance: reviewed');
+
+        // A manual done is not an acceptance either: the batch's threads refuse it outright.
         expect(await jobs.markDone(tasks.a!.rootJobId!, ALICE)).toBe('batch');
         await store.reconcile(id);
         expect((await stateOf(id)).j!.execution).toBe('pending');
 
-        await store.signalGate(id, 'a', 'passed');
-        await store.signalGate(id, 'b', 'passed');
+        await store.accept(id, 'a', ALICE);
+        await store.accept(id, 'b', ALICE);
         tasks = await stateOf(id);
         expect(tasks.j).toMatchObject({ execution: 'queued', attempt: 1 });
         expect((await store.get(id))!.activeStage).toBe('join');
@@ -180,7 +188,7 @@ describe.skipIf(!enabled)('batch dispatch', () => {
         await store.reconcile(id);
         const { a } = await stateOf(id);
         await setStatus(a!.rootJobId!, 'succeeded');
-        await store.signalGate(id, 'a', 'passed');
+        await store.accept(id, 'a', ALICE);
         const record = (await store.get(id))!;
         expect(record.completedAt).not.toBeNull();
         expect(record.activeStage).toBeNull();
@@ -194,7 +202,7 @@ describe.skipIf(!enabled)('batch dispatch', () => {
         const failedRoot = tasks.a!.rootJobId!;
         await setStatus(failedRoot, 'failed');
         await setStatus(tasks.b!.rootJobId!, 'succeeded');
-        await store.signalGate(id, 'b', 'passed');
+        await store.accept(id, 'b', ALICE);
         tasks = await stateOf(id);
         expect(tasks.a!.execution).toBe('failed');
         expect(tasks.j!.execution).toBe('pending');
@@ -283,7 +291,7 @@ describe.skipIf(!enabled)('batch dispatch', () => {
         expect((await stateOf(id)).a!.execution).toBe('queued');
     });
 
-    it('replays a duplicate gate signal and refuses one on a settled stage', async () => {
+    it('replays a duplicate acceptance and refuses one on a settled stage', async () => {
         const id = await frozen(
             plan([
                 { key: 'one', tasks: [task('a')] },
@@ -293,23 +301,55 @@ describe.skipIf(!enabled)('batch dispatch', () => {
         await store.reconcile(id);
         const { a } = await stateOf(id);
         await setStatus(a!.rootJobId!, 'succeeded');
-        expect(await store.signalGate(id, 'a', 'passed')).toEqual({ result: 'ok' });
-        expect(await store.signalGate(id, 'a', 'failed')).toEqual({ result: 'settled' });
+        expect(await store.accept(id, 'a', ALICE)).toEqual({ result: 'ok' });
+        expect(await store.accept(id, 'a', ALICE)).toEqual({ result: 'ok' });
         expect(await decisions(id)).toEqual(['advance:one', 'launch:a:1', 'launch:b:1']);
+        expect(await sql`select * from batch_acceptance where batch_id = ${id}`).toHaveLength(1);
+        // After the stage advanced the task's outcome is history.
+        const { b } = await stateOf(id);
+        expect(b).toMatchObject({ execution: 'queued' });
+        expect(await store.accept(id, 'a', ALICE)).toEqual({ result: 'ok' });
     });
 
-    it('refuses a gate signal that is not about a finished successful run, so a stale one cannot accept the next', async () => {
+    it('refuses to accept a PR-completion task, a missing task and a task of a settled stage', async () => {
+        const id = await frozen(
+            plan([
+                { key: 'one', tasks: [task('a'), task('p', { completion: { kind: 'pr' } })] },
+                { key: 'two', tasks: [task('b')] },
+            ])
+        );
+        await store.reconcile(id);
+        const { a, p } = await stateOf(id);
+        await setStatus(p!.rootJobId!, 'succeeded');
+        await setStatus(a!.rootJobId!, 'succeeded');
+        expect(await store.accept(id, 'p', ALICE)).toEqual({ result: 'not_acceptable' });
+        expect(await store.accept(id, 'nope', ALICE)).toEqual({ result: 'no_task' });
+        expect(await store.accept(id, 'a', ALICE)).toEqual({ result: 'ok' });
+        expect(await stateOf(id)).toMatchObject({ b: { execution: 'pending' } });
+    });
+
+    it('records who accepted, and two concurrent acceptances write one row', async () => {
         const id = await frozen(plan([{ key: 'one', tasks: [task('a')] }]));
         await store.reconcile(id);
         const { a } = await stateOf(id);
-        // Still queued: nothing to judge yet.
-        expect(await store.signalGate(id, 'a', 'passed')).toEqual({ result: 'not_ready' });
+        await setStatus(a!.rootJobId!, 'succeeded');
+        await Promise.all([store.accept(id, 'a', ALICE), store.accept(id, 'a', ALICE)]);
+        const rows = await sql`select kind, accepted_by, attempt from batch_acceptance where batch_id = ${id}`;
+        expect(rows).toEqual([{ kind: 'accepted', accepted_by: ALICE, attempt: 1 }]);
+    });
+
+    it('refuses an acceptance that is not about a finished successful run, so a stale one cannot accept the next', async () => {
+        const id = await frozen(plan([{ key: 'one', tasks: [task('a')] }]));
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        // Still queued: nothing to accept yet.
+        expect(await store.accept(id, 'a', ALICE)).toEqual({ result: 'not_ready' });
 
         await setStatus(a!.rootJobId!, 'succeeded');
-        await store.signalGate(id, 'a', 'failed');
+        await store.reconcile(id);
         expect(await store.retry(id, 'a')).toEqual({ result: 'ok' });
-        // Attempt 1's late "passed" arrives while attempt 2 runs.
-        expect(await store.signalGate(id, 'a', 'passed')).toEqual({ result: 'not_ready' });
+        // A late acceptance of attempt 1 arrives while attempt 2 runs.
+        expect(await store.accept(id, 'a', ALICE)).toEqual({ result: 'not_ready' });
         await setStatus(a!.rootJobId!, 'succeeded');
         await store.reconcile(id);
         const tasks = await stateOf(id);
@@ -317,12 +357,12 @@ describe.skipIf(!enabled)('batch dispatch', () => {
         expect((await store.get(id))!.completedAt).toBeNull();
     });
 
-    it('lets a refusing gate send a succeeded task back through retry', async () => {
+    it('lets an unaccepted succeeded task go back through retry', async () => {
         const id = await frozen(plan([{ key: 'one', tasks: [task('a')] }]));
         await store.reconcile(id);
         const { a } = await stateOf(id);
         await setStatus(a!.rootJobId!, 'succeeded');
-        await store.signalGate(id, 'a', 'failed');
+        await store.reconcile(id);
         expect(await store.retry(id, 'a')).toEqual({ result: 'ok' });
         expect(await stateOf(id)).toMatchObject({ a: { execution: 'queued', gate: 'open', attempt: 2 } });
     });
@@ -382,7 +422,7 @@ describe.skipIf(!enabled)('batch cancel', () => {
         await store.reconcile(id);
         const { a } = await stateOf(id);
         await setStatus(a!.rootJobId!, 'succeeded');
-        await store.signalGate(id, 'a', 'passed');
+        await store.accept(id, 'a', ALICE);
         expect(await store.cancel(id, ALICE)).toEqual({ result: 'finished' });
     });
 });
@@ -404,5 +444,157 @@ describe.skipIf(!enabled)('batch threads are batch history', () => {
         const ref = await jobs.create('echo', ALICE, { repo: null, executor: null });
         if (typeof ref === 'string') throw new Error(ref);
         expect(await jobs.removeThread(ref.id, ALICE)).toMatchObject({ result: 'ok' });
+    });
+});
+
+const REPO = 'acme/web';
+let nextPr = 1000;
+
+const prTask = (key: string) => task(key, { completion: { kind: 'pr' } });
+const prUrlOf = (repo: string, number: number) => `https://github.com/${repo}/pull/${number}`;
+
+/** Records the PR a task's thread published, as the verdict's publication does. */
+async function publish(root: string, base = 'main', repo = REPO): Promise<number> {
+    nextPr += 1;
+    await prs.recordPublication({
+        root,
+        repo,
+        prNumber: nextPr,
+        prUrl: prUrlOf(repo, nextPr),
+        headBranch: `factory/${root}`,
+        baseBranch: base,
+    });
+    return nextPr;
+}
+
+const merge = (repo: string, number: number) => jobs.closeMergedPr(repo, number, randomUUID());
+
+/** A two-stage batch whose first task has run and succeeded. */
+async function succeededFirst() {
+    const id = await frozen(
+        plan([
+            { key: 'one', tasks: [prTask('a')] },
+            { key: 'two', tasks: [prTask('b')] },
+        ])
+    );
+    await store.reconcile(id);
+    const { a } = await stateOf(id);
+    await setStatus(a!.rootJobId!, 'succeeded');
+    return { id, root: a!.rootJobId! };
+}
+
+describe.skipIf(!enabled)('human PR gate', () => {
+    it('does not accept a succeeded run that opened no PR', async () => {
+        const { id } = await succeededFirst();
+        await store.reconcile(id);
+        expect(await stateOf(id)).toMatchObject({
+            a: { execution: 'succeeded', gate: 'open', waitReason: 'the run succeeded without opening a PR' },
+            b: { execution: 'pending' },
+        });
+        expect(await decisions(id)).not.toContain('advance:one');
+    });
+
+    it('waits for a person to merge an open PR, and starts the next stage after the merge without a click', async () => {
+        const { id, root } = await succeededFirst();
+        const number = await publish(root);
+        await store.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({
+            gate: 'open',
+            pr: prUrlOf(REPO, number),
+            waitReason: `waiting for a person to merge ${prUrlOf(REPO, number)}`,
+        });
+
+        await merge(REPO, number);
+        await store.reconcile(id);
+        const tasks = await stateOf(id);
+        expect(tasks.a).toMatchObject({ gate: 'passed', waitReason: null, pr: prUrlOf(REPO, number) });
+        expect(tasks.b).toMatchObject({ execution: 'queued', attempt: 1 });
+        expect(
+            await sql`select kind, repo, pr_number, accepted_by from batch_acceptance where batch_id = ${id}`
+        ).toEqual([{ kind: 'pr_merged', repo: REPO, pr_number: number, accepted_by: null }]);
+        const [thread] = await sql`select done_at from job where id = ${root}`;
+        expect(thread!.done_at).toBeNull();
+    });
+
+    it('holds a merge that arrives before the run finished until the run succeeds', async () => {
+        const id = await frozen(plan([{ key: 'one', tasks: [prTask('a')] }]));
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        const number = await publish(a!.rootJobId!);
+        await setStatus(a!.rootJobId!, 'running');
+        await merge(REPO, number);
+        await store.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({ execution: 'running', gate: 'open' });
+
+        await setStatus(a!.rootJobId!, 'succeeded');
+        await store.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({ execution: 'succeeded', gate: 'passed' });
+        expect((await store.get(id))!.completedAt).not.toBeNull();
+    });
+
+    it('does not take another repository or another PR number as evidence', async () => {
+        const { id, root } = await succeededFirst();
+        const number = await publish(root);
+        await merge('acme/other', number);
+        await merge(REPO, number + 1);
+        await store.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({ gate: 'open' });
+    });
+
+    it('refuses a merged PR that targets another branch, with a reason', async () => {
+        const { id, root } = await succeededFirst();
+        const number = await publish(root, 'release');
+        await merge(REPO, number);
+        await store.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({
+            gate: 'open',
+            waitReason: `PR ${prUrlOf(REPO, number)} targets release, not main`,
+        });
+        expect(await decisions(id)).not.toContain('advance:one');
+    });
+
+    it('treats a merge older than the current attempt as stale', async () => {
+        const { id, root } = await succeededFirst();
+        const number = await publish(root);
+        await merge(REPO, number);
+        await sql`update pr_merge set merged_at = now() - interval '1 hour' where repo = ${REPO} and pr_number = ${number}`;
+        await store.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({
+            gate: 'open',
+            waitReason: `PR ${prUrlOf(REPO, number)} was merged before attempt 1 started`,
+        });
+    });
+
+    it('advances once under duplicate deliveries, racing schedulers and a restart', async () => {
+        const { id, root } = await succeededFirst();
+        const number = await publish(root);
+        const processes = [store, createBatchStore({ sql, orgId: ORG }), createBatchStore({ sql, orgId: ORG })];
+        await Promise.all([
+            merge(REPO, number),
+            merge(REPO, number),
+            ...processes.map((process) => process.reconcile(id)),
+            ...processes.map((process) => process.reconcile(id)),
+        ]);
+        await createBatchStore({ sql, orgId: ORG }).reconcileOpen();
+        expect(await decisions(id)).toEqual(['advance:one', 'launch:a:1', 'launch:b:1']);
+        expect(await sql`select 1 from batch_acceptance where batch_id = ${id}`).toHaveLength(1);
+    });
+
+    it('lets a restarted store pick up a merge it never saw', async () => {
+        const { id, root } = await succeededFirst();
+        const number = await publish(root);
+        await merge(REPO, number);
+        await createBatchStore({ sql, orgId: ORG }).reconcileOpen();
+        expect((await stateOf(id)).a).toMatchObject({ gate: 'passed' });
+    });
+
+    it('ignores a merge after the batch was cancelled', async () => {
+        const { id, root } = await succeededFirst();
+        const number = await publish(root);
+        await store.cancel(id, ALICE);
+        await merge(REPO, number);
+        await store.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({ gate: 'open' });
+        expect(await decisions(id)).not.toContain('advance:one');
     });
 });

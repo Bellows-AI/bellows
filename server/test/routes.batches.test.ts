@@ -329,16 +329,25 @@ describe('launch checks: validate and start', () => {
         expect(response.json()).toMatchObject({ code: 'BATCH_UNSUPPORTED', reason: 'non_default_branch' });
     });
 
+    it('answers 409 BATCH_UNSUPPORTED for an automerge stage, since the board does not merge yet', async () => {
+        const { call, create, batches } = await setup();
+        const { id } = await create(plan({ policy: 'automerge' }));
+        const response = await call('POST', `/api/batches/${id}/start`, { version: 1 });
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json()).toMatchObject({ code: 'BATCH_UNSUPPORTED', reason: 'automerge' });
+        expect(batches.writes).toEqual(['create']);
+    });
+
     it('freezes a single-target batch through the same shape; dispatch is the store’s, not the route’s', async () => {
         const { call, create, jobCreates } = await setup();
-        const { id } = await create(plan({ policy: 'automerge', executor: 'claude' }));
+        const { id } = await create(plan({ policy: 'human', executor: 'claude' }));
         const response = await call('POST', `/api/batches/${id}/start`, { version: 1 });
         expect(response.statusCode).toBe(HTTP_OK);
         const record = response.json();
         expect(record).toMatchObject({ id, status: 'started', version: 1 });
         expect(record.startedBy).not.toBeNull();
         expect(record.plan.targets[0].branch).toBe('main');
-        expect(record.plan.stages.map((stage: { policy: string }) => stage.policy)).toEqual(['automerge', 'automerge']);
+        expect(record.plan.stages.map((stage: { policy: string }) => stage.policy)).toEqual(['human', 'human']);
         expect(record.plan.stages[0].tasks[0]).toMatchObject({ target: 'web', executor: 'claude' });
         expect(record.tasks.every((state: { execution: string }) => state.execution === 'pending')).toBe(true);
         expect(jobCreates).toEqual([]);
@@ -536,34 +545,70 @@ describe('dispatch, wait, retry and cancel', () => {
     });
 });
 
-describe('the routes later issues own', () => {
-    const stubs = [['POST', '/tasks/a/accept', 'accept']] as const;
+describe('accept', () => {
+    const acceptedPlan = () =>
+        plan({
+            stages: [
+                {
+                    key: 'one',
+                    tasks: [task('a', { completion: { kind: 'accepted', condition: 'reviewed' } }), task('b')],
+                },
+            ],
+        });
+    const startAccepted = async () => {
+        const s = await setup();
+        const { id } = await s.create(acceptedPlan());
+        await s.call('POST', `/api/batches/${id}/start`, { version: 1 });
+        return { ...s, id };
+    };
 
-    it.each(stubs)('%s %s answers auth first, then BATCH_UNSUPPORTED', async (method, suffix, reason) => {
-        const { call, create } = await setup();
-        const { id } = await create();
-        const url = `/api/batches/${id}${suffix}`;
-        const anonymous = await call(method, url, undefined, { cookie: null });
-        expect(anonymous.statusCode).toBe(HTTP_UNAUTHORIZED);
-
-        const response = await call(method, url, method === 'POST' ? {} : undefined);
-        expect(response.statusCode).toBe(HTTP_CONFLICT);
-        expect(response.json()).toMatchObject({ code: 'BATCH_UNSUPPORTED', reason });
-    });
-
-    it.each(stubs)('%s %s checks existence before refusing', async (method, suffix) => {
-        const { call, otherCookie, create } = await setup();
-        const { id } = await create();
-        const missing = await call(method, `/api/batches/00000000-0000-4000-8000-000000000000${suffix}`, {});
+    it('needs a signed-in member and the caller’s own org, and 404s a missing batch', async () => {
+        const { call, otherCookie, id } = await startAccepted();
+        const url = `/api/batches/${id}/tasks/a/accept`;
+        expect((await call('POST', url, {}, { cookie: null })).statusCode).toBe(HTTP_UNAUTHORIZED);
+        expect((await call('POST', url, {}, { cookie: otherCookie })).statusCode).toBe(HTTP_NOT_FOUND);
+        const missing = await call('POST', '/api/batches/00000000-0000-4000-8000-000000000000/tasks/a/accept', {});
         expect(missing.statusCode).toBe(HTTP_NOT_FOUND);
-        const foreign = await call(method, `/api/batches/${id}${suffix}`, {}, { cookie: otherCookie });
-        expect(foreign.statusCode).toBe(HTTP_NOT_FOUND);
     });
 
     it('answers 404 for a task key the batch does not have', async () => {
-        const { call, create } = await setup();
-        const { id } = await create();
-        const response = await call('POST', `/api/batches/${id}/tasks/nope/accept`, {});
-        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+        const { call, id } = await startAccepted();
+        expect((await call('POST', `/api/batches/${id}/tasks/nope/accept`, {})).statusCode).toBe(HTTP_NOT_FOUND);
+    });
+
+    it('records the acceptance of a finished accepted-completion task, as the caller', async () => {
+        const { call, batches, id } = await startAccepted();
+        batches.mark(id, 'a', { execution: 'succeeded' });
+        const response = await call('POST', `/api/batches/${id}/tasks/a/accept`, {});
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.json().tasks.find((t: { key: string }) => t.key === 'a').gate).toBe('passed');
+        expect(batches.writes.filter((write) => write.startsWith('accept:'))).toHaveLength(1);
+    });
+
+    it('refuses a task that has not finished, and a PR-completion task, with BATCH_TASK_NOT_ACCEPTABLE', async () => {
+        const { call, batches, id } = await startAccepted();
+        const early = await call('POST', `/api/batches/${id}/tasks/a/accept`, {});
+        expect(early.statusCode).toBe(HTTP_CONFLICT);
+        expect(early.json().code).toBe('BATCH_TASK_NOT_ACCEPTABLE');
+
+        batches.mark(id, 'b', { execution: 'succeeded' });
+        const pr = await call('POST', `/api/batches/${id}/tasks/b/accept`, {});
+        expect(pr.statusCode).toBe(HTTP_CONFLICT);
+        expect(pr.json().code).toBe('BATCH_TASK_NOT_ACCEPTABLE');
+    });
+
+    it('refuses a draft and a cancelled batch with their own codes, and a body field', async () => {
+        const s = await setup();
+        const { id: draft } = await s.create(acceptedPlan());
+        expect((await s.call('POST', `/api/batches/${draft}/tasks/a/accept`, {})).json().code).toBe(
+            'BATCH_NOT_STARTED'
+        );
+
+        const { id } = await s.create(acceptedPlan());
+        await s.call('POST', `/api/batches/${id}/start`, { version: 1 });
+        const stray = await s.call('POST', `/api/batches/${id}/tasks/a/accept`, { condition: 'x' });
+        expect(stray.statusCode).toBe(HTTP_BAD_REQUEST);
+        await s.call('POST', `/api/batches/${id}/cancel`, {});
+        expect((await s.call('POST', `/api/batches/${id}/tasks/a/accept`, {})).json().code).toBe('BATCH_CANCELLED');
     });
 });

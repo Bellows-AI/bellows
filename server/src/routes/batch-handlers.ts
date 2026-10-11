@@ -31,20 +31,10 @@ import { HTTP_CONFLICT, HTTP_CREATED, HTTP_NOT_FOUND, HTTP_OK } from './job-limi
 
 /** One handler per batch route (docs/batches.md); `batches.ts` registers them. */
 
-/** The operation a stub still refuses, as `reason` — replaced by the issue that implements it. */
-export const BATCH_OPERATION_ACCEPT = 'accept';
-
 /** The wait's answer when the hold's deadline passed with the batch still moving. */
 export const BATCH_WAIT_TIMEOUT = 'timeout';
 /** How often a held wait reconciles and re-reads. */
 export const BATCH_WAIT_POLL_MS = 1000;
-
-const unsupported = (reply: FastifyReply, operation: string) =>
-    reply.code(HTTP_CONFLICT).send({
-        error: `Batch ${operation} is not available yet`,
-        code: ERROR_CODES.BATCH_UNSUPPORTED,
-        reason: operation,
-    });
 
 export async function handleCreate(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const ctx = await contextOf(orgs, request, reply);
@@ -85,7 +75,7 @@ export async function handleGet(orgs: OrgRegistry, request: FastifyRequest, repl
     if (!record) return reply;
     // The settle long-poll, shaped like the job's (`?waitFor=terminal&timeout=<s>`): the answer is
     // `{ result, batch }` — `terminal` (finished, or cancelled with nothing moving), `parked`
-    // (nothing moves without an operator: a failed task, a gate not yet signalled) or `timeout`.
+    // (nothing moves without an operator: a failed task, a gate not yet passed) or `timeout`.
     const wait = validateWaitQuery(request.query as { waitFor?: unknown; timeout?: unknown });
     if (!wait.ok) return bad(reply, wait.code, wait.message);
     if (!wait.value) return reply.code(HTTP_OK).send(record);
@@ -287,17 +277,35 @@ export async function handleStart(orgs: OrgRegistry, request: FastifyRequest, re
     return reply.code(HTTP_OK).send(frozen);
 }
 
-/** The routes whose behavior later issues own: auth, org and existence, then the one refusal. */
-export function handleUnsupported(orgs: OrgRegistry, operation: string, task: boolean) {
-    return async (request: FastifyRequest, reply: FastifyReply) => {
-        const ctx = await contextOf(orgs, request, reply);
-        if (!ctx) return reply;
-        const record = await loadBatch(ctx, request, reply);
-        if (!record) return reply;
-        const { key } = request.params as { key?: string };
-        if (task && !record.tasks.some((candidate) => candidate.key === key)) {
-            return reply.code(HTTP_NOT_FOUND).send({ error: 'No such task', code: ERROR_CODES.NOT_FOUND });
-        }
-        return unsupported(reply, operation);
-    };
+const ACCEPT_REFUSALS = {
+    not_acceptable:
+        'Only a task whose plan completion is "accepted" is accepted by a person; a PR task passes on merge',
+    not_ready: 'Only a task whose run succeeded can be accepted',
+    settled: "The task's stage already advanced",
+} as const;
+
+/** A person's recorded acceptance of a finished `accepted`-completion task; its gate passes and the stage may advance. */
+export async function handleAccept(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const ctx = await contextOf(orgs, request, reply);
+    if (!ctx) return reply;
+    if (!envelopeOf(request, reply, [])) return reply;
+    const id = batchIdOf(request, reply);
+    if (id === null) return reply;
+    const { key } = request.params as { key: string };
+
+    const accepted = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'batch task accept failed'),
+        () => ctx.store.accept(id, key, ctx.createdBy)
+    );
+    if (!accepted.ok) return reply;
+    const outcome = accepted.value;
+    if (outcome.result === 'missing') return notFoundBatch(reply);
+    if (outcome.result === 'no_task') return notFoundTask(reply);
+    if (outcome.result === 'not_started') return notStartedConflict(reply);
+    if (outcome.result === 'cancelled') return cancelledConflict(reply);
+    if (outcome.result !== 'ok') {
+        return bad(reply, ERROR_CODES.BATCH_TASK_NOT_ACCEPTABLE, ACCEPT_REFUSALS[outcome.result], HTTP_CONFLICT);
+    }
+    return answerWithBatch(ctx, request, reply);
 }

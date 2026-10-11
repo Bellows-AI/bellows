@@ -8,12 +8,14 @@ import {
     GATE_PASSED,
     isAccepted,
     isRetryable,
+    judgeTaskGate,
     TASK_FAILED,
     TASK_PENDING,
     TASK_QUEUED,
     TASK_RETRY,
     TASK_RUNNING,
     TASK_SUCCEEDED,
+    type GateEvidence,
     type ScheduleTask,
 } from '../src/index.js';
 
@@ -129,11 +131,58 @@ describe('task predicates', () => {
         expect(isAccepted({ execution: TASK_FAILED, gate: GATE_PASSED })).toBe(false);
     });
 
-    it('retries a failed run or a succeeded one whose gate refused it', () => {
+    it('retries a failed run or a succeeded one whose result was not accepted', () => {
         expect(isRetryable({ execution: TASK_FAILED, gate: GATE_OPEN })).toBe(true);
         expect(isRetryable({ execution: TASK_SUCCEEDED, gate: GATE_FAILED })).toBe(true);
+        expect(isRetryable({ execution: TASK_SUCCEEDED, gate: GATE_OPEN })).toBe(true);
         expect(isRetryable({ execution: TASK_SUCCEEDED, gate: GATE_PASSED })).toBe(false);
         expect(isRetryable({ execution: TASK_RUNNING, gate: GATE_OPEN })).toBe(false);
+    });
+});
+
+describe('judgeTaskGate', () => {
+    const url = 'https://github.com/acme/web/pull/7';
+    const evidence = (over: Partial<GateEvidence> = {}): GateEvidence => ({
+        completionKind: 'pr',
+        condition: null,
+        targetBranch: 'main',
+        pr: { url, baseBranch: 'main' },
+        mergedAt: 2000,
+        attempt: 1,
+        attemptStartedAt: 1000,
+        ...over,
+    });
+    const waits = (over: Partial<GateEvidence>) => judgeTaskGate(evidence(over));
+
+    it('passes a PR against the task target, merged during the current attempt', () => {
+        expect(judgeTaskGate(evidence())).toEqual({ pass: true });
+    });
+
+    it('never passes an accepted-completion task: only the accept route does', () => {
+        expect(waits({ completionKind: 'accepted', condition: 'reviewed' })).toEqual({
+            pass: false,
+            waitReason: 'waiting for acceptance: reviewed',
+        });
+    });
+
+    it('waits, with a reason, when there is no PR, it targets another branch, or it is unmerged', () => {
+        expect(waits({ pr: null })).toEqual({ pass: false, waitReason: 'the run succeeded without opening a PR' });
+        expect(waits({ pr: { url, baseBranch: 'dev' } })).toEqual({
+            pass: false,
+            waitReason: `PR ${url} targets dev, not main`,
+        });
+        expect(waits({ mergedAt: null })).toEqual({
+            pass: false,
+            waitReason: `waiting for a person to merge ${url}`,
+        });
+    });
+
+    it('refuses a merge observed before the current attempt started', () => {
+        expect(waits({ mergedAt: 999, attempt: 2 })).toEqual({
+            pass: false,
+            waitReason: `PR ${url} was merged before attempt 2 started`,
+        });
+        expect(waits({ mergedAt: 1000 })).toEqual({ pass: true });
     });
 });
 

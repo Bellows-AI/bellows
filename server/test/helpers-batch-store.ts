@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { holdsSlot, isRetryable, TASK_RETRY, type BatchPlan } from '@factory-ai/core';
+import {
+    BATCH_COMPLETION_ACCEPTED,
+    GATE_PASSED,
+    holdsSlot,
+    isRetryable,
+    TASK_RETRY,
+    TASK_SUCCEEDED,
+    type BatchPlan,
+} from '@factory-ai/core';
 import {
     BATCH_DRAFT,
     BATCH_STARTED,
@@ -156,14 +164,18 @@ export function memoryBatchStore(): MemoryBatchStore {
             writes.push('retry');
             return { result: 'ok' };
         },
-        async signalGate(id, taskKey, gate) {
+        async accept(id, taskKey, acceptedBy) {
             const batch = batches.get(id);
             if (!batch) return { result: 'missing' };
             if (batch.status !== BATCH_STARTED) return { result: 'not_started' };
+            if (batch.cancelledAt) return { result: 'cancelled' };
             const task = batch.tasks.find((candidate) => candidate.key === taskKey);
             if (!task) return { result: 'no_task' };
-            task.gate = gate;
-            writes.push('signalGate');
+            const planned = batch.plan.stages.flatMap((stage) => stage.tasks).find((t) => t.key === taskKey);
+            if (planned?.completion.kind !== BATCH_COMPLETION_ACCEPTED) return { result: 'not_acceptable' };
+            if (task.execution !== TASK_SUCCEEDED) return { result: 'not_ready' };
+            task.gate = GATE_PASSED;
+            writes.push(`accept:${acceptedBy}`);
             return { result: 'ok' };
         },
         mark(id, taskKey, state) {
