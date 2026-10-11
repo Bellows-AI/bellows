@@ -78,8 +78,11 @@ read it:
 **Never use a relative `cd`.** Use absolute paths; the session's cwd may be a worktree or a
 subdirectory rather than the repo root.
 
-**Do not retry a command the permission settings deny.** Reach for the non-destructive equivalent —
-`git restore`, `git merge --no-ff`, `trash` — or ask.
+**Do not retry a command the permission settings deny — split a compound one first.** A command
+wrapped in a `( … )` subshell, fed a heredoc, or chained with `;` or `&&` can be denied even when
+every part is allowed, so run each part once on its own, unwrapped: `npm install`, not
+`(npm install 2>&1 | tail -3)`. Only a plain command denied is a refusal — reach for the
+non-destructive equivalent — `git restore`, `git merge --no-ff`, `trash` — or ask.
 
 **Check auth once, before a batch, not per call.** One probe up front, then re-authenticate, before
 firing the rest.

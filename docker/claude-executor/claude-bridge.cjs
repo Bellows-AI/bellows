@@ -26,7 +26,12 @@ const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_SERVER_ERROR = 500;
 const ASK_TOOL = 'AskUserQuestion';
 
-const MSG_TOOL_DENIED = "Permission denied by the runner's permission settings.";
+const MSG_TOOL_DENIED = "Not pre-approved by the runner's allowlist, and nobody can approve it in this run.";
+// The CLI asks about a compound command whose every part is allowlisted when it cannot match the
+// whole, so a Bash denial is not a verdict on its parts.
+const MSG_BASH_DENIED =
+    `${MSG_TOOL_DENIED} A compound command (a \`( … )\` subshell, a heredoc, a \`;\` or \`&&\` chain) is approved ` +
+    'only when every part matches the allowlist: run each part once on its own, unwrapped, before treating it as refused.';
 const MSG_NOBODY = 'Nobody can answer questions in this run. Continue with your best judgment and state the assumption you made.';
 const MSG_EXPIRED = 'The question expired after 1 hour without an answer. Stop now.';
 const MSG_STOPPED = 'The task was stopped.';
@@ -98,6 +103,7 @@ async function ask(request) {
 }
 
 async function decide(request) {
+    if (request.tool_name === 'Bash') return deny(MSG_BASH_DENIED, false);
     if (request.tool_name !== ASK_TOOL) return deny(MSG_TOOL_DENIED, false);
     return ask(request);
 }
