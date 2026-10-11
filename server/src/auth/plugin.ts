@@ -110,7 +110,8 @@ const orgTokenAllowed = (method: string, path: string): boolean =>
  * - `/api/auth/*` is how a caller obtains a credential in the first place. `/api/auth/me` answers
  *   `200 {authenticated: false}` for nobody — being the thing that *tells* the SPA it is
  *   unauthenticated is its whole purpose, and a 401 there would be logged as a console error by
- *   the browser of everybody who has not signed in yet.
+ *   the browser of everybody who has not signed in yet. A PRESENT bearer is still the credential
+ *   there (the CLI's `auth status`), resolved by the route itself.
  *
  * Everything outside `/api/` — the SPA's HTML, its bundle, the not-found handler that serves
  * index.html — is open too, and that is not an omission. **If index.html 401s there is nothing left
@@ -228,7 +229,7 @@ export function createUserResolver({ config, store }: AuthPluginDeps) {
  * resolves is the credential for the request: a failed or foreign one is a 401, never a fall-through
  * to whatever stands behind it.
  */
-async function resolveBearer(request: FastifyRequest, reply: FastifyReply, store: AuthStore): Promise<boolean> {
+export async function resolveBearer(request: FastifyRequest, reply: FastifyReply, store: AuthStore): Promise<boolean> {
     const accessToken = bearer(request);
     if (!accessToken) return false;
     if (!isAccessToken(accessToken)) {

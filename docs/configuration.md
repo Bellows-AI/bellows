@@ -11,6 +11,7 @@ the shell). `.env.example` is the list; `server/src/config.ts` is the contract.
 | `DATABASE_URL`, disposable-database refusal | `server/src/config.ts` | `server/test/config.persistence.test.ts` |
 | `ORG_WORKSPACE_ROOT` | `server/src/config.ts` | `server/test/config.workspace.test.ts` |
 | The credential-free entry point | `server/src/offline.ts` | `server/test/routes.repos.test.ts` |
+| CLI `FACTORY_*` variables; a `FACTORY_URL` carrying `user:password@` is refused without echoing it | `cli/src/config.ts` | `cli/test/config.test.ts` |
 
 ## Invariants
 

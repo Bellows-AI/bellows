@@ -1,6 +1,6 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
-import { createUserResolver } from '../auth/plugin.js';
+import { createUserResolver, resolveBearer } from '../auth/plugin.js';
 import type { GitHubIdentity, GitHubIdentityClient } from '../auth/github.js';
 import { createGitHubAppClient, type InstallationRepo } from '../github/app-client.js';
 import { installationTokenProvider } from '../github/app-token.js';
@@ -342,9 +342,18 @@ export const authRoutes =
                 : undefined;
         const listInstallationRepos: ListInstallationRepos = installationListing ?? defaultListing;
 
+        // A present bearer is the credential here as on every person route — the CLI's `auth status`
+        // asks who its token acts as; a bad one is its 401 and an `oat_` its 403, never a fall-through.
+        const resolveMe = (reply: FastifyReply) => async (request: FastifyRequest) => {
+            if (auth.mode !== 'none' && (await resolveBearer(request, reply, store))) {
+                return request.auth?.kind === 'user' ? request.auth.caller : null;
+            }
+            return resolveUser(request);
+        };
+
         app.get('/api/auth/me', async (request, reply) => {
-            const resolved = await resolvedCaller(resolveUser, request, reply);
-            if (!resolved.ok) return reply;
+            const resolved = await resolvedCaller(resolveMe(reply), request, reply);
+            if (!resolved.ok || reply.sent) return reply;
             const caller = resolved.caller;
             if (!caller) {
                 // 200, not 401. This is the SPA's session probe, and the browser logs every 4xx as

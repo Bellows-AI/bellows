@@ -68,6 +68,23 @@ function assertHttpUrl(url: string): void {
     }
 }
 
+// Checked before the scheme, whose refusal echoes the value: a credential in the URL must never be
+// printed back, and the token has its own variable.
+function refuseUserinfo(url: string): void {
+    const parsed = (() => {
+        try {
+            return new URL(url);
+        } catch {
+            return null;
+        }
+    })();
+    if (parsed && (parsed.username || parsed.password)) {
+        throw new CliConfigError(
+            'FACTORY_URL must not carry credentials (user:password@) — put a personal token in FACTORY_TOKEN'
+        );
+    }
+}
+
 export function loadCliConfig(env: NodeJS.ProcessEnv): CliConfig {
     const url = (env.FACTORY_URL ?? '').trim();
     if (!url) {
@@ -76,6 +93,7 @@ export function loadCliConfig(env: NodeJS.ProcessEnv): CliConfig {
     // Trailing slashes are stripped, because request paths are concatenated onto this string and
     // `…:8080//api/jobs` must not happen.
     const stripped = url.replace(/\/+$/, '');
+    refuseUserinfo(stripped);
     assertHttpUrl(stripped);
     return {
         url: stripped,

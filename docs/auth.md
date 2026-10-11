@@ -7,7 +7,7 @@ Who a caller is, and which credential each route accepts.
 | Which routes accept which credential | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts` |
 | `AUTH_MODE`, its boot refusals, `AUTH_ALLOW_PUBLIC_BIND` | `server/src/config.ts` | `server/test/config.auth.test.ts` |
 | Session cookie: signing, flags, expiry | `server/src/auth/session.ts` | `server/test/auth.session.test.ts` |
-| OAuth round trip, state, redirect validation, `/me` | `server/src/routes/auth.ts`, `auth-shared.ts`, `server/src/auth/github.ts` | `server/test/auth.oauth*.test.ts`, `server/test/auth.github-client.test.ts` |
+| OAuth round trip, state, redirect validation, `/me` (a present bearer is its credential — the CLI's `auth status`) | `server/src/routes/auth.ts`, `auth-shared.ts`, `server/src/auth/github.ts` | `server/test/auth.oauth*.test.ts`, `server/test/auth.github-client.test.ts`, `server/test/auth.tokens.test.ts` |
 | Installation-selection screen, pending sign-in, repo scope | `server/src/routes/auth-onboarding.ts` | `server/test/auth.completion.test.ts` |
 | Accounts, sessions, memberships, roles (SQL) | `server/src/auth/store.ts`, `server/migrations/010_auth.sql` | `server/test-db/auth-store.test.ts` |
 | Personal (`fat_`) and org (`oat_`) access tokens | `server/src/auth/access-token.ts`, `server/src/routes/tokens.ts` | `server/test/auth.tokens.test.ts`, `server/test-db/auth-store.access-tokens.test.ts`, `…lifecycle.test.ts`, `…org.test.ts` |
