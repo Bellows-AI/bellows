@@ -608,7 +608,11 @@ describe('ui runner image', () => {
     // The ui gate (issue #576): `.bellows.yaml` pulls the tag this workflow publishes for the locked
     // playwright, so a lockfile bump that moves the browser fails here until the gate follows it.
     interface Bellows {
-        environment: { image: string; setup: string; gates: { name: string; command: string; timeout?: number }[] };
+        environment: {
+            image: string;
+            setup: string;
+            gates: { name: string; command: string; timeout?: number; on_demand?: boolean }[];
+        };
         services: { name: string; image: string; environment: Record<string, string> }[];
     }
     const bellows = () => load<Bellows>('.bellows.yaml');
@@ -619,12 +623,12 @@ describe('ui runner image', () => {
         );
     });
 
-    it('keeps the test and lint gates and adds a ui gate with its own timeout', () => {
+    it('keeps the test and lint gates and adds an on-demand ui gate with its own timeout', () => {
         const gates = bellows().environment.gates;
         expect(gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'ui']);
         expect(gates[0]).toEqual({ name: 'test', command: 'npm test' });
         expect(gates[1]).toEqual({ name: 'lint', command: 'npm run lint' });
-        expect(gates[2]).toEqual({ name: 'ui', command: 'sh scripts/ui-gate.sh', timeout: 45 });
+        expect(gates[2]).toEqual({ name: 'ui', command: 'sh scripts/ui-gate.sh', timeout: 45, on_demand: true });
     });
 
     it('the ui gate creates both databases on the postgres service, builds, then runs verify:ui', () => {

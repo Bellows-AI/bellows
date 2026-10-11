@@ -3204,6 +3204,33 @@ describe('verification gates', () => {
         expect(timeouts).toEqual([undefined, 2_700_000]);
     });
 
+    // An `on_demand` gate is the agent's to call ad hoc: registered with the token, never in the pass.
+    it('skips an on-demand gate in the end-of-run pass, yet registers it for the ad-hoc channel', async () => {
+        const onDemand: BoardJob = {
+            ...gatedJob(1),
+            gates: {
+                image: 'node:24',
+                gates: [
+                    { name: 'test', command: 'npm test' },
+                    { name: 'ui', command: 'npm run verify:ui', onDemand: true },
+                ],
+            },
+        };
+        const board = stubBoard([onDemand]);
+        const stack = stubGateStack({ ui: 1 });
+        const registered: string[][] = [];
+        stack.gates.server.register = (_token, claim) => {
+            registered.push(claim.gates.map((gate) => gate.name));
+        };
+
+        await drive({ ...board, runner: stubRunner(async () => ok({ output: 'done' })), gates: stack.gates });
+
+        expect(registered).toEqual([['test', 'ui']]);
+        expect(stack.stack.ran.names).toEqual(['test']);
+        expect(board.board.gatesReported.at(-1)?.results.map((gate) => gate.name)).toEqual(['test']);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
     // A gate that cannot run at all is a failed gate — an environment that cannot be re-acquired
     // at the gates pass is the same shape, never a silent pass and never a run crash.
     it('fails the gate, not the run, when the environment cannot be re-acquired at the gates pass', async () => {
@@ -5569,6 +5596,17 @@ describe('revision-bound evidence', () => {
         expect(options).toEqual([]);
         expect(completed).toMatchObject({ status: 'failed', failureKind: 'policy' });
         expect(completed?.output).toContain('publication refused — declared gates are required but none ran');
+        expect(completed?.evidence).toMatchObject({ gates: 'none' });
+    });
+
+    it('reads only on-demand gates as none ran — required gates never pass vacuously', async () => {
+        const gates = {
+            image: 'node:24',
+            gates: [{ name: 'ui', command: 'npm run verify:ui', onDemand: true as const }],
+        };
+        const { completed, options } = await driveWith({ ...gatedJob(1), gates, policy: { gates: true } });
+        expect(options).toEqual([]);
+        expect(completed).toMatchObject({ status: 'failed', failureKind: 'policy' });
         expect(completed?.evidence).toMatchObject({ gates: 'none' });
     });
 

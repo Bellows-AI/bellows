@@ -9,6 +9,7 @@ environment:
          - name: ui
            command: "sh scripts/ui-gate.sh"
            timeout: 45
+           on_demand: true
 
 services:
     - name: postgres

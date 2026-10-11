@@ -15,7 +15,8 @@
  *                command: "npm test"
  *
  * A gate may also carry `timeout: <minutes>` — its own wall-clock budget in place of the driver's
- * GATE_TIMEOUT_MS (`readTimeoutMinutes`).
+ * GATE_TIMEOUT_MS (`readTimeoutMinutes`) — and `on_demand: true`: the agent may run it ad hoc, the
+ * end-of-run gates pass skips it.
  *
  * `environment:` may also carry `setup: <command>` — run once per gate environment, before its
  * first gate, in the worktree (an install step); its failure is a setup failure, not a gate's.
@@ -60,6 +61,8 @@ export interface GateDef {
     readonly command: string;
     /** The gate's own wall-clock budget; absent, the driver's GATE_TIMEOUT_MS bounds it. */
     readonly timeoutMinutes?: number;
+    /** Ad hoc only: the end-of-run gates pass, and so the gate evidence, skips it. */
+    readonly onDemand?: true;
 }
 
 /** The evidence a repository requires; an absent key requires nothing. */
@@ -106,6 +109,7 @@ interface RawGate {
     name?: string;
     command?: string;
     timeoutMinutes?: number;
+    onDemand?: true;
 }
 
 interface BellowsState {
@@ -150,6 +154,7 @@ function finishGate(state: BellowsState): void {
         name,
         command: current.command,
         ...(current.timeoutMinutes === undefined ? {} : { timeoutMinutes: current.timeoutMinutes }),
+        ...(current.onDemand ? { onDemand: true as const } : {}),
     });
     state.current = null;
 }
@@ -225,7 +230,7 @@ function readGateCommand(line: number, raw: string | undefined): string {
     return scalar(line, raw, 'command');
 }
 
-/** A field indented under the currently open gate item (`name:` / `command:` / `timeout:`). */
+/** A field indented under the open gate item (`name:` / `command:` / `timeout:` / `on_demand:`). */
 function handleGateField({
     state,
     line,
@@ -251,8 +256,11 @@ function handleGateField({
         state.current.command = readGateCommand(line, match[3]);
     } else if (key === 'timeout') {
         state.current.timeoutMinutes = readTimeoutMinutes(line, match[3] ?? '');
+    } else if (key === 'on_demand') {
+        if (scalar(line, match[3] ?? '', 'on_demand') !== 'true') fail(line, 'on_demand must be "true"');
+        state.current.onDemand = true;
     } else {
-        fail(line, `unknown gate field "${key}" — only name, command and timeout are read`);
+        fail(line, `unknown gate field "${key}" — only name, command, timeout and on_demand are read`);
     }
 }
 
