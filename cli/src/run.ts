@@ -15,11 +15,13 @@ import {
     renderConnections,
     renderCreated,
     renderDone,
+    renderEdited,
     renderExecutors,
     renderJobDetail,
     renderJobLine,
     renderQuestions,
     renderRemoved,
+    renderReopened,
     renderRepos,
     renderSkills,
     renderStopped,
@@ -61,10 +63,12 @@ export const USAGE = `usage: factory job create (<command...> | --file <path> | 
        factory job wait <id> [--timeout <seconds>] [--json]
        factory job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
        factory job retry <id> [--idempotency-key <key>] [--json]
+       factory job edit <id> (<command...> | --file <path> | --stdin) [--json]
        factory job questions <id> [--json]
        factory job answer <id> <question-id> --answer <text>... [--json]
        factory job stop <id> [--json]
        factory job done <id> [--json]
+       factory job reopen <id> [--json]
        factory job remove <id> --yes [--json]
        factory repo list [--json]          repositories visible to the board, and which are synced
        factory executor list [--json]      executor profiles by scope (--executor-scope)
@@ -86,6 +90,10 @@ exit codes: 0 ok (a wait: the run succeeded), 1 the board refused, 2 usage or co
 
 --json prints one envelope on stdout and nothing on stderr, whatever the outcome:
   { ok, command, outcome, exitCode, data, error }
+
+retry queues a fresh attempt of the task's existing command; follow-up queues NEW instructions.
+edit replaces the command of a queued run you created, in place; the board refuses it once the run
+is claimed. reopen undoes done. The board decides every refusal.
 
 A question's --answer values go one per prompt, in the order \`job questions\` lists them: an
 option's label, or free text (a multi-select joins its picks with ", "). The board is the
@@ -439,6 +447,25 @@ async function runRetry(args: readonly string[], io: RunIo): Promise<CommandResu
     return createdResult(created);
 }
 
+async function runEdit(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const parsed = parseOrUsage(() =>
+        parseArgs({ args: [...args], allowPositionals: true, options: { ...JSON_OPTION, ...INPUT_OPTIONS } })
+    );
+    const [id, ...rest] = parsed.positionals;
+    if (!id) {
+        throw new UsageError('an edit needs a job id\n\n' + USAGE);
+    }
+    const command = await commandOf(rest, parsed.values, io);
+    const edited = await boardFor(io).editJob(id, command);
+    return ok(edited, renderEdited(edited));
+}
+
+async function runReopen(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const { id } = onlyId(args, 'reopen');
+    const reopened = await boardFor(io).reopenJob(id);
+    return ok(reopened, renderReopened(reopened));
+}
+
 /** Every question the task's runs asked, oldest first — each paired with the run that asked it. */
 async function questionsOf(client: BoardClient, id: string) {
     const thread = await client.thread(id);
@@ -551,10 +578,12 @@ const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<C
     'job wait': runWait,
     'job follow-up': runFollowUp,
     'job retry': runRetry,
+    'job edit': runEdit,
     'job questions': runQuestions,
     'job answer': runAnswer,
     'job stop': runStop,
     'job done': runDone,
+    'job reopen': runReopen,
     'job remove': runRemove,
     'repo list': runRepoList,
     'executor list': runExecutorList,

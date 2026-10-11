@@ -1,4 +1,4 @@
-import { request as httpRequest } from 'node:http';
+import { request as httpRequest, IncomingMessage } from 'node:http';
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
@@ -7,6 +7,22 @@ import { createGateManager, createGateServer } from '../src/gates.js';
 import { createKubernetesGateManager } from '../src/k8s-gates.js';
 import { gateEnvSecretName, jobsPath } from '../src/k8s-podspec.js';
 import type { K8sRequest } from '../src/k8s-transport.js';
+
+/**
+ * Resolves when the next request's handler has authorised its token and begun reading the body:
+ * `readBody` iterates the request only past the token check. Hooked on the builtin prototype, not
+ * by `vi.mock` — under `isolate: false` another file may already hold the real `http.js`.
+ */
+const nextBodyRead = (): Promise<void> =>
+    new Promise((resolve) => {
+        const proto = IncomingMessage.prototype as unknown as Record<symbol, unknown>;
+        const iterate = proto[Symbol.asyncIterator] as (this: IncomingMessage) => AsyncIterator<unknown>;
+        proto[Symbol.asyncIterator] = function (this: IncomingMessage) {
+            delete proto[Symbol.asyncIterator];
+            resolve();
+            return iterate.call(this);
+        };
+    });
 
 /**
  * The gate environment's owner (issue #436): release and cancel act only for the attempt the
@@ -148,8 +164,9 @@ describe('gate ownership: ad-hoc cancel races', () => {
         server.register('tok', claim);
         const port = await server.listen();
 
+        const reading = nextBodyRead();
         const post = slowPost(port, 'tok');
-        await delay(20); // the handler has authorised the token and is reading the body
+        await reading; // the handler has authorised the token and is reading the body
         server.cancel('tok');
         post.finish();
 
