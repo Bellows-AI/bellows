@@ -44,6 +44,8 @@ export interface ScheduleTask {
     required: boolean;
     execution: string;
     gate: string;
+    /** Epoch milliseconds before which a queued retry must not launch (its backoff), or null. */
+    notBefore: number | null;
 }
 
 export interface ScheduleInput {
@@ -55,6 +57,10 @@ export interface ScheduleInput {
     /** Stage keys that already carry an advance decision. */
     advanced: readonly string[];
     cancelled: boolean;
+    /** The batch's time limit passed: like a cancel, nothing launches or advances behind it. */
+    expired: boolean;
+    /** Epoch milliseconds the pass runs at. */
+    now: number;
 }
 
 export interface ScheduleDecision {
@@ -136,14 +142,16 @@ export function decideSchedule(input: ScheduleInput): ScheduleDecision {
     const active = input.tasks.filter((task) => holdsSlot(task.execution)).length;
     const activeStage = input.stages.find((stage) => !input.advanced.includes(stage)) ?? null;
     const none = { activeStage, launch: [], advance: null, complete: false, active };
-    if (input.cancelled) return none;
+    if (input.cancelled || input.expired) return none;
     if (activeStage === null) return { ...none, complete: true };
 
     const inStage = input.tasks.filter((task) => task.stage === activeStage);
     if (stageSettled(inStage)) return { ...none, advance: activeStage };
 
     const free = Math.max(0, input.concurrency - active);
-    const waiting = inStage.filter((task) => WAITING.includes(task.execution));
+    const waiting = inStage.filter(
+        (task) => WAITING.includes(task.execution) && (task.notBefore === null || task.notBefore <= input.now)
+    );
     // A retry or repair was already running once and the operator is waiting on it.
     const ordered = [
         ...waiting.filter((t) => t.execution === TASK_RETRY),
@@ -163,16 +171,21 @@ export function batchTaskCommand(task: { objective: string; acceptance: string; 
 /**
  * The long-poll's verdict on a started batch: `terminal` once finished or cancelled with nothing
  * moving, `parked` when nothing moves and nothing will without an operator (a failed task, a gate
- * not yet passed), otherwise null — still moving.
+ * not yet passed), otherwise null — still moving. A retry waiting out its backoff is moving: the
+ * board will launch it by itself. An expired batch is terminal like a cancelled one.
  */
 export type BatchWaitResult = 'terminal' | 'parked';
 
 export function batchWaitResult(state: {
     complete: boolean;
     cancelled: boolean;
+    expired: boolean;
     active: number;
+    /** Retries and repairs queued but not yet launched. */
+    waiting: number;
 }): BatchWaitResult | null {
     if (state.active > 0) return null;
-    if (state.complete || state.cancelled) return 'terminal';
+    if (state.complete || state.cancelled || state.expired) return 'terminal';
+    if (state.waiting > 0) return null;
     return 'parked';
 }

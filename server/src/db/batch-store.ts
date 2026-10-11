@@ -8,6 +8,7 @@ import {
     refusalOf,
     writeResolved,
 } from './batch-store-rows.js';
+import { readReport } from './batch-store-report.js';
 import {
     acceptBatchTask,
     cancelBatch,
@@ -34,6 +35,7 @@ export function createBatchStore({
     ready,
     stop,
     revisionOf,
+    now,
 }: {
     sql: Sql;
     orgId: string;
@@ -42,11 +44,13 @@ export function createBatchStore({
     stop?: StopThread;
     /** Resolves a target branch's head commit for the attempt record; absent records none. */
     revisionOf?: RevisionOf;
+    /** The clock the time limit and the retry backoff are read against; production leaves it unset. */
+    now?: () => Date;
 }): BatchStore {
     const gate = async () => {
         if (ready) await ready;
     };
-    const deps = { sql, orgId, stop, revisionOf };
+    const deps = { sql, orgId, stop, revisionOf, now };
 
     return {
         async create(plan, createdBy, idempotency) {
@@ -62,9 +66,10 @@ export function createBatchStore({
                 }
                 const [batch] = await tx<{ id: string; version: number }[]>`
                     insert into batch (org_id, plan_version, title, default_target, executor, policy, concurrency,
-                                       created_by)
+                                       infra_retries, repairs, time_limit_minutes, created_by)
                     values (${orgId}, ${plan.planVersion}, ${plan.title}, ${plan.defaultTarget ?? null},
-                            ${plan.executor ?? null}, ${plan.policy}, ${plan.concurrency}, ${createdBy})
+                            ${plan.executor ?? null}, ${plan.policy}, ${plan.concurrency}, ${plan.infraRetries},
+                            ${plan.repairs}, ${plan.timeLimitMinutes}, ${createdBy})
                     returning id, version
                 `;
                 await insertChildren(tx, { orgId, id: batch!.id }, plan);
@@ -91,6 +96,8 @@ export function createBatchStore({
                     set plan_version = ${plan.planVersion}, title = ${plan.title},
                         default_target = ${plan.defaultTarget ?? null}, executor = ${plan.executor ?? null},
                         policy = ${plan.policy}, concurrency = ${plan.concurrency},
+                        infra_retries = ${plan.infraRetries}, repairs = ${plan.repairs},
+                        time_limit_minutes = ${plan.timeLimitMinutes},
                         version = version + 1, updated_at = now()
                     where org_id = ${orgId} and id = ${id} and version = ${version} and status = ${BATCH_DRAFT}
                     returning version
@@ -124,7 +131,8 @@ export function createBatchStore({
                 await writeResolved(tx, { orgId, id }, plan);
                 await tx`
                     update batch
-                    set status = ${BATCH_STARTED}, started_by = ${startedBy}, started_at = now(), updated_at = now()
+                    set status = ${BATCH_STARTED}, started_by = ${startedBy}, started_at = now(),
+                        deadline_at = now() + make_interval(mins => time_limit_minutes), updated_at = now()
                     where org_id = ${orgId} and id = ${id}
                 `;
                 await stampKey(tx, scope, id);
@@ -150,6 +158,11 @@ export function createBatchStore({
         async retry(id, taskKey) {
             await gate();
             return retryBatchTask(deps, id, taskKey);
+        },
+
+        async report(id) {
+            await gate();
+            return readReport(sql, { orgId, id });
         },
 
         async accept(id, taskKey, acceptedBy) {

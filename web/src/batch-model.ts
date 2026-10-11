@@ -3,6 +3,9 @@ import {
     BATCH_COMPLETION_PR,
     BATCH_PLAN_VERSION,
     DEFAULT_BATCH_CONCURRENCY,
+    DEFAULT_BATCH_INFRA_RETRIES,
+    DEFAULT_BATCH_REPAIRS,
+    DEFAULT_BATCH_TIME_LIMIT_MINUTES,
     DEFAULT_BATCH_POLICY,
     isAccepted,
     isRetryable,
@@ -250,6 +253,9 @@ export function blankPlan(repo: string): BatchPlan {
         defaultTarget: target.key,
         policy: DEFAULT_BATCH_POLICY,
         concurrency: DEFAULT_BATCH_CONCURRENCY,
+        infraRetries: DEFAULT_BATCH_INFRA_RETRIES,
+        repairs: DEFAULT_BATCH_REPAIRS,
+        timeLimitMinutes: DEFAULT_BATCH_TIME_LIMIT_MINUTES,
         stages: [{ key: 'stage-1', tasks: [{ key: 'task-1', ...TASK_BLANK }] }],
     };
 }

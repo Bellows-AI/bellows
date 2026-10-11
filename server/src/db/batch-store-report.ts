@@ -1,0 +1,176 @@
+import { batchNextAction, GATE_PASSED, holdsSlot, TASK_NO_PR, TASK_RETRY, TASK_RUNNING } from '@factory-ai/core';
+import type { Sql } from 'postgres';
+import {
+    ACCEPTANCE_PR_MERGED,
+    BATCH_STARTED,
+    type BatchReport,
+    type BatchReportState,
+    type BatchReportTask,
+} from './batch-store-types.js';
+
+/**
+ * The morning report (docs/batches.md): assembled from durable rows on every read — the plan, the
+ * attempts, the acceptances and the threads' jobs — so a restart cannot lose it and a merge that
+ * landed after the limit expired still shows. Nothing here is written.
+ */
+
+interface ReportBatch {
+    id: string;
+    title: string;
+    status: string;
+    infra_retries: number;
+    repairs: number;
+    time_limit_minutes: number;
+    started_at: Date | null;
+    deadline_at: Date | null;
+    expired_at: Date | null;
+    cancelled_at: Date | null;
+    completed_at: Date | null;
+}
+
+interface ReportTaskRow {
+    key: string;
+    stage_key: string;
+    required: boolean;
+    execution: string;
+    gate: string;
+    attention: string | null;
+    wait_reason: string | null;
+    pr: string;
+    root_job_id: string | null;
+    completion_kind: string;
+    attempts: number;
+    infra_retries: number;
+    repairs: number;
+    wall_clock_ms: string;
+    agent_turns: string;
+    pending_question: string | null;
+    pending_question_job: string | null;
+}
+
+const iso = (value: Date): string => value.toISOString();
+
+function stateOf(batch: ReportBatch, tasks: readonly ReportTaskRow[]): BatchReportState {
+    if (batch.cancelled_at) return 'cancelled';
+    if (batch.expired_at) return 'expired';
+    if (batch.completed_at) return 'completed';
+    const moving = tasks.some((task) => holdsSlot(task.execution) || task.execution === TASK_RETRY);
+    return moving ? 'running' : 'parked';
+}
+
+export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: string }): Promise<BatchReport | null> {
+    const [batch] = await sql<ReportBatch[]>`
+        select id, title, status, infra_retries, repairs, time_limit_minutes, started_at, deadline_at, expired_at,
+               cancelled_at, completed_at
+        from batch where org_id = ${orgId} and id = ${id}
+    `;
+    if (!batch || batch.status !== BATCH_STARTED) return null;
+    const [tasks, merged] = await Promise.all([
+        sql<ReportTaskRow[]>`
+            select t.key, t.stage_key, t.required, t.execution, t.gate, t.attention, t.wait_reason, t.pr,
+                   t.root_job_id, t.completion_kind,
+                   (select count(*)::int from batch_attempt a
+                    where a.org_id = t.org_id and a.batch_id = t.batch_id and a.task_key = t.key) as attempts,
+                   (select count(*)::int from batch_attempt a
+                    where a.org_id = t.org_id and a.batch_id = t.batch_id and a.task_key = t.key
+                      and a.kind = 'infra_retry') as infra_retries,
+                   (select count(*)::int from batch_attempt a
+                    where a.org_id = t.org_id and a.batch_id = t.batch_id and a.task_key = t.key
+                      and a.kind = 'repair') as repairs,
+                   (select coalesce(sum(j.wall_clock_ms), 0) from job j
+                    where j.org_id = t.org_id and j.root_job_id = t.root_job_id) as wall_clock_ms,
+                   (select coalesce(sum(j.agent_turns), 0) from job j
+                    where j.org_id = t.org_id and j.root_job_id = t.root_job_id) as agent_turns,
+                   q.question_id as pending_question, q.job_id as pending_question_job
+            from batch_task t
+            join batch_stage s on s.org_id = t.org_id and s.batch_id = t.batch_id and s.key = t.stage_key
+            -- The question a running head can still be answered: the answer route addresses the job
+            -- that asked it, which after a repair or retry is not the root, and only under the live lease.
+            left join lateral (
+                select q.question_id, q.job_id from job_question q
+                join job h on h.org_id = q.org_id and h.id = q.job_id
+                where q.org_id = t.org_id and h.root_job_id = t.root_job_id and q.state = 'pending'
+                  and h.status = 'running' and q.lease_token = h.lease_token and t.execution = ${TASK_RUNNING}
+                order by q.asked_at desc limit 1
+            ) q on true
+            where t.org_id = ${orgId} and t.batch_id = ${id}
+            order by s.position, t.position
+        `,
+        sql<{ task_key: string; pr_url: string; merged_at: Date | null; recorded_at: Date }[]>`
+            select a.task_key, a.pr_url, m.merged_at, a.recorded_at
+            from batch_acceptance a
+            left join pr_merge m on m.org_id = a.org_id and m.repo = a.repo and m.pr_number = a.pr_number
+            where a.org_id = ${orgId} and a.batch_id = ${id} and a.kind = ${ACCEPTANCE_PR_MERGED}
+            order by a.recorded_at, a.task_key
+        `,
+    ]);
+    const state = stateOf(batch, tasks);
+    const rows: BatchReportTask[] = tasks.map((task) => {
+        const prUrl = task.pr === TASK_NO_PR ? null : task.pr;
+        return {
+            key: task.key,
+            stage: task.stage_key,
+            required: task.required,
+            execution: task.execution,
+            gate: task.gate,
+            attempts: task.attempts,
+            infraRetries: task.infra_retries,
+            repairs: task.repairs,
+            attention: task.attention,
+            waitReason: task.wait_reason,
+            pr: prUrl,
+            job: task.root_job_id ? `/api/jobs/${task.root_job_id}` : null,
+            usage: { wallClockMs: Number(task.wall_clock_ms), agentTurns: Number(task.agent_turns) },
+            next: batchNextAction({
+                batchId: id,
+                batchState: state,
+                task: {
+                    key: task.key,
+                    execution: task.execution,
+                    gate: task.gate,
+                    attention: task.attention,
+                    questionJobId: task.pending_question_job,
+                    questionId: task.pending_question,
+                    completionKind: task.completion_kind,
+                    prUrl,
+                },
+            }),
+        };
+    });
+    const mergedTasks = new Set(merged.map((row) => row.task_key));
+    return {
+        id: batch.id,
+        title: batch.title,
+        state,
+        startedAt: iso(batch.started_at!),
+        deadlineAt: iso(batch.deadline_at!),
+        expiredAt: batch.expired_at ? iso(batch.expired_at) : null,
+        cancelledAt: batch.cancelled_at ? iso(batch.cancelled_at) : null,
+        completedAt: batch.completed_at ? iso(batch.completed_at) : null,
+        budgets: {
+            infraRetries: batch.infra_retries,
+            repairs: batch.repairs,
+            timeLimitMinutes: batch.time_limit_minutes,
+        },
+        prs: {
+            merged: merged.map((row) => ({
+                task: row.task_key,
+                url: row.pr_url,
+                mergedAt: iso(row.merged_at ?? row.recorded_at),
+            })),
+            open: rows
+                .filter((task) => task.pr !== null && !mergedTasks.has(task.key))
+                .map((task) => ({ task: task.key, url: task.pr! })),
+        },
+        tasks: rows,
+        totals: {
+            accepted: rows.filter((task) => task.gate === GATE_PASSED).length,
+            failed: rows.filter((task) => task.execution === 'failed').length,
+            needsAttention: rows.filter((task) => task.attention !== null || task.waitReason !== null).length,
+            infraRetries: rows.reduce((sum, task) => sum + task.infraRetries, 0),
+            repairs: rows.reduce((sum, task) => sum + task.repairs, 0),
+            wallClockMs: rows.reduce((sum, task) => sum + task.usage.wallClockMs, 0),
+            agentTurns: rows.reduce((sum, task) => sum + task.usage.agentTurns, 0),
+        },
+    };
+}

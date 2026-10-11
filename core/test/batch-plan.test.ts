@@ -51,6 +51,9 @@ describe('validateBatchPlan', () => {
                 defaultTarget: 'web',
                 policy: 'human',
                 concurrency: 1,
+                infraRetries: 2,
+                repairs: 2,
+                timeLimitMinutes: 720,
                 stages: [
                     {
                         key: 'one',
@@ -239,6 +242,15 @@ describe('validateBatchPlan', () => {
             expect(paths(plan({ concurrency: MAX_BATCH_CONCURRENCY + 1 }))).toEqual(['concurrency']);
             expect(paths(plan({ concurrency: 0 }))).toEqual(['concurrency']);
             expect(paths(plan({ concurrency: 1.5 }))).toEqual(['concurrency']);
+        });
+
+        it('recovery budgets and the time limit', () => {
+            expect(issuesOf(plan({ infraRetries: 0, repairs: 5, timeLimitMinutes: 1440 }))).toEqual([]);
+            expect(paths(plan({ infraRetries: 6 }))).toEqual(['infraRetries']);
+            expect(paths(plan({ repairs: -1 }))).toEqual(['repairs']);
+            expect(paths(plan({ repairs: 1.5 }))).toEqual(['repairs']);
+            expect(paths(plan({ timeLimitMinutes: 0 }))).toEqual(['timeLimitMinutes']);
+            expect(paths(plan({ timeLimitMinutes: 1441 }))).toEqual(['timeLimitMinutes']);
         });
     });
 });

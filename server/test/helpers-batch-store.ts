@@ -27,6 +27,8 @@ export interface MemoryBatchStore extends BatchStore {
     readonly writes: string[];
     /** Plants a task's runtime state, standing in for the scheduler the SQL store's own suite pins. */
     mark(id: string, taskKey: string, state: Partial<BatchTaskState>): void;
+    /** Stamps the batch's time limit as passed, standing in for the scheduler pass the SQL suite pins. */
+    expire(id: string): void;
 }
 
 export function memoryBatchStore(): MemoryBatchStore {
@@ -53,6 +55,7 @@ export function memoryBatchStore(): MemoryBatchStore {
                 pr: 'none',
                 gate: 'open',
                 waitReason: null,
+                attention: null,
                 rootJobId: null,
                 attempt: 0,
             }))
@@ -76,6 +79,8 @@ export function memoryBatchStore(): MemoryBatchStore {
                 startedAt: null,
                 cancelledAt: null,
                 completedAt: null,
+                deadlineAt: null,
+                expiredAt: null,
                 activeStage: null,
                 plan,
                 tasks: taskStates(plan),
@@ -128,6 +133,7 @@ export function memoryBatchStore(): MemoryBatchStore {
                 status: BATCH_STARTED,
                 startedBy,
                 startedAt: new Date().toISOString(),
+                deadlineAt: new Date(Date.now() + plan.timeLimitMinutes * 60_000).toISOString(),
                 plan: plan as unknown as BatchPlan,
             });
             stamp(startedBy, idempotency, id);
@@ -141,7 +147,9 @@ export function memoryBatchStore(): MemoryBatchStore {
             return {
                 complete: batch.completedAt !== null,
                 cancelled: batch.cancelledAt !== null,
+                expired: batch.expiredAt !== null,
                 active: batch.tasks.filter((task) => holdsSlot(task.execution)).length,
+                waiting: batch.tasks.filter((task) => task.execution === TASK_RETRY).length,
             };
         },
         async reconcileOpen() {
@@ -162,6 +170,7 @@ export function memoryBatchStore(): MemoryBatchStore {
             if (!batch) return { result: 'missing' };
             if (batch.status !== BATCH_STARTED) return { result: 'not_started' };
             if (batch.cancelledAt) return { result: 'cancelled' };
+            if (batch.expiredAt) return { result: 'expired' };
             const task = batch.tasks.find((candidate) => candidate.key === taskKey);
             if (!task) return { result: 'no_task' };
             if (!isRetryable(task)) return { result: 'not_retryable' };
@@ -182,6 +191,40 @@ export function memoryBatchStore(): MemoryBatchStore {
             task.gate = GATE_PASSED;
             writes.push(`accept:${acceptedBy}`);
             return { result: 'ok' };
+        },
+        async report(id) {
+            const batch = batches.get(id);
+            if (!batch || batch.status !== BATCH_STARTED) return null;
+            return {
+                id,
+                title: batch.plan.title,
+                state: batch.expiredAt ? 'expired' : batch.cancelledAt ? 'cancelled' : 'parked',
+                startedAt: batch.startedAt!,
+                deadlineAt: batch.deadlineAt!,
+                expiredAt: batch.expiredAt,
+                cancelledAt: batch.cancelledAt,
+                completedAt: batch.completedAt,
+                budgets: {
+                    infraRetries: batch.plan.infraRetries,
+                    repairs: batch.plan.repairs,
+                    timeLimitMinutes: batch.plan.timeLimitMinutes,
+                },
+                prs: { merged: [], open: [] },
+                tasks: [],
+                totals: {
+                    accepted: 0,
+                    failed: 0,
+                    needsAttention: 0,
+                    infraRetries: 0,
+                    repairs: 0,
+                    wallClockMs: 0,
+                    agentTurns: 0,
+                },
+            };
+        },
+        expire(id) {
+            const batch = batches.get(id)!;
+            batches.set(id, { ...batch, expiredAt: new Date().toISOString() });
         },
         mark(id, taskKey, state) {
             const task = batches.get(id)!.tasks.find((candidate) => candidate.key === taskKey)!;

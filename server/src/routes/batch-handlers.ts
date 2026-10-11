@@ -99,6 +99,23 @@ export async function handleGet(orgs: OrgRegistry, request: FastifyRequest, repl
     return reply.code(HTTP_OK).send({ result: held.value, batch: settled });
 }
 
+/** The morning report: what merged, what is open, what recovery spent and what needs a person, with the next supported step. */
+export async function handleReport(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const ctx = await contextOf(orgs, request, reply);
+    if (!ctx) return reply;
+    const record = await loadBatch(ctx, request, reply);
+    if (!record) return reply;
+    if (record.status !== BATCH_STARTED) return notStartedConflict(reply);
+    const report = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'batch report failed'),
+        () => ctx.store.report(record.id)
+    );
+    if (!report.ok) return reply;
+    if (!report.value) return notFoundBatch(reply);
+    return reply.code(HTTP_OK).send(report.value);
+}
+
 /** Reconciles on every beat, so a batch settles for a waiter whether or not anything else is running. */
 async function holdUntilSettled(
     store: BatchStore,
@@ -137,6 +154,14 @@ export async function handleRetry(orgs: OrgRegistry, request: FastifyRequest, re
     if (outcome.result === 'no_task') return notFoundTask(reply);
     if (outcome.result === 'not_started') return notStartedConflict(reply);
     if (outcome.result === 'cancelled') return cancelledConflict(reply);
+    if (outcome.result === 'expired') {
+        return bad(
+            reply,
+            ERROR_CODES.BATCH_EXPIRED,
+            'This batch passed its time limit; start a new batch for the remaining work',
+            HTTP_CONFLICT
+        );
+    }
     if (outcome.result === 'not_retryable') {
         return bad(
             reply,

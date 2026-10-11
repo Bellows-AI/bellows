@@ -598,3 +598,396 @@ describe.skipIf(!enabled)('human PR gate', () => {
         expect(await decisions(id)).not.toContain('advance:one');
     });
 });
+
+/** A store whose clock the test moves: the deadline and the retry backoff are read against it. */
+function clockedStore() {
+    const clock = { ms: Date.now() };
+    return {
+        clock,
+        store: createBatchStore({
+            sql,
+            orgId: ORG,
+            stop: (id, by) => jobs.stop(id, by),
+            now: () => new Date(clock.ms),
+        }),
+    };
+}
+
+function planWith(stages: Record<string, unknown>[], budgets: Record<string, number> = {}): BatchPlan {
+    const result = validateBatchPlan({
+        planVersion: 1,
+        title: 'Recovery',
+        targets: [{ key: 'web', repo: REPO }],
+        defaultTarget: 'web',
+        executor: 'claude',
+        concurrency: 2,
+        ...budgets,
+        stages,
+    });
+    if (!result.ok) throw new Error(JSON.stringify(result.issues));
+    return result.plan;
+}
+
+/** Ends the thread head's run as failed with a structured reason, as the verdict does. */
+async function failWith(root: string, failureKind: string | null, status: 'failed' | 'dead' = 'failed') {
+    const head = await headOf(root);
+    await sql`
+        update job set status = ${status}, failure_kind = ${failureKind}, finished_at = now(), lease_token = null
+        where id = ${head.id}
+    `;
+}
+
+const kindsOf = async (taskKey: string, batchId: string) =>
+    (
+        await sql<{ kind: string }[]>`
+            select kind from batch_attempt where batch_id = ${batchId} and task_key = ${taskKey} order by attempt
+        `
+    ).map((r) => r.kind);
+
+describe.skipIf(!enabled)('bounded recovery', () => {
+    it('retries an infrastructure failure after its backoff and unlocks the next stage exactly once', async () => {
+        const { clock, store: timed } = clockedStore();
+        const id = await frozen(
+            planWith([
+                { key: 'one', tasks: [task('a')] },
+                { key: 'two', tasks: [task('b')] },
+            ]),
+            timed
+        );
+        await timed.reconcile(id);
+        const { a } = await stateOf(id);
+        await failWith(a!.rootJobId!, 'timeout');
+
+        await timed.reconcile(id);
+        // In backoff: queued for a retry, no wait reason (it is moving, not parked), no job yet.
+        expect((await stateOf(id)).a).toMatchObject({ execution: 'retry', waitReason: null, attempt: 1 });
+        expect(await jobCount()).toBe(1);
+        expect(await timed.reconcile(id)).toMatchObject({ waiting: 1, active: 0 });
+
+        clock.ms += 61_000;
+        await timed.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({ execution: 'queued', attempt: 2, rootJobId: a!.rootJobId });
+        expect(await kindsOf('a', id)).toEqual(['launch', 'infra_retry']);
+
+        await setStatus(a!.rootJobId!, 'succeeded');
+        await timed.accept(id, 'a', ALICE);
+        await timed.reconcile(id);
+        await timed.reconcile(id);
+        expect((await stateOf(id)).b).toMatchObject({ execution: 'queued' });
+        expect((await decisions(id)).filter((key) => key === 'advance:one')).toHaveLength(1);
+    });
+
+    it('repairs a failed check with a follow-up in the same thread, then judges the repaired run afresh', async () => {
+        const id = await frozen(planWith([{ key: 'one', tasks: [prTask('a')] }]));
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        const root = a!.rootJobId!;
+        const failedHead = await headOf(root);
+        await failWith(root, 'gate');
+
+        await store.reconcile(id);
+        const [repair] = await sql<{ parent_job_id: string; root_job_id: string; command: string }[]>`
+            select parent_job_id, root_job_id, command from job
+            where root_job_id = ${root} order by created_at desc, id desc limit 1
+        `;
+        expect(repair).toMatchObject({ parent_job_id: failedHead.id, root_job_id: root });
+        expect(repair!.command).toContain('failed its checks');
+        expect(repair!.command).toContain('run it again now');
+        expect(await kindsOf('a', id)).toEqual(['launch', 'repair']);
+        expect((await stateOf(id)).a).toMatchObject({ execution: 'queued', gate: 'open', attention: null });
+
+        await setStatus(root, 'succeeded');
+        const number = await publish(root);
+        await store.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({ execution: 'succeeded', gate: 'open' });
+        await merge(REPO, number);
+        await store.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({ gate: 'passed' });
+    });
+
+    it('sends a stale-branch publish failure to the agent as a rebase request', async () => {
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }]));
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        await failWith(a!.rootJobId!, 'publish');
+        await store.reconcile(id);
+        const head = await headOf(a!.rootJobId!);
+        const [row] = await sql<{ command: string }[]>`select command from job where id = ${head.id}`;
+        expect(row!.command).toContain('stale or conflicts');
+    });
+
+    it('needs attention once the budget is spent, while an independent sibling keeps running', async () => {
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a'), task('b')] }], { repairs: 1 }));
+        await store.reconcile(id);
+        let tasks = await stateOf(id);
+        await failWith(tasks.a!.rootJobId!, 'gate');
+        await store.reconcile(id);
+        expect(await kindsOf('a', id)).toEqual(['launch', 'repair']);
+        await failWith(tasks.a!.rootJobId!, 'gate');
+        await store.reconcile(id);
+        tasks = await stateOf(id);
+        expect(tasks.a).toMatchObject({ execution: 'failed', attention: 'budget' });
+        expect(tasks.a!.waitReason).toContain('recovery budget exhausted');
+        expect(await kindsOf('a', id)).toEqual(['launch', 'repair']);
+        expect(tasks.b).toMatchObject({ execution: 'queued', attention: null });
+    });
+
+    it('asks a person immediately when the budget is zero', async () => {
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }], { infraRetries: 0 }));
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        await failWith(a!.rootJobId!, null, 'dead');
+        await store.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({ execution: 'failed', attention: 'budget' });
+        expect(await kindsOf('a', id)).toEqual(['launch']);
+    });
+
+    it('classifies a configuration failure as needing attention and never retries it', async () => {
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }]));
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        await failWith(a!.rootJobId!, 'config');
+        await store.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({ execution: 'failed', attention: 'configuration' });
+        expect(await kindsOf('a', id)).toEqual(['launch']);
+        // A person's retry is the supported path, and it clears the attention.
+        expect(await store.retry(id, 'a')).toEqual({ result: 'ok' });
+        expect((await stateOf(id)).a).toMatchObject({ execution: 'queued', attention: null });
+        expect(await kindsOf('a', id)).toEqual(['launch', 'retry']);
+    });
+
+    it('surfaces an unanswered question, clears it once answered, and never retries an expired one', async () => {
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a'), task('b')] }]));
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        const root = a!.rootJobId!;
+        await setStatus(root, 'running');
+        const head = await headOf(root);
+        const lease = randomUUID();
+        await sql`update job set lease_token = ${lease}, attempts = 1 where id = ${head.id}`;
+        await sql`
+            insert into job_question (org_id, job_id, question_id, attempt, lease_token, questions, state)
+            values (${ORG}, ${head.id}, 'q1', 1, ${lease}, ${sql.json([{ question: 'which db?' }])}, 'pending')
+        `;
+        await store.reconcile(id);
+        let tasks = await stateOf(id);
+        expect(tasks.a).toMatchObject({ execution: 'running', attention: 'question' });
+        expect(tasks.a!.waitReason).toContain('question q1');
+        expect(tasks.b).toMatchObject({ execution: 'queued' });
+        // The answer route addresses the job that asked, which here is the thread's head.
+        expect((await store.report(id))!.tasks.find((t) => t.key === 'a')!.next).toEqual({
+            action: 'answer',
+            method: 'POST',
+            path: `/api/jobs/${head.id}/questions/q1/answer`,
+        });
+
+        await sql`update job_question set state = 'answered', answered_at = now() where job_id = ${head.id}`;
+        await store.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({ attention: null, waitReason: null });
+
+        await sql`update job_question set state = 'expired' where job_id = ${head.id}`;
+        await failWith(root, 'timeout');
+        await store.reconcile(id);
+        tasks = await stateOf(id);
+        expect(tasks.a).toMatchObject({ execution: 'failed', attention: 'question' });
+        expect(await kindsOf('a', id)).toEqual(['launch']);
+    });
+
+    it('does not mistake a question closed by a reclaim for an open one, and clears attention when the run ends', async () => {
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }]));
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        const root = a!.rootJobId!;
+        await setStatus(root, 'running');
+        const head = await headOf(root);
+        const lease = randomUUID();
+        await sql`update job set lease_token = ${lease}, attempts = 1 where id = ${head.id}`;
+        await sql`
+            insert into job_question (org_id, job_id, question_id, attempt, lease_token, questions, state)
+            values (${ORG}, ${head.id}, 'q1', 1, ${lease}, ${sql.json([{ question: 'which db?' }])}, 'pending')
+        `;
+        await store.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({ attention: 'question' });
+        // The run ends before the next pass: nothing may carry the question's attention forward.
+        await setStatus(root, 'succeeded');
+        await store.reconcile(id);
+        expect((await stateOf(id)).a!.attention).toBeNull();
+
+        // A reclaimed attempt holds a new lease: the old question is closed, so a gate failure is repaired.
+        const reclaimed = await frozen(planWith([{ key: 'one', tasks: [task('a')] }]));
+        await store.reconcile(reclaimed);
+        const second = (await stateOf(reclaimed)).a!.rootJobId!;
+        const asker = await headOf(second);
+        await sql`update job set lease_token = ${randomUUID()}, attempts = 2 where id = ${asker.id}`;
+        await sql`
+            insert into job_question (org_id, job_id, question_id, attempt, lease_token, questions, state)
+            values (${ORG}, ${asker.id}, 'q1', 1, ${randomUUID()}, ${sql.json([{ question: 'old?' }])}, 'pending')
+        `;
+        await failWith(second, 'gate');
+        await store.reconcile(reclaimed);
+        expect(await kindsOf('a', reclaimed)).toEqual(['launch', 'repair']);
+    });
+
+    it('cannot reset a budget or repeat a repair across a restart', async () => {
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }], { repairs: 1 }));
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        await failWith(a!.rootJobId!, 'gate');
+        const restarted = [createBatchStore({ sql, orgId: ORG }), createBatchStore({ sql, orgId: ORG })];
+        await Promise.all([store, ...restarted].map((process) => process.reconcile(id)));
+        await Promise.all(restarted.map((process) => process.reconcileOpen()));
+        expect(await kindsOf('a', id)).toEqual(['launch', 'repair']);
+        expect(await decisions(id)).toEqual(['launch:a:1', 'launch:a:2']);
+        const jobsBefore = await jobCount();
+
+        await failWith(a!.rootJobId!, 'gate');
+        await restarted[0]!.reconcile(id);
+        await restarted[1]!.reconcile(id);
+        expect(await jobCount()).toBe(jobsBefore);
+        expect((await stateOf(id)).a).toMatchObject({ execution: 'failed', attention: 'budget' });
+    });
+
+    it('lets cancellation win over a retry waiting out its backoff', async () => {
+        const { clock, store: timed } = clockedStore();
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a'), task('b')] }]), timed);
+        await timed.reconcile(id);
+        const tasks = await stateOf(id);
+        await failWith(tasks.a!.rootJobId!, 'timeout');
+        await timed.reconcile(id);
+        expect((await stateOf(id)).a!.execution).toBe('retry');
+        const jobsBefore = await jobCount();
+
+        await timed.cancel(id, ALICE);
+        clock.ms += 3_600_000;
+        await timed.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({ execution: 'cancelled' });
+        expect(await jobCount()).toBe(jobsBefore);
+        expect(await kindsOf('a', id)).toEqual(['launch']);
+    });
+});
+
+describe.skipIf(!enabled)('the time limit', () => {
+    const limited = () =>
+        planWith(
+            [
+                { key: 'one', tasks: [prTask('a'), task('s')] },
+                { key: 'two', tasks: [task('b')] },
+            ],
+            { timeLimitMinutes: 1 }
+        );
+
+    it('freezes the budgets and the deadline at start', async () => {
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }], { infraRetries: 3, repairs: 4 }));
+        const record = (await store.get(id))!;
+        expect(record.plan).toMatchObject({ infraRetries: 3, repairs: 4, timeLimitMinutes: 720 });
+        expect(Date.parse(record.deadlineAt!) - Date.parse(record.startedAt!)).toBe(720 * 60_000);
+        for (const change of [
+            () => sql`update batch set infra_retries = 0 where id = ${id}`,
+            () => sql`update batch set repairs = 0 where id = ${id}`,
+            () => sql`update batch set time_limit_minutes = 1000 where id = ${id}`,
+            () => sql`update batch set deadline_at = now() where id = ${id}`,
+        ]) {
+            await expect(change()).rejects.toMatchObject({ code: '23514' });
+        }
+    });
+
+    it('stops dispatch and recovery at the limit, cancels unrun work and still records a merge that landed', async () => {
+        const { clock, store: timed } = clockedStore();
+        const id = await frozen(limited(), timed);
+        await timed.reconcile(id);
+        let tasks = await stateOf(id);
+        await setStatus(tasks.a!.rootJobId!, 'succeeded');
+        const number = await publish(tasks.a!.rootJobId!);
+        await failWith(tasks.s!.rootJobId!, 'timeout');
+        await timed.reconcile(id);
+        expect((await stateOf(id)).s!.execution).toBe('retry');
+
+        clock.ms += 120_000;
+        expect(await timed.reconcile(id)).toMatchObject({ expired: true, active: 0 });
+        tasks = await stateOf(id);
+        expect(tasks.s).toMatchObject({ execution: 'cancelled' });
+        expect(tasks.s!.waitReason).toContain('time limit');
+        expect(tasks.b).toMatchObject({ execution: 'cancelled' });
+        expect(await decisions(id)).toContain('expire');
+        expect((await timed.get(id))!.expiredAt).not.toBeNull();
+
+        await merge(REPO, number);
+        await timed.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({ gate: 'passed' });
+        expect(await decisions(id)).not.toContain('advance:one');
+        expect(await kindsOf('b', id)).toEqual([]);
+        expect(await timed.retry(id, 's')).toEqual({ result: 'expired' });
+        // Expiring is a decision made once.
+        await timed.reconcile(id);
+        expect((await decisions(id)).filter((key) => key === 'expire')).toHaveLength(1);
+        expect((await timed.report(id))!).toMatchObject({
+            state: 'expired',
+            prs: { merged: [{ task: 'a', url: prUrlOf(REPO, number) }] },
+        });
+    });
+
+    it('stops work that is still moving when the limit passes', async () => {
+        const { clock, store: timed } = clockedStore();
+        const id = await frozen(limited(), timed);
+        await timed.reconcile(id);
+        const { s } = await stateOf(id);
+        await setStatus(s!.rootJobId!, 'running');
+        clock.ms += 120_000;
+        await timed.reconcile(id);
+        expect((await headOf(s!.rootJobId!)).status).toBe('stopped');
+        expect((await stateOf(id)).s!.execution).toBe('stopped');
+    });
+});
+
+describe.skipIf(!enabled)('the morning report', () => {
+    it('lists merged and open PRs, recovery spent, usage, exact waiting reasons and the next supported step', async () => {
+        const id = await frozen(
+            planWith([
+                { key: 'one', tasks: [prTask('a'), prTask('b'), task('c')] },
+                { key: 'two', tasks: [task('d')] },
+            ])
+        );
+        await store.reconcile(id);
+        const tasks = await stateOf(id);
+        await sql`update job set wall_clock_ms = 5000, agent_turns = 7 where root_job_id = ${tasks.a!.rootJobId!}`;
+        await setStatus(tasks.a!.rootJobId!, 'succeeded');
+        const merged = await publish(tasks.a!.rootJobId!);
+        await setStatus(tasks.b!.rootJobId!, 'succeeded');
+        const open = await publish(tasks.b!.rootJobId!);
+        await failWith(tasks.c!.rootJobId!, 'config');
+        await merge(REPO, merged);
+        await store.reconcile(id);
+
+        const report = (await store.report(id))!;
+        expect(report).toMatchObject({
+            state: 'parked',
+            budgets: { infraRetries: 2, repairs: 2, timeLimitMinutes: 720 },
+            prs: {
+                merged: [{ task: 'a', url: prUrlOf(REPO, merged) }],
+                open: [{ task: 'b', url: prUrlOf(REPO, open) }],
+            },
+            totals: { accepted: 1, failed: 1, needsAttention: 2, wallClockMs: 5000, agentTurns: 7 },
+        });
+        const byKey = Object.fromEntries(report.tasks.map((t) => [t.key, t]));
+        expect(byKey.a).toMatchObject({
+            gate: 'passed',
+            job: `/api/jobs/${tasks.a!.rootJobId}`,
+            next: { action: 'none' },
+        });
+        expect(byKey.b).toMatchObject({
+            waitReason: `waiting for a person to merge ${prUrlOf(REPO, open)}`,
+            next: { action: 'merge', url: prUrlOf(REPO, open) },
+        });
+        expect(byKey.c).toMatchObject({
+            attention: 'configuration',
+            next: { action: 'retry', method: 'POST', path: `/api/batches/${id}/tasks/c/retry` },
+        });
+        expect(byKey.d).toMatchObject({ execution: 'pending', next: { action: 'wait' } });
+        expect(await store.report('00000000-0000-4000-8000-000000000000')).toBeNull();
+    });
+
+    it('is not available for a draft', async () => {
+        const { id } = await store.create(planWith([{ key: 'one', tasks: [task('a')] }]), ALICE);
+        expect(await store.report(id)).toBeNull();
+    });
+});

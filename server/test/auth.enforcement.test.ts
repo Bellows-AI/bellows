@@ -142,6 +142,7 @@ const BATCH_PATHS: readonly (readonly [string, string])[] = [
     ['POST', '/api/batches'],
     ['GET', '/api/batches'],
     ['GET', `/api/batches/${JOB_ID}`],
+    ['GET', `/api/batches/${JOB_ID}/report`],
     ['PUT', `/api/batches/${JOB_ID}`],
     ['POST', `/api/batches/${JOB_ID}/validate`],
     ['POST', `/api/batches/${JOB_ID}/start`],
