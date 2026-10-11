@@ -78,9 +78,9 @@ export function createBatchStore({
             return readRecord(sql, { orgId, id });
         },
 
-        async list() {
+        async list(rootJobId) {
             await gate();
-            return listSummaries(sql, orgId);
+            return listSummaries(sql, orgId, rootJobId);
         },
 
         async replace(id, version, plan) {

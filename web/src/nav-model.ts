@@ -26,6 +26,7 @@ export interface PrimaryNavItem extends NavItem {
 export const NAV_ITEMS: readonly PrimaryNavItem[] = [
     { to: '/', label: 'Dashboard', end: true, icon: 'home' },
     { to: '/tasks', label: 'Tasks', icon: 'list' },
+    { to: '/batches', label: 'Batches', icon: 'layers' },
     { to: '/settings', label: 'Settings', icon: 'settings' },
 ];
 

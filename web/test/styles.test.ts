@@ -238,6 +238,13 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.token-create button',
         '.onboarding-org-summary',
     ],
+    'styles/regions/batches.css': [
+        '.batch-new',
+        '.batch-actions button',
+        '.batch-field input',
+        '.batch-field select',
+        '.batch-field textarea',
+    ],
 };
 
 describe('the stylesheet', () => {
@@ -561,6 +568,7 @@ describe('the style system file ownership (#321)', () => {
         './styles/regions/settings.css',
         './styles/regions/dashboard.css',
         './styles/regions/entry.css',
+        './styles/regions/batches.css',
         './styles/touch-targets.css',
         './styles/platform.css',
     ];

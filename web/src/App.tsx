@@ -2,6 +2,9 @@ import { createRoutesFromElements, Navigate, Outlet, Route } from 'react-router-
 import type { RouteObject } from 'react-router-dom';
 import { AppShell } from './components/AppShell.js';
 import { AccountPage } from './pages/AccountPage.js';
+import { BatchDetailPage } from './pages/BatchDetailPage.js';
+import { BatchesPage } from './pages/BatchesPage.js';
+import { BatchNewPage } from './pages/BatchNewPage.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { OnboardingPage } from './pages/OnboardingPage.js';
 import { SettingsExecutorsPage } from './pages/SettingsExecutorsPage.js';
@@ -62,6 +65,13 @@ export const appRoutes: RouteObject[] = createRoutesFromElements(
                 <Route index element={<TaskInboxPage />} />
                 <Route path="new" element={<TaskComposerPage />} />
                 <Route path=":id" element={<TaskDetailPage />} />
+            </Route>
+            {/* Batches (docs/batches.md): the list, a blank draft, and one batch — a draft opens its
+                editor, a started batch its monitor. `new` precedes `:id` for the reason tasks' does. */}
+            <Route path="batches">
+                <Route index element={<BatchesPage />} />
+                <Route path="new" element={<BatchNewPage />} />
+                <Route path=":id" element={<BatchDetailPage />} />
             </Route>
             {/* The member's own account. Reached from the app bar's user menu, not the sidenav:
                 it is personal, not a section of the dashboard — `/settings/*` is the

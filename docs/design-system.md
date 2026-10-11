@@ -99,4 +99,5 @@ Data display: `table-wrap`, `data`, `sortable`, `align-end`, `asc`, `kv`, `by-us
 
 [inbox](design-system/inbox.md) · [composer](design-system/composer.md) ·
 [task-detail](design-system/task-detail.md) · [settings](design-system/settings.md) ·
-[dashboard](design-system/dashboard.md) · [entry](design-system/entry.md)
+[dashboard](design-system/dashboard.md) · [entry](design-system/entry.md) ·
+[batches](design-system/batches.md)
