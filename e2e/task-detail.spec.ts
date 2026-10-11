@@ -695,22 +695,24 @@ test.describe('the task detail page', () => {
 
     test('the activity pulse opens the Task statistics modal and gives focus back', async ({ page }) => {
         const problems = watchConsole(page);
-        // The root run reported tokens and turns; the follow-up reported neither — partial data.
+        // Partial data: only the root run reported agent turns, and only the latest run — the one
+        // the sidebar pulse draws — reported tokens.
         const jobs = authoredBy(followUpThread, await sessionAuthor(page)).map((job, i) => ({
             ...job,
             agentTurns: i === 0 ? 4 : null,
         }));
+        const latest = jobs[jobs.length - 1]!;
         await routeThread(page, jobs);
         await page.route('**/api/jobs/*/activity', (route) => {
-            const measured = route.request().url().includes(jobs[0]!.id);
+            const measured = route.request().url().includes(latest.id);
             const tokens = { input: 1200, output: 300, cacheRead: 9000, cacheCreation: 50 };
             const zero = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
             return route.fulfill({
                 json: {
-                    jobId: jobs[0]!.id,
-                    sessionId: jobs[0]!.sessionId,
-                    from: jobs[0]!.startedAt,
-                    to: jobs[0]!.finishedAt,
+                    jobId: latest.id,
+                    sessionId: latest.sessionId,
+                    from: latest.startedAt,
+                    to: latest.finishedAt,
                     bucketMs: 300_000,
                     buckets: measured
                         ? [
@@ -731,12 +733,14 @@ test.describe('the task detail page', () => {
         await expect(page.locator('.task-activity .bar-primary')).toHaveCount(0);
         await expect(trigger.locator('svg polyline')).toHaveCount(4);
 
-        const dialog = page.getByRole('dialog', { name: 'Task statistics' });
+        // The panel inside the named dialog: the `dialog` role sits on Headless UI's zero-height
+        // positioning layer, which has no box to be visible.
+        const dialog = page.getByRole('dialog', { name: 'Task statistics' }).locator('.dialog.task-stats');
         // Enter, Space and click each open it; Escape and Close each shut it and return focus.
         await trigger.focus();
         await page.keyboard.press('Enter');
         await expect(dialog).toBeVisible();
-        await expect(dialog.getByText('Agent turns', { exact: true })).toBeVisible();
+        await expect(dialog.locator('.task-stats-totals').getByText('Agent turns', { exact: true })).toBeVisible();
         await expect(dialog.getByText('Agent turns measured for 1 of 2 runs.')).toBeVisible();
         await expect(dialog.getByRole('row')).toHaveCount(jobs.length + 1);
         await page.screenshot({ path: `${SHOTS}/task-detail-stats-modal.png`, fullPage: true });
