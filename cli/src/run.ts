@@ -1,4 +1,5 @@
 import { parseArgs } from 'node:util';
+import { batchCommands } from './batch-commands.js';
 import { createBoardClient, HTTP_OK, QUESTION_ANSWERED_CODE } from './board.js';
 import { TASK_LIST_OPTIONS, taskListFilters } from './tasks.js';
 import type { BoardClient, JobCreated, JobWait, QuestionRecord } from './board.js';
@@ -507,6 +508,7 @@ const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<C
     'skill list': runSkillList,
     'connection list': runConnectionList,
     'auth status': runAuthStatus,
+    ...batchCommands(boardFor),
     help: async () => ok({ usage: USAGE }, USAGE),
     version: async () => {
         const version = readCliVersion();

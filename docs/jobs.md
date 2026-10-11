@@ -71,6 +71,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | `job retry`, `edit`, `reopen` | `cli/src/board.ts` | `cli/test/retry-edit.test.ts` |
 | `job questions`, `job answer` | `cli/src/run.ts` | `cli/test/questions.test.ts` |
 | `--idempotency-key` | `cli/src/board.ts` | `cli/test/idempotency.test.ts` |
+| `batch` (import, update, validate, start, inspect, list, wait, retry, accept, cancel); a wait only reads, its verdict is `batchVerdict` | `cli/src/batch.ts`, `batch-commands.ts`, `batch-render.ts` | `cli/test/batch.test.ts` |
 
 ## Invariants
 

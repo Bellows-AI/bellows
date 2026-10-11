@@ -1,0 +1,314 @@
+import { describe, expect, it } from 'vitest';
+import { run } from '../src/run.js';
+
+const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
+const ID = '11111111-1111-4111-8111-111111111111';
+
+const PLAN = {
+    planVersion: 1,
+    title: 'Overnight',
+    targets: [
+        { key: 'api', repo: 'o/api' },
+        { key: 'web', repo: 'o/web', branch: 'dev' },
+    ],
+    defaultTarget: 'api',
+    policy: 'human',
+    concurrency: 2,
+    stages: [
+        {
+            key: 'build',
+            policy: 'automerge',
+            tasks: [
+                { key: 'a', objective: 'o', required: true, completion: { kind: 'pr' } },
+                { key: 'b', target: 'web', objective: 'o', required: true, completion: { kind: 'pr' } },
+            ],
+        },
+    ],
+};
+
+const task = (key: string, execution: string, extra: Record<string, unknown> = {}) => ({
+    key,
+    stage: 'build',
+    execution,
+    pr: 'none',
+    gate: 'open',
+    waitReason: null,
+    rootJobId: null,
+    ...extra,
+});
+
+const record = (status: string, tasks: unknown[]) => ({
+    id: ID,
+    status,
+    version: 3,
+    plan: PLAN,
+    tasks,
+    createdAt: 'c',
+    updatedAt: 'u',
+    startedAt: status === 'started' ? 's' : null,
+    startedBy: null,
+    createdBy: null,
+});
+
+interface Sent {
+    method: string;
+    url: string;
+    body: unknown;
+    key: string | null;
+}
+
+async function cli(
+    argv: string[],
+    respond: (sent: Sent, n: number) => Response,
+    extra: { files?: Record<string, string>; clock?: { t: number } } = {}
+) {
+    const out: string[] = [];
+    const err: string[] = [];
+    const sent: Sent[] = [];
+    const clock = extra.clock ?? { t: 0 };
+    const fetch = (async (url: string | URL | globalThis.Request, init?: RequestInit) => {
+        const entry: Sent = {
+            method: init?.method ?? 'GET',
+            url: String(url),
+            body: typeof init?.body === 'string' ? JSON.parse(init.body) : null,
+            key: new Headers(init?.headers).get('idempotency-key'),
+        };
+        sent.push(entry);
+        return respond(entry, sent.length);
+    }) as unknown as typeof globalThis.fetch;
+    const code = await run(argv, {
+        env: ENV,
+        fetch,
+        now: () => clock.t,
+        sleep: async (ms) => {
+            clock.t += ms;
+        },
+        readFile: async (path) => {
+            const text = extra.files?.[path];
+            if (text === undefined) throw new Error('ENOENT');
+            return text;
+        },
+        stdout: (text) => out.push(text),
+        stderr: (text) => err.push(text),
+    });
+    return { code, out: out.join(''), err: err.join(''), sent };
+}
+
+const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
+    Response.json(body, { status, headers });
+
+describe('batch import / update', () => {
+    it('creates a draft from a plan file, carrying the plan whole', async () => {
+        const result = await cli(
+            ['batch', 'import', '--file', 'plan.json', '--idempotency-key', 'key-12345678', '--json'],
+            () => json({ id: ID, status: 'draft', version: 1 }, 201),
+            { files: { 'plan.json': JSON.stringify(PLAN) } }
+        );
+        expect(result.code).toBe(0);
+        expect(result.sent).toEqual([
+            { method: 'POST', url: 'http://board/api/batches', body: { plan: PLAN }, key: 'key-12345678' },
+        ]);
+        expect(JSON.parse(result.out).data).toEqual({ id: ID, status: 'draft', version: 1 });
+    });
+
+    it('refuses an unreadable or non-JSON plan before any request', async () => {
+        const missing = await cli(['batch', 'import', '--file', 'nope.json'], () => json({}));
+        const bad = await cli(['batch', 'import', '--file', 'bad.json'], () => json({}), {
+            files: { 'bad.json': '{not json' },
+        });
+        const none = await cli(['batch', 'import'], () => json({}));
+        for (const result of [missing, bad, none]) {
+            expect(result.code).toBe(2);
+            expect(result.sent).toEqual([]);
+        }
+    });
+
+    it('shows every path-addressed plan issue of a rejected plan', async () => {
+        const result = await cli(
+            ['batch', 'import', '--file', 'plan.json'],
+            () =>
+                json(
+                    {
+                        error: 'The batch plan is not valid',
+                        code: 'BAD_BATCH',
+                        issues: [
+                            { path: 'stages[0].tasks[1].target', message: 'unknown target "x"' },
+                            { path: '', message: 'needs a title' },
+                        ],
+                    },
+                    400
+                ),
+            { files: { 'plan.json': '{}' } }
+        );
+        expect(result.code).toBe(1);
+        expect(result.err).toContain('stages[0].tasks[1].target: unknown target "x"');
+        expect(result.err).toContain('needs a title');
+        expect(result.err).toContain('[BAD_BATCH]');
+    });
+
+    it('replaces a draft at the version read, and surfaces a stale one', async () => {
+        const ok = await cli(
+            ['batch', 'update', ID, '--version', '3', '--stdin'],
+            () => json({ id: ID, status: 'draft', version: 4 }),
+            {}
+        );
+        // No stdin reader is injected, so the plan cannot be read: usage, nothing sent.
+        expect(ok.code).toBe(2);
+        expect(ok.sent).toEqual([]);
+
+        const stale = await cli(
+            ['batch', 'update', ID, '--version', '3', '--file', 'plan.json'],
+            () => json({ error: 'The draft is at version 5', code: 'BATCH_STALE', version: 5 }, 409),
+            { files: { 'plan.json': JSON.stringify(PLAN) } }
+        );
+        expect(stale.code).toBe(1);
+        expect(stale.err).toContain('BATCH_STALE');
+        expect(stale.sent).toEqual([
+            { method: 'PUT', url: `http://board/api/batches/${ID}`, body: { version: 3, plan: PLAN }, key: null },
+        ]);
+
+        const unversioned = await cli(['batch', 'update', ID, '--file', 'plan.json'], () => json({}), {
+            files: { 'plan.json': '{}' },
+        });
+        expect(unversioned.code).toBe(2);
+    });
+});
+
+describe('batch validate / start / inspect / list', () => {
+    it('shows effective stage policies and concurrency before start', async () => {
+        const result = await cli(['batch', 'validate', ID], () => json({ valid: true, version: 3, plan: PLAN }));
+        expect(result.code).toBe(0);
+        expect(result.out).toContain('policy human · concurrency 2');
+        expect(result.out).toContain('target web: o/web@dev');
+    });
+
+    it('round-trips a multi-repository draft on inspect, with each task target and the human gate', async () => {
+        const result = await cli(['batch', 'inspect', ID, '--json'], () =>
+            json(record('draft', [task('a', 'pending'), task('b', 'pending')]))
+        );
+        const data = JSON.parse(result.out).data;
+        expect(data.batch.plan).toEqual(PLAN);
+        expect(data.verdict).toBeNull();
+
+        const human = await cli(['batch', 'inspect', ID], () =>
+            json(record('draft', [task('a', 'pending'), task('b', 'pending')]))
+        );
+        expect(human.out).toContain('b pending · gate open · target web');
+        expect(human.out).toContain('a pending · gate open · target api');
+    });
+
+    it('explains the single-target limit and keeps the draft when start refuses a multi-repository plan', async () => {
+        const result = await cli(['batch', 'start', ID, '--version', '3'], () =>
+            json({ error: 'one target only', code: 'BATCH_UNSUPPORTED', reason: 'multi_target' }, 409)
+        );
+        expect(result.code).toBe(1);
+        expect(result.err).toContain('one target only');
+        expect(result.err).toContain('draft is unchanged');
+        expect(result.err).toContain('one repository target');
+    });
+
+    it('starts at the quoted version and marks a replay', async () => {
+        const result = await cli(
+            ['batch', 'start', ID, '--version', '3', '--idempotency-key', 'key-12345678', '--json'],
+            () => json(record('started', [task('a', 'running')]), 200, { 'idempotency-replayed': 'true' })
+        );
+        expect(result.code).toBe(0);
+        expect(result.sent).toEqual([
+            { method: 'POST', url: `http://board/api/batches/${ID}/start`, body: { version: 3 }, key: 'key-12345678' },
+        ]);
+        expect(JSON.parse(result.out).data.replayed).toBe(true);
+    });
+
+    it('says a start that got no answer may have landed, and how to recover', async () => {
+        const result = await cli(['batch', 'start', ID, '--version', '3'], () => json({ error: 'boom' }, 500));
+        expect(result.code).toBe(1);
+        expect(result.err).toContain('may have been applied');
+    });
+
+    it('lists batches', async () => {
+        const result = await cli(['batch', 'list'], () =>
+            json({ batches: [{ id: ID, title: 'T', status: 'draft', version: 1, taskCount: 2 }] })
+        );
+        expect(result.out).toBe(`${ID} draft v1 2 task(s) "T"\n`);
+    });
+
+    it('is usage when a verb is missing its arguments', async () => {
+        const result = await cli(['batch', 'retry', ID], () => json({}));
+        expect(result.code).toBe(2);
+        expect(result.sent).toEqual([]);
+    });
+});
+
+describe('batch wait', () => {
+    const wait = (states: unknown[], argv: string[] = []) =>
+        cli(['batch', 'wait', ID, '--json', ...argv], (_sent, n) => json(states[Math.min(n, states.length) - 1]));
+
+    it('exits 0 once every task succeeded, polling until then', async () => {
+        const result = await wait([
+            record('started', [task('a', 'running')]),
+            record('started', [task('a', 'succeeded')]),
+        ]);
+        expect(result.code).toBe(0);
+        expect(result.sent).toHaveLength(2);
+        expect(JSON.parse(result.out).outcome).toBe('succeeded');
+    });
+
+    it('exits 4 on a failed task, 5 on a cancelled batch', async () => {
+        const failed = await wait([record('started', [task('a', 'succeeded'), task('b', 'failed')])]);
+        const cancelled = await wait([record('started', [task('a', 'cancelled'), task('b', 'succeeded')])]);
+        expect(failed.code).toBe(4);
+        expect(cancelled.code).toBe(5);
+    });
+
+    it('exits 6 naming the human review gate and the PR needing action', async () => {
+        const waiting = record('started', [
+            task('a', 'running', { waitReason: 'human review', pr: 'https://github.com/o/api/pull/9' }),
+            task('b', 'running'),
+        ]);
+        const result = await cli(['batch', 'wait', ID], () => json(waiting));
+        expect(result.code).toBe(6);
+        expect(result.out).toContain('a: human review (pr https://github.com/o/api/pull/9)');
+
+        const asJson = await wait([waiting]);
+        expect(JSON.parse(asJson.out).data.needsAction.map((entry: { key: string }) => entry.key)).toEqual(['a']);
+    });
+
+    it('exits 3 when the budget ends with the batch still moving, leaving it running', async () => {
+        const result = await wait([record('started', [task('a', 'running')])], ['--timeout', '12']);
+        expect(result.code).toBe(3);
+        expect(JSON.parse(result.out).outcome).toBe('timeout');
+        // Only reads: a wait never writes.
+        expect(result.sent.every((sent) => sent.method === 'GET')).toBe(true);
+    });
+
+    it('refuses to wait on a draft', async () => {
+        const result = await cli(['batch', 'wait', ID], () => json(record('draft', [task('a', 'pending')])));
+        expect(result.code).toBe(1);
+        expect(result.err).toContain('draft');
+    });
+});
+
+describe('batch retry / accept / cancel', () => {
+    it('posts to the task and batch routes and surfaces the board answer', async () => {
+        const retry = await cli(['batch', 'retry', ID, 'a'], () => json({ ok: true }));
+        const accept = await cli(['batch', 'accept', ID, 'a'], () => json({ ok: true }));
+        const cancel = await cli(['batch', 'cancel', ID], () => json({ ok: true }));
+        expect(retry.sent[0]).toMatchObject({ method: 'POST', url: `http://board/api/batches/${ID}/tasks/a/retry` });
+        expect(accept.sent[0]).toMatchObject({ method: 'POST', url: `http://board/api/batches/${ID}/tasks/a/accept` });
+        expect(cancel.sent[0]).toMatchObject({ method: 'POST', url: `http://board/api/batches/${ID}/cancel` });
+        expect([retry.code, accept.code, cancel.code]).toEqual([0, 0, 0]);
+    });
+
+    it('surfaces the board refusing an unavailable operation or a forced code-changing completion', async () => {
+        const unsupported = await cli(['batch', 'cancel', ID], () =>
+            json({ error: 'Batch cancel is not available yet', code: 'BATCH_UNSUPPORTED' }, 409)
+        );
+        expect(unsupported.code).toBe(1);
+        expect(unsupported.err).toContain('BATCH_UNSUPPORTED');
+        const noTask = await cli(['batch', 'accept', ID, 'zzz'], () =>
+            json({ error: 'No such task', code: 'NOT_FOUND' }, 404)
+        );
+        expect(noTask.code).toBe(1);
+        expect(noTask.sent).toHaveLength(1);
+    });
+});
