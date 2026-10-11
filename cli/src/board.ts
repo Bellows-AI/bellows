@@ -100,14 +100,24 @@ export interface ArtifactPage {
     content: string;
 }
 
-/** The run-activity read: tokens and edits per bucket of the run's wall clock. */
+/** The token types a run reports, kept apart. */
+export interface ActivityTokens {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheCreation: number;
+}
+
+/** The run-activity read: tokens by type and edits per bucket of the run's wall clock. */
 export interface JobActivity {
     jobId: string;
     sessionId: string | null;
     from: string | null;
     to: string | null;
     bucketMs: number | null;
-    buckets: readonly { start: string; tokens: number; edits: number }[];
+    buckets: readonly { start: string; tokens: ActivityTokens; edits: number }[];
+    /** The run's token totals by type; null when nothing was measured. */
+    totals: ActivityTokens | null;
 }
 
 /** One option of an asked question. */

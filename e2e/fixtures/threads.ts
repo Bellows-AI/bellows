@@ -107,6 +107,7 @@ export interface ThreadJob {
     startedAt: string | null;
     finishedAt: string | null;
     wallClockMs: number | null;
+    agentTurns: number | null;
     taskWallClockMs: number | null;
     waitReason: string | null;
     waitingSince: string | null;
@@ -205,6 +206,7 @@ function run(fields: RunFields): ThreadJob {
         startedAt: '2026-09-01T12:00:01.000Z',
         finishedAt: '2026-09-01T12:30:00.000Z',
         wallClockMs: 1_799_000,
+        agentTurns: null,
         taskWallClockMs: null,
         publication: null,
         questions: [],
@@ -551,10 +553,11 @@ export const nullAuthorThread = thread([
 ]);
 
 /**
- * The activity payload a mocked thread answers with (issue #339): empty buckets, so the page's
- * run-activity panel renders its muted state. The page fetches `GET /api/jobs/:id/activity`
- * beside its thread poll — a mocked thread must answer that too, or the real board 404s a task
- * id the fixture only names, and the console watcher fails the spec.
+ * The activity payload a mocked thread answers with (issues #339, #530): empty buckets and null
+ * totals, so the page's activity summary renders its "no telemetry" state. The page fetches
+ * `GET /api/jobs/:id/activity` for every run beside its thread poll — a mocked thread must answer
+ * that too, or the real board 404s a task id the fixture only names, and the console watcher
+ * fails the spec.
  */
 export function mockedActivityOf(jobs: readonly ThreadJob[]): unknown {
     const head = jobs[jobs.length - 1] ?? null;
@@ -565,6 +568,7 @@ export function mockedActivityOf(jobs: readonly ThreadJob[]): unknown {
         to: head?.finishedAt ?? head?.startedAt ?? null,
         bucketMs: null,
         buckets: [],
+        totals: null,
     };
 }
 

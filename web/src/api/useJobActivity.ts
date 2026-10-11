@@ -1,14 +1,22 @@
 import { useEffect, useState } from 'react';
 import type { Job } from './useJobs.js';
 
+/** The four token types the board reports apart, as the activity route answers them. */
+export interface TokenTypes {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheCreation: number;
+}
+
 /**
  * One bucket of a run's wall clock, as `GET /api/jobs/:id/activity` answers it: the tokens the
- * run processed and the edit decisions it made inside the bucket. Copied from the route's
- * payload, the same rule every client-side row shape follows.
+ * run processed, by type, and the edit decisions it made inside the bucket. Copied from the
+ * route's payload, the same rule every client-side row shape follows.
  */
 export interface JobActivityBucket {
     start: string;
-    tokens: number;
+    tokens: TokenTypes;
     edits: number;
 }
 
@@ -20,51 +28,59 @@ export interface JobActivity {
     to: string | null;
     bucketMs: number | null;
     buckets: JobActivityBucket[];
+    /** The run's token totals by type; null when the run reported nothing — never a zero total. */
+    totals: TokenTypes | null;
 }
 
+/** A run's activity answer, or the board's refusal to give one. An absent run is still loading. */
+export type RunActivity = JobActivity | 'unavailable';
+
+/** Every run of the thread's activity answer, by job id. */
+export type ThreadActivity = Readonly<Record<string, RunActivity>>;
+
+/** A run with no session — or one that never started — has nothing the route could chart. */
+const hasTelemetryKey = (job: Job): boolean => job.sessionId !== null && job.startedAt !== null;
+
 /**
- * The head run's progress-over-time payload (issue 339), from the activity route, fetched for
- * the HEAD run by its own id — never the URL-named task: any member's id resolves to the same
- * conversation, so a follow-up URL would otherwise chart the root's run while the page reads
- * the follow-up's. Refetched when the head run changes, when its session is first reported,
- * when it starts, and when it finishes (`finishedAt` lands, the final fetch) — never on a
- * timer: a chart that redraws itself every two seconds is noise, not information. An HTTP
- * refusal answers null — an unreadable answer is not "keep a stale chart"; a network failure
- * keeps the last answer for THIS run on screen. A head change clears immediately, so the
- * previous run's chart never renders under the new one.
+ * Everything that makes a run's activity answer worth refetching: its session first reported,
+ * its start, and its finish (`finishedAt` lands: the final fetch). Never a timer — a chart that
+ * redraws itself every two seconds is noise, not information.
  */
-export function useJobActivity(head: Job | null): JobActivity | null {
-    const [activity, setActivity] = useState<JobActivity | null>(null);
-    const headId = head?.id ?? null;
-    const sessionId = head?.sessionId ?? null;
-    const startedAt = head?.startedAt ?? null;
-    const finishedAt = head?.finishedAt ?? null;
+const refetchKeyOf = (job: Job): string => [job.id, job.sessionId, job.startedAt, job.finishedAt].join('|');
 
-    // A different head run is a different question: the previous run's answer must not render
-    // under the new one while its first fetch is in flight.
-    useEffect(() => {
-        setActivity(null);
-    }, [headId]);
+/**
+ * The thread's per-run activity answers (issue 339, 530), fetched for EVERY run by its own id —
+ * the pulse reads the newest run, the statistics modal reads them all, and any member's id
+ * resolves to the same conversation so each run is asked for itself, never the URL-named one.
+ * A run with no session reads `unavailable` without a request. An HTTP refusal answers
+ * `unavailable` — an unreadable answer is not "keep a stale chart"; a network failure keeps the
+ * run's last answer. Answers are keyed by job id, so one run's chart can never render as
+ * another's, and a changed run keeps its previous answer on screen until the new one lands.
+ */
+export function useThreadActivity(jobs: readonly Job[] | null): ThreadActivity {
+    const [answers, setAnswers] = useState<ThreadActivity>({});
+    const runs = (jobs ?? []).filter(hasTelemetryKey);
+    const key = runs.map(refetchKeyOf).join(',');
 
     useEffect(() => {
-        if (headId === null || sessionId === null) {
-            setActivity(null);
-            return;
-        }
         const controller = new AbortController();
-        void (async () => {
-            try {
-                const response = await fetch(`/api/jobs/${headId}/activity`, { signal: controller.signal });
-                // A refusal — a 404 whose task just left the board, a 500 — is no answer: the
-                // panel falls back to its muted state rather than drawing a stale chart.
-                setActivity(response.ok ? ((await response.json()) as JobActivity) : null);
-            } catch {
-                // Aborted mid-flight (a task change won the race): the new fetch owns the state.
-                // A network failure that is not an abort keeps the run's last answer.
-            }
-        })();
+        const ids = key === '' ? [] : key.split(',').map((entry) => entry.split('|')[0]!);
+        for (const id of ids) {
+            void (async () => {
+                try {
+                    const response = await fetch(`/api/jobs/${id}/activity`, { signal: controller.signal });
+                    const answer: RunActivity = response.ok ? ((await response.json()) as JobActivity) : 'unavailable';
+                    setAnswers((previous) => ({ ...previous, [id]: answer }));
+                } catch {
+                    // Aborted mid-flight (the thread changed): the new fetch owns the state.
+                    // A network failure that is not an abort keeps the run's last answer.
+                }
+            })();
+        }
         return () => controller.abort();
-    }, [headId, sessionId, startedAt, finishedAt]);
+    }, [key]);
 
-    return activity;
+    // A run without telemetry is answered here, so the modal never reads it as "still loading".
+    const unmeasured = (jobs ?? []).filter((job) => !hasTelemetryKey(job));
+    return { ...answers, ...Object.fromEntries(unmeasured.map((job) => [job.id, 'unavailable' as const])) };
 }

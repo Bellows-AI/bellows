@@ -94,18 +94,24 @@ export function createPostgresTelemetryClient({ sql, orgId, ready }: PostgresTel
             // session arrived here through the caller's own org's job row, the same trust path
             // every other metric_point read leans on. `metric_point_used`, never `metric_point`:
             // the double-count rule (002_views.repeatable.sql). The window and the field filter
-            // bound the scan; the session index serves the rest.
+            // bound the scan; the session index serves the rest. Cumulative points from before
+            // the window ride along: a follow-up run shares its session's counters, and the
+            // total reached before `from` is the baseline its own increments difference from.
             const rows = await sql<ActivityRow[]>`
                 select agent, metric, field, temporality, start_time, attrs, value, time
                 from metric_point_used
                 where session_id = ${sessionId}
                   and field in ('tokens_input', 'tokens_output', 'tokens_cacheRead', 'tokens_cacheCreation',
                                 'edits_accept', 'edits_reject')
-                  and time >= ${from} and time <= ${to}
+                  and time <= ${to}
+                  and (time >= ${from} or temporality = 'cumulative')
             `;
             // Nothing measured is not a quiet run: [] is what the UI renders its muted
             // "no telemetry for this run" state from, never a fabricated zero line.
-            if (rows.length === 0) return [];
+            // Pre-window cumulative points only set a baseline: with none of the run's own, the
+            // run measured nothing, and its zero buckets would read as a measured zero.
+            const fromMs = Date.parse(from);
+            if (!rows.some((row) => new Date(row.time).getTime() >= fromMs)) return [];
             return bucketizeActivity(
                 rows.map((row) => ({
                     field: row.field,
