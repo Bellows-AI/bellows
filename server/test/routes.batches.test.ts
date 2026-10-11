@@ -514,6 +514,34 @@ describe('dispatch, wait, retry and cancel', () => {
         expect(cancelled.json().code).toBe('BATCH_CANCELLED');
     });
 
+    it('retry refuses an expired batch with its own code', async () => {
+        const s = await setup();
+        const id = await start(s);
+        s.batches.mark(id, 'a', { execution: 'failed' });
+        s.batches.expire(id);
+        const expired = await s.call('POST', `/api/batches/${id}/tasks/a/retry`, {});
+        expect(expired.statusCode).toBe(HTTP_CONFLICT);
+        expect(expired.json().code).toBe('BATCH_EXPIRED');
+    });
+
+    it('the report answers for a started batch, 409s a draft and 404s a stranger', async () => {
+        const s = await setup();
+        const id = await start(s);
+        const report = await s.call('GET', `/api/batches/${id}/report`);
+        expect(report.statusCode).toBe(HTTP_OK);
+        expect(report.json()).toMatchObject({ id, budgets: { infraRetries: 2, repairs: 2, timeLimitMinutes: 720 } });
+
+        const { id: draft } = await s.create();
+        const notStarted = await s.call('GET', `/api/batches/${draft}/report`);
+        expect(notStarted.statusCode).toBe(HTTP_CONFLICT);
+        expect(notStarted.json().code).toBe('BATCH_NOT_STARTED');
+
+        const anonymous = await s.call('GET', `/api/batches/${id}/report`, undefined, { cookie: null });
+        expect(anonymous.statusCode).toBe(HTTP_UNAUTHORIZED);
+        const foreign = await s.call('GET', `/api/batches/${id}/report`, undefined, { cookie: s.otherCookie });
+        expect(foreign.statusCode).toBe(HTTP_NOT_FOUND);
+    });
+
     it('cancel stamps the batch, and a repeat answers the same without a second write', async () => {
         const s = await setup();
         const id = await start(s);

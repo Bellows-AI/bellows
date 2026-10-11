@@ -25,10 +25,19 @@ const task = (key: string, stage: string, over: Partial<ScheduleTask> = {}): Sch
     required: true,
     execution: TASK_PENDING,
     gate: GATE_OPEN,
+    notBefore: null,
     ...over,
 });
 
-const base = { stages: ['build', 'join'], advanced: [] as string[], concurrency: 2, cancelled: false };
+const NOW = 1_000_000;
+const base = {
+    stages: ['build', 'join'],
+    advanced: [] as string[],
+    concurrency: 2,
+    cancelled: false,
+    expired: false,
+    now: NOW,
+};
 
 describe('decideSchedule', () => {
     it('launches the active stage in parallel and holds the join stage back', () => {
@@ -122,6 +131,17 @@ describe('decideSchedule', () => {
         const d = decideSchedule({ ...base, cancelled: true, tasks: [task('a', 'build')] });
         expect(d).toMatchObject({ launch: [], advance: null, complete: false });
     });
+
+    it('decides nothing once the time limit expired', () => {
+        const d = decideSchedule({ ...base, expired: true, tasks: [task('a', 'build')] });
+        expect(d).toMatchObject({ launch: [], advance: null, complete: false });
+    });
+
+    it('holds a retry until its backoff has passed, while its sibling launches', () => {
+        const tasks = [task('a', 'build', { execution: TASK_RETRY, notBefore: NOW + 1 }), task('b', 'build')];
+        expect(decideSchedule({ ...base, tasks }).launch).toEqual(['b']);
+        expect(decideSchedule({ ...base, now: NOW + 1, tasks }).launch).toEqual(['a', 'b']);
+    });
 });
 
 describe('task predicates', () => {
@@ -188,11 +208,19 @@ describe('judgeTaskGate', () => {
 
 describe('batchWaitResult', () => {
     it('is null while a task moves, terminal when done or cancelled, parked otherwise', () => {
-        expect(batchWaitResult({ complete: false, cancelled: false, active: 1 })).toBeNull();
-        expect(batchWaitResult({ complete: true, cancelled: false, active: 0 })).toBe('terminal');
-        expect(batchWaitResult({ complete: false, cancelled: true, active: 0 })).toBe('terminal');
-        expect(batchWaitResult({ complete: false, cancelled: false, active: 0 })).toBe('parked');
-        expect(batchWaitResult({ complete: false, cancelled: true, active: 1 })).toBeNull();
+        const idle = { complete: false, cancelled: false, expired: false, active: 0, waiting: 0 };
+        expect(batchWaitResult({ ...idle, active: 1 })).toBeNull();
+        expect(batchWaitResult({ ...idle, complete: true })).toBe('terminal');
+        expect(batchWaitResult({ ...idle, cancelled: true })).toBe('terminal');
+        expect(batchWaitResult(idle)).toBe('parked');
+        expect(batchWaitResult({ ...idle, cancelled: true, active: 1 })).toBeNull();
+    });
+
+    it('is terminal once expired, and still moving while a retry waits out its backoff', () => {
+        const idle = { complete: false, cancelled: false, expired: false, active: 0, waiting: 0 };
+        expect(batchWaitResult({ ...idle, expired: true })).toBe('terminal');
+        expect(batchWaitResult({ ...idle, waiting: 1 })).toBeNull();
+        expect(batchWaitResult({ ...idle, expired: true, waiting: 1 })).toBe('terminal');
     });
 });
 

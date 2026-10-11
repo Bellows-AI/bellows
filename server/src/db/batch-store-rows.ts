@@ -23,6 +23,9 @@ interface BatchRow {
     executor: string | null;
     policy: BatchPlan['policy'];
     concurrency: number;
+    infra_retries: number;
+    repairs: number;
+    time_limit_minutes: number;
     created_by: string | null;
     started_by: string | null;
     created_at: Date;
@@ -30,6 +33,8 @@ interface BatchRow {
     started_at: Date | null;
     cancelled_at: Date | null;
     completed_at: Date | null;
+    deadline_at: Date | null;
+    expired_at: Date | null;
 }
 
 interface TargetRow {
@@ -59,6 +64,7 @@ interface TaskRow {
     pr: string;
     gate: string;
     wait_reason: string | null;
+    attention: string | null;
     attempt: number;
 }
 
@@ -79,6 +85,9 @@ function planOf(batch: BatchRow, targets: TargetRow[], stages: StageRow[], tasks
         ...(batch.executor === null ? {} : { executor: batch.executor }),
         policy: batch.policy,
         concurrency: batch.concurrency,
+        infraRetries: batch.infra_retries,
+        repairs: batch.repairs,
+        timeLimitMinutes: batch.time_limit_minutes,
         stages: stages.map((stage) => ({
             key: stage.key,
             ...(stage.policy === null ? {} : { policy: stage.policy }),
@@ -105,7 +114,8 @@ function planOf(batch: BatchRow, targets: TargetRow[], stages: StageRow[], tasks
 export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise<BatchRecord | null> {
     const [batch] = await sql<BatchRow[]>`
         select id, status, version, plan_version, title, default_target, executor, policy, concurrency,
-               created_by, started_by, created_at, updated_at, started_at, cancelled_at, completed_at
+               infra_retries, repairs, time_limit_minutes, created_by, started_by, created_at, updated_at,
+               started_at, cancelled_at, completed_at, deadline_at, expired_at
         from batch where org_id = ${orgId} and id = ${id}
     `;
     if (!batch) return null;
@@ -121,7 +131,7 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
         sql<TaskRow[]>`
             select t.key, t.stage_key, t.target_key, t.executor, t.objective, t.acceptance, t.verification,
                    t.required, t.completion_kind, t.completion_condition, t.root_job_id, t.execution,
-                   t.pr, t.gate, t.wait_reason,
+                   t.pr, t.gate, t.wait_reason, t.attention,
                    (select coalesce(max(a.attempt), 0)::int from batch_attempt a
                     where a.org_id = t.org_id and a.batch_id = t.batch_id and a.task_key = t.key) as attempt
             from batch_task t
@@ -146,6 +156,8 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
         startedAt: iso(batch.started_at),
         cancelledAt: iso(batch.cancelled_at),
         completedAt: iso(batch.completed_at),
+        deadlineAt: iso(batch.deadline_at),
+        expiredAt: iso(batch.expired_at),
         activeStage:
             batch.status === BATCH_STARTED ? (stages.find((stage) => !done.has(stage.key))?.key ?? null) : null,
         plan: planOf(batch, targets, stages, tasks),
@@ -156,6 +168,7 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
             pr: task.pr,
             gate: task.gate,
             waitReason: task.wait_reason,
+            attention: task.attention,
             rootJobId: task.root_job_id,
             attempt: task.attempt,
         })),

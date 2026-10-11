@@ -147,31 +147,34 @@ export interface FollowUpRowInput {
     idempotency?: IdempotencyInput | undefined;
 }
 
-export async function createFollowUpRow(
-    sql: Sql,
-    input: FollowUpRowInput
-): Promise<CreatedRef | 'missing' | 'task_done' | 'not_finished' | 'forbidden' | 'purging'> {
-    const { orgId, parentId, command, createdBy, idempotency: idem } = input;
+export type FollowUpRowResult = CreatedRef | 'missing' | 'task_done' | 'not_finished' | 'forbidden' | 'purging';
+
+export async function createFollowUpRow(sql: Sql, input: FollowUpRowInput): Promise<FollowUpRowResult> {
     // One transaction for the checkout-row guard and the conditional insert, so a purge that
     // commits between them cannot slip a follow-up into a checkout that is being deleted — the
     // same lock both job-insert paths take (refuseIfCheckoutPurging), taken BEFORE the insert.
-    return sql.begin(async (tx) => {
-        // The follow-up runs in the PARENT's repo's checkout, so the guard reads the parent's
-        // repo label (a finished parent's label never changes) — and the same read resolves the
-        // thread root the advisory lock below is keyed by.
-        const [label] = await tx<{ repo: string | null; root_job_id: string }[]>`
+    return sql.begin((tx) => followUpInTx(tx, input));
+}
+
+/** createFollowUpRow's body, for a caller that already holds a transaction (the batch scheduler's repair). */
+export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput): Promise<FollowUpRowResult> {
+    const { orgId, parentId, command, createdBy, idempotency: idem } = input;
+    // The follow-up runs in the PARENT's repo's checkout, so the guard reads the parent's
+    // repo label (a finished parent's label never changes) — and the same read resolves the
+    // thread root the advisory lock below is keyed by.
+    const [label] = await tx<{ repo: string | null; root_job_id: string }[]>`
             select repo, root_job_id from job where org_id = ${orgId} and id = ${parentId}
         `;
-        if (!label) return 'missing';
-        const replayed = await replayOf(tx, orgId, createdBy, idem);
-        if (replayed) return replayedFor(tx, { orgId, parentId, createdBy }, replayed);
-        if (await refuseIfCheckoutPurging(tx, orgId, createdBy, label.repo)) return 'purging';
-        // The same per-thread advisory lock the claim, remove, reopen and done take: the
-        // eligibility check and the insert must be atomic with a racing done on ANY member —
-        // not only on the parent row the CTE below locks — or a done could commit between the
-        // check and the insert and leave queued work in a thread the user closed.
-        await tx`select pg_advisory_xact_lock(hashtextextended(${label.root_job_id}::text, 0))`;
-        const rows = await tx<{ id: string }[]>`
+    if (!label) return 'missing';
+    const replayed = await replayOf(tx, orgId, createdBy, idem);
+    if (replayed) return replayedFor(tx, { orgId, parentId, createdBy }, replayed);
+    if (await refuseIfCheckoutPurging(tx, orgId, createdBy, label.repo)) return 'purging';
+    // The same per-thread advisory lock the claim, remove, reopen and done take: the
+    // eligibility check and the insert must be atomic with a racing done on ANY member —
+    // not only on the parent row the CTE below locks — or a done could commit between the
+    // check and the insert and leave queued work in a thread the user closed.
+    await tx`select pg_advisory_xact_lock(hashtextextended(${label.root_job_id}::text, 0))`;
+    const rows = await tx<{ id: string }[]>`
             with parent as (
                 select id, repo, executor, executor_scope, session_id, root_job_id, workflow_name, mode
                 from job
@@ -215,15 +218,14 @@ export async function createFollowUpRow(
             from parent, root, primary_session
             returning id
         `;
-        if (rows[0]) {
-            await stampKey(tx, orgId, rows[0].id, idem);
-            return { id: rows[0].id };
-        }
-        // Nothing inserted — one of the four preconditions failed, and which one decides the answer
-        // the route turns into a status code. Forbidden is last. The parent cannot have moved to deleted since the pre-read above —
-        // remove deletes under this same advisory lock — so missing was decided before the lock.
-        return followUpRefusalOf(tx, orgId, parentId);
-    });
+    if (rows[0]) {
+        await stampKey(tx, orgId, rows[0].id, idem);
+        return { id: rows[0].id };
+    }
+    // Nothing inserted — one of the four preconditions failed, and which one decides the answer
+    // the route turns into a status code. Forbidden is last. The parent cannot have moved to deleted since the pre-read above —
+    // remove deletes under this same advisory lock — so missing was decided before the lock.
+    return followUpRefusalOf(tx, orgId, parentId);
 }
 
 /**

@@ -16,6 +16,7 @@ the in-memory stores in `server/test/helpers*.ts`.
 | Idempotency keys, stamped on the `job` row a create, follow-up or retry inserted and unique per org, caller and operation (migration 058) | `server/migrations/058_job_idempotency.sql`, `server/src/db/job-store-idempotency.ts` | `server/test-db/job-store.idempotency.test.ts` |
 | Batch plans: draft, frozen target/stage/task rows, idempotency records, immutability triggers (migration 059; [batches.md](batches.md)) | `server/migrations/059_batches.sql`, `server/src/db/batch-store.ts` | `server/test-db/batch-store.test.ts` |
 | Batch runtime: attempts, unique scheduling decisions, cancel/complete stamps (migration 060; [batches.md](batches.md)) | `server/migrations/060_batch_runtime.sql`, `server/src/db/batch-store-schedule.ts` | `server/test-db/batch-dispatch.test.ts` |
+| Batch recovery: frozen budgets and deadline, `expired_at`, task attention, recovery attempt kinds (migration 062; [batches.md](batches.md)) | `server/migrations/062_batch_recovery.sql` | `server/test-db/batch-dispatch.test.ts` |
 | Database-name guards | `server/src/config.ts`, `server/src/seed/cli.ts` | `server/test/config.persistence.test.ts` |
 | db-suite harness: name guard, migrate, truncate and reseed per test | `server/test-db/harness.ts` | `server/test/test-db.harness.test.ts` |
 

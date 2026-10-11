@@ -7,6 +7,7 @@ import {
     handleGet,
     handleList,
     handleReplace,
+    handleReport,
     handleRetry,
     handleStart,
     handleValidate,
@@ -26,6 +27,7 @@ export const batchRoutes =
         app.post('/api/batches', { bodyLimit: BODY_LIMIT }, (request, reply) => handleCreate(orgs, request, reply));
         app.get('/api/batches', (request, reply) => handleList(orgs, request, reply));
         app.get('/api/batches/:id', (request, reply) => handleGet(orgs, request, reply));
+        app.get('/api/batches/:id/report', (request, reply) => handleReport(orgs, request, reply));
         app.put('/api/batches/:id', { bodyLimit: BODY_LIMIT }, (request, reply) => handleReplace(orgs, request, reply));
         app.post('/api/batches/:id/validate', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleValidate(orgs, request, reply)

@@ -1,4 +1,4 @@
-import type { BatchPlan, ResolvedBatchPlan } from '@factory-ai/core';
+import type { BatchNextAction, BatchPlan, ResolvedBatchPlan } from '@factory-ai/core';
 
 export const BATCH_DRAFT = 'draft';
 export const BATCH_STARTED = 'started';
@@ -12,6 +12,7 @@ export const DECISION_LAUNCH = 'launch';
 export const DECISION_ADVANCE = 'advance';
 export const DECISION_COMPLETE = 'complete';
 export const DECISION_CANCEL = 'cancel';
+export const DECISION_EXPIRE = 'expire';
 
 /** `batch_acceptance.kind` (061): what made a task's gate pass. */
 export const ACCEPTANCE_ACCEPTED = 'accepted';
@@ -35,6 +36,8 @@ export interface BatchTaskState {
     pr: string;
     gate: string;
     waitReason: string | null;
+    /** Why the task needs a person (core's ATTENTION_REASONS), or null. */
+    attention: string | null;
     rootJobId: string | null;
     /** Launches of the task's thread so far: 0 until dispatched, then one per retry. */
     attempt: number;
@@ -56,6 +59,10 @@ export interface BatchRecord extends Omit<BatchSummary, 'title' | 'taskCount'> {
     startedBy: string | null;
     cancelledAt: string | null;
     completedAt: string | null;
+    /** When the frozen time limit ends; null for a draft. */
+    deadlineAt: string | null;
+    /** When the pass that found the deadline passed fenced the batch, or null. */
+    expiredAt: string | null;
     /** The first stage not yet advanced past; null for a draft and once every stage has advanced. */
     activeStage: string | null;
     /** As written while a draft; the resolved plan once started. */
@@ -67,8 +74,11 @@ export interface BatchRecord extends Omit<BatchSummary, 'title' | 'taskCount'> {
 export interface BatchProgress {
     complete: boolean;
     cancelled: boolean;
+    expired: boolean;
     /** Tasks holding a concurrency slot. */
     active: number;
+    /** Retries and repairs queued, not yet launched. */
+    waiting: number;
 }
 
 export type BatchAcceptRefusal =
@@ -87,6 +97,7 @@ export type BatchRetryRefusal =
     | { result: 'missing' }
     | { result: 'not_started' }
     | { result: 'cancelled' }
+    | { result: 'expired' }
     | { result: 'no_task' }
     | { result: 'not_retryable' };
 
@@ -102,6 +113,51 @@ export interface BatchStartInput {
     plan: ResolvedBatchPlan;
     startedBy: string | null;
     idempotency?: BatchIdempotency | undefined;
+}
+
+/** One task of the morning report: its outcome, what recovery spent, its links and the next supported step. */
+export interface BatchReportTask {
+    key: string;
+    stage: string;
+    required: boolean;
+    execution: string;
+    gate: string;
+    attempts: number;
+    infraRetries: number;
+    repairs: number;
+    attention: string | null;
+    waitReason: string | null;
+    pr: string | null;
+    /** The task's thread, as the board's job path. */
+    job: string | null;
+    usage: { wallClockMs: number; agentTurns: number };
+    next: BatchNextAction;
+}
+
+export type BatchReportState = 'running' | 'parked' | 'completed' | 'cancelled' | 'expired';
+
+/** The durable report (docs/batches.md): assembled from rows on every read, so it survives a restart. */
+export interface BatchReport {
+    id: string;
+    title: string;
+    state: BatchReportState;
+    startedAt: string;
+    deadlineAt: string;
+    expiredAt: string | null;
+    cancelledAt: string | null;
+    completedAt: string | null;
+    budgets: { infraRetries: number; repairs: number; timeLimitMinutes: number };
+    prs: { merged: { task: string; url: string; mergedAt: string }[]; open: { task: string; url: string }[] };
+    tasks: BatchReportTask[];
+    totals: {
+        accepted: number;
+        failed: number;
+        needsAttention: number;
+        infraRetries: number;
+        repairs: number;
+        wallClockMs: number;
+        agentTurns: number;
+    };
 }
 
 export interface BatchStore {
@@ -138,6 +194,8 @@ export interface BatchStore {
     cancel(id: string, cancelledBy: string | null): Promise<{ result: 'ok'; replayed: boolean } | BatchCancelRefusal>;
     /** Queues a failed, stopped or gate-refused task for another attempt in its own thread. */
     retry(id: string, taskKey: string): Promise<{ result: 'ok' } | BatchRetryRefusal>;
+    /** The morning report of a started batch; null when this org has no such batch or it is a draft. */
+    report(id: string): Promise<BatchReport | null>;
     /** Records a person's acceptance of a finished `accepted`-completion task, passing its gate. */
     accept(id: string, taskKey: string, acceptedBy: string | null): Promise<{ result: 'ok' } | BatchAcceptRefusal>;
 }

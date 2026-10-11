@@ -19,7 +19,10 @@ gate passes on a human-merged PR or a person's recorded acceptance. No driver or
 | Roots created in the scheduler's transaction; remove/reopen refuse a batch thread | `server/src/db/job-store-actions.ts` | `server/test-db/batch-dispatch.test.ts` |
 | Human PR gate: `judgeTaskGate` (pure), `judgeGates` (reads `job_pr` + `pr_merge` per pass) | `core/src/batch-schedule.ts`, `server/src/db/batch-store-gates.ts` | `core/test/batch-schedule.test.ts`, `server/test-db/batch-dispatch.test.ts` |
 | Gate evidence: `batch_acceptance` | `server/migrations/061_batch_acceptance.sql` | `server/test-db/batch-dispatch.test.ts` |
-| Routes (wait, retry, cancel, accept) | `server/src/routes/batches.ts`, `batch-handlers.ts` | `server/test/routes.batches.test.ts` |
+| Recovery: failure classification, backoff, repair command, attention reasons, next action | `core/src/batch-recovery.ts` | `core/test/batch-recovery.test.ts` |
+| Recovery state: budgets, `deadline_at`/`expired_at`, `attention`, `recovery`, `not_before`, attempt kinds | `server/migrations/062_batch_recovery.sql`, `server/src/db/batch-store-repair.ts` | `server/test-db/batch-dispatch.test.ts` |
+| Morning report, built from rows on every read | `server/src/db/batch-store-report.ts` | `server/test-db/batch-dispatch.test.ts` |
+| Routes (wait, retry, cancel, accept, report) | `server/src/routes/batches.ts`, `batch-handlers.ts` | `server/test/routes.batches.test.ts` |
 | Launch checks shared by `validate` and `start` | `server/src/routes/batch-launch.ts` | `server/test/routes.batches.test.ts` |
 | Request envelope, org context, refusals | `server/src/routes/batch-http.ts` | `server/test/routes.batches.test.ts` |
 | Auth wall: human credentials only | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts` |
@@ -71,6 +74,25 @@ gate passes on a human-merged PR or a person's recorded acceptance. No driver or
   after which more commits were pushed, a closed-unmerged PR and a webhook that never arrived are
   not detected; accept needs a human org member, not repository write access.
   `core/src/batch-plan.ts` (`batchExecutionCapability`), `server/src/db/batch-store-gates.ts`.
+- **Recovery is bounded and counted from durable rows.** `infraRetries`, `repairs` and
+  `timeLimitMinutes` freeze at start; a task's budget is the count of its `infra_retry` and `repair`
+  `batch_attempt` rows, so a restart cannot reset it, and a manual retry spends none. An
+  infrastructure failure retries in its own thread after a bounded backoff; a failed gate, publish
+  or helper is repaired by an ordinary follow-up of the thread head, so the task keeps its session
+  and PR, takes a scheduler slot, and its gate reopens and is judged afresh. A spent budget,
+  `config`/`policy`/`blocked`, an unclassified failure and an unanswered or expired question set
+  `attention` and park that task only; siblings keep running. `core/test/batch-recovery.test.ts`,
+  `server/test-db/batch-dispatch.test.ts`.
+- **Questions are never answered or extended by the board:** a pending one shows as `attention`
+  with its id and the answer route; a run that dies holding one is not retried automatically.
+  `server/src/db/batch-store-schedule.ts` (`syncQuestion`).
+- **The time limit is a fence like cancel:** the pass that finds `deadline_at` passed stamps
+  `expired_at` once, cancels work that never launched, stops moving work, and queues no recovery or
+  advance behind it; manual retry answers `409 BATCH_EXPIRED`, while merges and acceptances that
+  land are still recorded and reported. `server/test-db/batch-dispatch.test.ts`.
+- **Limits of recovery:** repair triggers only on a run's own `failure_kind`; a PR that turns red or
+  conflicts after a successful run is not detected, and there is no automatic merge to stop at expiry.
+  `server/src/db/batch-store-schedule.ts` (`recoverFailed`).
 - **Cancel is a fence, then a settle.** `cancelled_at` commits first, so nothing launches, retries
   or advances behind it; moving tasks are stopped through the job store's stop, repeated by every
   later pass until nothing moves. `server/test-db/batch-dispatch.test.ts`.

@@ -1,11 +1,18 @@
 import {
+    ATTENTION_QUESTION,
+    ATTENTION_REFUSED,
+    attentionWaitReason,
     BATCH_COMPLETION_ACCEPTED,
     batchTaskCommand,
+    classifyTaskFailure,
     decideSchedule,
     GATE_OPEN,
     GATE_PASSED,
     holdsSlot,
     isRetryable,
+    planRecovery,
+    RECOVERY_INFRA,
+    RECOVERY_REPAIR,
     TASK_CANCELLED,
     TASK_FAILED,
     TASK_PENDING,
@@ -18,6 +25,7 @@ import {
 } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
 import { judgeGates } from './batch-store-gates.js';
+import { repairInTx } from './batch-store-repair.js';
 import { insertJobInTx, retryInTx } from './job-store-actions.js';
 import {
     ACCEPTANCE_ACCEPTED,
@@ -25,6 +33,7 @@ import {
     DECISION_ADVANCE,
     DECISION_CANCEL,
     DECISION_COMPLETE,
+    DECISION_EXPIRE,
     DECISION_LAUNCH,
     type BatchCancelRefusal,
     type BatchAcceptRefusal,
@@ -48,7 +57,11 @@ export interface ScheduleDeps {
     orgId: string;
     stop?: StopThread | undefined;
     revisionOf?: RevisionOf | undefined;
+    /** The clock the deadline and the retry backoff are read against; absent is the wall clock. Tests move it. */
+    now?: (() => Date) | undefined;
 }
+
+const nowOf = (deps: ScheduleDeps): Date => (deps.now ? deps.now() : new Date());
 
 /** Each pass either records a decision or ends the loop; this bounds a pathological plan, not a real one. */
 const MAX_PASSES = 64;
@@ -60,6 +73,10 @@ interface LockedBatch {
     cancelled_at: Date | null;
     cancelled_by: string | null;
     completed_at: Date | null;
+    infra_retries: number;
+    repairs: number;
+    deadline_at: Date | null;
+    expired_at: Date | null;
 }
 
 interface StateTask {
@@ -74,12 +91,15 @@ interface StateTask {
     root_job_id: string | null;
     execution: string;
     gate: string;
+    recovery: string | null;
+    not_before: Date | null;
 }
 
 /** The batch row, locked. Everything the scheduler writes happens after this. */
 async function lockBatch(tx: TransactionSql, orgId: string, id: string): Promise<LockedBatch | null> {
     const [row] = await tx<LockedBatch[]>`
-        select status, concurrency, started_by, cancelled_at, cancelled_by, completed_at
+        select status, concurrency, started_by, cancelled_at, cancelled_by, completed_at, infra_retries, repairs,
+               deadline_at, expired_at
         from batch where org_id = ${orgId} and id = ${id} for update
     `;
     return row ?? null;
@@ -102,32 +122,146 @@ function executionOf(status: string): string {
     }
 }
 
+interface MovingTask {
+    key: string;
+    execution: string;
+    attention: string | null;
+    head_id: string | null;
+    status: string | null;
+    failure_kind: string | null;
+    /** The newest question still waiting for an answer, which only a running job can receive. */
+    pending_question: string | null;
+    /** A question the thread asked that no person ever answered: pending, or expired unanswered. */
+    unanswered: boolean;
+}
+
+/** Automatic recoveries a task has used, counted from the durable attempt rows. */
+async function recoveriesUsed(at: Tx, taskKey: string): Promise<{ infra: number; repairs: number }> {
+    const { tx, orgId, id } = at;
+    const [row] = await tx<{ infra: number; repairs: number }[]>`
+        select count(*) filter (where kind = ${RECOVERY_INFRA})::int as infra,
+               count(*) filter (where kind = ${RECOVERY_REPAIR})::int as repairs
+        from batch_attempt where org_id = ${orgId} and batch_id = ${id} and task_key = ${taskKey}
+    `;
+    return row!;
+}
+
+/**
+ * A run that just failed: classify it and either queue the matching automatic recovery or mark the
+ * task as needing a person. Runs once per failure — the task was moving until this transition —
+ * and never in a fenced (cancelled or expired) batch, where cancellation wins over a new recovery.
+ */
+async function recoverFailed(at: Tx, run: { batch: LockedBatch; task: MovingTask; now: Date }): Promise<void> {
+    const { tx, orgId, id } = at;
+    const { batch, task, now } = run;
+    const plan = planRecovery({
+        failure: classifyTaskFailure({
+            status: task.status!,
+            failureKind: task.failure_kind,
+            unansweredQuestion: task.unanswered,
+        }),
+        used: await recoveriesUsed(at, task.key),
+        budgets: { infraRetries: batch.infra_retries, repairs: batch.repairs },
+    });
+    if (plan.action === 'attention') {
+        const detail =
+            plan.reason === ATTENTION_QUESTION
+                ? `a question of this run was never answered`
+                : 'no automatic attempts left';
+        await tx`
+            update batch_task
+            set execution = ${TASK_FAILED}, attention = ${plan.reason},
+                wait_reason = ${attentionWaitReason(plan.reason, { jobId: task.head_id!, detail })}
+            where org_id = ${orgId} and batch_id = ${id} and key = ${task.key}
+        `;
+        return;
+    }
+    const notBefore = plan.action === RECOVERY_INFRA ? new Date(now.getTime() + plan.delayMs) : null;
+    // The wait reason stays null: a task waiting out a backoff or a repair is moving, not parked.
+    await tx`
+        update batch_task
+        set execution = ${TASK_RETRY}, recovery = ${plan.action}, not_before = ${notBefore}, attention = null,
+            wait_reason = null
+        where org_id = ${orgId} and batch_id = ${id} and key = ${task.key}
+    `;
+}
+
 /** Folds each moving task's thread head into the task. True when any task changed. */
-async function syncTasks(tx: TransactionSql, orgId: string, id: string): Promise<boolean> {
-    const moving = await tx<{ key: string; execution: string; status: string | null }[]>`
-        select t.key, t.execution, head.status
+async function syncTasks(at: Tx, run: { batch: LockedBatch; now: Date }): Promise<boolean> {
+    const { tx, orgId, id } = at;
+    const { batch, now } = run;
+    const moving = await tx<MovingTask[]>`
+        select t.key, t.execution, t.attention, head.id as head_id, head.status, head.failure_kind,
+               (select q.question_id from job_question q
+                where q.org_id = t.org_id and q.job_id = head.id and q.state = 'pending'
+                  and q.lease_token = head.lease_token
+                order by q.asked_at desc limit 1) as pending_question,
+               exists (select 1 from job_question q
+                       where q.org_id = t.org_id and q.job_id = head.id and q.attempt = head.attempts
+                         and q.state in ('pending', 'expired'))
+                   as unanswered
         from batch_task t
         left join lateral (
-            select j.status from job j
+            select j.id, j.status, j.failure_kind, j.lease_token, j.attempts from job j
             where j.org_id = t.org_id and j.root_job_id = t.root_job_id and j.review_of is null
             order by j.created_at desc, j.id desc
             limit 1
         ) head on true
         where t.org_id = ${orgId} and t.batch_id = ${id} and t.execution in (${TASK_QUEUED}, ${TASK_RUNNING})
     `;
+    const fenced = batch.cancelled_at !== null || batch.expired_at !== null || batch.completed_at !== null;
     let changed = false;
     for (const task of moving) {
         // No head: the thread is gone (its job rows were deleted), so the attempt can never finish.
         const next = task.status === null ? TASK_FAILED : executionOf(task.status);
-        if (next === task.execution) continue;
+        if (next === task.execution) {
+            changed = (await syncQuestion(at, task)) || changed;
+            continue;
+        }
+        changed = true;
+        if (next === TASK_FAILED && task.status !== null && !fenced) {
+            await recoverFailed(at, { batch, task, now });
+            continue;
+        }
         await tx`
             update batch_task
-            set execution = ${next}, wait_reason = ${task.status === null ? 'thread removed' : null}
+            set execution = ${next}, attention = null,
+                wait_reason = ${task.status === null ? 'thread removed' : null}
             where org_id = ${orgId} and batch_id = ${id} and key = ${task.key}
         `;
-        changed = true;
     }
     return changed;
+}
+
+/**
+ * A running task whose agent asked a question needs a person to answer it: surfaced as attention
+ * with the question's id, cleared once it is answered. The board never answers, and never extends
+ * an expired question — a run that dies with one unanswered is classified as needing attention.
+ */
+async function syncQuestion(at: Tx, task: MovingTask): Promise<boolean> {
+    const { tx, orgId, id } = at;
+    if (task.execution !== TASK_RUNNING) return false;
+    const asking = task.pending_question !== null;
+    if (asking && task.attention !== ATTENTION_QUESTION) {
+        await tx`
+            update batch_task
+            set attention = ${ATTENTION_QUESTION},
+                wait_reason = ${attentionWaitReason(ATTENTION_QUESTION, {
+                    jobId: task.head_id!,
+                    detail: `question ${task.pending_question}`,
+                })}
+            where org_id = ${orgId} and batch_id = ${id} and key = ${task.key}
+        `;
+        return true;
+    }
+    if (!asking && task.attention === ATTENTION_QUESTION) {
+        await tx`
+            update batch_task set attention = null, wait_reason = null
+            where org_id = ${orgId} and batch_id = ${id} and key = ${task.key}
+        `;
+        return true;
+    }
+    return false;
 }
 
 /** Records a decision once. False when it was already recorded — the caller does nothing then. */
@@ -174,7 +308,7 @@ async function loadSnapshot({ tx, orgId, id }: Tx): Promise<Snapshot> {
         `,
         tx<StateTask[]>`
             select t.key, t.stage_key, t.target_key, t.executor, t.objective, t.acceptance, t.verification,
-                   t.required, t.root_job_id, t.execution, t.gate
+                   t.required, t.root_job_id, t.execution, t.gate, t.recovery, t.not_before
             from batch_task t
             join batch_stage s on s.org_id = t.org_id and s.batch_id = t.batch_id and s.key = t.stage_key
             where t.org_id = ${orgId} and t.batch_id = ${id}
@@ -232,20 +366,28 @@ async function launch(
     if (!(await decide(tx, at, { key: decisionKey, kind: DECISION_LAUNCH, subject: task.key }))) return 'skipped';
 
     const retrying = task.execution === TASK_RETRY;
-    const created = retrying
-        ? await retryInTx(tx, { orgId, id: task.root_job_id!, createdBy: startedBy })
-        : await insertJobInTx(tx, deps, {
-              command: batchTaskCommand(task),
-              createdBy: startedBy,
-              target: { repo: target.repo, executor: task.executor },
-          });
+    const kind: string = retrying ? (task.recovery ?? 'retry') : 'launch';
+    const created =
+        kind === RECOVERY_REPAIR
+            ? await repairInTx(tx, { orgId, task, startedBy })
+            : retrying
+              ? await retryInTx(tx, { orgId, id: task.root_job_id!, createdBy: startedBy })
+              : await insertJobInTx(tx, deps, {
+                    command: batchTaskCommand(task),
+                    createdBy: startedBy,
+                    target: { repo: target.repo, executor: task.executor },
+                });
     if (typeof created === 'string') {
         // Nothing was created, so the decision must not stand. A checkout being purged is
-        // transient — the next pass tries again; a refused retry is the task's outcome.
+        // transient — the next pass tries again; a refused retry is the task's outcome, and one
+        // that needs a person.
         await tx`delete from batch_decision where org_id = ${orgId} and batch_id = ${id} and key = ${decisionKey}`;
         if (created === 'purging') return 'skipped';
+        const refusal = `retry refused: ${created}`;
         await tx`
-            update batch_task set execution = ${TASK_FAILED}, wait_reason = ${`retry refused: ${created}`}
+            update batch_task
+            set execution = ${TASK_FAILED}, attention = ${ATTENTION_REFUSED}, recovery = null, not_before = null,
+                wait_reason = ${attentionWaitReason(ATTENTION_REFUSED, { jobId: task.root_job_id ?? '', detail: refusal })}
             where org_id = ${orgId} and batch_id = ${id} and key = ${task.key}
         `;
         return 'changed';
@@ -253,17 +395,35 @@ async function launch(
     await tx`
         insert into batch_attempt (org_id, batch_id, task_key, attempt, kind, job_id, repo, source_branch,
                                    source_revision)
-        values (${orgId}, ${id}, ${task.key}, ${attempt}, ${retrying ? 'retry' : 'launch'}, ${created.id},
+        values (${orgId}, ${id}, ${task.key}, ${attempt}, ${kind}, ${created.id},
                 ${target.repo}, ${target.branch}, ${revisions.get(revisionKey(target)) ?? null})
     `;
-    // A retry stays a row of the thread it already has; only a first launch binds one.
+    // A retry stays a row of the thread it already has; only a first launch binds one. The gate
+    // reopens: a recovery's result is judged afresh, and a merge before this attempt began never counts.
     await tx`
         update batch_task
         set root_job_id = coalesce(root_job_id, ${created.id}), execution = ${TASK_QUEUED},
-            gate = ${GATE_OPEN}, wait_reason = null
+            gate = ${GATE_OPEN}, wait_reason = null, attention = null, recovery = null, not_before = null
         where org_id = ${orgId} and batch_id = ${id} and key = ${task.key}
     `;
     return 'launched';
+}
+
+/** What a pass reports: the long-poll's progress and the moving threads of a fenced batch to stop once it commits. */
+function resultOf(batch: LockedBatch, snapshot: Snapshot, decision: ScheduleDecision) {
+    const cancelled = batch.cancelled_at !== null;
+    const expired = batch.expired_at !== null;
+    return {
+        progress: {
+            complete: batch.completed_at !== null || decision.complete,
+            cancelled,
+            expired,
+            active: decision.active,
+            waiting: snapshot.tasks.filter((task) => task.execution === TASK_RETRY).length,
+        },
+        toStop: cancelled || expired ? movingRoots(snapshot) : [],
+        cancelledBy: batch.cancelled_by,
+    };
 }
 
 async function pass(deps: ScheduleDeps, id: string, revisions: Map<string, string | null>): Promise<PassResult | null> {
@@ -272,25 +432,20 @@ async function pass(deps: ScheduleDeps, id: string, revisions: Map<string, strin
         const batch = await lockBatch(tx, orgId, id);
         if (!batch || batch.status !== BATCH_STARTED) return null;
         const at = { tx, orgId, id };
-        let changed = await syncTasks(tx, orgId, id);
-        // The cancellation fence: a merge observed after cancel or completion passes nothing.
+        const now = nowOf(deps);
+        // The time limit is a fence like cancel: it commits first, so nothing recovers, launches or
+        // advances behind it.
+        let changed = await expire(at, batch, now);
+        changed = (await syncTasks(at, { batch, now })) || changed;
+        // The cancellation fence: a merge observed after cancel or completion passes nothing. An
+        // expired batch still records merges that land, so the report shows them.
         if (batch.cancelled_at === null && batch.completed_at === null) {
             changed = (await judgeGates(tx, orgId, id)) || changed;
         }
 
         const snapshot = await loadSnapshot(at);
-        const cancelled = batch.cancelled_at !== null;
-        const decision = decideFor(batch, snapshot);
-        const result = {
-            progress: {
-                complete: batch.completed_at !== null || decision.complete,
-                cancelled,
-                active: decision.active,
-            },
-            // Moving threads of a cancelled batch: the caller stops them once this commits.
-            toStop: cancelled ? movingRoots(snapshot) : [],
-            cancelledBy: batch.cancelled_by,
-        };
+        const decision = decideFor(batch, snapshot, now);
+        const result = resultOf(batch, snapshot, decision);
         if (batch.completed_at !== null) return { ...result, changed };
 
         changed = (await settle(at, decision, batch.completed_at)) || changed;
@@ -298,6 +453,27 @@ async function pass(deps: ScheduleDeps, id: string, revisions: Map<string, strin
         result.progress.active += launched.created;
         return { ...result, changed: changed || launched.changed };
     });
+}
+
+/**
+ * Fences a batch whose deadline passed: stamps `expired_at`, records the decision once and cancels
+ * work that never launched. Moving work is stopped after the commit, as a cancel's is. A batch
+ * that already finished or was cancelled has nothing to expire.
+ */
+async function expire(at: Tx, batch: LockedBatch, now: Date): Promise<boolean> {
+    const { tx, orgId, id } = at;
+    const due = batch.deadline_at !== null && batch.deadline_at.getTime() <= now.getTime();
+    if (!due || batch.expired_at !== null || batch.cancelled_at !== null || batch.completed_at !== null) return false;
+    if (!(await decide(tx, at, { key: DECISION_EXPIRE, kind: DECISION_EXPIRE, subject: null }))) return false;
+    await tx`update batch set expired_at = ${now}, updated_at = now() where org_id = ${orgId} and id = ${id}`;
+    batch.expired_at = now;
+    await tx`
+        update batch_task
+        set execution = ${TASK_CANCELLED}, recovery = null, not_before = null,
+            wait_reason = 'the batch time limit expired before this task ran'
+        where org_id = ${orgId} and batch_id = ${id} and execution in (${TASK_PENDING}, ${TASK_RETRY})
+    `;
+    return true;
 }
 
 const movingRoots = (snapshot: Snapshot): string[] =>
@@ -321,7 +497,7 @@ async function launchAll(
     return { created, changed };
 }
 
-function decideFor(batch: LockedBatch, snapshot: Snapshot): ScheduleDecision {
+function decideFor(batch: LockedBatch, snapshot: Snapshot, now: Date): ScheduleDecision {
     return decideSchedule({
         stages: snapshot.stages,
         tasks: snapshot.tasks.map((task) => ({
@@ -330,10 +506,13 @@ function decideFor(batch: LockedBatch, snapshot: Snapshot): ScheduleDecision {
             required: task.required,
             execution: task.execution,
             gate: task.gate,
+            notBefore: task.not_before ? task.not_before.getTime() : null,
         })),
         concurrency: batch.concurrency,
         advanced: snapshot.advanced,
         cancelled: batch.cancelled_at !== null,
+        expired: batch.expired_at !== null,
+        now: now.getTime(),
     });
 }
 
@@ -398,7 +577,7 @@ export async function reconcileOpenBatches(deps: ScheduleDeps): Promise<void> {
     const open = await deps.sql<{ id: string }[]>`
         select b.id from batch b
         where b.org_id = ${deps.orgId} and b.status = ${BATCH_STARTED} and b.completed_at is null
-          and (b.cancelled_at is null or exists (
+          and ((b.cancelled_at is null and b.expired_at is null) or exists (
               select 1 from batch_task t
               where t.org_id = b.org_id and t.batch_id = b.id and t.execution in (${TASK_QUEUED}, ${TASK_RUNNING})
           ))
@@ -432,7 +611,7 @@ export async function cancelBatch(
         await decide(tx, { orgId, id }, { key: DECISION_CANCEL, kind: DECISION_CANCEL, subject: null });
         // Work that never launched is cancelled outright; moving work is settled by reconcile's stop.
         await tx`
-            update batch_task set execution = ${TASK_CANCELLED}
+            update batch_task set execution = ${TASK_CANCELLED}, recovery = null, not_before = null
             where org_id = ${orgId} and batch_id = ${id} and execution in (${TASK_PENDING}, ${TASK_RETRY})
         `;
         return { result: 'ok' as const, replayed: false };
@@ -453,13 +632,21 @@ export async function retryBatchTask(
         if (!batch) return { result: 'missing' };
         if (batch.status !== BATCH_STARTED) return { result: 'not_started' };
         if (batch.cancelled_at !== null) return { result: 'cancelled' };
+        if (batch.expired_at !== null) return { result: 'expired' };
         const [task] = await tx<{ stage_key: string; root_job_id: string | null; execution: string; gate: string }[]>`
             select stage_key, root_job_id, execution, gate from batch_task
             where org_id = ${orgId} and batch_id = ${id} and key = ${taskKey}
         `;
         if (!task) return { result: 'no_task' };
-        // A repeat of an accepted retry is the same request, answered the same way.
-        if (task.execution === TASK_RETRY) return { result: 'ok' };
+        if (task.execution === TASK_RETRY) {
+            // A person's retry of an automatic recovery waiting out its backoff launches it now,
+            // as a manual retry that spends no budget; a repeat of an accepted retry is the same request.
+            await tx`
+                update batch_task set recovery = null, not_before = null
+                where org_id = ${orgId} and batch_id = ${id} and key = ${taskKey}
+            `;
+            return { result: 'ok' };
+        }
         // The thread is what a retry re-runs; a task that never launched has none, and a settled
         // stage's outcome is history.
         const [advanced] = await tx`
@@ -468,7 +655,8 @@ export async function retryBatchTask(
         `;
         if (advanced || !task.root_job_id || !isRetryable(task)) return { result: 'not_retryable' };
         await tx`
-            update batch_task set execution = ${TASK_RETRY}, wait_reason = null
+            update batch_task
+            set execution = ${TASK_RETRY}, wait_reason = null, attention = null, recovery = null, not_before = null
             where org_id = ${orgId} and batch_id = ${id} and key = ${taskKey}
         `;
         return { result: 'ok' };
@@ -527,7 +715,7 @@ export async function acceptBatchTask(
         if (batch.cancelled_at !== null) return { result: 'cancelled' };
         // The accepted result must be the current one: fold the thread's head in first, so a run
         // that just finished is seen as finished.
-        await syncTasks(tx, orgId, id);
+        await syncTasks({ tx, orgId, id }, { batch, now: nowOf(deps) });
         const check = await acceptCheck({ tx, orgId, id }, taskKey);
         if (check.result === 'replay') return { result: 'ok' };
         if (check.result !== 'accept') return check;
