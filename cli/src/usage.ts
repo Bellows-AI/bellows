@@ -23,7 +23,17 @@ export const USAGE = `usage: factory job create (<command...> | --file <path> | 
        factory connection list [--json]    managed connections you may select (--jira-connection)
        factory job preflight [--repo owner/name] [--executor name] [--executor-scope user|org]
                              [--skill name]... [--jira-connection <id>] [--json]
-       factory auth status [--json]        the configuration, the board's version, and who the token acts as
+       factory batch import (--file <path> | --stdin) [--idempotency-key <key>] [--json]
+       factory batch update <id> --version <n> (--file <path> | --stdin) [--json]
+       factory batch validate <id> [--json]
+       factory batch start <id> --version <n> [--idempotency-key <key>] [--json]
+       factory batch inspect <id> [--json]
+       factory batch list [--json]
+       factory batch wait <id> [--timeout <seconds>] [--json]
+       factory batch retry <id> <task> [--json]
+       factory batch accept <id> <task> [--json]
+       factory batch cancel <id> [--json]
+       factory auth status [--json]      the configuration, the board's version, and who the token acts as
        factory help | --help | -h          this text; factory --version prints the CLI's version
                                            (neither needs FACTORY_URL)
 
@@ -36,6 +46,17 @@ committed. It acts as you until revoked or your membership ends; \`factory auth 
 and only reads. An org token (oat_...) only reads and cannot queue a task.
 
 'task list' is one row per task plus its head run; 'job list' is per run. A --cursor fits only its own filters.
+batch plans are JSON documents (the board's plan contract, docs/batches.md): import makes a draft,
+update replaces the whole draft at the --version you last read (a stale one is refused and nothing
+is written), validate shows the plan as start would freeze it — each stage's effective policy and
+the concurrency — and start freezes it at that version. The plan is carried whole: a
+multi-repository draft round-trips through inspect and update, but start refuses it for now (one
+repository target on its default branch). The board runs the batch: wait only watches — it ends
+0 when every task succeeded, 4 when one failed, 5 when cancelled, 6 when a task waits on a person
+(a human review gate; the PRs needing action are listed) and 3 when the budget ran out — and
+leaving it, or the CLI, never cancels anything. A code-changing task needs its merged PR;
+accept only answers a declared human-reviewed no-PR task, and the board refuses the rest.
+
 config:
   FACTORY_URL    the board's base URL (required)
   FACTORY_TOKEN  a personal access token (fat_...) minted from the settings page;

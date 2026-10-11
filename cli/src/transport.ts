@@ -125,6 +125,17 @@ function unreachable(url: string, error: unknown): BoardError {
     return new BoardError(`cannot reach ${url}: ${reason}`, NO_RESPONSE_STATUS, null);
 }
 
+/** A refusal's path-addressed `issues` (a rejected batch plan), one per line under its message. */
+function issueLines(issues: unknown): string {
+    if (!Array.isArray(issues)) return '';
+    return issues
+        .map((issue: { path?: unknown; message?: unknown } | null) => {
+            if (typeof issue?.message !== 'string') return '';
+            return `\n  ${typeof issue.path === 'string' && issue.path ? `${issue.path}: ` : ''}${issue.message}`;
+        })
+        .join('');
+}
+
 /**
  * The refusal a non-2xx answer carries: the board's one envelope is `{ error, code }` — the human
  * message is what the board said, and the code rides beside it for scripting. A body that is not
@@ -135,9 +146,10 @@ function refusalFrom(path: string, status: number, text: string): { message: str
     if (text) message += `: ${text.slice(0, ERROR_BODY_PREVIEW_LENGTH)}`;
     let code: string | null = null;
     try {
-        const body = JSON.parse(text) as { error?: unknown; code?: unknown };
+        const body = JSON.parse(text) as { error?: unknown; code?: unknown; issues?: unknown };
         if (typeof body.error === 'string') message = body.error;
         if (typeof body.code === 'string') code = body.code;
+        message += issueLines(body.issues);
     } catch {
         // Not JSON — keep the status line.
     }
