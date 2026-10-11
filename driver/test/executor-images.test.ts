@@ -1221,6 +1221,20 @@ describe('the executor infrastructure-access guide', () => {
 });
 
 /*
+ * The claude guide's no-retry rule: a real run took one denied compound command,
+ * `(npm install | tail -3)`, as "npm is forbidden" and reported itself blocked, though npm was
+ * allowlisted. The rule keeps a denied compound command from reading as a refusal of its parts.
+ */
+describe('the claude guide on denied commands', () => {
+    it('splits a denied compound command before treating it as refused', () => {
+        const text = read('docker/claude-executor/claude-home/CLAUDE.md');
+        expect(text).toContain('split a compound one first');
+        expect(text).toContain('run each part once on its own, unwrapped');
+        expect(text).toContain('Only a plain command denied is a refusal');
+    });
+});
+
+/*
  * The baked Stop hook is a prompt hook, and one without a usable model fails open (issue #226), so
  * the entrypoint turns its placeholder into the run's model: $ANTHROPIC_MODEL, else the merged
  * settings' `model`, else no `model` key at all. Run for real under /bin/sh against a sandbox
