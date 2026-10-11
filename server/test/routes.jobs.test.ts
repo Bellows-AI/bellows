@@ -3010,6 +3010,7 @@ describe('GET /api/jobs', () => {
         startedAt: '2026-08-21T12:00:01.000Z',
         finishedAt: '2026-08-21T12:00:09.000Z',
         wallClockMs: null,
+        agentTurns: null,
         taskWallClockMs: null,
     };
 
@@ -3195,6 +3196,7 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
         startedAt: '2026-08-21T12:00:01.000Z',
         finishedAt: null,
         wallClockMs: null,
+        agentTurns: null,
         taskWallClockMs: null,
     };
 
@@ -3404,12 +3406,24 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         startedAt: '2026-09-22T20:46:16.000Z',
         finishedAt: '2026-09-22T22:46:16.000Z',
         wallClockMs: null,
+        agentTurns: null,
         taskWallClockMs: null,
     };
 
     it('answers the telemetry buckets over the run window', async () => {
         const telemetry = stubTelemetryClient({
-            runActivity: () => [{ start: '2026-09-22T21:00:00.000Z', tokens: 2_500_000, edits: 3 }],
+            runActivity: () => [
+                {
+                    start: '2026-09-22T21:00:00.000Z',
+                    tokens: { input: 2_000_000, output: 500_000, cacheRead: 7, cacheCreation: 1 },
+                    edits: 3,
+                },
+                {
+                    start: '2026-09-22T21:15:00.000Z',
+                    tokens: { input: 100, output: 0, cacheRead: 0, cacheCreation: 0 },
+                    edits: 0,
+                },
+            ],
         });
         const instance = await harnessWith(stubStore({ job: runJob }), undefined, telemetry);
 
@@ -3422,8 +3436,26 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
             from: runJob.startedAt,
             to: runJob.finishedAt,
             bucketMs: 900_000,
-            buckets: [{ start: '2026-09-22T21:00:00.000Z', tokens: 2_500_000, edits: 3 }],
+            buckets: [
+                {
+                    start: '2026-09-22T21:00:00.000Z',
+                    tokens: { input: 2_000_000, output: 500_000, cacheRead: 7, cacheCreation: 1 },
+                    edits: 3,
+                },
+                {
+                    start: '2026-09-22T21:15:00.000Z',
+                    tokens: { input: 100, output: 0, cacheRead: 0, cacheCreation: 0 },
+                    edits: 0,
+                },
+            ],
+            totals: { input: 2_000_100, output: 500_000, cacheRead: 7, cacheCreation: 1 },
         });
+    });
+
+    it('answers null totals, never a zero total, when the run reported nothing', async () => {
+        const instance = await harnessWith(stubStore({ job: runJob }), undefined, stubTelemetryClient());
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}/activity` });
+        expect(response.json()).toMatchObject({ buckets: [], totals: null });
     });
 
     it('answers empty for a job that never started or never named a session', async () => {
@@ -3438,6 +3470,7 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
             to: null,
             bucketMs: null,
             buckets: [],
+            totals: null,
         });
         expect(telemetry.activityCalls).toEqual([]);
 

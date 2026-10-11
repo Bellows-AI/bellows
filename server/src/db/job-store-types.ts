@@ -257,6 +257,12 @@ export interface Job {
      */
     wallClockMs: number | null;
     /**
+     * The assistant response cycles in THIS run's root conversation, as the executor counted them
+     * at close (026). Null is unmeasured — the read failed, the run is still going, or the row
+     * predates the column — never zero; a genuine zero-response run stores 0.
+     */
+    agentTurns: number | null;
+    /**
      * The wall clock the task's WHOLE thread has banked — every executed segment of every run,
      * accumulated by the board at the settle points (claim, the dead retirement, the verdict,
      * the suspend park) into `wall_clock_ms` and summed over the thread by the read. Served by

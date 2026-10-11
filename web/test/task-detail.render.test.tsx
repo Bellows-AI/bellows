@@ -2,27 +2,39 @@ import { describe, expect, it } from 'vitest';
 import type { Job, RuntimeVitals } from '../src/api/useJobs.js';
 import { FORBIDDEN, job, renderDetail } from './tasks-fixtures.js';
 
-describe('TaskDetail — run activity (issue #339)', () => {
+describe('TaskDetail — task activity (issues #339, #530)', () => {
+    const jobId = '11111111-1111-4111-8111-111111111111';
     const activity = {
-        jobId: '11111111-1111-4111-8111-111111111111',
-        sessionId: '33333333-3333-4333-8333-333333333333',
-        from: '2026-09-22T20:46:16.000Z',
-        to: '2026-09-22T22:46:16.000Z',
-        bucketMs: 900_000,
-        buckets: [{ start: '2026-09-22T21:00:00.000Z', tokens: 2_500_000, edits: 3 }],
+        [jobId]: {
+            jobId,
+            sessionId: '33333333-3333-4333-8333-333333333333',
+            from: '2026-09-22T20:46:16.000Z',
+            to: '2026-09-22T22:46:16.000Z',
+            bucketMs: 900_000,
+            buckets: [
+                {
+                    start: '2026-09-22T21:00:00.000Z',
+                    tokens: { input: 2_000_000, output: 500_000, cacheRead: 0, cacheCreation: 0 },
+                    edits: 3,
+                },
+            ],
+            totals: { input: 2_000_000, output: 500_000, cacheRead: 0, cacheCreation: 0 },
+        },
     };
 
-    it('renders the head run’s activity chart between the conversation and the panels', () => {
-        const html = renderDetail({ jobs: [job()], activity, live: false });
-        expect(html).toContain('Run activity');
-        expect(html).toMatch(/data-series="tokens"/);
-        // The chart follows the conversation and precedes the follow-up slot.
-        expect(html.indexOf('Run activity')).toBeGreaterThan(html.indexOf('</article>'));
+    it('renders the latest run’s pulse between the conversation and the panels', () => {
+        const html = renderDetail({ jobs: [job()], activity });
+        expect(html).toContain('Task activity');
+        expect(html).toMatch(/data-series="input"/);
+        expect(html).not.toContain('bar-primary');
+        // The pulse follows the conversation and precedes nothing of the follow-up slot.
+        expect(html.indexOf('Task activity')).toBeGreaterThan(html.indexOf('</article>'));
     });
 
-    it('says so in place when the run has no telemetry to chart', () => {
-        const html = renderDetail({ jobs: [job()] });
+    it('says so in place when the run has no telemetry to chart, and still offers the details', () => {
+        const html = renderDetail({ jobs: [job()], activity: { [jobId]: 'unavailable' } });
         expect(html).toContain('No telemetry for this run.');
+        expect(html).toContain('Open task statistics');
         // No chart in the activity panel itself — the page's other icons are not the chart's.
         const panel = html.slice(html.indexOf('task-activity'), html.indexOf('task-follow-up'));
         expect(panel).not.toContain('<svg');
