@@ -487,7 +487,7 @@ export function createBoardClient({
     signal?: AbortSignal | undefined;
     /** One attempt's deadline, headers and body read included. */
     requestTimeoutMs?: number | undefined;
-    /** How many times a failed READ is re-issued; a write is never replayed. */
+    /** How many times a failed read or keyed write is re-issued; an unkeyed write never is. */
     readRetries?: number | undefined;
     /** The total wait budget's end on `clock`: no attempt or backoff runs past it (plus a grace). */
     deadlineAt?: number | undefined;
