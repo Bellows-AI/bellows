@@ -3,6 +3,7 @@ import { BATCH_COMPLETION_ACCEPTED, BATCH_COMPLETION_PR } from '@factory-ai/core
 import type { Sql, TransactionSql } from 'postgres';
 import {
     BATCH_LIST_LIMIT,
+    DECISION_ADVANCE,
     BATCH_STARTED,
     type BatchRecord,
     type BatchStatus,
@@ -27,6 +28,8 @@ interface BatchRow {
     created_at: Date;
     updated_at: Date;
     started_at: Date | null;
+    cancelled_at: Date | null;
+    completed_at: Date | null;
 }
 
 interface TargetRow {
@@ -56,6 +59,7 @@ interface TaskRow {
     pr: string;
     gate: string;
     wait_reason: string | null;
+    attempt: number;
 }
 
 /** The plan's rows are addressed by the org and the batch, always together. */
@@ -101,11 +105,11 @@ function planOf(batch: BatchRow, targets: TargetRow[], stages: StageRow[], tasks
 export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise<BatchRecord | null> {
     const [batch] = await sql<BatchRow[]>`
         select id, status, version, plan_version, title, default_target, executor, policy, concurrency,
-               created_by, started_by, created_at, updated_at, started_at
+               created_by, started_by, created_at, updated_at, started_at, cancelled_at, completed_at
         from batch where org_id = ${orgId} and id = ${id}
     `;
     if (!batch) return null;
-    const [targets, stages, tasks] = await Promise.all([
+    const [targets, stages, tasks, advanced] = await Promise.all([
         sql<TargetRow[]>`
             select key, repo, branch from batch_target
             where org_id = ${orgId} and batch_id = ${id} order by position
@@ -117,13 +121,20 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
         sql<TaskRow[]>`
             select t.key, t.stage_key, t.target_key, t.executor, t.objective, t.acceptance, t.verification,
                    t.required, t.completion_kind, t.completion_condition, t.root_job_id, t.execution,
-                   t.pr, t.gate, t.wait_reason
+                   t.pr, t.gate, t.wait_reason,
+                   (select coalesce(max(a.attempt), 0)::int from batch_attempt a
+                    where a.org_id = t.org_id and a.batch_id = t.batch_id and a.task_key = t.key) as attempt
             from batch_task t
             join batch_stage s on s.org_id = t.org_id and s.batch_id = t.batch_id and s.key = t.stage_key
             where t.org_id = ${orgId} and t.batch_id = ${id}
             order by s.position, t.position
         `,
+        sql<{ subject: string }[]>`
+            select subject from batch_decision
+            where org_id = ${orgId} and batch_id = ${id} and kind = ${DECISION_ADVANCE}
+        `,
     ]);
+    const done = new Set(advanced.map((row) => row.subject));
     return {
         id: batch.id,
         status: batch.status,
@@ -133,6 +144,10 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
         createdAt: batch.created_at.toISOString(),
         updatedAt: batch.updated_at.toISOString(),
         startedAt: iso(batch.started_at),
+        cancelledAt: iso(batch.cancelled_at),
+        completedAt: iso(batch.completed_at),
+        activeStage:
+            batch.status === BATCH_STARTED ? (stages.find((stage) => !done.has(stage.key))?.key ?? null) : null,
         plan: planOf(batch, targets, stages, tasks),
         tasks: tasks.map((task) => ({
             key: task.key,
@@ -142,6 +157,7 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
             gate: task.gate,
             waitReason: task.wait_reason,
             rootJobId: task.root_job_id,
+            attempt: task.attempt,
         })),
     };
 }

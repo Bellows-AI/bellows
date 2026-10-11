@@ -39,6 +39,33 @@ export {
     resolveBatchPlan,
     validateBatchPlan,
 } from './batch-plan.js';
+export type {
+    BatchGate,
+    BatchTaskExecution,
+    BatchWaitResult,
+    ScheduleDecision,
+    ScheduleInput,
+    ScheduleTask,
+} from './batch-schedule.js';
+export {
+    batchTaskCommand,
+    batchWaitResult,
+    decideSchedule,
+    GATE_FAILED,
+    GATE_OPEN,
+    GATE_PASSED,
+    holdsSlot,
+    isAccepted,
+    isRetryable,
+    TASK_CANCELLED,
+    TASK_FAILED,
+    TASK_PENDING,
+    TASK_QUEUED,
+    TASK_RETRY,
+    TASK_RUNNING,
+    TASK_STOPPED,
+    TASK_SUCCEEDED,
+} from './batch-schedule.js';
 export { HOUR } from './config.js';
 export { ENV_NAME, ENV_NAME_LIMIT, ENV_VALUE_LIMIT, MAX_ENV_VARS_PER_SCOPE, RESERVED_ENV_NAMES } from './env.js';
 export type { ErrorCode } from './error-codes.js';

@@ -329,7 +329,7 @@ describe('launch checks: validate and start', () => {
         expect(response.json()).toMatchObject({ code: 'BATCH_UNSUPPORTED', reason: 'non_default_branch' });
     });
 
-    it('freezes a single-target batch through the same shape and creates no job', async () => {
+    it('freezes a single-target batch through the same shape; dispatch is the store’s, not the route’s', async () => {
         const { call, create, jobCreates } = await setup();
         const { id } = await create(plan({ policy: 'automerge', executor: 'claude' }));
         const response = await call('POST', `/api/batches/${id}/start`, { version: 1 });
@@ -367,7 +367,8 @@ describe('launch checks: validate and start', () => {
         expect(second.statusCode).toBe(HTTP_OK);
         expect(second.headers['idempotency-replayed']).toBe('true');
         expect(second.json().status).toBe('started');
-        expect(batches.writes).toEqual(['create', 'start']);
+        // The replay answered before any launch check, write or dispatch: one start, one pass.
+        expect(batches.writes).toEqual(['create', 'start', 'reconcile']);
     });
 
     it('refuses a suspended executor', async () => {
@@ -427,13 +428,116 @@ describe('org scoping and availability', () => {
     });
 });
 
+describe('dispatch, wait, retry and cancel', () => {
+    const start = async (setupResult: Awaited<ReturnType<typeof setup>>) => {
+        const { id } = await setupResult.create();
+        await setupResult.call('POST', `/api/batches/${id}/start`, { version: 1 });
+        return id;
+    };
+
+    it('start runs the first scheduling pass after it freezes the plan', async () => {
+        const s = await setup();
+        await start(s);
+        expect(s.batches.writes).toEqual(['create', 'start', 'reconcile']);
+    });
+
+    it('wait answers parked at once when nothing moves, with the batch beside the result', async () => {
+        const s = await setup();
+        const id = await start(s);
+        const response = await s.call('GET', `/api/batches/${id}?waitFor=terminal&timeout=1`);
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.json()).toMatchObject({ result: 'parked', batch: { id, status: 'started' } });
+    });
+
+    it('wait answers timeout while a task still moves', async () => {
+        const s = await setup();
+        const id = await start(s);
+        s.batches.mark(id, 'a', { execution: 'running' });
+        const response = await s.call('GET', `/api/batches/${id}?waitFor=terminal&timeout=1`);
+        expect(response.json()).toMatchObject({ result: 'timeout' });
+    });
+
+    it('wait answers terminal once the batch is cancelled with nothing moving', async () => {
+        const s = await setup();
+        const id = await start(s);
+        await s.call('POST', `/api/batches/${id}/cancel`, {});
+        const response = await s.call('GET', `/api/batches/${id}?waitFor=terminal&timeout=1`);
+        expect(response.json()).toMatchObject({ result: 'terminal' });
+    });
+
+    it('refuses a bad wait query and a wait on a draft', async () => {
+        const s = await setup();
+        const { id } = await s.create();
+        const bad = await s.call('GET', `/api/batches/${id}?waitFor=settled`);
+        expect(bad.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(bad.json().code).toBe('BAD_WAIT_FOR');
+        const draft = await s.call('GET', `/api/batches/${id}?waitFor=terminal`);
+        expect(draft.statusCode).toBe(HTTP_CONFLICT);
+        expect(draft.json().code).toBe('BATCH_NOT_STARTED');
+    });
+
+    it('retry queues a failed task, refuses a healthy one, and 404s an unknown key', async () => {
+        const s = await setup();
+        const id = await start(s);
+        s.batches.mark(id, 'a', { execution: 'failed' });
+        const retried = await s.call('POST', `/api/batches/${id}/tasks/a/retry`, {});
+        expect(retried.statusCode).toBe(HTTP_OK);
+        expect(retried.json().tasks.find((t: { key: string }) => t.key === 'a').execution).toBe('retry');
+
+        const healthy = await s.call('POST', `/api/batches/${id}/tasks/b/retry`, {});
+        expect(healthy.statusCode).toBe(HTTP_CONFLICT);
+        expect(healthy.json().code).toBe('BATCH_TASK_NOT_RETRYABLE');
+
+        const unknown = await s.call('POST', `/api/batches/${id}/tasks/nope/retry`, {});
+        expect(unknown.statusCode).toBe(HTTP_NOT_FOUND);
+    });
+
+    it('retry refuses a draft and a cancelled batch with their own codes', async () => {
+        const s = await setup();
+        const { id: draft } = await s.create();
+        const notStarted = await s.call('POST', `/api/batches/${draft}/tasks/a/retry`, {});
+        expect(notStarted.json().code).toBe('BATCH_NOT_STARTED');
+
+        const id = await start(s);
+        await s.call('POST', `/api/batches/${id}/cancel`, {});
+        const cancelled = await s.call('POST', `/api/batches/${id}/tasks/a/retry`, {});
+        expect(cancelled.statusCode).toBe(HTTP_CONFLICT);
+        expect(cancelled.json().code).toBe('BATCH_CANCELLED');
+    });
+
+    it('cancel stamps the batch, and a repeat answers the same without a second write', async () => {
+        const s = await setup();
+        const id = await start(s);
+        const first = await s.call('POST', `/api/batches/${id}/cancel`, {});
+        expect(first.statusCode).toBe(HTTP_OK);
+        expect(first.json().cancelledAt).not.toBeNull();
+        const again = await s.call('POST', `/api/batches/${id}/cancel`, {});
+        expect(again.statusCode).toBe(HTTP_OK);
+        expect(s.batches.writes.filter((write) => write === 'cancel')).toHaveLength(1);
+    });
+
+    it('cancel refuses a draft', async () => {
+        const s = await setup();
+        const { id } = await s.create();
+        const response = await s.call('POST', `/api/batches/${id}/cancel`, {});
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json().code).toBe('BATCH_NOT_STARTED');
+    });
+
+    it('retry and cancel need a signed-in member and the caller’s own org', async () => {
+        const s = await setup();
+        const id = await start(s);
+        for (const suffix of ['/cancel', '/tasks/a/retry']) {
+            const anonymous = await s.call('POST', `/api/batches/${id}${suffix}`, {}, { cookie: null });
+            expect(anonymous.statusCode).toBe(HTTP_UNAUTHORIZED);
+            const foreign = await s.call('POST', `/api/batches/${id}${suffix}`, {}, { cookie: s.otherCookie });
+            expect(foreign.statusCode).toBe(HTTP_NOT_FOUND);
+        }
+    });
+});
+
 describe('the routes later issues own', () => {
-    const stubs = [
-        ['GET', '?waitFor=settled', 'wait'],
-        ['POST', '/cancel', 'cancel'],
-        ['POST', '/tasks/a/retry', 'retry'],
-        ['POST', '/tasks/a/accept', 'accept'],
-    ] as const;
+    const stubs = [['POST', '/tasks/a/accept', 'accept']] as const;
 
     it.each(stubs)('%s %s answers auth first, then BATCH_UNSUPPORTED', async (method, suffix, reason) => {
         const { call, create } = await setup();
@@ -459,9 +563,7 @@ describe('the routes later issues own', () => {
     it('answers 404 for a task key the batch does not have', async () => {
         const { call, create } = await setup();
         const { id } = await create();
-        for (const operation of ['retry', 'accept']) {
-            const response = await call('POST', `/api/batches/${id}/tasks/nope/${operation}`, {});
-            expect(response.statusCode).toBe(HTTP_NOT_FOUND);
-        }
+        const response = await call('POST', `/api/batches/${id}/tasks/nope/accept`, {});
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
     });
 });

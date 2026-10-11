@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import type { BatchPlan } from '@factory-ai/core';
+import { holdsSlot, isRetryable, TASK_RETRY, type BatchPlan } from '@factory-ai/core';
 import {
     BATCH_DRAFT,
     BATCH_STARTED,
     type BatchIdempotency,
     type BatchRecord,
     type BatchStore,
+    type BatchTaskState,
 } from '../src/db/batch-store.js';
 import { IdempotencyKeyReusedError } from '../src/db/job-store-idempotency.js';
 
@@ -16,6 +17,8 @@ import { IdempotencyKeyReusedError } from '../src/db/job-store-idempotency.js';
 export interface MemoryBatchStore extends BatchStore {
     /** Every write that reached the store, in order — what "changes nothing" asserts against. */
     readonly writes: string[];
+    /** Plants a task's runtime state, standing in for the scheduler the SQL store's own suite pins. */
+    mark(id: string, taskKey: string, state: Partial<BatchTaskState>): void;
 }
 
 export function memoryBatchStore(): MemoryBatchStore {
@@ -43,6 +46,7 @@ export function memoryBatchStore(): MemoryBatchStore {
                 gate: 'open',
                 waitReason: null,
                 rootJobId: null,
+                attempt: 0,
             }))
         );
 
@@ -62,6 +66,9 @@ export function memoryBatchStore(): MemoryBatchStore {
                 createdAt: now,
                 updatedAt: now,
                 startedAt: null,
+                cancelledAt: null,
+                completedAt: null,
+                activeStage: null,
                 plan,
                 tasks: taskStates(plan),
             });
@@ -113,6 +120,55 @@ export function memoryBatchStore(): MemoryBatchStore {
             stamp(startedBy, idempotency, id);
             writes.push('start');
             return { result: 'ok' };
+        },
+        async reconcile(id) {
+            const batch = batches.get(id);
+            if (!batch || batch.status !== BATCH_STARTED) return null;
+            writes.push('reconcile');
+            return {
+                complete: batch.completedAt !== null,
+                cancelled: batch.cancelledAt !== null,
+                active: batch.tasks.filter((task) => holdsSlot(task.execution)).length,
+            };
+        },
+        async reconcileOpen() {
+            writes.push('reconcileOpen');
+        },
+        async cancel(id) {
+            const batch = batches.get(id);
+            if (!batch) return { result: 'missing' };
+            if (batch.status !== BATCH_STARTED) return { result: 'not_started' };
+            if (batch.cancelledAt) return { result: 'ok', replayed: true };
+            if (batch.completedAt) return { result: 'finished' };
+            batches.set(id, { ...batch, cancelledAt: new Date().toISOString() });
+            writes.push('cancel');
+            return { result: 'ok', replayed: false };
+        },
+        async retry(id, taskKey) {
+            const batch = batches.get(id);
+            if (!batch) return { result: 'missing' };
+            if (batch.status !== BATCH_STARTED) return { result: 'not_started' };
+            if (batch.cancelledAt) return { result: 'cancelled' };
+            const task = batch.tasks.find((candidate) => candidate.key === taskKey);
+            if (!task) return { result: 'no_task' };
+            if (!isRetryable(task)) return { result: 'not_retryable' };
+            task.execution = TASK_RETRY;
+            writes.push('retry');
+            return { result: 'ok' };
+        },
+        async signalGate(id, taskKey, gate) {
+            const batch = batches.get(id);
+            if (!batch) return { result: 'missing' };
+            if (batch.status !== BATCH_STARTED) return { result: 'not_started' };
+            const task = batch.tasks.find((candidate) => candidate.key === taskKey);
+            if (!task) return { result: 'no_task' };
+            task.gate = gate;
+            writes.push('signalGate');
+            return { result: 'ok' };
+        },
+        mark(id, taskKey, state) {
+            const task = batches.get(id)!.tasks.find((candidate) => candidate.key === taskKey)!;
+            Object.assign(task, state);
         },
     };
 }

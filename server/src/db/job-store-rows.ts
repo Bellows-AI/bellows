@@ -464,3 +464,14 @@ export function taskPreviewColumnsFragment(sql: Sql): Fragment {
         wait_reason, waiting_since, wait_terminal_reason, needs_answer
     `;
 }
+
+/**
+ * A thread that backs a batch task is the batch's history and a completed stage's evidence
+ * (docs/batches.md): marking it done, removing it, reopening it or closing it on a PR merge would
+ * rewrite what the batch already decided, or block the task's retry. The batch's retry and cancel
+ * are the sanctioned paths.
+ */
+export async function backsBatchTask(tx: TransactionSql, orgId: string, rootJobId: string): Promise<boolean> {
+    const rows = await tx`select 1 from batch_task where org_id = ${orgId} and root_job_id = ${rootJobId}`;
+    return rows.length > 0;
+}
