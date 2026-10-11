@@ -141,6 +141,7 @@ function resolveTaskThreads(jobs: readonly Job[]): ResolvedTask[] {
     return [...threads.values()].map(({ root, head }): ResolvedTask => {
         const summary: TaskSummary = {
             id: root.id,
+            headRunId: head.id,
             command: root.command,
             status: head.status,
             cancelRequestedAt: head.cancelRequestedAt,

@@ -276,9 +276,13 @@ const STUB = `#!/bin/sh
 # orphan a process that outlives the whole suite by STUB_SLEEP seconds, and killing without
 # waiting would leave a zombie that is still signalable. The marker is written after the
 # wait, so a test that sees the marker knows the sleep is gone.
+# The kill is KILL, not TERM: the backgrounded sleep is a fork of this shell, carrying this
+# very trap until it execs, and under load a TERM landing in that sliver is swallowed by the
+# copy (dash, measured: ~1 in 7 forwards) — the trap then waits out the whole STUB_SLEEP.
+# KILL cannot be caught, so it ends the sleep whether or not it has exec'd yet.
 # The guard covers a TERM landing before the sleep exists (STUB_SETTLE): an unset pid would
 # make kill and wait no-ops anyway, and an empty "$VAR" is an argument, not nothing.
-trap '[ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null && wait "$SLEEP_PID" 2>/dev/null; echo "$$" > "$STUB_DIR/signaled"; exit 143' TERM
+trap '[ -n "$SLEEP_PID" ] && kill -KILL "$SLEEP_PID" 2>/dev/null && wait "$SLEEP_PID" 2>/dev/null; echo "$$" > "$STUB_DIR/signaled"; exit 143' TERM
 sleep "\${STUB_SETTLE:-0}"
 sleep "\${STUB_SLEEP:-0}" &
 SLEEP_PID=$!

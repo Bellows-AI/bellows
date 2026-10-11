@@ -106,6 +106,17 @@ const craft = async (
 };
 
 describe.skipIf(!enabled)('listTasks: organization-wide summary', () => {
+    it('names the newest run of the thread as headRunId, never the root or an older run', async () => {
+        const root = await craft({ status: 'succeeded', createdMinutesAgo: 60, finishedMinutesAgo: 55 });
+        await craft({ root, parent: root, status: 'failed', createdMinutesAgo: 40, finishedMinutesAgo: 35 });
+        const head = await craft({ root, parent: root, status: 'running', createdMinutesAgo: 10 });
+
+        const { page } = await store.listTasks({ state: 'running', sort: 'newest', limit: 30 });
+
+        expect(page.items).toHaveLength(1);
+        expect(page.items[0]).toMatchObject({ id: root, headRunId: head, status: 'running' });
+    });
+
     it('keeps counts and previews organization-wide while the page obeys the filters', async () => {
         const RUNNING_STARTED_MINUTES_AGO = 59;
         await craft({

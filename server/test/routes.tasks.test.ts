@@ -191,6 +191,7 @@ describe('GET /api/tasks', () => {
         expect(body.page.items).toHaveLength(2);
         expect(body.page.items[0]).toEqual({
             id: uid(1),
+            headRunId: uid(11),
             command: 'fix the login bug',
             status: 'running',
             cancelRequestedAt: null,
@@ -210,6 +211,7 @@ describe('GET /api/tasks', () => {
         });
         expect(Object.keys(body.page.items[1])).toEqual([
             'id',
+            'headRunId',
             'command',
             'status',
             'cancelRequestedAt',

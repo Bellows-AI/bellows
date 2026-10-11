@@ -354,7 +354,7 @@ export async function listTasksOf(ctx: JobStoreContext, filters: TaskListFilters
             -- thread) rather than scanning the org's runs and filtering id = root_job_id —
             -- the EXPLAIN-measured difference between touching every run and touching one
             -- row per thread.
-            select h.root_job_id as id, r.command, r.repo, r.executor, r.executor_scope, r.created_at,
+            select h.root_job_id as id, h.id as head_id, r.command, r.repo, r.executor, r.executor_scope, r.created_at,
                    h.status, h.done_at, h.cancel_requested_at, h.summary, h.runtime,
                    -- The sort key is truncated to milliseconds, the precision an ISO
                    -- stamp and a JS Date carry: the cursor's value round-trips EXACTLY,

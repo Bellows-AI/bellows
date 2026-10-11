@@ -1,10 +1,13 @@
 import type {
     ArtifactPage,
     BoardJobRecord,
+    BoardTaskPage,
     ConnectionView,
     JobActivity,
     JobDone,
+    JobEdited,
     JobRemoved,
+    JobReopened,
     JobStopped,
     QuestionRecord,
     SkillView,
@@ -48,6 +51,16 @@ export function renderStopped(stopped: JobStopped): string {
 /** The answer to a done: the user's stamp, beside the run's own untouched verdict. */
 export function renderDone(done: JobDone): string {
     return `done ${done.doneAt ?? DASH} ${done.id} (run ${done.status})`;
+}
+
+/** The answer to a reopen: the task is open to a follow-up again. */
+export function renderReopened(reopened: JobReopened): string {
+    return `reopened ${reopened.id}`;
+}
+
+/** The answer to an edit: the run keeps its id and its place in the queue. */
+export function renderEdited(edited: JobEdited): string {
+    return `${edited.status} ${edited.id}`;
 }
 
 /** The answer to a remove. The thread is gone, so the id is all there is left to name. */
@@ -175,6 +188,25 @@ export function renderPageNote(page: ArtifactPage): string {
     const more = end < page.totalCharacters ? `; next page: --offset ${end}` : '; end of artifact';
     const cut = page.truncated ? '; the stored artifact was itself truncated at upload' : '';
     return `${page.kind} attempt ${page.attempt}: characters ${page.offset}..${end} of ${page.totalCharacters}${more}${cut}\n`;
+}
+
+/**
+ * One task row: the TASK id first (what `task list` is keyed by), then the head run's status and
+ * id — the run the status describes, never a historical one — and the task's own labels.
+ */
+export function renderTaskPage(page: BoardTaskPage): string {
+    const lines = page.items.map((task) =>
+        [
+            task.id,
+            task.status,
+            `head:${task.headRunId}`,
+            task.activityAt,
+            task.repo ?? DASH,
+            commandPreview(task.command),
+        ].join('  ')
+    );
+    if (page.nextCursor !== null) lines.push(`next: --cursor ${page.nextCursor}`);
+    return lines.length === 0 ? 'no tasks' : lines.join('\n');
 }
 
 /** Repo discovery: one row per repo, visible and synced marked, a note when the list may be thin. */

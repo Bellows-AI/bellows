@@ -1,29 +1,32 @@
 import { parseArgs } from 'node:util';
 import { createBoardClient, HTTP_OK, QUESTION_ANSWERED_CODE } from './board.js';
-import type { ArtifactKind, BoardClient, JobCreated, JobWait, QuestionRecord } from './board.js';
-import { artifactResult } from './artifacts.js';
+import { TASK_LIST_OPTIONS, taskListFilters } from './tasks.js';
+import type { BoardClient, JobCreated, JobWait, QuestionRecord } from './board.js';
+import { activityCommand, artifactCommand } from './artifacts.js';
 import { CliConfigError, loadCliConfig } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
 import type { CommandResult, ErrorDetail } from './outcome.js';
 import { executorDiscovery, repoDiscovery } from './discovery.js';
-import { INPUT_OPTIONS, resolveCommandInput, UsageError } from './input.js';
+import { INPUT_OPTIONS, parseOrUsage, resolveCommandInput, UsageError } from './input.js';
 import type { InputIo } from './input.js';
 import { BoardError, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS, realClock } from './transport.js';
 import type { BoardClock } from './transport.js';
 import {
-    renderActivity,
     renderAnswered,
     renderConnections,
     renderCreated,
     renderDone,
+    renderEdited,
     renderExecutors,
     renderJobDetail,
     renderJobLine,
     renderQuestions,
     renderRemoved,
+    renderReopened,
     renderRepos,
     renderSkills,
     renderStopped,
+    renderTaskPage,
     renderThread,
 } from './render.js';
 
@@ -55,22 +58,27 @@ const JSON_OPTION = { json: { type: 'boolean', default: false } } as const;
 export const USAGE = `usage: factory job create (<command...> | --file <path> | --stdin) [--repo owner/name] [--executor name] [--executor-scope user|org]
                           [--skill name]... [--jira-connection <id>] [--idempotency-key <key>] [--json]
        factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
+       factory task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
+                         [--sort newest|oldest] [--limit <n>] [--cursor <cursor>] [--json]
        factory job investigate <id> [--json]
        factory job log|transcript <id> [--attempt <n>] [--offset <n>] [--limit <n>] [--all] [--json]
        factory job activity <id> [--json]
        factory job wait <id> [--timeout <seconds>] [--json]
        factory job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
        factory job retry <id> [--idempotency-key <key>] [--json]
+       factory job edit <id> (<command...> | --file <path> | --stdin) [--json]
        factory job questions <id> [--json]
        factory job answer <id> <question-id> --answer <text>... [--json]
        factory job stop <id> [--json]
        factory job done <id> [--json]
+       factory job reopen <id> [--json]
        factory job remove <id> --yes [--json]
        factory repo list [--json]          repositories visible to the board, and which are synced
        factory executor list [--json]      executor profiles by scope (--executor-scope)
        factory skill list [--json]         skills a task may select (--skill)
        factory connection list [--json]    managed connections you may select (--jira-connection)
 
+'task list' is one row per task plus its head run; 'job list' is per run. A --cursor fits only its own filters.
 config:
   FACTORY_URL    the board's base URL (required)
   FACTORY_TOKEN  a personal access token (fat_...) minted from the settings page;
@@ -86,11 +94,13 @@ exit codes: 0 ok (a wait: the run succeeded), 1 the board refused, 2 usage or co
 --json prints one envelope on stdout and nothing on stderr, whatever the outcome:
   { ok, command, outcome, exitCode, data, error }
 
-log and transcript read the STORED artifact (not the output tail investigate shows), newest attempt
-unless --attempt names one. One call prints one page of characters from --offset (stderr names the
-next --offset); --all walks every page and prints the whole artifact, or fails naming the page that
-could not be read — it never prints a partial artifact as complete. --all takes --limit as its page
-size and no --offset.
+log and transcript read the STORED artifact (not investigate's tail), newest attempt unless --attempt
+names one: one page from --offset per call (stderr names the next), or with --all every page, failing
+naming the page that could not be read rather than printing a partial artifact. --all takes no --offset.
+
+retry queues a fresh attempt of the task's existing command; follow-up queues NEW instructions.
+edit replaces the command of a queued run you created, in place; the board refuses it once the run
+is claimed. reopen undoes done. The board decides every refusal.
 
 A question's --answer values go one per prompt, in the order \`job questions\` lists them: an
 option's label, or free text (a multi-select joins its picks with ", "). The board is the
@@ -123,14 +133,6 @@ export interface RunIo extends InputIo {
     signal?: AbortSignal | undefined;
     stdout(text: string): void;
     stderr(text: string): void;
-}
-
-function parseOrUsage<T>(parse: () => T): T {
-    try {
-        return parse();
-    } catch (error) {
-        throw new UsageError(error instanceof Error ? error.message : String(error));
-    }
 }
 
 function parseLimit(raw: string | undefined): number | undefined {
@@ -304,39 +306,24 @@ async function runList(args: readonly string[], io: RunIo): Promise<CommandResul
     return { outcome: OUTCOME.ok, data: { jobs }, stdout: jobs.map((job) => `${renderJobLine(job)}\n`).join('') };
 }
 
+async function runTaskList(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const { values } = parseOrUsage(() =>
+        parseArgs({ args: [...args], options: { ...JSON_OPTION, ...TASK_LIST_OPTIONS } })
+    );
+    const page = await boardFor(io).listTasks(taskListFilters(values));
+    return {
+        outcome: OUTCOME.ok,
+        data: { tasks: page.items, nextCursor: page.nextCursor },
+        stdout: `${renderTaskPage(page)}\n`,
+    };
+}
+
 async function runInvestigate(args: readonly string[], io: RunIo): Promise<CommandResult> {
     const { id } = onlyId(args, 'investigate');
     const client = boardFor(io);
     const job = await client.getJob(id);
     const thread = await client.thread(id);
     return ok({ job, thread }, `${renderJobDetail(job)}\n\n${renderThread(thread)}`);
-}
-
-/** `job log` / `job transcript`: one page by default, the whole artifact with `--all`. */
-function artifactCommand(kind: ArtifactKind) {
-    return async (args: readonly string[], io: RunIo): Promise<CommandResult> => {
-        const parsed = parseOrUsage(() =>
-            parseArgs({
-                args: [...args],
-                allowPositionals: true,
-                options: {
-                    ...JSON_OPTION,
-                    attempt: { type: 'string' },
-                    offset: { type: 'string' },
-                    limit: { type: 'string' },
-                    all: { type: 'boolean', default: false },
-                },
-            })
-        );
-        if (parsed.positionals.length !== 1) throw new UsageError(`${kind} needs exactly one job id\n\n${USAGE}`);
-        return artifactResult(boardFor(io), kind, parsed.positionals[0]!, parsed.values);
-    };
-}
-
-async function runActivity(args: readonly string[], io: RunIo): Promise<CommandResult> {
-    const { id } = onlyId(args, 'activity');
-    const activity = await boardFor(io).activity(id);
-    return ok(activity, renderActivity(activity));
 }
 
 /** What a wait's `data` says: the result, and the task / requested run / head run identities. */
@@ -459,6 +446,25 @@ async function runRetry(args: readonly string[], io: RunIo): Promise<CommandResu
     return createdResult(created);
 }
 
+async function runEdit(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const parsed = parseOrUsage(() =>
+        parseArgs({ args: [...args], allowPositionals: true, options: { ...JSON_OPTION, ...INPUT_OPTIONS } })
+    );
+    const [id, ...rest] = parsed.positionals;
+    if (!id) {
+        throw new UsageError('an edit needs a job id\n\n' + USAGE);
+    }
+    const command = await commandOf(rest, parsed.values, io);
+    const edited = await boardFor(io).editJob(id, command);
+    return ok(edited, renderEdited(edited));
+}
+
+async function runReopen(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const { id } = onlyId(args, 'reopen');
+    const reopened = await boardFor(io).reopenJob(id);
+    return ok(reopened, renderReopened(reopened));
+}
+
 /** Every question the task's runs asked, oldest first — each paired with the run that asked it. */
 async function questionsOf(client: BoardClient, id: string) {
     const thread = await client.thread(id);
@@ -566,17 +572,20 @@ async function runConnectionList(args: readonly string[], io: RunIo): Promise<Co
 const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<CommandResult>> = {
     'job create': runCreate,
     'job list': runList,
+    'task list': runTaskList,
     'job investigate': runInvestigate,
-    'job log': artifactCommand('log'),
-    'job transcript': artifactCommand('transcript'),
-    'job activity': runActivity,
+    'job log': (args, io) => artifactCommand('log', args, boardFor(io), USAGE),
+    'job transcript': (args, io) => artifactCommand('transcript', args, boardFor(io), USAGE),
+    'job activity': (args, io) => activityCommand(args, boardFor(io), USAGE),
     'job wait': runWait,
     'job follow-up': runFollowUp,
     'job retry': runRetry,
+    'job edit': runEdit,
     'job questions': runQuestions,
     'job answer': runAnswer,
     'job stop': runStop,
     'job done': runDone,
+    'job reopen': runReopen,
     'job remove': runRemove,
     'repo list': runRepoList,
     'executor list': runExecutorList,

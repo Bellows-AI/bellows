@@ -12,8 +12,8 @@ import type { BoardClock } from './transport.js';
 /**
  * The board client for the person routes the CLI speaks to: the two reads
  * (`GET /api/jobs`, `GET /api/jobs/:id[/thread]`, the second doubling as the settle long-poll)
- * and the five writes (`POST /api/jobs` and the `follow-up`, `stop`, `done` and `remove` actions
- * on a job). A plain HTTP client that depends on nothing,
+ * and the writes (`POST /api/jobs`, `PATCH /api/jobs/:id` and the `follow-up`, `retry`, `stop`,
+ * `done`, `reopen` and `remove` actions on a job). A plain HTTP client that depends on nothing,
  * core included — the driver's rule and its reason apply word for word: this is a client of an
  * HTTP board, and importing the server's types would hand a process that needs only `fetch` the
  * whole server dependency tree, plus a build order.
@@ -158,6 +158,19 @@ export interface JobDone {
     doneAt: string | null;
 }
 
+/** The 200 body of a queued-command edit: the same run, still queued, with its new command. */
+export interface JobEdited {
+    id: string;
+    status: string;
+    command: string;
+}
+
+/** The 200 body of a reopen: the done stamp is cleared, so the task takes a follow-up again. */
+export interface JobReopened {
+    id: string;
+    reopened: boolean;
+}
+
 /** The 200 body of a remove. The whole thread is gone; there is nothing left to render. */
 export interface JobRemoved {
     id: string;
@@ -197,6 +210,35 @@ export interface JobWait {
     job: BoardJobRecord;
 }
 
+/** The board's task states and sorts, copied from `GET /api/tasks` — the CLI imports nothing from the server. */
+export const TASK_STATES = ['attention', 'running', 'review', 'past'] as const;
+export const TASK_SORTS = ['newest', 'oldest'] as const;
+
+/**
+ * One logical task of `GET /api/tasks`. `id` is the task (its root run); `headRunId` is the one
+ * run `status` and `activity` describe — every other run of the thread is history.
+ */
+export interface BoardTaskSummary {
+    id: string;
+    headRunId: string;
+    command: string;
+    status: string;
+    doneAt: string | null;
+    repo: string | null;
+    executor: string | null;
+    author: { login: string } | null;
+    waitReason: string | null;
+    needsAnswer: boolean;
+    createdAt: string;
+    activityAt: string;
+}
+
+/** The slice of the task list answer the CLI shows: the page and its query-bound cursor. */
+export interface BoardTaskPage {
+    items: BoardTaskSummary[];
+    nextCursor: string | null;
+}
+
 export interface BoardClient {
     createJob(input: {
         command: string;
@@ -216,6 +258,16 @@ export interface BoardClient {
         limit?: number | undefined;
         repo?: string | undefined;
     }): Promise<BoardJobRecord[]>;
+    /** One page of logical tasks (`GET /api/tasks`); `cursor` is only valid under the query that minted it. */
+    listTasks(filters: {
+        state?: string | undefined;
+        q?: string | undefined;
+        author?: string | undefined;
+        repo?: string | undefined;
+        sort?: string | undefined;
+        limit?: number | undefined;
+        cursor?: string | undefined;
+    }): Promise<BoardTaskPage>;
     getJob(id: string): Promise<BoardJobRecord>;
     /**
      * One settle long-poll: the board holds the read until the thread's chain head is terminal, an
@@ -234,7 +286,10 @@ export interface BoardClient {
     followUp(id: string, command: string, idempotencyKey?: string): Promise<JobCreated>;
     /** Re-runs the thread head's own command as a fresh attempt; the board takes nothing from a body. */
     retry(id: string, idempotencyKey?: string): Promise<JobCreated>;
+    /** Replaces a queued run's command in place; the board refuses anything else and any non-author. */
+    editJob(id: string, command: string): Promise<JobEdited>;
     stopJob(id: string): Promise<JobStopped>;
+    reopenJob(id: string): Promise<JobReopened>;
     markDone(id: string): Promise<JobDone>;
     removeJob(id: string): Promise<JobRemoved>;
     /**
@@ -302,6 +357,20 @@ const MS_PER_SECOND = 1000;
  */
 const jobPath = (id: string): string => `/api/jobs/${encodeURIComponent(id)}`;
 
+/** The task list's query string (with its `?`), omitting every filter that was not given. */
+function taskQuery(filters: Record<string, string | number | undefined>): string {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) if (value !== undefined) params.set(key, String(value));
+    const query = params.toString();
+    return query ? `?${query}` : '';
+}
+/** A queued-command edit's request: the command is the whole body, like a follow-up's. */
+const editInit = (headers: Record<string, string>, command: string): RequestInit => ({
+    method: 'PATCH',
+    headers: { ...headers, [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
+    body: JSON.stringify({ command }),
+});
+
 function isWait(value: unknown): value is JobWait {
     if (typeof value !== 'object' || value === null) return false;
     const wait = value as Partial<Record<keyof JobWait, unknown>>;
@@ -323,6 +392,33 @@ function artifactPath(id: string, kind: ArtifactKind, page: Record<string, numbe
         )
     ).toString();
     return `${jobPath(id)}/${kind}${query ? `?${query}` : ''}`;
+}
+
+type ReadRoutes = 'artifactPage' | 'activity' | 'listRepos' | 'workspace' | 'listSkills' | 'listConnections';
+
+/** The plain GET reads, over whatever `get` does to fetch one authenticated path. */
+function readRoutes(get: (path: string) => Promise<unknown>): Pick<BoardClient, ReadRoutes> {
+    return {
+        async listRepos() {
+            return (await get('/api/repos')) as VisibleRepos;
+        },
+        async workspace() {
+            return (await get('/api/workspace')) as WorkspaceView;
+        },
+        async listSkills() {
+            return ((await get('/api/skills')) as { skills: SkillView[] }).skills;
+        },
+        async listConnections() {
+            return ((await get('/api/connections')) as { connections: ConnectionView[] }).connections;
+        },
+        async artifactPage(id, kind, page) {
+            const path = artifactPath(id, kind, page);
+            return checkedArtifactPage(path, await get(path));
+        },
+        async activity(id) {
+            return (await get(`${jobPath(id)}/activity`)) as JobActivity;
+        },
+    };
 }
 
 function checkedArtifactPage(path: string, payload: unknown): ArtifactPage {
@@ -433,6 +529,12 @@ export function createBoardClient({
             return payload.jobs;
         },
 
+        async listTasks(filters) {
+            const query = taskQuery(filters);
+            return ((await request(at(`/api/tasks${query}`), { headers: authHeaders() })) as { page: BoardTaskPage })
+                .page;
+        },
+
         async getJob(id) {
             return (await request(at(jobPath(id)), { headers: authHeaders() })) as BoardJobRecord;
         },
@@ -463,14 +565,7 @@ export function createBoardClient({
             return payload.jobs;
         },
 
-        async artifactPage(id, kind, page) {
-            const path = artifactPath(id, kind, page);
-            return checkedArtifactPage(path, await request(at(path), { headers: authHeaders() }));
-        },
-
-        async activity(id) {
-            return (await request(at(`${jobPath(id)}/activity`), { headers: authHeaders() })) as JobActivity;
-        },
+        ...readRoutes((path) => request(at(path), { headers: authHeaders() })),
 
         async followUp(id, command, idempotencyKey) {
             // The command is the whole body: the repo, the executor and the session are copied
@@ -488,6 +583,17 @@ export function createBoardClient({
                 method: 'POST',
                 headers: { ...authHeaders(), ...keyHeader(idempotencyKey) },
             });
+        },
+
+        async editJob(id, command) {
+            return (await request(at(jobPath(id)), editInit(authHeaders(), command))) as JobEdited;
+        },
+
+        async reopenJob(id) {
+            return (await request(at(`${jobPath(id)}/reopen`), {
+                method: 'POST',
+                headers: authHeaders(),
+            })) as JobReopened;
         },
 
         // The three actions take no body, so they send no content-type either.
@@ -512,26 +618,6 @@ export function createBoardClient({
                 headers: { ...authHeaders(), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
                 body: JSON.stringify({ answers }),
             })) as QuestionRecord;
-        },
-
-        async listRepos() {
-            return (await request(at('/api/repos'), { headers: authHeaders() })) as VisibleRepos;
-        },
-
-        async workspace() {
-            return (await request(at('/api/workspace'), { headers: authHeaders() })) as WorkspaceView;
-        },
-
-        async listSkills() {
-            const payload = (await request(at('/api/skills'), { headers: authHeaders() })) as { skills: SkillView[] };
-            return payload.skills;
-        },
-
-        async listConnections() {
-            const payload = (await request(at('/api/connections'), { headers: authHeaders() })) as {
-                connections: ConnectionView[];
-            };
-            return payload.connections;
         },
     };
 }

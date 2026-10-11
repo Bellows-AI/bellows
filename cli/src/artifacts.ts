@@ -1,9 +1,10 @@
+import { parseArgs } from 'node:util';
 import { HTTP_OK } from './board.js';
 import type { ArtifactKind, ArtifactPage, BoardClient } from './board.js';
-import { UsageError } from './input.js';
+import { parseOrUsage, UsageError } from './input.js';
 import { OUTCOME } from './outcome.js';
 import type { CommandResult } from './outcome.js';
-import { renderPageNote } from './render.js';
+import { renderActivity, renderPageNote } from './render.js';
 import { BoardError, MALFORMED_RESPONSE_CODE } from './transport.js';
 
 /**
@@ -32,6 +33,14 @@ export interface WholeArtifact {
     content: string;
 }
 
+const JSON_OPTION = { json: { type: 'boolean', default: false } } as const;
+const PAGING_OPTIONS = {
+    attempt: { type: 'string' },
+    offset: { type: 'string' },
+    limit: { type: 'string' },
+    all: { type: 'boolean', default: false },
+} as const;
+
 /** A non-negative (or, with `min` 1, positive) integer flag, refused as usage before any request. */
 function parseCount(raw: string | undefined, flag: string, min: number): number | undefined {
     if (raw === undefined) return undefined;
@@ -42,13 +51,30 @@ function parseCount(raw: string | undefined, flag: string, min: number): number 
     return value;
 }
 
+/** The command line of a job-scoped read: exactly one job id and the flags the command takes. */
+function parseJobArgs(args: readonly string[], verb: string, paged: boolean, usage: string) {
+    const options = paged ? { ...JSON_OPTION, ...PAGING_OPTIONS } : JSON_OPTION;
+    const parsed = parseOrUsage(() => parseArgs({ args: [...args], allowPositionals: true, options }));
+    if (parsed.positionals.length !== 1) throw new UsageError(`${verb} needs exactly one job id\n\n${usage}`);
+    const values = parsed.values as { attempt?: string; offset?: string; limit?: string; all?: boolean };
+    return { id: parsed.positionals[0]!, values };
+}
+
+/** `job activity <id>`. */
+export async function activityCommand(args: readonly string[], client: BoardClient, usage: string) {
+    const { id } = parseJobArgs(args, 'activity', false, usage);
+    const activity = await client.activity(id);
+    return { outcome: OUTCOME.ok, data: activity, stdout: `${renderActivity(activity)}\n` };
+}
+
 /** `job log` / `job transcript`: one page by default, the whole artifact with `--all`. */
-export async function artifactResult(
-    client: BoardClient,
+export async function artifactCommand(
     kind: ArtifactKind,
-    id: string,
-    flags: { attempt?: string | undefined; offset?: string | undefined; limit?: string | undefined; all?: boolean }
+    args: readonly string[],
+    client: BoardClient,
+    usage: string
 ): Promise<CommandResult> {
+    const { id, values: flags } = parseJobArgs(args, kind, true, usage);
     const attempt = parseCount(flags.attempt, '--attempt', 1);
     const offset = parseCount(flags.offset, '--offset', 0);
     const limit = parseCount(flags.limit, '--limit', 1);
