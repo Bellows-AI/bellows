@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { createGateManager, type GateAttempt } from '../src/gates.js';
+import { createGateManager, declaredTimeoutMs, type GateAttempt, type GateRunOptions } from '../src/gates.js';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { gateEnvContainerName } from '../src/docker.js';
@@ -97,6 +97,7 @@ const NOT_FOUND_STATUS = 404;
 const BAD_REQUEST_STATUS = 400;
 const CONFLICT_STATUS = 409;
 const PAYLOAD_TOO_LARGE_STATUS = 413;
+const UNPROCESSABLE_STATUS = 422;
 
 /** The margin past a 5ms cooldown that every "did the teardown fire" assertion waits out. */
 const COOLDOWN_SETTLE_MS = 40;
@@ -395,6 +396,70 @@ describe('the gate environment manager: acquire serialization and timeouts', () 
         expect(seenOptions.at(-1)).toMatchObject({ timeout: 30_000 });
         await manager.stop();
     });
+
+    /** An exec seam that kills every `docker exec` at its timeout, recording each one's options. */
+    const killedAtTimeout = (seenOptions: ({ timeout?: number } | undefined)[]) =>
+        exec((args, options) => {
+            if (args[0] !== 'exec') return { stdout: '', stderr: '' };
+            seenOptions.push(options);
+            const error = new Error('killed') as Error & { killed?: boolean };
+            error.killed = true;
+            return Promise.reject(error);
+        });
+
+    // A gate's own `timeout:` (issue #576): the UI suite outlives GATE_TIMEOUT_MS by design, so
+    // its declared budget, not the driver default, bounds it.
+    it('kills a gate at its own timeout, not the driver default', async () => {
+        const seenOptions: ({ timeout?: number } | undefined)[] = [];
+        const manager = createGateManager({
+            config,
+            cooldownMs: 1000,
+            gateTimeoutMs: 30_000,
+            execDocker: killedAtTimeout(seenOptions),
+        });
+        await manager.acquire(KEY, 'node:24', '');
+
+        await expect(manager.runGate(KEY, 'ui', 'npm run verify:ui', { timeoutMs: 2_700_000 })).resolves.toEqual({
+            exitCode: 124,
+            output: '[driver] gate killed after 2700000ms',
+        });
+        expect(seenOptions.at(-1)).toMatchObject({ timeout: 2_700_000 });
+        await manager.stop();
+    });
+
+    // The board is trusted, but a claim carrying no positive number must not become a NaN deadline.
+    it.each([Number.NaN, 0, -5, Number.POSITIVE_INFINITY])('reads a timeoutMinutes of %s as none', (timeoutMinutes) => {
+        expect(declaredTimeoutMs({ name: 'ui', command: 'x', timeoutMinutes })).toBeUndefined();
+    });
+
+    it("caps a gate's own timeout at DRIVER_JOB_TIMEOUT_MS", async () => {
+        const seenOptions: ({ timeout?: number } | undefined)[] = [];
+        const manager = createGateManager({
+            config: loadDriverConfig({ DRIVER_JOB_TIMEOUT_MS: '1800000' }),
+            cooldownMs: 1000,
+            gateTimeoutMs: 30_000,
+            execDocker: killedAtTimeout(seenOptions),
+        });
+        await manager.acquire(KEY, 'node:24', '');
+
+        await manager.runGate(KEY, 'ui', 'npm run verify:ui', { timeoutMs: 2_700_000 });
+        expect(seenOptions.at(-1)).toMatchObject({ timeout: 1_800_000 });
+        await manager.stop();
+    });
+
+    it('runs setup under the driver default when the gate declares its own timeout', async () => {
+        const seenOptions: ({ timeout?: number } | undefined)[] = [];
+        const passing = exec((args, options) => {
+            if (args[0] === 'exec') seenOptions.push(options);
+            return { stdout: '', stderr: '' };
+        });
+        const manager = createGateManager({ config, cooldownMs: 1000, gateTimeoutMs: 30_000, execDocker: passing });
+        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+
+        await manager.runGate(KEY, 'ui', 'npm run verify:ui', { timeoutMs: 2_700_000 });
+        expect(seenOptions.map((options) => options?.timeout)).toEqual([30_000, 2_700_000]);
+        await manager.stop();
+    });
 });
 
 describe('the gate environment manager: failure and edge cases', () => {
@@ -524,6 +589,74 @@ describe('the gate server', () => {
         await expect(response.json()).resolves.toEqual({ exitCode: 0, output: 'ok' });
         expect(seen).toEqual([{ key: KEY, name: 'test', command: 'npm test' }]);
         expect(acquiredFor).toEqual([JOB]);
+        await server.close();
+    });
+
+    // An ad-hoc call is a client waiting on one HTTP answer (the agent's shell tool gives up at
+    // 10 minutes), and a hangup kills the run: a longer gate would die every time, so it is
+    // refused up front and left to the end-of-run pass (issue #576).
+    it('refuses an ad-hoc run of a gate whose timeout outlasts the call, before acquiring', async () => {
+        let acquired = 0;
+        let ran = 0;
+        const manager = {
+            acquire: async () => {
+                acquired += 1;
+            },
+            runGate: async () => {
+                ran += 1;
+                return { exitCode: 0, output: '' };
+            },
+        };
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        server.register('tok-1', {
+            key: KEY,
+            image: 'node:24',
+            job: JOB,
+            gates: [{ name: 'ui', command: 'npm run verify:ui', timeoutMinutes: 11 }],
+        });
+        const port = await server.listen();
+        const response = await fetch(`http://127.0.0.1:${port}/run`, {
+            method: 'POST',
+            headers: { authorization: 'Bearer tok-1' },
+            body: JSON.stringify({ gate: 'ui' }),
+        });
+        expect(response.status).toBe(UNPROCESSABLE_STATUS);
+        await expect(response.json()).resolves.toEqual({
+            error: 'gate "ui" declares timeout: 11, longer than an ad-hoc run can wait (10 minutes); it runs in the end-of-run gates pass',
+        });
+        expect([acquired, ran]).toEqual([0, 0]);
+        await server.close();
+    });
+
+    it("passes a declared gate's timeout to the manager in ms", async () => {
+        const seen: (number | undefined)[] = [];
+        const manager = {
+            acquire: async () => {},
+            runGate: async (_key: string, _name: string, _command: string, options?: GateRunOptions) => {
+                seen.push(options?.timeoutMs);
+                return { exitCode: 0, output: 'ok' };
+            },
+        };
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        server.register('tok-1', {
+            key: KEY,
+            image: 'node:24',
+            job: JOB,
+            gates: [
+                { name: 'test', command: 'npm test' },
+                { name: 'ui', command: 'npm run verify:ui', timeoutMinutes: 10 },
+            ],
+        });
+        const port = await server.listen();
+        for (const gate of ['test', 'ui']) {
+            const response = await fetch(`http://127.0.0.1:${port}/run`, {
+                method: 'POST',
+                headers: { authorization: 'Bearer tok-1' },
+                body: JSON.stringify({ gate }),
+            });
+            expect(response.status).toBe(OK_STATUS);
+        }
+        expect(seen).toEqual([undefined, 600_000]);
         await server.close();
     });
 
@@ -1049,7 +1182,7 @@ describe('cancelling a gate', () => {
         await manager.acquire(KEY, 'node:24', '');
         const cancel = new AbortController();
 
-        const gate = manager.runGate(KEY, 'test', 'npm test', cancel.signal);
+        const gate = manager.runGate(KEY, 'test', 'npm test', { signal: cancel.signal });
         await new Promise((resolve) => setTimeout(resolve, 5));
         cancel.abort();
         await gate;
@@ -1067,7 +1200,7 @@ describe('cancelling a gate', () => {
         const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
         await manager.acquire(KEY, 'node:24', '');
 
-        await manager.runGate(KEY, 'test', 'npm test', AbortSignal.abort());
+        await manager.runGate(KEY, 'test', 'npm test', { signal: AbortSignal.abort() });
 
         expect(logs.filter((args) => args[0] === 'exec')).toEqual([]);
         await manager.stop();
@@ -1078,7 +1211,7 @@ describe('cancelling a gate', () => {
         const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
         await manager.acquire(KEY, 'node:24', '');
 
-        await manager.runGate(KEY, 'test', 'npm test', new AbortController().signal);
+        await manager.runGate(KEY, 'test', 'npm test', { signal: new AbortController().signal });
 
         expect(logs.filter((args) => args[0] === 'rm')).toHaveLength(1); // the acquire's fence only
         await manager.stop();
@@ -1093,7 +1226,7 @@ describe('cancelling a gate', () => {
         });
         const manager = {
             acquire: async () => {},
-            runGate: (_key: string, _name: string, _command: string, signal?: AbortSignal) =>
+            runGate: (_key: string, _name: string, _command: string, { signal }: GateRunOptions = {}) =>
                 new Promise<{ exitCode: number; output: string }>((resolve) => {
                     started();
                     signal?.addEventListener('abort', () => {

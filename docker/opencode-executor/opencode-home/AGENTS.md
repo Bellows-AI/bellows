@@ -125,4 +125,6 @@ console.log(j.output)})'
 
 `exitCode` 0 means the gate passed; otherwise read `output`, fix what it names, and run it again.
 Only gates `.bellows.yaml` declares can run — the request carries a gate NAME, never a command.
+A gate that declares `timeout:` above 10 (minutes) answers 422 and runs only when you finish: do
+not retry it; run its pieces with your own commands instead.
 If `BELLOWS_GATE_URL` is unset there are no gates here: verify with your own commands instead.

@@ -189,7 +189,8 @@ driver:
     jobTimeoutMs: '7200000'
     # The wall-clock cap on ONE gate run — the gate Job's activeDeadlineSeconds. A gate that
     # outlives it fails with exit 124. A declared gate that installs dependencies into a fresh
-    # worktree before running a whole suite needs more than the ten-minute default.
+    # worktree before running a whole suite needs more than the ten-minute default. A gate's own
+    # `.bellows.yaml` `timeout:` overrides this one, capped by jobTimeoutMs.
     gateTimeoutMs: '600000'
     # The orphan reaper (issue #301): how often the driver sweeps service objects whose owning
     # job can no longer use them (DRIVER_REAP_INTERVAL_MS), and how old an object must be before

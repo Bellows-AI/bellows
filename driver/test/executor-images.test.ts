@@ -1267,3 +1267,18 @@ describe('the claude entrypoint Stop-hook model', () => {
         expect(stopHookAfterRun({}, {})).not.toHaveProperty('model');
     });
 });
+
+// The gate server refuses an ad-hoc run of a gate whose `timeout:` outlasts the call (issue #576);
+// the agent must hear that before it spends a turn retrying the 422.
+describe('the ad-hoc gate limit in the agent instructions', () => {
+    it.each(['docker/skills/gates/SKILL.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
+        '%s names the 10-minute limit, the 422 and the end-of-run pass',
+        (path) => {
+            const text = read(path).replace(/\s+/g, ' ');
+            expect(text).toContain('declares `timeout:` above 10 (minutes)');
+            expect(text).toContain('422');
+            expect(text).toMatch(/runs only when you finish/);
+            expect(text).toMatch(/[Dd]o not retry it/);
+        }
+    );
+});

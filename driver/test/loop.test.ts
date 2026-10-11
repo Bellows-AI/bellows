@@ -3179,6 +3179,31 @@ describe('verification gates', () => {
         expect(acquired).toEqual([key, key, key]);
     });
 
+    // A gate's own `timeout:` (issue #576) reaches the manager in ms; an undeclared one stays undefined.
+    it("hands each declared gate's timeout to the manager in ms", async () => {
+        const timed: BoardJob = {
+            ...gatedJob(1),
+            gates: {
+                image: 'node:24',
+                gates: [
+                    { name: 'test', command: 'npm test' },
+                    { name: 'ui', command: 'npm run verify:ui', timeoutMinutes: 45 },
+                ],
+            },
+        };
+        const board = stubBoard([timed]);
+        const stack = stubGateStack();
+        const timeouts: (number | undefined)[] = [];
+        stack.gates.manager.runGate = async (_key, name, _command, options) => {
+            timeouts.push(options?.timeoutMs);
+            return { exitCode: 0, output: `${name} ok` };
+        };
+
+        await drive({ ...board, runner: stubRunner(async () => ok({ output: 'done' })), gates: stack.gates });
+
+        expect(timeouts).toEqual([undefined, 2_700_000]);
+    });
+
     // A gate that cannot run at all is a failed gate — an environment that cannot be re-acquired
     // at the gates pass is the same shape, never a silent pass and never a run crash.
     it('fails the gate, not the run, when the environment cannot be re-acquired at the gates pass', async () => {
@@ -4580,7 +4605,7 @@ describe('a stop cancels the gates', () => {
         const stack = stubGateStack();
         const ran: string[] = [];
         let aborted = false;
-        stack.gates.manager.runGate = (_key, name, _command, signal) => {
+        stack.gates.manager.runGate = (_key, name, _command, { signal } = {}) => {
             ran.push(name);
             options.cancelRequested = true;
             return new Promise((resolve) => {
@@ -4608,7 +4633,7 @@ describe('a stop cancels the gates', () => {
         const options: { removedOnBeat?: boolean } = {};
         const board = stubBoard([gatedJob(1)], options);
         const stack = stubGateStack();
-        stack.gates.manager.runGate = (_key, _name, _command, signal) => {
+        stack.gates.manager.runGate = (_key, _name, _command, { signal } = {}) => {
             options.removedOnBeat = true;
             return new Promise((resolve) => {
                 signal?.addEventListener('abort', () => resolve({ exitCode: 137, output: 'killed' }));

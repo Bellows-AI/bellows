@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import type { BoardJob } from './board.js';
+import type { BoardJob, DeclaredGate } from './board.js';
 import type { DriverConfig } from './config.js';
 import { gateEnvArgs, gateEnvContainerName, gateExecArgs } from './docker.js';
 import { startEnvContainer } from './docker-runner-support.js';
@@ -26,6 +26,7 @@ const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_CONFLICT = 409;
+const HTTP_UNPROCESSABLE = 422;
 const HTTP_INTERNAL_SERVER_ERROR = 500;
 /** What a gate cancelled before it started answers — discarded by the loop that cancelled it. */
 const CANCELLED_EXIT_CODE = 130;
@@ -103,6 +104,12 @@ export interface GateAttempt {
     signal?: AbortSignal;
 }
 
+/** How one gate run is bounded: the cancel `signal`, and the gate's own declared `timeoutMs`. */
+export interface GateRunOptions {
+    signal?: AbortSignal | undefined;
+    timeoutMs?: number | undefined;
+}
+
 export interface GateManager {
     /**
      * Ensures the environment for the checkout exists, cancelling any teardown already
@@ -114,9 +121,10 @@ export interface GateManager {
     /**
      * Runs one declared gate inside the checkout's environment container. An abort of `signal`
      * cancels the gate where it stands — its process killed, its kubernetes Job deleted — and
-     * the run answers whatever the cancellation left; the caller discards it.
+     * the run answers whatever the cancellation left; the caller discards it. `timeoutMs` is the
+     * gate's own declared budget (`gateDeadlineMs`); setup always runs under the driver default.
      */
-    runGate(key: string, name: string, command: string, signal?: AbortSignal): Promise<GateRun>;
+    runGate(key: string, name: string, command: string, options?: GateRunOptions): Promise<GateRun>;
     /**
      * Arms the cooldown teardown. Safe to call repeatedly; acquire cancels it. The job is the
      * releaser: a no-op unless it is the attempt the environment is currently filed under — a
@@ -213,6 +221,24 @@ const newEntry = (name: string, image: string, envBody: string, job: BoardJob | 
     network: null,
 });
 
+const MS_PER_MINUTE = 60_000;
+
+/** A declared gate's `timeout:` in ms; undefined when it declares none (or the claim carried no positive number). */
+export const declaredTimeoutMs = (gate: DeclaredGate): number | undefined =>
+    gate.timeoutMinutes !== undefined && Number.isFinite(gate.timeoutMinutes) && gate.timeoutMinutes > 0
+        ? gate.timeoutMinutes * MS_PER_MINUTE
+        : undefined;
+
+/**
+ * The longest gate an ad-hoc call may start: the agent's shell tool gives up on one command at 10
+ * minutes, and the hangup cancels the run, so a longer gate would be killed every time.
+ */
+const AD_HOC_MAX_MINUTES = 10;
+
+/** A gate's deadline: its own timeout, capped by DRIVER_JOB_TIMEOUT_MS, else the driver default. */
+export const gateDeadlineMs = (config: { jobTimeoutMs: number }, defaultMs: number, timeoutMs?: number): number =>
+    timeoutMs === undefined ? defaultMs : Math.min(timeoutMs, config.jobTimeoutMs);
+
 /**
  * Runs the container's pending setup, then the gate. Setup is once per container: a failed one
  * stays pending, so the next gate retries it, and the failing gate never runs.
@@ -220,14 +246,15 @@ const newEntry = (name: string, image: string, envBody: string, job: BoardJob | 
 async function setupThenGate(
     entry: Pick<Entry, 'pendingSetup'>,
     command: string,
-    exec: (script: string) => Promise<GateRun>
+    commandTimeoutMs: number,
+    exec: (script: string, timeoutMs?: number) => Promise<GateRun>
 ): Promise<GateRun> {
     if (entry.pendingSetup) {
         const setupRun = await exec(entry.pendingSetup);
         if (setupRun.exitCode !== 0) return { ...setupRun, setupFailed: true };
         entry.pendingSetup = null;
     }
-    return exec(command);
+    return exec(command, commandTimeoutMs);
 }
 
 /**
@@ -364,7 +391,7 @@ export function createGateManager({
         // one warm container per checkout, every gate exec'd into it — so the gate's own name
         // never reaches the transport here. The kubernetes manager does use it: a gate run is a
         // Job there, and the name becomes part of the Job's.
-        runGate(key, _name, command, signal) {
+        runGate(key, _name, command, { signal, timeoutMs } = {}) {
             const entry = entries.get(key);
             if (!entry) {
                 return Promise.reject(
@@ -392,11 +419,11 @@ export function createGateManager({
             const queued = serialize(key, async (): Promise<GateRun> => {
                 if (signal?.aborted) return cancelled;
                 signal?.addEventListener('abort', cancel, { once: true });
-                const exec = (script: string): Promise<GateRun> =>
-                    execInContainer({ execDocker, name: entry.name, script, gateTimeoutMs, onKilled: cancel });
+                const exec = (script: string, ms = gateTimeoutMs): Promise<GateRun> =>
+                    execInContainer({ execDocker, name: entry.name, script, gateTimeoutMs: ms, onKilled: cancel });
                 try {
                     await joinServices(entry);
-                    return await setupThenGate(entry, command, exec);
+                    return await setupThenGate(entry, command, gateDeadlineMs(config, gateTimeoutMs, timeoutMs), exec);
                 } finally {
                     signal?.removeEventListener('abort', cancel);
                     armCooldown(key, entry);
@@ -454,7 +481,7 @@ export interface GateClaim {
     image: string;
     envBody?: string;
     job: BoardJob;
-    gates: readonly { name: string; command: string }[];
+    gates: readonly DeclaredGate[];
     /** The dead-service note the loop's sampler last set (issue #487); set on the stored claim, never at register. */
     deadServices?: string | undefined;
 }
@@ -547,7 +574,7 @@ const parseGateRequest = async (request: IncomingMessage): Promise<GateRequest> 
 const runRegisteredGate = async (
     manager: Pick<GateManager, 'acquire' | 'runGate'>,
     claim: GateClaim,
-    gate: { name: string; command: string },
+    gate: DeclaredGate,
     signal: AbortSignal
 ): Promise<{ status: number; body: unknown }> => {
     // A cancelled token must not re-create the environment its cancel just tore down: at
@@ -562,7 +589,10 @@ const runRegisteredGate = async (
         };
     }
     try {
-        const outcome = await manager.runGate(claim.key, gate.name, gate.command, signal);
+        const outcome = await manager.runGate(claim.key, gate.name, gate.command, {
+            signal,
+            timeoutMs: declaredTimeoutMs(gate),
+        });
         // A cancelled run's answer is whatever the kill left — never a verdict to record.
         if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
         return { status: HTTP_OK, body: outcome };
@@ -641,6 +671,11 @@ export function createGateServer({
         // declare-then-run model exists to prevent.
         const gate = claim.gates.find((candidate) => candidate.name === parsedRequest.gate);
         if (!gate) return respond(reply, HTTP_NOT_FOUND, { error: `no declared gate "${parsedRequest.gate}"` });
+        if ((declaredTimeoutMs(gate) ?? 0) > AD_HOC_MAX_MINUTES * MS_PER_MINUTE) {
+            return respond(reply, HTTP_UNPROCESSABLE, {
+                error: `gate "${gate.name}" declares timeout: ${gate.timeoutMinutes}, longer than an ad-hoc run can wait (${AD_HOC_MAX_MINUTES} minutes); it runs in the end-of-run gates pass`,
+            });
+        }
 
         const cancelled = AbortSignal.any([cancels.get(auth)?.signal ?? AbortSignal.abort(), hangup]);
         const result = await runRegisteredGate(manager, claim, gate, cancelled);

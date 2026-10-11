@@ -6434,6 +6434,36 @@ describe('the kubernetes gate manager', () => {
         expect(outcome.output).toMatch(/gate killed after \d+ms/);
     });
 
+    // A gate's own `timeout:` (issue #576) is its Job's deadline; setup keeps GATE_TIMEOUT_MS.
+    it("files the gate Job with the gate's own activeDeadlineSeconds, setup with the default", async () => {
+        const { request, calls } = gateFake();
+        const m = manager(request);
+        const withSetup = { ...job, gates: { image: 'node:24', setup: 'npm ci', gates: [] } };
+        await m.acquire(KEY, 'node:24', '', { job: withSetup });
+        await m.runGate(KEY, 'ui', 'npm run verify:ui', { timeoutMs: 2_700_000 });
+
+        const deadlines = calls
+            .filter((c) => c.method === 'POST' && c.path === jobsPath(namespace))
+            .map((c) => (c.body as { spec: { activeDeadlineSeconds: number } }).spec.activeDeadlineSeconds);
+        expect(deadlines).toEqual([30, 2700]);
+    });
+
+    it("names the gate's own deadline when the kubelet kills it", async () => {
+        const { request } = gateFake({
+            job: {
+                status: 200,
+                body: JSON.stringify({
+                    status: { failed: 1, conditions: [{ type: 'Failed', reason: 'DeadlineExceeded' }] },
+                }),
+            },
+            log: { status: 200, body: '' },
+        });
+        const m = manager(request);
+        await m.acquire(KEY, 'node:24', '', { job });
+        const outcome = await m.runGate(KEY, 'ui', 'npm run verify:ui', { timeoutMs: 2_700_000 });
+        expect(outcome).toEqual({ exitCode: 124, output: '[driver] gate killed after 2700000ms' });
+    });
+
     // A Stop or Remove ends the gate where it stands: its Job goes Foreground, its pod with it.
     it('deletes the running gate Job when the signal aborts, and stops polling', async () => {
         const { request, calls } = gateFake({ job: { status: 200, body: JSON.stringify({ status: { active: 1 } }) } });
@@ -6449,7 +6479,9 @@ describe('the kubernetes gate manager', () => {
         });
         await m.acquire(KEY, 'node:24', '', { job });
 
-        await expect(m.runGate(KEY, 'test', 'npm test', cancel.signal)).rejects.toMatchObject({ code: 125 });
+        await expect(m.runGate(KEY, 'test', 'npm test', { signal: cancel.signal })).rejects.toMatchObject({
+            code: 125,
+        });
 
         const deletes = calls.filter((c) => c.method === 'DELETE' && c.path?.startsWith(`${jobsPath(namespace)}/`));
         expect(deletes.some((c) => c.path?.includes('propagationPolicy=Foreground'))).toBe(true);
@@ -6461,7 +6493,9 @@ describe('the kubernetes gate manager', () => {
         const m = manager(request);
         await m.acquire(KEY, 'node:24', '', { job });
 
-        await expect(m.runGate(KEY, 'test', 'npm test', AbortSignal.abort())).rejects.toMatchObject({ code: 125 });
+        await expect(m.runGate(KEY, 'test', 'npm test', { signal: AbortSignal.abort() })).rejects.toMatchObject({
+            code: 125,
+        });
 
         expect(calls.some((c) => c.method === 'POST' && c.path === jobsPath(namespace))).toBe(false);
     });

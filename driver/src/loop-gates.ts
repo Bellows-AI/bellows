@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import type { BoardJob } from './board.js';
+import type { BoardJob, DeclaredGate } from './board.js';
 import { CONTROL_POLL_MS_ENV, CONTROL_TOKEN_ENV, CONTROL_URL_ENV, envFileBody } from './claim.js';
 import { tailBytes, type DeadService } from './runner.js';
-import type { GateRun } from './gates.js';
+import { declaredTimeoutMs, type GateRun } from './gates.js';
 import { clearQuestionTimers, down, raceStep, RUN_CONTROL_POLL_MS } from './loop-attempt.js';
 import type { JobState } from './loop-attempt.js';
 import { createPublishRelay } from './loop-publish.js';
@@ -31,7 +31,7 @@ export interface GateSession {
     token: string;
     image: string;
     envBody: string;
-    declared: readonly { name: string; command: string }[];
+    declared: readonly DeclaredGate[];
 }
 
 export interface GateFailure {
@@ -160,7 +160,7 @@ interface GatesRunCtx {
 }
 
 /** One declared gate's re-acquire-then-run outcome, folding a re-acquire failure into a failed gate. */
-async function runOneGate(ctx: GatesRunCtx, gate: { name: string; command: string }): Promise<GateRun | null> {
+async function runOneGate(ctx: GatesRunCtx, gate: DeclaredGate): Promise<GateRun | null> {
     const { rt, job, gateSession, state, signal } = ctx;
     const { gates } = rt;
     if (!gates) return null;
@@ -172,7 +172,10 @@ async function runOneGate(ctx: GatesRunCtx, gate: { name: string; command: strin
             // so. Starting the gate then would be dead work, on a checkout another attempt may
             // own: the same refusal the check before the acquire makes.
             if (down(state)) return null;
-            return gates.manager.runGate(gateSession.key, gate.name, gate.command, signal);
+            return gates.manager.runGate(gateSession.key, gate.name, gate.command, {
+                signal,
+                timeoutMs: declaredTimeoutMs(gate),
+            });
         })
         .catch((e: Error) => ({ exitCode: REFUSED_TO_RUN_EXIT_CODE, output: e.message }));
 }

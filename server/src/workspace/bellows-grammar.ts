@@ -32,3 +32,15 @@ export function scalar(line: number, raw: string, what: string): string {
 
 /** `key: value` / `key:` — the key shape is fixed, the value may contain colons. */
 export const KEY_VALUE = /^([A-Za-z][A-Za-z0-9_]*):(?:(\s+)(.*))?$/;
+
+/** The longest `timeout:` a gate or reviewer may declare, in whole minutes. */
+export const MAX_TIMEOUT_MINUTES = 120;
+
+/** `timeout: <minutes>` — whole minutes, 1 to MAX_TIMEOUT_MINUTES; shared by gates and reviewers. */
+export function readTimeoutMinutes(line: number, raw: string): number {
+    const minutes = Number(scalar(line, raw, 'timeout'));
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > MAX_TIMEOUT_MINUTES) {
+        fail(line, `timeout is whole minutes, 1 to ${MAX_TIMEOUT_MINUTES}`);
+    }
+    return minutes;
+}
