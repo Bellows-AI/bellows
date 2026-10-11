@@ -8,6 +8,7 @@ and their routes answer `409 BATCH_UNSUPPORTED` until then. No driver or runner 
 | Concern | Code | Test |
 | --- | --- | --- |
 | Plan contract v1: types, bounds, `validateBatchPlan`, `resolveBatchPlan`, `batchExecutionCapability` | `core/src/batch-plan.ts` | `core/test/batch-plan.test.ts` |
+| PR-gate decisions: `evaluatePrGate`, `decideMerge`, `evaluateStageGate`, `mergeLockKey` (pure; not yet wired to a route or store) | `core/src/batch-gate.ts` | `core/test/batch-gate.test.ts` |
 | Error codes (`BAD_BATCH`, `BATCH_STALE`, `BATCH_STARTED`, `BATCH_UNSUPPORTED`, `BATCH_NO_DEFAULT_BRANCH`, `BATCHES_UNAVAILABLE`) | `core/src/error-codes.ts` | `core/test/error-codes.test.ts` |
 | Schema: `batch`, `batch_target`, `batch_stage`, `batch_task`, `batch_idempotency`, the immutability triggers | `server/migrations/059_batches.sql` | `server/test-db/batch-store.test.ts` |
 | Store bound to `orgId`: create, get, list, replace, start | `server/src/db/batch-store.ts`, `batch-store-rows.ts`, `batch-store-types.ts` | `server/test-db/batch-store.test.ts` |

@@ -1,4 +1,27 @@
 export type {
+    ChecksState,
+    LiveRevisions,
+    MergeDecision,
+    ObservedPr,
+    PrGate,
+    PrGateReason,
+    PrState,
+    ReviewState,
+    StageGate,
+    StageGateReason,
+    StageVerification,
+    TaskOutcome,
+    TaskTarget,
+} from './batch-gate.js';
+export {
+    decideMerge,
+    evaluatePrGate,
+    evaluateStageGate,
+    mergeLockKey,
+    PR_GATE_REASONS,
+    STAGE_GATE_REASONS,
+} from './batch-gate.js';
+export type {
     BatchCapability,
     BatchCompletion,
     BatchPlan,
