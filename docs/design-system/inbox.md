@@ -6,8 +6,9 @@ contracts: [../design-system.md](../design-system.md).
 | Concern | Code | Test |
 | --- | --- | --- |
 | Page, cards, filters, chips, rows, states | `web/src/pages/TaskInboxPage.tsx` | `web/test/task-inbox.render.test.tsx` |
-| Filter and sort round trip through the URL | `web/src/pages/TaskInboxPage.tsx` | `e2e/journeys.spec.ts`, `e2e/navigation.spec.ts` |
-| Row timing and tone derivation | `web/src/format.ts`, `web/src/api/useJobs.ts` | `web/test/task-derivations.test.ts` |
+| Filter and sort round trip through the URL | `web/src/pages/TaskInboxPage.tsx`, `web/src/api/useTasks.ts` | `web/test/use-tasks.test.ts`, `e2e/journeys.spec.ts`, `e2e/navigation.spec.ts` |
+| Row timing | `web/src/format.ts`, `web/src/api/useJobs.ts` | `web/test/task-derivations.test.ts` |
+| Row tone, status label, dot | `web/src/task-tree.ts` | `web/test/task-tree.test.ts` |
 
 ## Invariants
 

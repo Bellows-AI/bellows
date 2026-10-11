@@ -1,8 +1,6 @@
 # Executor testing
 
-Which lane proves what for the board/driver/runner/telemetry control plane. A V8 percentage does
-not prove docker, Kubernetes, git, PostgreSQL or the collector accepted the artifact handed to it,
-so the lanes are listed by boundary, not by coverage.
+Which lane proves what for the board/driver/runner/telemetry control plane, listed by boundary, not by coverage.
 
 | Lane | Needs | Proves |
 | --- | --- | --- |
@@ -28,15 +26,12 @@ so the lanes are listed by boundary, not by coverage.
   Kubernetes object specs, both pins stay. Consolidate only when setup, branch and expected failure
   are identical.
 - **The focused coverage gate excludes `driver/src/index.ts`, `driver/src/scripts/` and the
-  Postgres telemetry store.** V8 cannot attribute child-process code to the parent Vitest process,
-  and the stores need a real PostgreSQL; those paths are covered by the script suites and
-  `test:db`. Adding them as zeroes would make the number less truthful, not stricter.
+  Postgres telemetry store** (`vitest.executors.config.ts`); the script suites and `test:db` cover them.
 - **A new slow boundary test must close a missing boundary, not repeat a covered branch.** Build
   large git histories with `git fast-import` rather than real commits.
 
 ## What no lane covers
 
-- **IPv6.** Every policy rule is IPv4; the limit is stated, not implemented.
 - **The real collector** is in neither end-to-end path; `test:jobs` and `--cluster` assert the
   driver's export, not a stored-and-rolled-up datapoint.
 - **A cloud cluster.** `--cluster` refuses every non-kind context deliberately (it deletes runner
@@ -54,8 +49,7 @@ so the lanes are listed by boundary, not by coverage.
   What the lane does prove is the mechanism underneath: `169.254.0.0/16` is a `blockedCidrs` entry
   excluded from the same `0.0.0.0/0` egress rule the node probe shows dropping traffic for real.
   The endpoint's own defence is a node setting outside the chart ([kubernetes.md](kubernetes.md)).
-- **Cross-attempt network isolation** and **declared-service DNS shadowing** are owned elsewhere;
-  `--netpol` pins cross-attempt traffic as reachable on purpose.
-- **Task-level workspace isolation** does not exist — the mount is a member boundary
+- **IPv6, cross-attempt isolation, DNS shadowing** — residuals in [kubernetes.md](kubernetes.md).
+  **Task-level workspace isolation** does not exist — the mount is a member boundary
   ([workspace.md](workspace.md)). **Kernel isolation** is claimed nowhere
   ([security.md](security.md)).

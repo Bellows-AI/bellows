@@ -40,8 +40,8 @@ never utilities, and every color it renders resolves through a token.
   lists' disjointness.
 - Status color carries one meaning everywhere: blue is your turn, green the machine working or
   finished well, red failed, grey parked, amber warnings only. The text label always renders and
-  the icon is `aria-hidden`. The per-state maps are the `TONE` tables in
-  `web/src/panels/TaskHeader.tsx` and `web/src/pages/TaskInboxPage.tsx`.
+  the icon is `aria-hidden`. The per-state maps are `TONE` in `web/src/panels/TaskHeader.tsx` and
+  `STATE_PILL` in `web/src/pages/TaskInboxPage.tsx`, keyed by `taskTone` in `web/src/task-tree.ts`.
 - The light washes are opaque tints mixed into `--surface-raised`; the dark ones are translucent.
   `e2e/polish.spec.ts` measures every pill, chip and banner on raised, canvas and sunken in both
   themes — a translucent light wash drops below AA on the light canvas.
@@ -92,8 +92,8 @@ Data display: `table-wrap`, `data`, `sortable`, `align-end`, `asc`, `kv`, `by-us
 
 `AppBar.tsx`, `AppShell.tsx`, `DraftReturnBanner.tsx`, `Icon.tsx`, `KeyValues.tsx`,
 `MobileNavDialog.tsx`, `NavItems.tsx`, `OrgSelector.tsx`, `PageHeader.tsx`, `RelativeTime.tsx`,
-`SideNav.tsx`, `StatusBanner.tsx`, `ThemeSelector.tsx`, `UserMenu.tsx`, `SettingsLayout.tsx`,
-`TasksLayout.tsx`.
+`SideNav.tsx`, `StatusBanner.tsx`, `ThemeSelector.tsx`, `UserMenu.tsx` (all `web/src/components/`);
+`SettingsLayout.tsx`, `TasksLayout.tsx` (`web/src/pages/`).
 
 ## Lanes
 
