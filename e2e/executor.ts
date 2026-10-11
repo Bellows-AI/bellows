@@ -1,5 +1,5 @@
 import { CLAUDE_CODE } from '@factory-ai/core';
-import { expect, type Page } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
 import { ADD_LABEL } from '../web/src/workspace/executors.js';
 import { queuedThread } from './fixtures/threads.js';
 
@@ -21,6 +21,13 @@ export const E2E_EXECUTOR_ROW = { ...E2E_EXECUTOR, config: {} };
  * workspace root, so no real clone exists: the poll carries it, and `stubLaunch` answers the launch.
  */
 export const E2E_REPO = { owner: 'acme', name: 'web' };
+
+/**
+ * A composer context chip by its `Field: value` name. `getByLabel(field)` substring-matches the
+ * chip's `About <field>` help trigger too.
+ */
+export const contextChip = (scope: Page | Locator, field: 'Repository' | 'Executor'): Locator =>
+    scope.getByRole('button', { name: new RegExp(`^${field}: `) });
 
 const E2E_LAUNCHED_ID = '11111111-1111-4111-8111-111111111111';
 

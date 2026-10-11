@@ -82,8 +82,8 @@ export function TaskStatsDialog({ open, stats, onClose }: { open: boolean; stats
                             />
                             <ul className="pulse-legend">
                                 {TOKEN_TYPES.map((type) => (
-                                    <li key={type.key} className={type.line}>
-                                        <span className="pulse-swatch" aria-hidden="true" />
+                                    <li key={type.key}>
+                                        <span className={`pulse-swatch ${type.line}`} aria-hidden="true" />
                                         {type.label}
                                     </li>
                                 ))}

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { addExecutorViaDialog, countLaunches, E2E_REPO, mockExecutors, stubLaunch } from './executor.js';
+import { addExecutorViaDialog, contextChip, countLaunches, E2E_REPO, mockExecutors, stubLaunch } from './executor.js';
 import {
     authoredBy,
     failedGateFollowUpThread,
@@ -122,7 +122,7 @@ for (const theme of THEMES) {
 
         await page.getByRole('link', { name: 'Back to new task' }).click();
         await expect(prompt).toHaveValue(command);
-        await expect(page.getByLabel('Executor')).toHaveText('journey-executor');
+        await expect(contextChip(page, 'Executor')).toHaveText('journey-executor');
         await expect(composer.locator('.banner-bad')).toHaveCount(0);
         expect(launches.bodies).toHaveLength(0);
         await shoot(page, 'configure', 'draft-restored', theme);
