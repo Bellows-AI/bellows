@@ -17,7 +17,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | Merged PR closing its threads | `server/src/db/job-store-merge.ts` | `server/test-db/job-store.merge-close.test.ts` |
 | Task summary (`GET /api/tasks`) | `server/src/db/task-summary.ts`, `server/src/routes/tasks.ts` | `server/test/task-summary.test.ts`, `server/test/routes.tasks.test.ts` |
 | Attribution, wall clock, publication | `server/src/db/job-store-reads.ts`, `job-store-rows.ts` | `server/test-db/job-store.attribution.test.ts`, `job-store.wall-clock.test.ts`, `job-store.publication.test.ts` |
-| Mutation idempotency (`Idempotency-Key`) | `server/src/routes/job-idempotency.ts`, `server/src/db/job-store-idempotency.ts`, `server/migrations/058_job_idempotency.sql` | `server/test-db/job-store.idempotency.test.ts`, `server/test/routes.jobs.test.ts` |
+| Mutation idempotency (`Idempotency-Key`) | `server/src/routes/job-idempotency.ts`, `server/src/db/job-store-idempotency.ts`, `server/migrations/058_job_idempotency.sql` | `server/test-db/job-store.idempotency.test.ts`, `server/test/routes.jobs.test.ts`, `server/test-db/cli.scripting.test.ts` |
 | `.bellows.yaml` parser: gates, services, `policy:`, `reviewers:` | `server/src/workspace/bellows.ts`, `bellows-reviewers.ts` | `server/test/bellows.test.ts`, `bellows.policy.test.ts`, `bellows.reviewers.test.ts` |
 | Gates, board side; the claim's `gatesSource` | `server/src/db/job-store-worker.ts`, `server/migrations/018_job_gates.sql` | `server/test-db/job-store.gates.test.ts`, `server/test/claim-gates-source.test.ts` |
 | Master prompt and turn context, rendered | `server/src/db/master-prompt.ts` | `server/test/master-prompt.test.ts` |
@@ -60,8 +60,8 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Entry, dispatch, board client, config | `cli/src/index.ts`, `run.ts`, `board.ts`, `config.ts`, `http.ts` | `cli/test/commands.test.ts`, `board-client.test.ts`, `config.test.ts` |
-| Transport: deadlines, read-only retries, interrupt | `cli/src/transport.ts` | `cli/test/board-client.test.ts` |
+| Entry, dispatch, board client, config | `cli/src/index.ts`, `run.ts`, `board.ts`, `config.ts`, `http.ts` | `cli/test/commands.test.ts`, `board-client.test.ts`, `config.test.ts`; end to end: `server/test-db/cli.scripting.test.ts` |
+| Transport: deadlines, retries of reads and keyed writes only, interrupt | `cli/src/transport.ts` | `cli/test/board-client.test.ts` |
 | Outcomes, exit codes, `--json` envelope | `cli/src/outcome.ts`, `render.ts` | `cli/test/commands.test.ts` |
 | Prompt input (words, `--file`, `--stdin`) | `cli/src/input.ts` | `cli/test/input.test.ts` |
 | `task list` and cursors | `cli/src/tasks.ts` | `cli/test/tasks.test.ts` |
