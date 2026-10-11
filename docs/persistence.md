@@ -14,6 +14,7 @@ the in-memory stores in `server/test/helpers*.ts`.
 | Named-profile reviews, a job row of its own thread linked by `review_of` and unique per caller and key, plus the profiles stamped on the caller (migration 056) | `server/migrations/056_job_review.sql`, `server/src/db/job-store-reviews.ts` | `server/test-db/job-store.reviews.test.ts` |
 | The never-refunded claim sequence the kubernetes checkout claim orders by (migration 057) | `server/migrations/057_job_claim_seq.sql`, `server/src/db/job-store-claim.ts` | `server/test-db/job-store.requeue.test.ts` |
 | Idempotency keys, stamped on the `job` row a create, follow-up or retry inserted and unique per org, caller and operation (migration 058) | `server/migrations/058_job_idempotency.sql`, `server/src/db/job-store-idempotency.ts` | `server/test-db/job-store.idempotency.test.ts` |
+| Batch plans: draft, frozen target/stage/task rows, idempotency records, immutability triggers (migration 059; [batches.md](batches.md)) | `server/migrations/059_batches.sql`, `server/src/db/batch-store.ts` | `server/test-db/batch-store.test.ts` |
 | Database-name guards | `server/src/config.ts`, `server/src/seed/cli.ts` | `server/test/config.persistence.test.ts` |
 | db-suite harness: name guard, migrate, truncate and reseed per test | `server/test-db/harness.ts` | `server/test/test-db.harness.test.ts` |
 

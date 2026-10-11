@@ -7,6 +7,7 @@ import type { AppConfig } from './config.js';
 import type { InstallationRepo } from './github/app-client.js';
 import type { OrgRegistry } from './orgs.js';
 import type { ConnectionOfLease } from './db/connection-store.js';
+import { batchRoutes } from './routes/batches.js';
 import { connectionRoutes, type CloudIdLookup } from './routes/connections.js';
 import { connectorJiraRoutes } from './routes/connector-jira.js';
 import { workspaceRoutes } from './routes/workspace.js';
@@ -170,6 +171,8 @@ export async function buildApp({
     await app.register(jobRoutes({ orgs }));
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
+    // Batch plans (059): like the routes above, 503 for an org whose runtime carries no batch store.
+    await app.register(batchRoutes({ orgs }));
     await app.register(envRoutes({ config, orgs }));
     // Managed connector connections (#546) and the runner-facing proxy that spends them.
     await app.register(connectionRoutes({ orgs, ...(cloudIdLookup ? { lookupCloudId: cloudIdLookup } : {}) }));
