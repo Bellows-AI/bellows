@@ -1,5 +1,5 @@
 environment:
-    image: ghcr.io/bellows-ai/factory-ui-runner:playwright-1.62.1
+    image: node:24
     setup: "npm ci"
     gates:
          - name: test
