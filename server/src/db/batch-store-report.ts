@@ -8,12 +8,15 @@ import {
     VERIFY_FAILED,
 } from '@factory-ai/core';
 import type { Sql } from 'postgres';
+import { type BatchPrObservation, readObservations } from './batch-store-observation.js';
 import {
     ACCEPTANCE_PR_MERGED,
     BATCH_STARTED,
     type BatchReport,
+    type BatchReportObservation,
     type BatchReportState,
     type BatchReportTask,
+    REPORT_UNAVAILABLE,
 } from './batch-store-types.js';
 
 /**
@@ -50,6 +53,7 @@ interface ReportTaskRow {
     attempts: number;
     infra_retries: number;
     repairs: number;
+    manual_retries: number;
     wall_clock_ms: string;
     agent_turns: string;
     pending_question: string | null;
@@ -57,6 +61,21 @@ interface ReportTaskRow {
 }
 
 const iso = (value: Date): string => value.toISOString();
+
+const observationOf = (row: BatchPrObservation | undefined): BatchReportObservation | null =>
+    row
+        ? {
+              outcome: row.outcome,
+              checks: row.checks,
+              mergeability: row.mergeability,
+              review: row.review,
+              headSha: row.headSha,
+              targetSha: row.targetSha,
+              stale: row.stale,
+              observedAt: row.observedAt,
+              error: row.error,
+          }
+        : null;
 
 function stateOf(batch: ReportBatch, tasks: readonly ReportTaskRow[]): BatchReportState {
     if (batch.cancelled_at) return 'cancelled';
@@ -73,7 +92,7 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
         from batch where org_id = ${orgId} and id = ${id}
     `;
     if (!batch || batch.status !== BATCH_STARTED) return null;
-    const [tasks, merged, verification] = await Promise.all([
+    const [tasks, merged, verification, observations] = await Promise.all([
         sql<ReportTaskRow[]>`
             select t.key, t.stage_key, t.required, t.execution, t.gate, t.attention, t.wait_reason, t.pr,
                    t.root_job_id, t.completion_kind,
@@ -85,6 +104,9 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
                    (select count(*)::int from batch_attempt a
                     where a.org_id = t.org_id and a.batch_id = t.batch_id and a.task_key = t.key
                       and a.kind = 'repair') as repairs,
+                   (select count(*)::int from batch_attempt a
+                    where a.org_id = t.org_id and a.batch_id = t.batch_id and a.task_key = t.key
+                      and a.kind = 'retry') as manual_retries,
                    (select coalesce(sum(j.wall_clock_ms), 0) from job j
                     where j.org_id = t.org_id and j.root_job_id = t.root_job_id) as wall_clock_ms,
                    (select coalesce(sum(j.agent_turns), 0) from job j
@@ -118,7 +140,9 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
             where v.org_id = ${orgId} and v.batch_id = ${id}
             order by s.position
         `,
+        readObservations({ sql, orgId }, id),
     ]);
+    const observed = new Map(observations.map((row) => [row.taskKey, row]));
     const state = stateOf(batch, tasks);
     const rows: BatchReportTask[] = tasks.map((task) => {
         const prUrl = task.pr === TASK_NO_PR ? null : task.pr;
@@ -131,11 +155,17 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
             attempts: task.attempts,
             infraRetries: task.infra_retries,
             repairs: task.repairs,
+            manualRetries: task.manual_retries,
+            remaining: {
+                infraRetries: Math.max(0, batch.infra_retries - task.infra_retries),
+                repairs: Math.max(0, batch.repairs - task.repairs),
+            },
             attention: task.attention,
             waitReason: task.wait_reason,
             pr: prUrl,
             job: task.root_job_id ? `/api/jobs/${task.root_job_id}` : null,
-            usage: { wallClockMs: Number(task.wall_clock_ms), agentTurns: Number(task.agent_turns) },
+            usage: { wallClockMs: Number(task.wall_clock_ms), agentTurns: Number(task.agent_turns), tokens: null },
+            observation: observationOf(observed.get(task.key)),
             next: batchNextAction({
                 batchId: id,
                 batchState: state,
@@ -185,6 +215,13 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
             checkedAt: iso(row.checked_at),
         })),
         tasks: rows,
+        latestObservationAt:
+            observations
+                .map((row) => row.observedAt)
+                .filter((at): at is string => at !== null)
+                .sort()
+                .at(-1) ?? null,
+        unavailable: REPORT_UNAVAILABLE,
         totals: {
             accepted: rows.filter((task) => task.gate === GATE_PASSED).length,
             failed: rows.filter((task) => task.execution === 'failed').length,

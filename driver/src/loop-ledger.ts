@@ -5,8 +5,8 @@
  * `Fault`, never another if-chain. Pure: nothing here touches the board, a runner or the clock.
  */
 
-import type { FailureKind } from './board.js';
-import type { HelperFailureReport } from './helpers.js';
+import type { FailureCause, FailureKind } from './board.js';
+import type { HelperFailureReason, HelperFailureReport } from './helpers.js';
 import type { GateFailure } from './loop-gates.js';
 import type { PublishResult } from './publish.js';
 import { serviceHint } from './runner.js';
@@ -22,6 +22,8 @@ export interface Fault {
     gatesStillRun: boolean;
     /** Why the gates were skipped over this fault; set exactly when `gatesStillRun` is false. */
     skipWhy: string | null;
+    /** What lies under a `gate`, `publish` or `helper` fault (issue #581); absent on every other kind. */
+    cause?: FailureCause;
 }
 
 export type Ledger = readonly Fault[];
@@ -41,6 +43,22 @@ export const RANK: readonly FailureKind[] = [
     'policy',
     'publish',
 ];
+
+/** A failed helper's cause by its named reason: a refused token needs a person, a dead run is transport. */
+const HELPER_CAUSES: Readonly<Record<HelperFailureReason, FailureCause>> = {
+    auth_failed: 'denied',
+    timeout: 'transport',
+    runner_error: 'transport',
+    unknown_helper: 'config',
+    wrong_version: 'config',
+    invalid_control: 'config',
+    invalid_composite_plan: 'config',
+    malformed_output: 'unknown',
+    oversized_output: 'unknown',
+};
+
+/** The cause a failed helper names, pre-run or post-run alike. */
+export const helperCauseOf = (reason: HelperFailureReason): FailureCause => HELPER_CAUSES[reason];
 
 /** The line the master prompt (server/src/db/master-prompt.ts) tells a blocked agent to end on. */
 export const BLOCKED_MARKER = 'FACTORY_BLOCKED:';
@@ -182,7 +200,12 @@ export function ledgerOf(parts: LedgerParts): Ledger {
         faults.unshift(
             published.stale
                 ? { kind: 'policy', note: `publication refused — ${published.reason}`, ...done }
-                : { kind: 'publish', note: `publish failed — the work did not land: ${published.reason}`, ...done }
+                : {
+                      kind: 'publish',
+                      note: `publish failed — the work did not land: ${published.reason}`,
+                      ...done,
+                      cause: published.cause ?? 'unknown',
+                  }
         );
     }
     if (policyRefusal) {
@@ -198,6 +221,8 @@ export function ledgerOf(parts: LedgerParts): Ledger {
             kind: 'gate',
             note: `gate "${failure.name}" failed (exit ${failure.exitCode})\n${failure.output}`,
             ...done,
+            // A gate failure always carries the gate's real exit; a harness that lost it threw instead.
+            cause: 'verification',
         });
     }
     if (helperFailure) {
@@ -205,6 +230,7 @@ export function ledgerOf(parts: LedgerParts): Ledger {
             kind: 'helper',
             note: `helper "${helperFailure.helperId}" failed (${helperFailure.result.reason}): ${helperFailure.result.message}`,
             ...done,
+            cause: helperCauseOf(helperFailure.result.reason),
         });
     }
     return faults;
@@ -216,6 +242,12 @@ export const statusOf = (ledger: Ledger): 'succeeded' | 'failed' => (ledger.leng
 /** The structured failure kind the most decisive fault names; a success carries none. */
 export function kindOf(ledger: Ledger): FailureKind | null {
     return RANK.find((kind) => ledger.some((fault) => fault.kind === kind)) ?? null;
+}
+
+/** The cause of the fault `kindOf` names (issue #581); null when that kind carries none. */
+export function causeOf(ledger: Ledger): FailureCause | null {
+    const kind = kindOf(ledger);
+    return ledger.find((fault) => fault.kind === kind)?.cause ?? null;
 }
 
 /** Whether the declared gates run over this ledger. */

@@ -101,6 +101,7 @@ interface StoreStub extends JobStore {
         agentTurns: number | null;
         summary: string | null;
         failureKind: string | null;
+        failureCause: string | null;
         treeChanged: boolean | null;
         evidence: unknown;
     }[];
@@ -416,7 +417,17 @@ function stubStore(
         async complete(
             id: string,
             _token: string,
-            { output, contextTokens, contextCostUsd, agentTurns, summary, failureKind, treeChanged, evidence }
+            {
+                output,
+                contextTokens,
+                contextCostUsd,
+                agentTurns,
+                summary,
+                failureKind,
+                failureCause,
+                treeChanged,
+                evidence,
+            }
         ) {
             boom();
             stub.completed.push({
@@ -427,6 +438,7 @@ function stubStore(
                 agentTurns: agentTurns ?? null,
                 summary: summary ?? null,
                 failureKind: failureKind ?? null,
+                failureCause: failureCause ?? null,
                 treeChanged: treeChanged ?? null,
                 evidence: evidence ?? null,
             });
@@ -2710,6 +2722,7 @@ describe('POST /api/jobs/:id/complete', () => {
                 agentTurns: null,
                 summary: null,
                 failureKind: null,
+                failureCause: null,
                 treeChanged: null,
                 evidence: null,
             },
@@ -2937,6 +2950,36 @@ describe('POST /api/jobs/:id/complete', () => {
         const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, failureKind });
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_FAILURE_KIND');
+    });
+
+    // Issue #581: the cause under a gate, publish or helper failure lands beside the kind; the
+    // board recovers by it, so a cause that cannot be one of those kinds' is refused, never stored.
+    it('records the failure cause beside a publish kind, and null when absent', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const failed = { ...done, status: 'failed', failureKind: 'publish' };
+        const caused = await post(instance, `/api/jobs/${ID}/complete`, { ...failed, failureCause: 'conflict' });
+        expect(caused.statusCode).toBe(200);
+        expect((await post(instance, `/api/jobs/${ID}/complete`, failed)).statusCode).toBe(200);
+        expect(store.completed.map((row) => row.failureCause)).toEqual(['conflict', null]);
+    });
+
+    it.each([
+        ['an unknown cause', { status: 'failed', failureKind: 'gate', failureCause: 'nope' }],
+        ['a non-string cause', { status: 'failed', failureKind: 'gate', failureCause: 3 }],
+        ['a cause with no kind', { status: 'failed', failureCause: 'conflict' }],
+        [
+            'a cause under a kind that carries none',
+            { status: 'failed', failureKind: 'timeout', failureCause: 'transport' },
+        ],
+        ['a cause on a succeeded run', { status: 'succeeded', failureCause: 'verification' }],
+    ])('refuses %s with BAD_FAILURE_KIND', async (_label, fields) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, ...fields });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_FAILURE_KIND');
+        expect(store.completed).toEqual([]);
     });
 
     it.each(['blocked', 'gate', 'services'])('refuses status succeeded with failureKind %s', async (failureKind) => {

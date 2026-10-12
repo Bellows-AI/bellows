@@ -51,11 +51,76 @@ export interface BatchRecord {
     createdAt: string;
     updatedAt: string;
     startedAt: string | null;
+    /** The fences: once either is set the board starts nothing new for the batch. */
+    cancelledAt: string | null;
+    expiredAt: string | null;
     plan: BatchPlanView;
     tasks: BatchTaskState[];
     /** Not in the body: read off the board's `Idempotency-Replayed` header. */
     replayed?: boolean;
 }
+
+/** The one supported next step for a task (core's `BatchNextAction`), copied. */
+export interface BatchNextAction {
+    action: string;
+    method?: string;
+    path?: string;
+    url?: string;
+}
+
+/** What the board last observed on a task's PR; `stale` is a hint not yet re-read. */
+export interface BatchReportObservation {
+    outcome: string | null;
+    checks: string | null;
+    mergeability: string | null;
+    review: string | null;
+    headSha: string | null;
+    targetSha: string | null;
+    stale: boolean;
+    observedAt: string | null;
+    error: { code: string; detail: string | null } | null;
+}
+
+export interface BatchReportTask {
+    key: string;
+    stage: string;
+    execution: string;
+    gate: string;
+    attempts: number;
+    infraRetries: number;
+    repairs: number;
+    manualRetries: number;
+    remaining: { infraRetries: number; repairs: number };
+    attention: string | null;
+    waitReason: string | null;
+    pr: string | null;
+    job: string | null;
+    usage: { wallClockMs: number; agentTurns: number; tokens: number | null };
+    observation: BatchReportObservation | null;
+    next: BatchNextAction;
+}
+
+/** The board's morning report (`GET /api/batches/:id/report`), copied from the server's read model. */
+export interface BatchReport {
+    id: string;
+    title: string;
+    /** `running`, `parked`, `completed`, `cancelled` or `expired`. */
+    state: string;
+    startedAt: string;
+    deadlineAt: string;
+    expiredAt: string | null;
+    cancelledAt: string | null;
+    completedAt: string | null;
+    budgets: { infraRetries: number; repairs: number; timeLimitMinutes: number };
+    prs: { merged: { task: string; url: string; mergedAt: string }[]; open: { task: string; url: string }[] };
+    tasks: BatchReportTask[];
+    latestObservationAt: string | null;
+    /** What the board does not measure, named rather than estimated. */
+    unavailable: string[];
+}
+
+export const REPORT_EXPIRED = 'expired';
+export const REPORT_CANCELLED = 'cancelled';
 
 export interface BatchSummary {
     id: string;
@@ -108,6 +173,7 @@ export interface BatchRoutes {
     createBatch(plan: unknown, idempotencyKey?: string): Promise<BatchDraftWritten>;
     listBatches(): Promise<BatchSummary[]>;
     getBatch(id: string): Promise<BatchRecord>;
+    getBatchReport(id: string): Promise<BatchReport>;
     replaceBatch(id: string, version: number, plan: unknown): Promise<BatchDraftWritten>;
     validateBatch(id: string): Promise<BatchValidated>;
     startBatch(id: string, version: number, idempotencyKey?: string): Promise<BatchRecord>;
@@ -152,6 +218,9 @@ export function batchRoutes(
         },
         async getBatch(id) {
             return (await send(batchPath(id), { headers: authHeaders() })) as BatchRecord;
+        },
+        async getBatchReport(id) {
+            return (await send(`${batchPath(id)}/report`, { headers: authHeaders() })) as BatchReport;
         },
         async replaceBatch(id, version, plan) {
             return (await send(batchPath(id), jsonInit('PUT', { version, plan }))) as BatchDraftWritten;

@@ -48,7 +48,7 @@ async function pushDraft(
     if (gone()) return 'gone';
     const result = await rt.runner
         .publishGit?.(job, token ?? undefined, { draft: true, ...(revision === null ? {} : { revision }) })
-        .catch((e: Error) => publishFailed(`the publish threw: ${e.message}`));
+        .catch((e: Error) => publishFailed(`the publish threw: ${e.message}`, 'unknown'));
     if (result?.ok && result.published) state.draftPublication = result;
     return result ?? 'unsupported';
 }

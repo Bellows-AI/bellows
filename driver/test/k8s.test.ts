@@ -2553,6 +2553,7 @@ describe('publishing the produced work', () => {
             repository: 'Bellows-AI/factory',
             baseBranch: 'main',
             prNumber: 42,
+            cause: null,
         });
         const posted = calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace));
         expect(posted.map((call) => (call.body as { metadata?: { name?: string } }).metadata?.name)).toEqual(
@@ -2701,8 +2702,55 @@ describe('publishing the produced work', () => {
 
         const result = await runner(request).publishGit(ISSUE_JOB, 'ghs_fresh');
 
-        expect(result).toMatchObject({ ok: false, published: false });
+        expect(result).toMatchObject({ ok: false, published: false, cause: 'transport' });
         expect(result.reason).toContain('ECONNREFUSED');
+    });
+
+    // Issue #581: an API server that answers the Secret POST with a refusal is configuration (RBAC,
+    // quota, admission) — the board parks it for a person instead of spending a retry on it.
+    it('names a refused Secret POST a configuration failure', async () => {
+        const { request: base } = scripted([{ exit: 0, log: JSON.stringify({ cloned: false }) }]);
+        const request: K8sRequest = (method, path, body) =>
+            method === 'POST' && path === secretsPath
+                ? Promise.resolve({
+                      status: 403,
+                      body: JSON.stringify({ kind: 'Status', message: 'secrets is forbidden' }),
+                  })
+                : base(method, path, body);
+
+        const result = await runner(request).publishGit(ISSUE_JOB, 'ghs_fresh');
+
+        expect(result).toMatchObject({ ok: false, published: false, cause: 'config' });
+    });
+
+    it.each([409, 429])(
+        'names a Secret POST answered %i a transport failure, which a retry outlasts',
+        async (status) => {
+            const { request: base } = scripted([{ exit: 0, log: JSON.stringify({ cloned: false }) }]);
+            const request: K8sRequest = (method, path, body) =>
+                method === 'POST' && path === secretsPath
+                    ? Promise.resolve({ status, body: JSON.stringify({ kind: 'Status', message: 'try again' }) })
+                    : base(method, path, body);
+
+            const result = await runner(request).publishGit(ISSUE_JOB, 'ghs_fresh');
+
+            expect(result).toMatchObject({ ok: false, published: false, cause: 'transport' });
+        }
+    );
+
+    it('names a Secret POST the API server failed on a transport failure, not configuration', async () => {
+        const { request: base } = scripted([{ exit: 0, log: JSON.stringify({ cloned: false }) }]);
+        const request: K8sRequest = (method, path, body) =>
+            method === 'POST' && path === secretsPath
+                ? Promise.resolve({
+                      status: 503,
+                      body: JSON.stringify({ kind: 'Status', message: 'etcdserver: request timed out' }),
+                  })
+                : base(method, path, body);
+
+        const result = await runner(request).publishGit(ISSUE_JOB, 'ghs_fresh');
+
+        expect(result).toMatchObject({ ok: false, published: false, cause: 'transport' });
     });
 
     // The claim's GITHUB_TOKEN was minted at claim time and a long run can outlive its hour —
@@ -2777,6 +2825,7 @@ describe('publishing the produced work', () => {
             repository: null,
             baseBranch: null,
             prNumber: null,
+            cause: null,
         });
         expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
     });
@@ -2811,6 +2860,7 @@ describe('publishing the produced work', () => {
             repository: null,
             baseBranch: null,
             prNumber: null,
+            cause: null,
         });
         expect(
             calls.filter(
@@ -2849,6 +2899,7 @@ describe('publishing the produced work', () => {
             repository: 'Bellows-AI/factory',
             baseBranch: 'main',
             prNumber: 42,
+            cause: null,
         });
         expect(calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toHaveLength(3);
     });
@@ -2871,6 +2922,25 @@ describe('publishing the produced work', () => {
         expect(result.published).toBe(false);
         expect(result.reason).toContain('git push');
         expect(result.reason).toContain('Permission to Bellows-AI/factory');
+        expect(result.cause).toBe('denied');
+    });
+
+    // Issue #581: the aux Job's own log is what the cause is read from, the same text docker reads.
+    it('names a rejected non-fast-forward push from the aux Job a conflict', async () => {
+        const { request } = scripted([
+            { exit: 0, log: JSON.stringify(DIRTY_ON_MAIN) },
+            { exit: 1, log: '' }, // switch
+            { exit: 0, log: '' }, // switch -c
+            { exit: 0, log: '' }, // add
+            { exit: 0, log: '' }, // commit
+            {
+                exit: 1,
+                log: ' ! [rejected]        HEAD -> fix/10 (non-fast-forward)\nerror: failed to push some refs\n',
+            }, // push
+        ]);
+        const result = await runner(request).publishGit(ISSUE_JOB);
+
+        expect(result).toMatchObject({ ok: false, published: false, cause: 'conflict' });
     });
 });
 

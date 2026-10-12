@@ -58,9 +58,12 @@ import { deadServices, restartServiceFleet, startServiceFleet, teardownServices 
 import {
     answerPreview,
     expectOk,
+    HTTP_CONFLICT,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
     HTTP_OK_STATUS,
+    HTTP_SERVER_ERROR_STATUS,
+    HTTP_TOO_MANY_REQUESTS,
     livePod,
     MS_PER_SECOND,
     parse,
@@ -401,6 +404,16 @@ async function run(
 // this executor's transport underneath: one aux Job per step over the workspaces PVC, the claim
 // env by a per-attempt Secret read through envFrom, and the verdict off the pod's exit code and
 // log.
+/**
+ * A refused publish Secret: a 4xx is the cluster refusing it (RBAC, quota, admission) —
+ * configuration — except a conflict or a throttle, which, like a 5xx from the API server, a retry
+ * can outlast.
+ */
+const publishSecretCause = (status: number): 'config' | 'transport' =>
+    status >= HTTP_SERVER_ERROR_STATUS || status === HTTP_CONFLICT || status === HTTP_TOO_MANY_REQUESTS
+        ? 'transport'
+        : 'config';
+
 async function publishGit(
     deps: K8sDeps,
     job: BoardJob,
@@ -418,9 +431,10 @@ async function publishGit(
                 secretBody(job, secret, env)
             );
             const refused = refusal(response, 'creating the publish secret');
-            if (refused) return publishFailed(refused);
+            const cause = publishSecretCause(response.status);
+            if (refused) return publishFailed(refused, cause);
         } catch (e) {
-            return publishFailed(`creating the publish secret: ${(e as Error).message}`);
+            return publishFailed(`creating the publish secret: ${(e as Error).message}`, 'transport');
         }
     }
     let stepNumber = 0;

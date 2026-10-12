@@ -42,6 +42,15 @@ export interface MergeDeps {
 
 const nowOf = (deps: MergeDeps): Date => (deps.now ? deps.now() : new Date());
 
+/**
+ * A batch (alias `b`) the merger may still act for: not cancelled, finished or expired — and not
+ * past its deadline either, though no reconcile pass has stamped `expired_at` yet.
+ */
+const unfenced = (db: Sql | TransactionSql, now: Date) => db`
+    b.cancelled_at is null and b.expired_at is null and b.completed_at is null
+    and (b.deadline_at is null or b.deadline_at > ${now})
+`;
+
 /** Outcomes that sent nothing the provider accepted: the same task may be tried again after a backoff, a bounded number of times. */
 const RETRYABLE: string[] = [MERGE_LAPSED, MERGE_CHANGED];
 
@@ -107,8 +116,7 @@ function candidateRows(
             where org_id = t.org_id and batch_id = t.batch_id and task_key = t.key
         ) a on a.attempt is not null
         join batch_pr_observation o on o.org_id = t.org_id and o.batch_id = t.batch_id and o.task_key = t.key
-        where t.org_id = ${orgId} and b.status = ${BATCH_STARTED}
-          and b.cancelled_at is null and b.expired_at is null and b.completed_at is null
+        where t.org_id = ${orgId} and b.status = ${BATCH_STARTED} and ${unfenced(db, now)}
           and s.policy = ${AUTOMERGE} and t.completion_kind = ${BATCH_COMPLETION_PR}
           and t.execution = ${TASK_SUCCEEDED} and t.gate = ${GATE_OPEN}
           -- Only rows judgeMergeCandidate can accept count against the limit, so a backlog of
@@ -177,9 +185,9 @@ export async function claimMerges(deps: MergeDeps, limit: number): Promise<Merge
         if (!candidateOf(row).merge) continue;
         const intent = await sql.begin(async (tx) => {
             const [batch] = await tx<{ id: string }[]>`
-                select id from batch
-                where org_id = ${orgId} and id = ${row.batch_id} and status = ${BATCH_STARTED}
-                  and cancelled_at is null and expired_at is null and completed_at is null
+                select b.id from batch b
+                where b.org_id = ${orgId} and b.id = ${row.batch_id} and b.status = ${BATCH_STARTED}
+                  and ${unfenced(tx, now)}
                 for update
             `;
             if (!batch) return null;
@@ -223,12 +231,11 @@ export async function claimMerges(deps: MergeDeps, limit: number): Promise<Merge
     return intents;
 }
 
-/** True when the batch is cancelled, expired or finished: nothing is requested behind a fence. */
+/** True when the batch is cancelled, expired, past its deadline or finished: nothing is requested behind a fence. */
 export async function batchFenced(deps: MergeDeps, batchId: string): Promise<boolean> {
     const [row] = await deps.sql<{ fenced: boolean }[]>`
-        select (status <> ${BATCH_STARTED} or cancelled_at is not null or expired_at is not null
-                or completed_at is not null) as fenced
-        from batch where org_id = ${deps.orgId} and id = ${batchId}
+        select (b.status <> ${BATCH_STARTED} or not (${unfenced(deps.sql, nowOf(deps))})) as fenced
+        from batch b where b.org_id = ${deps.orgId} and b.id = ${batchId}
     `;
     return row?.fenced ?? true;
 }
@@ -373,6 +380,7 @@ export interface VerificationJob {
  */
 export async function dueVerifications(deps: MergeDeps, limit: number): Promise<VerificationJob[]> {
     const { sql, orgId } = deps;
+    const now = nowOf(deps);
     const stages = await sql<{ batch_id: string; stage_key: string; repo: string; branch: string }[]>`
         select distinct b.id as batch_id, s.key as stage_key, s.position, tg.repo, tg.branch, b.started_at
         from batch b
@@ -381,10 +389,9 @@ export async function dueVerifications(deps: MergeDeps, limit: number): Promise<
         join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id and tg.key = t.target_key
         left join batch_stage_verification v
             on v.org_id = s.org_id and v.batch_id = s.batch_id and v.stage_key = s.key
-        where b.org_id = ${orgId} and b.status = ${BATCH_STARTED}
-          and b.cancelled_at is null and b.expired_at is null and b.completed_at is null
+        where b.org_id = ${orgId} and b.status = ${BATCH_STARTED} and ${unfenced(sql, now)}
           and s.policy = ${AUTOMERGE}
-          and (v.stage_key is null or (v.state <> ${VERIFY_PASSED} and v.next_check_at <= ${nowOf(deps)}))
+          and (v.stage_key is null or (v.state <> ${VERIFY_PASSED} and v.next_check_at <= ${now}))
           and not exists (
               select 1 from batch_decision d
               where d.org_id = b.org_id and d.batch_id = b.id and d.key = ${`${DECISION_ADVANCE}:`}::text || s.key
@@ -446,9 +453,8 @@ export async function recordVerification(
     const { batchId, stageKey, verification } = run;
     return sql.begin(async (tx) => {
         const [batch] = await tx<{ id: string }[]>`
-            select id from batch
-            where org_id = ${orgId} and id = ${batchId} and status = ${BATCH_STARTED}
-              and cancelled_at is null and expired_at is null and completed_at is null
+            select b.id from batch b
+            where b.org_id = ${orgId} and b.id = ${batchId} and b.status = ${BATCH_STARTED} and ${unfenced(tx, now)}
             for update
         `;
         if (!batch) return false;

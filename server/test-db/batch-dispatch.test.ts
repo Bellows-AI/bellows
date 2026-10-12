@@ -3,6 +3,7 @@ import type { Sql } from 'postgres';
 import { resolveBatchPlan, validateBatchPlan, type BatchPlan } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { createBatchStore, type BatchStore } from '../src/db/batch-store.js';
+import { claimDue, commitObservation } from '../src/db/batch-store-observation.js';
 import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
@@ -628,11 +629,17 @@ function planWith(stages: Record<string, unknown>[], budgets: Record<string, num
     return result.plan;
 }
 
-/** Ends the thread head's run as failed with a structured reason, as the verdict does. */
-async function failWith(root: string, failureKind: string | null, status: 'failed' | 'dead' = 'failed') {
+/** Ends the thread head's run as failed with a structured reason and its cause, as the verdict does. */
+async function failWith(
+    root: string,
+    failureKind: string | null,
+    status: 'failed' | 'dead' = 'failed',
+    failureCause: string | null = null
+) {
     const head = await headOf(root);
     await sql`
-        update job set status = ${status}, failure_kind = ${failureKind}, finished_at = now(), lease_token = null
+        update job set status = ${status}, failure_kind = ${failureKind}, failure_cause = ${failureCause},
+            finished_at = now(), lease_token = null
         where id = ${head.id}
     `;
 }
@@ -683,7 +690,7 @@ describe.skipIf(!enabled)('bounded recovery', () => {
         const { a } = await stateOf(id);
         const root = a!.rootJobId!;
         const failedHead = await headOf(root);
-        await failWith(root, 'gate');
+        await failWith(root, 'gate', 'failed', 'verification');
 
         await store.reconcile(id);
         const [repair] = await sql<{ parent_job_id: string; root_job_id: string; command: string }[]>`
@@ -709,7 +716,7 @@ describe.skipIf(!enabled)('bounded recovery', () => {
         const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }]));
         await store.reconcile(id);
         const { a } = await stateOf(id);
-        await failWith(a!.rootJobId!, 'publish');
+        await failWith(a!.rootJobId!, 'publish', 'failed', 'conflict');
         await store.reconcile(id);
         const head = await headOf(a!.rootJobId!);
         const [row] = await sql<{ command: string }[]>`select command from job where id = ${head.id}`;
@@ -720,10 +727,10 @@ describe.skipIf(!enabled)('bounded recovery', () => {
         const id = await frozen(planWith([{ key: 'one', tasks: [task('a'), task('b')] }], { repairs: 1 }));
         await store.reconcile(id);
         let tasks = await stateOf(id);
-        await failWith(tasks.a!.rootJobId!, 'gate');
+        await failWith(tasks.a!.rootJobId!, 'gate', 'failed', 'verification');
         await store.reconcile(id);
         expect(await kindsOf('a', id)).toEqual(['launch', 'repair']);
-        await failWith(tasks.a!.rootJobId!, 'gate');
+        await failWith(tasks.a!.rootJobId!, 'gate', 'failed', 'verification');
         await store.reconcile(id);
         tasks = await stateOf(id);
         expect(tasks.a).toMatchObject({ execution: 'failed', attention: 'budget' });
@@ -823,7 +830,7 @@ describe.skipIf(!enabled)('bounded recovery', () => {
             insert into job_question (org_id, job_id, question_id, attempt, lease_token, questions, state)
             values (${ORG}, ${asker.id}, 'q1', 1, ${randomUUID()}, ${sql.json([{ question: 'old?' }])}, 'pending')
         `;
-        await failWith(second, 'gate');
+        await failWith(second, 'gate', 'failed', 'verification');
         await store.reconcile(reclaimed);
         expect(await kindsOf('a', reclaimed)).toEqual(['launch', 'repair']);
     });
@@ -832,7 +839,7 @@ describe.skipIf(!enabled)('bounded recovery', () => {
         const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }], { repairs: 1 }));
         await store.reconcile(id);
         const { a } = await stateOf(id);
-        await failWith(a!.rootJobId!, 'gate');
+        await failWith(a!.rootJobId!, 'gate', 'failed', 'verification');
         const restarted = [createBatchStore({ sql, orgId: ORG }), createBatchStore({ sql, orgId: ORG })];
         await Promise.all([store, ...restarted].map((process) => process.reconcile(id)));
         await Promise.all(restarted.map((process) => process.reconcileOpen()));
@@ -840,11 +847,73 @@ describe.skipIf(!enabled)('bounded recovery', () => {
         expect(await decisions(id)).toEqual(['launch:a:1', 'launch:a:2']);
         const jobsBefore = await jobCount();
 
-        await failWith(a!.rootJobId!, 'gate');
+        await failWith(a!.rootJobId!, 'gate', 'failed', 'verification');
         await restarted[0]!.reconcile(id);
         await restarted[1]!.reconcile(id);
         expect(await jobCount()).toBe(jobsBefore);
         expect((await stateOf(id)).a).toMatchObject({ execution: 'failed', attention: 'budget' });
+    });
+
+    // Issue #581: gate, publish and helper are coarse labels; the cause under them decides.
+    it('sends a refused publish to a person without spending a repair', async () => {
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }]));
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        const jobsBefore = await jobCount();
+        await failWith(a!.rootJobId!, 'publish', 'failed', 'denied');
+        await store.reconcile(id);
+        expect((await stateOf(id)).a).toMatchObject({ execution: 'failed', attention: 'configuration' });
+        expect(await kindsOf('a', id)).toEqual(['launch']);
+        expect(await jobCount()).toBe(jobsBefore);
+    });
+
+    it('retries a publish lost to transport as infrastructure, after its backoff', async () => {
+        const { clock, store: timed } = clockedStore();
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }]), timed);
+        await timed.reconcile(id);
+        const { a } = await stateOf(id);
+        await failWith(a!.rootJobId!, 'publish', 'failed', 'transport');
+        await timed.reconcile(id);
+        const [row] = await sql<{ recovery: string; not_before: Date | null }[]>`
+            select recovery, not_before from batch_task where batch_id = ${id} and key = 'a'
+        `;
+        expect(row).toMatchObject({ recovery: 'infra_retry' });
+        expect(row!.not_before!.getTime()).toBe(clock.ms + 60_000);
+        clock.ms += 61_000;
+        await timed.reconcile(id);
+        expect(await kindsOf('a', id)).toEqual(['launch', 'infra_retry']);
+    });
+
+    it.each([
+        ['publish', 'conflict', 'stale or conflicts'],
+        ['gate', 'verification', 'failed its checks'],
+    ])('repairs a %s failure caused by %s with a follow-up on the same root', async (kind, cause, wording) => {
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }]));
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        const root = a!.rootJobId!;
+        const failedHead = await headOf(root);
+        await failWith(root, kind, 'failed', cause);
+        await store.reconcile(id);
+        const head = await headOf(root);
+        const [row] = await sql<{ command: string; parent_job_id: string; root_job_id: string }[]>`
+            select command, parent_job_id, root_job_id from job where id = ${head.id}
+        `;
+        expect(row).toMatchObject({ parent_job_id: failedHead.id, root_job_id: root });
+        expect(row!.command).toContain(wording);
+        expect(await kindsOf('a', id)).toEqual(['launch', 'repair']);
+    });
+
+    it('names the kind of a helper failure it cannot classify, and spends nothing on it', async () => {
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }]));
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        await failWith(a!.rootJobId!, 'helper', 'failed', 'unknown');
+        await store.reconcile(id);
+        const { a: after } = await stateOf(id);
+        expect(after).toMatchObject({ execution: 'failed', attention: 'unclassified' });
+        expect(after!.waitReason).toContain('helper');
+        expect(await kindsOf('a', id)).toEqual(['launch']);
     });
 
     it('lets cancellation win over a retry waiting out its backoff', async () => {
@@ -942,10 +1011,14 @@ describe.skipIf(!enabled)('the time limit', () => {
 describe.skipIf(!enabled)('the morning report', () => {
     it('lists merged and open PRs, recovery spent, usage, exact waiting reasons and the next supported step', async () => {
         const id = await frozen(
-            planWith([
-                { key: 'one', tasks: [prTask('a'), prTask('b'), task('c')] },
-                { key: 'two', tasks: [task('d')] },
-            ])
+            // Three slots: the report reads all three first-stage tasks as having run.
+            planWith(
+                [
+                    { key: 'one', tasks: [prTask('a'), prTask('b'), task('c')] },
+                    { key: 'two', tasks: [task('d')] },
+                ],
+                { concurrency: 3 }
+            )
         );
         await store.reconcile(id);
         const tasks = await stateOf(id);
@@ -984,6 +1057,75 @@ describe.skipIf(!enabled)('the morning report', () => {
         });
         expect(byKey.d).toMatchObject({ execution: 'pending', next: { action: 'wait' } });
         expect(await store.report('00000000-0000-4000-8000-000000000000')).toBeNull();
+    });
+
+    it('states remaining budgets, manual retries apart from automatic ones, observation freshness and unavailable usage', async () => {
+        const { clock, store: timed } = clockedStore();
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a'), prTask('b')] }]), timed);
+        await timed.reconcile(id);
+        const { a, b } = await stateOf(id);
+        await failWith(a!.rootJobId!, 'timeout');
+        await timed.reconcile(id);
+        clock.ms += 61_000;
+        await timed.reconcile(id);
+        await failWith(a!.rootJobId!, 'timeout');
+        await timed.reconcile(id);
+        expect(await timed.retry(id, 'a')).toEqual({ result: 'ok' });
+        expect(await kindsOf('a', id)).toEqual(['launch', 'infra_retry', 'retry']);
+
+        const number = await publish(b!.rootJobId!);
+        await setStatus(b!.rootJobId!, 'succeeded');
+        await timed.reconcile(id);
+        const deps = { sql, orgId: ORG, now: () => new Date(clock.ms) };
+        const [claim] = await claimDue(deps, 5);
+        await commitObservation(deps, claim!, {
+            kind: 'facts',
+            facts: {
+                repo: REPO,
+                number,
+                url: prUrlOf(REPO, number),
+                state: 'open',
+                merged: false,
+                mergedAt: null,
+                mergeCommitSha: null,
+                baseBranch: 'main',
+                headSha: 'h1',
+                targetSha: 't1',
+                mergeable: true,
+                requiredContexts: ['build'],
+                requiredApprovals: 0,
+                approvals: 0,
+                checks: [{ name: 'build', state: 'pending', url: null, detail: null }],
+            },
+        });
+
+        const report = (await timed.report(id))!;
+        const observedAt = new Date(clock.ms).toISOString();
+        expect(report).toMatchObject({ latestObservationAt: observedAt, unavailable: ['tokens', 'cost'] });
+        const byKey = Object.fromEntries(report.tasks.map((t) => [t.key, t]));
+        expect(byKey.a).toMatchObject({
+            infraRetries: 1,
+            repairs: 0,
+            manualRetries: 1,
+            remaining: { infraRetries: 1, repairs: 2 },
+            usage: { tokens: null },
+            observation: null,
+        });
+        expect(byKey.b).toMatchObject({
+            manualRetries: 0,
+            remaining: { infraRetries: 2, repairs: 2 },
+            observation: {
+                outcome: 'checks_pending',
+                checks: 'pending',
+                mergeability: 'clean',
+                headSha: 'h1',
+                targetSha: 't1',
+                stale: false,
+                observedAt,
+                error: null,
+            },
+        });
+        expect(Object.keys(byKey.a!.usage).sort()).toEqual(['agentTurns', 'tokens', 'wallClockMs']);
     });
 
     it('is not available for a draft', async () => {

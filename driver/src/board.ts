@@ -334,6 +334,14 @@ export type FailureKind =
     | 'runner_error';
 
 /**
+ * What lies under a `gate`, `publish` or `helper` failure (issue #581), stored as
+ * `job.failure_cause`: the board recovers by it — a conflict or a failed check is repaired, a
+ * transport loss retried, a refusal or bad configuration left to a person, `unknown` never guessed.
+ * Copied here rather than imported because this package depends on nothing.
+ */
+export type FailureCause = 'verification' | 'conflict' | 'denied' | 'config' | 'transport' | 'unknown';
+
+/**
  * The attempt's evidence record, reported with the verdict: the tree fingerprint the run started
  * from, the one its gates assessed, and how the declared gates ended (copied from the board's
  * `evidence-policy.ts`).
@@ -509,6 +517,8 @@ export interface Board {
              * row stays queryable as "not a failure".
              */
             failureKind?: FailureKind;
+            /** What lies under a `gate`, `publish` or `helper` kind (issue #581); null and absent stay off the wire. */
+            failureCause?: FailureCause | null;
             /**
              * Whether the task tree differs from the one the startup sync left, read only after
              * a declared gate failed. Absent is unknown; the board rests a gate-fix edge on false.
@@ -591,6 +601,7 @@ function completeBody({
     agentTurns,
     summary,
     failureKind,
+    failureCause,
     treeChanged,
     evidence,
     publication,
@@ -607,6 +618,7 @@ function completeBody({
         ...(summary ? { summary } : {}),
         // The structured failure reason, when there is one (issue #339); absent stays null.
         ...(failureKind ? { failureKind } : {}),
+        ...(failureCause ? { failureCause } : {}),
         // Measured only after a failed gate; unknown stays off the wire.
         ...(typeof treeChanged === 'boolean' ? { treeChanged } : {}),
         // What the gates and the review assessed, for the board's completion check.

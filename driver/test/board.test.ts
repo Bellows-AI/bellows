@@ -804,6 +804,32 @@ describe('the complete verdict', () => {
         expect(calls[1]!.body).not.toHaveProperty('failureKind');
     });
 
+    it('carries failureCause beside the kind when set, and no key when null or absent (#581)', async () => {
+        const { calls, fetch } = recorder(() => Response.json({ id: 'job-1', threadDone: false }, { status: 200 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+
+        await board.complete(job, {
+            status: 'failed',
+            exitCode: 1,
+            output: 'rejected',
+            failureKind: 'publish',
+            failureCause: 'conflict',
+        });
+        expect(calls[0]!.body).toMatchObject({ failureKind: 'publish', failureCause: 'conflict' });
+
+        await board.complete(job, {
+            status: 'failed',
+            exitCode: null,
+            output: 'k',
+            failureKind: 'timeout',
+            failureCause: null,
+        });
+        expect(calls[1]!.body).not.toHaveProperty('failureCause');
+
+        await board.complete(job, { status: 'succeeded', exitCode: 0, output: 'done' });
+        expect(calls[2]!.body).not.toHaveProperty('failureCause');
+    });
+
     it('no longer carries a separate thread read — the answer travels on complete', () => {
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: recorder(() => claimed()).fetch });
         expect('threadDone' in board).toBe(false);

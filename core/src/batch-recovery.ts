@@ -4,6 +4,7 @@
  * board's transactions count the attempts already spent, ask here, and write the answer under the
  * batch's row lock. A budget is counted from the durable attempt rows, so a restart cannot reset it.
  */
+import type { CheckEvidence, ObservationOutcome } from './batch-observation.js';
 
 /** `batch_attempt.kind` of a retry the board queued itself: a transient infrastructure failure. */
 export const RECOVERY_INFRA = 'infra_retry';
@@ -18,6 +19,8 @@ export const ATTENTION_QUESTION = 'question';
 export const ATTENTION_BUDGET = 'budget';
 export const ATTENTION_REFUSED = 'refused';
 export const ATTENTION_UNCLASSIFIED = 'unclassified';
+/** The task's PR was closed without merging: only a person can reopen it or ask for another run. */
+export const ATTENTION_CLOSED = 'closed';
 export const ATTENTION_REASONS = [
     ATTENTION_CONFIGURATION,
     ATTENTION_BLOCKED,
@@ -25,8 +28,12 @@ export const ATTENTION_REASONS = [
     ATTENTION_BUDGET,
     ATTENTION_REFUSED,
     ATTENTION_UNCLASSIFIED,
+    ATTENTION_CLOSED,
 ] as const;
 export type AttentionReason = (typeof ATTENTION_REASONS)[number];
+
+/** Bounds on the evidence a repair prompt and a person read; batch-observation.ts re-exports it. */
+export const MAX_EVIDENCE_ITEMS = 20;
 
 /** Backoff before an automatic infrastructure retry: doubles from the base, capped. */
 export const BATCH_RETRY_BACKOFF_BASE_MS = 60_000;
@@ -36,17 +43,32 @@ export type FailureClass = { kind: 'infra' } | { kind: 'repairable' } | { kind: 
 
 /** The infrastructure failure kinds: the run did not get to judge the work. */
 const INFRA_KINDS: readonly string[] = ['timeout', 'cache_lost', 'services', 'runner_error'];
-/** The kinds an agent can fix in its own checkout: a failed gate, an unlanded publish, a failed helper. */
-const REPAIRABLE_KINDS: readonly string[] = ['gate', 'publish', 'helper'];
+/** The coarse kinds whose `failure_cause` decides (issue #581): a failed gate, publish or helper. */
+const CAUSED_KINDS: readonly string[] = ['gate', 'publish', 'helper'];
 const CONFIGURATION_KINDS: readonly string[] = ['config', 'policy'];
+/** Causes an agent can fix in its own checkout: a failed check, a stale or conflicting branch. */
+const REPAIRABLE_CAUSES: readonly string[] = ['verification', 'conflict'];
+/** Causes no retry or repair can fix: a refused credential, a bad configuration. */
+const CONFIGURATION_CAUSES: readonly string[] = ['denied', 'config'];
+
+/** A gate, publish or helper failure by its cause; an unknown or missing cause is never guessed. */
+function classifyCause(cause: string | null): FailureClass {
+    if (cause !== null && REPAIRABLE_CAUSES.includes(cause)) return { kind: 'repairable' };
+    if (cause === 'transport') return { kind: 'infra' };
+    if (cause !== null && CONFIGURATION_CAUSES.includes(cause)) {
+        return { kind: 'attention', reason: ATTENTION_CONFIGURATION };
+    }
+    return { kind: 'attention', reason: ATTENTION_UNCLASSIFIED };
+}
 
 /**
- * Classifies a failed run from its job status and `failure_kind`. An unanswered question outranks
- * every kind: the agent is waiting on a person, and retrying would invent the answer.
+ * Classifies a failed run from its job status, `failure_kind` and `failure_cause`. An unanswered
+ * question outranks every kind: the agent is waiting on a person, and retrying would invent the answer.
  */
 export function classifyTaskFailure(failure: {
     status: string;
     failureKind: string | null;
+    failureCause: string | null;
     unansweredQuestion: boolean;
 }): FailureClass {
     if (failure.unansweredQuestion) return { kind: 'attention', reason: ATTENTION_QUESTION };
@@ -54,7 +76,7 @@ export function classifyTaskFailure(failure: {
     const kind = failure.failureKind;
     if (kind === null) return { kind: 'attention', reason: ATTENTION_UNCLASSIFIED };
     if (INFRA_KINDS.includes(kind)) return { kind: 'infra' };
-    if (REPAIRABLE_KINDS.includes(kind)) return { kind: 'repairable' };
+    if (CAUSED_KINDS.includes(kind)) return classifyCause(failure.failureCause);
     if (CONFIGURATION_KINDS.includes(kind)) return { kind: 'attention', reason: ATTENTION_CONFIGURATION };
     if (kind === 'blocked') return { kind: 'attention', reason: ATTENTION_BLOCKED };
     return { kind: 'attention', reason: ATTENTION_UNCLASSIFIED };
@@ -86,26 +108,53 @@ export function planRecovery(input: {
 }
 
 /**
+ * What a repair answers: a run's own failure (`failure_cause`), or a PR observed failing its checks
+ * or conflicting after a successful run, with the contexts that are not passing.
+ */
+export type RepairEvidence =
+    | { source: 'run'; cause: string | null }
+    | { source: 'observed'; outcome: ObservationOutcome; evidence: readonly CheckEvidence[] };
+
+const STALE_BRANCH_PROBLEM =
+    'Your last attempt could not publish: the branch is stale or conflicts with its base. Update the branch to its base, resolve any conflicts and publish again.';
+const FAILED_CHECKS_PROBLEM = 'Your last attempt failed its checks. Find out why, fix it and publish again.';
+
+/** One non-passing context as the repair prompt lists it. */
+const checkLine = (check: CheckEvidence): string =>
+    `- ${check.name}: ${check.state}${check.url ? ` (${check.url})` : ''}${check.detail ? ` — ${check.detail}` : ''}`;
+
+function repairProblem(evidence: RepairEvidence): string {
+    if (evidence.source === 'run') return evidence.cause === 'conflict' ? STALE_BRANCH_PROBLEM : FAILED_CHECKS_PROBLEM;
+    if (evidence.outcome === 'conflicting') {
+        return 'Your pull request conflicts with its target branch. Update the branch to its target, resolve the conflicts and publish again.';
+    }
+    const checks = evidence.evidence.slice(0, MAX_EVIDENCE_ITEMS).map(checkLine);
+    return [
+        'Your pull request is failing its checks. Find out why, fix it and publish again.',
+        ...(checks.length ? [`Checks not passing:\n${checks.join('\n')}`] : []),
+    ].join('\n\n');
+}
+
+/**
  * The follow-up that asks the agent to repair its own earlier attempt. The verification is
  * restated and must be re-run: an earlier pass does not count for the new head.
  */
 export function batchRepairCommand(
     task: { acceptance: string; verification: string },
-    failureKind: string | null
+    evidence: RepairEvidence
 ): string {
-    const problem =
-        failureKind === 'publish'
-            ? 'Your last attempt could not publish: the branch is stale or conflicts with its base. Update the branch to its base, resolve any conflicts and publish again.'
-            : 'Your last attempt failed its checks. Find out why, fix it and publish again.';
     return [
-        problem,
+        repairProblem(evidence),
         `Acceptance:\n${task.acceptance}`,
         `Verification (run it again now; an earlier result does not count):\n${task.verification}`,
     ].join('\n\n');
 }
 
 /** The wait reason a task needing attention carries: the exact reason and the job to look at. */
-export function attentionWaitReason(reason: AttentionReason, subject: { jobId: string; detail?: string }): string {
+export function attentionWaitReason(
+    reason: AttentionReason,
+    subject: { jobId: string; detail?: string | undefined }
+): string {
     const at = `job ${subject.jobId}`;
     switch (reason) {
         case ATTENTION_QUESTION:
@@ -119,7 +168,11 @@ export function attentionWaitReason(reason: AttentionReason, subject: { jobId: s
         case ATTENTION_REFUSED:
             return `${subject.detail ?? 'the board refused the next attempt'} (${at})`;
         case ATTENTION_UNCLASSIFIED:
-            return `failed with no recorded reason (${at})`;
+            return subject.detail
+                ? `failed with no recognised cause: ${subject.detail} (${at})`
+                : `failed with no recorded reason (${at})`;
+        case ATTENTION_CLOSED:
+            return `the pull request ${subject.detail ? `${subject.detail} ` : ''}was closed without merging (${at})`;
     }
 }
 
@@ -156,12 +209,15 @@ export function batchNextAction(input: {
         method: 'POST',
         path: `${batchPath(batchId)}/tasks/${task.key}/retry`,
     };
-    const finished = task.execution === 'succeeded' ? finishedAction(batchId, task) : null;
+    // A PR closed without merging can be neither merged nor accepted; a person reopens it or asks again.
+    const closed = task.attention === ATTENTION_CLOSED;
+    const finished = task.execution === 'succeeded' && !closed ? finishedAction(batchId, task) : null;
     if (task.gate === 'passed') return { action: 'none' };
     if (batchState === 'cancelled' || batchState === 'expired') {
         // Accepting a finished run and merging its PR are still honored; new work is not.
         return finished ?? { action: 'new_batch', method: 'POST', path: '/api/batches' };
     }
+    if (closed) return retry;
     // Only a running job can still receive an answer; a run that died asking is retried instead.
     if (
         task.attention === ATTENTION_QUESTION &&

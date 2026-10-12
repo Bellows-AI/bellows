@@ -13,6 +13,8 @@ export const DECISION_ADVANCE = 'advance';
 export const DECISION_COMPLETE = 'complete';
 export const DECISION_CANCEL = 'cancel';
 export const DECISION_EXPIRE = 'expire';
+/** A repair decided from an observed PR (065): `repair:<task>:<attempt>:<observation revision>`. */
+export const DECISION_REPAIR = 'repair';
 
 /** `batch_acceptance.kind` (061): what made a task's gate pass. */
 export const ACCEPTANCE_ACCEPTED = 'accepted';
@@ -115,6 +117,22 @@ export interface BatchStartInput {
     idempotency?: BatchIdempotency | undefined;
 }
 
+/** What the board last observed on a task's PR (063), as the report shows it; `stale` is a hint not yet re-read. */
+export interface BatchReportObservation {
+    outcome: string | null;
+    checks: string | null;
+    mergeability: string | null;
+    review: string | null;
+    headSha: string | null;
+    targetSha: string | null;
+    stale: boolean;
+    observedAt: string | null;
+    error: { code: string; detail: string | null } | null;
+}
+
+/** Usage the board does not measure: reported as unavailable, never estimated. */
+export const REPORT_UNAVAILABLE = ['tokens', 'cost'] as const;
+
 /** One task of the morning report: its outcome, what recovery spent, its links and the next supported step. */
 export interface BatchReportTask {
     key: string;
@@ -125,12 +143,18 @@ export interface BatchReportTask {
     attempts: number;
     infraRetries: number;
     repairs: number;
+    /** A person's retries: counted apart, they spend no automatic budget. */
+    manualRetries: number;
+    /** Automatic recoveries left of the frozen budgets. */
+    remaining: { infraRetries: number; repairs: number };
     attention: string | null;
     waitReason: string | null;
     pr: string | null;
     /** The task's thread, as the board's job path. */
     job: string | null;
-    usage: { wallClockMs: number; agentTurns: number };
+    /** Measured only; token counts are not recorded per run, so `tokens` is always null. */
+    usage: { wallClockMs: number; agentTurns: number; tokens: null };
+    observation: BatchReportObservation | null;
     next: BatchNextAction;
 }
 
@@ -151,6 +175,9 @@ export interface BatchReport {
     /** Each automerge stage's combined verification (064): a stage advances only on `passed`; `failed` needs a person. */
     verification: { stage: string; state: string; detail: string | null; headSha: string | null; checkedAt: string }[];
     tasks: BatchReportTask[];
+    /** The newest PR observation of any task; null when none was read yet. */
+    latestObservationAt: string | null;
+    unavailable: readonly (typeof REPORT_UNAVAILABLE)[number][];
     totals: {
         accepted: number;
         failed: number;

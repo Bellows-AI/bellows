@@ -1,5 +1,13 @@
 import { BATCH_DRAFT, batchVerdict } from './batch.js';
-import type { BatchPlanView, BatchRecord, BatchSummary, BatchTaskState } from './batch.js';
+import type {
+    BatchNextAction,
+    BatchPlanView,
+    BatchRecord,
+    BatchReport,
+    BatchReportTask,
+    BatchSummary,
+    BatchTaskState,
+} from './batch.js';
 
 /**
  * Human renderers for the batch commands. Pure text in, text out, like `render.ts`; `--json`
@@ -82,11 +90,65 @@ export function renderValidated(id: string, validated: { version: number; plan: 
     );
 }
 
-/** The wait's final line, naming the tasks that need a person. */
-export function renderWaitEnd(batch: BatchRecord): string {
+/** The wait's final line, naming the tasks that need a person; `ending` replaces the verdict for a fenced batch. */
+export function renderWaitEnd(batch: BatchRecord, ending: string = batchVerdict(batch)): string {
     const waiting = batch.tasks.filter(needsAction);
-    const lines = [`${batch.id} ${batchVerdict(batch)}`];
+    const lines = [`${batch.id} ${ending}`];
     for (const task of waiting)
         lines.push(`  ${task.key}: ${task.waitReason}${task.pr === NO_PR ? '' : ` (pr ${task.pr})`}`);
+    return lines.join('\n');
+}
+
+const SECOND_MS = 1000;
+const MINUTE_S = 60;
+const HOUR_S = 3600;
+
+/** How long ago an ISO instant was, coarsely: `45s`, `12m`, `3h`. */
+function ageOf(at: string, now: number): string {
+    const seconds = Math.max(0, Math.floor((now - Date.parse(at)) / SECOND_MS));
+    if (seconds < MINUTE_S) return `${seconds}s`;
+    if (seconds < HOUR_S) return `${Math.floor(seconds / MINUTE_S)}m`;
+    return `${Math.floor(seconds / HOUR_S)}h`;
+}
+
+const nextOf = (next: BatchNextAction): string =>
+    [next.action, next.method, next.path ?? next.url].filter((part) => part !== undefined).join(' ');
+
+function renderReportTask(task: BatchReportTask, now: number): string[] {
+    const lines = [
+        `  ${task.key} ${task.execution} · gate ${task.gate} · attempts ${task.attempts} ` +
+            `(infra ${task.infraRetries}, repairs ${task.repairs}, manual ${task.manualRetries}) · ` +
+            `remaining infra ${task.remaining.infraRetries}, repairs ${task.remaining.repairs}`,
+    ];
+    if (task.pr !== null) lines.push(`    pr ${task.pr}`);
+    const seen = task.observation;
+    if (seen === null) {
+        if (task.pr !== null) lines.push('    observed: none yet');
+    } else {
+        const when = seen.observedAt === null ? 'never read' : `${ageOf(seen.observedAt, now)} ago`;
+        const stale = seen.stale ? ' (stale, re-reading)' : '';
+        const error = seen.error === null ? '' : ` · read error ${seen.error.code}`;
+        lines.push(`    observed ${seen.outcome ?? 'nothing'} ${when}${stale}${error}`);
+    }
+    if (task.waitReason !== null) lines.push(`    waiting: ${task.waitReason}`);
+    lines.push(`    next: ${nextOf(task.next)}`);
+    return lines;
+}
+
+/** The morning report: the batch's state and budgets, what merged, then every task with its next step. */
+export function renderReport(report: BatchReport, now: number): string {
+    const fence = report.expiredAt ? ` · expired ${report.expiredAt}` : '';
+    const lines = [
+        `${report.id} ${report.state} "${report.title}" · deadline ${report.deadlineAt}${fence}`,
+        `budgets: infra ${report.budgets.infraRetries} · repairs ${report.budgets.repairs} · ` +
+            `time limit ${report.budgets.timeLimitMinutes}m`,
+        ...report.prs.merged.map((pr) => `merged ${pr.task}: ${pr.url}`),
+        ...report.prs.open.map((pr) => `open ${pr.task}: ${pr.url}`),
+        report.latestObservationAt === null
+            ? 'latest observation: none yet'
+            : `latest observation ${ageOf(report.latestObservationAt, now)} ago`,
+        report.unavailable.map((what) => `${what}: unavailable`).join(' · '),
+    ];
+    for (const task of report.tasks) lines.push(...renderReportTask(task, now));
     return lines.join('\n');
 }
