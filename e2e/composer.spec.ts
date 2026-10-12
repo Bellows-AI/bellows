@@ -48,6 +48,17 @@ async function openSelector(page: Page, label: 'Repository' | 'Executor') {
     await trigger.click();
 }
 
+/**
+ * Away to Settings through the app's own navigation, and landed. The router renders a navigation as
+ * a transition — the URL moves at once, the page later — so a return before Settings is on screen
+ * leaves the composer mounted, and nothing re-polls the workspace.
+ */
+async function detourToSettings(page: Page) {
+    await page.locator('.sidenav-link', { hasText: 'Settings' }).click();
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.getByRole('heading', { name: 'Configuration overview' })).toBeVisible();
+}
+
 test.describe('the guided task composer', () => {
     test.beforeEach(({ page }) => withExecutor(page));
 
@@ -463,8 +474,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
 
         // Away and back through the app's own navigation — a reload is a fresh start by design —
         // with the chosen profile deleted in between.
-        await page.locator('.sidenav-link', { hasText: 'Settings' }).click();
-        await expect(page).toHaveURL(/\/settings$/);
+        await detourToSettings(page);
         held.executors = held.executors.filter((row) => row.name !== 'doomed');
         // The clamp, and the notice that names it, are driven by the workspace answer — not by the
         // return itself. Wait for the answer that has actually dropped the profile: on a slower
@@ -521,8 +531,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         await page.getByRole('option', { name: 'acme/api' }).click();
         await expect(contextChip(page, 'Repository')).toHaveText('acme/api');
 
-        await page.locator('.sidenav-link', { hasText: 'Settings' }).click();
-        await expect(page).toHaveURL(/\/settings$/);
+        await detourToSettings(page);
         // Hold the workspace poll back on return, so the pending window is real rather than a race.
         let releasePoll: () => void = () => {};
         const pollHeld = new Promise<void>((resolve) => {
