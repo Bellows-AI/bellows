@@ -34,7 +34,7 @@ import type { K8sClaim, K8sDeps, K8sResponse } from './k8s-transport.js';
 /**
  * The re-claim fence: taking the checkout claim, sweeping a superseded attempt's leftovers, and
  * the pre/post-create claim verifies that bracket the runner Job POST. See docs/kubernetes.md's
- * "Re-claims fence by claiming the checkout, atomically" for the full protocol; this file is its
+ * "Re-claim fence by claiming the checkout, atomically" for the full protocol; this file is its
  * implementation, shared by the runner's `prepare`/`launch` and by `syncCheckout`/`reclaimWorktree`
  * (`k8s-runner.ts`), which run the same `acquireClaim`/`releaseClaim` pair under their own Jobs.
  */
