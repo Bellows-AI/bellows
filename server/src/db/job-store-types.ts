@@ -916,7 +916,9 @@ export interface JobStore {
     closeMergedPr(
         repo: string,
         prNumber: number,
-        deliveryId: string
+        deliveryId: string,
+        /** When GitHub says the merge happened; absent is "now", which is all a webhook knows. */
+        mergedAt?: Date
     ): Promise<{ outcome: 'applied' | 'duplicate'; closedRoots: number }>;
     /**
      * The user's stop. A QUEUED row never started, so it is settled `stopped` right here: the

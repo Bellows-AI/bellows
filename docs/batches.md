@@ -21,6 +21,8 @@ gate passes on a human-merged PR or a person's recorded acceptance. No driver or
 | Gate evidence: `batch_acceptance` | `server/migrations/061_batch_acceptance.sql` | `server/test-db/batch-dispatch.test.ts` |
 | Recovery: failure classification, backoff, repair command, attention reasons, next action | `core/src/batch-recovery.ts` | `core/test/batch-recovery.test.ts` |
 | Recovery state: budgets, `deadline_at`/`expired_at`, `attention`, `recovery`, `not_before`, attempt kinds | `server/migrations/062_batch_recovery.sql`, `server/src/db/batch-store-repair.ts` | `server/test-db/batch-dispatch.test.ts` |
+| PR observation: assessment, fingerprint, backoff (pure); GitHub read and its typed errors | `core/src/batch-observation.ts`, `server/src/github/pr-read.ts` | `core/test/batch-observation.test.ts`, `server/test/github.pr-read.test.ts` |
+| Observation rows, leases, supersession, hints; observer loop and merge hand-off | `server/migrations/063_batch_pr_observation.sql`, `server/src/db/batch-store-observation.ts`, `server/src/batch-pr-observer.ts` | `server/test-db/batch-pr-observation.test.ts` |
 | Morning report, built from rows on every read | `server/src/db/batch-store-report.ts` | `server/test-db/batch-dispatch.test.ts` |
 | Routes (wait, retry, cancel, accept, report) | `server/src/routes/batches.ts`, `batch-handlers.ts` | `server/test/routes.batches.test.ts` |
 | Launch checks shared by `validate` and `start` | `server/src/routes/batch-launch.ts` | `server/test/routes.batches.test.ts` |
@@ -72,9 +74,20 @@ gate passes on a human-merged PR or a person's recorded acceptance. No driver or
   of the active stage is accepted. `core/test/batch-schedule.test.ts`,
   `server/test-db/batch-dispatch.test.ts`.
 - **Limits of the human gate:** the board never merges (automerge is refused at start); a merge
-  after which more commits were pushed, a closed-unmerged PR and a webhook that never arrived are
-  not detected; accept needs a human org member, not repository write access.
-  `core/src/batch-plan.ts` (`batchExecutionCapability`), `server/src/db/batch-store-gates.ts`.
+  after which more commits were pushed is not detected; accept needs a human org member, not
+  repository write access. `core/src/batch-plan.ts` (`batchExecutionCapability`),
+  `server/src/db/batch-store-gates.ts`.
+- **A task's PR is observed from GitHub, never inferred from `failure_kind`.** A row is bound to
+  (repo, PR number, attempt) and names the head its checks ran on and the target a conflict was
+  judged against; only a confirmed failing required check or conflict is `repairable`, and a new
+  attempt deletes the row. A read commits only while it holds its lease and the binding stands;
+  `revision` bumps only when the `fingerprint` changes, so #581 acts once per fingerprint.
+  `core/test/batch-observation.test.ts`, `server/test-db/batch-pr-observation.test.ts`.
+- **Webhooks hint, the observer decides:** a delivery marks rows `stale` and due, never reads;
+  polling is 60 s, backs off to 15 min, honors Retry-After and spends no execution budget. An
+  observed merge lands in `pr_merge` like a delivered one, even in a cancelled or expired batch,
+  which it never revives. Mocks do not prove merge queues, protection only an admin token reads
+  (unreadable is `unknown`) or an App lacking `Checks: read`. `server/test/webhook.batch-observation.test.ts`.
 - **Recovery is bounded and counted from durable rows.** `infraRetries`, `repairs` and
   `timeLimitMinutes` freeze at start; a task's budget is the count of its `infra_retry` and `repair`
   `batch_attempt` rows, so a restart cannot reset it, and a manual retry spends none. An
@@ -92,8 +105,8 @@ gate passes on a human-merged PR or a person's recorded acceptance. No driver or
   advance behind it; manual retry answers `409 BATCH_EXPIRED`, while merges and acceptances that
   land are still recorded and reported. `server/test-db/batch-dispatch.test.ts`.
 - **Limits of recovery:** repair triggers only on a run's own `failure_kind`; a PR that turns red or
-  conflicts after a successful run is not detected, and there is no automatic merge to stop at expiry.
-  `server/src/db/batch-store-schedule.ts` (`recoverFailed`).
+  conflicts after a successful run is observed, not repaired, and there is no automatic merge to
+  stop at expiry. `server/src/db/batch-store-schedule.ts` (`recoverFailed`).
 - **Cancel is a fence, then a settle.** `cancelled_at` commits first, so nothing launches, retries
   or advances behind it; moving tasks are stopped through the job store's stop, repeated by every
   later pass until nothing moves. `server/test-db/batch-dispatch.test.ts`.

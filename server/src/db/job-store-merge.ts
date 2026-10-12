@@ -28,7 +28,7 @@ export async function closeMergedPr(
     ctx: JobStoreContext,
     repo: string,
     prNumber: number,
-    deliveryId: string
+    { deliveryId, mergedAt }: { deliveryId: string; mergedAt?: Date }
 ): Promise<CloseMergedPrResult> {
     const { sql, orgId, prs } = ctx;
     // One transaction: the ledger insert is the dedupe gate AND the durable merge state, and the
@@ -39,8 +39,8 @@ export async function closeMergedPr(
         await tx`select pg_advisory_xact_lock(hashtextextended(${prLockKey(orgId, repo, prNumber)}::text, 0))`;
 
         const [recorded] = await tx<{ org_id: string }[]>`
-            insert into pr_merge (org_id, repo, pr_number, delivery_id)
-            values (${orgId}, ${repo}, ${prNumber}, ${deliveryId})
+            insert into pr_merge (org_id, repo, pr_number, delivery_id, merged_at)
+            values (${orgId}, ${repo}, ${prNumber}, ${deliveryId}, coalesce(${mergedAt ?? null}::timestamptz, now()))
             on conflict (org_id, repo, pr_number) do nothing
             returning org_id
         `;

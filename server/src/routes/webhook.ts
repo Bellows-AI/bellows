@@ -36,7 +36,11 @@ interface WebhookPayload {
     installation?: { id?: unknown } | null;
     membership?: { user?: { id?: unknown } | null } | null;
     repository?: { full_name?: unknown } | null;
-    pull_request?: { number?: unknown; merged?: unknown } | null;
+    pull_request?: { number?: unknown; merged?: unknown; head?: { sha?: unknown } | null } | null;
+    /** `check_run` and `check_suite` name the PRs they ran for; `status` carries only the commit. */
+    check_run?: { head_sha?: unknown; pull_requests?: { number?: unknown }[] | null } | null;
+    check_suite?: { head_sha?: unknown; pull_requests?: { number?: unknown }[] | null } | null;
+    sha?: unknown;
     /** An issue # addresses a number here too; the PR clincher is `pull_request` on the issue. */
     issue?: { number?: unknown; pull_request?: unknown } | null;
 }
@@ -72,6 +76,75 @@ const PR_FAMILIES: Record<string, (action: unknown) => 'fold' | 'cancel' | null>
 function resolveDeed(event: unknown, action: unknown): 'fold' | 'cancel' | null {
     const route = typeof event === 'string' ? PR_FAMILIES[event] : undefined;
     return route === undefined ? null : route(action);
+}
+
+/**
+ * What an event says changed about a batch task's PR, as a refresh hint. Events are hints, never
+ * state: the observer re-reads GitHub, so a forged-looking, duplicated or out-of-order delivery can
+ * at worst cause a read. Null for an event that cannot move a check or a mergeability.
+ */
+function observationHint(
+    event: unknown,
+    payload: WebhookPayload
+): { installation: number; repo: string; numbers: number[]; headSha: string | null } | null {
+    const installation = payload.installation?.id;
+    const repo = payload.repository?.full_name;
+    if (typeof installation !== 'number' || typeof repo !== 'string' || repo === '') return null;
+    const asNumbers = (values: { number?: unknown }[] | null | undefined): number[] =>
+        (values ?? []).map((v) => v.number).filter((n): n is number => typeof n === 'number' && n > 0);
+    const sha = (value: unknown): string | null => (typeof value === 'string' && value !== '' ? value : null);
+    switch (event) {
+        case 'pull_request':
+        case 'pull_request_review':
+        case 'pull_request_review_comment': {
+            const number = payload.pull_request?.number;
+            return {
+                installation,
+                repo,
+                numbers: typeof number === 'number' && number > 0 ? [number] : [],
+                headSha: sha(payload.pull_request?.head?.sha),
+            };
+        }
+        case 'check_run':
+            return {
+                installation,
+                repo,
+                numbers: asNumbers(payload.check_run?.pull_requests),
+                headSha: sha(payload.check_run?.head_sha),
+            };
+        case 'check_suite':
+            return {
+                installation,
+                repo,
+                numbers: asNumbers(payload.check_suite?.pull_requests),
+                headSha: sha(payload.check_suite?.head_sha),
+            };
+        case 'status':
+            return { installation, repo, numbers: [], headSha: sha(payload.sha) };
+        default:
+            return null;
+    }
+}
+
+/** Asks the org's observer to re-read; a failure is logged and never changes the delivery's answer. */
+async function requestObservationRefresh(
+    orgs: OrgRegistry,
+    event: unknown,
+    payload: WebhookPayload,
+    log: { warn(message: string): void }
+): Promise<void> {
+    const hint = observationHint(event, payload);
+    if (hint === null) return;
+    try {
+        const runtime = await orgs.for(String(hint.installation));
+        await runtime?.batchObserver?.requestRefresh({
+            repo: hint.repo,
+            numbers: hint.numbers,
+            headSha: hint.headSha,
+        });
+    } catch (e) {
+        log.warn(`batch observation refresh failed: ${(e as Error).message}`);
+    }
 }
 
 async function handleOrganizationEvent(store: AuthStore, payload: WebhookPayload, reply: FastifyReply): Promise<void> {
@@ -237,6 +310,10 @@ export const webhookRoutes =
             if (event === 'organization') {
                 return handleOrganizationEvent(store, payload, reply);
             }
+
+            // Any delivery that can move a check or a mergeability asks the observer to re-read,
+            // whatever else the delivery does below.
+            await requestObservationRefresh(orgs, event, payload, request.log);
 
             // A merged close closes tasks rather than folding waits — decided before the family
             // routing, whose `closed` action would otherwise read as an ordinary cancel.

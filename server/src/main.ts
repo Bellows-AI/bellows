@@ -6,6 +6,7 @@ import { LOCAL_ORG_ID, resolveConfig, type GitHubConfig } from './config.js';
 import { createConnectionOfLease } from './db/connection-store.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/job-store-org-resolvers.js';
 import { createAppSlugProvider } from './github/app-token.js';
+import { startBatchPrObserver } from './batch-pr-observer.js';
 import { startBatchReconciler } from './batch-reconciler.js';
 import { createOrgRegistry } from './orgs.js';
 import { createFactsCache } from './workspace/facts.js';
@@ -124,6 +125,8 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
 
     // Dispatch survives a missed callback or a restart: the first pass runs now, then on an interval.
     void ready.then(() => startBatchReconciler(orgs));
+    // PR checks and mergeability are read from GitHub on a cadence; webhooks only hint (docs/batches.md).
+    void ready.then(() => startBatchPrObserver(orgs));
 
     await app.listen({ port: config.port, host: config.host });
 }

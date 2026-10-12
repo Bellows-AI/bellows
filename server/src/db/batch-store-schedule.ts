@@ -398,6 +398,12 @@ async function launch(
         values (${orgId}, ${id}, ${task.key}, ${attempt}, ${kind}, ${created.id},
                 ${target.repo}, ${target.branch}, ${revisions.get(revisionKey(target)) ?? null})
     `;
+    // A new attempt invalidates what was observed of the last: its failures are history, and the
+    // checks of whatever head it pushes are awaited afresh (063). An in-flight read loses its lease.
+    await tx`
+        delete from batch_pr_observation
+        where org_id = ${orgId} and batch_id = ${id} and task_key = ${task.key}
+    `;
     // A retry stays a row of the thread it already has; only a first launch binds one. The gate
     // reopens: a recovery's result is judged afresh, and a merge before this attempt began never counts.
     await tx`

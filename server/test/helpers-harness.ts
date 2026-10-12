@@ -31,6 +31,7 @@ export function staticRegistry(
         prs?: OrgRuntime['prs'];
         envVars?: OrgRuntime['envVars'];
         batches?: OrgRuntime['batches'];
+        batchObserver?: OrgRuntime['batchObserver'];
         /** The org's own runtime store, when a test needs two orgs that do not share one. */
         batchesByOrg?: Readonly<Record<string, NonNullable<OrgRuntime['batches']>>>;
         connections?: OrgRuntime['connections'];
@@ -56,6 +57,7 @@ export function staticRegistry(
         prs: parts.prs,
         envVars: parts.envVars,
         batches: parts.batches,
+        batchObserver: parts.batchObserver,
         connections: parts.connections,
         userRepos: parts.userRepos,
         userExecutors: parts.userExecutors,
