@@ -1,12 +1,10 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { addExecutorViaDialog, contextChip, countLaunches, E2E_REPO, mockExecutors, stubLaunch } from './executor.js';
 import {
     authoredBy,
     failedGateFollowUpThread,
     failedGateThread,
     mockedActivityOf,
-    otherAuthorThread,
     parkedReviewWaitMarkedDoneThread,
     parkedReviewWaitRunningThread,
     parkedReviewWaitThread,
@@ -14,14 +12,14 @@ import {
     type ThreadJob,
     taskSummaryOf,
 } from './fixtures/threads.js';
-import { THEMES, type Theme, VIEWPORTS } from './screenshot-matrix.js';
+import { type Theme, VIEWPORTS } from './screenshot-matrix.js';
 
 /**
- * The whole task journey across the merged lanes (#286, F1), in both themes: configure an executor
- * from the composer's blocker and launch once, then the three ways a finished run hands back —
- * (a) a parked review wait closed with Mark done, (b) a failed gate answered with another pass,
- * (c) another author's task, which offers no composer. No executor runs on the open board, so the
- * launch is real and the later states are the #270 fixtures, each branch following one task id.
+ * The task journey's hand-backs across the merged lanes (#286), in one theme — the theme only
+ * changes the screenshots: (a) a parked review wait closed with Mark done, (b) a failed gate
+ * answered with another pass. The states are the #270 fixtures, each branch following one task
+ * id. The configure-from-the-blocker launch is composer.spec.ts's F1 journey; another author's
+ * refusal is web/test/task-detail.render.test.tsx's.
  */
 
 const SHOTS = 'artifacts/ui/journeys';
@@ -95,52 +93,10 @@ const meta = (page: Page) => page.locator('.page-header-meta');
 const sidebarRow = (page: Page, id: string) =>
     page.locator(`nav[aria-label="Primary"] .sidenav-task[href="/tasks/${id}"]`);
 
-for (const theme of THEMES) {
-    test(`configure an executor from the composer's blocker, return to the draft, and launch once (${theme})`, async ({
-        page,
-    }) => {
-        const problems = watchConsole(page);
-        await atTheme(page, theme);
-        await mockExecutors(page, [], [E2E_REPO]);
-        await stubLaunch(page);
-        const launches = countLaunches(page);
-        const command = `journey: tidy the retry helper (${theme})`;
-        const prompt = page.getByLabel('What should the agent do?');
-        await page.goto('/tasks/new');
+test.describe('task journeys', () => {
+    const theme: Theme = 'dark';
 
-        const composer = page.locator('.composer');
-        await prompt.fill(command);
-        const banner = composer.locator('.banner-bad');
-        await expect(banner).toContainText('No executor configured');
-        await shoot(page, 'configure', 'blocked', theme);
-
-        await banner.getByRole('link', { name: 'Add an executor in Settings' }).click();
-        await expect(page).toHaveURL(/\/settings\/executors\?return=\/tasks\/new$/);
-        await expect(page.getByText('You have a task draft in progress.')).toBeVisible();
-        await addExecutorViaDialog(page, 'journey-executor');
-        await shoot(page, 'configure', 'settings-return', theme);
-
-        await page.getByRole('link', { name: 'Back to new task' }).click();
-        await expect(prompt).toHaveValue(command);
-        await expect(contextChip(page, 'Executor')).toHaveText('journey-executor');
-        await expect(composer.locator('.banner-bad')).toHaveCount(0);
-        expect(launches.bodies).toHaveLength(0);
-        await shoot(page, 'configure', 'draft-restored', theme);
-
-        await page.getByRole('button', { name: 'Start task' }).click();
-        await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
-        expect(launches.bodies).toHaveLength(1);
-        expect(launches.bodies[0]).toMatchObject({
-            command,
-            executor: 'journey-executor',
-            repo: `${E2E_REPO.owner}/${E2E_REPO.name}`,
-        });
-        // The launch is stubbed (issue 263: the open board holds no synced repository), so no task
-        // is left claimable for task-detail.spec.ts and there is none to stop.
-        expect(problems.join('\n')).toBe('');
-    });
-
-    test(`running → parked review wait → Mark done reads Done everywhere, with no follow-up offered (${theme})`, async ({
+    test('running → parked review wait → Mark done reads Done everywhere, with no follow-up offered', async ({
         page,
     }) => {
         const problems = watchConsole(page);
@@ -198,7 +154,7 @@ for (const theme of THEMES) {
         expect(problems.join('\n')).toBe('');
     });
 
-    test(`a failed gate opens expanded, Ask for another pass focuses the composer, and the follow-up is sent (${theme})`, async ({
+    test('a failed gate opens expanded, Ask for another pass focuses the composer, and the follow-up is sent', async ({
         page,
     }) => {
         const problems = watchConsole(page);
@@ -242,21 +198,4 @@ for (const theme of THEMES) {
         await shoot(page, 'failed-gate', 'follow-up-sent', theme);
         expect(problems.join('\n')).toBe('');
     });
-
-    test(`another author's task explains the refusal and renders no composer (${theme})`, async ({ page }) => {
-        const problems = watchConsole(page);
-        await atTheme(page, theme);
-        await routeTask(page, { jobs: otherAuthorThread });
-        await page.goto(`/tasks/${otherAuthorThread[0]!.id}`);
-
-        await expect(
-            page.getByText('Only octo-reviewer can continue this session. You can still mark it done.')
-        ).toBeVisible();
-        await expect(page.locator('textarea')).toHaveCount(0);
-        await expect(page.getByRole('button', { name: 'Send follow-up' })).toHaveCount(0);
-        await expect(page.getByRole('button', { name: 'Ask for another pass' })).toHaveCount(0);
-        await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeVisible();
-        await shoot(page, 'other-author', 'refusal', theme);
-        expect(problems.join('\n')).toBe('');
-    });
-}
+});

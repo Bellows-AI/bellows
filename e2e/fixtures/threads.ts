@@ -129,7 +129,7 @@ export const LOCAL_AUTHOR: ThreadUser = {
 };
 
 /** Someone else in the org — the task the viewer did not start. */
-export const OTHER_AUTHOR: ThreadUser = {
+const OTHER_AUTHOR: ThreadUser = {
     id: 'cccccccc-0000-4000-8000-000000000002',
     login: 'octo-reviewer',
     name: 'Octo Reviewer',
@@ -594,18 +594,6 @@ export async function sessionAuthor(page: Page): Promise<ThreadUser> {
     const me = (await response.json()) as { user: { id: string; login: string; name: string | null } };
     return { id: me.user.id, login: me.user.login, name: me.user.name, avatarUrl: null };
 }
-
-/** Published with a url no reader should open: the branch shows, the url is never a link. */
-export const unsafePrUrlThread = thread([
-    run({
-        id: 'aaaaaaaa-0000-4000-8000-000000000124',
-        command: 'publish somewhere odd',
-        repo: REPO,
-        sessionId: 'bbbbbbbb-0000-4000-8000-000000000124',
-        summary: 'Published the branch.',
-        output: 'pushed\n[driver] published fix/odd — javascript:alert(1)',
-    }),
-]);
 
 /** The parked task's first state, before it parked: the same id, still running, no wait yet. */
 export const parkedReviewWaitRunningThread = thread([
