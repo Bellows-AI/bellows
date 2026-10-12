@@ -1,5 +1,5 @@
 import { ADMIN_ROLE } from '@factory-ai/core';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, configure, render } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { afterEach, vi } from 'vitest';
@@ -14,6 +14,10 @@ import { ThemeProvider } from '../src/theme.js';
  * board is a stubbed `fetch`; the router is a memory data router over the real route table, so a
  * page under test owns the same polls, blockers and links it owns in the browser.
  */
+
+// `find*`/`waitFor` give up after 1s by default, which a full run on a loaded machine outlasts —
+// the same contention the 30s testTimeout in vitest.config.ts absorbs.
+configure({ asyncUtilTimeout: 10_000 });
 
 afterEach(() => {
     cleanup();

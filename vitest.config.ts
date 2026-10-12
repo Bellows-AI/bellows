@@ -48,10 +48,11 @@ export default defineConfig({
                 minWorkers: 1,
                 maxWorkers: 2,
             },
-            // The `dom` project's pool only; a project-level `isolate` does not reach the pool.
+            // The `dom` project's pool only; a project-level `isolate` does not reach the pool. One
+            // thread: it runs beside the forks, and more starved their RPC under a full run.
             threads: {
                 minThreads: 1,
-                maxThreads: 2,
+                maxThreads: 1,
                 isolate: true,
             },
         },
