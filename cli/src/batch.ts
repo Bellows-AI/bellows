@@ -42,6 +42,18 @@ export interface BatchTaskState {
     rootJobId: string | null;
 }
 
+/** An automerge stage's combined verification (core's `VERIFY_*` states), copied: it advances only on `passed`. */
+export interface BatchStageVerification {
+    stage: string;
+    state: string;
+    detail: string | null;
+    headSha: string | null;
+    checkedAt: string;
+}
+
+export const VERIFY_PASSED = 'passed';
+export const VERIFY_FAILED = 'failed';
+
 export interface BatchRecord {
     id: string;
     status: string;
@@ -56,6 +68,7 @@ export interface BatchRecord {
     expiredAt: string | null;
     plan: BatchPlanView;
     tasks: BatchTaskState[];
+    verification: BatchStageVerification[];
     /** Not in the body: read off the board's `Idempotency-Replayed` header. */
     replayed?: boolean;
 }
@@ -113,6 +126,7 @@ export interface BatchReport {
     completedAt: string | null;
     budgets: { infraRetries: number; repairs: number; timeLimitMinutes: number };
     prs: { merged: { task: string; url: string; mergedAt: string }[]; open: { task: string; url: string }[] };
+    verification: BatchStageVerification[];
     tasks: BatchReportTask[];
     latestObservationAt: string | null;
     /** What the board does not measure, named rather than estimated. */
@@ -147,7 +161,8 @@ export interface BatchValidated {
 
 /**
  * The execution states the board's dispatch (#579) settles a task in; a task not in one is still
- * moving. The wait's verdict is read from these and from `waitReason`, nothing else.
+ * moving. The wait's verdict is read from these, from `waitReason` and from the stages'
+ * `verification`, nothing else.
  */
 export const TASK_SUCCEEDED = 'succeeded';
 export const TASK_FAILED = 'failed';
@@ -158,14 +173,18 @@ export type BatchVerdict = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'n
 
 /**
  * Where a started batch stands. A task with a `waitReason` needs a person (a human review gate, a
- * question) and outranks everything: nothing a wait does moves it. Otherwise the batch is settled
- * only when every task is, and then a failed task beats a cancelled one beats success.
+ * question), as does a stage whose combined verification failed, and those outrank everything:
+ * nothing a wait does moves it. Otherwise the batch is settled only when every task is, and then a
+ * failed task beats a cancelled one beats success — which also needs every stage verified.
  */
 export function batchVerdict(batch: BatchRecord): BatchVerdict {
     if (batch.tasks.some((task) => task.waitReason !== null)) return 'needs_attention';
+    if (batch.verification.some((stage) => stage.state === VERIFY_FAILED)) return 'needs_attention';
     if (!batch.tasks.every((task) => TASK_TERMINAL.includes(task.execution))) return 'running';
     if (batch.tasks.some((task) => task.execution === TASK_FAILED)) return 'failed';
     if (batch.tasks.some((task) => task.execution === TASK_CANCELLED)) return 'cancelled';
+    // The last automerge stage's tasks are all done while its verification is still being read.
+    if (batch.verification.some((stage) => stage.state !== VERIFY_PASSED)) return 'running';
     return 'succeeded';
 }
 

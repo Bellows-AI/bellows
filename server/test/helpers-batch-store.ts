@@ -84,6 +84,7 @@ export function memoryBatchStore(): MemoryBatchStore {
                 activeStage: null,
                 plan,
                 tasks: taskStates(plan),
+                verification: [],
             });
             stamp(createdBy, idempotency, id);
             writes.push('create');

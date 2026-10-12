@@ -1,10 +1,11 @@
-import { BATCH_DRAFT, batchVerdict } from './batch.js';
+import { BATCH_DRAFT, batchVerdict, VERIFY_FAILED } from './batch.js';
 import type {
     BatchNextAction,
     BatchPlanView,
     BatchRecord,
     BatchReport,
     BatchReportTask,
+    BatchStageVerification,
     BatchSummary,
     BatchTaskState,
 } from './batch.js';
@@ -23,6 +24,10 @@ const NO_PR = 'none';
 /** A task whose state names a person to act: the wait reason is the board's own words for it. */
 export const needsAction = (task: BatchTaskState): boolean => task.waitReason !== null;
 
+/** A stage's combined verification in a few words: its state, then why, if the board said. */
+const verificationOf = (row: BatchStageVerification): string =>
+    `verification ${row.state}${row.detail === null ? '' : `: ${row.detail}`}`;
+
 /** The plan's settings: effective policy per stage, concurrency, executor default. */
 export function renderPlanSettings(plan: BatchPlanView): string[] {
     const lines = [
@@ -32,7 +37,12 @@ export function renderPlanSettings(plan: BatchPlanView): string[] {
     return lines;
 }
 
-function renderStage(plan: BatchPlanView, stageKey: string, tasks: BatchTaskState[]): string[] {
+function renderStage(
+    plan: BatchPlanView,
+    stageKey: string,
+    tasks: BatchTaskState[],
+    verification: BatchStageVerification | undefined
+): string[] {
     const stage = plan.stages.find((candidate) => candidate.key === stageKey);
     const policy = stage?.policy ?? plan.policy;
     const gate = policy === HUMAN_POLICY ? ' [human review gate]' : '';
@@ -49,6 +59,7 @@ function renderStage(plan: BatchPlanView, stageKey: string, tasks: BatchTaskStat
         );
         if (state.waitReason !== null) lines.push(`    needs action: ${state.waitReason}`);
     }
+    if (verification) lines.push(`  ${verificationOf(verification)} (at ${verification.headSha ?? 'unknown head'})`);
     return lines;
 }
 
@@ -63,7 +74,8 @@ export function renderBatch(batch: BatchRecord): string {
             ...renderStage(
                 batch.plan,
                 stage,
-                batch.tasks.filter((task) => task.stage === stage)
+                batch.tasks.filter((task) => task.stage === stage),
+                batch.verification.find((row) => row.stage === stage)
             )
         );
     }
@@ -96,6 +108,8 @@ export function renderWaitEnd(batch: BatchRecord, ending: string = batchVerdict(
     const lines = [`${batch.id} ${ending}`];
     for (const task of waiting)
         lines.push(`  ${task.key}: ${task.waitReason}${task.pr === NO_PR ? '' : ` (pr ${task.pr})`}`);
+    for (const row of batch.verification.filter((stage) => stage.state === VERIFY_FAILED))
+        lines.push(`  stage ${row.stage} ${verificationOf(row)}`);
     return lines.join('\n');
 }
 
@@ -148,6 +162,7 @@ export function renderReport(report: BatchReport, now: number): string {
             ? 'latest observation: none yet'
             : `latest observation ${ageOf(report.latestObservationAt, now)} ago`,
         report.unavailable.map((what) => `${what}: unavailable`).join(' · '),
+        ...report.verification.map((row) => `stage ${row.stage} ${verificationOf(row)}`),
     ];
     for (const task of report.tasks) lines.push(...renderReportTask(task, now));
     return lines.join('\n');

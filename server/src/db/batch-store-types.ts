@@ -70,6 +70,17 @@ export interface BatchRecord extends Omit<BatchSummary, 'title' | 'taskCount'> {
     /** As written while a draft; the resolved plan once started. */
     plan: BatchPlan;
     tasks: BatchTaskState[];
+    /** Each automerge stage's combined verification (064): a stage advances only on `passed`; `failed` needs a person. */
+    verification: BatchStageVerification[];
+}
+
+/** One automerge stage's combined verification row, as the record and the report both show it. */
+export interface BatchStageVerification {
+    stage: string;
+    state: string;
+    detail: string | null;
+    headSha: string | null;
+    checkedAt: string;
 }
 
 /** What a scheduling pass left: the long-poll's inputs. */
@@ -172,8 +183,7 @@ export interface BatchReport {
     completedAt: string | null;
     budgets: { infraRetries: number; repairs: number; timeLimitMinutes: number };
     prs: { merged: { task: string; url: string; mergedAt: string }[]; open: { task: string; url: string }[] };
-    /** Each automerge stage's combined verification (064): a stage advances only on `passed`; `failed` needs a person. */
-    verification: { stage: string; state: string; detail: string | null; headSha: string | null; checkedAt: string }[];
+    verification: BatchStageVerification[];
     tasks: BatchReportTask[];
     /** The newest PR observation of any task; null when none was read yet. */
     latestObservationAt: string | null;
