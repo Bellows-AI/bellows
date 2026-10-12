@@ -284,33 +284,6 @@ for (const width of [1440, 390]) {
                 await expect(input).toHaveValue(pasted);
             });
 
-            test('Enter fallback restores selection and composing Enter is left to the browser', async ({ page }) => {
-                const { input } = await openEditor(page);
-                const text = '{\n  "x": 12\n}';
-                await input.fill(text);
-                await input.evaluate((el: HTMLTextAreaElement) => {
-                    el.setSelectionRange(9, 11);
-                    document.execCommand = () => false;
-                });
-                await input.press('Enter');
-                await expect(input).toHaveValue('{\n  "x": \n  \n}');
-                expect(await input.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(12);
-                await page.keyboard.insertText('3');
-                await expect(input).toHaveValue('{\n  "x": \n  3\n}');
-                const composing = await input.evaluate((el) => {
-                    const event = new KeyboardEvent('keydown', {
-                        key: 'Enter',
-                        bubbles: true,
-                        cancelable: true,
-                        isComposing: true,
-                    });
-                    el.dispatchEvent(event);
-                    return event.defaultPrevented;
-                });
-                expect(composing).toBe(false);
-                await expect(input).toHaveValue('{\n  "x": \n  3\n}');
-            });
-
             test('forced colors keep one readable editable layer and keyboard focus', async ({ page }) => {
                 const { input } = await openEditor(page);
                 await input.fill(sample);

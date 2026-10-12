@@ -199,79 +199,8 @@ test.describe('the guided task composer', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    test('the keyboard path shares the button validation: an empty prompt never queues', async ({ page }) => {
-        const problems = watchConsole(page);
-        await stubLaunch(page);
-        await page.goto('/tasks/new');
-
-        const composer = page.locator('.composer');
-        const request = page.getByLabel('What should the agent do?');
-
-        // The shortcut is the button, never a bypass: an empty prompt sends nothing and says why.
-        await request.press('ControlOrMeta+Enter');
-        await expect(composer.getByText('Describe the task to continue.')).toBeVisible();
-        expect(page.url()).toContain('/tasks/new');
-
-        // A prompt lets the same shortcut queue: the board answers 201 and the page walks
-        // straight to the new task.
-        await request.fill('fix the login crash');
-        await request.press('ControlOrMeta+Enter');
-        await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}/);
-        expect(problems.join('\n')).toBe('');
-    });
-
     // The synced-repository requirement (issue 263). The poll is mocked, so `repos` is whatever
     // the test says; no launch reaches the board unless the test stubs it.
-    test('with nothing synced, both launch triggers open the dialog, queue nothing, and Cancel keeps the draft', async ({
-        page,
-    }) => {
-        await page.unroute('**/api/workspace');
-        await mockExecutors(page, [E2E_EXECUTOR_ROW], [{ ...E2E_REPO, status: 'cloning' }]);
-        const launches = countLaunches(page);
-        await page.goto('/tasks/new');
-
-        const prompt = page.getByLabel('What should the agent do?');
-        await prompt.fill('fix the login crash');
-        const start = page.getByRole('button', { name: 'Start task' });
-        await expect(start).toBeEnabled();
-        await expect(page.locator('.composer .banner-bad')).toContainText('No repos synced');
-
-        await start.click();
-        const dialog = page.getByRole('dialog', { name: 'No repos synced' });
-        await expect(dialog).toContainText(
-            'Go to the Repositories page to select and sync a repository before running a task.'
-        );
-        await dialog.getByRole('button', { name: 'Cancel' }).click();
-        await expect(dialog).toHaveCount(0);
-        await expect(start).toBeFocused();
-        await expect(prompt).toHaveValue('fix the login crash');
-
-        await prompt.press('ControlOrMeta+Enter');
-        // The panel, not the container: `.dialog-layer` is a zero-height shell with no box to measure.
-        await expect(dialog.locator('.dialog')).toBeVisible();
-        await page.keyboard.press('Escape');
-        await expect(dialog).toHaveCount(0);
-        await expect(prompt).toBeFocused();
-        expect(launches.bodies).toHaveLength(0);
-    });
-
-    test('Go to Repositories carries the draft there and back', async ({ page }) => {
-        await page.unroute('**/api/workspace');
-        await mockExecutors(page, [E2E_EXECUTOR_ROW], []);
-        await page.goto('/tasks/new');
-
-        const prompt = page.getByLabel('What should the agent do?');
-        await prompt.fill('fix the login crash');
-        await page.getByRole('button', { name: 'Start task' }).click();
-        await page
-            .getByRole('dialog', { name: 'No repos synced' })
-            .getByRole('button', { name: 'Go to Repositories' })
-            .click();
-        await expect(page).toHaveURL(/\/settings\/repos\?return=\/tasks\/new$/);
-        await page.getByRole('link', { name: 'Back to new task' }).click();
-        await expect(prompt).toHaveValue('fix the login crash');
-    });
-
     test('a chosen repository that is not ready blocks launch even though another is ready', async ({ page }) => {
         await page.unroute('**/api/workspace');
         await mockExecutors(

@@ -182,6 +182,7 @@ cannot tell you:
   `driver/test/scripts-*.test.ts` pins the bytes that ship.
 - **`server/migrations/*.sql` are not compiled by `tsc`** — `docker/Dockerfile` copies the
   directory. Forgetting that fails only in the container.
-- `core/test` imports `core/src` directly, so it needs no build. The web suite is a `react-dom/server`
-  render smoke test: it will not tell you the SPA looks right. `npm run verify:ui` does.
+- `core/test` imports `core/src` directly, so it needs no build. The web suite renders with
+  `react-dom/server`, and its `*.dom.test.tsx` files drive components under jsdom
+  (`web/test/dom.tsx`): neither will tell you the SPA looks right. `npm run verify:ui` does.
 </content>

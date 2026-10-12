@@ -10,7 +10,7 @@ Which repositories an organization sees, where that list comes from, and what it
 | Credential-less fallback to `session_branch` | `server/src/db/stored-repos.ts` | `server/test/routes.repos.test.ts` |
 | Picker route | `server/src/routes/repos.ts` | `server/test/routes.repos.test.ts` |
 | Personal checkout selection and the 20-repo cap | `server/src/routes/workspace.ts` (`MAX_REPOS_PER_USER`) | `server/test/routes.workspace.test.ts` |
-| Settings → Repositories page | `web/src/pages/SettingsRepositoriesPage.tsx`, `web/src/components/repository-setup.ts` | `web/test/repository-setup.test.ts`, `web/test/repository-setup.render.test.tsx` |
+| Settings → Repositories page | `web/src/pages/SettingsRepositoriesPage.tsx`, `web/src/components/repository-setup.ts` | `web/test/repository-setup.test.ts`, `web/test/repository-setup.render.test.tsx`, `web/test/repository-selection.dom.test.tsx` |
 | Scoping of stored reads | `server/src/stats-service.ts`, `core/src/telemetry.ts` | `core/test/telemetry.stats.test.ts` |
 
 ## Invariants

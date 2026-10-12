@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { appearance, chooseAppearance, expectAppearanceOptions } from './appearance.js';
-import { THEMES } from './screenshot-matrix.js';
 import { finishSignIn, throughSignIn } from './signin.js';
 
 /**
@@ -103,22 +102,6 @@ test('the gate holds a narrow phone inside the viewport, in both palettes (issue
     });
 });
 
-test('a refused sign-in says why on the gate, in both palettes (issue 284)', async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 1000 });
-    await page.goto('/?auth_error=denied');
-
-    await expect(gate(page)).toBeVisible();
-    await expect(gate(page).getByRole('alert')).toHaveText('Sign-in was cancelled.');
-    await expect(signIn(page)).toBeVisible();
-    for (const theme of THEMES) {
-        await page.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
-        await page.screenshot({
-            path: `artifacts/ui/matrix/signin-gate_denied_${theme}_1440.png`,
-            animations: 'disabled',
-        });
-    }
-});
-
 test('the document itself is served without authentication', async ({ page }) => {
     // If index.html 401'd there would be nothing left to render a sign-in button in. The wall is on
     // /api/*, never on the document — this is what pins that.
@@ -217,36 +200,6 @@ test('the screen explains itself, its identity, and the default choice (issue 18
 
     // Confirming the default still completes: the choice lands, the dashboard is reached.
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
-});
-
-test('a choice of nothing refuses Continue and says what is missing (issue 187)', async ({ page }) => {
-    await page.goto('/api/auth/github?reselect=1');
-    await screen(page).waitFor({ timeout: 60_000 });
-    const reported = await pendingReport(page);
-    const orgs = screen(page).locator('.onboarding-org');
-    for (const install of reported) {
-        await orgs.filter({ hasText: install.account }).getByRole('checkbox').uncheck();
-    }
-
-    const cont = page.getByRole('button', { name: 'Continue' });
-    await expect(cont).toHaveAttribute('aria-disabled', 'true');
-    await expect(page.getByText('Choose at least one organization to continue.')).toBeVisible();
-    // The visible reason is also the button's description (issue 284): a screen reader on the
-    // dead Continue hears why, not just that.
-    await expect(cont).toHaveAccessibleDescription('Choose at least one organization to continue.');
-    // And it looks blocked: aria-disabled carries the disabled-primary recipe, not the accent.
-    await expect(cont).toHaveCSS('cursor', 'not-allowed');
-    // The attempted action is receivable — it cannot post, and the screen stands. Forced, because
-    // Playwright's actionability check reads aria-disabled as disabled and would wait forever.
-    await cont.click({ force: true });
-    await expect(screen(page)).toBeVisible();
-
-    // Choosing one organization re-enables the action and completes.
-    await orgs.filter({ hasText: reported[0]!.account }).getByRole('checkbox').check();
-    await expect(cont).not.toHaveAttribute('aria-disabled', 'true');
-    await expect(cont).toHaveAccessibleDescription('');
-    await cont.click();
     await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
 });
 
@@ -375,47 +328,4 @@ test('the returnTo path survives the round trip', async ({ page }) => {
     await signIn(page).click();
     await finishSignIn(page);
     expect(new URL(page.url()).pathname).toBe('/');
-});
-
-test('the scope dropdown scopes the figures to the signed-in member', async ({ page }) => {
-    await throughSignIn(page);
-
-    // The dropdown exists only behind a session — this board signs in, so it is here.
-    const trigger = page.locator('#scope-select');
-    await expect(trigger).toBeVisible();
-    await expect(trigger).toHaveText('Organization');
-
-    const [response] = await Promise.all([
-        page.waitForResponse((r) => r.url().includes('scope=mine') && r.status() === 200),
-        (async () => {
-            await trigger.click();
-            await page.getByRole('option', { name: 'Personal', exact: true }).click();
-        })(),
-    ]);
-    const body = (await response.json()) as { meta: { scope: string; scopeLogin: string | null } };
-    expect(body.meta.scope).toBe('mine');
-    expect(body.meta.scopeLogin).toBe('e2e-user');
-    await expect(trigger).toHaveText('Personal');
-
-    // This member's org holds no seeded rows (the seed plants under the local org only), so the
-    // analytics render the ONE empty state — not zeros, not dash cards — and no per-task figures
-    // render to masquerade as measurements.
-    await expect(page.locator('.usage-empty')).toBeVisible();
-    await expect(page.getByText('Per-task usage')).toHaveCount(0);
-    await page.screenshot({ path: 'artifacts/ui/scope-mine.png', fullPage: true });
-
-    // Back to org: the organization selection returns from the same snapshot. `scope=org` is not
-    // a URL form — org is the query's default, so its absence IS the org request; the body's meta
-    // says what the figures were computed under.
-    const [orgResponse] = await Promise.all([
-        page.waitForResponse(
-            (r) => r.url().includes('/api/stats?') && !r.url().includes('scope=mine') && r.status() === 200
-        ),
-        (async () => {
-            await trigger.click();
-            await page.getByRole('option', { name: 'Organization', exact: true }).click();
-        })(),
-    ]);
-    expect(((await orgResponse.json()) as { meta: { scope: string } }).meta.scope).toBe('org');
-    await expect(trigger).toHaveText('Organization');
 });

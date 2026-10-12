@@ -5,28 +5,19 @@ import { ADMIN_ROLE, MEMBER_ROLE } from '@factory-ai/core';
 import { AUTH_DATABASE_URL, E2E_LOGIN } from '../playwright.config.js';
 import { throughSignIn } from './signin.js';
 import { ORG_CONNECTION_SCOPE } from '../web/src/api/connections.js';
-import {
-    CONNECTION_DIALOG_TITLE,
-    SAVE_CONNECTION_LABEL,
-    SCOPED_TOKEN_HINT,
-} from '../web/src/components/JiraConnectionDialog.js';
-import { unsavedDialogTitle } from '../web/src/components/UnsavedChangesDialog.js';
-import { ADD_CONNECTION_LABEL, DEFAULT_CONNECTION_CAPTION } from '../web/src/panels/JiraConnectionsPanel.js';
 
 /**
- * The Jira connection panels on the Organization and Workspace settings pages (#567).
+ * The Jira connection panel on the Organization settings page (#567), read by a member.
  *
  * On the `auth` project: the connection routes need a signed-in caller whose role is real. The
  * offline board cannot reach Atlassian, so a connection is seeded straight into the table (the
- * `setRole` idiom of org-executors.spec.ts) and the add path is exercised to the refusal the board
- * gives when the site's cloud id cannot be resolved — surfaced as sent. The token is never read
- * back anywhere, and the page must not carry the seeded one.
+ * `setRole` idiom of org-executors.spec.ts). The admin's add dialog and the personal panel are
+ * web/test/jira-connections.dom.test.tsx's.
  */
 
 const SHOTS = 'artifacts/ui';
 const SITE = 'e2e-seeded-site.atlassian.net';
 const SECRET = 'e2e-secret-token-must-never-render';
-const UNRESOLVABLE_SITE = 'e2e-no-such-site-567.atlassian.net';
 
 async function withSql<T>(run: (sql: postgres.Sql) => Promise<T>): Promise<T> {
     const sql = postgres(AUTH_DATABASE_URL, { max: 1 });
@@ -53,64 +44,10 @@ const seedOrgConnection = () =>
 const clearConnections = () => withSql((sql) => sql`delete from connector_connection where site = ${SITE}`);
 
 const panel = (page: Page) => page.getByRole('region', { name: 'Organization Jira connections' });
-const dialog = (page: Page) => page.getByRole('dialog', { name: CONNECTION_DIALOG_TITLE });
 
 test.afterEach(async () => {
     await clearConnections();
     await setRole(ADMIN_ROLE);
-});
-
-test('an admin sees the default marker, adds through the dialog to the route refusal, and deletes', async ({
-    page,
-}) => {
-    await seedOrgConnection();
-    await throughSignIn(page);
-    await setRole(ADMIN_ROLE);
-    await page.goto('/settings/organization');
-
-    const row = panel(page).getByRole('row').filter({ hasText: SITE });
-    await expect(row).toContainText(DEFAULT_CONNECTION_CAPTION);
-    await expect(row).toContainText('bot@example.com');
-    await expect(page.locator('body')).not.toContainText(SECRET);
-    await expect(panel(page).getByRole('textbox')).toHaveCount(0);
-
-    await panel(page).getByRole('button', { name: ADD_CONNECTION_LABEL }).click();
-    await expect(dialog(page)).toContainText(SCOPED_TOKEN_HINT);
-    await expect(dialog(page).getByLabel('Jira site')).toBeFocused();
-    await expect(dialog(page).getByRole('button', { name: SAVE_CONNECTION_LABEL })).toBeDisabled();
-
-    // The offline board cannot resolve a cloud id: the 502 message lands in the dialog as the route
-    // sent it, and the dialog keeps every field.
-    await dialog(page).getByLabel('Jira site').fill(UNRESOLVABLE_SITE);
-    await dialog(page).getByLabel('Jira email').fill('bot@example.com');
-    await dialog(page).getByLabel('Jira API token').fill('typed-token-never-echoed');
-    await dialog(page).getByRole('button', { name: SAVE_CONNECTION_LABEL }).click();
-    await expect(dialog(page).getByRole('alert')).toContainText(
-        `Could not resolve the Jira cloud id of ${UNRESOLVABLE_SITE}`
-    );
-    await expect(dialog(page).getByLabel('Jira site')).toHaveValue(UNRESOLVABLE_SITE);
-    await page.screenshot({ path: `${SHOTS}/settings-jira-connections-admin.png`, fullPage: true });
-
-    // Dismissing with typed fields asks first; the safe answer keeps them, Discard closes and hands
-    // focus back to the trigger.
-    const confirm = page.getByRole('dialog', { name: unsavedDialogTitle() });
-    await page.keyboard.press('Escape');
-    await confirm.getByRole('button', { name: 'Continue editing' }).click();
-    await expect(confirm).toHaveCount(0);
-    await expect(dialog(page).getByLabel('Jira email')).toHaveValue('bot@example.com');
-    await dialog(page).getByRole('button', { name: 'Cancel' }).click();
-    await confirm.getByRole('button', { name: 'Discard changes' }).click();
-    await expect(dialog(page)).toHaveCount(0);
-    await expect(panel(page).getByRole('button', { name: ADD_CONNECTION_LABEL })).toBeFocused();
-
-    // A blank dialog closes without asking.
-    await panel(page).getByRole('button', { name: ADD_CONNECTION_LABEL }).click();
-    await page.keyboard.press('Escape');
-    await expect(dialog(page)).toHaveCount(0);
-    await expect(confirm).toHaveCount(0);
-
-    await row.getByRole('button', { name: /^Delete/ }).click();
-    await expect(row).toHaveCount(0);
 });
 
 test('a member reads the list with no controls, and a forced org create is a 403', async ({ page }) => {
@@ -128,13 +65,4 @@ test('a member reads the list with no controls, and a forced org create is a 403
         data: { scope: ORG_CONNECTION_SCOPE, site: SITE, email: 'x@example.com', apiToken: 'x' },
     });
     expect(forced.status()).toBe(403);
-});
-
-test('the workspace page carries the personal panel and its override note', async ({ page }) => {
-    await throughSignIn(page);
-    await page.goto('/settings/workspace');
-    const personal = page.getByRole('region', { name: 'Personal Jira connections' });
-    await expect(personal).toContainText('overrides the organization');
-    await expect(personal.getByRole('button', { name: ADD_CONNECTION_LABEL })).toBeVisible();
-    await page.screenshot({ path: `${SHOTS}/settings-jira-connections-personal.png`, fullPage: true });
 });

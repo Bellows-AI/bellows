@@ -106,71 +106,6 @@ test.describe('date range selector', () => {
         await expect.poll(async () => page.locator('.usage-summary strong').allInnerTexts()).not.toEqual(allTime);
     });
 
-    test('the custom picker commits once through Apply, and a draft never requests', async ({ page }) => {
-        const problems = watchConsole(page);
-        await open(page);
-
-        const requests: string[] = [];
-        page.on('request', (r) => {
-            if (r.url().includes('/api/stats?')) requests.push(r.url());
-        });
-
-        const openCustom = async () => {
-            await page.locator('#range-select').click();
-            // Anchored, not exact: once a custom window is committed the option is the selected
-            // one, and its accessible name carries the checkmark ("Custom ✓").
-            await page.getByRole('option', { name: /^Custom( ✓)?$/ }).click();
-        };
-
-        // Custom opens the dialog; opening it is not a selection and issues no request.
-        await openCustom();
-        const from = page.locator('.range-draft input').first();
-        const to = page.locator('.range-draft input').last();
-        await expect(from).toHaveValue('');
-        await from.fill('2026-07-01');
-        // Typing is a draft: no stats request may fire for it. Cancel discards the draft.
-        expect(requests.filter((u) => u.includes('range=custom'))).toEqual([]);
-        await page.getByRole('button', { name: 'Cancel' }).click();
-        await expect(page.locator('.range-dialog')).toHaveCount(0);
-        expect(requests.filter((u) => u.includes('range=custom'))).toEqual([]);
-        await expect(page.locator('#range-select')).toHaveText('All time');
-
-        // Reopening starts from the committed values — all time here — not the abandoned draft.
-        // Escape discards a draft exactly like Cancel does.
-        await openCustom();
-        await expect(from).toHaveValue('');
-        await from.fill('2026-07-15');
-        await page.keyboard.press('Escape');
-        await expect(page.locator('.range-dialog')).toHaveCount(0);
-        expect(requests.filter((u) => u.includes('range=custom'))).toEqual([]);
-
-        // Apply commits both bounds exactly once.
-        await openCustom();
-        await from.fill('2026-07-01');
-        await to.fill('2026-08-01');
-        const [response] = await Promise.all([
-            page.waitForResponse((r) => r.url().includes('range=custom') && r.status() === 200),
-            page.getByRole('button', { name: 'Apply range' }).click(),
-        ]);
-        const body = (await response.json()) as { meta: { range: { from: string; to: string } } };
-        expect(body.meta.range.from).toBe('2026-07-01T00:00:00.000Z');
-        // `to` is exclusive, so the picked day is widened to the start of the next one.
-        expect(body.meta.range.to).toBe('2026-08-02T00:00:00.000Z');
-        await expect(page.locator('#range-select')).toHaveText('Jul 1 – Aug 1');
-
-        // Clear returns to All time from the same dialog.
-        await openCustom();
-        const [cleared] = await Promise.all([
-            page.waitForResponse((r) => r.url().includes('range=all') && r.status() === 200),
-            page.getByRole('button', { name: 'Clear' }).click(),
-        ]);
-        expect(new URL(cleared.url()).searchParams.get('range')).toBe('all');
-        await expect(page.locator('#range-select')).toHaveText('All time');
-
-        await assertRendersCleanly(page, 'custom-jul');
-        expect(problems.join('\n')).toBe('');
-    });
-
     test('the custom range dialog stays inside the viewport and restores focus to the trigger on a narrow phone', async ({
         page,
     }) => {
@@ -269,19 +204,6 @@ test.describe('date range selector', () => {
 });
 
 test.describe('the supporting tables and the task board', () => {
-    test('a supporting table sorts from the keyboard and announces the active column', async ({ page }) => {
-        await open(page);
-
-        const header = page.getByRole('button', { name: 'New tokens' });
-        const th = page.locator('th', { has: header });
-        // The by-user table opens sorted by New tokens, largest first.
-        await expect(th).toHaveAttribute('aria-sort', 'descending');
-        await header.focus();
-        await page.keyboard.press('Enter');
-        await expect(th).toHaveAttribute('aria-sort', 'ascending');
-        await page.screenshot({ path: `${SHOTS}/by-user-sorted.png`, fullPage: true });
-    });
-
     test('a recent task title opens the task page', async ({ page }) => {
         await open(page);
 
@@ -380,23 +302,6 @@ test.describe('the organization selector', () => {
     });
 });
 
-test.describe('the user menu', () => {
-    // The Headless UI Menu renders the panel client-side only, so the render suite cannot see it;
-    // this open board is AUTH_MODE=none, which makes it the one place the sign-out negative lives.
-    test('offers the way to the account page but no sign out where there is no session to end', async ({ page }) => {
-        await open(page);
-
-        await page.locator('.user-menu-button').click();
-        // The mode ignores every credential, so a sign-out item could never work — absent, not
-        // disabled, like the account page's token sections under the same mode.
-        await expect(page.getByRole('menuitem', { name: 'Sign out' })).toHaveCount(0);
-        await expect(page.getByRole('menuitem', { name: 'Account' })).toBeVisible();
-
-        await page.keyboard.press('Escape');
-        await page.locator('.appbar').screenshot({ path: `${SHOTS}/appbar-user-menu.png` });
-    });
-});
-
 test.describe('the analytics dashboard layout (issue 283)', () => {
     test('the toolbar is one 64px panel carrying range, scope, coverage and freshness', async ({ page }) => {
         await page.setViewportSize({ width: 1440, height: 900 });
@@ -457,26 +362,6 @@ test.describe('the analytics dashboard layout (issue 283)', () => {
         // 360px of plot plus the axis padding, drawn near 1:1 at this width.
         expect(box.height).toBeGreaterThanOrEqual(400);
         expect(box.height).toBeLessThanOrEqual(432);
-    });
-
-    test('the legend toggles a series and the buckets inspect from the keyboard', async ({ page }) => {
-        await page.setViewportSize({ width: 1440, height: 900 });
-        await open(page);
-
-        const panel = page.locator('section.panel', { hasText: 'AI token usage' });
-        const output = panel.getByRole('button', { name: 'Output', exact: true });
-        await expect(panel.locator('rect[data-series="output"]').first()).toBeAttached();
-        await output.click();
-        await expect(output).toHaveAttribute('aria-pressed', 'false');
-        await expect(panel.locator('rect[data-series="output"]')).toHaveCount(0);
-        await output.click();
-        await expect(output).toHaveAttribute('aria-pressed', 'true');
-
-        const buckets = panel.locator('.bucket-hit');
-        await buckets.first().focus();
-        await page.keyboard.press('ArrowRight');
-        await expect(buckets.nth(1)).toBeFocused();
-        await expect(panel.locator('.chart-tooltip')).toBeVisible();
     });
 
     test('a partial period is hatched and keyed in the caption', async ({ page }) => {

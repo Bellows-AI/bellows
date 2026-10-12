@@ -1,13 +1,16 @@
+import { ADMIN_ROLE } from '@factory-ai/core';
 import { cleanup, render } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { afterEach, vi } from 'vitest';
+import { LOCAL_AUTHOR } from '../../e2e/fixtures/threads.js';
+import type { Session } from '../src/api/useSession.js';
 import { App, appRoutes } from '../src/App.js';
 import { ThemeProvider } from '../src/theme.js';
 
 /**
- * The shared harness of the `*.dom.test.tsx` layer — files that opt into jsdom with a
- * `@vitest-environment jsdom` docblock and drive the real components with Testing Library. The
+ * The shared harness of the `*.dom.test.tsx` layer — files the `dom` project in vitest.config.ts
+ * runs under jsdom, isolated, driving the real components with Testing Library. The
  * board is a stubbed `fetch`; the router is a memory data router over the real route table, so a
  * page under test owns the same polls, blockers and links it owns in the browser.
  */
@@ -93,8 +96,39 @@ function safeJson(raw: string): unknown {
     }
 }
 
+/** The open board's member (AUTH_MODE=none): the stand-in account every local action is attributed to. */
+export const OPEN_BOARD_SESSION: Session = {
+    authenticated: true,
+    user: { ...LOCAL_AUTHOR, githubUserId: 0 },
+    role: ADMIN_ROLE,
+    membership: { invitedAt: null, claimedAt: null },
+    account: { createdAt: null, lastLoginAt: null },
+    organization: { id: 'local', name: 'Local' },
+    organizations: [],
+    workspacePath: null,
+    mode: 'none',
+};
+
+/**
+ * A data-router navigation builds a Node `Request` around jsdom's AbortSignal, which Node refuses
+ * as foreign; nothing under test aborts a load, so the signal is dropped. Unstubbed after each test.
+ */
+function acceptJsdomSignals() {
+    const NodeRequest = globalThis.Request;
+    vi.stubGlobal(
+        'Request',
+        class extends NodeRequest {
+            constructor(input: RequestInfo | URL, init: RequestInit = {}) {
+                const { signal: _signal, ...rest } = init;
+                super(input, rest);
+            }
+        }
+    );
+}
+
 /** Mounts the app's own route table at `path` under a memory data router. */
 export function renderApp(path: string) {
+    acceptJsdomSignals();
     const router = createMemoryRouter([{ element: <App />, children: appRoutes }], { initialEntries: [path] });
     const view = render(
         <ThemeProvider>
@@ -106,6 +140,7 @@ export function renderApp(path: string) {
 
 /** Mounts one element at `path` under a memory data router, for a component that needs router context. */
 export function renderAt(element: ReactNode, path = '/') {
+    acceptJsdomSignals();
     const router = createMemoryRouter([{ path: '*', element }], { initialEntries: [path] });
     return { ...render(<RouterProvider router={router} />), router };
 }

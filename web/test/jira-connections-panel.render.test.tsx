@@ -74,7 +74,7 @@ describe('the Jira connections panel', () => {
 
 /**
  * The add dialog is a Headless UI Dialog and portals, which `renderToStaticMarkup` does not
- * render: its fields, the scoped-token help and the in-dialog refusal are e2e/jira-connections.spec.ts's.
+ * render: its fields, the scoped-token help and the in-dialog refusal are web/test/jira-connections.dom.test.tsx's.
  */
 describe('the Jira connection dialog', () => {
     it('server-renders a placeholder, open or closed', () => {
