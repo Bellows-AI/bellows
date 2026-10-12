@@ -75,316 +75,327 @@ async function expectScrollAligned(input: Locator) {
         .toEqual({ paintTop: 0, paintLeft: 0, gutterTop: 0 });
 }
 
+/**
+ * Each body runs only in the cells its claim depends on: the theme changes colors only, so it
+ * matters to the selection wash alone, and the width matters only to where lines wrap and scroll.
+ */
 for (const width of [1440, 390]) {
     for (const theme of ['dark', 'light']) {
+        const dark = theme === 'dark';
+        const wide = width === 1440;
         test.describe(`${theme} ${width}px`, () => {
             test.beforeEach(async ({ page }) => {
                 await page.setViewportSize({ width, height: 1000 });
                 await page.addInitScript((nextTheme) => localStorage.setItem('factory.theme', nextTheme), theme);
             });
 
-            test('clicks land on painted characters across tokens and lines', async ({ page }) => {
-                const { input } = await openEditor(page);
-                await input.fill(sample);
-                await input.scrollIntoViewIfNeeded();
-                const metrics = await input.evaluate((el) => {
-                    const paint = el.parentElement!.querySelector('code')!;
-                    const properties = [
-                        'font-family',
-                        'font-size',
-                        'font-weight',
-                        'font-style',
-                        'line-height',
-                        'letter-spacing',
-                        'tab-size',
-                        'white-space',
-                    ];
-                    const read = (node: Element) =>
-                        properties.map((property) => getComputedStyle(node).getPropertyValue(property));
-                    return { input: read(el), paint: read(paint) };
-                });
-                expect(metrics.paint).toEqual(metrics.input);
-                for (const offset of [0, 4, 12, 18, 26, 40, 48, 60, 95, 112, sample.length - 1]) {
-                    // Long lines on a phone are covered after horizontal scrolling below.
-                    const point = await paintPoint(input, offset);
-                    const box = await input.boundingBox();
-                    if (point.x >= box!.x + box!.width - 12) continue;
-                    await clickPaint(page, input, offset);
-                }
-                mkdirSync(SHOTS, { recursive: true });
-                await page.screenshot({ path: `${SHOTS}/caret-${theme}-${width}.png` });
-            });
-
-            test('native selection, replacement, Enter and undo keep text and caret', async ({ page }) => {
-                const { input, dialog } = await openEditor(page);
-                await input.fill('{\n  "value": "abcdef"\n}');
-                await clickPaint(page, input, 15);
-                await page.keyboard.press('Shift+ArrowRight');
-                await page.keyboard.press('Shift+ArrowRight');
-                await page.keyboard.press('Shift+ArrowRight');
-                expect(
-                    await input.evaluate((el: HTMLTextAreaElement) =>
-                        el.value.slice(el.selectionStart, el.selectionEnd)
-                    )
-                ).toBe('bcd');
-                await page.keyboard.insertText('XYZ');
-                await expect(input).toHaveValue('{\n  "value": "aXYZef"\n}');
-                await page.keyboard.press('ControlOrMeta+z');
-                await expect(input).toHaveValue('{\n  "value": "abcdef"\n}');
-                await page.keyboard.press('ControlOrMeta+Shift+z');
-                await expect(input).toHaveValue('{\n  "value": "aXYZef"\n}');
-                await input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(23, 23));
-                await page.keyboard.press('Enter');
-                await expect(input).toHaveValue('{\n  "value": "aXYZef"\n}\n');
-                await page.keyboard.press('ControlOrMeta+z');
-                await expect(input).toHaveValue('{\n  "value": "aXYZef"\n}');
-                await input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(22, 22));
-                await page.keyboard.press('Enter');
-                await expect(input).toHaveValue('{\n  "value": "aXYZef"\n\n}');
-                await input.fill('{\n  "value": 1\n}');
-                await input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(14, 14));
-                await page.keyboard.press('Enter');
-                await expect(input).toHaveValue('{\n  "value": 1\n  \n}');
-                expect(await input.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(17);
-                await page.keyboard.press('Tab');
-                await expect(dialog.getByRole('button', { name: FORMAT_JSON_LABEL })).toBeFocused();
-            });
-
-            test('select-all and partial selections keep the painted text readable under the highlight', async ({
-                page,
-                context,
-            }) => {
-                const { input } = await openEditor(page);
-                await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-                await input.fill(sample);
-                await input.focus();
-                const selection = () =>
-                    input.evaluate((el: HTMLTextAreaElement) => {
-                        const wash = getComputedStyle(el, '::selection').backgroundColor;
-                        const paint = getComputedStyle(el.parentElement!.querySelector('code')!);
-                        return { wash, ink: paint.color, hidden: paint.visibility === 'hidden' };
+            if (dark)
+                test('clicks land on painted characters across tokens and lines', async ({ page }) => {
+                    const { input } = await openEditor(page);
+                    await input.fill(sample);
+                    await input.scrollIntoViewIfNeeded();
+                    const metrics = await input.evaluate((el) => {
+                        const paint = el.parentElement!.querySelector('code')!;
+                        const properties = [
+                            'font-family',
+                            'font-size',
+                            'font-weight',
+                            'font-style',
+                            'line-height',
+                            'letter-spacing',
+                            'tab-size',
+                            'white-space',
+                        ];
+                        const read = (node: Element) =>
+                            properties.map((property) => getComputedStyle(node).getPropertyValue(property));
+                        return { input: read(el), paint: read(paint) };
                     });
-                const alpha = (color: string) => {
-                    const channels = /\/\s*([\d.]+)\s*\)|,\s*([\d.]+)\s*\)$/.exec(color);
-                    return channels ? Number(channels[1] ?? channels[2]) : 1;
-                };
-                mkdirSync(SHOTS, { recursive: true });
+                    expect(metrics.paint).toEqual(metrics.input);
+                    for (const offset of [0, 4, 12, 18, 26, 40, 48, 60, 95, 112, sample.length - 1]) {
+                        // Long lines on a phone are covered after horizontal scrolling below.
+                        const point = await paintPoint(input, offset);
+                        const box = await input.boundingBox();
+                        if (point.x >= box!.x + box!.width - 12) continue;
+                        await clickPaint(page, input, offset);
+                    }
+                    mkdirSync(SHOTS, { recursive: true });
+                    await page.screenshot({ path: `${SHOTS}/caret-${theme}-${width}.png` });
 
-                await input.press('ControlOrMeta+a');
-                const full = await selection();
-                // An opaque wash over the transparent textarea text would cover the glyphs painted
-                // beneath it; the selection must stay see-through.
-                expect(alpha(full.wash)).toBeGreaterThan(0);
-                expect(alpha(full.wash)).toBeLessThan(0.6);
-                expect(full.hidden).toBe(false);
-                await page.screenshot({ path: `${SHOTS}/select-all-${theme}-${width}.png` });
-                await expect(input).toHaveValue(sample);
-                await page.evaluate(() => navigator.clipboard.writeText(''));
-                await input.press('ControlOrMeta+c');
-                expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(sample);
-                await expect(input).toHaveValue(sample);
-
-                await clickPaint(page, input, 4);
-                for (let step = 0; step < 6; step++) await page.keyboard.press('Shift+ArrowRight');
-                expect(
-                    await input.evaluate((el: HTMLTextAreaElement) =>
-                        el.value.slice(el.selectionStart, el.selectionEnd)
-                    )
-                ).toBe('"model');
-                await page.screenshot({ path: `${SHOTS}/select-partial-${theme}-${width}.png` });
-
-                await input.press('ControlOrMeta+a');
-                await page.keyboard.insertText('{}');
-                await expect(input).toHaveValue('{}');
-                await input.press('ControlOrMeta+z');
-                await expect(input).toHaveValue(sample);
-                await clickPaint(page, input, 4);
-                await expect(page.locator('.json-editor-highlight code')).toHaveText(`${sample}\n `);
-            });
-
-            test('scrolling to all edges and replacing a scrolled draft keeps paint aligned', async ({ page }) => {
-                const { input, dialog } = await openEditor(page);
-                await input.fill(longConfig);
-                await input.evaluate((el: HTMLTextAreaElement) => {
-                    el.scrollTop = el.scrollHeight;
-                    el.scrollLeft = el.scrollWidth;
+                    // Mouse dragging selects the painted substring, and a double click selects a word.
+                    const text = '{\n  "x": "alpha beta"\n}';
+                    await input.fill(text);
+                    const start = text.indexOf('alpha');
+                    const from = await paintPoint(input, start);
+                    const to = await paintPoint(input, start + 5);
+                    await page.mouse.move(from.x, from.y);
+                    await page.mouse.down();
+                    await page.mouse.move(to.x, to.y, { steps: 8 });
+                    await page.mouse.up();
+                    expect(
+                        await input.evaluate((el: HTMLTextAreaElement) =>
+                            el.value.slice(el.selectionStart, el.selectionEnd)
+                        )
+                    ).toBe('alpha');
+                    await page.keyboard.insertText('gamma');
+                    await expect(input).toHaveValue(text.replace('alpha', 'gamma'));
+                    const word = await paintPoint(input, text.indexOf('beta') + 1);
+                    await page.mouse.dblclick(word.x, word.y);
+                    expect(
+                        await input.evaluate((el: HTMLTextAreaElement) =>
+                            el.value.slice(el.selectionStart, el.selectionEnd)
+                        )
+                    ).toBe('beta');
                 });
-                await expectScrollAligned(input);
-                const offset = longConfig.lastIndexOf('_59');
-                await clickPaint(page, input, offset);
-                await page.keyboard.type('X');
-                await expect(input).toHaveValue(`${longConfig.slice(0, offset)}X${longConfig.slice(offset)}`);
-                await expectScrollAligned(input);
-                await input.press(process.platform === 'darwin' ? 'Meta+ArrowUp' : 'Control+Home');
-                expect(await input.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(0);
-                await expectScrollAligned(input);
-                await clickPaint(page, input, 4);
-                await input.press(process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End');
-                await expectScrollAligned(input);
-                await dialog.getByLabel('Agent', { exact: true }).selectOption({ label: 'OpenCode' });
-                await expect(input).toHaveValue('{}');
-                await expectScrollAligned(input);
-                await dialog.getByLabel('Agent', { exact: true }).selectOption({ label: 'Claude Code' });
-                await expect(input).toHaveValue(`${longConfig.slice(0, offset)}X${longConfig.slice(offset)}`);
-                await expectScrollAligned(input);
-                await input.fill('{"x":1}');
-                await dialog.getByRole('button', { name: FORMAT_JSON_LABEL }).click();
-                await expect(input).toHaveValue('{\n  "x": 1\n}');
-                await expectScrollAligned(input);
-                await clickPaint(page, input, 4);
-            });
 
-            test('mouse dragging selects the painted substring and double click selects a word', async ({ page }) => {
-                const { input } = await openEditor(page);
-                const text = '{\n  "x": "alpha beta"\n}';
-                await input.fill(text);
-                const start = text.indexOf('alpha');
-                const from = await paintPoint(input, start);
-                const to = await paintPoint(input, start + 5);
-                await page.mouse.move(from.x, from.y);
-                await page.mouse.down();
-                await page.mouse.move(to.x, to.y, { steps: 8 });
-                await page.mouse.up();
-                expect(
-                    await input.evaluate((el: HTMLTextAreaElement) =>
-                        el.value.slice(el.selectionStart, el.selectionEnd)
-                    )
-                ).toBe('alpha');
-                await page.keyboard.insertText('gamma');
-                await expect(input).toHaveValue(text.replace('alpha', 'gamma'));
-                const word = await paintPoint(input, text.indexOf('beta') + 1);
-                await page.mouse.dblclick(word.x, word.y);
-                expect(
-                    await input.evaluate((el: HTMLTextAreaElement) =>
-                        el.value.slice(el.selectionStart, el.selectionEnd)
-                    )
-                ).toBe('beta');
-            });
+            if (dark && wide)
+                test('native selection, replacement, Enter, undo, paste and Unicode keep text and caret', async ({
+                    page,
+                    context,
+                }) => {
+                    const { input, dialog } = await openEditor(page);
+                    await input.fill('{\n  "value": "abcdef"\n}');
+                    await clickPaint(page, input, 15);
+                    await page.keyboard.press('Shift+ArrowRight');
+                    await page.keyboard.press('Shift+ArrowRight');
+                    await page.keyboard.press('Shift+ArrowRight');
+                    expect(
+                        await input.evaluate((el: HTMLTextAreaElement) =>
+                            el.value.slice(el.selectionStart, el.selectionEnd)
+                        )
+                    ).toBe('bcd');
+                    await page.keyboard.insertText('XYZ');
+                    await expect(input).toHaveValue('{\n  "value": "aXYZef"\n}');
+                    await page.keyboard.press('ControlOrMeta+z');
+                    await expect(input).toHaveValue('{\n  "value": "abcdef"\n}');
+                    await page.keyboard.press('ControlOrMeta+Shift+z');
+                    await expect(input).toHaveValue('{\n  "value": "aXYZef"\n}');
+                    await input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(23, 23));
+                    await page.keyboard.press('Enter');
+                    await expect(input).toHaveValue('{\n  "value": "aXYZef"\n}\n');
+                    await page.keyboard.press('ControlOrMeta+z');
+                    await expect(input).toHaveValue('{\n  "value": "aXYZef"\n}');
+                    await input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(22, 22));
+                    await page.keyboard.press('Enter');
+                    await expect(input).toHaveValue('{\n  "value": "aXYZef"\n\n}');
+                    await input.fill('{\n  "value": 1\n}');
+                    await input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(14, 14));
+                    await page.keyboard.press('Enter');
+                    await expect(input).toHaveValue('{\n  "value": 1\n  \n}');
+                    expect(await input.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(17);
+                    await page.keyboard.press('Tab');
+                    await expect(dialog.getByRole('button', { name: FORMAT_JSON_LABEL })).toBeFocused();
 
-            test('clipboard paste, Unicode, tabs, empty text and trailing newlines stay lossless', async ({
-                page,
-                context,
-            }) => {
-                const { input } = await openEditor(page);
-                await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-                const pasted = '{\n\t"text": "café 漢字 🙂",\n\t"n": 42\n}\n';
-                await input.fill('');
-                await expect(page.locator('.json-editor-gutter')).toHaveText('1');
-                await input.focus();
-                await page.evaluate((text) => navigator.clipboard.writeText(text), pasted);
-                await input.press('ControlOrMeta+v');
-                await expect(input).toHaveValue(pasted);
-                expect(await page.locator('.json-editor-gutter > span').count()).toBe(5);
-                await clickPaint(page, input, pasted.indexOf('café'));
-                await clickPaint(page, input, pasted.indexOf('漢字'));
-                await clickPaint(page, input, pasted.indexOf('42'));
-                await page.keyboard.insertText('7');
-                await expect(input).toHaveValue(pasted.replace('42', '742'));
-                await input.press('ControlOrMeta+z');
-                await expect(input).toHaveValue(pasted);
-            });
-
-            test('Enter fallback restores selection and composing Enter is left to the browser', async ({ page }) => {
-                const { input } = await openEditor(page);
-                const text = '{\n  "x": 12\n}';
-                await input.fill(text);
-                await input.evaluate((el: HTMLTextAreaElement) => {
-                    el.setSelectionRange(9, 11);
-                    document.execCommand = () => false;
+                    // Clipboard paste, Unicode, tabs, empty text and trailing newlines stay lossless.
+                    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+                    const pasted = '{\n\t"text": "café 漢字 🙂",\n\t"n": 42\n}\n';
+                    await input.fill('');
+                    await expect(page.locator('.json-editor-gutter')).toHaveText('1');
+                    await input.focus();
+                    await page.evaluate((text) => navigator.clipboard.writeText(text), pasted);
+                    await input.press('ControlOrMeta+v');
+                    await expect(input).toHaveValue(pasted);
+                    expect(await page.locator('.json-editor-gutter > span').count()).toBe(5);
+                    await clickPaint(page, input, pasted.indexOf('café'));
+                    await clickPaint(page, input, pasted.indexOf('漢字'));
+                    await clickPaint(page, input, pasted.indexOf('42'));
+                    await page.keyboard.insertText('7');
+                    await expect(input).toHaveValue(pasted.replace('42', '742'));
+                    await input.press('ControlOrMeta+z');
+                    await expect(input).toHaveValue(pasted);
                 });
-                await input.press('Enter');
-                await expect(input).toHaveValue('{\n  "x": \n  \n}');
-                expect(await input.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(12);
-                await page.keyboard.insertText('3');
-                await expect(input).toHaveValue('{\n  "x": \n  3\n}');
-                const composing = await input.evaluate((el) => {
-                    const event = new KeyboardEvent('keydown', {
-                        key: 'Enter',
-                        bubbles: true,
-                        cancelable: true,
-                        isComposing: true,
-                    });
-                    el.dispatchEvent(event);
-                    return event.defaultPrevented;
-                });
-                expect(composing).toBe(false);
-                await expect(input).toHaveValue('{\n  "x": \n  3\n}');
-            });
 
-            test('forced colors keep one readable editable layer and keyboard focus', async ({ page }) => {
-                const { input } = await openEditor(page);
-                await input.fill(sample);
-                await page.emulateMedia({ forcedColors: 'active' });
-                await expect(page.locator('.json-editor-highlight')).toBeHidden();
-                const colors = await input.evaluate((el) => {
-                    const css = getComputedStyle(el);
-                    return { text: css.color, caret: css.caretColor, background: css.backgroundColor };
-                });
-                expect(colors.text).not.toBe('rgba(0, 0, 0, 0)');
-                expect(colors.caret).not.toBe(colors.background);
-                await input.focus();
-                await input.press('ControlOrMeta+a');
-                await page.keyboard.insertText('{"n":2}');
-                await expect(input).toHaveValue('{"n":2}');
-                mkdirSync(SHOTS, { recursive: true });
-                await page.screenshot({ path: `${SHOTS}/forced-colors-${theme}-${width}.png` });
-            });
+            if (wide)
+                test('select-all and partial selections keep the painted text readable under the highlight', async ({
+                    page,
+                    context,
+                }) => {
+                    const { input } = await openEditor(page);
+                    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+                    await input.fill(sample);
+                    await input.focus();
+                    const selection = () =>
+                        input.evaluate((el: HTMLTextAreaElement) => {
+                            const wash = getComputedStyle(el, '::selection').backgroundColor;
+                            const paint = getComputedStyle(el.parentElement!.querySelector('code')!);
+                            return { wash, ink: paint.color, hidden: paint.visibility === 'hidden' };
+                        });
+                    const alpha = (color: string) => {
+                        const channels = /\/\s*([\d.]+)\s*\)|,\s*([\d.]+)\s*\)$/.exec(color);
+                        return channels ? Number(channels[1] ?? channels[2]) : 1;
+                    };
+                    mkdirSync(SHOTS, { recursive: true });
 
-            test('seeded gremlins click painted text, edit, navigate and delete without losing characters', async ({
-                page,
-            }) => {
-                test.setTimeout(60_000);
-                const { input } = await openEditor(page);
-                let expected = '{\n  "value": "abcdefghijklmnop",\n  "n": 123\n}';
-                await input.fill(expected);
-                let seed = 387;
-                const actions = [0, 0, 0, 0];
-                const random = () => {
-                    seed ^= seed << 13;
-                    seed ^= seed >>> 17;
-                    seed ^= seed << 5;
-                    return seed >>> 0;
-                };
-                for (let step = 0; step < 80; step++) {
-                    const offset = random() % expected.length;
-                    if (expected[offset] === '\n') continue;
+                    await input.press('ControlOrMeta+a');
+                    const full = await selection();
+                    // An opaque wash over the transparent textarea text would cover the glyphs painted
+                    // beneath it; the selection must stay see-through.
+                    expect(alpha(full.wash)).toBeGreaterThan(0);
+                    expect(alpha(full.wash)).toBeLessThan(0.6);
+                    expect(full.hidden).toBe(false);
+                    await page.screenshot({ path: `${SHOTS}/select-all-${theme}-${width}.png` });
+                    await expect(input).toHaveValue(sample);
+                    await page.evaluate(() => navigator.clipboard.writeText(''));
+                    await input.press('ControlOrMeta+c');
+                    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(sample);
+                    await expect(input).toHaveValue(sample);
+
+                    await clickPaint(page, input, 4);
+                    for (let step = 0; step < 6; step++) await page.keyboard.press('Shift+ArrowRight');
+                    expect(
+                        await input.evaluate((el: HTMLTextAreaElement) =>
+                            el.value.slice(el.selectionStart, el.selectionEnd)
+                        )
+                    ).toBe('"model');
+                    await page.screenshot({ path: `${SHOTS}/select-partial-${theme}-${width}.png` });
+
+                    await input.press('ControlOrMeta+a');
+                    await page.keyboard.insertText('{}');
+                    await expect(input).toHaveValue('{}');
+                    await input.press('ControlOrMeta+z');
+                    await expect(input).toHaveValue(sample);
+                    await clickPaint(page, input, 4);
+                    await expect(page.locator('.json-editor-highlight code')).toHaveText(`${sample}\n `);
+                });
+
+            if (dark)
+                test('scrolling to all edges and replacing a scrolled draft keeps paint aligned', async ({ page }) => {
+                    const { input, dialog } = await openEditor(page);
+                    await input.fill(longConfig);
                     await input.evaluate((el: HTMLTextAreaElement) => {
-                        el.scrollLeft = 0;
-                        el.scrollTop = 0;
+                        el.scrollTop = el.scrollHeight;
+                        el.scrollLeft = el.scrollWidth;
                     });
                     await expectScrollAligned(input);
-                    const point = await paintPoint(input, offset);
-                    const box = await input.boundingBox();
-                    if (point.x >= box!.x + box!.width - 12 || point.y >= box!.y + box!.height - 12) continue;
+                    const offset = longConfig.lastIndexOf('_59');
                     await clickPaint(page, input, offset);
-                    if (step % 5 === 0) {
-                        await input.press('ArrowRight');
-                        await input.press('ArrowLeft');
-                        expect(await input.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(offset);
-                    }
-                    const action = random() % 4;
-                    actions[action]!++;
-                    if (action === 0 && offset > 0) {
-                        await page.keyboard.press('Backspace');
-                        expected = expected.slice(0, offset - 1) + expected.slice(offset);
-                    } else if (action === 1) {
-                        await page.keyboard.press('Delete');
-                        expected = expected.slice(0, offset) + expected.slice(offset + 1);
-                    } else if (action === 2) {
-                        await page.keyboard.press('Shift+ArrowRight');
-                        await page.keyboard.type('q');
-                        expected = `${expected.slice(0, offset)}q${expected.slice(offset + 1)}`;
-                    } else {
-                        await page.keyboard.type('z');
-                        expected = `${expected.slice(0, offset)}z${expected.slice(offset)}`;
-                    }
-                    await expect(input, `seed 387, step ${step}, action ${action}`).toHaveValue(expected);
+                    await page.keyboard.type('X');
+                    await expect(input).toHaveValue(`${longConfig.slice(0, offset)}X${longConfig.slice(offset)}`);
                     await expectScrollAligned(input);
-                }
-                expect(actions.reduce((sum, count) => sum + count, 0)).toBeGreaterThan(35);
-                expect(actions.every((count) => count > 0)).toBe(true);
-                console.log(`gremlins seed=387 theme=${theme} width=${width} actions=${JSON.stringify(actions)}`);
-            });
+                    await input.press(process.platform === 'darwin' ? 'Meta+ArrowUp' : 'Control+Home');
+                    expect(await input.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(0);
+                    await expectScrollAligned(input);
+                    await clickPaint(page, input, 4);
+                    await input.press(process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End');
+                    await expectScrollAligned(input);
+                    await dialog.getByLabel('Agent', { exact: true }).selectOption({ label: 'OpenCode' });
+                    await expect(input).toHaveValue('{}');
+                    await expectScrollAligned(input);
+                    await dialog.getByLabel('Agent', { exact: true }).selectOption({ label: 'Claude Code' });
+                    await expect(input).toHaveValue(`${longConfig.slice(0, offset)}X${longConfig.slice(offset)}`);
+                    await expectScrollAligned(input);
+                    await input.fill('{"x":1}');
+                    await dialog.getByRole('button', { name: FORMAT_JSON_LABEL }).click();
+                    await expect(input).toHaveValue('{\n  "x": 1\n}');
+                    await expectScrollAligned(input);
+                    await clickPaint(page, input, 4);
+                });
+
+            if (dark && wide)
+                test('Enter fallback restores selection and composing Enter is left to the browser', async ({
+                    page,
+                }) => {
+                    const { input } = await openEditor(page);
+                    const text = '{\n  "x": 12\n}';
+                    await input.fill(text);
+                    await input.evaluate((el: HTMLTextAreaElement) => {
+                        el.setSelectionRange(9, 11);
+                        document.execCommand = () => false;
+                    });
+                    await input.press('Enter');
+                    await expect(input).toHaveValue('{\n  "x": \n  \n}');
+                    expect(await input.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(12);
+                    await page.keyboard.insertText('3');
+                    await expect(input).toHaveValue('{\n  "x": \n  3\n}');
+                    const composing = await input.evaluate((el) => {
+                        const event = new KeyboardEvent('keydown', {
+                            key: 'Enter',
+                            bubbles: true,
+                            cancelable: true,
+                            isComposing: true,
+                        });
+                        el.dispatchEvent(event);
+                        return event.defaultPrevented;
+                    });
+                    expect(composing).toBe(false);
+                    await expect(input).toHaveValue('{\n  "x": \n  3\n}');
+                });
+
+            if (dark && wide)
+                test('forced colors keep one readable editable layer and keyboard focus', async ({ page }) => {
+                    const { input } = await openEditor(page);
+                    await input.fill(sample);
+                    await page.emulateMedia({ forcedColors: 'active' });
+                    await expect(page.locator('.json-editor-highlight')).toBeHidden();
+                    const colors = await input.evaluate((el) => {
+                        const css = getComputedStyle(el);
+                        return { text: css.color, caret: css.caretColor, background: css.backgroundColor };
+                    });
+                    expect(colors.text).not.toBe('rgba(0, 0, 0, 0)');
+                    expect(colors.caret).not.toBe(colors.background);
+                    await input.focus();
+                    await input.press('ControlOrMeta+a');
+                    await page.keyboard.insertText('{"n":2}');
+                    await expect(input).toHaveValue('{"n":2}');
+                    mkdirSync(SHOTS, { recursive: true });
+                    await page.screenshot({ path: `${SHOTS}/forced-colors-${theme}-${width}.png` });
+                });
+
+            if (dark && wide)
+                test('seeded gremlins click painted text, edit, navigate and delete without losing characters', async ({
+                    page,
+                }) => {
+                    test.setTimeout(60_000);
+                    const { input } = await openEditor(page);
+                    let expected = '{\n  "value": "abcdefghijklmnop",\n  "n": 123\n}';
+                    await input.fill(expected);
+                    let seed = 387;
+                    const actions = [0, 0, 0, 0];
+                    const random = () => {
+                        seed ^= seed << 13;
+                        seed ^= seed >>> 17;
+                        seed ^= seed << 5;
+                        return seed >>> 0;
+                    };
+                    for (let step = 0; step < 80; step++) {
+                        const offset = random() % expected.length;
+                        if (expected[offset] === '\n') continue;
+                        await input.evaluate((el: HTMLTextAreaElement) => {
+                            el.scrollLeft = 0;
+                            el.scrollTop = 0;
+                        });
+                        await expectScrollAligned(input);
+                        const point = await paintPoint(input, offset);
+                        const box = await input.boundingBox();
+                        if (point.x >= box!.x + box!.width - 12 || point.y >= box!.y + box!.height - 12) continue;
+                        await clickPaint(page, input, offset);
+                        if (step % 5 === 0) {
+                            await input.press('ArrowRight');
+                            await input.press('ArrowLeft');
+                            expect(await input.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(offset);
+                        }
+                        const action = random() % 4;
+                        actions[action]!++;
+                        if (action === 0 && offset > 0) {
+                            await page.keyboard.press('Backspace');
+                            expected = expected.slice(0, offset - 1) + expected.slice(offset);
+                        } else if (action === 1) {
+                            await page.keyboard.press('Delete');
+                            expected = expected.slice(0, offset) + expected.slice(offset + 1);
+                        } else if (action === 2) {
+                            await page.keyboard.press('Shift+ArrowRight');
+                            await page.keyboard.type('q');
+                            expected = `${expected.slice(0, offset)}q${expected.slice(offset + 1)}`;
+                        } else {
+                            await page.keyboard.type('z');
+                            expected = `${expected.slice(0, offset)}z${expected.slice(offset)}`;
+                        }
+                        await expect(input, `seed 387, step ${step}, action ${action}`).toHaveValue(expected);
+                        await expectScrollAligned(input);
+                    }
+                    expect(actions.reduce((sum, count) => sum + count, 0)).toBeGreaterThan(35);
+                    expect(actions.every((count) => count > 0)).toBe(true);
+                    console.log(`gremlins seed=387 theme=${theme} width=${width} actions=${JSON.stringify(actions)}`);
+                });
         });
     }
 }

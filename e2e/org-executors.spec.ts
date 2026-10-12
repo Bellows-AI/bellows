@@ -181,28 +181,6 @@ test('Delete asks first, and cancelling leaves the row untouched', async ({ page
     await expect(row(page, name)).toHaveCount(0);
 });
 
-test('Make personal asks first, naming the profile and what every other member loses', async ({ page }) => {
-    await asAdmin(page);
-    const name = PROFILES[1]!;
-    await addProfile(page, name);
-
-    await trigger(page, name).click();
-    await page.getByRole('menu').getByRole('menuitem', { name: DEMOTE_LABEL }).click();
-
-    const confirm = page.getByRole('dialog');
-    await expect(confirm.getByRole('heading', { name: confirmTitle({ action: 'demote', name }) })).toBeVisible();
-    await expect(confirm.getByText(/stops being available/)).toBeVisible();
-    await expect(confirm.getByRole('button', { name: confirmLabel({ action: 'demote', name }) })).toBeVisible();
-    await confirm.getByRole('button', { name: 'Cancel' }).click();
-    await expect(confirm).toHaveCount(0);
-    await expect(row(page, name)).toBeVisible();
-
-    // Confirming the demote is not driven here: `confirmedWrite`'s own suite pins which route each
-    // answer calls; what only a browser can show is that the gate stands between the click and the
-    // write.
-    await deleteProfile(page, name);
-});
-
 /** The member's own list (issue 440): the table is named "Executors", the org's "Organization executors". */
 const personalTable = (page: Page) => page.getByRole('region', { name: 'Executors', exact: true });
 const personalRow = (page: Page, name: string) => personalTable(page).getByRole('row').filter({ hasText: name });

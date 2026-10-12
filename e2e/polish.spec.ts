@@ -5,7 +5,8 @@ import type { Locator, Page } from '@playwright/test';
  * The application-wide interaction, contrast, and motion check (issue 189): the rendered values
  * the static stylesheet contracts can only describe. WCAG ratios are computed in the browser
  * from computed rgb() values — no Node-side reimplementation of the token recipes — and the
- * motion, focus and target measurements run in both themes by flipping `data-theme` on <html>.
+ * focus measurements run in both themes by flipping `data-theme` on <html>. Reduced motion is
+ * matrix.spec.ts's.
  * Runs on the open board (AUTH_MODE=none, seeded offline server) beside navigation.spec.ts.
  */
 
@@ -181,22 +182,6 @@ async function measureComposite(page: Page, [label, text, layers]: Composite): P
     return ratio;
 }
 
-/** A running dot to observe: a real one when the seed has a live run, otherwise one injected
- * into the sidenav — the class is what carries the animation, whatever rendered it. */
-async function runningDot(page: Page): Promise<Locator> {
-    let dot = page.locator('.sidenav-dot-running').first();
-    if ((await dot.count()) === 0) {
-        await page.locator('.sidenav').waitFor({ state: 'attached' });
-        await page.evaluate(() => {
-            const injected = document.createElement('span');
-            injected.className = 'sidenav-dot-running';
-            document.querySelector('.sidenav')?.appendChild(injected);
-        });
-        dot = page.locator('.sidenav-dot-running').first();
-    }
-    return dot;
-}
-
 async function assertRing(target: Locator, label: string) {
     await target.focus();
     const ring = await target.evaluate((el) => {
@@ -272,18 +257,6 @@ test.describe('polish (issue 189)', () => {
             await assertRing(page.locator('.inbox-tab').first(), 'inbox tab');
         });
     }
-
-    test('reduced motion stills the lamp and keeps the state text', async ({ page }) => {
-        // Default motion first: the lamp is the one ambient animation, so it must be running.
-        await page.goto('/tasks');
-        expect(await (await runningDot(page)).evaluate((el) => getComputedStyle(el).animationName)).toBe('lamp');
-
-        await page.emulateMedia({ reducedMotion: 'reduce' });
-        await page.goto('/tasks');
-        expect(await (await runningDot(page)).evaluate((el) => getComputedStyle(el).animationName)).toBe('none');
-        // The stilling keeps the textual state: the sidenav count line reads the live sections.
-        await expect(page.locator('.sidenav-section').first()).toBeVisible();
-    });
 
     test('controls clear 44px at 390px', async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 800 });
