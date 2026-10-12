@@ -92,7 +92,10 @@ Each report task carries `waitReason`, `attention` and `next` — the one suppor
 what `next.action` says and nothing else:
 
 - `merge` — a `human` stage PR at `next.url` needs review and merge **by a person**. List the URLs
-  for the user. The board verifies the merge itself and continues; never merge for them.
+  for the user. The board verifies the merge itself and continues; never merge for them. Passing
+  checks are not the task's `acceptance`: compare each PR's changed files with it
+  (`gh pr view <url> --json files`) and name any file outside it — a repair that fixed its
+  failing gate may have reached past the task.
 - `answer` — the agent asked a question (`next.path` names the job and question). Relay it to the
   user (`npm run dev -w cli -- job questions <job>` shows its prompts), then send their answer with
   `npm run dev -w cli -- job answer <job> <question> --answer <text>`, one `--answer` per prompt
