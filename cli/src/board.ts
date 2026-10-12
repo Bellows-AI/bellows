@@ -63,6 +63,8 @@ export interface BoardJobRecord {
     sessionId: string | null;
     exitCode: number | null;
     failureKind: string | null;
+    /** Beside a `gate`, `publish` or `helper` kind: what caused it (#581), which batch recovery decides on. */
+    failureCause: string | null;
     summary: string | null;
     gates: readonly { name: string; status: string; exitCode?: number | null; output?: string | null }[] | null;
     output: string | null;

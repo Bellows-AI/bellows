@@ -23,6 +23,7 @@ const job = (overrides: Record<string, unknown> = {}) => ({
     output: 'line one\nline two',
     summary: 'started looking at auth',
     failureKind: null,
+    failureCause: null,
     gates: [{ name: 'lint', status: 'passed', exitCode: 0, output: null }],
     runtime: null,
     repo: 'owner/name',
@@ -254,6 +255,19 @@ describe('factory job investigate', () => {
 
         expect(code).toBe(0);
         expect(out.join('')).toMatch(/scope:\s+org/);
+    });
+
+    it('prints a failure cause beside its kind, the half a batch recovery decides on', async () => {
+        const detail = job({ status: 'failed', failureKind: 'gate', failureCause: 'verification' });
+        const kindOnly = job({ status: 'failed', failureKind: 'timeout' });
+        const caused = harness(ENV, (index) => (index === 0 ? json(detail) : json({ jobs: [detail] })));
+        const plain = harness(ENV, (index) => (index === 0 ? json(kindOnly) : json({ jobs: [kindOnly] })));
+
+        await run(['job', 'investigate', 'job-1'], caused.io);
+        await run(['job', 'investigate', 'job-1'], plain.io);
+
+        expect(caused.out.join('')).toMatch(/failure:\s+gate \(cause verification\)/);
+        expect(plain.out.join('')).toMatch(/failure:\s+timeout\n/);
     });
 
     it('prints the task mode in the detail block', async () => {
