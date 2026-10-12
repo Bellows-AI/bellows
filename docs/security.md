@@ -28,6 +28,8 @@ Credentials: [auth.md](auth.md) · cluster: [kubernetes.md](kubernetes.md) · mo
   `GITHUB_OAUTH_CLIENT_SECRET`, `SESSION_SECRET`, `INGEST_TOKEN`, `GITHUB_WEBHOOK_SECRET`, `JOB_BOARD_TOKEN`.
 - **Required App installation permissions: `Metadata: read`, `Contents: read`**; committing runners need
   `Contents: write`, `Pull requests: write`, `Actions: read`, and `RUNNER_TOKEN_PERMISSIONS` beyond the grant is a 422.
+  Batch PR observation also reads `Checks: read` and `Commit statuses: read`, and subscribes to `check_run`,
+  `check_suite` and `status`; without them a PR's checks read as missing or unknown, never as passing.
 - **Keep `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, `OTEL_LOG_TOOL_DETAILS` at `0`**: that content
   arrives as the log record *body*. The collector binds 4317/4318 to `127.0.0.1`, open unless `auth.ingest_token`.
 - Runner env values are plaintext at rest ([env.md](env.md)).

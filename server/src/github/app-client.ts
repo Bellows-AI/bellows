@@ -1,6 +1,7 @@
+import { READ_TRANSPORT, type PrFacts } from '@factory-ai/core';
 import type { GitHubConfig, Repo } from '../config.js';
-import { GitHubAppError } from './app-token.js';
 import type { InstallationTokenProvider } from './app-token.js';
+import { classifyReadFailure, GitHubReadError, readPullRequest } from './pr-read.js';
 
 /**
  * What the App installation reports it can see. This replaced ORG_REPOS: the credential and the
@@ -37,6 +38,12 @@ export interface GitHubAppClient {
      * not with the installation token this client holds, so reaching for it here would 403.
      */
     listRepositories(): Promise<InstallationListing>;
+    /**
+     * One PR's state, head, target, required contexts and checks (docs/batches.md). Rejects with a
+     * `GitHubReadError` whose `kind` says why nothing was read; never resolves for a PR the
+     * installation cannot see or that belongs to another repository.
+     */
+    readPullRequest(repo: string, number: number): Promise<PrFacts>;
 }
 
 /**
@@ -47,6 +54,11 @@ const MAX_PAGES = 100;
 
 /** GitHub's page size for the repositories listing — the standard, and the largest, `per_page`. */
 const PAGE_SIZE = 100;
+
+const REQUEST_TIMEOUT_MS = 20_000;
+
+/** Rulesets change rarely; reading them on every 60 s poll would spend the installation's rate limit. */
+const RULES_TTL_MS = 300_000;
 
 /** How much of a failed response's body is worth quoting back in the thrown error. */
 const ERROR_DETAIL_LIMIT = 200;
@@ -62,7 +74,8 @@ interface RepoPayload {
 export function createGitHubAppClient(
     github: Extract<GitHubConfig, { mode: 'app' }>,
     tokens: InstallationTokenProvider,
-    fetchFn: typeof fetch = fetch
+    fetchFn: typeof fetch = fetch,
+    now: () => number = Date.now
 ): GitHubAppClient {
     const call = async (path: string): Promise<unknown> => {
         const response = await fetchFn(`${github.apiUrl}${path}`, {
@@ -72,12 +85,25 @@ export function createGitHubAppClient(
                 // GitHub rejects an API request with no User-Agent outright.
                 'user-agent': 'factory-ai',
             },
+            // Well under the observation lease: a stalled request must fail as transport, not hold a pass.
+            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
         if (!response.ok) {
             const detail = (await response.text().catch(() => '')).slice(0, ERROR_DETAIL_LIMIT);
-            throw new GitHubAppError(`GET ${path} failed with ${response.status}${detail ? `: ${detail}` : ''}`);
+            throw classifyReadFailure(path, { status: response.status, headers: response.headers, detail }, now());
         }
         return response.json();
+    };
+
+    // Only successful ruleset answers are kept; a failure is asked again next time.
+    const rules = new Map<string, { at: number; body: unknown }>();
+    const cachedCall = async (path: string): Promise<unknown> => {
+        if (!path.includes('/rules/branches/')) return call(path);
+        const hit = rules.get(path);
+        if (hit && now() - hit.at < RULES_TTL_MS) return hit.body;
+        const body = await call(path);
+        rules.set(path, { at: now(), body });
+        return body;
     };
 
     /**
@@ -131,6 +157,16 @@ export function createGitHubAppClient(
     };
 
     return {
+        async readPullRequest(repo, number) {
+            try {
+                return await readPullRequest(cachedCall, repo, number);
+            } catch (e) {
+                // A dropped connection or a token mint that failed is the provider being unreachable.
+                if (e instanceof GitHubReadError) throw e;
+                throw new GitHubReadError((e as Error).message, READ_TRANSPORT);
+            }
+        },
+
         async listRepositories() {
             const { repos, selection } = await fetchInstallationRepos();
 
