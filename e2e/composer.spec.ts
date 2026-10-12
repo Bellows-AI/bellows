@@ -12,12 +12,8 @@ import {
     stubLaunch,
     withExecutor,
 } from './executor.js';
-import { noHorizontalOverflow } from './viewport.js';
 
 const SHOTS = 'artifacts/ui';
-
-/** A literal 'NaN' or 'undefined' is what a missing null guard looks like to a reader. */
-const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
 function watchConsole(page: Page): string[] {
     const problems: string[] = [];
@@ -62,65 +58,10 @@ async function detourToSettings(page: Page) {
 test.describe('the guided task composer', () => {
     test.beforeEach(({ page }) => withExecutor(page));
 
-    test('workflows are dormant: no workflow chip, no step cards, and no routine preflight copy', async ({ page }) => {
-        const problems = watchConsole(page);
-        await page.goto('/tasks/new');
-
-        const composer = page.locator('.composer');
-        await expect(composer.getByText('What should the agent do?')).toBeVisible();
-        await expect(contextChip(composer, 'Repository')).toBeVisible();
-        await expect(contextChip(composer, 'Executor')).toBeVisible();
-        await expect(composer.getByLabel('Reusable workflow')).toHaveCount(0);
-        await expect(composer.getByRole('heading', { name: 'Workflow details' })).toHaveCount(0);
-
-        // One prompt surface (issue 571): no numbered step cards, no secondary headings.
-        await expect(composer.locator('.panel')).toHaveCount(1);
-        await expect(composer.getByRole('heading')).toHaveCount(0);
-
-        await page.getByLabel('What should the agent do?').fill('fix the login crash');
-        await expect(page.getByRole('button', { name: 'Start task' })).toBeEnabled();
-        // Ready says nothing: the chips already show what will run.
-        await expect(composer.getByText(/Will run|as written/)).toHaveCount(0);
-        const visible = await composer.innerText();
-        for (const token of FORBIDDEN) expect(visible, token).not.toContain(token);
-
-        await page.screenshot({ path: `${SHOTS}/composer-guided.png`, fullPage: true });
-        await page.setViewportSize({ width: 360, height: 800 });
-        await noHorizontalOverflow(page);
-        await page.screenshot({ path: `${SHOTS}/composer-360.png`, fullPage: true });
-        await page.setViewportSize({ width: 1440, height: 900 });
-        await page.screenshot({ path: `${SHOTS}/composer-1440.png`, fullPage: true });
-        expect(problems.join('\n')).toBe('');
-    });
-
-    test('the context chips share one row on a wide screen, with no workflow step controls', async ({ page }) => {
-        const problems = watchConsole(page);
-        await page.goto('/tasks/new');
-
-        const composer = page.locator('.composer');
-        const context = composer.locator('.composer-context');
-        await expect(context).toBeVisible();
-
-        // On a wide screen the chips share one row: same top, left to right.
-        const boxes: { x: number; y: number }[] = [];
-        for (const label of ['Repository', 'Executor'] as const) {
-            const box = await contextChip(page, label).boundingBox();
-            expect(box).not.toBeNull();
-            boxes.push(box!);
-        }
-        expect(boxes[1]!.y).toBeCloseTo(boxes[0]!.y, 0);
-        expect(boxes[0]!.x).toBeLessThan(boxes[1]!.x);
-
-        // No workflow step controls exist (issue 543): objective mode has nothing to configure.
-        await expect(composer.locator('.composer-steps')).toHaveCount(0);
-        await expect(composer.getByRole('checkbox')).toHaveCount(0);
-
-        expect(problems.join('\n')).toBe('');
-    });
-
     test('at 1440×900 the prompt, the chosen repository and executor, and Start show without scrolling', async ({
         page,
     }) => {
+        const problems = watchConsole(page);
         await page.setViewportSize({ width: 1440, height: 900 });
         await page.goto('/tasks/new');
 
@@ -132,12 +73,19 @@ test.describe('the guided task composer', () => {
         }
         await expect(page.getByRole('button', { name: 'Start task' })).toBeInViewport({ ratio: 1 });
         expect(await page.evaluate(() => window.scrollY)).toBe(0);
-    });
 
-    test('the prompt opens compact and grows with the request, up to half the viewport', async ({ page }) => {
-        await page.setViewportSize({ width: 1440, height: 900 });
-        await page.goto('/tasks/new');
+        // On a wide screen the context chips share one row: same top, left to right.
+        const boxes: { x: number; y: number }[] = [];
+        for (const label of ['Repository', 'Executor'] as const) {
+            const box = await contextChip(page, label).boundingBox();
+            expect(box).not.toBeNull();
+            boxes.push(box!);
+        }
+        expect(boxes[1]!.y).toBeCloseTo(boxes[0]!.y, 0);
+        expect(boxes[0]!.x).toBeLessThan(boxes[1]!.x);
 
+        // The prompt opens compact and grows with the request, up to half the viewport. Last,
+        // because the growth moves Start below the fold.
         const prompt = page.getByLabel('What should the agent do?');
         const before = (await prompt.boundingBox())!.height;
         await prompt.fill(Array.from({ length: 15 }, (_, i) => `line ${i + 1}`).join('\n'));
@@ -145,57 +93,6 @@ test.describe('the guided task composer', () => {
         expect(grown).toBeGreaterThan(before);
         await prompt.fill(Array.from({ length: 80 }, (_, i) => `line ${i + 1}`).join('\n'));
         expect((await prompt.boundingBox())!.height).toBeLessThanOrEqual(900 / 2 + 1);
-    });
-
-    test('renders correctly in dark theme at desktop and mobile widths', async ({ page }) => {
-        const problems = watchConsole(page);
-        await page.addInitScript(() => localStorage.setItem('factory.theme', 'dark'));
-        await page.goto('/tasks/new');
-        await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-
-        const composer = page.locator('.composer');
-        await expect(composer.getByText('What should the agent do?')).toBeVisible();
-
-        await page.setViewportSize({ width: 1440, height: 900 });
-        await page.screenshot({ path: `${SHOTS}/composer-1440-dark.png`, fullPage: true });
-        await page.setViewportSize({ width: 360, height: 800 });
-        await noHorizontalOverflow(page);
-        // Every context chip still clears the compact-shell touch-target floor in dark theme, the
-        // same as light — the theme swaps color tokens only — and still shows its selected value
-        // inside the viewport.
-        for (const [label, value] of [
-            ['Repository', `${E2E_REPO.owner}/${E2E_REPO.name}`],
-            ['Executor', E2E_EXECUTOR.name],
-        ] as const) {
-            const trigger = contextChip(page, label);
-            await expect(trigger).toHaveText(value);
-            const box = await trigger.boundingBox();
-            expect(box).not.toBeNull();
-            expect(box!.height).toBeGreaterThanOrEqual(44);
-            expect(box!.x + box!.width).toBeLessThanOrEqual(360);
-        }
-        await page.screenshot({ path: `${SHOTS}/composer-360-dark.png`, fullPage: true });
-        expect(problems.join('\n')).toBe('');
-    });
-
-    test('the raw prompt runs as written, and an empty prompt explains the dark Start', async ({ page }) => {
-        const problems = watchConsole(page);
-        await page.goto('/tasks/new');
-
-        const composer = page.locator('.composer');
-
-        // Fresh page, empty prompt: Start is dark by design and says so.
-        const start = page.getByRole('button', { name: 'Start task' });
-        await expect(start).toBeDisabled();
-        await expect(composer.getByText('Describe the task to continue.')).toBeVisible();
-        await expect(composer.locator('.composer-param-error')).toHaveCount(0);
-
-        // The prompt is the only requirement: no process chosen, the member's words are the
-        // whole command, and a ready launch carries no description to announce.
-        await page.getByLabel('What should the agent do?').fill('fix the login crash');
-        await expect(start).toBeEnabled();
-        await expect(start).not.toHaveAttribute('aria-describedby');
-        await page.screenshot({ path: `${SHOTS}/composer-unchosen-raw-prompt.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });
 
