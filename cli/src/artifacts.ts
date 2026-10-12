@@ -9,7 +9,7 @@ import { BoardError, MALFORMED_RESPONSE_CODE } from './transport.js';
 
 /**
  * The complete retrieval of one stored artifact: every page in order, or a failure — never a
- * partial artifact presented as whole. The attempt is pinned to the first page's, so a newer
+ * partial artifact presented as a whole. The attempt is pinned to the first page's, so a newer
  * attempt landing mid-read cannot splice two runs together, and the total must hold still.
  */
 
