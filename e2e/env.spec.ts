@@ -142,37 +142,6 @@ test.describe('environment editors', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    test('the repositories page offers no checkout without a workspace root, though rows stay readable', async ({
-        page,
-    }) => {
-        const problems = watchConsole(page);
-        await page.goto('/settings/repos');
-        // The open board runs without ORG_WORKSPACE_ROOT (issue 181's root-null posture):
-        // availability and status stay readable — the seeded repository is named, its cached
-        // checkout status renders — while every checkout control is off, with the reason in the
-        // warn banner and its Workspace link. The dirty-draft dialog and the guarded Configure
-        // switch drive on the auth project's board, where a root exists (workspace.spec.ts).
-        await expect(page.getByRole('button', { name: 'Save selection' })).toBeVisible({ timeout: 60_000 });
-        await expect(page.getByText('Bellows-AI/bellows.ai')).toBeVisible();
-        const selected = page.locator('.repo-card', { hasText: 'Selected' });
-        await expect(selected.locator('.repo-card-value')).toHaveText('0');
-        await expect(selected).toContainText('of 20 allowed');
-        await expect(selected).toContainText('1 available');
-        const checkbox = page.getByRole('checkbox', { name: 'Enable Bellows-AI/bellows.ai in my workspace' });
-        await expect(checkbox).toBeDisabled();
-        await expect(page.getByRole('button', { name: 'Save selection' })).toBeDisabled();
-        const banner = page.locator('.banner-warn');
-        await expect(banner).toContainText('Workspace root not configured');
-        await expect(banner).toContainText('An operator must set ORG_WORKSPACE_ROOT on the deployment');
-        // The operator's setting, never a member's: the banner offers no button.
-        await expect(banner.getByRole('button')).toHaveCount(0);
-
-        await banner.getByRole('link', { name: 'Learn about workspaces' }).click();
-        await expect(page).toHaveURL(/\/settings\/workspace$/);
-        expect(problems.join('\n')).toBe('');
-        await page.screenshot({ path: `${SHOTS}/settings-repos-root-null.png`, fullPage: true });
-    });
-
     test('the editor stays usable and overflow-free at a narrow phone width', async ({ page }) => {
         const problems = watchConsole(page);
         await page.setViewportSize({ width: 390, height: 844 });

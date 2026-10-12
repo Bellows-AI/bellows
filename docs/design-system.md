@@ -12,7 +12,7 @@ never utilities, and every color it renders resolves through a token.
 | Shared primitives (shell, panels, pills, fields, buttons, selectors, dialogs, tables) | `web/src/styles/primitives.css` | `e2e/polish.spec.ts` |
 | A lane's own rules | `web/src/styles/regions/<lane>.css` | `web/test/styles.test.ts` |
 | Shell-wide 44px compact targets | `web/src/styles/touch-targets.css` | `e2e/matrix.spec.ts` |
-| Reduced motion, forced colors (unlayered) | `web/src/styles/platform.css` | `e2e/matrix.spec.ts` |
+| Reduced motion, forced colors (unlayered) | `web/src/styles/platform.css` | `e2e/matrix.spec.ts`, `e2e/polish.spec.ts` |
 | Theme preference, `data-theme`, pre-paint bootstrap | `web/src/theme.tsx`, `web/public/theme-bootstrap.js` | `web/test/theme.test.tsx` |
 | Appearance control | `web/src/components/ThemeSelector.tsx` | `e2e/auth.spec.ts` (`e2e/appearance.ts`) |
 | Downward-only popover anchoring | `web/src/anchor.ts` | `web/test/anchor.test.ts` |
@@ -22,7 +22,7 @@ never utilities, and every color it renders resolves through a token.
 | Shell, sidenav, drawer | `web/src/components/AppShell.tsx`, `SideNav.tsx`, `MobileNavDialog.tsx` | `web/test/shell.test.tsx`, `web/test/navigation.dom.test.tsx`, `web/test/sidenav.test.tsx`, `web/test/mobile-nav.test.tsx` |
 | Component interaction under jsdom + Testing Library (the `dom` project) | `web/test/dom.tsx`, `vitest.config.ts` | `web/test/*.dom.test.tsx` |
 | Primitive-state reference sheet | `e2e/specimen/main.tsx`, `e2e/specimen/specimen.css` | `e2e/specimen.spec.ts` |
-| Every route family × 5 widths × 2 themes | — | `e2e/matrix.spec.ts` |
+| Every route family's overflow at 4 widths in one theme; rendered contrast in both themes | — | `e2e/matrix.spec.ts` |
 
 ## Invariants
 

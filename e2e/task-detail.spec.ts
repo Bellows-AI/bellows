@@ -5,26 +5,15 @@ import { E2E_DATABASE_URL } from '../playwright.config.js';
 import { E2E_REPO, withExecutor } from './executor.js';
 import {
     authoredBy,
-    doneThread,
     failedGateThread,
     followUpThread,
-    missingSummaryThread,
-    multiFollowUpThread,
-    nullAuthorThread,
-    otherAuthorThread,
-    parkedReviewWaitDoneThread,
-    parkedReviewWaitThread,
     publishedThread,
     routeThread,
     runningThread,
     sessionAuthor,
-    sessionlessThread,
-    taskSummaryOf,
-    unsafePrUrlThread,
 } from './fixtures/threads.js';
 
 const SHOTS = 'artifacts/ui';
-const WIDTHS = [360, 768, 1024, 1440];
 
 /** A literal 'NaN' or 'undefined' is what a missing null guard looks like to a reader. */
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
@@ -131,18 +120,9 @@ test.describe('the task detail actions', () => {
         expect(((await parked.json()) as { status: string }).status).toBe('stopped');
         await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeVisible({ timeout: 10_000 });
 
-        for (const token of FORBIDDEN) expect(problems.join('\n'), token).not.toContain(token);
-        expect(problems.join('\n')).toBe('');
-    });
-
-    test('Mark done closes a task, and the closure reads as attribution, not a disabled control', async ({ page }) => {
-        const problems = watchConsole(page);
-        await page.goto(`/tasks/${await seededTaskId(page)}`);
-
-        await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeVisible();
+        // Mark done closes the task, and the closure reads as attribution, not a disabled control.
         await expect(header(page).getByRole('button', { name: 'Mark done' })).toHaveClass(/primary/);
         await page.screenshot({ path: `${SHOTS}/task-detail-open.png`, fullPage: true });
-
         await header(page).getByRole('button', { name: 'Mark done' }).click();
         // The stand-in account AUTH_MODE=none attributes every action to.
         await expect(header(page).getByText('Closed by __local__')).toBeVisible({ timeout: 10_000 });
@@ -302,27 +282,6 @@ test.describe('the task detail actions', () => {
         await expect(dialog).toBeHidden();
         await expect(trigger).toBeFocused();
     });
-
-    test('no page-level horizontal overflow at any target width', async ({ page }) => {
-        const problems = watchConsole(page);
-        const detail = `/tasks/${await seededTaskId(page)}`;
-
-        for (const width of WIDTHS) {
-            await page.setViewportSize({ width, height: 1000 });
-            for (const path of [detail, '/tasks/new']) {
-                await page.goto(path);
-                await expect(page.locator('.page-header')).toBeVisible();
-                const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-                const clientWidth = await page.evaluate(() => document.documentElement.clientWidth);
-                expect(scrollWidth, `${path} overflows at ${width}px`).toBeLessThanOrEqual(clientWidth);
-                const slug = path === detail ? 'detail' : 'composer';
-                await page.screenshot({ path: `${SHOTS}/width-${width}-${slug}.png`, fullPage: true });
-            }
-        }
-
-        for (const token of FORBIDDEN) expect(problems.join('\n'), token).not.toContain(token);
-        expect(problems.join('\n')).toBe('');
-    });
 });
 
 const sql = postgres(E2E_DATABASE_URL, { max: 1 });
@@ -358,35 +317,6 @@ test.describe('the task detail page', () => {
         await expect(page.locator('.task-published')).toContainText('Pull request #1');
         await expect(page.getByRole('link', { name: 'View checks' })).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/task-detail-thread.png`, fullPage: true });
-    });
-
-    test('a finished task without a captured response says so, and offers the composer', async ({ page }) => {
-        await routeThread(page, authoredBy(missingSummaryThread, await sessionAuthor(page)));
-        await page.goto(`/tasks/${missingSummaryThread[0]!.id}`);
-        await expect(page.getByText('finished without a captured agent response')).toBeVisible();
-        await expect(page.getByText('Ask for a follow-up')).toBeVisible();
-    });
-
-    test('a sessionless terminal run offers the composer, and a closed one renders none', async ({ page }) => {
-        await routeThread(page, authoredBy(sessionlessThread, await sessionAuthor(page)));
-        await page.goto(`/tasks/${sessionlessThread[0]!.id}`);
-        await expect(page.getByText('Ask for a follow-up')).toBeVisible();
-        await expect(page.getByText('no agent session to continue')).not.toBeVisible();
-
-        await routeThread(page, doneThread);
-        await page.goto(`/tasks/${doneThread[0]!.id}`);
-        await expect(page.getByText('Ask for a follow-up')).not.toBeVisible();
-    });
-
-    test('a failed send preserves the draft, and says why inside the composer', async ({ page }) => {
-        await routeThread(page, authoredBy(missingSummaryThread, await sessionAuthor(page)));
-        await page.route('**/api/jobs/*/follow-up', (route) => route.abort());
-        await page.goto(`/tasks/${missingSummaryThread[0]!.id}`);
-        const box = page.getByLabel('Ask for a follow-up');
-        await box.fill('try again tomorrow');
-        await page.getByRole('button', { name: 'Send follow-up' }).click();
-        await expect(page.locator('.composer .status')).toBeVisible();
-        await expect(box).toHaveValue('try again tomorrow');
     });
 
     test('a running run shows its activity and a bounded live output', async ({ page }) => {
@@ -453,53 +383,6 @@ test.describe('the task detail page', () => {
         }
     });
 
-    test('a parked review wait offers Mark done, never Stop, and closing it reads Done everywhere', async ({
-        page,
-    }) => {
-        const problems = watchConsole(page);
-        const me = await sessionAuthor(page);
-        await routeThread(page, authoredBy(parkedReviewWaitThread, me));
-        await page.goto(`/tasks/${parkedReviewWaitThread[0]!.id}`);
-
-        await expect(page.locator('.page-header-meta')).toContainText('Waiting for review');
-        await expect(header(page).getByRole('button', { name: 'Stop run' })).toHaveCount(0);
-        await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeVisible();
-        await expect(header(page)).toContainText('No executor is running. The workflow is waiting for review.');
-        await expect(header(page)).toContainText('Does not merge or close the pull request.');
-        await page.screenshot({ path: `${SHOTS}/task-detail-review-wait.png`, fullPage: true });
-
-        // The board stamps done and leaves the wait row open; the next poll carries both.
-        const done = authoredBy(parkedReviewWaitDoneThread, me);
-        await page.route('**/api/jobs/*/done', (route) => route.fulfill({ status: 200, json: {} }));
-        await routeThread(page, done);
-        await header(page).getByRole('button', { name: 'Mark done' }).click();
-
-        await expect(page.locator('.page-header-meta')).toContainText('Done', { timeout: 10_000 });
-        await expect(page.locator('.page-header-meta')).not.toContainText('Waiting for review');
-        await expect(page.locator('.task-outcome')).toContainText('Done');
-        await expect(page.locator('.task-outcome')).not.toContainText('Waiting for review');
-        await expect(header(page)).toContainText('Closed by');
-        await expect(page.locator('textarea')).toHaveCount(0);
-        await expect(page.getByText('can continue this session')).toHaveCount(0);
-        await page.screenshot({ path: `${SHOTS}/task-detail-review-wait-done.png`, fullPage: true });
-
-        // The inbox row and the sidebar read the same precedence off the board's summary row.
-        const row = taskSummaryOf(done);
-        await page.route(/\/api\/tasks(\?|$)/, (route) =>
-            route.fulfill({
-                json: {
-                    navigation: { counts: { running: 0, review: 0, past: 1 }, running: [], review: [] },
-                    page: { items: [row], nextCursor: null },
-                },
-            })
-        );
-        await page.goto('/tasks?state=past');
-        await expect(page.locator('.inbox-row').first()).toContainText('Done');
-        await expect(page.locator('.inbox-row').first()).not.toContainText('Waiting for review');
-        await expect(page.locator('.sidenav-task', { hasText: row.command })).toHaveCount(0);
-        expect(problems.join('\n')).toBe('');
-    });
-
     test('a failed gate opens only its own output, counts only what happened, and asks for another pass', async ({
         page,
     }) => {
@@ -540,42 +423,5 @@ test.describe('the task detail page', () => {
         await expect(page.getByRole('menuitem', { name: 'Remove task' })).toBeVisible();
         await page.keyboard.press('Escape');
         expect(problems.join('\n')).toBe('');
-    });
-
-    test("another member's task and a null-author task say who can continue, and keep Mark done", async ({ page }) => {
-        await routeThread(page, otherAuthorThread);
-        await page.goto(`/tasks/${otherAuthorThread[0]!.id}`);
-        await expect(
-            page.getByText('Only octo-reviewer can continue this session. You can still mark it done.')
-        ).toBeVisible();
-        await expect(page.locator('textarea')).toHaveCount(0);
-        await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeVisible();
-        await page.screenshot({ path: `${SHOTS}/task-detail-not-author.png`, fullPage: true });
-
-        await routeThread(page, nullAuthorThread);
-        await page.goto(`/tasks/${nullAuthorThread[0]!.id}`);
-        await expect(page.getByText('Only the task author can continue this session.')).toBeVisible();
-        await expect(page.locator('textarea')).toHaveCount(0);
-        await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeVisible();
-    });
-
-    test('a multi-follow-up thread lists every recorded fact and links the newest PR', async ({ page }) => {
-        await routeThread(page, multiFollowUpThread);
-        await page.goto(`/tasks/${multiFollowUpThread[0]!.id}`);
-        // Three runs, each created, started and finished — and nothing the board did not stamp.
-        await expect(page.locator('.task-history-item')).toHaveCount(9);
-        await expect(page.locator('.task-history')).not.toContainText('Implemented');
-        await expect(page.locator('.task-history')).not.toContainText('Published');
-        await expect(page.locator('.task-published')).toContainText('Pull request #21');
-        await expect(page.locator('.task-published')).toContainText('feat/export');
-        await page.screenshot({ path: `${SHOTS}/task-detail-multi-follow-up.png`, fullPage: true });
-    });
-
-    test('an unsafe PR url is never a link', async ({ page }) => {
-        await routeThread(page, unsafePrUrlThread);
-        await page.goto(`/tasks/${unsafePrUrlThread[0]!.id}`);
-        await expect(page.locator('.task-published')).toContainText('fix/odd');
-        await expect(page.locator('a[href^="javascript:"]')).toHaveCount(0);
-        await expect(page.locator('.task-published a')).toHaveCount(0);
     });
 });

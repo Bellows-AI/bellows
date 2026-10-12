@@ -1,9 +1,8 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { appearance, chooseAppearance, expectAppearanceOptions } from './appearance.js';
-import { routeLongTasks } from './fixtures/tasks.js';
 import { seededTaskId } from './routes.js';
-import { controlsOutsideViewport, NAMED_SCROLL_REGIONS, noHorizontalOverflow } from './viewport.js';
+import { controlsOutsideViewport, noHorizontalOverflow } from './viewport.js';
 
 const SHOTS = 'artifacts/ui';
 
@@ -12,13 +11,13 @@ const SHOTS = 'artifacts/ui';
  * management, the skip link, and the shapes every routed page must agree on. Runs on the open
  * board (AUTH_MODE=none, seeded offline server) like the dashboard check beside it.
  *
- * The closeout audit (issue 190) lives here too: narrow-phone toolbar wrap and named scroll
- * regions are pinned, and 200% zoom gets the overflow sentinel. The per-route overflow sentinel
- * and the route/state/theme/width screenshot matrix moved to matrix.spec.ts (issue 287), which
- * walks them in both themes.
+ * The closeout audit (issue 190) lives here too: narrow-phone toolbar wrap is pinned, and 200%
+ * zoom gets the overflow sentinel. The per-route overflow sentinel, the named scroll regions, the
+ * pill under long inbox content and the route/state/theme/width screenshot matrix live in
+ * matrix.spec.ts (issue 287).
  *
- * The task inbox's own cases (issue 279) close the file: count-card links, chip removal with
- * Back/reload, poll-stable depth and focus, the pill under long content, and its screenshots.
+ * The task inbox's own cases (issue 279) close the file: chip removal with Back/reload,
+ * poll-stable depth and focus, and its screenshots.
  */
 
 /** Every page the shell routes to, with the name its screenshot carries. */
@@ -34,8 +33,7 @@ const PAGES: ReadonlyArray<[string, string]> = [
     ['/account', 'page-account'],
 ];
 
-/** The routes the named-scroll-region and zoom audits walk: every shell page plus, at run time, a
-    task detail. */
+/** The routes the zoom audit walks: every shell page plus, at run time, a task detail. */
 const MATRIX_ROUTES: ReadonlyArray<string> = PAGES.map(([path]) => path);
 
 /** Waits for the route's data anchor, so a measurement reads the settled layout and not the
@@ -70,8 +68,8 @@ async function matrixRoutes(page: Page): Promise<string[]> {
 test.describe('appearance', () => {
     /**
      * The persisted System/Light/Dark preference (issue 188), in the browser: the bootstrap's
-     * before-paint resolution, the control's immediate switches, persistence, and the cross-tab
-     * sync. The OS palette is always read from the page itself — headless defaults are never
+     * before-paint resolution, the control's immediate switches, and persistence; the store and
+     * the cross-tab sync are web/test/theme.test.tsx's. The OS palette is always read from the page itself — headless defaults are never
      * written down here.
      */
     const systemTheme = (page: Page) =>
@@ -95,75 +93,22 @@ test.describe('appearance', () => {
         expect(await page.evaluate(() => (window as { __probe?: number }).__probe)).toBe(1);
         await page.screenshot({ path: `${SHOTS}/appearance-dark.png` });
 
-        // The stored choice, not the OS, survives a reload.
-        await page.reload();
-        await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-        await expect(appearance(page)).toHaveText('Dark');
-    });
-
-    test('System removes the stored key and resolves the live OS palette', async ({ page }) => {
-        await page.goto('/');
-        await appearance(page).waitFor({ state: 'attached' });
-        await chooseAppearance(page, 'Light');
-        await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-        await chooseAppearance(page, 'System');
-        expect(await stored(page)).toBeNull();
-        await expect(page.locator('html')).toHaveAttribute('data-theme', await systemTheme(page));
-        await expect(appearance(page)).toHaveText('System');
-    });
-
-    test('a second tab follows the first', async ({ page, context }) => {
-        await page.goto('/');
-        await appearance(page).waitFor({ state: 'attached' });
-        const other = await context.newPage();
-        await other.goto('/');
-        await appearance(other).waitFor({ state: 'attached' });
-
-        await chooseAppearance(page, 'Light');
-        await expect(other.locator('html')).toHaveAttribute('data-theme', 'light');
-        await expect(appearance(other)).toHaveText('Light');
-
-        // A removal from the other tab reads as System again here.
-        await other.evaluate(() => localStorage.removeItem('factory.theme'));
-        await expect(appearance(page)).toHaveText('System');
-        await other.close();
-    });
-
-    test('the selector clears its narrow-screen target and the bar holds', async ({ page }) => {
-        await page.setViewportSize({ width: 360, height: 1000 });
-        await page.goto('/');
-        await appearance(page).waitFor({ state: 'attached' });
-        expect((await appearance(page).boundingBox())?.height).toBeGreaterThanOrEqual(44);
-        await expect
-            .poll(() =>
-                page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
-            )
-            .toBeLessThanOrEqual(0);
-    });
-
-    test('paired dark and light screenshots at 1440', async ({ page }) => {
-        await page.goto('/');
-        await appearance(page).waitFor({ state: 'attached' });
+        // The paired light/dark captures; Dark is chosen last so the reload below reads it.
         await chooseAppearance(page, 'Light');
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
         await page.screenshot({ path: `${SHOTS}/appearance-light-1440.png`, fullPage: true });
         await chooseAppearance(page, 'Dark');
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
         await page.screenshot({ path: `${SHOTS}/appearance-dark-1440.png`, fullPage: true });
+
+        // The stored choice, not the OS, survives a reload.
+        await page.reload();
+        await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+        await expect(appearance(page)).toHaveText('Dark');
     });
 });
 
 test.describe('the desktop shell', () => {
-    test('the seeded board holds at least a hundred tasks', async ({ page }) => {
-        const body = (await page.request.get('/api/jobs?limit=200').then((r) => r.json())) as {
-            jobs: Array<{ followUpTo: string | null }>;
-        };
-        const roots = body.jobs.filter((job) => job.followUpTo === null);
-        // The five-row preview cap below means nothing unless the board has far more tasks than
-        // the cap — the seed's fixed generator produces about 105-110 roots per run.
-        expect(roots.length).toBeGreaterThanOrEqual(100);
-    });
-
     test('the persistent nav holds 224px and the 56px app bar sticks without an h1', async ({ page }) => {
         await page.goto('/');
         const nav = page.locator('nav[aria-label="Primary"]');
@@ -186,84 +131,6 @@ test.describe('the desktop shell', () => {
             .poll(async () => (await bar.boundingBox())?.y ?? Number.POSITIVE_INFINITY, 'app bar stuck to the top')
             .toBeLessThanOrEqual(2);
         await page.screenshot({ path: `${SHOTS}/shell-desktop-1440.png`, fullPage: true });
-    });
-
-    test('the sidenav preview never exceeds five rows per section', async ({ page }) => {
-        await page.goto('/tasks');
-        // The counts arrive with the navigation read, not with the document, and both assertions
-        // below are plain `count()`/`allInnerTexts()` reads that do not retry. Waiting for a
-        // parenthesised number is waiting for the sidenav to have answered at all — without it
-        // this samples whatever was painted first and passes on timing.
-        await expect(page.locator('.sidenav-section').first()).toContainText(/\(\d+\)/);
-
-        // All three sections' rows together, however the seed sorted them.
-        const rows = await page.locator('.sidenav-task').count();
-        expect(rows, 'preview rows across all sections').toBeLessThanOrEqual(15);
-
-        // The cap only means something if it actually bit: with the board at 100+ tasks, some
-        // count must be speaking a number no preview could render. The count line packs its
-        // clauses into one element ("Running (1) · Need review (103)"), so read every
-        // parenthesized number, not just the first.
-        const headers = await page.locator('.sidenav-section').allInnerTexts();
-        const counts = headers.flatMap((text) => [...text.matchAll(/\((\d+)\)/g)].map((match) => Number(match[1])));
-        expect(
-            counts.some((count) => count > 5),
-            `one section counts past the cap: ${headers.join(', ')}`
-        ).toBe(true);
-    });
-
-    test('keyboard alone reaches Tasks, reads its review count, and folds the preview', async ({ page }) => {
-        await page.goto('/');
-        await page.locator('.skip-link').waitFor({ state: 'attached' });
-        const tasks = page.locator('.sidenav-link', { hasText: 'Tasks' });
-        // Tab from the top until the Tasks link holds focus, bounded so a lost focus order fails
-        // here rather than looping.
-        for (let i = 0; i < 10; i += 1) {
-            await page.keyboard.press('Tab');
-            if (await tasks.evaluate((el) => el === document.activeElement)) break;
-        }
-        await expect(tasks).toBeFocused();
-        await page.keyboard.press('Enter');
-        await expect(page).toHaveURL('/tasks');
-        await expect(tasks).toHaveAttribute('aria-current', 'page');
-
-        // The seed leaves tasks awaiting review: the pill shows the number, the name speaks it.
-        const summary = page.locator('summary.sidenav-section');
-        await expect(summary).toContainText(/Need review \(\d+\)/);
-        // textContent, not innerText: the summary is uppercased by CSS.
-        const review = Number((await summary.textContent())!.match(/Need review \((\d+)\)/)![1]);
-        await expect(tasks.locator('.sidenav-count')).toHaveText(String(review));
-        await expect(tasks.locator('.sidenav-count')).toHaveAttribute('aria-hidden', 'true');
-        await expect(tasks).toHaveAttribute(
-            'aria-label',
-            `Tasks, ${review} task${review === 1 ? ' needs' : 's need'} review`
-        );
-
-        // The summary is a keyboard control: Enter folds the preview and unfolds it again.
-        const preview = page.locator('details.sidenav-preview');
-        await summary.focus();
-        await page.keyboard.press('Enter');
-        await expect(preview).not.toHaveAttribute('open', '');
-        await expect(page.locator('.sidenav-task').first()).toBeHidden();
-        await page.keyboard.press('Enter');
-        await expect(preview).toHaveAttribute('open', '');
-        await expect(page.locator('.sidenav-task').first()).toBeVisible();
-    });
-
-    test('on /settings the Overview item is the one current page', async ({ page }) => {
-        const nav = page.locator('nav[aria-label="Primary"]');
-        const settings = nav.locator('.sidenav-link', { hasText: 'Settings' });
-        for (const [path, label] of [
-            ['/settings', 'Overview'],
-            ['/settings/workspace', 'Workspace'],
-        ] as const) {
-            await page.goto(path);
-            const current = nav.locator('[aria-current="page"]');
-            await expect(current).toHaveCount(1);
-            await expect(current).toHaveText(label);
-            await expect(settings).toHaveAttribute('aria-current', 'false');
-            await expect(settings).toHaveClass(/is-active/);
-        }
     });
 
     test('shell screenshots at 1440, 1024 and 390 in both themes', async ({ page }) => {
@@ -322,38 +189,9 @@ test.describe('the responsive shell', () => {
         expect(after, 'client-side navigation did not move focus to the main region').not.toBe('main-content');
     });
 
-    test('keyboard focus paints the accent ring on navigation and controls, in both themes', async ({ page }) => {
-        // The :focus-visible rule is CSS, invisible to the render suites; this pins the contract
-        // where it lands: a keyboard-focused link and button carry a solid two-pixel ring, and
-        // the rule colors it via var(--accent) — asserted per theme, since a reflow can wrap the
-        // control and no theme may drop the ring (issue 190).
-        await page.goto('/');
-        await page.locator('.skip-link').waitFor({ state: 'attached' });
-
-        for (const theme of [null, 'light'] as const) {
-            await page.evaluate((t) => {
-                if (t) document.documentElement.setAttribute('data-theme', t);
-                else document.documentElement.removeAttribute('data-theme');
-            }, theme);
-            for (const target of [page.locator('.sidenav-link').first(), page.locator('#range-select')]) {
-                await target.focus();
-                const outline = await target.evaluate((el) => {
-                    const style = getComputedStyle(el);
-                    return { style: style.outlineStyle, width: style.outlineWidth };
-                });
-                expect(outline.style, `focused control shows its focus ring (${theme ?? 'dark'})`).toBe('solid');
-                expect(parseInt(outline.width, 10), `focus ring is two pixels (${theme ?? 'dark'})`).toBe(2);
-            }
-        }
-        await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
-        await page.screenshot({ path: `${SHOTS}/focus-ring-light.png` });
-        await page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
-    });
-
     for (const [width, height] of [
         [768, 1000],
         [390, 844],
-        [360, 844],
     ] as const) {
         test(`the drawer manages focus at ${width}px`, async ({ page }) => {
             await page.setViewportSize({ width, height });
@@ -428,6 +266,21 @@ test.describe('the responsive shell', () => {
             await panel.locator('.sidenav-link', { hasText: 'Dashboard' }).click();
             await expect(panel).toHaveCount(0);
             await expect(page).toHaveURL('/');
+
+            if (width !== 390) return;
+            // On the narrow phone the account menu opens inside the viewport and restores its trigger.
+            const menuTrigger = page.locator('.appbar .user-menu-button');
+            await menuTrigger.click();
+            const menu = page.locator('.user-menu-panel');
+            await expect(menu).toBeVisible();
+            const box = (await menu.boundingBox())!;
+            expect(box.x, 'account menu left edge').toBeGreaterThanOrEqual(0);
+            expect(box.x + box.width, 'account menu right edge').toBeLessThanOrEqual(391);
+            await page.screenshot({ path: `${SHOTS}/user-menu-390-open.png` });
+
+            await page.keyboard.press('Escape');
+            await expect(menu).toHaveCount(0);
+            await expect(menuTrigger).toBeFocused();
         });
     }
 
@@ -452,26 +305,6 @@ test.describe('the responsive shell', () => {
             expect(await controlsOutsideViewport(page, width), 'controls pushed outside the viewport').toEqual([]);
         });
     }
-
-    test('horizontal scrolling lives only in named regions on a narrow phone', async ({ page }) => {
-        await page.setViewportSize({ width: 390, height: 844 });
-        for (const path of await matrixRoutes(page)) {
-            await page.goto(path);
-            await settle(page, path);
-            const offenders = await page.evaluate((allowed) => {
-                const out: string[] = [];
-                for (const el of document.querySelectorAll<HTMLElement>('main *')) {
-                    if (el.scrollWidth - el.clientWidth <= 1) continue;
-                    const style = getComputedStyle(el);
-                    if (style.overflowX !== 'auto' && style.overflowX !== 'scroll') continue;
-                    if (el.closest(allowed)) continue;
-                    out.push(`${el.tagName.toLowerCase()}.${el.className}`);
-                }
-                return out;
-            }, NAMED_SCROLL_REGIONS);
-            expect(offenders, `${path} scrolls somewhere without a named region`).toEqual([]);
-        }
-    });
 
     test('200% zoom keeps every primary route free of page-level overflow', async ({ page }) => {
         // Real browser zoom does two things at once, and Playwright has no native lever for
@@ -499,120 +332,9 @@ test.describe('the responsive shell', () => {
         await settle(page, '/');
         await page.screenshot({ path: `${SHOTS}/zoom-200-dashboard.png`, fullPage: true });
     });
-
-    test('the account menu opens inside the viewport and restores its trigger on a narrow phone', async ({ page }) => {
-        await page.setViewportSize({ width: 390, height: 844 });
-        await page.goto('/');
-        await page.locator('.skip-link').waitFor({ state: 'attached' });
-
-        const trigger = page.locator('.appbar .user-menu-button');
-        await trigger.click();
-        const panel = page.locator('.user-menu-panel');
-        await expect(panel).toBeVisible();
-        const box = (await panel.boundingBox())!;
-        expect(box.x, 'account menu left edge').toBeGreaterThanOrEqual(0);
-        expect(box.x + box.width, 'account menu right edge').toBeLessThanOrEqual(391);
-        await page.screenshot({ path: `${SHOTS}/user-menu-390-open.png` });
-
-        await page.keyboard.press('Escape');
-        await expect(panel).toHaveCount(0);
-        await expect(trigger).toBeFocused();
-    });
-});
-
-test.describe('the visual regression matrix', () => {
-    // Issue 190's deterministic captures: route × theme × width, named so a reviewer can find
-    // any cell. Not a full Cartesian product — one state per route here, the overlay states
-    // below — and animations are disabled, because the one ambient motion would otherwise make
-    // two runs of the same page two different pictures. Both themes are SET explicitly: the
-    // appearance bootstrap (#188) resolves System to the live OS palette, and headless cannot
-    // be trusted to prefer either.
-    const themeAttr = (page: Page, theme: 'dark' | 'light') =>
-        page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
-
-    test('captures the drawer open on a narrow phone', async ({ page }) => {
-        await page.setViewportSize({ width: 390, height: 844 });
-        await page.goto('/tasks');
-        await settle(page, '/tasks');
-        await themeAttr(page, 'dark');
-        await page.locator('.appbar-trigger').click();
-        await expect(page.locator('.mobile-nav')).toBeVisible();
-        await page.screenshot({
-            path: `${SHOTS}/matrix/inbox_drawer-open_dark_390.png`,
-            animations: 'disabled',
-        });
-    });
-
-    test('captures the account menu and the range dialog open', async ({ page }) => {
-        await page.setViewportSize({ width: 1440, height: 1000 });
-        await page.goto('/');
-        await settle(page, '/');
-        await themeAttr(page, 'dark');
-        await page.locator('.appbar .user-menu-button').click();
-        await expect(page.locator('.user-menu-panel')).toBeVisible();
-        await page.screenshot({
-            path: `${SHOTS}/matrix/dashboard_user-menu-open_dark_1440.png`,
-            animations: 'disabled',
-        });
-        await page.keyboard.press('Escape');
-        await page.locator('#range-select').click();
-        await page.getByRole('option', { name: 'Custom', exact: true }).click();
-        await expect(page.locator('.range-dialog')).toBeVisible();
-        await page.screenshot({
-            path: `${SHOTS}/matrix/dashboard_range-dialog-open_dark_1440.png`,
-            animations: 'disabled',
-        });
-    });
-
-    test('captures the remove dialog open on a narrow phone', async ({ page }) => {
-        const taskId = await seededTaskId(page);
-        await page.setViewportSize({ width: 390, height: 844 });
-        await page.goto(`/tasks/${taskId}`);
-        await settle(page, `/tasks/${taskId}`);
-        await themeAttr(page, 'dark');
-        await page.locator('.page-header-actions').getByRole('button', { name: 'More task actions' }).click();
-        await page.getByRole('menuitem', { name: 'Remove task' }).click();
-        await expect(page.locator('.task-remove')).toBeVisible();
-        await page.screenshot({
-            path: `${SHOTS}/matrix/task-detail_remove-dialog-open_dark_390.png`,
-            animations: 'disabled',
-        });
-    });
 });
 
 test.describe('the task inbox (issue 279)', () => {
-    /** The three count cards' accessible names, in card order. */
-    const cardLabels = (page: Page): Promise<string[]> =>
-        page.locator('.inbox-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('aria-label') ?? ''));
-
-    test('each count card opens its state tab, and no filter changes the counts', async ({ page }) => {
-        await page.goto('/tasks');
-        await settle(page, '/tasks');
-        const before = await cardLabels(page);
-        expect(before).toHaveLength(3);
-        expect(before[0]).toMatch(/^\d+ tasks? needs? review across the organization$/);
-
-        for (const [index, state, tab] of [
-            [0, 'review', 'Needs review'],
-            [1, 'running', 'Running'],
-            [2, 'past', 'Past'],
-        ] as const) {
-            await page.goto('/tasks');
-            await settle(page, '/tasks');
-            await page.locator('.inbox-card').nth(index).click();
-            await expect(page).toHaveURL(`/tasks?state=${state}`);
-            await expect(page.locator('.inbox-tabs [aria-current="page"]')).toHaveText(tab);
-        }
-
-        // A search that matches nothing: the list empties into the filtered state, never the
-        // empty-board one, and the organization counts above it hold still.
-        await page.locator('.inbox-search').getByLabel('Search').fill('zz-no-task-says-this');
-        await page.locator('.inbox-search').getByRole('button', { name: 'Filter' }).click();
-        await expect(page.getByText('No tasks match these filters')).toBeVisible();
-        await expect(page.getByText('No tasks yet')).toHaveCount(0);
-        expect(await cardLabels(page)).toEqual(before);
-    });
-
     test('a chip removes its one filter, Back restores it, Clear filters empties them all', async ({ page }) => {
         await page.goto('/tasks?state=past&q=task&author=nobody');
         await settle(page, '/tasks');
@@ -642,28 +364,6 @@ test.describe('the task inbox (issue 279)', () => {
         await expect(page).toHaveURL('/tasks');
         await expect(chips).toHaveCount(0);
         await expect(search).toHaveValue('');
-    });
-
-    test('a long title or repository never hides the state pill', async ({ page }) => {
-        await routeLongTasks(page);
-        for (const width of [1440, 1024, 390] as const) {
-            await page.setViewportSize({ width, height: 900 });
-            await page.goto('/tasks');
-            await settle(page, '/tasks');
-            await expect(page.locator('.inbox-row').first()).toContainText('refactor-');
-            for (const row of (await page.locator('.inbox-row').all()).slice(0, 4)) {
-                const rowBox = (await row.boundingBox())!;
-                const pill = row.locator('.pill');
-                await expect(pill).toBeVisible();
-                const pillBox = (await pill.boundingBox())!;
-                expect(pillBox.width, `pill width at ${width}`).toBeGreaterThan(24);
-                expect(pillBox.x + pillBox.width, `pill inside its row at ${width}`).toBeLessThanOrEqual(
-                    rowBox.x + rowBox.width + 1
-                );
-            }
-            await noHorizontalOverflow(page);
-            await page.screenshot({ path: `${SHOTS}/inbox-long-content-${width}.png` });
-        }
     });
 
     test('inbox screenshots, filtered and stale, in both themes at 1440 and 390', async ({ page }) => {

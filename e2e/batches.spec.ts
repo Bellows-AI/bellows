@@ -3,11 +3,12 @@ import type { Page } from '@playwright/test';
 import type { BatchRecord } from '../web/src/batch-model.js';
 import { BatchBoard } from './fixtures/batch-board.js';
 import { seededTaskId } from './routes.js';
-import { THEMES, type Theme, VIEWPORTS } from './screenshot-matrix.js';
+import { type Theme, VIEWPORTS } from './screenshot-matrix.js';
 import { noHorizontalOverflow } from './viewport.js';
 
 /**
- * The batch pages in a real browser, both themes, desktop and phone (issue 584). The open board
+ * The batch pages in a real browser, desktop and phone, in one theme — the theme only changes the
+ * screenshots, and rendered contrast is matrix.spec.ts's (issue 584). The open board
  * runs no driver, so everything the scheduler would do is the fake board's (fixtures/batch-board.ts)
  * — but a draft is created and saved against the real API first, and the fake takes over from the
  * moment the saved batch exists. What is verified here is the journey across pages: that a draft
@@ -60,16 +61,25 @@ async function fillTask(page: Page, section: string, taskIndex: number, text: st
     await task.getByLabel('Verification').fill('npm test');
 }
 
-for (const theme of THEMES) {
-    test(`plan a batch, start it, and find it from its task and the list (${theme})`, async ({ page }) => {
+test.describe('batch pages', () => {
+    const theme: Theme = 'dark';
+
+    test('plan a batch, start it, and find it from its task and the list', async ({ page }) => {
         const problems = watchConsole(page);
         await atTheme(page, theme);
         const board = new BatchBoard(page);
         await board.install();
         const rootTask = await seededTaskId(page);
 
+        // — The way in: the sidenav reaches the list, and the list reaches a new draft by keyboard.
+        await page.goto('/');
+        await page.locator('.sidenav-link', { hasText: 'Batches' }).click();
+        await expect(page).toHaveURL(/\/batches$/);
+        await page.getByRole('link', { name: 'New batch' }).focus();
+        await page.keyboard.press('Enter');
+        await expect(page).toHaveURL(/\/batches\/new$/);
+
         // — Draft: created and saved against the real board.
-        await page.goto('/batches/new');
         await expect(page.getByRole('heading', { level: 1, name: 'New batch' })).toBeVisible();
         await page.getByLabel('Title').fill(`Upgrade the SDK (${theme})`);
         await page.getByLabel('Concurrency').fill('2');
@@ -125,21 +135,12 @@ for (const theme of THEMES) {
         await shoot(page, 'list', theme);
         expect(problems.join('\n')).toBe('');
     });
-}
+});
 
 test('a refused plan shows each problem at its field and writes nothing', async ({ page }) => {
     await page.goto('/batches/new');
     await page.getByRole('button', { name: 'Save draft' }).click();
     await expect(page.locator('p.status.error')).toContainText('The plan has problems');
     await expect(page.getByLabel('Title')).toHaveAttribute('aria-invalid', 'true');
-    await expect(page).toHaveURL(/\/batches\/new$/);
-});
-
-test('the sidenav reaches the list, and the list reaches a new draft by keyboard', async ({ page }) => {
-    await page.goto('/');
-    await page.locator('.sidenav-link', { hasText: 'Batches' }).click();
-    await expect(page).toHaveURL(/\/batches$/);
-    await page.getByRole('link', { name: 'New batch' }).focus();
-    await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/batches\/new$/);
 });

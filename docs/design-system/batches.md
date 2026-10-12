@@ -14,7 +14,7 @@ the batch contract: [../batches.md](../batches.md).
 | Verdict, task state labels, retry eligibility, morning report | `web/src/batch-model.ts` | `web/test/batch-model.test.ts` |
 | Task page backlink | `web/src/components/BatchBacklink.tsx`, `server/src/routes/batch-handlers.ts` (`?task=`) | `server/test/routes.batches.test.ts`, `e2e/batches.spec.ts` |
 | Sidenav item | `web/src/nav-model.ts` | `web/test/nav-model.test.ts` |
-| Both themes, desktop and mobile widths | — | `e2e/matrix.spec.ts`, `e2e/batches.spec.ts` |
+| Desktop and mobile widths without page overflow | — | `e2e/batches.spec.ts` |
 
 ## Invariants
 

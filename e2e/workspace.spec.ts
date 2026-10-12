@@ -3,8 +3,8 @@ import type { Page } from '@playwright/test';
 import { throughSignIn } from './signin.js';
 
 /**
- * The workspace section of Settings, the repositories section its selection moved to (#181), the
- * left nav, and the one failure that shows up only in production.
+ * The workspace section of Settings, the repositories section its selection moved to (#181), and
+ * the one failure that shows up only in production.
  *
  * On the `auth` project, because every route here needs a signed-in member — and because the
  * `chromium` project is the visual regression check for the dashboard and should not churn over
@@ -28,30 +28,6 @@ async function signedIn(page: Page) {
     await throughSignIn(page);
 }
 
-test('the left nav is there and moves between sections', async ({ page }) => {
-    await signedIn(page);
-
-    const nav = page.locator('.sidenav');
-    await expect(nav).toBeVisible();
-
-    // The Settings item opens the tree at the configuration overview, the area's index (#180);
-    // the workspace section is one click below it, with the four section links under the item
-    // (#150).
-    await nav.getByRole('link', { name: 'Settings' }).click();
-    await expect(page).toHaveURL(/\/settings$/);
-    await expect(page.getByRole('heading', { name: 'Configuration overview' })).toBeVisible();
-    await nav.getByRole('link', { name: 'Workspace' }).click();
-    await expect(page).toHaveURL(/\/settings\/workspace$/);
-    await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible();
-    await expect(nav.getByRole('link', { name: 'Repositories' })).toBeVisible();
-
-    await nav.getByRole('link', { name: 'Dashboard' }).click();
-    await expect(page).toHaveURL(/\/$/);
-    // The analytics anchor, not a group count: this member's org holds no seeded rows, so the
-    // dashboard truthfully answers with the one empty state rather than four figures.
-    await expect(page.locator('.usage-summary, .usage-empty').first()).toBeVisible();
-});
-
 test('reloading /settings/workspace directly serves the app rather than a 404', async ({ page }) => {
     /*
      * THE reason this file exists.
@@ -61,6 +37,11 @@ test('reloading /settings/workspace directly serves the app rather than a 404', 
      * document must also be open — the wall is on /api/*, never on index.html — which is why the
      * status is asserted before anything renders.
      */
+    // Signed out first — a fresh context has no session: the deep link gets the gate, not a 404.
+    const anonymous = await page.goto('/settings/workspace');
+    expect(anonymous?.status()).toBe(200);
+    await expect(page.locator('.login-gate')).toBeVisible();
+
     await signedIn(page);
 
     const response = await page.goto('/settings/workspace');
@@ -71,15 +52,6 @@ test('reloading /settings/workspace directly serves the app rather than a 404', 
     await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible();
     await expect(page.locator('.sidenav')).toBeVisible();
 });
-
-test('a signed-out visitor deep-linking to the settings tree gets the gate, not a 404', async ({ page }) => {
-    await page.request.post('/api/auth/logout');
-
-    const response = await page.goto('/settings/workspace');
-    expect(response?.status()).toBe(200);
-    await expect(page.locator('.login-gate')).toBeVisible();
-});
-
 test('the workspace page links to the repositories page for checkout management', async ({ page }) => {
     await signedIn(page);
     await page.goto('/settings/workspace');

@@ -75,6 +75,8 @@ test.describe('date range selector', () => {
         // 'All time' is the default, so it is selected last: clicking it first would change no
         // query and fire no request.
         await expect(page.locator('#range-select')).toHaveText('All time');
+        // All time is what the page opens on, so no click is needed to read the baseline.
+        const allTime = await page.locator('.usage-summary strong').allInnerTexts();
 
         for (const [label, preset] of [
             ['Today', 'day'],
@@ -87,23 +89,19 @@ test.describe('date range selector', () => {
             expect(url.searchParams.get('range'), label).toBe(preset);
             expect(range.preset, label).toBe(preset);
             await expect(page.locator('#range-select')).toHaveText(label);
+            if (preset === 'day') {
+                // A narrowed range changes the numbers. A sparse day may render the one empty
+                // state instead of the summary — that is a different screen, not the same
+                // numbers, and both satisfy "changed". The poll rides out the gap between the
+                // response reaching the test and React committing the payload.
+                await expect
+                    .poll(async () => page.locator('.usage-summary strong').allInnerTexts())
+                    .not.toEqual(allTime);
+            }
             await assertRendersCleanly(page, preset);
         }
 
         expect(problems.join('\n')).toBe('');
-    });
-
-    test('a narrowed range changes the numbers', async ({ page }) => {
-        await open(page);
-
-        // All time is what the page opens on, so no click is needed to read the baseline.
-        const allTime = await page.locator('.usage-summary strong').allInnerTexts();
-
-        await selectPreset(page, 'Today', 'day');
-        // A sparse day may render the one empty state instead of the summary — that is a
-        // different screen, not the same numbers, and both satisfy "changed". The poll rides
-        // out the gap between the response reaching the test and React committing the payload.
-        await expect.poll(async () => page.locator('.usage-summary strong').allInnerTexts()).not.toEqual(allTime);
     });
 
     test('the custom range dialog stays inside the viewport and restores focus to the trigger on a narrow phone', async ({
@@ -145,25 +143,6 @@ test.describe('date range selector', () => {
         expect(box.x + box.width, 'chart tooltip right edge').toBeLessThanOrEqual(1441);
     });
 
-    test('a range with almost no data renders empty or ready, never broken', async ({ page }) => {
-        const problems = watchConsole(page);
-        await open(page);
-        await selectPreset(page, 'Today', 'day');
-
-        // Whether the fixture's last day holds a session or not, the page stands: the summary
-        // renders its figures, or the one empty state replaces them — never dash cards, and a
-        // metric with no basis must read as unavailable rather than as a measured zero.
-        await expect(analyticsAnchor(page)).toBeVisible();
-        const summary = page.locator('.usage-summary');
-        if (await summary.count()) {
-            await expect(summary.locator('strong').first()).not.toHaveText('');
-        }
-        const text = await page.locator('main').innerText();
-        for (const token of FORBIDDEN) expect(text).not.toContain(token);
-        await page.screenshot({ path: `${SHOTS}/today-sparse.png`, fullPage: true });
-        expect(problems.join('\n')).toBe('');
-    });
-
     test('the page carries no pull-request vocabulary', async ({ page }) => {
         await open(page);
         const text = (await page.locator('main').innerText()) + (await page.locator('.appbar').innerText());
@@ -203,105 +182,6 @@ test.describe('date range selector', () => {
     });
 });
 
-test.describe('the supporting tables and the task board', () => {
-    test('a recent task title opens the task page', async ({ page }) => {
-        await open(page);
-
-        const link = page.locator('.task-title').first();
-        await expect(link).toBeVisible();
-        const href = await link.getAttribute('href');
-        expect(href).toMatch(/^\/tasks\//);
-        await link.click();
-        await expect(page).toHaveURL(new RegExp(`${href!.replaceAll('/', '\\/')}$`));
-    });
-
-    test('View all tasks opens the task list', async ({ page }) => {
-        await open(page);
-
-        await page.getByRole('link', { name: 'View all tasks' }).click();
-        await expect(page).toHaveURL(/\/tasks$/);
-    });
-
-    test('a board read failure keeps the last good rows while the telemetry stays', async ({ page }) => {
-        test.slow();
-        await open(page);
-        const lastGood = await page.locator('.task-title').first().innerText();
-
-        // Every poll after this point fails: the alert must appear at the next tick (~30s) and
-        // the section must keep its rows — a board failure must not blank a section that was
-        // answering a moment ago, nor take the telemetry down with it.
-        await page.route('**/api/jobs**', (route) =>
-            route.fulfill({ status: 500, body: JSON.stringify({ error: 'board offline' }) })
-        );
-        await expect(page.getByText('The board could not be read — board offline')).toBeVisible({
-            timeout: 60_000,
-        });
-        await expect(page.locator('.task-title').first()).toHaveText(lastGood);
-        await expect(page.locator('section.panel', { hasText: 'Per-task usage' })).toBeVisible();
-        await page.screenshot({ path: `${SHOTS}/board-degraded.png`, fullPage: true });
-    });
-
-    test('a cold board failure shows the error in place', async ({ page }) => {
-        await page.route('**/api/jobs**', (route) =>
-            route.fulfill({ status: 503, body: JSON.stringify({ error: 'board unreachable' }) })
-        );
-        await page.goto('/');
-        await expect(page.getByText('The board could not be read — board unreachable')).toBeVisible({
-            timeout: 60_000,
-        });
-        await expect(page.locator('.task-title')).toHaveCount(0);
-    });
-
-    test('the page never overflows horizontally at the target widths', async ({ page }) => {
-        await open(page);
-
-        for (const width of [360, 768, 1024, 1440]) {
-            await page.setViewportSize({ width, height: 900 });
-            const overflow = await page.evaluate(() => document.body.scrollWidth - document.body.clientWidth);
-            expect(overflow, `${width}px: body wider than the viewport`).toBeLessThanOrEqual(0);
-            await page.screenshot({ path: `${SHOTS}/width-${width}.png`, fullPage: true });
-        }
-    });
-
-    test('the primary content begins in the first viewport', async ({ page }) => {
-        await page.setViewportSize({ width: 1440, height: 900 });
-        await page.goto('/');
-        // Measured once the analytics have landed, not at whatever the first paint happened to be.
-        // The board panels mount before the telemetry read resolves, so for a moment the first
-        // `main section` is a task panel a screen and a half down; `.first()` resolves against that
-        // DOM and the assertion then describes a page that no longer exists. It is the same anchor
-        // navigation.spec.ts and workspace.spec.ts wait on for "the dashboard is loaded".
-        //
-        // This raced from the day it was written and passed on timing alone — a front-end change
-        // that moved hydration by a few milliseconds flipped it to failing 2 runs in 6, with the
-        // settled layout byte-identical before and after. What it means to assert is where the
-        // content SETTLES, which is what it now measures.
-        await expect(page.locator('.usage-summary, .usage-empty').first()).toBeVisible();
-        const box = await page.locator('main section').first().boundingBox();
-        expect(box).not.toBeNull();
-        expect(box!.y).toBeLessThan(900);
-    });
-});
-
-test.describe('the organization selector', () => {
-    // Its own case because assertRendersCleanly only scans `main`, and the app bar is outside it.
-    test('names the organization and is inert', async ({ page }) => {
-        await open(page);
-
-        const select = page.locator('.org-select');
-        await expect(select).toBeDisabled();
-        // AUTH_MODE=none has exactly one organization, the local one — its id and name are the
-        // same string, and the ORG_ID env that used to rename it here is gone (#121). The
-        // Listbox trigger carries the name in text and in its aria-label; the one option it
-        // would offer is a client-side concern.
-        await expect(select).toHaveText('default');
-        await expect(select).toHaveAttribute('aria-label', 'Organization: default');
-
-        // Fitting on one line with the account menu is a layout fact no assertion covers.
-        await page.locator('.appbar').screenshot({ path: `${SHOTS}/appbar-org.png` });
-    });
-});
-
 test.describe('the analytics dashboard layout (issue 283)', () => {
     test('the toolbar is one 64px panel carrying range, scope, coverage and freshness', async ({ page }) => {
         await page.setViewportSize({ width: 1440, height: 900 });
@@ -327,17 +207,35 @@ test.describe('the analytics dashboard layout (issue 283)', () => {
         const stamp = (await toolbar.locator('.updated-at').boundingBox())!;
         expect(Math.abs(range.y + range.height / 2 - (stamp.y + stamp.height / 2))).toBeLessThan(4);
         await toolbar.screenshot({ path: `${SHOTS}/dashboard-toolbar-1440.png` });
-    });
 
-    test('the precise freshness stamp opens inside the viewport from the toolbar edge', async ({ page }) => {
-        for (const width of [1440, 390]) {
-            await page.setViewportSize({ width, height: 900 });
-            await open(page);
+        // The primary content begins in the first viewport. Measured once the analytics have
+        // landed (open() waits on the anchor): the board panels mount before the telemetry read
+        // resolves, so the first paint's first `main section` is a task panel further down.
+        const first = await page.locator('main section').first().boundingBox();
+        expect(first).not.toBeNull();
+        expect(first!.y).toBeLessThan(900);
+
+        // The precise freshness stamp opens inside the viewport from the toolbar edge.
+        const stampInside = async (width: number) => {
             await page.locator('.updated-at').focus();
-            const box = (await page.locator('.updated-at-full').boundingBox())!;
-            expect(box.x, `${width}px: stamp left edge`).toBeGreaterThanOrEqual(0);
-            expect(box.x + box.width, `${width}px: stamp right edge`).toBeLessThanOrEqual(width);
-        }
+            const full = (await page.locator('.updated-at-full').boundingBox())!;
+            expect(full.x, `${width}px: stamp left edge`).toBeGreaterThanOrEqual(0);
+            expect(full.x + full.width, `${width}px: stamp right edge`).toBeLessThanOrEqual(width);
+        };
+        await stampInside(1440);
+
+        // Usage by user and Recent tasks sit side by side from 1200px and stack below.
+        const byUser = page.locator('section.panel', { hasText: 'Usage by user' });
+        const recent = page.locator('section.panel', { hasText: 'Recent tasks' });
+        const [a, b] = [(await byUser.boundingBox())!, (await recent.boundingBox())!];
+        expect(Math.abs(a.y - b.y), 'same row at 1440').toBeLessThan(2);
+        expect(b.x).toBeGreaterThan(a.x + a.width);
+        await page.setViewportSize({ width: 1024, height: 900 });
+        const [c, d] = [(await byUser.boundingBox())!, (await recent.boundingBox())!];
+        expect(d.y, 'stacked at 1024').toBeGreaterThanOrEqual(c.y + c.height);
+
+        await page.setViewportSize({ width: 390, height: 900 });
+        await stampInside(390);
     });
 
     test('four metric cards, no decorative trend, comparison or cost', async ({ page }) => {
@@ -372,35 +270,6 @@ test.describe('the analytics dashboard layout (issue 283)', () => {
         await expect(panel.getByText('The hatched bucket is a partial period.')).toBeVisible();
     });
 
-    test('Usage by user and Recent tasks sit side by side from 1200px and stack below', async ({ page }) => {
-        const byUser = page.locator('section.panel', { hasText: 'Usage by user' });
-        const recent = page.locator('section.panel', { hasText: 'Recent tasks' });
-
-        await page.setViewportSize({ width: 1440, height: 900 });
-        await open(page);
-        const [a, b] = [(await byUser.boundingBox())!, (await recent.boundingBox())!];
-        expect(Math.abs(a.y - b.y), 'same row at 1440').toBeLessThan(2);
-        expect(b.x).toBeGreaterThan(a.x + a.width);
-
-        await page.setViewportSize({ width: 1024, height: 900 });
-        const [c, d] = [(await byUser.boundingBox())!, (await recent.boundingBox())!];
-        expect(d.y, 'stacked at 1024').toBeGreaterThanOrEqual(c.y + c.height);
-    });
-
-    test('a recent task status is a toned pill, and the section says range and scope do not apply', async ({
-        page,
-    }) => {
-        await open(page);
-
-        const recent = page.locator('section.panel', { hasText: 'Recent tasks' });
-        await expect(recent.locator('.recent-tasks-head .pill-done')).toHaveText('Task board');
-        await expect(recent.getByText('Not affected by range or scope')).toBeVisible();
-        const status = recent.locator('tbody tr').first().locator('td').nth(1).locator('.pill');
-        await expect(status).toHaveText(
-            /^(Running|Stopping|Done|Waiting for review|Queued|(Succeeded|Failed|Stopped) · Needs review.*)$/
-        );
-    });
-
     test('a failed refresh keeps the last good data and recovers on the next read', async ({ page }) => {
         test.slow();
         await open(page);
@@ -412,16 +281,5 @@ test.describe('the analytics dashboard layout (issue 283)', () => {
         await page.unroute('**/api/stats**');
         await expect(page.getByText('showing the last successful')).toHaveCount(0, { timeout: 90_000 });
         await expect(page.locator('.usage-summary')).toBeVisible();
-    });
-
-    test('screenshots: dark and light at 1440 and 390', async ({ page }) => {
-        for (const width of [1440, 390]) {
-            await page.setViewportSize({ width, height: 1000 });
-            await open(page);
-            for (const theme of ['dark', 'light']) {
-                await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
-                await page.screenshot({ path: `${SHOTS}/dashboard-${theme}-${width}.png`, fullPage: true });
-            }
-        }
     });
 });

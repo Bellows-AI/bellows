@@ -19,11 +19,12 @@ import {
     threadShot,
 } from './routes.js';
 import { MATRIX_VIEWPORTS, THEMES, type Theme } from './screenshot-matrix.js';
-import { controlsOutsideViewport, pageOverflow } from './viewport.js';
+import { controlsOutsideViewport, NAMED_SCROLL_REGIONS, pageOverflow } from './viewport.js';
 
 /**
- * The responsive and accessibility matrix (issue 287, plan §8): every route family × the five
- * validation widths × both themes, with the page-level overflow contract asserted in every cell,
+ * The responsive and accessibility matrix (issue 287, plan §8): every route family × the
+ * validation widths, in one theme — the light block of tokens.css carries colors only, so geometry
+ * cannot differ by theme — with the page-level overflow contract asserted in every cell,
  * then the assistive passes — accessible names, live regions, keyboard-only reach, compact
  * targets, reduced motion, rendered text contrast, and dialog focus containment and return.
  *
@@ -51,8 +52,11 @@ const SHOTS = `${OUT}/shots`;
 process.env.MATRIX_RUN ??= String(Date.now());
 const RUN = process.env.MATRIX_RUN;
 
-/** The compact-shell breakpoint (docs/design-system.md): at or under it, the drawer is the navigation. */
-const COMPACT_SHELL_MAX = 900;
+/** The overflow sweep's one theme; contrast is the pass that runs both. */
+const OVERFLOW_THEME: Theme = 'dark';
+
+/** The WCAG reflow width: the narrow phone where horizontal scrolling must live in named regions. */
+const REFLOW_WIDTH = 320;
 
 /** The seeded detail page, by a live id: the seed mints its ids, so none is written down here. */
 const SEEDED_DETAIL: Shot = {
@@ -167,75 +171,73 @@ test.describe('responsive and accessibility matrix (issue 287)', () => {
     test.afterAll(writeReport);
 
     for (const viewport of MATRIX_VIEWPORTS) {
-        for (const theme of THEMES) {
-            test(`no page-level horizontal overflow — ${theme} at ${viewport.width}`, async ({ page }) => {
-                test.setTimeout(FAMILIES.length * SLOW);
-                await page.setViewportSize(viewport);
-                await useTheme(page, theme);
-                for (const shot of FAMILIES) {
-                    await openSettled(page, shot, theme);
-                    // Polled, not slept: the claim is about the settled layout. The poll's own
-                    // failure is swallowed — the soft assertion below reports the settled value.
-                    await expect
-                        .poll(async () => Math.max(...Object.values(await pageOverflow(page))))
-                        .toBeLessThanOrEqual(0)
-                        .catch(() => undefined);
-                    const overflow = await pageOverflow(page);
-                    const outside = await controlsOutsideViewport(page, viewport.width);
-                    const cell = `${label(shot)} ${theme} ${viewport.width}`;
-                    expect.soft(overflow.inner, `${cell}: scrollWidth <= innerWidth`).toBeLessThanOrEqual(0);
-                    expect.soft(overflow.body, `${cell}: body overflow`).toBeLessThanOrEqual(0);
-                    expect.soft(outside, `${cell}: controls outside the viewport`).toEqual([]);
-                    const file = shotFile(shot, theme, viewport.width);
-                    writeFileSync(
-                        `${CELLS}/${file.replace(/\.png$/, '.json')}`,
-                        JSON.stringify({ ...shot, run: RUN, theme, width: viewport.width, overflow, outside })
-                    );
-                    await page.screenshot({ path: `${SHOTS}/${file}`, fullPage: true, animations: 'disabled' });
-                }
-            });
-        }
-    }
-
-    for (const width of [1440, 390] as const) {
-        test(`every control is named and polled counts stay out of live regions at ${width}`, async ({ page }) => {
-            describeCheck('names, labels and live regions', `every family at ${width}, drawer open too at ${width}`);
+        const theme = OVERFLOW_THEME;
+        test(`no page-level horizontal overflow at ${viewport.width}`, async ({ page }) => {
             test.setTimeout(FAMILIES.length * SLOW);
-            await page.setViewportSize({ width, height: 900 });
-            await useTheme(page, 'dark');
+            await page.setViewportSize(viewport);
+            await useTheme(page, theme);
             for (const shot of FAMILIES) {
-                await openSettled(page, shot, 'dark');
-                expect.soft(await unnamedControls(page), `${label(shot)} at ${width}: unnamed controls`).toEqual([]);
-                expect.soft(await polledInLiveRegions(page), `${label(shot)} at ${width}: polled in live`).toEqual([]);
-                if (width <= COMPACT_SHELL_MAX && shot.route !== 'signin' && shot.route !== 'onboarding') {
-                    // The drawer carries the section counts at this width: the same rule inside it.
-                    await page.locator('.appbar-trigger').click();
-                    await expect(page.locator('.mobile-nav')).toBeVisible();
-                    expect.soft(await unnamedControls(page), `${label(shot)} drawer: unnamed controls`).toEqual([]);
-                    expect.soft(await polledInLiveRegions(page), `${label(shot)} drawer: polled in live`).toEqual([]);
-                    await page.keyboard.press('Escape');
-                    await expect(page.locator('.mobile-nav')).toHaveCount(0);
+                await openSettled(page, shot, theme);
+                // Polled, not slept: the claim is about the settled layout. The poll's own
+                // failure is swallowed — the soft assertion below reports the settled value.
+                await expect
+                    .poll(async () => Math.max(...Object.values(await pageOverflow(page))))
+                    .toBeLessThanOrEqual(0)
+                    .catch(() => undefined);
+                const overflow = await pageOverflow(page);
+                const outside = await controlsOutsideViewport(page, viewport.width);
+                const cell = `${label(shot)} ${theme} ${viewport.width}`;
+                expect.soft(overflow.inner, `${cell}: scrollWidth <= innerWidth`).toBeLessThanOrEqual(0);
+                expect.soft(overflow.body, `${cell}: body overflow`).toBeLessThanOrEqual(0);
+                expect.soft(outside, `${cell}: controls outside the viewport`).toEqual([]);
+                if (viewport.width === REFLOW_WIDTH) {
+                    expect.soft(await unnamedScrollers(page), `${cell}: scroll outside a named region`).toEqual([]);
                 }
+                if (shot === LONG_INBOX) {
+                    expect.soft(await pillsOutsideRows(page), `${cell}: state pill hidden by long content`).toEqual([]);
+                }
+                const file = shotFile(shot, theme, viewport.width);
+                writeFileSync(
+                    `${CELLS}/${file.replace(/\.png$/, '.json')}`,
+                    JSON.stringify({ ...shot, run: RUN, theme, width: viewport.width, overflow, outside })
+                );
+                await page.screenshot({ path: `${SHOTS}/${file}`, fullPage: true, animations: 'disabled' });
             }
         });
     }
 
-    for (const [width, forcedColors] of [
-        [1440, false],
-        [390, false],
-        [1440, true],
-    ] as const) {
-        const mode = forcedColors ? ' under forced colors' : '';
-        test(`keyboard alone reaches every control and shows focus at ${width}${mode}`, async ({ page }) => {
-            describeCheck('keyboard-only', `open board + sign-in/onboarding at ${width}${mode}`);
+    test('every control is named and polled counts stay out of live regions at 1440', async ({ page }) => {
+        describeCheck('names, labels and live regions', 'every family at 1440, drawer open at 390');
+        test.setTimeout((FAMILIES.length + 1) * SLOW);
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await useTheme(page, 'dark');
+        for (const shot of FAMILIES) {
+            await openSettled(page, shot, 'dark');
+            expect.soft(await unnamedControls(page), `${label(shot)} at 1440: unnamed controls`).toEqual([]);
+            expect.soft(await polledInLiveRegions(page), `${label(shot)} at 1440: polled in live`).toEqual([]);
+        }
+        // The drawer is shell-wide and carries the section counts in the compact shell: the same
+        // rule inside it, once.
+        await page.setViewportSize({ width: 390, height: 844 });
+        await openSettled(page, DASHBOARD_SHOT, 'dark');
+        await page.locator('.appbar-trigger').click();
+        await expect(page.locator('.mobile-nav')).toBeVisible();
+        expect.soft(await unnamedControls(page), 'drawer: unnamed controls').toEqual([]);
+        expect.soft(await polledInLiveRegions(page), 'drawer: polled in live').toEqual([]);
+        await page.keyboard.press('Escape');
+        await expect(page.locator('.mobile-nav')).toHaveCount(0);
+    });
+
+    for (const width of [1440, 390] as const) {
+        test(`keyboard alone reaches every control and shows focus at ${width}`, async ({ page }) => {
+            describeCheck('keyboard-only', `open board + sign-in/onboarding at ${width}`);
             test.setTimeout(FAMILIES.length * SLOW);
             await page.setViewportSize({ width, height: 900 });
             await useTheme(page, 'dark');
-            if (forcedColors) await page.emulateMedia({ forcedColors: 'active' });
             for (const shot of [...OPEN_BOARD, ...ANONYMOUS_ENTRY]) {
                 await openSettled(page, shot, 'dark');
                 const walk = await tabWalk(page);
-                const where = `${label(shot)} at ${width}${mode}`;
+                const where = `${label(shot)} at ${width}`;
                 expect.soft(walk.stops, `${where}: Tab reaches the page at all`).toBeGreaterThan(1);
                 expect.soft(walk.trapped, `${where}: Tab never leaves the page`).toBe(false);
                 expect.soft(walk.ringless, `${where}: focus without a ring`).toEqual([]);
@@ -260,7 +262,17 @@ test.describe('responsive and accessibility matrix (issue 287)', () => {
     test('nothing animates under reduced motion', async ({ page }) => {
         describeCheck('reduced motion', 'open board + sign-in/onboarding + running detail at 1440');
         test.setTimeout(FAMILIES.length * SLOW);
+        // The positive control: under default motion the lamp is the one ambient animation, so it
+        // must be running — otherwise the empty lists below would prove nothing.
+        await page.goto('/tasks');
+        expect(await (await runningDot(page)).evaluate((el) => getComputedStyle(el).animationName)).toBe('lamp');
+
         await page.emulateMedia({ reducedMotion: 'reduce' });
+        await page.goto('/tasks');
+        expect(await (await runningDot(page)).evaluate((el) => getComputedStyle(el).animationName)).toBe('none');
+        // The stilling keeps the textual state: the sidenav count line reads the live sections.
+        await expect(page.locator('.sidenav-section').first()).toBeVisible();
+
         await useTheme(page, 'dark');
         for (const shot of [...OPEN_BOARD, ...ANONYMOUS_ENTRY, threadShot('running', 'runningThread', runningThread)]) {
             await openSettled(page, shot, 'dark');
@@ -382,12 +394,20 @@ test.describe('responsive and accessibility matrix (issue 287)', () => {
             plant('div', 'probe-wide', 'wide', { width: '2000px' });
             plant('button', 'probe-offscreen', 'offscreen', { position: 'relative', left: '-600px' });
             plant('div', 'probe-moving', 'moving', {}).animate([{ opacity: 0 }, { opacity: 1 }], 60_000);
+            const scroller = plant('div', 'probe-scroller', '', { width: '100px', overflowX: 'auto' });
+            const wide = document.createElement('div');
+            wide.textContent = 'scrolls';
+            Object.assign(wide.style, { width: '400px' });
+            scroller.append(wide);
         });
         expect((await pageOverflow(page)).inner, 'overflow').toBeGreaterThan(0);
         expect(await controlsOutsideViewport(page, 390), 'off-screen').toContainEqual(
             expect.stringContaining('probe-offscreen')
         );
         expect(await runningAnimations(page), 'motion').toEqual(['script animation']);
+        expect(await unnamedScrollers(page), 'scroll regions').toContainEqual(
+            expect.stringContaining('probe-scroller')
+        );
         expect(await unnamedControls(page), 'names').toEqual([expect.stringMatching(/^- button\b/)]);
         expect(await polledInLiveRegions(page), 'live regions').toEqual([expect.stringContaining('sidenav-count')]);
         expect(await shortTargets(page), 'targets').toContainEqual(expect.stringContaining('probe-short'));
@@ -409,6 +429,52 @@ async function runningAnimations(page: Page): Promise<string[]> {
                 return 'script animation';
             })
     );
+}
+
+/** A running dot to observe: a real one when the seed has a live run, otherwise one injected
+ *  into the sidenav — the class is what carries the animation, whatever rendered it. */
+async function runningDot(page: Page): Promise<Locator> {
+    let dot = page.locator('.sidenav-dot-running').first();
+    if ((await dot.count()) === 0) {
+        await page.locator('.sidenav').waitFor({ state: 'attached' });
+        await page.evaluate(() => {
+            const injected = document.createElement('span');
+            injected.className = 'sidenav-dot-running';
+            document.querySelector('.sidenav')?.appendChild(injected);
+        });
+        dot = page.locator('.sidenav-dot-running').first();
+    }
+    return dot;
+}
+
+/** Every element in the main region that scrolls horizontally outside a named scroll region. */
+async function unnamedScrollers(page: Page): Promise<string[]> {
+    return await page.evaluate((allowed) => {
+        const out: string[] = [];
+        for (const el of document.querySelectorAll<HTMLElement>('main *')) {
+            if (el.scrollWidth - el.clientWidth <= 1) continue;
+            const style = getComputedStyle(el);
+            if (style.overflowX !== 'auto' && style.overflowX !== 'scroll') continue;
+            if (el.closest(allowed)) continue;
+            out.push(`${el.tagName.toLowerCase()}.${el.className}`);
+        }
+        return out;
+    }, NAMED_SCROLL_REGIONS);
+}
+
+/** The first inbox rows whose state pill is missing, collapsed, or pushed past the row's edge. */
+async function pillsOutsideRows(page: Page): Promise<string[]> {
+    const out: string[] = [];
+    for (const [index, row] of (await page.locator('.inbox-row').all()).slice(0, 4).entries()) {
+        const rowBox = await row.boundingBox();
+        const pillBox = await row.locator('.pill').boundingBox();
+        if (!rowBox || !pillBox) {
+            out.push(`row ${index}: no visible pill`);
+        } else if (pillBox.width <= 24 || pillBox.x + pillBox.width > rowBox.x + rowBox.width + 1) {
+            out.push(`row ${index}: pill ${Math.round(pillBox.width)}px wide at x ${Math.round(pillBox.x)}`);
+        }
+    }
+    return out;
 }
 
 /** Open a dialog, prove Tab and Shift+Tab never leave it, close it with Escape, and prove focus
@@ -694,23 +760,19 @@ function writeReport(): void {
         'every control outside a named scroll region sits inside it; otherwise the overflow in px.',
         '',
     ];
-    for (const theme of THEMES) {
-        lines.push(`## Page-level overflow — ${theme}`, '', `| family / state | ${widths.join(' | ')} |`);
-        lines.push(`| --- | ${widths.map(() => '---').join(' | ')} |`);
-        for (const shot of FAMILIES) {
-            const row = widths.map((width) => {
-                const cell = cells.find(
-                    (c) => c.route === shot.route && c.state === shot.state && c.theme === theme && c.width === width
-                );
-                if (!cell) return 'not run';
-                const worst = Math.max(cell.overflow.inner, cell.overflow.body);
-                if (worst > 0) return `FAIL (+${worst}px)`;
-                return cell.outside.length > 0 ? `FAIL (${cell.outside.length} controls off-screen)` : 'pass';
-            });
-            lines.push(`| ${label(shot)} | ${row.join(' | ')} |`);
-        }
-        lines.push('');
+    lines.push(`## Page-level overflow — ${OVERFLOW_THEME}`, '', `| family / state | ${widths.join(' | ')} |`);
+    lines.push(`| --- | ${widths.map(() => '---').join(' | ')} |`);
+    for (const shot of FAMILIES) {
+        const row = widths.map((width) => {
+            const cell = cells.find((c) => c.route === shot.route && c.state === shot.state && c.width === width);
+            if (!cell) return 'not run';
+            const worst = Math.max(cell.overflow.inner, cell.overflow.body);
+            if (worst > 0) return `FAIL (+${worst}px)`;
+            return cell.outside.length > 0 ? `FAIL (${cell.outside.length} controls off-screen)` : 'pass';
+        });
+        lines.push(`| ${label(shot)} | ${row.join(' | ')} |`);
     }
+    lines.push('');
     lines.push('## Assistive checks', '', '| check | scope | result |', '| --- | --- | --- |');
     for (const check of checks) lines.push(`| ${check.check} | ${check.scope} | ${check.result} |`);
     for (const check of checks.filter((c) => c.failures.length > 0 || c.notes.length > 0)) {
