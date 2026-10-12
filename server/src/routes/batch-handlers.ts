@@ -61,7 +61,7 @@ export async function handleList(orgs: OrgRegistry, request: FastifyRequest, rep
     const ctx = await contextOf(orgs, request, reply);
     if (!ctx) return reply;
     // `?task=<thread id>` is the task page's backlink: the batches that thread backs a task of.
-    // Not a uuid names no thread, so the answer is the empty list rather than a refusal.
+    // A non-uuid names no thread, so the answer is the empty list rather than a refusal.
     const { task } = request.query as { task?: unknown };
     if (task !== undefined && (typeof task !== 'string' || !UUID.test(task))) {
         return reply.code(HTTP_OK).send({ batches: [] });
