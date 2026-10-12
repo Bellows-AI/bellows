@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { FailureKind } from '../src/board.js';
-import type { HelperFailureReport } from '../src/helpers.js';
+import type { FailureCause, FailureKind } from '../src/board.js';
+import type { HelperFailureReason, HelperFailureReport } from '../src/helpers.js';
 import {
     agentFaults,
+    causeOf,
     draftable,
     gatesEligible,
     kindOf,
@@ -185,5 +186,51 @@ describe('the fault ledger', () => {
         const ledger = ledgerOf(merge(SINGLE.blocked, SINGLE.helper));
         const lines = outputOf(ledger, 'the agent reported it is blocked').split('\n[driver] ').slice(1);
         expect(lines.map((line) => line.split(' ')[0])).toEqual(['the', 'gates', 'helper']);
+    });
+});
+
+describe('the failure cause (#581)', () => {
+    const helperFailing = (reason: HelperFailureReason): LedgerParts =>
+        parts({ helperFailure: { helperId: 'h', result: { ok: false, reason, message: 'm' } } as HelperFailureReport });
+    const publishFailing = (cause: FailureCause): LedgerParts =>
+        parts({ published: { ok: false, published: false, reason: 'r', cause } as never });
+
+    it('names a failed gate a verification failure', () => {
+        expect(causeOf(ledgerOf(SINGLE.gate))).toBe('verification');
+    });
+
+    it.each<[HelperFailureReason, FailureCause]>([
+        ['auth_failed', 'denied'],
+        ['timeout', 'transport'],
+        ['runner_error', 'transport'],
+        ['unknown_helper', 'config'],
+        ['wrong_version', 'config'],
+        ['invalid_control', 'config'],
+        ['invalid_composite_plan', 'config'],
+        ['malformed_output', 'unknown'],
+        ['oversized_output', 'unknown'],
+    ])('reads a helper failing with %s as %s', (reason, cause) => {
+        expect(causeOf(ledgerOf(helperFailing(reason)))).toBe(cause);
+    });
+
+    it('carries the publish result its own cause', () => {
+        expect(causeOf(ledgerOf(publishFailing('conflict')))).toBe('conflict');
+        expect(causeOf(ledgerOf(publishFailing('denied')))).toBe('denied');
+    });
+
+    it('follows RANK: the cause belongs to the fault kindOf names', () => {
+        const ledger = ledgerOf(merge(SINGLE.gate, publishFailing('denied')));
+        expect(kindOf(ledger)).toBe('gate');
+        expect(causeOf(ledger)).toBe('verification');
+        expect(causeOf(ledgerOf(merge(helperFailing('auth_failed'), publishFailing('transport'))))).toBe('denied');
+    });
+
+    it('names no cause for a success or any other kind', () => {
+        expect(causeOf(ledgerOf(parts()))).toBeNull();
+        for (const kind of ['timeout', 'cache_lost', 'blocked', 'services', 'policy', 'runner_error'] as const) {
+            expect(causeOf(ledgerOf(SINGLE[kind]))).toBeNull();
+        }
+        // A timeout outranks the gate that still ran over it: the kind is timeout, so no cause.
+        expect(causeOf(ledgerOf(merge(SINGLE.timeout, SINGLE.gate)))).toBeNull();
     });
 });

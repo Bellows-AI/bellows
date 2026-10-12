@@ -212,6 +212,8 @@ export function memoryBatchStore(): MemoryBatchStore {
                 prs: { merged: [], open: [] },
                 verification: [],
                 tasks: [],
+                latestObservationAt: null,
+                unavailable: ['tokens', 'cost'],
                 totals: {
                     accepted: 0,
                     failed: 0,

@@ -3,6 +3,7 @@ import type { HelperFailureReport, HelperPlan, HelperResult } from './helpers.js
 import { formatConcludeOutput, runHelperPlan } from './helpers.js';
 import { down, raceStep } from './loop-attempt.js';
 import type { JobState } from './loop-attempt.js';
+import { helperCauseOf } from './loop-ledger.js';
 import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 
@@ -59,6 +60,7 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<SetupConclusion | 
                     exitCode: null,
                     output: `The declared pre-run helper "${plan.helperId}" failed (${result.reason}): ${result.message}`,
                     failureKind: 'helper' satisfies FailureKind,
+                    failureCause: helperCauseOf(result.reason),
                 },
             };
         }

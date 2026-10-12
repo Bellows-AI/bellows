@@ -28,6 +28,7 @@ export const USAGE = `usage: factory job create (<command...> | --file <path> | 
        factory batch validate <id> [--json]
        factory batch start <id> --version <n> [--idempotency-key <key>] [--json]
        factory batch inspect <id> [--json]
+       factory batch report <id> [--json]
        factory batch list [--json]
        factory batch wait <id> [--timeout <seconds>] [--json]
        factory batch retry <id> <task> [--json]
@@ -52,7 +53,7 @@ is written), validate shows the plan as start would freeze it — each stage's e
 the concurrency — and start freezes it at that version. The plan is carried whole: a
 multi-repository draft round-trips through inspect and update, but start refuses it for now (one
 repository target on its default branch). The board runs the batch: wait only watches — it ends
-0 when every task succeeded, 4 when one failed, 5 when cancelled, 6 when a task waits on a person
+0 when every task succeeded, 4 when one failed, 5 when cancelled or expired, 6 when a task waits on a person
 (a human review gate; the PRs needing action are listed) and 3 when the budget ran out — and
 leaving it, or the CLI, never cancels anything. A code-changing task needs its merged PR;
 accept only answers a declared human-reviewed no-PR task, and the board refuses the rest.

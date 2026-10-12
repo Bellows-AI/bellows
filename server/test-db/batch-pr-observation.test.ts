@@ -71,13 +71,15 @@ beforeAll(() => {
     prs = createPrLifecycleStore({ sql, orgId: ORG });
     jobs = createJobStore({ sql, orgId: ORG, prs });
     store = createBatchStore({ sql, orgId: ORG, stop: (id, by) => jobs.stop(id, by) });
-    observer = observerFor(ORG, jobs, store);
 });
 
 beforeEach(() => {
     github.replies.clear();
     github.reads.length = 0;
     clock.ms = Date.now();
+    // An observer holds the installation's rate-limit pause in memory; a test's clock starts over,
+    // so a pause one test earned must not outlive it.
+    if (enabled) observer = observerFor(ORG, jobs, store);
 });
 
 const prTask = (key: string) => ({
@@ -88,7 +90,7 @@ const prTask = (key: string) => ({
     completion: { kind: 'pr' },
 });
 
-function plan(stages: Record<string, unknown>[]): BatchPlan {
+function plan(stages: Record<string, unknown>[], extra: Record<string, number> = {}): BatchPlan {
     const result = validateBatchPlan({
         planVersion: 1,
         title: 'Observe',
@@ -96,6 +98,7 @@ function plan(stages: Record<string, unknown>[]): BatchPlan {
         defaultTarget: 'web',
         executor: 'claude',
         concurrency: 2,
+        ...extra,
         stages,
     });
     if (!result.ok) throw new Error(JSON.stringify(result.issues));
@@ -547,5 +550,360 @@ describe.skipIf(!enabled)('organization scope', () => {
         await observerOther.observeDue();
         expect(github.reads).toEqual([numberOther]);
         expect(await observerOther.list(idOther)).toHaveLength(1);
+    });
+});
+
+describe.skipIf(!enabled)('observed recovery (#581)', () => {
+    const repairsOf = async (id: string, key = 'a') =>
+        sql<{ attempt: number; job_id: string }[]>`
+            select attempt, job_id from batch_attempt
+            where batch_id = ${id} and task_key = ${key} and kind = 'repair' order by attempt
+        `;
+    const repairDecisions = async (id: string) =>
+        Number((await sql`select count(*) from batch_decision where batch_id = ${id} and kind = 'repair'`)[0]!.count);
+    const jobRow = async (jobId: string) =>
+        (
+            await sql<{ root_job_id: string; parent_job_id: string | null; command: string }[]>`
+                select root_job_id, parent_job_id, command from job where id = ${jobId}
+            `
+        )[0]!;
+    const taskOf = async (id: string, key = 'a') => (await store.get(id))!.tasks.find((t) => t.key === key)!;
+
+    /** A succeeded task whose PR the observer has just read as `extra` says. */
+    async function observedAs(extra: Partial<PrFacts>) {
+        const run = await succeededWithPr();
+        github.replies.set(run.number, facts(run.number, extra));
+        await observer.observeDue();
+        return run;
+    }
+
+    it('repairs a PR that fails its checks after a successful run, once, as a follow-up of the same thread', async () => {
+        const { id, root, number } = await observedAs({ checks: checks('failing') });
+
+        await store.reconcile(id);
+
+        const repairs = await repairsOf(id);
+        expect(repairs).toHaveLength(1);
+        expect(repairs[0]!.attempt).toBe(2);
+        const job = await jobRow(repairs[0]!.job_id);
+        expect(job.root_job_id).toBe(root);
+        expect(job.parent_job_id).not.toBeNull();
+        expect(job.command).toContain('failing its checks');
+        expect(job.command).toContain('- build: failing (https://ci/1)');
+        expect(job.command).toContain('a works');
+        expect(await observer.list(id)).toEqual([]);
+        expect(await taskOf(id)).toMatchObject({ execution: 'queued', gate: 'open', attention: null });
+        expect((await store.get(id))!.tasks[0]!.rootJobId).toBe(root);
+        expect(github.reads).toEqual([number]);
+    });
+
+    it('repairs a PR that conflicts after its target moved', async () => {
+        const { id, number } = await observedAs({});
+        github.replies.set(number, facts(number, { targetSha: 't2', mergeable: false }));
+        clock.ms += 61_000;
+        await observer.observeDue();
+
+        await store.reconcile(id);
+
+        const repairs = await repairsOf(id);
+        expect(repairs).toHaveLength(1);
+        expect((await jobRow(repairs[0]!.job_id)).command).toContain('conflicts with its target branch');
+    });
+
+    it('decides once for one fingerprint, however many passes race over it', async () => {
+        const { id, number } = await observedAs({ checks: checks('failing') });
+
+        await Promise.all([store.reconcile(id), store.reconcile(id), store.reconcile(id)]);
+        await store.reconcile(id);
+
+        expect(await repairsOf(id)).toHaveLength(1);
+        expect(await repairDecisions(id)).toBe(1);
+        expect(github.reads).toEqual([number]);
+    });
+
+    it.each([
+        ['pending checks', { checks: checks('pending') }],
+        ['missing checks', { checks: [] }],
+        ['unknown mergeability', { mergeable: null }],
+        ['a pending review', { requiredApprovals: 1, approvals: 0 }],
+    ] as const)('waits on %s without a repair or a budget charge', async (_what, extra) => {
+        const { id } = await observedAs(extra);
+
+        await store.reconcile(id);
+
+        expect(await repairsOf(id)).toEqual([]);
+        expect(await repairDecisions(id)).toBe(0);
+        expect(await taskOf(id)).toMatchObject({ execution: 'succeeded', gate: 'open', attention: null });
+    });
+
+    it('a target that moved under a clean PR re-reads it and repairs nothing', async () => {
+        const { id, number } = await observedAs({});
+        github.replies.set(number, facts(number, { targetSha: 't2' }));
+        clock.ms += 61_000;
+        await observer.observeDue();
+
+        await store.reconcile(id);
+
+        expect(await only(id)).toMatchObject({ targetSha: 't2', outcome: 'ready', revision: 2 });
+        expect(await repairsOf(id)).toEqual([]);
+        expect(await repairDecisions(id)).toBe(0);
+    });
+
+    it('never acts on a row a hint marked stale', async () => {
+        const { id, number } = await observedAs({ checks: checks('failing') });
+        await requestRefresh({ sql, orgId: ORG, now }, { repo: REPO, numbers: [number] });
+
+        await store.reconcile(id);
+
+        expect(await repairsOf(id)).toEqual([]);
+        expect(await repairDecisions(id)).toBe(0);
+    });
+
+    it('parks the task for a person when its repairs are spent, and its sibling still launches', async () => {
+        const id = await frozen(
+            plan([{ key: 'one', tasks: [prTask('a'), prTask('b')] }], { concurrency: 1, repairs: 0 })
+        );
+        await store.reconcile(id);
+        const root = await rootOf(id, 'a');
+        const number = await publish(root);
+        await setSucceeded(root);
+        await store.reconcile(id);
+        github.replies.set(number, facts(number, { checks: checks('failing') }));
+        await observer.observeDue();
+
+        await store.reconcile(id);
+
+        expect(await repairsOf(id)).toEqual([]);
+        const a = await taskOf(id);
+        expect(a).toMatchObject({ execution: 'succeeded', gate: 'open', attention: 'budget' });
+        expect(a.waitReason).toContain('recovery budget exhausted');
+        expect(await taskOf(id, 'b')).toMatchObject({ execution: 'queued', attempt: 1 });
+
+        // The gate's own wait reason does not overwrite the person's reason on a later pass.
+        await store.reconcile(id);
+        expect((await taskOf(id)).waitReason).toBe(a.waitReason);
+    });
+
+    it('counts a spent repair from the attempt rows: a second failing PR after one repair needs a person', async () => {
+        const id = await frozen(plan([{ key: 'one', tasks: [prTask('a')] }], { repairs: 1 }));
+        await store.reconcile(id);
+        const root = await rootOf(id, 'a');
+        const number = await publish(root);
+        await setSucceeded(root);
+        await store.reconcile(id);
+        github.replies.set(number, facts(number, { checks: checks('failing') }));
+        await observer.observeDue();
+        await store.reconcile(id);
+        expect(await repairsOf(id)).toHaveLength(1);
+
+        await setSucceeded(root);
+        await store.reconcile(id);
+        github.replies.set(number, facts(number, { headSha: 'h2', checks: checks('failing') }));
+        clock.ms += 61_000;
+        await observer.observeDue();
+        await store.reconcile(id);
+
+        expect(await repairsOf(id)).toHaveLength(1);
+        expect(await taskOf(id)).toMatchObject({ execution: 'succeeded', attention: 'budget' });
+    });
+
+    it('repairs nothing in a cancelled batch', async () => {
+        const { id, number } = await succeededWithPr();
+        await store.cancel(id, ALICE);
+        github.replies.set(number, facts(number, { checks: checks('failing') }));
+        await observer.observeDue();
+        const jobsBefore = await jobCount();
+
+        await store.reconcile(id);
+
+        expect(await repairsOf(id)).toEqual([]);
+        expect(await repairDecisions(id)).toBe(0);
+        expect(await jobCount()).toBe(jobsBefore);
+    });
+
+    it('repairs nothing once the time limit expired', async () => {
+        const timed = createBatchStore({ sql, orgId: ORG, stop: (id, by) => jobs.stop(id, by), now });
+        const timedObserver = observerFor(ORG, jobs, timed);
+        const id = await frozen(plan([{ key: 'one', tasks: [prTask('a')] }], { timeLimitMinutes: 1 }), timed);
+        await timed.reconcile(id);
+        const root = await rootOf(id, 'a', timed);
+        const number = await publish(root);
+        await setSucceeded(root);
+        await timed.reconcile(id);
+        github.replies.set(number, facts(number, { checks: checks('failing') }));
+        await timedObserver.observeDue();
+
+        clock.ms += 120_000;
+        await timed.reconcile(id);
+
+        expect((await timed.get(id))!.expiredAt).not.toBeNull();
+        expect(await repairsOf(id)).toEqual([]);
+        expect(await repairDecisions(id)).toBe(0);
+    });
+
+    it('awaits the repaired head’s own observation, and an earlier merge does not pass its gate', async () => {
+        const { id, root, number } = await observedAs({ checks: checks('failing') });
+        await store.reconcile(id);
+        expect(await repairsOf(id)).toHaveLength(1);
+
+        // The repair is running: its PR is not read, and the old failure is gone.
+        clock.ms += 61_000;
+        await observer.observeDue();
+        expect(await observer.list(id)).toEqual([]);
+
+        await setSucceeded(root);
+        await store.reconcile(id);
+        expect(await repairsOf(id)).toHaveLength(1);
+        expect(await taskOf(id)).toMatchObject({ execution: 'succeeded', gate: 'open', attention: null });
+
+        // A merge stamped before the repair began is about the old head.
+        await jobs.closeMergedPr(REPO, number, randomUUID(), new Date(Date.now() - 3_600_000));
+        await store.reconcile(id);
+        expect(await taskOf(id)).toMatchObject({ gate: 'open' });
+        expect(await repairsOf(id)).toHaveLength(1);
+    });
+
+    /** Task a's repair is decided but b holds the only slot; then a hint makes a's evidence stale and b finishes. */
+    async function repairWithdrawnOnStaleEvidence() {
+        const id = await frozen(plan([{ key: 'one', tasks: [prTask('a'), prTask('b')] }], { concurrency: 1 }));
+        await store.reconcile(id);
+        const root = await rootOf(id, 'a');
+        const number = await publish(root);
+        await setSucceeded(root);
+        await store.reconcile(id);
+        github.replies.set(number, facts(number, { checks: checks('failing') }));
+        await observer.observeDue();
+        await store.reconcile(id);
+        expect(await taskOf(id)).toMatchObject({ execution: 'retry' });
+        expect(await repairsOf(id)).toEqual([]);
+
+        await requestRefresh({ sql, orgId: ORG, now }, { repo: REPO, numbers: [number] });
+        await setSucceeded(await rootOf(id, 'b'));
+        await store.reconcile(id);
+        return { id, number };
+    }
+
+    it('withdraws an undispatched repair whose evidence went stale, charging nothing', async () => {
+        const { id } = await repairWithdrawnOnStaleEvidence();
+
+        expect(await repairsOf(id)).toEqual([]);
+        expect(await repairDecisions(id)).toBe(0);
+        expect(await taskOf(id)).toMatchObject({ execution: 'succeeded', gate: 'open', attention: null });
+        const launches = await sql`select 1 from batch_decision where batch_id = ${id} and key like 'launch:a:%'`;
+        expect(launches).toHaveLength(1);
+    });
+
+    it.each([
+        ['confirms the same failure', { checks: checks('failing') }, 1],
+        ['finds the checks passing', { headSha: 'h2' }, 0],
+    ] as const)('after a withdrawal, a refresh that %s decides afresh', async (_what, extra, repairs) => {
+        const { id, number } = await repairWithdrawnOnStaleEvidence();
+        github.replies.set(number, facts(number, extra));
+
+        await observer.observeDue();
+        await store.reconcile(id);
+
+        expect(await repairsOf(id)).toHaveLength(repairs);
+    });
+
+    /** Task a's repair is decided but b holds the only slot. */
+    async function repairWaitingForSlot() {
+        const id = await frozen(plan([{ key: 'one', tasks: [prTask('a'), prTask('b')] }], { concurrency: 1 }));
+        await store.reconcile(id);
+        const number = await publish(await rootOf(id, 'a'));
+        await setSucceeded(await rootOf(id, 'a'));
+        await store.reconcile(id);
+        github.replies.set(number, facts(number, { checks: checks('failing') }));
+        await observer.observeDue();
+        await store.reconcile(id);
+        expect(await taskOf(id)).toMatchObject({ execution: 'retry' });
+        return { id, number };
+    }
+
+    it('keeps reading the PR of a waiting repair: a merge with no hint withdraws it and passes the gate', async () => {
+        const { id, number } = await repairWaitingForSlot();
+        github.replies.set(number, facts(number, { state: 'closed', merged: true, mergeCommitSha: 'mc7' }));
+        clock.ms += 61_000;
+        await observer.observeDue();
+        expect(await sql`select 1 from pr_merge where pr_number = ${number}`).toHaveLength(1);
+
+        await setSucceeded(await rootOf(id, 'b'));
+        await store.reconcile(id);
+
+        expect(await repairsOf(id)).toEqual([]);
+        expect(await taskOf(id)).toMatchObject({ execution: 'succeeded', gate: 'passed', attention: null });
+    });
+
+    it('withdraws a waiting repair whose PR a delivered merge closed before the row was re-read', async () => {
+        const { id, number } = await repairWaitingForSlot();
+        await jobs.closeMergedPr(REPO, number, randomUUID());
+
+        await setSucceeded(await rootOf(id, 'b'));
+        await store.reconcile(id);
+
+        expect(await repairsOf(id)).toEqual([]);
+        expect(await taskOf(id)).toMatchObject({ execution: 'succeeded', gate: 'passed' });
+    });
+
+    it('clears a spent-budget attention once the checks pass again, and the report agrees with the gate', async () => {
+        const id = await frozen(plan([{ key: 'one', tasks: [prTask('a')] }], { repairs: 0 }));
+        await store.reconcile(id);
+        const root = await rootOf(id, 'a');
+        const number = await publish(root);
+        await setSucceeded(root);
+        await store.reconcile(id);
+        github.replies.set(number, facts(number, { checks: checks('failing') }));
+        await observer.observeDue();
+        await store.reconcile(id);
+        expect(await taskOf(id)).toMatchObject({ attention: 'budget' });
+
+        github.replies.set(number, facts(number));
+        clock.ms += 61_000;
+        await observer.observeDue();
+        await store.reconcile(id);
+
+        const url = `https://github.com/${REPO}/pull/${number}`;
+        expect(await taskOf(id)).toMatchObject({ attention: null, waitReason: `waiting for a person to merge ${url}` });
+        const reported = (await store.report(id))!.tasks[0]!;
+        expect(reported).toMatchObject({
+            attention: null,
+            waitReason: `waiting for a person to merge ${url}`,
+            next: { action: 'merge', url },
+        });
+    });
+
+    it('parks a PR closed without merging, names it, and clears once it is reopened and merged', async () => {
+        const { id, number } = await observedAs({ state: 'closed' });
+
+        await store.reconcile(id);
+        const parked = await taskOf(id);
+        expect(parked).toMatchObject({ execution: 'succeeded', gate: 'open', attention: 'closed' });
+        expect(parked.waitReason).toContain(`https://github.com/${REPO}/pull/${number}`);
+        expect(parked.waitReason).toContain('closed without merging');
+        expect(await repairsOf(id)).toEqual([]);
+
+        await store.reconcile(id);
+        expect(await taskOf(id)).toMatchObject({ attention: 'closed', waitReason: parked.waitReason });
+
+        github.replies.set(number, facts(number, { state: 'closed', merged: true, mergeCommitSha: 'mc9' }));
+        clock.ms += 61_000;
+        await observer.observeDue();
+        await store.reconcile(id);
+        expect(await taskOf(id)).toMatchObject({ gate: 'passed', attention: null });
+    });
+
+    it('clears the closed attention when the PR is reopened, and the gate waits again', async () => {
+        const { id, number } = await observedAs({ state: 'closed' });
+        await store.reconcile(id);
+        expect(await taskOf(id)).toMatchObject({ attention: 'closed' });
+
+        github.replies.set(number, facts(number));
+        clock.ms += 61_000;
+        await observer.observeDue();
+        await store.reconcile(id);
+
+        const reopened = await taskOf(id);
+        expect(reopened).toMatchObject({ attention: null, gate: 'open' });
+        expect(reopened.waitReason).toBe(`waiting for a person to merge https://github.com/${REPO}/pull/${number}`);
     });
 });

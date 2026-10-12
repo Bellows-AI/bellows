@@ -27,7 +27,8 @@ import {
 } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
 import { judgeGates } from './batch-store-gates.js';
-import { repairInTx } from './batch-store-repair.js';
+import { recoverObserved, withdrawRepair } from './batch-store-observed.js';
+import { decide, failedAttentionReason, recoveriesUsed, repairInTx, type Tx } from './batch-store-repair.js';
 import { insertJobInTx, retryInTx } from './job-store-actions.js';
 import {
     ACCEPTANCE_ACCEPTED,
@@ -131,21 +132,12 @@ interface MovingTask {
     head_id: string | null;
     status: string | null;
     failure_kind: string | null;
+    /** What lies under a gate, publish or helper failure (065, issue #581). */
+    failure_cause: string | null;
     /** The newest question still waiting for an answer, which only a running job can receive. */
     pending_question: string | null;
     /** A question the thread asked that no person ever answered: pending, or expired unanswered. */
     unanswered: boolean;
-}
-
-/** Automatic recoveries a task has used, counted from the durable attempt rows. */
-async function recoveriesUsed(at: Tx, taskKey: string): Promise<{ infra: number; repairs: number }> {
-    const { tx, orgId, id } = at;
-    const [row] = await tx<{ infra: number; repairs: number }[]>`
-        select count(*) filter (where kind = ${RECOVERY_INFRA})::int as infra,
-               count(*) filter (where kind = ${RECOVERY_REPAIR})::int as repairs
-        from batch_attempt where org_id = ${orgId} and batch_id = ${id} and task_key = ${taskKey}
-    `;
-    return row!;
 }
 
 /**
@@ -160,20 +152,17 @@ async function recoverFailed(at: Tx, run: { batch: LockedBatch; task: MovingTask
         failure: classifyTaskFailure({
             status: task.status!,
             failureKind: task.failure_kind,
+            failureCause: task.failure_cause,
             unansweredQuestion: task.unanswered,
         }),
         used: await recoveriesUsed(at, task.key),
         budgets: { infraRetries: batch.infra_retries, repairs: batch.repairs },
     });
     if (plan.action === 'attention') {
-        const detail =
-            plan.reason === ATTENTION_QUESTION
-                ? `a question of this run was never answered`
-                : 'no automatic attempts left';
         await tx`
             update batch_task
             set execution = ${TASK_FAILED}, attention = ${plan.reason},
-                wait_reason = ${attentionWaitReason(plan.reason, { jobId: task.head_id!, detail })}
+                wait_reason = ${failedAttentionReason(plan.reason, task)}
             where org_id = ${orgId} and batch_id = ${id} and key = ${task.key}
         `;
         return;
@@ -193,7 +182,7 @@ async function syncTasks(at: Tx, run: { batch: LockedBatch; now: Date }): Promis
     const { tx, orgId, id } = at;
     const { batch, now } = run;
     const moving = await tx<MovingTask[]>`
-        select t.key, t.execution, t.attention, head.id as head_id, head.status, head.failure_kind,
+        select t.key, t.execution, t.attention, head.id as head_id, head.status, head.failure_kind, head.failure_cause,
                (select q.question_id from job_question q
                 where q.org_id = t.org_id and q.job_id = head.id and q.state = 'pending'
                   and q.lease_token = head.lease_token
@@ -204,7 +193,7 @@ async function syncTasks(at: Tx, run: { batch: LockedBatch; now: Date }): Promis
                    as unanswered
         from batch_task t
         left join lateral (
-            select j.id, j.status, j.failure_kind, j.lease_token, j.attempts from job j
+            select j.id, j.status, j.failure_kind, j.failure_cause, j.lease_token, j.attempts from job j
             where j.org_id = t.org_id and j.root_job_id = t.root_job_id and j.review_of is null
             order by j.created_at desc, j.id desc
             limit 1
@@ -266,21 +255,6 @@ async function syncQuestion(at: Tx, task: MovingTask): Promise<boolean> {
     return false;
 }
 
-/** Records a decision once. False when it was already recorded — the caller does nothing then. */
-async function decide(
-    tx: TransactionSql,
-    at: { orgId: string; id: string },
-    decision: { key: string; kind: string; subject: string | null }
-): Promise<boolean> {
-    const rows = await tx`
-        insert into batch_decision (org_id, batch_id, key, kind, subject)
-        values (${at.orgId}, ${at.id}, ${decision.key}, ${decision.kind}, ${decision.subject})
-        on conflict do nothing
-        returning key
-    `;
-    return rows.length > 0;
-}
-
 interface PassResult {
     changed: boolean;
     progress: BatchProgress;
@@ -298,8 +272,6 @@ interface Snapshot {
     targets: Map<string, { repo: string; branch: string }>;
     attempts: Map<string, number>;
 }
-
-type Tx = { tx: TransactionSql; orgId: string; id: string };
 
 async function loadSnapshot({ tx, orgId, id }: Tx): Promise<Snapshot> {
     const [stages, advanced, unverified, tasks, targets, attempts] = await Promise.all([
@@ -383,7 +355,7 @@ async function launch(
     const kind: string = retrying ? (task.recovery ?? 'retry') : 'launch';
     const created =
         kind === RECOVERY_REPAIR
-            ? await repairInTx(tx, { orgId, task, startedBy })
+            ? await repairInTx(tx, { orgId, batchId: id, task, startedBy })
             : retrying
               ? await retryInTx(tx, { orgId, id: task.root_job_id!, createdBy: startedBy })
               : await insertJobInTx(tx, deps, {
@@ -397,6 +369,10 @@ async function launch(
         // that needs a person.
         await tx`delete from batch_decision where org_id = ${orgId} and batch_id = ${id} and key = ${decisionKey}`;
         if (created === 'purging') return 'skipped';
+        if (created === 'superseded') {
+            await withdrawRepair(at, { key: task.key, attempt: attempt - 1 });
+            return 'changed';
+        }
         const refusal = `retry refused: ${created}`;
         await tx`
             update batch_task
@@ -457,11 +433,7 @@ async function pass(deps: ScheduleDeps, id: string, revisions: Map<string, strin
         // advances behind it.
         let changed = await expire(at, batch, now);
         changed = (await syncTasks(at, { batch, now })) || changed;
-        // The cancellation fence: a merge observed after cancel or completion passes nothing. An
-        // expired batch still records merges that land, so the report shows them.
-        if (batch.cancelled_at === null && batch.completed_at === null) {
-            changed = (await judgeGates(tx, orgId, id)) || changed;
-        }
+        changed = (await judge(at, batch)) || changed;
 
         const snapshot = await loadSnapshot(at);
         const decision = decideFor(batch, snapshot, now);
@@ -473,6 +445,19 @@ async function pass(deps: ScheduleDeps, id: string, revisions: Map<string, strin
         result.progress.active += launched.created;
         return { ...result, changed: changed || launched.changed };
     });
+}
+
+/**
+ * The gates, then what each task's PR shows after a successful run (issue #581). The cancellation
+ * fence: a merge observed after cancel or completion passes nothing. An expired batch still records
+ * merges that land, so the report shows them, but recovers nothing.
+ */
+async function judge(at: Tx, batch: LockedBatch): Promise<boolean> {
+    if (batch.cancelled_at !== null || batch.completed_at !== null) return false;
+    const changed = await judgeGates(at.tx, at.orgId, at.id);
+    if (batch.expired_at !== null) return changed;
+    const budgets = { infraRetries: batch.infra_retries, repairs: batch.repairs };
+    return (await recoverObserved(at, budgets)) || changed;
 }
 
 /**
