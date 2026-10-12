@@ -253,8 +253,18 @@ export async function completeJob(
     result: CompleteResult
 ): ReturnType<JobStore['complete']> {
     const { sql, orgId, wallTick, prs } = ctx;
-    const { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary, failureKind, publication } =
-        result;
+    const {
+        status,
+        exitCode,
+        output,
+        contextTokens,
+        contextCostUsd,
+        agentTurns,
+        summary,
+        failureKind,
+        failureCause,
+        publication,
+    } = result;
     const treeChanged = result.treeChanged ?? null;
     // The context stats ride the verdict and merge into the runtime vitals — the row keeps
     // its last CPU sample AND gains the context the run reached. The stats are stored
@@ -281,6 +291,8 @@ export async function completeJob(
     // the attempt's whole write, so an absent kind overwrites to null — a success and a
     // pre-column row read the same, "not a failure".
     const failureKindPatch = failureKind ?? null;
+    // The cause under that kind (065, issue #581), same overwrite rule.
+    const failureCausePatch = failureCause ?? null;
     const evidencePatch = result.evidence ? sql.json(result.evidence as never) : null;
     const runtimeUpdate = context === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${context}`;
     // One transaction, because the terminality answer must describe the thread AS THE
@@ -319,6 +331,7 @@ export async function completeJob(
                 agent_turns = ${agentTurnsPatch},
                 summary = ${summaryPatch},
                 failure_kind = ${failureKindPatch},
+                failure_cause = ${failureCausePatch},
                 -- The attempt's evidence record, same overwrite rule: a retry never inherits the
                 -- killed attempt's tree or gate outcome.
                 evidence = ${evidencePatch},

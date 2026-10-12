@@ -10,7 +10,9 @@ import {
     observationFingerprint,
     PR_CLOSED,
     PR_OPEN,
+    RECOVERY_REPAIR,
     sameRepo,
+    TASK_RETRY,
     TASK_SUCCEEDED,
     type CheckEvidence,
     type PrFacts,
@@ -91,7 +93,11 @@ const nowOf = (deps: ObservationDeps): Date => (deps.now ? deps.now() : new Date
 /** How long after a cancel or expiry its PRs are still read for a merge; polling forever would spend the rate limit. */
 export const FENCED_OBSERVATION_MS = HOUR * 24;
 
-/** Tasks whose PR is worth reading: an unaccepted PR of a live batch, or a fenced one's until merged or the window ends. */
+/**
+ * Tasks whose PR is worth reading: an unaccepted PR of a live batch — a repair waiting for its slot
+ * included, so the evidence it will be launched on stays fresh — or a fenced one's until merged or
+ * the window ends.
+ */
 const eligible = (tx: TransactionSql, orgId: string, now: Date) => {
     const fenceCutoff = new Date(now.getTime() - FENCED_OBSERVATION_MS);
     return tx`
@@ -102,7 +108,8 @@ const eligible = (tx: TransactionSql, orgId: string, now: Date) => {
     )
     and (
         (b.cancelled_at is null and b.expired_at is null and b.completed_at is null
-         and t.execution = ${TASK_SUCCEEDED} and t.gate = ${GATE_OPEN})
+         and (t.execution = ${TASK_SUCCEEDED} or (t.execution = ${TASK_RETRY} and t.recovery = ${RECOVERY_REPAIR}))
+         and t.gate = ${GATE_OPEN})
         or ((b.cancelled_at is not null or b.expired_at is not null) and b.completed_at is null
             and coalesce(b.cancelled_at, b.expired_at) > ${fenceCutoff})
     )

@@ -4,7 +4,7 @@
  * provider outside any lock, asks here, and commits the answer only if the task is still bound to
  * what was read. Observation supplies facts; recovery (batch-recovery.ts) decides what to do.
  */
-import { BATCH_RETRY_BACKOFF_BASE_MS, recoveryBackoffMs } from './batch-recovery.js';
+import { BATCH_RETRY_BACKOFF_BASE_MS, MAX_EVIDENCE_ITEMS, recoveryBackoffMs } from './batch-recovery.js';
 
 export const PR_OPEN = 'open';
 export const PR_CLOSED = 'closed';
@@ -78,8 +78,6 @@ export const OBSERVE_INTERVAL_MS = BATCH_RETRY_BACKOFF_BASE_MS;
 /** Mergeability is computed lazily by GitHub; an unanswered one is asked again soon. */
 export const OBSERVE_MERGEABILITY_RETRY_MS = 20_000;
 
-/** Bounds on the evidence a #581 consumer and a person reads. */
-export const MAX_EVIDENCE_ITEMS = 20;
 const EVIDENCE_NAME_LIMIT = 200;
 const EVIDENCE_URL_LIMIT = 500;
 const EVIDENCE_DETAIL_LIMIT = 300;

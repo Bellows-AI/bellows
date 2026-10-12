@@ -1,11 +1,12 @@
 import { parseArgs } from 'node:util';
-import { BATCH_DRAFT, BATCH_UNSUPPORTED_CODE, batchVerdict } from './batch.js';
+import { BATCH_DRAFT, BATCH_UNSUPPORTED_CODE, batchVerdict, REPORT_CANCELLED, REPORT_EXPIRED } from './batch.js';
 import type { BatchRecord } from './batch.js';
 import {
     needsAction,
     renderBatch,
     renderBatchList,
     renderDraftWritten,
+    renderReport,
     renderValidated,
     renderWaitEnd,
 } from './batch-render.js';
@@ -165,13 +166,23 @@ async function runStart(args: readonly string[], _io: BatchIo, boardFor: BoardFo
 
 async function runInspect(args: readonly string[], _io: BatchIo, boardFor: BoardFor): Promise<CommandResult> {
     const { positionals } = positionalsOf(args, 'inspect', '<id>', {});
-    const batch = await boardFor().getBatch(positionals[0]!);
+    const client = boardFor();
+    const batch = await client.getBatch(positionals[0]!);
+    const draft = batch.status === BATCH_DRAFT;
     const data = {
         batch,
-        verdict: batch.status === BATCH_DRAFT ? null : batchVerdict(batch),
+        verdict: draft ? null : batchVerdict(batch),
         needsAction: actionOf(batch),
+        // A draft has no report: the board refuses one until the batch starts.
+        report: draft ? null : await client.getBatchReport(batch.id),
     };
     return ok(data, renderBatch(batch));
+}
+
+async function runReport(args: readonly string[], io: BatchIo, boardFor: BoardFor): Promise<CommandResult> {
+    const { positionals } = positionalsOf(args, 'report', '<id>', {});
+    const report = await boardFor().getBatchReport(positionals[0]!);
+    return ok(report, renderReport(report, (io.now ?? Date.now)()));
 }
 
 const actionOf = (batch: BatchRecord) => batch.tasks.filter(needsAction);
@@ -212,16 +223,35 @@ async function runWait(args: readonly string[], io: BatchIo, boardFor: BoardFor)
                 `batch ${id} is a draft; start it first (factory batch start ${id} --version ${batch.version})`
             );
         }
-        const verdict = batchVerdict(batch);
-        const data = { verdict, budgetSeconds: total, batch, needsAction: actionOf(batch) };
-        const settled = SETTLED[verdict];
-        if (settled) return { outcome: settled, data, stdout: `${renderWaitEnd(batch)}\n` };
         const remaining = deadline - now();
-        if (remaining <= 0) {
-            return { outcome: OUTCOME.timeout, data, stderr: `still running after ${total}s: ${id}\n` };
-        }
+        const ended = await waitEnd(client, { batch, total, timedOut: remaining <= 0 });
+        if (ended) return ended;
         await sleep(Math.min(WAIT_POLL_MS, remaining), io.signal);
     }
+}
+
+const FENCED: readonly string[] = [REPORT_CANCELLED, REPORT_EXPIRED];
+
+/**
+ * How a wait ends, with the report beside the batch; null while it keeps watching. A fenced batch
+ * starts nothing new: it ends as cancelled, named for the fence (`cancelled` or `expired`).
+ */
+async function waitEnd(
+    client: BoardClient,
+    run: { batch: BatchRecord; total: number; timedOut: boolean }
+): Promise<CommandResult | null> {
+    const { batch, total, timedOut } = run;
+    const verdict = batchVerdict(batch);
+    const settled = SETTLED[verdict];
+    const fenced = Boolean(batch.cancelledAt) || Boolean(batch.expiredAt);
+    if (!fenced && !settled && !timedOut) return null;
+    const report = await client.getBatchReport(batch.id);
+    const data = { verdict, budgetSeconds: total, batch, needsAction: actionOf(batch), report };
+    if (FENCED.includes(report.state)) {
+        return { outcome: OUTCOME.cancelled, data, stdout: `${renderWaitEnd(batch, report.state)}\n` };
+    }
+    if (settled) return { outcome: settled, data, stdout: `${renderWaitEnd(batch)}\n` };
+    return { outcome: OUTCOME.timeout, data, stderr: `still running after ${total}s: ${batch.id}\n` };
 }
 
 /** How each settled verdict ends the command; `running` is absent — it is the loop's. */
@@ -258,6 +288,7 @@ const BATCH_HANDLERS: Record<string, BatchCommand> = {
     'batch validate': runValidate,
     'batch start': runStart,
     'batch inspect': runInspect,
+    'batch report': runReport,
     'batch list': runList,
     'batch wait': runWait,
     'batch cancel': runCancel,

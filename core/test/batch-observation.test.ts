@@ -3,12 +3,12 @@ import {
     assessChecks,
     assessPullRequest,
     errorFingerprint,
-    MAX_EVIDENCE_ITEMS,
     nextObservationDelayMs,
     observationFingerprint,
     type CheckItem,
     type PrFacts,
 } from '../src/batch-observation.js';
+import { MAX_EVIDENCE_ITEMS } from '../src/batch-recovery.js';
 
 const check = (name: string, state: CheckItem['state'], extra: Partial<CheckItem> = {}): CheckItem => ({
     name,

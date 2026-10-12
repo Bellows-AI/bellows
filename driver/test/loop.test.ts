@@ -3551,6 +3551,7 @@ describe('block-helper steps (issue #207)', () => {
                 exitCode: null,
                 output: expect.stringContaining('the helper blew up'),
                 failureKind: 'helper',
+                failureCause: 'transport',
             },
         ]);
     });
@@ -4291,7 +4292,12 @@ describe('the verdict failure kind (issue #339)', () => {
 
         await drive({ ...board, runner, gates });
 
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'gate' });
+        // Issue #581: the cause rides beside the kind — a gate's real exit is a verification failure.
+        expect(board.board.completed[0]).toMatchObject({
+            status: 'failed',
+            failureKind: 'gate',
+            failureCause: 'verification',
+        });
     });
 
     it('names an unlanded publish publish', async () => {
@@ -4306,12 +4312,17 @@ describe('the verdict failure kind (issue #339)', () => {
                 repository: null,
                 baseBranch: null,
                 prNumber: null,
+                cause: 'conflict',
             },
         });
 
         await drive({ ...board, runner });
 
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'publish' });
+        expect(board.board.completed[0]).toMatchObject({
+            status: 'failed',
+            failureKind: 'publish',
+            failureCause: 'conflict',
+        });
     });
 
     it('names a failed post-helper helper', async () => {
@@ -4323,7 +4334,11 @@ describe('the verdict failure kind (issue #339)', () => {
 
         await drive({ ...board, runner });
 
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'helper' });
+        expect(board.board.completed[0]).toMatchObject({
+            status: 'failed',
+            failureKind: 'helper',
+            failureCause: 'unknown',
+        });
     });
 
     it('names a failed pre-helper helper — the agent never launched', async () => {
@@ -4337,7 +4352,11 @@ describe('the verdict failure kind (issue #339)', () => {
 
         await drive({ ...board, runner });
 
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'helper' });
+        expect(board.board.completed[0]).toMatchObject({
+            status: 'failed',
+            failureKind: 'helper',
+            failureCause: 'transport',
+        });
     });
 
     it('names a cache kill cache_lost', async () => {

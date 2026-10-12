@@ -55,6 +55,14 @@ export type FailureKind =
     | 'policy'
     | 'runner_error';
 
+/**
+ * What lies under a `gate`, `publish` or `helper` failure (issue #581), stored as
+ * `job.failure_cause` and read only by the batch scheduler's recovery: a conflict or failed check is
+ * repaired, a transport loss retried, a refusal or bad configuration left to a person. Null on every
+ * other kind. Copied from the driver's `board.ts`, which depends on nothing.
+ */
+export type FailureCause = 'verification' | 'conflict' | 'denied' | 'config' | 'transport' | 'unknown';
+
 /** Where one declared gate is, right now. 'running' is the worker's claim, the others its verdict. */
 export interface GateReport {
     name: string;
@@ -1180,6 +1188,8 @@ export interface JobStore {
              * a success and a pre-column row read the same.
              */
             failureKind?: FailureKind | null;
+            /** The cause under a `gate`/`publish`/`helper` kind (issue #581); absent overwrites to null. */
+            failureCause?: FailureCause | null;
             /**
              * Whether the task tree changed since the attempt's startup sync, measured by the
              * driver only after a declared gate failed. Not stored: the workflow transition in

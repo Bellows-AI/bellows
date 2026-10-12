@@ -107,7 +107,8 @@ export async function enforceCompletionPolicy(
         failureKind: 'policy',
     };
     await tx`
-        update job set status = ${refused.status}, failure_kind = ${refused.failureKind}, output = ${refused.output}
+        update job set status = ${refused.status}, failure_kind = ${refused.failureKind}, failure_cause = null,
+            output = ${refused.output}
         where org_id = ${row.orgId} and id = ${row.id}
     `;
     return refused;

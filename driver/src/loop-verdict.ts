@@ -11,6 +11,7 @@ import { runTimeoutMs } from './claim.js';
 import type { HelperFailureReport } from './helpers.js';
 import type { GateFailure } from './loop-gates.js';
 import {
+    causeOf,
     deadServiceNote,
     draftable,
     kindOf,
@@ -79,7 +80,7 @@ export async function publishBranch(
     if (!rt.runner.publishGit) return null;
     return rt.runner
         .publishGit(job, publishToken ?? undefined, options)
-        .catch((e: Error) => publishFailed(`the publish threw: ${e.message}`));
+        .catch((e: Error) => publishFailed(`the publish threw: ${e.message}`, 'unknown'));
 }
 
 /** The publication identity to ride the verdict, only when the publish really happened and landed. */
@@ -169,6 +170,7 @@ export async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<
     const output = buildOutput(rt, finish, ledger);
     const publication = publicationOf(published);
     const failureKind = kindOf(ledger);
+    const failureCause = causeOf(ledger);
 
     const verdict = await report(rt, job, {
         status,
@@ -182,6 +184,7 @@ export async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<
         ...(outcome.summary ? { summary: outcome.summary } : {}),
         // The structured failure reason (issue #339); a success reports no kind at all.
         ...(failureKind ? { failureKind } : {}),
+        ...(failureCause ? { failureCause } : {}),
         ...(finish.treeChanged !== null ? { treeChanged: finish.treeChanged } : {}),
         ...(finish.evidence ? { evidence: finish.evidence } : {}),
         ...(publication ? { publication } : {}),

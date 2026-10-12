@@ -54,10 +54,12 @@ export type {
     FailureClass,
     RecoveryKind,
     RecoveryPlan,
+    RepairEvidence,
 } from './batch-recovery.js';
 export {
     ATTENTION_BLOCKED,
     ATTENTION_BUDGET,
+    ATTENTION_CLOSED,
     ATTENTION_CONFIGURATION,
     ATTENTION_QUESTION,
     ATTENTION_REASONS,
@@ -69,6 +71,7 @@ export {
     batchNextAction,
     batchRepairCommand,
     classifyTaskFailure,
+    MAX_EVIDENCE_ITEMS,
     planRecovery,
     RECOVERY_INFRA,
     RECOVERY_REPAIR,
@@ -96,7 +99,6 @@ export {
     CHECKS_UNKNOWN,
     errorFingerprint,
     isTransientReadError,
-    MAX_EVIDENCE_ITEMS,
     MERGEABLE_CLEAN,
     MERGEABLE_CONFLICTING,
     MERGEABLE_UNKNOWN,

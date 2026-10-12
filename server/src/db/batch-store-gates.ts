@@ -12,6 +12,7 @@ import {
     TASK_SUCCEEDED,
 } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
+import { OBSERVED_ATTENTION } from './batch-store-observed.js';
 import { ACCEPTANCE_PR_MERGED, DECISION_ADVANCE } from './batch-store-types.js';
 
 /**
@@ -35,6 +36,7 @@ interface GateRow {
     attempt: number;
     attempt_started_at: Date;
     wait_reason: string | null;
+    attention: string | null;
     policy: string;
     merge_state: string | null;
     merge_detail: string | null;
@@ -61,7 +63,7 @@ function mergeNoteOf(state: string | null, detail: string | null): string | null
 /** True only when a task's row changed: a pass that rewrites nothing must end the reconcile loop. */
 export async function judgeGates(tx: TransactionSql, orgId: string, id: string): Promise<boolean> {
     const rows = await tx<GateRow[]>`
-        select t.key, t.completion_kind, t.completion_condition, tg.branch as target_branch, t.pr, t.wait_reason,
+        select t.key, t.completion_kind, t.completion_condition, tg.branch as target_branch, t.pr, t.wait_reason, t.attention,
                p.repo, p.pr_number, p.pr_url, p.base_branch, m.merged_at,
                a.attempt, a.created_at as attempt_started_at, s.policy, mg.state as merge_state,
                mg.detail as merge_detail
@@ -116,9 +118,11 @@ export async function judgeGates(tx: TransactionSql, orgId: string, id: string):
             continue;
         }
         const pr = row.pr_url ?? TASK_NO_PR;
-        if (pr === row.pr && judgement.waitReason === row.wait_reason) continue;
+        // A person's reason from the observed PR (closed, budget spent) outranks "waiting to merge".
+        const waitReason = OBSERVED_ATTENTION.includes(row.attention ?? '') ? row.wait_reason : judgement.waitReason;
+        if (pr === row.pr && waitReason === row.wait_reason) continue;
         await tx`
-            update batch_task set pr = ${pr}, wait_reason = ${judgement.waitReason}
+            update batch_task set pr = ${pr}, wait_reason = ${waitReason}
             where org_id = ${orgId} and batch_id = ${id} and key = ${row.key}
         `;
         changed = true;

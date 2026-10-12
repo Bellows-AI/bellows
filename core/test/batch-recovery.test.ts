@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
     ATTENTION_BUDGET,
+    ATTENTION_CLOSED,
+    ATTENTION_REASONS,
     ATTENTION_QUESTION,
     attentionWaitReason,
     BATCH_RETRY_BACKOFF_BASE_MS,
@@ -8,12 +10,15 @@ import {
     batchNextAction,
     batchRepairCommand,
     classifyTaskFailure,
+    MAX_EVIDENCE_ITEMS,
     planRecovery,
     recoveryBackoffMs,
 } from '../src/index.js';
 
-const failed = (failureKind: string | null, over: { status?: string; unansweredQuestion?: boolean } = {}) =>
-    classifyTaskFailure({ status: 'failed', failureKind, unansweredQuestion: false, ...over });
+const failed = (
+    failureKind: string | null,
+    over: { status?: string; unansweredQuestion?: boolean; failureCause?: string | null } = {}
+) => classifyTaskFailure({ status: 'failed', failureKind, failureCause: null, unansweredQuestion: false, ...over });
 
 describe('classifyTaskFailure', () => {
     it.each([
@@ -21,11 +26,24 @@ describe('classifyTaskFailure', () => {
         ['cache_lost', 'infra'],
         ['services', 'infra'],
         ['runner_error', 'infra'],
-        ['gate', 'repairable'],
-        ['publish', 'repairable'],
-        ['helper', 'repairable'],
     ])('%s is %s', (kind, expected) => {
         expect(failed(kind)).toEqual({ kind: expected });
+    });
+
+    // Issue #581: gate, publish and helper are coarse labels; the cause under them decides.
+    describe.each(['gate', 'publish', 'helper'])('a %s failure', (kind) => {
+        it.each([
+            ['conflict', { kind: 'repairable' }],
+            ['verification', { kind: 'repairable' }],
+            ['transport', { kind: 'infra' }],
+            ['denied', { kind: 'attention', reason: 'configuration' }],
+            ['config', { kind: 'attention', reason: 'configuration' }],
+            ['unknown', { kind: 'attention', reason: 'unclassified' }],
+            [null, { kind: 'attention', reason: 'unclassified' }],
+            ['something_new', { kind: 'attention', reason: 'unclassified' }],
+        ])('caused by %s is %o', (failureCause, expected) => {
+            expect(failed(kind, { failureCause })).toEqual(expected);
+        });
     });
 
     it.each([
@@ -108,17 +126,49 @@ describe('planRecovery', () => {
 
 describe('batchRepairCommand', () => {
     const task = { acceptance: 'it works', verification: 'npm test' };
+    const failing = (n: number) =>
+        Array.from({ length: n }, (_, i) => ({
+            name: `check-${i}`,
+            state: 'failing' as const,
+            url: `https://ci/${i}`,
+            detail: null,
+        }));
 
-    it('restates acceptance and verification and demands a fresh run', () => {
-        const command = batchRepairCommand(task, 'gate');
-        expect(command).toContain('failed its checks');
+    it.each([
+        { source: 'run', cause: 'verification' },
+        { source: 'run', cause: 'conflict' },
+        { source: 'observed', outcome: 'checks_failing', evidence: failing(1) },
+        { source: 'observed', outcome: 'conflicting', evidence: [] },
+    ] as const)('restates acceptance and verification and demands a fresh run (%o)', (evidence) => {
+        const command = batchRepairCommand(task, evidence);
         expect(command).toContain('Acceptance:\nit works');
         expect(command).toContain('run it again now');
         expect(command).toContain('npm test');
     });
 
-    it('names a stale or conflicting branch for a failed publish', () => {
-        expect(batchRepairCommand(task, 'publish')).toContain('stale or conflicts');
+    it('names failed checks for a run that failed verification', () => {
+        expect(batchRepairCommand(task, { source: 'run', cause: 'verification' })).toContain('failed its checks');
+    });
+
+    it('names a stale or conflicting branch for a run that hit a conflict', () => {
+        expect(batchRepairCommand(task, { source: 'run', cause: 'conflict' })).toContain('stale or conflicts');
+    });
+
+    it('lists the observed failing checks by name and state, bounded', () => {
+        const command = batchRepairCommand(task, {
+            source: 'observed',
+            outcome: 'checks_failing',
+            evidence: failing(MAX_EVIDENCE_ITEMS + 5),
+        });
+        expect(command).toContain('pull request');
+        expect(command).toContain('check-0: failing (https://ci/0)');
+        expect(command).toContain(`check-${MAX_EVIDENCE_ITEMS - 1}: failing`);
+        expect(command).not.toContain(`check-${MAX_EVIDENCE_ITEMS}:`);
+    });
+
+    it('names a conflict with the target for an observed conflicting PR', () => {
+        const command = batchRepairCommand(task, { source: 'observed', outcome: 'conflicting', evidence: [] });
+        expect(command).toContain('conflicts with its target branch');
     });
 });
 
@@ -129,6 +179,17 @@ describe('attentionWaitReason', () => {
         );
         expect(attentionWaitReason('configuration', { jobId: 'j1' })).toContain('job j1');
         expect(attentionWaitReason('budget', { jobId: 'j1', detail: '2 of 2 repairs used' })).toContain('2 of 2');
+    });
+
+    it('names the failure kind of an unclassified failure, and the PR of a closed one (#581)', () => {
+        expect(attentionWaitReason('unclassified', { jobId: 'j1', detail: 'publish (cause unknown)' })).toBe(
+            'failed with no recognised cause: publish (cause unknown) (job j1)'
+        );
+        expect(attentionWaitReason('unclassified', { jobId: 'j1' })).toBe('failed with no recorded reason (job j1)');
+        expect(attentionWaitReason(ATTENTION_CLOSED, { jobId: 'j1', detail: 'https://x/pull/1' })).toBe(
+            'the pull request https://x/pull/1 was closed without merging (job j1)'
+        );
+        expect(ATTENTION_REASONS).toContain('closed');
     });
 });
 
@@ -179,6 +240,19 @@ describe('batchNextAction', () => {
         expect(next('cancelled')).toMatchObject({ action: 'new_batch' });
         expect(next('expired', { execution: 'succeeded', prUrl: 'https://x/pull/1' })).toMatchObject({
             action: 'merge',
+        });
+    });
+
+    it('retries, rather than merges, a task whose PR was closed without merging (#581)', () => {
+        expect(next('parked', { execution: 'succeeded', prUrl: 'https://x/pull/1', attention: 'closed' })).toEqual({
+            action: 'retry',
+            method: 'POST',
+            path: '/api/batches/b1/tasks/a/retry',
+        });
+        expect(next('expired', { execution: 'succeeded', prUrl: 'https://x/pull/1', attention: 'closed' })).toEqual({
+            action: 'new_batch',
+            method: 'POST',
+            path: '/api/batches',
         });
     });
 

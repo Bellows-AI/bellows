@@ -44,7 +44,7 @@ import {
     serviceContainerName,
     serviceRunArgs,
 } from '../src/services.js';
-import { syncCheckoutArgs } from '../src/docker-runner-support.js';
+import { type RunnerFiles, syncCheckoutArgs } from '../src/docker-runner-support.js';
 import { telemetryConfig, telemetryConfigTar } from '../src/telemetry-config.js';
 import {
     CREDENTIAL_HELPER,
@@ -4674,7 +4674,14 @@ describe('publishing the produced work', () => {
      */
     const publishRunner = (
         state: Record<string, unknown>,
-        opts: { prExists?: boolean; fail?: (args: string[]) => boolean; summary?: Record<string, unknown> } = {}
+        opts: {
+            prExists?: boolean;
+            fail?: (args: string[]) => boolean;
+            /** The step's stderr, carried the way execFile rejects: on `stderr`, beside the echoed command. */
+            failStderr?: string;
+            summary?: Record<string, unknown>;
+            files?: RunnerFiles;
+        } = {}
     ) => {
         const calls: string[][] = [];
         const envBodies: string[] = [];
@@ -4684,7 +4691,11 @@ describe('publishing the produced work', () => {
             // step runs, so a test can assert exactly what the container was handed.
             const envAt = args.indexOf('--env-file');
             if (envAt !== -1) envBodies.push(readFileSync(args[envAt + 1] as string, 'utf8'));
-            if (opts.fail?.(args)) throw new Error('step refused');
+            if (opts.fail?.(args)) {
+                throw opts.failStderr === undefined
+                    ? new Error('step refused')
+                    : Object.assign(new Error('Command failed: docker run …'), { stderr: opts.failStderr });
+            }
             // The probe's marker rides INSIDE the -e script string; the git steps carry their
             // subcommand as a standalone argv element. The PR summarizer (issue #82) is the
             // second node step — told apart by the git argv its script embeds.
@@ -4701,7 +4712,12 @@ describe('publishing the produced work', () => {
             if (args.includes('pr') && args.includes('create')) return { stdout: `${PR_URL}\n` };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({}), (() => fakeChild('')) as unknown as typeof spawn, exec);
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('')) as unknown as typeof spawn,
+            exec,
+            opts.files
+        );
         return { calls, envBodies, runner };
     };
 
@@ -4803,6 +4819,7 @@ describe('publishing the produced work', () => {
             repository: 'Bellows-AI/factory',
             baseBranch: 'main',
             prNumber: 42,
+            cause: null,
         });
         expect(shapesOf(calls)).toEqual([
             'probe',
@@ -4870,6 +4887,7 @@ describe('publishing the produced work', () => {
             repository: 'Bellows-AI/factory',
             baseBranch: 'main',
             prNumber: 42,
+            cause: null,
         });
         // On a task branch already: no switch, no commit (clean tree), push of the unpushed
         // commit, PR found and reused — and no summarizer step, which only a NEW PR gets.
@@ -4909,6 +4927,7 @@ describe('publishing the produced work', () => {
             repository: 'Bellows-AI/factory',
             baseBranch: 'main',
             prNumber: 42,
+            cause: null,
         });
         expect(shapesOf(reconciled.calls)).toEqual(['probe', 'pr-view']);
 
@@ -4933,6 +4952,7 @@ describe('publishing the produced work', () => {
             repository: null,
             baseBranch: null,
             prNumber: null,
+            cause: null,
         });
         expect(clean.calls).toHaveLength(1);
 
@@ -4946,6 +4966,7 @@ describe('publishing the produced work', () => {
             repository: null,
             baseBranch: null,
             prNumber: null,
+            cause: null,
         });
         expect(uncloned.calls).toHaveLength(1);
     });
@@ -4984,6 +5005,30 @@ describe('publishing the produced work', () => {
         expect(result.reason).toContain('step refused');
     });
 
+    // Issue #581: the board recovers a failed publish by its cause, read from the step's own words.
+    it('names a rejected non-fast-forward push a conflict', async () => {
+        const { runner } = publishRunner(DIRTY_ON_MAIN, {
+            fail: (a) => a.includes('push'),
+            failStderr: ' ! [rejected]        HEAD -> fix/10 (non-fast-forward)\nerror: failed to push some refs',
+        });
+        const result = await runner.publishGit(ISSUE_JOB);
+
+        expect(result).toMatchObject({ ok: false, published: false, cause: 'conflict' });
+    });
+
+    it('names an env file it could not write a transport failure', async () => {
+        const { runner } = publishRunner(DIRTY_ON_MAIN, {
+            files: {
+                writeFile: () => Promise.reject(new Error('ENOSPC: no space left on device')),
+                rm: () => Promise.resolve(),
+            } as unknown as RunnerFiles,
+        });
+        const result = await runner.publishGit(ISSUE_JOB);
+
+        expect(result).toMatchObject({ ok: false, published: false, cause: 'transport' });
+        expect(result.reason).toContain('could not write the publish env file');
+    });
+
     // The summary is decoration, never worth the publish (issue #82): a script that cannot read
     // the branch must not fail a run that already pushed — the command-derived title and the
     // plain body are the fallback the old PRs carried.
@@ -5002,6 +5047,7 @@ describe('publishing the produced work', () => {
             repository: 'Bellows-AI/factory',
             baseBranch: 'main',
             prNumber: 42,
+            cause: null,
         });
         const create = calls.find((a) => a.includes('pr') && a.includes('create'));
         expect(create?.[create.indexOf('--title') + 1]).toBe(

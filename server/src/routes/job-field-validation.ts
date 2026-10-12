@@ -9,7 +9,7 @@ import {
 } from '@factory-ai/core';
 import type { ExecutorScope } from '@factory-ai/core';
 import { GATES_OUTCOMES, type RecordedEvidence } from '../db/evidence-policy.js';
-import type { FailureKind, GateReport, JobOutcome, JobStatus } from '../db/job-store-types.js';
+import type { FailureCause, FailureKind, GateReport, JobOutcome, JobStatus } from '../db/job-store-types.js';
 import {
     type ParamValues,
     type WorkflowDefinition,
@@ -229,6 +229,7 @@ export interface CompleteFields {
     agentTurns: number | null;
     summary: string | null;
     failureKind: FailureKind | null;
+    failureCause: FailureCause | null;
     treeChanged: boolean | null;
     evidence: RecordedEvidence | null;
 }
@@ -250,6 +251,31 @@ export const FAILURE_KINDS: readonly FailureKind[] = [
     'policy',
     'runner_error',
 ];
+
+/** The causes a `gate`, `publish` or `helper` failure may name (issue #581), and only those kinds. */
+export const FAILURE_CAUSES: readonly FailureCause[] = [
+    'verification',
+    'conflict',
+    'denied',
+    'config',
+    'transport',
+    'unknown',
+];
+const CAUSED_KINDS: readonly FailureKind[] = ['gate', 'publish', 'helper'];
+
+/** Why a verdict's `failureCause` is refused, or null: one of the causes, under a kind that carries one. */
+function failureCauseRefusal(fields: Record<string, unknown>): string | null {
+    const { failureCause, failureKind } = fields;
+    if (failureCause === undefined || failureCause === null) return null;
+    if (!FAILURE_CAUSES.includes(failureCause as FailureCause)) {
+        return `failureCause must be one of ${FAILURE_CAUSES.join(', ')} or null`;
+    }
+    if (fields.status === 'succeeded') return 'a succeeded run carries no failureCause';
+    if (!CAUSED_KINDS.includes(failureKind as FailureKind)) {
+        return `failureCause rides only a failureKind of ${CAUSED_KINDS.join(', ')}`;
+    }
+    return null;
+}
 
 function badFailureKind(failureKind: unknown): boolean {
     return failureKind !== undefined && failureKind !== null && !FAILURE_KINDS.includes(failureKind as FailureKind);
@@ -315,6 +341,8 @@ function closingFieldRefusal(fields: Record<string, unknown>): { code: string; m
     if (fields.status === 'succeeded' && fields.failureKind !== undefined && fields.failureKind !== null) {
         return { code: ERROR_CODES.BAD_FAILURE_KIND, message: 'a succeeded run carries no failureKind' };
     }
+    const causeRefusal = failureCauseRefusal(fields);
+    if (causeRefusal !== null) return { code: ERROR_CODES.BAD_FAILURE_KIND, message: causeRefusal };
     if (fields.treeChanged !== undefined && fields.treeChanged !== null && typeof fields.treeChanged !== 'boolean') {
         return { code: ERROR_CODES.BAD_TREE_CHANGED, message: 'treeChanged must be a boolean or null' };
     }
@@ -407,6 +435,7 @@ export function validateCompleteFields(
             agentTurns: (agentTurns as number | undefined) ?? null,
             summary: summaryValue(summary),
             failureKind: (failureKind as FailureKind | undefined) ?? null,
+            failureCause: (fields.failureCause as FailureCause | undefined) ?? null,
             treeChanged: typeof treeChanged === 'boolean' ? treeChanged : null,
             evidence: evidenceValue(fields.evidence),
         },

@@ -37,7 +37,7 @@ const task = (key: string, execution: string, extra: Record<string, unknown> = {
     ...extra,
 });
 
-const record = (status: string, tasks: unknown[]) => ({
+const record = (status: string, tasks: unknown[], extra: Record<string, unknown> = {}) => ({
     id: ID,
     status,
     version: 3,
@@ -48,7 +48,90 @@ const record = (status: string, tasks: unknown[]) => ({
     startedAt: status === 'started' ? 's' : null,
     startedBy: null,
     createdBy: null,
+    cancelledAt: null,
+    expiredAt: null,
+    ...extra,
 });
+
+const OBSERVED_AT = '2026-10-12T08:00:00.000Z';
+
+/** The board's morning report (`GET /api/batches/:id/report`), as the server builds it. */
+const REPORT = (state = 'running') => ({
+    id: ID,
+    title: 'Overnight',
+    state,
+    startedAt: '2026-10-12T00:00:00.000Z',
+    deadlineAt: '2026-10-12T12:00:00.000Z',
+    expiredAt: state === 'expired' ? '2026-10-12T12:00:00.000Z' : null,
+    cancelledAt: state === 'cancelled' ? '2026-10-12T07:00:00.000Z' : null,
+    completedAt: null,
+    budgets: { infraRetries: 2, repairs: 2, timeLimitMinutes: 720 },
+    prs: { merged: [], open: [{ task: 'a', url: 'https://github.com/o/api/pull/9' }] },
+    verification: [],
+    tasks: [
+        {
+            key: 'a',
+            stage: 'build',
+            required: true,
+            execution: 'succeeded',
+            gate: 'open',
+            attempts: 2,
+            infraRetries: 0,
+            repairs: 1,
+            manualRetries: 0,
+            remaining: { infraRetries: 2, repairs: 1 },
+            attention: null,
+            waitReason: 'waiting for a person to merge https://github.com/o/api/pull/9',
+            pr: 'https://github.com/o/api/pull/9',
+            job: '/api/jobs/j1',
+            usage: { wallClockMs: 5000, agentTurns: 7, tokens: null },
+            observation: {
+                outcome: 'checks_pending',
+                checks: 'pending',
+                mergeability: 'clean',
+                review: 'none',
+                headSha: 'h1',
+                targetSha: 't1',
+                stale: false,
+                observedAt: OBSERVED_AT,
+                error: null,
+            },
+            next: { action: 'merge', url: 'https://github.com/o/api/pull/9' },
+        },
+        {
+            key: 'b',
+            stage: 'build',
+            required: true,
+            execution: 'failed',
+            gate: 'open',
+            attempts: 1,
+            infraRetries: 0,
+            repairs: 0,
+            manualRetries: 1,
+            remaining: { infraRetries: 2, repairs: 2 },
+            attention: 'configuration',
+            waitReason: 'failed on configuration or permission, which a retry cannot fix (job j2)',
+            pr: null,
+            job: '/api/jobs/j2',
+            usage: { wallClockMs: 0, agentTurns: 0, tokens: null },
+            observation: null,
+            next: { action: 'retry', method: 'POST', path: `/api/batches/${ID}/tasks/b/retry` },
+        },
+    ],
+    latestObservationAt: OBSERVED_AT,
+    unavailable: ['tokens', 'cost'],
+    totals: {
+        accepted: 0,
+        failed: 1,
+        needsAttention: 2,
+        infraRetries: 0,
+        repairs: 1,
+        wallClockMs: 5000,
+        agentTurns: 7,
+    },
+});
+
+const isReport = (sent: Sent) => sent.url.endsWith('/report');
 
 interface Sent {
     method: string;
@@ -197,6 +280,19 @@ describe('batch validate / start / inspect / list', () => {
         expect(human.out).toContain('a pending · gate open · target api');
     });
 
+    it('carries the report of a started batch on inspect, and reads none for a draft', async () => {
+        const started = await cli(['batch', 'inspect', ID, '--json'], (sent) =>
+            json(isReport(sent) ? REPORT() : record('started', [task('a', 'running')]))
+        );
+        expect(JSON.parse(started.out).data.report).toEqual(REPORT());
+
+        const draft = await cli(['batch', 'inspect', ID, '--json'], () =>
+            json(record('draft', [task('a', 'pending')]))
+        );
+        expect(JSON.parse(draft.out).data.report).toBeNull();
+        expect(draft.sent.some(isReport)).toBe(false);
+    });
+
     it('explains the single-target limit and keeps the draft when start refuses a multi-repository plan', async () => {
         const result = await cli(['batch', 'start', ID, '--version', '3'], () =>
             json({ error: 'one target only', code: 'BATCH_UNSUPPORTED', reason: 'multi_target' }, 409)
@@ -240,8 +336,15 @@ describe('batch validate / start / inspect / list', () => {
 });
 
 describe('batch wait', () => {
-    const wait = (states: unknown[], argv: string[] = []) =>
-        cli(['batch', 'wait', ID, '--json', ...argv], (_sent, n) => json(states[Math.min(n, states.length) - 1]));
+    /** Answers the batch reads in order, and every report read with `report`. */
+    const wait = (states: unknown[], argv: string[] = [], report: unknown = REPORT()) => {
+        let reads = 0;
+        return cli(['batch', 'wait', ID, '--json', ...argv], (sent) => {
+            if (isReport(sent)) return json(report);
+            reads += 1;
+            return json(states[Math.min(reads, states.length) - 1]);
+        });
+    };
 
     it('exits 0 once every task succeeded, polling until then', async () => {
         const result = await wait([
@@ -249,7 +352,7 @@ describe('batch wait', () => {
             record('started', [task('a', 'succeeded')]),
         ]);
         expect(result.code).toBe(0);
-        expect(result.sent).toHaveLength(2);
+        expect(result.sent.filter((sent) => !isReport(sent))).toHaveLength(2);
         expect(JSON.parse(result.out).outcome).toBe('succeeded');
     });
 
@@ -265,7 +368,7 @@ describe('batch wait', () => {
             task('a', 'running', { waitReason: 'human review', pr: 'https://github.com/o/api/pull/9' }),
             task('b', 'running'),
         ]);
-        const result = await cli(['batch', 'wait', ID], () => json(waiting));
+        const result = await cli(['batch', 'wait', ID], (sent) => json(isReport(sent) ? REPORT() : waiting));
         expect(result.code).toBe(6);
         expect(result.out).toContain('a: human review (pr https://github.com/o/api/pull/9)');
 
@@ -281,10 +384,96 @@ describe('batch wait', () => {
         expect(result.sent.every((sent) => sent.method === 'GET')).toBe(true);
     });
 
+    it('carries the report in what it ends with, whatever the ending', async () => {
+        const settled = await wait([record('started', [task('a', 'succeeded')])]);
+        const timedOut = await wait([record('started', [task('a', 'running')])], ['--timeout', '12']);
+        expect(JSON.parse(settled.out).data.report).toEqual(REPORT());
+        expect(JSON.parse(timedOut.out).data.report).toEqual(REPORT());
+    });
+
+    it('ends an expired batch as cancelled, naming it expired, and a cancelled one as cancelled', async () => {
+        const fenced = (field: string) =>
+            record('started', [task('a', 'succeeded', { waitReason: 'waiting for a person to merge x' })], {
+                [field]: '2026-10-12T12:00:00.000Z',
+            });
+        const expired = await cli(['batch', 'wait', ID], (sent) =>
+            json(isReport(sent) ? REPORT('expired') : fenced('expiredAt'))
+        );
+        const cancelled = await cli(['batch', 'wait', ID], (sent) =>
+            json(isReport(sent) ? REPORT('cancelled') : fenced('cancelledAt'))
+        );
+        expect(expired.code).toBe(5);
+        expect(expired.out).toContain(`${ID} expired`);
+        expect(cancelled.code).toBe(5);
+        expect(cancelled.out).toContain(`${ID} cancelled`);
+
+        const asJson = await wait([fenced('expiredAt')], [], REPORT('expired'));
+        expect(JSON.parse(asJson.out)).toMatchObject({ outcome: 'cancelled', data: { report: { state: 'expired' } } });
+        expect(asJson.sent.every((sent) => sent.method === 'GET')).toBe(true);
+    });
+
+    it('an interrupted wait ends 130 and never cancels the batch', async () => {
+        const controller = new AbortController();
+        const sent: string[] = [];
+        const fetch = (async (url: string | URL | globalThis.Request, init?: RequestInit) => {
+            // As the platform's fetch does: an aborted signal rejects the request.
+            if (init?.signal?.aborted) throw new DOMException('This operation was aborted', 'AbortError');
+            sent.push(init?.method ?? 'GET');
+            return isReport({ method: 'GET', url: String(url), body: null, key: null })
+                ? json(REPORT())
+                : json(record('started', [task('a', 'running')]));
+        }) as unknown as typeof globalThis.fetch;
+
+        const code = await run(['batch', 'wait', ID, '--json'], {
+            env: ENV,
+            fetch,
+            signal: controller.signal,
+            sleep: async () => controller.abort(),
+            stdout: () => undefined,
+            stderr: () => undefined,
+        });
+
+        expect(code).toBe(130);
+        expect(sent.every((method) => method === 'GET')).toBe(true);
+    });
+
     it('refuses to wait on a draft', async () => {
         const result = await cli(['batch', 'wait', ID], () => json(record('draft', [task('a', 'pending')])));
         expect(result.code).toBe(1);
         expect(result.err).toContain('draft');
+    });
+});
+
+describe('batch report', () => {
+    it('reads the report route and prints each task’s next action, observation age and unavailable usage', async () => {
+        const clock = { t: Date.parse(OBSERVED_AT) + 90_000 };
+        const result = await cli(['batch', 'report', ID], () => json(REPORT()), { clock });
+
+        expect(result.code).toBe(0);
+        expect(result.sent).toEqual([
+            { method: 'GET', url: `http://board/api/batches/${ID}/report`, body: null, key: null },
+        ]);
+        expect(result.out).toContain(`${ID} running "Overnight"`);
+        expect(result.out).toContain('tokens: unavailable · cost: unavailable');
+        expect(result.out).toContain('latest observation 1m ago');
+        expect(result.out).toContain('observed checks_pending 1m ago');
+        expect(result.out).toContain('next: merge https://github.com/o/api/pull/9');
+        expect(result.out).toContain(`next: retry POST /api/batches/${ID}/tasks/b/retry`);
+        expect(result.out).toContain('remaining infra 2, repairs 1');
+        expect(result.out).toContain('manual 1');
+        // A task with no PR has nothing to observe, and says nothing about it.
+        expect(result.out).not.toContain('observed: none yet');
+    });
+
+    it('prints the report itself as JSON', async () => {
+        const result = await cli(['batch', 'report', ID, '--json'], () => json(REPORT('expired')));
+        expect(JSON.parse(result.out).data).toEqual(REPORT('expired'));
+    });
+
+    it('is usage without a batch id', async () => {
+        const result = await cli(['batch', 'report'], () => json(REPORT()));
+        expect(result.code).toBe(2);
+        expect(result.sent).toEqual([]);
     });
 });
 

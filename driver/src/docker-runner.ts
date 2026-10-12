@@ -383,7 +383,7 @@ async function dockerPublishGit(deps: RunnerDeps, job: BoardJob, publishToken?: 
         file = envFilePath(job);
         await files.writeFile(file, envFileBody(withPublishToken(job, publishToken)), { mode: 0o600 });
     } catch (e) {
-        return publishFailed(`could not write the publish env file: ${(e as Error).message}`);
+        return publishFailed(`could not write the publish env file: ${(e as Error).message}`, 'transport');
     }
     const envFile = file;
     try {

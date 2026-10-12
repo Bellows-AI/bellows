@@ -1,4 +1,4 @@
-import type { BoardJob } from './board.js';
+import type { BoardJob, FailureCause } from './board.js';
 import type { DriverConfig } from './config.js';
 import { containerScript as script } from './container-scripts.js';
 import { pushWithLease } from './publish-stale.js';
@@ -121,6 +121,8 @@ export interface PublishResult {
      * `policy` failure rather than a `publish` one.
      */
     stale?: true;
+    /** What lies under a failed publish (`publishCauseOf` or the transport's own); null when it did not fail. */
+    cause: FailureCause | null;
 }
 
 /** How one publish differs from the board's end-of-run one. */
@@ -237,13 +239,14 @@ export const publishNothing = (reason: string): PublishResult => ({
     repository: null,
     baseBranch: null,
     prNumber: null,
+    cause: null,
 });
 
 /** Why a publish bound to a revision pushed nothing: the tree moved after the evidence was taken. */
 export const STALE_REVISION_REASON =
     'the checkout changed after the required evidence was taken — nothing was pushed; re-run the gates (and review) over the current work';
 
-export const publishFailed = (reason: string): PublishResult => ({
+export const publishFailed = (reason: string, cause: FailureCause | null): PublishResult => ({
     ok: false,
     published: false,
     branch: null,
@@ -252,7 +255,32 @@ export const publishFailed = (reason: string): PublishResult => ({
     repository: null,
     baseBranch: null,
     prNumber: null,
+    cause,
 });
+
+/**
+ * The cause a publish step's own git/gh stderr names, checked in this order so a refusal that also
+ * prints `[rejected]` stays a refusal; anything unrecognised is `unknown`, never a guess.
+ */
+const PUBLISH_CAUSES: readonly [FailureCause, RegExp][] = [
+    // GitHub answers a rate limit with a 403 too; it passes, so it is transport, read before `denied`.
+    ['transport', /rate limit exceeded|secondary rate limit|HTTP 429|returned error: 429/i],
+    [
+        'denied',
+        /Permission to .* denied|returned error: 403|HTTP 403|Authentication failed|could not read Username|Resource not accessible by integration|protected branch hook declined/,
+    ],
+    [
+        'conflict',
+        /\[rejected\]|non-fast-forward|stale info|fetch first|CONFLICT|merge conflict|HEAD does not contain it/i,
+    ],
+    [
+        'transport',
+        /Could not resolve host|Connection (timed out|reset|refused)|RPC failed|early EOF|returned error: 5\d\d|HTTP 5\d\d|TLS/,
+    ],
+];
+
+export const publishCauseOf = (message: string): FailureCause =>
+    PUBLISH_CAUSES.find(([, pattern]) => pattern.test(message))?.[0] ?? 'unknown';
 
 /**
  * The repo directory of the job's clone: `<mount>/<workspacePath>/<repo segment>`. Both halves
@@ -593,6 +621,7 @@ async function reconcileAgentPr(
         repository: job.repo ?? null,
         baseBranch: state.defaultBranch ?? null,
         prNumber: prNumberFromUrl(prUrl),
+        cause: null,
     };
 }
 
@@ -690,7 +719,7 @@ export async function publishCheckout(
         const state = await probeCheckout(runStep, repo);
         if (!state.cloned) return publishNothing('the checkout has not been cloned yet');
         if (options?.revision !== undefined && state.fingerprint !== options.revision) {
-            return { ...publishFailed(STALE_REVISION_REASON), stale: true };
+            return { ...publishFailed(STALE_REVISION_REASON, null), stale: true };
         }
         if (!state.dirty && state.unpushed === 0) {
             return (
@@ -733,8 +762,10 @@ export async function publishCheckout(
             repository: job.repo ?? null,
             baseBranch: state.defaultBranch ?? null,
             prNumber: prNumberFromUrl(prUrl ?? ''),
+            cause: null,
         };
     } catch (e) {
-        return publishFailed(`${(e as Error).message}`.slice(0, PUBLISH_FAILURE_MAX_CHARS));
+        const message = `${(e as Error).message}`;
+        return publishFailed(message.slice(0, PUBLISH_FAILURE_MAX_CHARS), publishCauseOf(message));
     }
 }

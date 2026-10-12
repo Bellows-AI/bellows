@@ -370,6 +370,44 @@ describe.skipIf(!enabled)('job store', () => {
         expect(await store.get(second.id)).toMatchObject({ failureKind: null });
     });
 
+    // Issue #581: the cause under a gate/publish/helper kind is stored for the batch scheduler's
+    // recovery; same overwrite rule as the kind, so a report without one stores null.
+    it('stores the failure cause beside its kind, and null when the report carries none', async () => {
+        const causeOf = async (id: string) =>
+            (
+                await sql<{ failure_cause: string | null }[]>`
+                select failure_cause from job where org_id = ${ORG} and id = ${id}
+            `
+            )[0]?.failure_cause;
+        const first = await queue('echo hi');
+        const one = await store.claim('w1', LEASE_SECONDS);
+        await store.complete(first.id, one!.leaseToken, {
+            status: 'failed',
+            exitCode: 1,
+            output: '! [rejected] (non-fast-forward)',
+            failureKind: 'publish',
+            failureCause: 'conflict',
+        });
+        expect(await causeOf(first.id)).toBe('conflict');
+
+        const second = await queue('echo hi');
+        const two = await store.claim('w2', LEASE_SECONDS);
+        await store.complete(second.id, two!.leaseToken, {
+            status: 'failed',
+            exitCode: 1,
+            output: 'gate failed',
+            failureKind: 'gate',
+        });
+        expect(await causeOf(second.id)).toBeNull();
+    });
+
+    it('refuses a failure cause outside the six at the column', async () => {
+        const { id } = await queue('echo hi');
+        await expect(sql`update job set failure_cause = 'guess' where org_id = ${ORG} and id = ${id}`).rejects.toThrow(
+            /job_failure_cause_ck/
+        );
+    });
+
     it('carries the run banked wall clock on list rows, and the thread sum only on the thread read', async () => {
         const first = await queue('echo hi');
         const one = await store.claim('w1', LEASE_SECONDS);

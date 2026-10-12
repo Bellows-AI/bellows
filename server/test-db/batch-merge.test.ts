@@ -535,6 +535,30 @@ describe.skipIf(!enabled)('automerge', () => {
         expect((await store.get(id))!.completedAt).toBeNull();
     });
 
+    it('issues no request once the deadline passed, before any pass stamped the expiry', async () => {
+        const { id } = await readyBatch(plan([policyStage('automerge', ['a'])]));
+        clock.offset += 13 * HOURS;
+
+        await merger.mergeDue();
+
+        expect(github.merges).toEqual([]);
+        expect(await intents(id)).toEqual([]);
+        const [batch] = await sql<{ expired_at: Date | null }[]>`select expired_at from batch where id = ${id}`;
+        expect(batch!.expired_at).toBeNull();
+    });
+
+    it('stops a claimed request whose deadline passes between the claim and the send', async () => {
+        const { id } = await readyBatch(plan([policyStage('automerge', ['a'])]));
+        github.beforeRead = async () => {
+            clock.offset += 13 * HOURS;
+        };
+
+        await merger.mergeDue();
+
+        expect(github.merges).toEqual([]);
+        expect(await intents(id)).toMatchObject([{ state: 'fenced' }]);
+    });
+
     it('records a merge the provider accepted before the fence, without advancing a fenced batch', async () => {
         const { id, number } = await readyBatch(plan([policyStage('automerge', ['a'])]));
         const [claimed] = await claimMerges({ sql, orgId: ORG, now }, 1);

@@ -556,7 +556,12 @@ describe('dispatch, wait, retry and cancel', () => {
         const id = await start(s);
         const report = await s.call('GET', `/api/batches/${id}/report`);
         expect(report.statusCode).toBe(HTTP_OK);
-        expect(report.json()).toMatchObject({ id, budgets: { infraRetries: 2, repairs: 2, timeLimitMinutes: 720 } });
+        expect(report.json()).toMatchObject({
+            id,
+            budgets: { infraRetries: 2, repairs: 2, timeLimitMinutes: 720 },
+            latestObservationAt: null,
+            unavailable: ['tokens', 'cost'],
+        });
 
         const { id: draft } = await s.create();
         const notStarted = await s.call('GET', `/api/batches/${draft}/report`);
