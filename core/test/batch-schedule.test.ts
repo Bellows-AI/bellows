@@ -33,6 +33,7 @@ const NOW = 1_000_000;
 const base = {
     stages: ['build', 'join'],
     advanced: [] as string[],
+    unverified: [] as string[],
     concurrency: 2,
     cancelled: false,
     expired: false,
@@ -94,6 +95,15 @@ describe('decideSchedule', () => {
         });
         expect(d.launch).toEqual(['b']);
         expect(d.advance).toBeNull();
+    });
+
+    it('does not advance a settled stage whose merged result is not yet verified', () => {
+        const accepted = { execution: TASK_SUCCEEDED, gate: GATE_PASSED };
+        const tasks = [task('a', 'build', accepted), task('j', 'join')];
+        const held = decideSchedule({ ...base, unverified: ['build'], tasks });
+        expect(held.advance).toBeNull();
+        expect(held.launch).toEqual([]);
+        expect(decideSchedule({ ...base, unverified: [], tasks }).advance).toBe('build');
     });
 
     it('launches the next stage once the previous one has advanced', () => {
@@ -170,6 +180,8 @@ describe('judgeTaskGate', () => {
         mergedAt: 2000,
         attempt: 1,
         attemptStartedAt: 1000,
+        automerge: false,
+        mergeNote: null,
         ...over,
     });
     const waits = (over: Partial<GateEvidence>) => judgeTaskGate(evidence(over));
@@ -195,6 +207,18 @@ describe('judgeTaskGate', () => {
             pass: false,
             waitReason: `waiting for a person to merge ${url}`,
         });
+    });
+
+    it('waits for the board, not a person, in an automerge stage, and surfaces its latest merge note', () => {
+        expect(waits({ mergedAt: null, automerge: true })).toEqual({
+            pass: false,
+            waitReason: `waiting for the board to merge ${url}`,
+        });
+        expect(waits({ mergedAt: null, automerge: true, mergeNote: 'merge refused: protected' })).toEqual({
+            pass: false,
+            waitReason: 'merge refused: protected',
+        });
+        expect(waits({ automerge: true, mergeNote: 'merge refused: protected' })).toEqual({ pass: true });
     });
 
     it('refuses a merge observed before the current attempt started', () => {

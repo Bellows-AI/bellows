@@ -110,7 +110,9 @@ export async function launchChecks(
     if (!defaults) return null;
 
     const resolved = resolveBatchPlan(plan, defaults);
-    const capability = batchExecutionCapability(resolved, defaults);
+    const capability = batchExecutionCapability(resolved, defaults, {
+        canMerge: ctx.runtime.batchMerger !== undefined,
+    });
     if (!capability.ok) {
         reply.code(HTTP_CONFLICT).send({
             error: capability.message,

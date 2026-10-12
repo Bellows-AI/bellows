@@ -1,7 +1,22 @@
-import { READ_TRANSPORT, type PrFacts } from '@factory-ai/core';
+import {
+    CONTENT_TYPE_HEADER,
+    JSON_CONTENT_TYPE,
+    MERGE_ERR_NOT_SENT,
+    MERGE_ERR_UNCERTAIN,
+    READ_TRANSPORT,
+    type PrFacts,
+} from '@factory-ai/core';
 import type { GitHubConfig, Repo } from '../config.js';
 import type { InstallationTokenProvider } from './app-token.js';
-import { classifyReadFailure, GitHubReadError, readPullRequest } from './pr-read.js';
+import { classifyMergeFailure, GitHubMergeError, readMergeResponse, type MergeResult } from './pr-merge.js';
+import {
+    classifyReadFailure,
+    GitHubReadError,
+    readBranchHead,
+    readBranchState,
+    readPullRequest,
+    type BranchState,
+} from './pr-read.js';
 
 /**
  * What the App installation reports it can see. This replaced ORG_REPOS: the credential and the
@@ -44,6 +59,16 @@ export interface GitHubAppClient {
      * installation cannot see or that belongs to another repository.
      */
     readPullRequest(repo: string, number: number): Promise<PrFacts>;
+    /**
+     * Asks GitHub to merge a PR, bound to the head the caller decided on: GitHub refuses when the head
+     * moved, and enforces protection, required checks, reviews and merge queues itself. Rejects with a
+     * `GitHubMergeError` whose `kind` says whether the merge may have happened (`uncertain`).
+     */
+    mergePullRequest(repo: string, number: number, request: { sha: string; method: string }): Promise<MergeResult>;
+    /** A branch's tip, whether it holds each commit, and the tip's checks (the stage's combined verification). */
+    readBranchState(repo: string, branch: string, shas: readonly string[]): Promise<BranchState>;
+    /** A branch's tip commit, or null when it cannot be read. */
+    readBranchHead(repo: string, branch: string): Promise<string | null>;
 }
 
 /**
@@ -156,14 +181,64 @@ export function createGitHubAppClient(
         return { repos, selection };
     };
 
+    // A dropped connection or a token mint that failed is the provider being unreachable.
+    const readError = (e: unknown): GitHubReadError =>
+        e instanceof GitHubReadError ? e : new GitHubReadError((e as Error).message, READ_TRANSPORT);
+
+    const merge = async (repo: string, number: number, request: { sha: string; method: string }) => {
+        const path = `/repos/${repo}/pulls/${number}/merge`;
+        // No token, no request: nothing can have been merged, unlike a request that was sent.
+        const token = await tokens.get().catch((e: Error) => {
+            throw new GitHubMergeError(e.message, MERGE_ERR_NOT_SENT);
+        });
+        let response: Response;
+        try {
+            response = await fetchFn(`${github.apiUrl}${path}`, {
+                method: 'PUT',
+                headers: {
+                    authorization: `Bearer ${token}`,
+                    accept: 'application/vnd.github+json',
+                    [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE,
+                    'user-agent': 'factory-ai',
+                },
+                body: JSON.stringify({ sha: request.sha, merge_method: request.method }),
+                signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+            });
+        } catch (e) {
+            // The request may have reached GitHub: the caller reconciles against the PR, never repeats blindly.
+            throw new GitHubMergeError((e as Error).message, MERGE_ERR_UNCERTAIN);
+        }
+        if (!response.ok) {
+            const detail = (await response.text().catch(() => '')).slice(0, ERROR_DETAIL_LIMIT);
+            throw classifyMergeFailure(path, { status: response.status, headers: response.headers, detail }, now());
+        }
+        return readMergeResponse((await response.json().catch(() => null)) as Parameters<typeof readMergeResponse>[0]);
+    };
+
     return {
+        mergePullRequest: merge,
+
+        async readBranchState(repo, branch, shas) {
+            try {
+                return await readBranchState(call, repo, branch, shas);
+            } catch (e) {
+                throw readError(e);
+            }
+        },
+
+        async readBranchHead(repo, branch) {
+            try {
+                return await readBranchHead(call, repo, branch);
+            } catch (e) {
+                throw readError(e);
+            }
+        },
+
         async readPullRequest(repo, number) {
             try {
                 return await readPullRequest(cachedCall, repo, number);
             } catch (e) {
-                // A dropped connection or a token mint that failed is the provider being unreachable.
-                if (e instanceof GitHubReadError) throw e;
-                throw new GitHubReadError((e as Error).message, READ_TRANSPORT);
+                throw readError(e);
             }
         },
 

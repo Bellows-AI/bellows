@@ -293,3 +293,61 @@ export async function readPullRequest(call: ApiCall, repo: string, number: numbe
         checks: [...runs, ...statuses],
     };
 }
+
+/** The target branch as it stands: its tip, whether it holds given commits, and the tip's own checks. */
+export interface BranchState {
+    headSha: string;
+    /** Whether the tip contains each asked commit, by sha. */
+    contains: Record<string, boolean>;
+    requiredContexts: string[] | null;
+    checks: CheckItem[];
+}
+
+/** The tip commit of a branch, or null when the branch cannot be read. */
+export async function readBranchHead(call: ApiCall, repo: string, branch: string): Promise<string | null> {
+    const body = (await optional(
+        call,
+        `/repos/${repo}/branches/${encodeURIComponent(branch)}`
+    )) as BranchPayload | null;
+    return body?.commit?.sha ?? null;
+}
+
+/** Whether `head` descends from `sha`: GitHub's compare says `ahead` or `identical`. An unknown commit is not contained. */
+async function containsCommit(call: ApiCall, base: string, sha: string, head: string): Promise<boolean> {
+    if (sha === head) return true;
+    try {
+        const body = (await call(`${base}/compare/${sha}...${head}`)) as { status?: string };
+        return body.status === 'ahead' || body.status === 'identical';
+    } catch (e) {
+        if (e instanceof GitHubReadError && e.kind === READ_NOT_FOUND) return false;
+        throw e;
+    }
+}
+
+/**
+ * What a stage's combined verification reads (docs/batches.md): the target's tip, whether each
+ * merge commit is on it, and the checks on that tip against what the target requires. A tip that
+ * cannot be read is a read error, never a pass.
+ */
+export async function readBranchState(
+    call: ApiCall,
+    repo: string,
+    branch: string,
+    shas: readonly string[]
+): Promise<BranchState> {
+    const base = `/repos/${repo}`;
+    const requirements = await readRequirements(call, base, branch);
+    const headSha = requirements.targetSha;
+    if (headSha === null) throw new GitHubReadError(`branch ${branch} of ${repo} could not be read`, READ_NOT_FOUND);
+    const [runs, statuses, held] = await Promise.all([
+        readCheckRuns(call, base, headSha),
+        readStatuses(call, base, headSha),
+        Promise.all(shas.map(async (sha) => [sha, await containsCommit(call, base, sha, headSha)] as const)),
+    ]);
+    return {
+        headSha,
+        contains: Object.fromEntries(held),
+        requiredContexts: requirements.contexts,
+        checks: [...runs, ...statuses],
+    };
+}

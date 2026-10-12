@@ -451,13 +451,24 @@ export type BatchUnsupportedReason = (typeof BATCH_UNSUPPORTED_REASONS)[number];
 
 export type BatchCapability = { ok: true } | { ok: false; reason: BatchUnsupportedReason; message: string };
 
+/** What the board running the batch can do beyond running tasks. */
+export interface BoardCapabilities {
+    /** The board holds a GitHub installation it can merge through; offline it cannot. */
+    canMerge: boolean;
+}
+
 /**
- * What the executors can run today, separate from whether a plan is valid: one (repo, branch)
- * pair across the targets the tasks use, and that branch the repository's default — executors base
- * every job on `origin/HEAD`. Takes a resolved plan, so the branches are names; `defaults` is
- * what decides whether one of them is the default.
+ * What the executors and the board can run today, separate from whether a plan is valid: one
+ * (repo, branch) pair across the targets the tasks use, and that branch the repository's default
+ * — executors base every job on `origin/HEAD`. Takes a resolved plan, so the branches are names;
+ * `defaults` is what decides whether one of them is the default. An automerge stage needs a board
+ * that can merge.
  */
-export function batchExecutionCapability(plan: ResolvedBatchPlan, defaults: DefaultBranches): BatchCapability {
+export function batchExecutionCapability(
+    plan: ResolvedBatchPlan,
+    defaults: DefaultBranches,
+    board: BoardCapabilities
+): BatchCapability {
     const used = new Set(plan.stages.flatMap((stage) => stage.tasks.map((task) => task.target)));
     const pairs = new Set(
         plan.targets.filter((target) => used.has(target.key)).map((target) => `${target.repo}\u0000${target.branch}`)
@@ -477,11 +488,11 @@ export function batchExecutionCapability(plan: ResolvedBatchPlan, defaults: Defa
             message: `Tasks run on the repository's default branch for now; "${offDefault.key}" names ${offDefault.branch}`,
         };
     }
-    if (plan.stages.some((stage) => stage.policy === AUTOMERGE)) {
+    if (!board.canMerge && plan.stages.some((stage) => stage.policy === AUTOMERGE)) {
         return {
             ok: false,
             reason: AUTOMERGE,
-            message: 'The board does not merge PRs yet; every stage must use the "human" policy',
+            message: 'This board has no GitHub installation to merge through; every stage must use the "human" policy',
         };
     }
     return { ok: true };
