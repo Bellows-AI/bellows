@@ -1,0 +1,47 @@
+{
+    "planVersion": 1,
+    "title": "Add request logging to the API",
+    "targets": [{ "key": "app", "repo": "owner/name" }],
+    "defaultTarget": "app",
+    "policy": "human",
+    "concurrency": 2,
+    "infraRetries": 2,
+    "repairs": 2,
+    "timeLimitMinutes": 720,
+    "stages": [
+        {
+            "key": "foundation",
+            "tasks": [
+                {
+                    "key": "logger",
+                    "objective": "Add a structured request logger module with a unit test.",
+                    "acceptance": "Every request logs method, path, status and duration as one JSON line.",
+                    "verification": "npm test passes, including the new logger test.",
+                    "required": true,
+                    "completion": { "kind": "pr" }
+                },
+                {
+                    "key": "config",
+                    "objective": "Add a LOG_LEVEL setting read from the environment, defaulting to info.",
+                    "acceptance": "LOG_LEVEL accepts debug, info, warn and error and refuses anything else.",
+                    "verification": "npm test passes, including a test for the refused value.",
+                    "required": true,
+                    "completion": { "kind": "pr" }
+                }
+            ]
+        },
+        {
+            "key": "wire-up",
+            "tasks": [
+                {
+                    "key": "middleware",
+                    "objective": "Register the request logger as middleware, honoring LOG_LEVEL.",
+                    "acceptance": "Requests to every route are logged at the configured level.",
+                    "verification": "npm test passes, including an integration test for one route.",
+                    "required": true,
+                    "completion": { "kind": "pr" }
+                }
+            ]
+        }
+    ]
+}
