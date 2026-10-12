@@ -56,6 +56,8 @@ export interface ScheduleInput {
     concurrency: number;
     /** Stage keys that already carry an advance decision. */
     advanced: readonly string[];
+    /** Stages whose merged result is not yet verified as a whole: they settle only once it is. */
+    unverified: readonly string[];
     cancelled: boolean;
     /** The batch's time limit passed: like a cancel, nothing launches or advances behind it. */
     expired: boolean;
@@ -102,14 +104,17 @@ export interface GateEvidence {
     mergedAt: number | null;
     attempt: number;
     attemptStartedAt: number;
+    /** The task's stage merges by itself: an unmerged PR waits for the board, not a person. */
+    automerge: boolean;
+    /** The board's latest word on its own merge request (refused, unresolved, backing off), or null. */
+    mergeNote: string | null;
 }
 
 export type GateJudgement = { pass: true } | { pass: false; waitReason: string };
 
 /**
- * Whether a succeeded task's gate passes on the evidence. Human policy only: a run's success is
- * never enough, the PR must be recorded against the task's own target and merged during the
- * current attempt. An `accepted` task never passes here — only the accept route passes it.
+ * Whether a succeeded task's gate passes on the evidence, whoever merged: a run's success is never
+ * enough, the PR must be recorded against the task's own target and merged during the current attempt. An `accepted` task never passes here — only the accept route passes it.
  */
 export function judgeTaskGate(evidence: GateEvidence): GateJudgement {
     const wait = (waitReason: string): GateJudgement => ({ pass: false, waitReason });
@@ -120,7 +125,13 @@ export function judgeTaskGate(evidence: GateEvidence): GateJudgement {
     if (pr.baseBranch !== evidence.targetBranch) {
         return wait(`PR ${pr.url} targets ${pr.baseBranch}, not ${evidence.targetBranch}`);
     }
-    if (evidence.mergedAt === null) return wait(`waiting for a person to merge ${pr.url}`);
+    if (evidence.mergedAt === null) {
+        return wait(
+            evidence.automerge
+                ? (evidence.mergeNote ?? `waiting for the board to merge ${pr.url}`)
+                : `waiting for a person to merge ${pr.url}`
+        );
+    }
     if (evidence.mergedAt < evidence.attemptStartedAt) {
         return wait(`PR ${pr.url} was merged before attempt ${evidence.attempt} started`);
     }
@@ -146,7 +157,7 @@ export function decideSchedule(input: ScheduleInput): ScheduleDecision {
     if (activeStage === null) return { ...none, complete: true };
 
     const inStage = input.tasks.filter((task) => task.stage === activeStage);
-    if (stageSettled(inStage)) return { ...none, advance: activeStage };
+    if (stageSettled(inStage) && !input.unverified.includes(activeStage)) return { ...none, advance: activeStage };
 
     const free = Math.max(0, input.concurrency - active);
     const waiting = inStage.filter(

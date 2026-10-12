@@ -148,6 +148,8 @@ export interface BatchReport {
     completedAt: string | null;
     budgets: { infraRetries: number; repairs: number; timeLimitMinutes: number };
     prs: { merged: { task: string; url: string; mergedAt: string }[]; open: { task: string; url: string }[] };
+    /** Each automerge stage's combined verification (064): a stage advances only on `passed`; `failed` needs a person. */
+    verification: { stage: string; state: string; detail: string | null; headSha: string | null; checkedAt: string }[];
     tasks: BatchReportTask[];
     totals: {
         accepted: number;

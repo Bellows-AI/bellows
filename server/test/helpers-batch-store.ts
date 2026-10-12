@@ -210,6 +210,7 @@ export function memoryBatchStore(): MemoryBatchStore {
                     timeLimitMinutes: batch.plan.timeLimitMinutes,
                 },
                 prs: { merged: [], open: [] },
+                verification: [],
                 tasks: [],
                 totals: {
                     accepted: 0,

@@ -84,6 +84,8 @@ async function setup(
     options: {
         repos?: { owner: string; name: string; defaultBranch: string | null }[];
         userExecutors?: UserExecutorStore;
+        /** The org's board holds an installation it can merge through. */
+        canMerge?: boolean;
     } = {}
 ) {
     const auth = memoryAuthStore();
@@ -113,6 +115,7 @@ async function setup(
             jobs,
             telemetry: stubTelemetryClient(),
             batchesByOrg: { [ORG]: batches, [OTHER_ORG]: otherBatches },
+            ...(options.canMerge ? { batchMerger: { mergeDue: async () => 0 } } : {}),
             ...(options.userExecutors ? { userExecutors: options.userExecutors } : {}),
         }),
         auth,
@@ -345,13 +348,21 @@ describe('launch checks: validate and start', () => {
         expect(response.json()).toMatchObject({ code: 'BATCH_UNSUPPORTED', reason: 'non_default_branch' });
     });
 
-    it('answers 409 BATCH_UNSUPPORTED for an automerge stage, since the board does not merge yet', async () => {
+    it('answers 409 BATCH_UNSUPPORTED for an automerge stage on a board that cannot merge', async () => {
         const { call, create, batches } = await setup();
         const { id } = await create(plan({ policy: 'automerge' }));
         const response = await call('POST', `/api/batches/${id}/start`, { version: 1 });
         expect(response.statusCode).toBe(HTTP_CONFLICT);
         expect(response.json()).toMatchObject({ code: 'BATCH_UNSUPPORTED', reason: 'automerge' });
         expect(batches.writes).toEqual(['create']);
+    });
+
+    it('starts an automerge stage on a board that can merge', async () => {
+        const { call, create } = await setup({ canMerge: true });
+        const { id } = await create(plan({ policy: 'automerge' }));
+        const response = await call('POST', `/api/batches/${id}/start`, { version: 1 });
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.json()).toMatchObject({ id, status: 'started' });
     });
 
     it('freezes a single-target batch through the same shape; dispatch is the store’s, not the route’s', async () => {

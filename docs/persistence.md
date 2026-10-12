@@ -18,6 +18,7 @@ the in-memory stores in `server/test/helpers*.ts`.
 | Batch runtime: attempts, unique scheduling decisions, cancel/complete stamps (migration 060; [batches.md](batches.md)) | `server/migrations/060_batch_runtime.sql`, `server/src/db/batch-store-schedule.ts` | `server/test-db/batch-dispatch.test.ts` |
 | Batch recovery: frozen budgets and deadline, `expired_at`, task attention, recovery attempt kinds (migration 062; [batches.md](batches.md)) | `server/migrations/062_batch_recovery.sql` | `server/test-db/batch-dispatch.test.ts` |
 | Batch PR observation: one leased row per task, bound to PR and attempt (migration 063; [batches.md](batches.md)) | `server/migrations/063_batch_pr_observation.sql` | `server/test-db/batch-pr-observation.test.ts` |
+| Batch merge intents (one request per target slot) and stage verification (migration 064; [batches.md](batches.md)) | `server/migrations/064_batch_merge.sql` | `server/test-db/batch-merge.test.ts` |
 | Database-name guards | `server/src/config.ts`, `server/src/seed/cli.ts` | `server/test/config.persistence.test.ts` |
 | db-suite harness: name guard, migrate, truncate and reseed per test | `server/test-db/harness.ts` | `server/test/test-db.harness.test.ts` |
 

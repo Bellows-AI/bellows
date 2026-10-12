@@ -1,5 +1,6 @@
 import type { Sql } from 'postgres';
 import type { AppConfig } from './config.js';
+import { createBatchMerger, type BatchMerger } from './batch-merger.js';
 import { createBatchPrObserver, type BatchPrObserver } from './batch-pr-observer.js';
 import { createBatchStore, type BatchStore } from './db/batch-store.js';
 import { createConnectionStore, type ConnectionStore } from './db/connection-store.js';
@@ -53,6 +54,8 @@ export interface OrgRuntime {
     batches?: BatchStore | undefined;
     /** Reads each batch task's PR from GitHub and records the observations (063); present with the batch store. */
     batchObserver?: BatchPrObserver | undefined;
+    /** Merges the PRs of automerge stages and verifies each merged stage (064); absent offline, where the board cannot merge. */
+    batchMerger?: BatchMerger | undefined;
     /** The managed connector connections (054) a task may select; present with the other stores. */
     connections?: ConnectionStore | undefined;
     userRepos?: UserRepoStore | undefined;
@@ -76,7 +79,7 @@ export interface OrgRegistry {
     warmAll(): Promise<void>;
     /** One scheduling pass over every org's open batches (docs/batches.md); one org's failure is logged, not thrown. */
     reconcileBatches(): Promise<void>;
-    /** One observation pass over every org's due batch PRs (docs/batches.md); one org's failure is logged, not thrown. */
+    /** One observation pass, then one merge pass, over every org's batch PRs (docs/batches.md); one org's failure is logged, not thrown. */
     observeBatchPrs(): Promise<void>;
 }
 
@@ -115,6 +118,7 @@ function buildOrgStores({
     envVars: EnvVarStore;
     batches: BatchStore;
     batchObserver: BatchPrObserver;
+    batchMerger: BatchMerger | undefined;
     connections: ConnectionStore;
     userExecutors: UserExecutorStore;
     userRepos: UserRepoStore;
@@ -177,7 +181,14 @@ function buildOrgStores({
     });
     // Batches (059, 060): dispatch creates task roots in the job table and settles a cancelled
     // batch through the job store's own stop.
-    const batches = createBatchStore({ sql, orgId, ready, stop: (id, by) => jobs.stop(id, by) });
+    // The attempt record names the target's head commit, resolved from the installation when there is one.
+    const batches = createBatchStore({
+        sql,
+        orgId,
+        ready,
+        stop: (id, by) => jobs.stop(id, by),
+        ...(client ? { revisionOf: (repo: string, branch: string) => client.readBranchHead(repo, branch) } : {}),
+    });
     // The PR observer (063): reads the org's installation, records merges through the job store and
     // lets the gate judge them. Offline there is no client, so it only keeps rows and hints.
     const batchObserver = createBatchPrObserver({
@@ -188,6 +199,19 @@ function buildOrgStores({
         recordMerge: (repo, prNumber, deliveryId, mergedAt) => jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
         reconcile: (batchId) => batches.reconcile(batchId),
     });
+    // The merger (064): needs the installation to merge through; offline the board cannot merge and
+    // refuses an automerge plan at start.
+    const batchMerger = client
+        ? createBatchMerger({
+              sql,
+              orgId,
+              ready,
+              client,
+              recordMerge: (repo, prNumber, deliveryId, mergedAt) =>
+                  jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
+              reconcile: (batchId) => batches.reconcile(batchId),
+          })
+        : undefined;
     // Workflow definitions (027): the process a task walks, stored per scope inside this org.
     const workflows = createWorkflowStore({ sql, orgId, ready });
     return {
@@ -195,6 +219,7 @@ function buildOrgStores({
         envVars,
         batches,
         batchObserver,
+        batchMerger,
         connections,
         userExecutors,
         userRepos,
@@ -220,6 +245,7 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     runtime.envVars = stores.envVars;
     runtime.batches = stores.batches;
     runtime.batchObserver = stores.batchObserver;
+    runtime.batchMerger = stores.batchMerger;
     runtime.connections = stores.connections;
     runtime.userExecutors = stores.userExecutors;
     runtime.userRepos = stores.userRepos;
@@ -362,7 +388,9 @@ export function createOrgRegistry({
             await Promise.all(
                 (await this.list()).map(async (org) => {
                     try {
-                        await (await this.for(org.id))?.batchObserver?.observeDue();
+                        const runtime = await this.for(org.id);
+                        // Observe first: a merge decision is only as good as the observation it reads.
+                        await runtime?.batchObserver?.observeDue().finally(() => runtime?.batchMerger?.mergeDue());
                     } catch (e) {
                         console.error(`[batches] observe for "${org.id}" failed: ${(e as Error).message}`);
                     }

@@ -263,6 +263,7 @@ const parsed = (raw: unknown) => {
 
 describe('resolveBatchPlan and batchExecutionCapability', () => {
     const defaults = { 'acme/web': 'main', 'acme/api': 'trunk' };
+    const CAN_MERGE = { canMerge: true };
 
     it('resolves branches, targets, stage policies and executors', () => {
         const resolved = resolveBatchPlan(
@@ -276,12 +277,12 @@ describe('resolveBatchPlan and batchExecutionCapability', () => {
 
     it('passes a single-target plan on the default branch', () => {
         const resolved = resolveBatchPlan(parsed(plan()), defaults);
-        expect(batchExecutionCapability(resolved, defaults)).toEqual({ ok: true });
+        expect(batchExecutionCapability(resolved, defaults, CAN_MERGE)).toEqual({ ok: true });
         const explicit = resolveBatchPlan(
             parsed(plan({ targets: [{ key: 'web', repo: 'acme/web', branch: 'main' }] })),
             defaults
         );
-        expect(batchExecutionCapability(explicit, defaults)).toEqual({ ok: true });
+        expect(batchExecutionCapability(explicit, defaults, CAN_MERGE)).toEqual({ ok: true });
     });
 
     it('refuses more than one (repo, branch) pair', () => {
@@ -297,7 +298,10 @@ describe('resolveBatchPlan and batchExecutionCapability', () => {
             ),
             defaults
         );
-        expect(batchExecutionCapability(resolved, defaults)).toMatchObject({ ok: false, reason: 'multi_target' });
+        expect(batchExecutionCapability(resolved, defaults, CAN_MERGE)).toMatchObject({
+            ok: false,
+            reason: 'multi_target',
+        });
     });
 
     it('refuses a branch other than the repository default', () => {
@@ -305,22 +309,25 @@ describe('resolveBatchPlan and batchExecutionCapability', () => {
             parsed(plan({ targets: [{ key: 'web', repo: 'acme/web', branch: 'release' }] })),
             defaults
         );
-        expect(batchExecutionCapability(resolved, defaults)).toMatchObject({
+        expect(batchExecutionCapability(resolved, defaults, CAN_MERGE)).toMatchObject({
             ok: false,
             reason: 'non_default_branch',
         });
     });
 
-    it('refuses a stage whose resolved policy is automerge, whether set on the batch or the stage', () => {
+    it('accepts automerge, set on the batch or the stage, only on a board that can merge', () => {
+        const cannot = { canMerge: false };
         const batchWide = resolveBatchPlan(parsed(plan({ policy: 'automerge' })), defaults);
-        expect(batchExecutionCapability(batchWide, defaults)).toMatchObject({ ok: false, reason: 'automerge' });
+        expect(batchExecutionCapability(batchWide, defaults, cannot)).toMatchObject({ ok: false, reason: 'automerge' });
+        expect(batchExecutionCapability(batchWide, defaults, CAN_MERGE)).toEqual({ ok: true });
         const oneStage = resolveBatchPlan(
             parsed(plan({ stages: [{ key: 'one', policy: 'automerge', tasks: [task('a')] }] })),
             defaults
         );
-        expect(batchExecutionCapability(oneStage, defaults)).toMatchObject({ ok: false, reason: 'automerge' });
+        expect(batchExecutionCapability(oneStage, defaults, cannot)).toMatchObject({ ok: false, reason: 'automerge' });
+        expect(batchExecutionCapability(oneStage, defaults, CAN_MERGE)).toEqual({ ok: true });
         const human = resolveBatchPlan(parsed(plan({ policy: 'human' })), defaults);
-        expect(batchExecutionCapability(human, defaults)).toEqual({ ok: true });
+        expect(batchExecutionCapability(human, defaults, cannot)).toEqual({ ok: true });
     });
 
     it('ignores a declared target no task uses', () => {
@@ -335,6 +342,6 @@ describe('resolveBatchPlan and batchExecutionCapability', () => {
             ),
             defaults
         );
-        expect(batchExecutionCapability(resolved, defaults)).toEqual({ ok: true });
+        expect(batchExecutionCapability(resolved, defaults, CAN_MERGE)).toEqual({ ok: true });
     });
 });

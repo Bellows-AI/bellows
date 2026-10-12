@@ -32,6 +32,8 @@ export function staticRegistry(
         envVars?: OrgRuntime['envVars'];
         batches?: OrgRuntime['batches'];
         batchObserver?: OrgRuntime['batchObserver'];
+        /** Present when the org's board can merge: its absence refuses an automerge plan at start. */
+        batchMerger?: OrgRuntime['batchMerger'];
         /** The org's own runtime store, when a test needs two orgs that do not share one. */
         batchesByOrg?: Readonly<Record<string, NonNullable<OrgRuntime['batches']>>>;
         connections?: OrgRuntime['connections'];
@@ -58,6 +60,7 @@ export function staticRegistry(
         envVars: parts.envVars,
         batches: parts.batches,
         batchObserver: parts.batchObserver,
+        batchMerger: parts.batchMerger,
         connections: parts.connections,
         userRepos: parts.userRepos,
         userExecutors: parts.userExecutors,

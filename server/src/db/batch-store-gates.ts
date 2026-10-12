@@ -1,4 +1,16 @@
-import { GATE_OPEN, GATE_PASSED, judgeTaskGate, TASK_NO_PR, TASK_SUCCEEDED } from '@factory-ai/core';
+import {
+    AUTOMERGE,
+    GATE_OPEN,
+    GATE_PASSED,
+    judgeTaskGate,
+    MERGE_CHANGED,
+    MERGE_DISPATCHING,
+    MERGE_LAPSED,
+    MERGE_REFUSED,
+    MERGE_UNCERTAIN,
+    TASK_NO_PR,
+    TASK_SUCCEEDED,
+} from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
 import { ACCEPTANCE_PR_MERGED, DECISION_ADVANCE } from './batch-store-types.js';
 
@@ -23,6 +35,27 @@ interface GateRow {
     attempt: number;
     attempt_started_at: Date;
     wait_reason: string | null;
+    policy: string;
+    merge_state: string | null;
+    merge_detail: string | null;
+}
+
+/** The board's own word on its merge request, as the task's wait reason carries it; null once it says nothing. */
+function mergeNoteOf(state: string | null, detail: string | null): string | null {
+    switch (state) {
+        case MERGE_REFUSED:
+            return `merge refused: ${detail ?? 'no reason given'}`;
+        case MERGE_CHANGED:
+            return `merge held, the PR changed: ${detail ?? ''}`;
+        case MERGE_LAPSED:
+            return `merge not accepted by GitHub, will retry: ${detail ?? ''}`;
+        case MERGE_UNCERTAIN:
+            return 'a merge request has an unknown outcome; reconciling with GitHub';
+        case MERGE_DISPATCHING:
+            return 'merging';
+        default:
+            return null;
+    }
 }
 
 /** True only when a task's row changed: a pass that rewrites nothing must end the reconcile loop. */
@@ -30,14 +63,21 @@ export async function judgeGates(tx: TransactionSql, orgId: string, id: string):
     const rows = await tx<GateRow[]>`
         select t.key, t.completion_kind, t.completion_condition, tg.branch as target_branch, t.pr, t.wait_reason,
                p.repo, p.pr_number, p.pr_url, p.base_branch, m.merged_at,
-               a.attempt, a.created_at as attempt_started_at
+               a.attempt, a.created_at as attempt_started_at, s.policy, mg.state as merge_state,
+               mg.detail as merge_detail
         from batch_task t
+        join batch_stage s on s.org_id = t.org_id and s.batch_id = t.batch_id and s.key = t.stage_key
         join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id and tg.key = t.target_key
         join lateral (
             select attempt, created_at from batch_attempt
             where org_id = t.org_id and batch_id = t.batch_id and task_key = t.key
             order by attempt desc limit 1
         ) a on true
+        left join lateral (
+            select state, detail from batch_merge
+            where org_id = t.org_id and batch_id = t.batch_id and task_key = t.key and attempt = a.attempt
+            order by id desc limit 1
+        ) mg on true
         left join job_pr p on p.org_id = t.org_id and p.root_job_id = t.root_job_id
         left join pr_merge m on m.org_id = p.org_id and m.repo = p.repo and m.pr_number = p.pr_number
         where t.org_id = ${orgId} and t.batch_id = ${id} and t.execution = ${TASK_SUCCEEDED}
@@ -58,6 +98,8 @@ export async function judgeGates(tx: TransactionSql, orgId: string, id: string):
             mergedAt: row.merged_at?.getTime() ?? null,
             attempt: row.attempt,
             attemptStartedAt: row.attempt_started_at.getTime(),
+            automerge: row.policy === AUTOMERGE,
+            mergeNote: mergeNoteOf(row.merge_state, row.merge_detail),
         });
         if (judgement.pass) {
             await tx`
@@ -67,7 +109,7 @@ export async function judgeGates(tx: TransactionSql, orgId: string, id: string):
                 on conflict do nothing
             `;
             await tx`
-                update batch_task set gate = ${GATE_PASSED}, pr = ${row.pr_url}, wait_reason = null
+                update batch_task set gate = ${GATE_PASSED}, pr = ${row.pr_url}, wait_reason = null, attention = null
                 where org_id = ${orgId} and batch_id = ${id} and key = ${row.key}
             `;
             changed = true;

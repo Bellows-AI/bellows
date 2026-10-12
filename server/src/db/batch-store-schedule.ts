@@ -1,4 +1,5 @@
 import {
+    AUTOMERGE,
     ATTENTION_QUESTION,
     ATTENTION_REFUSED,
     attentionWaitReason,
@@ -21,6 +22,7 @@ import {
     TASK_RUNNING,
     TASK_STOPPED,
     TASK_SUCCEEDED,
+    VERIFY_PASSED,
     type ScheduleDecision,
 } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
@@ -290,6 +292,8 @@ interface PassResult {
 interface Snapshot {
     stages: string[];
     advanced: string[];
+    /** Automerge stages whose merged result has not passed its combined verification (064). */
+    unverified: string[];
     tasks: StateTask[];
     targets: Map<string, { repo: string; branch: string }>;
     attempts: Map<string, number>;
@@ -298,13 +302,22 @@ interface Snapshot {
 type Tx = { tx: TransactionSql; orgId: string; id: string };
 
 async function loadSnapshot({ tx, orgId, id }: Tx): Promise<Snapshot> {
-    const [stages, advanced, tasks, targets, attempts] = await Promise.all([
+    const [stages, advanced, unverified, tasks, targets, attempts] = await Promise.all([
         tx<{ key: string }[]>`
             select key from batch_stage where org_id = ${orgId} and batch_id = ${id} order by position
         `,
         tx<{ subject: string }[]>`
             select subject from batch_decision
             where org_id = ${orgId} and batch_id = ${id} and kind = ${DECISION_ADVANCE}
+        `,
+        tx<{ key: string }[]>`
+            select s.key from batch_stage s
+            where s.org_id = ${orgId} and s.batch_id = ${id} and s.policy = ${AUTOMERGE}
+              and not exists (
+                  select 1 from batch_stage_verification v
+                  where v.org_id = s.org_id and v.batch_id = s.batch_id and v.stage_key = s.key
+                    and v.state = ${VERIFY_PASSED}
+              )
         `,
         tx<StateTask[]>`
             select t.key, t.stage_key, t.target_key, t.executor, t.objective, t.acceptance, t.verification,
@@ -325,6 +338,7 @@ async function loadSnapshot({ tx, orgId, id }: Tx): Promise<Snapshot> {
     return {
         stages: stages.map((stage) => stage.key),
         advanced: advanced.map((row) => row.subject),
+        unverified: unverified.map((row) => row.key),
         tasks,
         targets: new Map(targets.map((target) => [target.key, target])),
         attempts: new Map(attempts.map((row) => [row.task_key, row.attempt])),
@@ -516,6 +530,7 @@ function decideFor(batch: LockedBatch, snapshot: Snapshot, now: Date): ScheduleD
         })),
         concurrency: batch.concurrency,
         advanced: snapshot.advanced,
+        unverified: snapshot.unverified,
         cancelled: batch.cancelled_at !== null,
         expired: batch.expired_at !== null,
         now: now.getTime(),

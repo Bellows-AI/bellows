@@ -1,4 +1,12 @@
-import { batchNextAction, GATE_PASSED, holdsSlot, TASK_NO_PR, TASK_RETRY, TASK_RUNNING } from '@factory-ai/core';
+import {
+    batchNextAction,
+    GATE_PASSED,
+    holdsSlot,
+    TASK_NO_PR,
+    TASK_RETRY,
+    TASK_RUNNING,
+    VERIFY_FAILED,
+} from '@factory-ai/core';
 import type { Sql } from 'postgres';
 import {
     ACCEPTANCE_PR_MERGED,
@@ -65,7 +73,7 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
         from batch where org_id = ${orgId} and id = ${id}
     `;
     if (!batch || batch.status !== BATCH_STARTED) return null;
-    const [tasks, merged] = await Promise.all([
+    const [tasks, merged, verification] = await Promise.all([
         sql<ReportTaskRow[]>`
             select t.key, t.stage_key, t.required, t.execution, t.gate, t.attention, t.wait_reason, t.pr,
                    t.root_job_id, t.completion_kind,
@@ -102,6 +110,13 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
             left join pr_merge m on m.org_id = a.org_id and m.repo = a.repo and m.pr_number = a.pr_number
             where a.org_id = ${orgId} and a.batch_id = ${id} and a.kind = ${ACCEPTANCE_PR_MERGED}
             order by a.recorded_at, a.task_key
+        `,
+        sql<{ stage_key: string; state: string; detail: string | null; head_sha: string | null; checked_at: Date }[]>`
+            select v.stage_key, v.state, v.detail, v.head_sha, v.checked_at
+            from batch_stage_verification v
+            join batch_stage s on s.org_id = v.org_id and s.batch_id = v.batch_id and s.key = v.stage_key
+            where v.org_id = ${orgId} and v.batch_id = ${id}
+            order by s.position
         `,
     ]);
     const state = stateOf(batch, tasks);
@@ -162,11 +177,20 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
                 .filter((task) => task.pr !== null && !mergedTasks.has(task.key))
                 .map((task) => ({ task: task.key, url: task.pr! })),
         },
+        verification: verification.map((row) => ({
+            stage: row.stage_key,
+            state: row.state,
+            detail: row.detail,
+            headSha: row.head_sha,
+            checkedAt: iso(row.checked_at),
+        })),
         tasks: rows,
         totals: {
             accepted: rows.filter((task) => task.gate === GATE_PASSED).length,
             failed: rows.filter((task) => task.execution === 'failed').length,
-            needsAttention: rows.filter((task) => task.attention !== null || task.waitReason !== null).length,
+            needsAttention:
+                rows.filter((task) => task.attention !== null || task.waitReason !== null).length +
+                verification.filter((row) => row.state === VERIFY_FAILED).length,
             infraRetries: rows.reduce((sum, task) => sum + task.infraRetries, 0),
             repairs: rows.reduce((sum, task) => sum + task.repairs, 0),
             wallClockMs: rows.reduce((sum, task) => sum + task.usage.wallClockMs, 0),
