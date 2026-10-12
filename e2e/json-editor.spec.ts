@@ -341,9 +341,9 @@ for (const width of [1440, 390]) {
                 });
 
             if (dark && wide)
-                test('seeded gremlins click painted text, edit, navigate and delete without losing characters', async ({
-                    page,
-                }) => {
+                test('seeded gremlins click painted text, edit, navigate and delete without losing characters', {
+                    tag: '@nightly',
+                }, async ({ page }) => {
                     test.setTimeout(60_000);
                     const { input } = await openEditor(page);
                     let expected = '{\n  "value": "abcdefghijklmnop",\n  "n": 123\n}';

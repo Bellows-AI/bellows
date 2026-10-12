@@ -44,7 +44,8 @@ import { THEMES, VIEWPORTS } from './screenshot-matrix.js';
  * entry per shot, and the commit the UI came from — `git rev-parse HEAD`, or `BASELINE_COMMIT` in a
  * `git archive` export, which has no repository to ask.
  *
- * Opt-in (`BASELINE=1`), so `verify:ui` does not pay for it. Sign-in, onboarding and the account page need a github-mode board, so they are shot on the auth
+ * Tagged `@nightly`, so `verify:ui` does not pay for it — `npm run verify:ui:nightly` runs it.
+ * Sign-in, onboarding and the account page need a github-mode board, so they are shot on the auth
  * board by absolute URL; everything else is the open board and its seed.
  */
 
@@ -81,7 +82,7 @@ const SHOTS: Shot[] = [
     ...ENTRY_SHOTS,
 ];
 
-test.describe('baseline gallery', () => {
+test.describe('baseline gallery', { tag: '@nightly' }, () => {
     test.beforeAll(() => mkdirSync(OUT, { recursive: true }));
 
     // Rebuilt from the plan and the disk, not from a list the tests append to: a worker restarted
@@ -108,8 +109,6 @@ test.describe('baseline gallery', () => {
         writeFileSync(`${OUT}/manifest.json`, `${JSON.stringify(manifest, null, 4)}\n`);
     });
 
-    // biome-ignore lint/suspicious/noSkippedTests: a conditional opt-in, not a forgotten skip — a capture tool, not a check, so 120 shots would add minutes to every verify:ui for no assertion
-    test.skip(!process.env.BASELINE, 'gallery capture — run with BASELINE=1');
     // Room for a SLOW wait plus the navigation and full-page shot around it; the 30 s default is less than one.
     test.describe.configure({ timeout: 2 * SLOW });
 

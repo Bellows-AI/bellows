@@ -1,6 +1,6 @@
 # CI
 
-Two workflows and no configured secret — the only credential either uses is `github.token`, and
+Three workflows and no configured secret — the only credential any uses is `github.token`, and
 `core/test/ci-workflows.test.ts` pins every claim below.
 
 | Concern | Code | Test |
@@ -10,6 +10,7 @@ Two workflows and no configured secret — the only credential either uses is `g
 | Release command: patch bump, version-only commit, tag, atomic push | `scripts/release.sh`, `VERSION` | `core/test/release-script.test.ts` |
 | The images a release builds | `docker/Dockerfile`, `docker/driver.Dockerfile`, `docker/{claude,opencode}-executor/` | `driver/test/executor-images.test.ts` |
 | Browser-lane databases and ports | `e2e/reset-db.mjs`, `playwright.config.ts` | `core/test/e2e-config.test.ts` |
+| Nightly/on-demand browser lane: `@nightly` specs and the specimen, never on the merge path | `.github/workflows/ui-nightly.yml`, `playwright.nightly.config.ts` | `core/test/ci-workflows.test.ts`, `core/test/e2e-config.test.ts` |
 
 ## Invariants
 
