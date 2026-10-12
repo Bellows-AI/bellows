@@ -21,7 +21,7 @@ const MS_PER_SECOND = 1000;
 const SECONDS_PER_MINUTE = 60;
 const SECONDS_PER_HOUR = 3600;
 
-/** GitHub's ceiling on a App JWT is 10 minutes. Nine leaves room for a slow clock. */
+/** GitHub's ceiling on an App JWT is 10 minutes. Nine leaves room for a slow clock. */
 const JWT_TTL_SECONDS = 540;
 
 /**
