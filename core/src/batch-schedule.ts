@@ -173,7 +173,7 @@ export function decideSchedule(input: ScheduleInput): ScheduleDecision {
 
 /**
  * The frozen instructions a task's thread starts from: objective, acceptance and verification as
- * the plan wrote them, so editing nothing later can change what a launched task was asked.
+ * the plan wrote them, so nothing later can change what a launched task was asked.
  */
 export function batchTaskCommand(task: { objective: string; acceptance: string; verification: string }): string {
     return [task.objective, `Acceptance:\n${task.acceptance}`, `Verification:\n${task.verification}`].join('\n\n');
