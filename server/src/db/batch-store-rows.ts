@@ -6,6 +6,7 @@ import {
     DECISION_ADVANCE,
     BATCH_STARTED,
     type BatchRecord,
+    type BatchStageVerification,
     type BatchStatus,
     type BatchSummary,
     type BatchWriteRefusal,
@@ -110,6 +111,26 @@ function planOf(batch: BatchRow, targets: TargetRow[], stages: StageRow[], tasks
     };
 }
 
+/** Each automerge stage's combined verification, in stage order; shared by the record and the report. */
+export async function readVerification(sql: Sql, { orgId, id }: BatchAddress): Promise<BatchStageVerification[]> {
+    const rows = await sql<
+        { stage_key: string; state: string; detail: string | null; head_sha: string | null; checked_at: Date }[]
+    >`
+        select v.stage_key, v.state, v.detail, v.head_sha, v.checked_at
+        from batch_stage_verification v
+        join batch_stage s on s.org_id = v.org_id and s.batch_id = v.batch_id and s.key = v.stage_key
+        where v.org_id = ${orgId} and v.batch_id = ${id}
+        order by s.position
+    `;
+    return rows.map((row) => ({
+        stage: row.stage_key,
+        state: row.state,
+        detail: row.detail,
+        headSha: row.head_sha,
+        checkedAt: row.checked_at.toISOString(),
+    }));
+}
+
 /** The batch with its plan and per-task state, or null when this org has no such batch. */
 export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise<BatchRecord | null> {
     const [batch] = await sql<BatchRow[]>`
@@ -119,7 +140,7 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
         from batch where org_id = ${orgId} and id = ${id}
     `;
     if (!batch) return null;
-    const [targets, stages, tasks, advanced] = await Promise.all([
+    const [targets, stages, tasks, advanced, verification] = await Promise.all([
         sql<TargetRow[]>`
             select key, repo, branch from batch_target
             where org_id = ${orgId} and batch_id = ${id} order by position
@@ -143,6 +164,7 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
             select subject from batch_decision
             where org_id = ${orgId} and batch_id = ${id} and kind = ${DECISION_ADVANCE}
         `,
+        readVerification(sql, { orgId, id }),
     ]);
     const done = new Set(advanced.map((row) => row.subject));
     return {
@@ -172,6 +194,7 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
             rootJobId: task.root_job_id,
             attempt: task.attempt,
         })),
+        verification,
     };
 }
 

@@ -61,6 +61,14 @@ describe('the batch-control skill', () => {
         }
     });
 
+    it('reads a failed stage verification, which no task names, and waits again after a merge', () => {
+        // Both were found driving a real batch: a red check on the target tip held the next stage
+        // with every task's `next` at `none`, and a merge takes a poll to be observed.
+        expect(skill).toContain("The report's `verification`");
+        expect(skill).toContain('never retry a task for it');
+        expect(skill).toContain('means wait again');
+    });
+
     it('confirms with the user before start and cancel, and never merges or answers on its own', () => {
         const start = skill.slice(skill.indexOf('## 3. Start'));
         expect(start).toMatch(/^## 3\. Start\n\nConfirm with the user/);

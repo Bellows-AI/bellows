@@ -289,6 +289,8 @@ describe.skipIf(!enabled)('automerge', () => {
         expect(report.verification[0]!.detail).toContain('build');
         expect(report.totals.needsAttention).toBe(1);
         expect(report.state).not.toBe('completed');
+        // The record a waiting client polls carries the same row, so a wait can stop on it.
+        expect((await store.get(id))!.verification).toEqual(report.verification);
 
         github.branch.checks = checks('passing');
         clock.offset += 2 * 60_000;

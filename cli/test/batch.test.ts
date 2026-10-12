@@ -50,7 +50,17 @@ const record = (status: string, tasks: unknown[], extra: Record<string, unknown>
     createdBy: null,
     cancelledAt: null,
     expiredAt: null,
+    verification: [],
     ...extra,
+});
+
+/** A stage's combined verification row, as the record and the report both carry it. */
+const verified = (state: string, detail: string | null = null) => ({
+    stage: 'build',
+    state,
+    detail,
+    headSha: 'cd89f3d2',
+    checkedAt: '2026-10-12T17:45:09.298Z',
 });
 
 const OBSERVED_AT = '2026-10-12T08:00:00.000Z';
@@ -280,6 +290,15 @@ describe('batch validate / start / inspect / list', () => {
         expect(human.out).toContain('a pending · gate open · target api');
     });
 
+    it('names a failed stage verification on inspect, under its stage, with the verdict it forces', async () => {
+        const parked = record('started', [task('a', 'succeeded', { gate: 'passed' })], {
+            verification: [verified('failed', 'checks on main fail: e2e failing')],
+        });
+        const result = await cli(['batch', 'inspect', ID], (sent) => json(isReport(sent) ? REPORT() : parked));
+        expect(result.out).toContain('verdict needs_attention');
+        expect(result.out).toContain('  verification failed: checks on main fail: e2e failing (at cd89f3d2)');
+    });
+
     it('carries the report of a started batch on inspect, and reads none for a draft', async () => {
         const started = await cli(['batch', 'inspect', ID, '--json'], (sent) =>
             json(isReport(sent) ? REPORT() : record('started', [task('a', 'running')]))
@@ -376,6 +395,22 @@ describe('batch wait', () => {
         expect(JSON.parse(asJson.out).data.needsAction.map((entry: { key: string }) => entry.key)).toEqual(['a']);
     });
 
+    it('exits 6 on a failed stage verification, naming the stage and why, though no task waits', async () => {
+        const parked = record('started', [task('a', 'succeeded', { gate: 'passed' })], {
+            verification: [verified('failed', 'checks on main at cd89f3d2 fail: e2e failing')],
+        });
+        const result = await cli(['batch', 'wait', ID], (sent) => json(isReport(sent) ? REPORT() : parked));
+        expect(result.code).toBe(6);
+        expect(result.out).toContain('stage build verification failed: checks on main at cd89f3d2 fail: e2e failing');
+    });
+
+    it('keeps waiting while a stage verification is only pending', async () => {
+        const verifying = record('started', [task('a', 'succeeded', { gate: 'passed' })], {
+            verification: [verified('pending')],
+        });
+        expect((await wait([verifying], ['--timeout', '12'])).code).toBe(3);
+    });
+
     it('exits 3 when the budget ends with the batch still moving, leaving it running', async () => {
         const result = await wait([record('started', [task('a', 'running')])], ['--timeout', '12']);
         expect(result.code).toBe(3);
@@ -463,6 +498,12 @@ describe('batch report', () => {
         expect(result.out).toContain('manual 1');
         // A task with no PR has nothing to observe, and says nothing about it.
         expect(result.out).not.toContain('observed: none yet');
+    });
+
+    it('prints each stage verification, a failed one with why', async () => {
+        const report = { ...REPORT('parked'), verification: [verified('failed', 'checks on main fail: e2e failing')] };
+        const result = await cli(['batch', 'report', ID], () => json(report));
+        expect(result.out).toContain('stage build verification failed: checks on main fail: e2e failing');
     });
 
     it('prints the report itself as JSON', async () => {

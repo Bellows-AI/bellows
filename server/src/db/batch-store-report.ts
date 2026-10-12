@@ -9,6 +9,7 @@ import {
 } from '@factory-ai/core';
 import type { Sql } from 'postgres';
 import { type BatchPrObservation, readObservations } from './batch-store-observation.js';
+import { readVerification } from './batch-store-rows.js';
 import {
     ACCEPTANCE_PR_MERGED,
     BATCH_STARTED,
@@ -133,13 +134,7 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
             where a.org_id = ${orgId} and a.batch_id = ${id} and a.kind = ${ACCEPTANCE_PR_MERGED}
             order by a.recorded_at, a.task_key
         `,
-        sql<{ stage_key: string; state: string; detail: string | null; head_sha: string | null; checked_at: Date }[]>`
-            select v.stage_key, v.state, v.detail, v.head_sha, v.checked_at
-            from batch_stage_verification v
-            join batch_stage s on s.org_id = v.org_id and s.batch_id = v.batch_id and s.key = v.stage_key
-            where v.org_id = ${orgId} and v.batch_id = ${id}
-            order by s.position
-        `,
+        readVerification(sql, { orgId, id }),
         readObservations({ sql, orgId }, id),
     ]);
     const observed = new Map(observations.map((row) => [row.taskKey, row]));
@@ -207,13 +202,7 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
                 .filter((task) => task.pr !== null && !mergedTasks.has(task.key))
                 .map((task) => ({ task: task.key, url: task.pr! })),
         },
-        verification: verification.map((row) => ({
-            stage: row.stage_key,
-            state: row.state,
-            detail: row.detail,
-            headSha: row.head_sha,
-            checkedAt: iso(row.checked_at),
-        })),
+        verification,
         tasks: rows,
         latestObservationAt:
             observations

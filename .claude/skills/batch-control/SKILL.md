@@ -79,14 +79,23 @@ npm run dev -w cli -- batch report <id> --json                                  
 
 | Exit | Meaning | Next |
 | --- | --- | --- |
-| `0` | every task succeeded and passed its gate | report, done |
+| `0` | every task succeeded and passed its gate, every automerge stage verified | report, done |
 | `3` | the wait budget ran out; the batch is still going | wait again |
-| `6` | a task needs a person | read the report, act on section 5 |
+| `6` | a task, or a stage's verification, needs a person | read the report, act on section 5 |
 | `4` | a task failed and needs a decision | read the report, act on section 5 |
 | `5` | cancelled, or the time limit expired | report what merged; a new batch for the rest |
 | `7` | board unreachable | wait again once it answers |
 
+After a person merges, the board needs up to a minute to observe it: a `wait` that exits `6` again
+at once, naming the same merged PR, means wait again — not that the merge was missed.
+
 ## 5. Act on the report
+
+The report's `verification` lists each automerge stage's combined check of the target after its
+merges. `failed` holds the next stage with no task waiting: its `detail` names what failed on the
+target branch (a check on the tip, a merge missing from it). Show it to the user; a flaky check is
+re-run on GitHub by a person, a real break is fixed on the target. The board re-reads it on every
+pass and advances on its own once it passes — never retry a task for it.
 
 Each report task carries `waitReason`, `attention` and `next` — the one supported next step. Do
 what `next.action` says and nothing else:
