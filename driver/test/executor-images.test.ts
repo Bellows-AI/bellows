@@ -321,6 +321,7 @@ const CONTAINER_GUARD_NAMES = [
     'ANTHROPIC_MODEL',
     'FACTORY_TRANSCRIPT_DIR',
     'CLAUDE_CODE_CONFIG_CONTENT',
+    'OPENCODE_CONFIG_CONTENT',
     'OTEL_EXPORTER_OTLP_ENDPOINT',
     'XDG_DATA_HOME',
     'DEFAULT_BRANCH',
@@ -376,7 +377,8 @@ const makeSandbox = (): Sandbox => {
     for (const name of ATLASSIAN_NAMES) delete inherited[name];
     // The container-only guards are absent on a dev host but present when the suite itself runs
     // inside an executor (a board task): inherited, they would move CLAUDE_CONFIG_DIR onto the
-    // real transcript store and patch its settings. A test that wants one passes it explicitly.
+    // real transcript store and patch its settings, or hand the entrypoint the runner's own
+    // inline opencode config. A test that wants one passes it explicitly.
     for (const name of CONTAINER_GUARD_NAMES) delete inherited[name];
     // Same story for the /opt/claude-home seed, which is keyed on the filesystem: a present
     // settings.json marks the config dir as already seeded, so the seed never overwrites the
