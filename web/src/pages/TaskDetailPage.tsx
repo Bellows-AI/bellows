@@ -5,6 +5,7 @@ import { useThread } from '../api/useJobs.js';
 import type { Job } from '../api/useJobs.js';
 import { useThreadActivity } from '../api/useJobActivity.js';
 import type { UseTasks } from '../api/useTasks.js';
+import { BatchBacklink } from '../components/BatchBacklink.js';
 import { TaskRemoveDialog } from '../components/TaskRemoveDialog.js';
 import { TaskHeader } from '../panels/TaskHeader.js';
 import { TaskDetail } from '../panels/TaskDetail.js';
@@ -235,6 +236,7 @@ export function TaskDetailPage() {
                 onDone={doneTask}
                 onRemoveRequest={openRemove}
             />
+            <BatchBacklink rootId={detail.jobs?.[0]?.id ?? null} />
             <TaskDetail
                 key={id ?? 'none'}
                 jobs={detail.jobs}

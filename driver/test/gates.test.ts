@@ -660,6 +660,42 @@ describe('the gate server', () => {
         await server.close();
     });
 
+    it('runs an on-demand gate ad hoc, and refuses a long one without promising the end-of-run pass', async () => {
+        const ran: string[] = [];
+        const manager = {
+            acquire: async () => {},
+            runGate: async (_key: string, name: string) => {
+                ran.push(name);
+                return { exitCode: 0, output: 'ok' };
+            },
+        };
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        server.register('tok-1', {
+            key: KEY,
+            image: 'node:24',
+            job: JOB,
+            gates: [
+                { name: 'smoke', command: 'npm run smoke', onDemand: true },
+                { name: 'ui', command: 'npm run verify:ui', timeoutMinutes: 45, onDemand: true },
+            ],
+        });
+        const port = await server.listen();
+        const post = (gate: string) =>
+            fetch(`http://127.0.0.1:${port}/run`, {
+                method: 'POST',
+                headers: { authorization: 'Bearer tok-1' },
+                body: JSON.stringify({ gate }),
+            });
+        expect((await post('smoke')).status).toBe(OK_STATUS);
+        const refused = await post('ui');
+        expect(refused.status).toBe(UNPROCESSABLE_STATUS);
+        await expect(refused.json()).resolves.toEqual({
+            error: 'gate "ui" declares timeout: 45, longer than an ad-hoc run can wait (10 minutes); it is on_demand, so the end-of-run gates pass skips it too',
+        });
+        expect(ran).toEqual(['smoke']);
+        await server.close();
+    });
+
     it('refuses an unknown token, an undeclared gate and a malformed body', async () => {
         const manager = {
             acquire: async () => {},

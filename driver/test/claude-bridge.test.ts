@@ -11,7 +11,9 @@ import { afterEach, describe, expect, it } from 'vitest';
  * The runner end of AskUserQuestion (issue #226): docker/claude-executor/claude-bridge.cjs run
  * against a fake `claude` on PATH and a fake control server on loopback. The fake CLI records its
  * argv and stdin, emits scripted stream-json, waits for one control_response per control_request
- * it emitted, then ends the turn with a `result` line and exits when its stdin closes.
+ * it emitted, then ends the turn with a `result` line and exits when its stdin closes. FAKE_LATER
+ * scripts one more turn the CLI starts on its own after that `result` — the one a background
+ * subagent's completion queues — which only runs while stdin is still open.
  */
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const BRIDGE = join(ROOT, 'docker/claude-executor/claude-bridge.cjs');
@@ -30,11 +32,23 @@ const fs = require('node:fs');
 const dir = process.env.FAKE_DIR;
 fs.writeFileSync(dir + '/argv.json', JSON.stringify(process.argv.slice(2)));
 const lines = JSON.parse(process.env.FAKE_LINES || '[]');
-const expected = lines.filter((line) => line.type === 'control_request').length;
+const later = JSON.parse(process.env.FAKE_LATER || '[]');
+const requests = (batch) => batch.filter((line) => line.type === 'control_request').length;
+let expected = requests(lines);
 let responses = 0;
 let emitted = false;
+let laterEmitted = false;
 const say = (line) => process.stdout.write(JSON.stringify(line) + '\\n');
-const finish = () => say({ type: 'result', subtype: 'success' });
+const finish = () => {
+    say({ type: 'result', subtype: 'success' });
+    if (!later.length || laterEmitted) return;
+    laterEmitted = true;
+    setTimeout(() => {
+        expected += requests(later);
+        for (const item of later) say(item);
+        if (!requests(later)) finish();
+    }, 50);
+};
 process.on('SIGTERM', () => {
     fs.writeFileSync(dir + '/termed', '1');
     process.exit(0);
@@ -282,6 +296,43 @@ describe('claude-bridge stream', () => {
         );
     });
 
+    // Job 2bfc0e63 (2026-10-11): the agent ended its turn while its reviewer subagent ran, the
+    // bridge closed stdin on that `result`, and every permission request of the turn the
+    // subagent's completion started failed "Stream closed" — AskUserQuestion included.
+    it('keeps stdin open across a result while a background subagent runs, so the turn it starts is answered', async () => {
+        const subagents = (tasks: unknown[]) => ({ type: 'system', subtype: 'background_tasks_changed', tasks });
+        const result = await run({
+            lines: [subagents([{ task_id: 'a1', task_type: 'local_agent', description: 'review' }])],
+            env: { FAKE_LATER: JSON.stringify([subagents([]), { ...askRequest('Write'), request_id: 'req-2' }]) },
+        });
+
+        expect(result.stdin.at(-1)).toMatchObject({
+            type: 'control_response',
+            response: { subtype: 'success', request_id: 'req-2', response: { behavior: 'deny' } },
+        });
+        expect(result.stdout.match(/"type":"result"/g)).toHaveLength(2);
+        expect(result.code).toBe(0);
+    });
+
+    // The CLI kills a background shell at end of input rather than waiting for it, so a shell
+    // left running — a dev server — must not hold the run open.
+    it('closes stdin on a result while only a background shell runs', async () => {
+        const result = await run({
+            lines: [
+                {
+                    type: 'system',
+                    subtype: 'background_tasks_changed',
+                    tasks: [{ task_id: 'b1', task_type: 'local_bash', description: 'npm run dev' }],
+                },
+            ],
+            env: { FAKE_LATER: JSON.stringify([{ ...askRequest('Write'), request_id: 'req-2' }]) },
+        });
+
+        expect(existsSync(join(result.dir, 'stdin-closed'))).toBe(true);
+        expect(result.stdout.match(/"type":"result"/g)).toHaveLength(1);
+        expect(result.code).toBe(0);
+    });
+
     it('answers a control request it does not support with an error', async () => {
         const result = await run({
             lines: [{ type: 'control_request', request_id: 'req-9', request: { subtype: 'set_model' } }],
@@ -371,11 +422,32 @@ describe('claude-bridge can_use_tool', () => {
         const control = await startControl({});
         controls.push(control);
 
+        const result = await run({ lines: [askRequest('WebFetch')], control });
+
+        expect(result.decision).toEqual({
+            behavior: 'deny',
+            message: "Not pre-approved by the runner's allowlist, and nobody can approve it in this run.",
+            interrupt: false,
+        });
+        expect(control.posts).toEqual([]);
+    });
+
+    // A real run (`/fix 582`) read the old "denied by the permission settings" on
+    // `(npm install | tail -3)` as "npm is forbidden" and gave up, though `Bash(npm *)` was allowed:
+    // the subshell, not npm, kept the command from matching. The Bash denial names that way out.
+    it('tells a denied Bash command that a compound command may pass split into plain parts', async () => {
+        const control = await startControl({});
+        controls.push(control);
+
         const result = await run({ lines: [askRequest('Bash')], control });
 
         expect(result.decision).toEqual({
             behavior: 'deny',
-            message: "Permission denied by the runner's permission settings.",
+            message:
+                "Not pre-approved by the runner's allowlist, and nobody can approve it in this run. " +
+                'A compound command (a `( … )` subshell, a heredoc, a `;` or `&&` chain) is approved only when ' +
+                'every part matches the allowlist: run each part once on its own, unwrapped, before treating ' +
+                'it as refused.',
             interrupt: false,
         });
         expect(control.posts).toEqual([]);

@@ -673,7 +673,7 @@ export function createGateServer({
         if (!gate) return respond(reply, HTTP_NOT_FOUND, { error: `no declared gate "${parsedRequest.gate}"` });
         if ((declaredTimeoutMs(gate) ?? 0) > AD_HOC_MAX_MINUTES * MS_PER_MINUTE) {
             return respond(reply, HTTP_UNPROCESSABLE, {
-                error: `gate "${gate.name}" declares timeout: ${gate.timeoutMinutes}, longer than an ad-hoc run can wait (${AD_HOC_MAX_MINUTES} minutes); it runs in the end-of-run gates pass`,
+                error: `gate "${gate.name}" declares timeout: ${gate.timeoutMinutes}, longer than an ad-hoc run can wait (${AD_HOC_MAX_MINUTES} minutes); ${gate.onDemand ? 'it is on_demand, so the end-of-run gates pass skips it too' : 'it runs in the end-of-run gates pass'}`,
             });
         }
 

@@ -243,9 +243,9 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
             return markJobDone(ctx, id, doneBy);
         },
 
-        async closeMergedPr(repo, prNumber, deliveryId) {
+        async closeMergedPr(repo, prNumber, deliveryId, mergedAt) {
             await gate();
-            return closeMergedPr(ctx, repo, prNumber, deliveryId);
+            return closeMergedPr(ctx, repo, prNumber, { deliveryId, ...(mergedAt ? { mergedAt } : {}) });
         },
 
         async answerQuestion(id, questionId, answers, answeredBy) {

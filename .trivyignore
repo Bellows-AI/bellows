@@ -23,8 +23,6 @@
 # (removing npm from the executors) takes the plugin path with it.
 # Neither is reachable from anything these images run: npm is a build-time tool there, and no
 # runner invokes it. Revisit when @anthropic-ai/claude-code installs cleanly under npm 12.
-# The UI runner image (docker/ui-runner.Dockerfile) carries the same npm and does run it, but only
-# against this repository's own package.json and lockfile — no untrusted brace pattern or WebSocket.
 
 # brace-expansion denial of service, two of them. npm 11.21.0 vendors 5.0.9; the fixes are 5.0.10
 # and 5.0.11.

@@ -1,3 +1,5 @@
+import { batchRoutes } from './batch.js';
+import type { BatchRoutes } from './batch.js';
 import { CONTENT_TYPE_HEADER, IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAYED_HEADER, JSON_CONTENT_TYPE } from './http.js';
 import {
     BoardError,
@@ -249,7 +251,7 @@ export interface BoardTaskPage {
     nextCursor: string | null;
 }
 
-export interface BoardClient {
+export interface BoardClient extends BatchRoutes {
     createJob(input: {
         command: string;
         repo?: string | undefined;
@@ -605,6 +607,8 @@ export function createBoardClient({
         },
 
         ...readRoutes((path) => request(at(path), { headers: authHeaders() })),
+
+        ...batchRoutes((path, init, onResponse) => request(at(path), init, onResponse), authHeaders),
 
         async followUp(id, command, idempotencyKey) {
             // The command is the whole body: the repo, the executor and the session are copied

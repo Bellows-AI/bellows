@@ -48,6 +48,13 @@ describe('parseBellows: valid documents', () => {
         expect('timeoutMinutes' in (gate ?? {})).toBe(false);
     });
 
+    it('reads an on-demand gate, and omits onDemand when a gate declares none', () => {
+        expect(parseBellows(`${EXAMPLE}\n           on_demand: true`)?.gates).toEqual([
+            { name: 'test', command: 'npm test', onDemand: true },
+        ]);
+        expect('onDemand' in (parseBellows(EXAMPLE)?.gates[0] ?? {})).toBe(false);
+    });
+
     it.each([
         ['an empty setup', '    setup: ""', /line 3: setup is empty/],
         ['a valueless setup', '    setup:', /line 3: setup takes a value/],
@@ -222,12 +229,11 @@ describe('parseBellows: rejects malformed structure', () => {
 describe("parseBellows: this repository's own .bellows.yaml", () => {
     // The yaml library the ci-workflows checks use accepts what this grammar refuses; the real
     // parser is the one the board runs at claim.
-    it('parses under the strict grammar, the ui gate with its own timeout', async () => {
+    it('parses under the strict grammar', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
         expect(parseBellows(text)?.gates).toEqual([
             { name: 'test', command: 'npm test' },
             { name: 'lint', command: 'npm run lint' },
-            { name: 'ui', command: 'sh scripts/ui-gate.sh', timeoutMinutes: 45 },
         ]);
     });
 });
@@ -266,9 +272,15 @@ describe('parseBellows: rejects invalid gates and limits', () => {
         );
     });
 
-    it('names timeout among the gate fields an unknown key is refused against', () => {
+    it.each(['false', 'yes', '""'])('refuses an on_demand of %s — the one value is true', (value) => {
+        expect(() => parseBellows(`${EXAMPLE}\n           on_demand: ${value}`)).toThrow(
+            /line 6: on_demand must be "true"/
+        );
+    });
+
+    it('names timeout and on_demand among the gate fields an unknown key is refused against', () => {
         expect(() => parseBellows(`${EXAMPLE}\n           retries: 2`)).toThrow(
-            /unknown gate field "retries" — only name, command and timeout are read/
+            /unknown gate field "retries" — only name, command, timeout and on_demand are read/
         );
     });
 

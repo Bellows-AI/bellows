@@ -106,11 +106,13 @@ function splitOuter(text) {
 
 // Split a command into its runnable segments. Operators bind only outside quotes; the
 // contents of $(…), <(…) and `…` cannot run as part of the surrounding command, so each span
-// is lifted out and recursed as segments of its own. Unbalanced quoting means the command
-// cannot be proven safe — { ok: false } and the caller denies.
+// is lifted out and recursed as segments of its own — inside double quotes too, where the shell
+// still expands them but a `'` is a literal. Unbalanced quoting means the command cannot be
+// proven safe — { ok: false } and the caller denies.
 function segmentsOf(command, depth) {
     const subs = [];
     let outer = '';
+    let inDouble = false;
     let i = 0;
     while (i < command.length) {
         const c = command[i];
@@ -119,7 +121,8 @@ function segmentsOf(command, depth) {
             i += 2;
             continue;
         }
-        if (c === "'") {
+        if (c === '"') inDouble = !inDouble;
+        if (c === "'" && !inDouble) {
             const end = command.indexOf("'", i + 1);
             if (end === -1) return { ok: false };
             outer += command.slice(i, end + 1);
@@ -457,6 +460,12 @@ const CASES = [
     ['allow', "sh -c 'gh pr create --fill'"],
     ['allow', 'gh pr edit 82 --title x'],
     ['allow', 'gh pr ready 82'],
+    // A `'` inside double quotes is a literal (job 2bfc0e63, 2026-10-11): the apostrophe in a PR
+    // body read as an unclosed single quote, and the agent's own `gh pr create` was denied.
+    ['allow', 'gh pr create --title "x" --body "the run\'s own failure"'],
+    ['allow', 'git commit -m "don\'t move HEAD"'],
+    ['deny', 'echo "it\'s" && git switch main'],
+    ['deny', 'echo "it\'s $(git switch main)"'],
     ['allow', 'git status'],
     ['allow', 'git status --short'],
     ['allow', 'git diff'],

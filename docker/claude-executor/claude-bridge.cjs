@@ -26,7 +26,12 @@ const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_SERVER_ERROR = 500;
 const ASK_TOOL = 'AskUserQuestion';
 
-const MSG_TOOL_DENIED = "Permission denied by the runner's permission settings.";
+const MSG_TOOL_DENIED = "Not pre-approved by the runner's allowlist, and nobody can approve it in this run.";
+// The CLI asks about a compound command whose every part is allowlisted when it cannot match the
+// whole, so a Bash denial is not a verdict on its parts.
+const MSG_BASH_DENIED =
+    `${MSG_TOOL_DENIED} A compound command (a \`( … )\` subshell, a heredoc, a \`;\` or \`&&\` chain) is approved ` +
+    'only when every part matches the allowlist: run each part once on its own, unwrapped, before treating it as refused.';
 const MSG_NOBODY = 'Nobody can answer questions in this run. Continue with your best judgment and state the assumption you made.';
 const MSG_EXPIRED = 'The question expired after 1 hour without an answer. Stop now.';
 const MSG_STOPPED = 'The task was stopped.';
@@ -98,6 +103,7 @@ async function ask(request) {
 }
 
 async function decide(request) {
+    if (request.tool_name === 'Bash') return deny(MSG_BASH_DENIED, false);
     if (request.tool_name !== ASK_TOOL) return deny(MSG_TOOL_DENIED, false);
     return ask(request);
 }
@@ -123,6 +129,11 @@ function main() {
     // The CLI can exit before a late write lands; that is the exit handler's to report, not a crash.
     cli.stdin.on('error', () => {});
 
+    // A `result` ends a turn, and closing stdin ends the run — but the CLI still runs the turn a
+    // background subagent's completion queues, and past end of input that turn's permission
+    // requests fail "Stream closed". So stdin stays open while a subagent runs. A background
+    // shell does not count: the CLI kills shells at end of input instead of waiting for them.
+    let subagentsRunning = false;
     let inputOpen = true;
     const send = (message) => {
         if (inputOpen) cli.stdin.write(`${JSON.stringify(message)}\n`);
@@ -146,7 +157,10 @@ function main() {
             return;
         }
         if (!event || typeof event !== 'object') return;
-        if (event.type === 'result') {
+        if (event.type === 'system' && event.subtype === 'background_tasks_changed' && Array.isArray(event.tasks)) {
+            subagentsRunning = event.tasks.some((task) => task?.task_type === 'local_agent');
+        } else if (event.type === 'result') {
+            if (subagentsRunning) return;
             inputOpen = false;
             cli.stdin.end();
         } else if (event.type === 'control_request' && event.request) {

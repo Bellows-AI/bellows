@@ -695,7 +695,9 @@ export type EditCommandResult =
 export type RemoveResult =
     | { result: 'ok'; rootJobId: string; repo: string | null; workspacePath: string | null }
     | 'missing'
-    | 'conflict';
+    | 'conflict'
+    /** The thread backs a batch task: removing it would rewrite the batch's history. */
+    | 'batch';
 
 /**
  * What a user wait-cancel (issue #328) did.
@@ -738,7 +740,7 @@ export type PokeWaitResult = { result: 'ok'; woken: boolean } | 'missing' | 'no_
  *                 now. Retry once the claim settles: an ack stamps the marker (`reclaimed`), an
  *                 expired lease reverts the row to withdrawable (`ok`).
  */
-export type ReopenResult = { result: 'ok' } | 'missing' | 'not_done' | 'reclaimed' | 'reclaiming';
+export type ReopenResult = { result: 'ok' } | 'missing' | 'not_done' | 'reclaimed' | 'reclaiming' | 'batch';
 
 /** A worktree reclaim a driver just leased. Acking by id removes the row. `leaseExpiresAt` is the
  * expiry the claim granted, read back from the row it was persisted on — the holder keeps the row
@@ -897,7 +899,7 @@ export interface JobStore {
     markDone(
         id: string,
         doneBy: string | null
-    ): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict'>;
+    ): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict' | 'batch'>;
     /**
      * The merge half of issue #390: a verified `pull_request closed, merged: true` delivery names
      * this operation with the delivery's GUID, and every thread whose recorded publication
@@ -914,7 +916,9 @@ export interface JobStore {
     closeMergedPr(
         repo: string,
         prNumber: number,
-        deliveryId: string
+        deliveryId: string,
+        /** When GitHub says the merge happened; absent is "now", which is all a webhook knows. */
+        mergedAt?: Date
     ): Promise<{ outcome: 'applied' | 'duplicate'; closedRoots: number }>;
     /**
      * The user's stop. A QUEUED row never started, so it is settled `stopped` right here: the

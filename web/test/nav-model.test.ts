@@ -34,6 +34,7 @@ describe('nav model', () => {
             ['/', 'Dashboard', true, 'home'],
             // Observe → act → configure (#159): the report, then the work, then the configuration.
             ['/tasks', 'Tasks', false, 'list'],
+            ['/batches', 'Batches', false, 'layers'],
             ['/settings', 'Settings', false, 'settings'],
         ]);
     });
@@ -64,7 +65,7 @@ describe('nav model', () => {
             running: [],
             review: [],
         });
-        const [dashboard, tasks, settings] = NAV_ITEMS;
+        const [dashboard, tasks, , settings] = NAV_ITEMS;
         expect(navCount(tasks!, counts(REVIEW_COUNT))).toBe(REVIEW_COUNT);
         expect(navCount(tasks!, counts(0))).toBeNull();
         expect(navCount(tasks!, null)).toBeNull();

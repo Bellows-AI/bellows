@@ -48,7 +48,7 @@ function messageOf(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
-async function readSource(selection: InputSelection, io: InputIo): Promise<string> {
+export async function readSource(selection: InputSelection, io: InputIo): Promise<string> {
     if (selection.file !== undefined) {
         if (!io.readFile) throw new UsageError(`--${FILE_OPTION} is not available here`);
         try {

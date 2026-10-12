@@ -18,7 +18,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | Task summary (`GET /api/tasks`) | `server/src/db/task-summary.ts`, `server/src/routes/tasks.ts` | `server/test/task-summary.test.ts`, `server/test/routes.tasks.test.ts` |
 | Attribution, wall clock, publication | `server/src/db/job-store-reads.ts`, `job-store-rows.ts` | `server/test-db/job-store.attribution.test.ts`, `job-store.wall-clock.test.ts`, `job-store.publication.test.ts` |
 | Mutation idempotency (`Idempotency-Key`) | `server/src/routes/job-idempotency.ts`, `server/src/db/job-store-idempotency.ts`, `server/migrations/058_job_idempotency.sql` | `server/test-db/job-store.idempotency.test.ts`, `server/test/routes.jobs.test.ts`, `server/test-db/cli.scripting.test.ts` |
-| `.bellows.yaml` parser: gates and their `timeout:`, services, `policy:`, `reviewers:` | `server/src/workspace/bellows.ts`, `bellows-reviewers.ts` | `server/test/bellows.test.ts`, `bellows.policy.test.ts`, `bellows.reviewers.test.ts` |
+| `.bellows.yaml` parser: gates and their `timeout:` and `on_demand:`, services, `policy:`, `reviewers:` | `server/src/workspace/bellows.ts`, `bellows-reviewers.ts` | `server/test/bellows.test.ts`, `bellows.policy.test.ts`, `bellows.reviewers.test.ts` |
 | Gates, board side; the claim's `gatesSource` | `server/src/db/job-store-worker.ts`, `server/migrations/018_job_gates.sql` | `server/test-db/job-store.gates.test.ts`, `server/test/claim-gates-source.test.ts` |
 | Master prompt and turn context, rendered | `server/src/db/master-prompt.ts` | `server/test/master-prompt.test.ts` |
 | Objective mode (no `workflow`) | `core/src/job-mode.ts`, `server/migrations/051_job_mode.sql` | `server/test-db/job-store.objective.test.ts` |
@@ -36,7 +36,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | Master prompt delivered; turn-context hook | `driver/src/master-prompt.ts`, `runner-plan.ts`, `docker/claude-executor/turn-context-hook.cjs` | `driver/test/master-prompt.test.ts`, `turn-context-hook.test.ts` |
 | Docker runner | `driver/src/docker-runner.ts`, `docker.ts`, `runner.ts`, `config.ts` | `driver/test/docker.test.ts`, `config.test.ts` |
 | Kubernetes runner | `driver/src/k8s-*.ts` | `driver/test/k8s.test.ts`, `k8s-admission.test.ts`, `k8s-transport.test.ts` |
-| Gates, `environment.setup`, lease-owned gate environments; a gate's `timeout:` overrides `GATE_TIMEOUT_MS`, capped by `DRIVER_JOB_TIMEOUT_MS` (`gateDeadlineMs`), and ad-hoc `/run` answers 422 above 10 minutes | `driver/src/gates.ts`, `loop-gates.ts`, `k8s-gates.ts` | `driver/test/gates.test.ts`, `gates-limits.test.ts`, `gates-ownership.test.ts`, `k8s.test.ts`, `loop.test.ts` |
+| Gates, `environment.setup`, lease-owned gate environments; a gate's `timeout:` overrides `GATE_TIMEOUT_MS`, capped by `DRIVER_JOB_TIMEOUT_MS` (`gateDeadlineMs`), and ad-hoc `/run` answers 422 above 10 minutes; an `on_demand` gate runs ad hoc only, never in the end-of-run pass or its evidence | `driver/src/gates.ts`, `loop-gates.ts`, `k8s-gates.ts` | `driver/test/gates.test.ts`, `gates-limits.test.ts`, `gates-ownership.test.ts`, `k8s.test.ts`, `loop.test.ts` |
 | Run control (`GET /control`, stop poller, step-boundary hook/plugin) | `driver/src/gates.ts`, `docker/claude-executor/stop-poller.cjs`, `stop-hook.cjs`, `docker/opencode-executor/stop-plugin/index.js` | `driver/test/run-control.test.ts` |
 | Ledger, failure kind, `FACTORY_BLOCKED:`, timeout note | `driver/src/loop-ledger.ts`, `loop-verdict.ts`, `exec-codes.ts`, `timeout-note.ts` | `driver/test/loop-ledger.test.ts`, `timeout-note.test.ts`, `branch-reporter.test.ts` |
 | Services, dead-service probe and restart, `infraLoss` | `driver/src/services.ts`, `service-restart.ts`, `k8s-services.ts`, `k8s-auxspec.ts`, `driver/src/scripts/bellows-read.sh` | `driver/test/services.test.ts`, `scripts-bellows-read.test.ts` |
@@ -71,6 +71,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | `job retry`, `edit`, `reopen` | `cli/src/board.ts` | `cli/test/retry-edit.test.ts` |
 | `job questions`, `job answer` | `cli/src/run.ts` | `cli/test/questions.test.ts` |
 | `--idempotency-key` | `cli/src/board.ts` | `cli/test/idempotency.test.ts` |
+| `batch` (import, update, validate, start, inspect, list, wait, retry, accept, cancel); a wait only reads, its verdict is `batchVerdict` | `cli/src/batch.ts`, `batch-commands.ts`, `batch-render.ts` | `cli/test/batch.test.ts` |
 
 ## Invariants
 

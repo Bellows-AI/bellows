@@ -31,6 +31,14 @@ export const MAX_BATCH_TASKS = 100;
 export const MIN_BATCH_CONCURRENCY = 1;
 export const MAX_BATCH_CONCURRENCY = 20;
 export const DEFAULT_BATCH_CONCURRENCY = 1;
+/** Recovery budgets (docs/batches.md): automatic infrastructure retries and agent repairs per task, and the batch's elapsed-time limit. */
+export const MIN_BATCH_RETRY_BUDGET = 0;
+export const MAX_BATCH_RETRY_BUDGET = 5;
+export const DEFAULT_BATCH_INFRA_RETRIES = 2;
+export const DEFAULT_BATCH_REPAIRS = 2;
+export const MIN_BATCH_TIME_LIMIT_MINUTES = 1;
+export const MAX_BATCH_TIME_LIMIT_MINUTES = 1440;
+export const DEFAULT_BATCH_TIME_LIMIT_MINUTES = 720;
 
 const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
@@ -72,6 +80,12 @@ export interface BatchPlan {
     executor?: string;
     policy: BatchPolicy;
     concurrency: number;
+    /** Automatic retries per task after an infrastructure failure. */
+    infraRetries: number;
+    /** Automatic agent repairs per task after a failed check, stale branch or conflict. */
+    repairs: number;
+    /** Elapsed minutes from start after which nothing new dispatches. */
+    timeLimitMinutes: number;
     stages: BatchStage[];
 }
 
@@ -201,7 +215,19 @@ const TARGET_FIELDS = ['key', 'repo', 'branch'];
 const COMPLETION_FIELDS = ['kind', 'condition'];
 const TASK_FIELDS = ['key', 'target', 'executor', 'objective', 'acceptance', 'verification', 'required', 'completion'];
 const STAGE_FIELDS = ['key', 'policy', 'tasks'];
-const PLAN_FIELDS = ['planVersion', 'title', 'targets', 'defaultTarget', 'executor', 'policy', 'concurrency', 'stages'];
+const PLAN_FIELDS = [
+    'planVersion',
+    'title',
+    'targets',
+    'defaultTarget',
+    'executor',
+    'policy',
+    'concurrency',
+    'infraRetries',
+    'repairs',
+    'timeLimitMinutes',
+    'stages',
+];
 
 function parseTarget(raw: unknown, path: string, issues: Issues): BatchTarget | undefined {
     const fields = objectAt(raw, TARGET_FIELDS, path, issues);
@@ -297,18 +323,16 @@ function parseStages(raw: unknown, issues: Issues): BatchStage[] {
     return stages;
 }
 
-function parseConcurrency(raw: unknown, issues: Issues): number {
-    if (raw === undefined) return DEFAULT_BATCH_CONCURRENCY;
-    if (
-        typeof raw === 'number' &&
-        Number.isInteger(raw) &&
-        raw >= MIN_BATCH_CONCURRENCY &&
-        raw <= MAX_BATCH_CONCURRENCY
-    ) {
-        return raw;
-    }
-    issues.add('concurrency', `must be a whole number from ${MIN_BATCH_CONCURRENCY} to ${MAX_BATCH_CONCURRENCY}`);
-    return DEFAULT_BATCH_CONCURRENCY;
+/** A whole number within bounds, or the default once omitted or refused. */
+function boundedInt(
+    raw: unknown,
+    field: { path: string; min: number; max: number; fallback: number },
+    issues: Issues
+): number {
+    if (raw === undefined) return field.fallback;
+    if (typeof raw === 'number' && Number.isInteger(raw) && raw >= field.min && raw <= field.max) return raw;
+    issues.add(field.path, `must be a whole number from ${field.min} to ${field.max}`);
+    return field.fallback;
 }
 
 /** Targets referenced by the plan, checked once the whole document has been read. */
@@ -348,7 +372,46 @@ export function validateBatchPlan(raw: unknown): BatchPlanResult {
         ...(defaultTarget === undefined ? {} : { defaultTarget }),
         ...(executor === undefined ? {} : { executor }),
         policy: fields.policy === undefined ? DEFAULT_BATCH_POLICY : policy(fields.policy, 'policy', issues)!,
-        concurrency: parseConcurrency(fields.concurrency, issues),
+        concurrency: boundedInt(
+            fields.concurrency,
+            {
+                path: 'concurrency',
+                min: MIN_BATCH_CONCURRENCY,
+                max: MAX_BATCH_CONCURRENCY,
+                fallback: DEFAULT_BATCH_CONCURRENCY,
+            },
+            issues
+        ),
+        infraRetries: boundedInt(
+            fields.infraRetries,
+            {
+                path: 'infraRetries',
+                min: MIN_BATCH_RETRY_BUDGET,
+                max: MAX_BATCH_RETRY_BUDGET,
+                fallback: DEFAULT_BATCH_INFRA_RETRIES,
+            },
+            issues
+        ),
+        repairs: boundedInt(
+            fields.repairs,
+            {
+                path: 'repairs',
+                min: MIN_BATCH_RETRY_BUDGET,
+                max: MAX_BATCH_RETRY_BUDGET,
+                fallback: DEFAULT_BATCH_REPAIRS,
+            },
+            issues
+        ),
+        timeLimitMinutes: boundedInt(
+            fields.timeLimitMinutes,
+            {
+                path: 'timeLimitMinutes',
+                min: MIN_BATCH_TIME_LIMIT_MINUTES,
+                max: MAX_BATCH_TIME_LIMIT_MINUTES,
+                fallback: DEFAULT_BATCH_TIME_LIMIT_MINUTES,
+            },
+            issues
+        ),
         stages: parseStages(fields.stages, issues),
     };
     checkTargetReferences(plan, issues);
@@ -382,18 +445,30 @@ export function resolveBatchPlan(plan: BatchPlan, defaults: DefaultBranches): Re
 
 export const MULTI_TARGET = 'multi_target';
 export const NON_DEFAULT_BRANCH = 'non_default_branch';
-export const BATCH_UNSUPPORTED_REASONS = [MULTI_TARGET, NON_DEFAULT_BRANCH] as const;
+export const AUTOMERGE = 'automerge';
+export const BATCH_UNSUPPORTED_REASONS = [MULTI_TARGET, NON_DEFAULT_BRANCH, AUTOMERGE] as const;
 export type BatchUnsupportedReason = (typeof BATCH_UNSUPPORTED_REASONS)[number];
 
 export type BatchCapability = { ok: true } | { ok: false; reason: BatchUnsupportedReason; message: string };
 
+/** What the board running the batch can do beyond running tasks. */
+export interface BoardCapabilities {
+    /** The board holds a GitHub installation it can merge through; offline it cannot. */
+    canMerge: boolean;
+}
+
 /**
- * What the executors can run today, separate from whether a plan is valid: one (repo, branch)
- * pair across the targets the tasks use, and that branch the repository's default — executors base
- * every job on `origin/HEAD`. Takes a resolved plan, so the branches are names; `defaults` is
- * what decides whether one of them is the default.
+ * What the executors and the board can run today, separate from whether a plan is valid: one
+ * (repo, branch) pair across the targets the tasks use, and that branch the repository's default
+ * — executors base every job on `origin/HEAD`. Takes a resolved plan, so the branches are names;
+ * `defaults` is what decides whether one of them is the default. An automerge stage needs a board
+ * that can merge.
  */
-export function batchExecutionCapability(plan: ResolvedBatchPlan, defaults: DefaultBranches): BatchCapability {
+export function batchExecutionCapability(
+    plan: ResolvedBatchPlan,
+    defaults: DefaultBranches,
+    board: BoardCapabilities
+): BatchCapability {
     const used = new Set(plan.stages.flatMap((stage) => stage.tasks.map((task) => task.target)));
     const pairs = new Set(
         plan.targets.filter((target) => used.has(target.key)).map((target) => `${target.repo}\u0000${target.branch}`)
@@ -411,6 +486,13 @@ export function batchExecutionCapability(plan: ResolvedBatchPlan, defaults: Defa
             ok: false,
             reason: NON_DEFAULT_BRANCH,
             message: `Tasks run on the repository's default branch for now; "${offDefault.key}" names ${offDefault.branch}`,
+        };
+    }
+    if (!board.canMerge && plan.stages.some((stage) => stage.policy === AUTOMERGE)) {
+        return {
+            ok: false,
+            reason: AUTOMERGE,
+            message: 'This board has no GitHub installation to merge through; every stage must use the "human" policy',
         };
     }
     return { ok: true };
