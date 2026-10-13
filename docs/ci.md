@@ -18,6 +18,7 @@ Three workflows and no configured secret — the only credential any uses is `gi
   follows, covering `server/tsconfig.test.json` and `e2e/tsconfig.json`.
 - **The `test-db` job runs `npm run test:db` on every pull request**, beside `validate`, against a `postgres:17`
   service whose database ends `_test` — the only coverage the SQL and the migrations have.
+  `.github/workflows/ci.yml`, `core/test/ci-workflows.test.ts`.
 - **The `e2e` job runs only on a push to `main`**, with a `postgres:17` service, `factory_e2e` and
   `factory_auth_e2e` created by hand (`e2e/reset-db.mjs` truncates but never creates), and chromium.
 - **A push to `main` that changes only `VERSION` skips CI; its tag still validates** through the `workflow_call`

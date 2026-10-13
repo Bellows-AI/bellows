@@ -34,7 +34,7 @@ recorded acceptance.
 | Auth wall: human credentials only | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts` |
 | CLI client: `factory batch …`, draft round-trip, `report`, wait exit codes (expired ends as cancelled, a failed stage verification needs attention, a pending one and a task whose report `next` is `wait` keep waiting) | `cli/src/batch.ts`, `batch-commands.ts`, `batch-render.ts` | `cli/test/batch.test.ts` |
 | Local-session skill: plan authoring, launch, watch, act on `next`; its example plan | `.claude/skills/batch-control/` | `core/test/skills.batch-control.test.ts` |
-| Web: list, draft composer, monitor, human-gate and task backlink | `web/src/pages/Batch*Page.tsx`, `web/src/panels/Batch*.tsx`, `web/src/api/useBatches.ts`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts` (stage verification: failed needs a person, pending and passed do not; the verdict reads `status`, `expired` included), `web/test/batch-detail.dom.test.tsx`, `e2e/batches.spec.ts` ([design-system/batches.md](design-system/batches.md)) |
+| Web: list, draft composer, monitor, human-gate and task backlink | `web/src/pages/Batch*Page.tsx`, `web/src/panels/Batch*.tsx`, `web/src/api/useBatches.ts`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts` (stage verification: failed needs a person, pending and passed do not; a task whose report `next` is `wait` needs no one; the verdict reads `status`, `expired` included), `web/test/batch-detail.dom.test.tsx`, `e2e/batches.spec.ts` ([design-system/batches.md](design-system/batches.md)) |
 | In-memory store double for the offline route tests | `server/test/helpers-batch-store.ts` | `server/test/routes.batches.test.ts` |
 
 ## Invariants
@@ -141,8 +141,8 @@ recorded acceptance.
 - The attempt record carries the target branch always and the source revision when a `revisionOf`
   resolver is given to `createBatchStore`; the board wires the installation's branch read
   (`server/src/orgs.ts`), so a downstream task records a revision that holds the verified merges.
-- **The web is a client of these routes, never a scheduler:** it polls the record and presses the
-  same retry, accept and cancel the CLI does, so a batch created in either is operated in the
-  other. `web/src/batch-model.ts`, `web/test/batch-detail.dom.test.tsx`.
+- **The web is a client of these routes, never a scheduler:** it polls the record and its report
+  and presses the same retry, accept and cancel the CLI does, so a batch created in either is
+  operated in the other. `web/src/batch-model.ts`, `web/test/batch-detail.dom.test.tsx`.
 - The routes are registered always and answer `503 BATCHES_UNAVAILABLE` for an org whose runtime
   has no batch store, the way the env and workflow routes do (`server/src/orgs.ts`).

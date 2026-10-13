@@ -9,6 +9,7 @@ import {
     gateInstruction,
     moveStage,
     morningReport,
+    needsPerson,
     nextKey,
     removeStage,
     removeTask,
@@ -147,18 +148,19 @@ describe('inherited versus overridden', () => {
 
 describe('a started batch', () => {
     it('wears one verdict: the board’s stamps first, then whether anyone is needed', () => {
-        expect(batchVerdict(record({ status: 'draft' }))).toBe('draft');
+        expect(batchVerdict(record({ status: 'draft' }), null)).toBe('draft');
         const at = '2026-09-02T00:00:00.000Z';
-        expect(batchVerdict(record({ status: 'cancelled', cancelledAt: at }))).toBe('cancelled');
-        expect(batchVerdict(record({ status: 'completed', completedAt: at }))).toBe('completed');
-        expect(batchVerdict(record({ status: 'expired', expiredAt: at }))).toBe('expired');
+        expect(batchVerdict(record({ status: 'cancelled', cancelledAt: at }), null)).toBe('cancelled');
+        expect(batchVerdict(record({ status: 'completed', completedAt: at }), null)).toBe('completed');
+        expect(batchVerdict(record({ status: 'expired', expiredAt: at }), null)).toBe('expired');
         // Cancelled after the deadline fenced it: the board answers cancelled, and so does the verdict.
-        expect(batchVerdict(record({ status: 'cancelled', cancelledAt: at, expiredAt: at }))).toBe('cancelled');
-        expect(batchVerdict(record({ tasks: [state({ execution: 'running' })] }))).toBe('running');
-        expect(batchVerdict(record({ tasks: [state({ execution: 'failed' })] }))).toBe('needs_attention');
+        expect(batchVerdict(record({ status: 'cancelled', cancelledAt: at, expiredAt: at }), null)).toBe('cancelled');
+        expect(batchVerdict(record({ tasks: [state({ execution: 'running' })] }), null)).toBe('running');
+        expect(batchVerdict(record({ tasks: [state({ execution: 'failed' })] }), null)).toBe('needs_attention');
         expect(
             batchVerdict(
-                record({ tasks: [state({ execution: 'succeeded', waitReason: 'waiting for a person to merge x' })] })
+                record({ tasks: [state({ execution: 'succeeded', waitReason: 'waiting for a person to merge x' })] }),
+                null
             )
         ).toBe('needs_attention');
         expect(summaryVerdict({ status: 'running' })).toBe('running');
@@ -167,11 +169,11 @@ describe('a started batch', () => {
     });
 
     it('labels a task by its run and its gate, never the run alone', () => {
-        expect(taskStateLabel(state({ execution: 'succeeded', gate: 'passed' })).label).toBe('Accepted');
-        expect(taskStateLabel(state({ execution: 'succeeded', gate: 'open', waitReason: 'x' })).label).toBe(
+        expect(taskStateLabel(state({ execution: 'succeeded', gate: 'passed' }), null).label).toBe('Accepted');
+        expect(taskStateLabel(state({ execution: 'succeeded', gate: 'open', waitReason: 'x' }), null).label).toBe(
             'Waiting for you'
         );
-        expect(taskStateLabel(state({ execution: 'failed' }))).toEqual({ label: 'Failed', tone: 'bad' });
+        expect(taskStateLabel(state({ execution: 'failed' }), null)).toEqual({ label: 'Failed', tone: 'bad' });
     });
 
     it('offers retry only in the active stage of a batch that still schedules', () => {
@@ -197,25 +199,70 @@ describe('a started batch', () => {
             pr: 'https://github.com/acme/widgets/pull/9',
             waitReason: 'x',
         });
-        expect(gateInstruction(task, waiting)).toBe('Review and merge the pull request.');
-        expect(gateInstruction(task, state({ execution: 'running' }))).toBeNull();
+        expect(gateInstruction(task, waiting, null)).toBe('Review and merge the pull request.');
+        expect(gateInstruction(task, state({ execution: 'running' }), null)).toBeNull();
         const accepted = { ...task, completion: { kind: 'accepted' as const, condition: 'the dashboard loads' } };
-        expect(gateInstruction(accepted, waiting)).toContain('the dashboard loads');
+        expect(gateInstruction(accepted, waiting, null)).toContain('the dashboard loads');
     });
 
     it('reads a failed stage verification as needing a person, and pending or passed as not', () => {
         const accepted = [state({ execution: 'succeeded', gate: 'passed' })];
         const failed = record({ tasks: accepted, verification: verifying('failed') });
-        expect(batchVerdict(failed)).toBe('needs_attention');
-        expect(morningReport(failed).needsYou).toBe(1);
+        expect(batchVerdict(failed, null)).toBe('needs_attention');
+        expect(morningReport(failed, null).needsYou).toBe(1);
         for (const ok of ['pending', 'passed']) {
             const batch = record({ tasks: accepted, verification: verifying(ok) });
-            expect(batchVerdict(batch)).toBe('running');
-            expect(morningReport(batch).needsYou).toBe(0);
+            expect(batchVerdict(batch, null)).toBe('running');
+            expect(morningReport(batch, null).needsYou).toBe(0);
         }
-        expect(batchVerdict({ ...failed, status: 'completed', completedAt: '2026-09-02T00:00:00.000Z' })).toBe(
+        expect(batchVerdict({ ...failed, status: 'completed', completedAt: '2026-09-02T00:00:00.000Z' }, null)).toBe(
             'completed'
         );
+    });
+
+    it('reads an automerge PR the board is still merging as the board’s, not a person’s (#693)', () => {
+        const task = filled().stages[0]!.tasks[0]!;
+        const pr = 'https://github.com/acme/widgets/pull/9';
+        const merging = state({
+            execution: 'succeeded',
+            pr,
+            attempt: 1,
+            waitReason: `waiting for the board to merge ${pr}`,
+        });
+        const batch = record({ tasks: [merging] });
+        const entry = { key: 'task-1', execution: 'succeeded', attempts: 1 };
+        const boardOn = { tasks: [{ ...entry, next: { action: 'wait' as const } }] };
+        expect(needsPerson(merging, boardOn)).toBe(false);
+        expect(batchVerdict(batch, boardOn)).toBe('running');
+        expect(morningReport(batch, boardOn).needsYou).toBe(0);
+        expect(taskStateLabel(merging, boardOn)).toEqual({ label: 'Board merging', tone: 'ok' });
+        expect(gateInstruction(task, merging, boardOn)).toBeNull();
+
+        // The board cannot merge it by itself: `next` hands it to a person, and the monitor says so.
+        const personOn = { tasks: [{ ...entry, next: { action: 'merge' as const, url: pr } }] };
+        expect(needsPerson(merging, personOn)).toBe(true);
+        expect(batchVerdict(batch, personOn)).toBe('needs_attention');
+        expect(morningReport(batch, personOn).needsYou).toBe(1);
+        expect(taskStateLabel(merging, personOn).label).toBe('Waiting for you');
+        expect(gateInstruction(task, merging, personOn)).toBe('Review and merge the pull request.');
+
+        // No report yet: the record's own rule, as before the first report lands.
+        expect(needsPerson(merging, null)).toBe(true);
+    });
+
+    it('never lets an older report entry speak for a newer run of the task', () => {
+        const boardOn = {
+            tasks: [{ key: 'task-1', execution: 'succeeded', attempts: 1, next: { action: 'wait' as const } }],
+        };
+        // The board's repair ran and failed after the report said `wait`: the record is newer, so a person retries.
+        const failedRepair = state({ execution: 'failed', attempt: 2 });
+        expect(needsPerson(failedRepair, boardOn)).toBe(true);
+        expect(batchVerdict(record({ tasks: [failedRepair] }), boardOn)).toBe('needs_attention');
+        // Same attempt, but the record has moved on from the run the report read.
+        const failedSame = state({ execution: 'failed', attempt: 1 });
+        expect(needsPerson(failedSame, boardOn)).toBe(true);
+        const merging = state({ execution: 'succeeded', attempt: 2, waitReason: 'waiting for the board to merge x' });
+        expect(taskStateLabel(merging, boardOn).label).toBe('Waiting for you');
     });
 
     it('counts the morning report from the same predicates the rows use', () => {
@@ -226,6 +273,6 @@ describe('a started batch', () => {
                 state({ key: 'c', execution: 'pending' }),
             ],
         });
-        expect(morningReport(batch)).toEqual({ accepted: 1, needsYou: 1, notStarted: 1, total: 3 });
+        expect(morningReport(batch, null)).toEqual({ accepted: 1, needsYou: 1, notStarted: 1, total: 3 });
     });
 });
