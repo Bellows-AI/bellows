@@ -15,7 +15,7 @@ import {
 } from './loop-gates.js';
 import { heartbeat, newJobState, raceStep, stopIfDraining, watchOutput } from './loop-attempt.js';
 import type { GateRunNote } from './timeout-note.js';
-import { concludeSetup, handBackFence, releaseAbandonedSync, standDown } from './loop-fence.js';
+import { concludeSetup, handBackFence, leaveToLease, releaseAbandonedSync, standDown } from './loop-fence.js';
 import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import type { HelperFailureReport } from './helpers.js';
@@ -377,7 +377,7 @@ async function launchRun(
 
 /** The run itself: spawn, and resolve to what to report (or nothing). */
 async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseDone | RunPhaseResult> {
-    const { rt, job, state, settle } = ctx;
+    const { rt, job, state } = ctx;
     const { log } = rt;
     const { session, gateSession, executorType, onOutput } = inputs;
     const outcome = await launchRun(ctx, session, onOutput);
@@ -401,8 +401,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
      */
     const leftToLease = leaseLeftWhy(outcome);
     if (leftToLease !== null) {
-        await settle();
-        log(`job ${job.id}: ${leftToLease}, leaving it to the lease`);
+        await leaveToLease(ctx, leftToLease, `${leftToLease}, leaving it to the lease`, outcome.exitCode);
         return { done: true };
     }
 
@@ -454,7 +453,9 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
  */
 function leaseLeftWhy(outcome: RunOutcome): string | null {
     if (outcome.infraLoss) return `infrastructure loss: ${outcome.infraLoss}`;
-    return outcome.started ? null : 'the runner reports the container never started';
+    if (outcome.started) return null;
+    const said = outcome.output.trim();
+    return `the runner reports the container never started${said ? `: ${said}` : ''}`;
 }
 
 /** How the declared gates ended for the evidence record: `none` when none were declared to run. */
@@ -746,8 +747,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         if (await standDown(ctx, 'its run')) return;
         // A throw is the path that would otherwise leak the claim: no runner ever launched, so none
         // of them releases it, and it would sit there until the cluster noticed (issue #469).
-        await handBackFence(ctx);
-        await settle();
-        log(`job ${job.id}: could not run, leaving it to the lease: ${(e as Error).message}`);
+        const why = (e as Error).message;
+        await leaveToLease(ctx, `could not run: ${why}`, `could not run, leaving it to the lease: ${why}`, null);
     }
 }
