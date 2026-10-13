@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import fastifyCookie from '@fastify/cookie';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { LOCAL_ORG_ID, UUID, type AppConfig, type AuthConfig } from '../config.js';
+import { guard } from '../routes/helpers.js';
 import { ORG_TOKEN_PREFIX, isAccessToken } from './access-token.js';
 import { SESSION_COOKIE, hashToken, unsign } from './session.js';
 import type { AuthStore, Caller, OrgTokenIdentity } from './store.js';
@@ -426,14 +427,23 @@ export async function registerAuth(
 
     app.decorateRequest('auth', null);
 
-    app.addHook('onRequest', async (request, reply) => {
+    const enforce = (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
         const requirement = requirementFor(pathOf(request.url));
-        if (requirement === 'open') return;
+        if (requirement === 'open') return Promise.resolve();
         if (requirement === 'ingest') return enforceIngest(auth, request, reply);
         if (requirement === 'connector') return enforceConnector(request, reply);
         if (requirement === 'branch') return enforceBranch({ auth, store, leaseOrgOf }, request, reply);
         if (requirement === 'worker') return enforceWorker({ auth, jobOrgOf, reclaimOrgOf }, request, reply);
         return enforceUser({ auth, store, resolveUser }, request, reply);
+    };
+
+    // A credential lookup that cannot reach the database is a 503 like any store call, never a 500.
+    app.addHook('onRequest', async (request, reply) => {
+        await guard(
+            reply,
+            (e) => request.log.error(e),
+            () => enforce(request, reply)
+        );
     });
 }
 
