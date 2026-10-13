@@ -336,6 +336,29 @@ describe('the docker run arguments', () => {
         );
     });
 
+    // npm's update notice is the last thing every npm call prints, burying the summary the
+    // output tail exists to show (#511). Both executors, before the image — so it is runner env.
+    it('silences npm update notices in the claude and opencode runner', () => {
+        const runners: [string[], string][] = [
+            [args(), 'claude-executor'],
+            [dockerArgs(loadDriverConfig({}), opencodeJob, null, { envFile: '/tmp/env-file' }), 'opencode-executor'],
+        ];
+        for (const [line, image] of runners) {
+            const at = line.indexOf('NPM_CONFIG_UPDATE_NOTIFIER=false');
+            expect(line[at - 1]).toBe('-e');
+            expect(at).toBeLessThan(line.indexOf(image));
+        }
+    });
+
+    // A default only: a member who wants the notice back names it in claim env, and the driver's
+    // `-e` — which would beat the env file — is not there to override it.
+    it('leaves the npm notice to a claim that names it', () => {
+        const envJob: BoardJob = { ...job, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } };
+        const line = dockerArgs(loadDriverConfig({}), envJob, { id: SESSION, resume: false }, { envFile: '/tmp/e' });
+        expect(line.some((arg) => arg.startsWith('NPM_CONFIG_UPDATE_NOTIFIER'))).toBe(false);
+        expect(envFileBody(envJob, loadDriverConfig({}))).toContain('NPM_CONFIG_UPDATE_NOTIFIER=true\n');
+    });
+
     // The claude runner is told the session id before the container starts (the driver mints it),
     // so the reporter never has to scrape a transcript. A resumed session keeps its id — the
     // follow-up's spans must join to the same conversation.
@@ -1557,11 +1580,26 @@ describe('the gate environment container', () => {
         expect(line).toEqual(expect.arrayContaining(['--user', '1000:1000', '-e', 'HOME=/tmp']));
     });
 
+    // A gate's tail is what the job output shows; npm's update notice must not be its last word
+    // (#511). Container env, so every `docker exec` of a gate inherits it.
+    it('silences npm update notices for every gate exec', () => {
+        const line = gateEnvArgs(config, KEY, 'node:24');
+        const at = line.indexOf('NPM_CONFIG_UPDATE_NOTIFIER=false');
+        expect(line[at - 1]).toBe('-e');
+        expect(at).toBeLessThan(line.indexOf('node:24'));
+    });
+
+    it('leaves the npm notice to a claim that names it, in the gate env file', () => {
+        const envJob = { id: 'j', leaseToken: 'l', env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } };
+        const line = gateEnvArgs(config, KEY, 'node:24', { envFile: '/tmp/gate.env', job: envJob });
+        expect(line.filter((_, i) => line[i - 1] === '-e')).toEqual(['HOME=/tmp']);
+    });
+
     it('never puts a member value on the command line — the env file is the only carrier', () => {
         const line = gateEnvArgs(config, KEY, 'node:24', { envFile: '/tmp/gate.env' });
-        // The one -e is the driver's own HOME literal for the non-root uid (above); every claim
-        // value travels the env file.
-        expect(line.filter((arg) => arg === '-e')).toHaveLength(1);
+        // The only -e values are the driver's own literals — HOME for the non-root uid and the
+        // npm notice switch (above); every claim value travels the env file.
+        expect(line.filter((_, i) => line[i - 1] === '-e')).toEqual(['HOME=/tmp', 'NPM_CONFIG_UPDATE_NOTIFIER=false']);
     });
 
     it('refuses an image that smuggles a flag, whitespace or expansion', () => {

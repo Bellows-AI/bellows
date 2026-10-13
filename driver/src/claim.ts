@@ -33,8 +33,23 @@ export const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
  */
 export const GATE_UID = 1000;
 export const GATE_GID = 1000;
-/** HOME for the gate env's non-root uid — /tmp is world-writable where the image's own is not. */
-export const GATE_HOME = '/tmp';
+const NPM_UPDATE_NOTIFIER = 'NPM_CONFIG_UPDATE_NOTIFIER';
+/**
+ * Runner and gate env, both executors: npm's update notice is the last line every npm call prints,
+ * and it buries the summary a job's output tail exists to show (#511). A default only — a claim
+ * that names it wins, so the driver never states the name beside it (docker's `-e` would beat the
+ * env file, a pod's `env` would beat `envFrom`, and a runner pod would carry the name twice).
+ */
+export function npmQuietEnv(job: Pick<BoardJob, 'env'> | undefined): [string, string][] {
+    return Object.hasOwn(job?.env ?? {}, NPM_UPDATE_NOTIFIER) ? [] : [[NPM_UPDATE_NOTIFIER, 'false']];
+}
+/**
+ * The gate env's own literals, rendered as `-e` by docker and as container env by kubernetes. HOME
+ * for the non-root uid — /tmp is world-writable where the image's own is not.
+ */
+export function gateEnv(job: Pick<BoardJob, 'env'> | undefined): [string, string][] {
+    return [['HOME', '/tmp'], ...npmQuietEnv(job)];
+}
 
 /**
  * The session database opencode writes under XDG_DATA_HOME, as the runner sets it: one directory
