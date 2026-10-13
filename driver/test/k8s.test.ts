@@ -710,6 +710,37 @@ describe('resources on every pod the driver specs', () => {
         expect(pod.spec.containers[0].resources).toEqual(REQUESTS);
     });
 
+    // Issue #507: a gate runs the whole suite, so it is sized by GATE_* — every other aux Job
+    // keeps the runner's sizing, and an unset GATE_ slot inherits the runner's.
+    it('sizes the gate Job by GATE_* while every other aux Job keeps the runner resources', () => {
+        const config = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            K8S_NAMESPACE: namespace,
+            RUNNER_CPU_REQUEST: '500m',
+            RUNNER_MEMORY_REQUEST: '1Gi',
+            RUNNER_CPU_LIMIT: '4',
+            GATE_CPU_REQUEST: '2',
+            GATE_MEMORY_REQUEST: '2Gi',
+        });
+        const gate = gateJobSpec(config, job, {
+            key: `bellows/${USER}/.worktrees/${job.id}`,
+            image: 'node:24',
+            gateName: 't',
+            command: 'npm test',
+            run: 1,
+            envSecretName: null,
+            gateTimeoutMs: 30_000,
+        });
+        expect(gate.spec.template.spec.containers[0].resources).toEqual({
+            requests: { cpu: '2', memory: '2Gi' },
+            limits: { cpu: '4' },
+        });
+        expect(syncJobSpec(config, repoJob, null).spec.template.spec.containers[0].resources).toEqual({
+            requests: { cpu: '500m', memory: '1Gi' },
+            limits: { cpu: '4' },
+        });
+    });
+
     it('carries no resources on any of them when none are configured', () => {
         const plain = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
         expect(syncJobSpec(plain, repoJob, null).spec.template.spec.containers[0].resources).toBeUndefined();

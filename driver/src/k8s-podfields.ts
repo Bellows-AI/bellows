@@ -31,9 +31,10 @@ export interface PodResources {
  * Cluster Autoscaler size for; limits render only when set, because a memory limit on an agent
  * run turns a big build into an OOM kill mid-work — the requests-only posture the dashboard pod
  * keeps deliberately. The values travel verbatim; the config validated their shape at boot.
+ * The block is the runner's everywhere but the gate Job, which passes `config.gateResources`.
  */
-export function resourcesField(config: DriverConfig): { resources?: PodResources } {
-    const { cpuRequest, cpuLimit, memoryRequest, memoryLimit } = config.runnerResources;
+export function resourcesField(config: DriverConfig, block = config.runnerResources): { resources?: PodResources } {
+    const { cpuRequest, cpuLimit, memoryRequest, memoryLimit } = block;
     const requests: ResourceList = {
         ...(cpuRequest ? { cpu: cpuRequest } : {}),
         ...(memoryRequest ? { memory: memoryRequest } : {}),

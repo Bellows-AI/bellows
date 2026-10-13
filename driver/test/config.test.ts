@@ -357,6 +357,35 @@ describe('the driver config: runner resources', () => {
         ).not.toThrow();
     });
 
+    // Issue #507: a gate runs the whole test suite where a runner mostly waits on a model, so a
+    // gate is sized on its own (GATE_*). Each unset slot falls back to the runner's, slot by slot.
+    it('falls back to the runner resources slot by slot when a GATE_ variable is unset', () => {
+        const runner = { RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi', RUNNER_CPU_LIMIT: '4' };
+        expect(loadDriverConfig(runner).gateResources).toEqual(loadDriverConfig(runner).runnerResources);
+        expect(loadDriverConfig({ ...runner, GATE_CPU_REQUEST: '2', GATE_MEMORY_LIMIT: '8Gi' }).gateResources).toEqual({
+            cpuRequest: '2',
+            cpuLimit: '4',
+            memoryRequest: '1Gi',
+            memoryLimit: '8Gi',
+        });
+    });
+
+    it('refuses a bad GATE_ quantity, naming the variable', () => {
+        expect(() => loadDriverConfig({ GATE_CPU_REQUEST: 'two cores' })).toThrow(/GATE_CPU_REQUEST/);
+        expect(() => loadDriverConfig({ GATE_MEMORY_LIMIT: '500m' })).toThrow(/GATE_MEMORY_LIMIT/);
+    });
+
+    // The pair is checked as the gate pod will carry it — a gate request against an inherited
+    // runner limit names both variables actually in play.
+    it('refuses a gate request above the effective limit, naming both variables', () => {
+        expect(() => loadDriverConfig({ GATE_CPU_REQUEST: '8', RUNNER_CPU_LIMIT: '4' })).toThrow(
+            /GATE_CPU_REQUEST.*RUNNER_CPU_LIMIT/
+        );
+        expect(() => loadDriverConfig({ GATE_MEMORY_REQUEST: '4Gi', GATE_MEMORY_LIMIT: '2Gi' })).toThrow(
+            /GATE_MEMORY_REQUEST.*GATE_MEMORY_LIMIT/
+        );
+    });
+
     it('renders cpu quantities as decimal cores for the docker flag', () => {
         expect(cpuQuantityToCores('500m')).toBe('0.5');
         expect(cpuQuantityToCores('250m')).toBe('0.25');

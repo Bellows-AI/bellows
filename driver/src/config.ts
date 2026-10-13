@@ -225,6 +225,13 @@ export interface DriverConfig {
      */
     runnerResources: RunnerResources;
     /**
+     * The gate pods' and the docker gate container's resources (GATE_CPU_REQUEST /
+     * GATE_MEMORY_REQUEST / GATE_CPU_LIMIT / GATE_MEMORY_LIMIT, issue #507): a gate runs the
+     * whole test suite where a runner mostly waits on a model, so it is sized on its own. Each
+     * unset slot falls back to the matching runnerResources slot.
+     */
+    gateResources: RunnerResources;
+    /**
      * The nodeSelector every pod this driver specs lands with, under the kubernetes executor
      * (RUNNER_NODE_SELECTOR, a JSON object). The chart's own pods get theirs from the top-level
      * `nodeSelector` value; these are the runner node group's — the tainted, IMDS-hardened nodes
@@ -583,28 +590,39 @@ function jsonNodeSelector(raw: string | undefined, label: string): Record<string
     return parsed as Record<string, string>;
 }
 
+/** The four resource slots, each with the variable suffix the RUNNER_ and GATE_ blocks share. */
+const RESOURCE_SLOTS = [
+    ['cpuRequest', 'CPU_REQUEST', 'cpu'],
+    ['cpuLimit', 'CPU_LIMIT', 'cpu'],
+    ['memoryRequest', 'MEMORY_REQUEST', 'memory'],
+    ['memoryLimit', 'MEMORY_LIMIT', 'memory'],
+] as const;
+
 /**
- * The four runner resource variables, each shape-validated by runnerResource, then the request/
- * limit pairs validated against each other — shape is per-variable, but request>limit is only
- * visible across the two.
+ * One block of four resource variables (`RUNNER_*`, or `GATE_*` over the runner's block), each
+ * shape-validated by runnerResource, then the request/limit pairs validated against each other —
+ * shape is per-variable, but request>limit is only visible across the two. With a `fallback`,
+ * an unset slot takes the fallback's value and the pair check names the variable that set it.
  */
-function loadRunnerResources(env: NodeJS.ProcessEnv): RunnerResources {
-    const resources: RunnerResources = {
-        cpuRequest: runnerResource(env.RUNNER_CPU_REQUEST, 'RUNNER_CPU_REQUEST', 'cpu'),
-        cpuLimit: runnerResource(env.RUNNER_CPU_LIMIT, 'RUNNER_CPU_LIMIT', 'cpu'),
-        memoryRequest: runnerResource(env.RUNNER_MEMORY_REQUEST, 'RUNNER_MEMORY_REQUEST', 'memory'),
-        memoryLimit: runnerResource(env.RUNNER_MEMORY_LIMIT, 'RUNNER_MEMORY_LIMIT', 'memory'),
-    };
+function loadResources(env: NodeJS.ProcessEnv, prefix: 'RUNNER' | 'GATE', fallback?: RunnerResources): RunnerResources {
+    const resources = {} as RunnerResources;
+    const labels = {} as Record<keyof RunnerResources, string>;
+    for (const [slot, suffix, kind] of RESOURCE_SLOTS) {
+        const own = runnerResource(env[`${prefix}_${suffix}`], `${prefix}_${suffix}`, kind);
+        const inherited = own === null && fallback !== undefined;
+        resources[slot] = inherited ? fallback[slot] : own;
+        labels[slot] = inherited ? `RUNNER_${suffix}` : `${prefix}_${suffix}`;
+    }
     assertRequestWithinLimit(
         resources.cpuRequest,
         resources.cpuLimit,
-        ['RUNNER_CPU_REQUEST', 'RUNNER_CPU_LIMIT'],
+        [labels.cpuRequest, labels.cpuLimit],
         cpuQuantityToCores
     );
     assertRequestWithinLimit(
         resources.memoryRequest,
         resources.memoryLimit,
-        ['RUNNER_MEMORY_REQUEST', 'RUNNER_MEMORY_LIMIT'],
+        [labels.memoryRequest, labels.memoryLimit],
         memoryQuantityToBytes
     );
     return resources;
@@ -613,6 +631,7 @@ function loadRunnerResources(env: NodeJS.ProcessEnv): RunnerResources {
 export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
     const boardUrl = text(env.JOB_BOARD_URL, 'JOB_BOARD_URL', DEFAULTS.boardUrl).replace(/\/+$/, '');
     assertHttpUrl(boardUrl, 'JOB_BOARD_URL');
+    const runnerResources = loadResources(env, 'RUNNER');
 
     // The branch reporter's endpoint, defaulted to the board itself — one URL, already checked
     // and already trailing-slash-stripped. An explicit RUNNER_STATS_URL is validated under its
@@ -720,7 +739,8 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         // docker flags take them translated by cpuQuantityToCores/memoryQuantityToBytes. A
         // request above its limit is refused by the apiserver only per attempt, so the pair is
         // checked here instead (see assertRequestWithinLimit).
-        runnerResources: loadRunnerResources(env),
+        runnerResources,
+        gateResources: loadResources(env, 'GATE', runnerResources),
         runnerNodeSelector: jsonNodeSelector(env.RUNNER_NODE_SELECTOR, 'RUNNER_NODE_SELECTOR'),
         runnerTolerations: jsonArray(env.RUNNER_TOLERATIONS, 'RUNNER_TOLERATIONS'),
         runnerAffinity: jsonObject(env.RUNNER_AFFINITY, 'RUNNER_AFFINITY'),
