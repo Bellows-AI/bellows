@@ -58,10 +58,10 @@ export type FailureKind =
 /**
  * What lies under a `gate`, `publish` or `helper` failure (issue #581), stored as
  * `job.failure_cause` and read only by the batch scheduler's recovery: a conflict or failed check is
- * repaired, a transport loss retried, a refusal or bad configuration left to a person. Null on every
- * other kind. Copied from the driver's `board.ts`, which depends on nothing.
+ * repaired, a transport loss or an environment fault retried, a refusal or bad configuration left to
+ * a person. Null on every other kind. Copied from the driver's `board.ts`, which depends on nothing.
  */
-export type FailureCause = 'verification' | 'conflict' | 'denied' | 'config' | 'transport' | 'unknown';
+export type FailureCause = 'verification' | 'conflict' | 'denied' | 'config' | 'transport' | 'environment' | 'unknown';
 
 /** Where one declared gate is, right now. 'running' is the worker's claim, the others its verdict. */
 export interface GateReport {

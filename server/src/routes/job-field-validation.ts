@@ -259,6 +259,7 @@ export const FAILURE_CAUSES: readonly FailureCause[] = [
     'denied',
     'config',
     'transport',
+    'environment',
     'unknown',
 ];
 const CAUSED_KINDS: readonly FailureKind[] = ['gate', 'publish', 'helper'];

@@ -328,10 +328,10 @@ export type FailureKind =
 /**
  * What lies under a `gate`, `publish` or `helper` failure (issue #581), stored as
  * `job.failure_cause`: the board recovers by it — a conflict or a failed check is repaired, a
- * transport loss retried, a refusal or bad configuration left to a person, `unknown` never guessed.
- * Copied here rather than imported because this package depends on nothing.
+ * transport loss or an environment fault retried, a refusal or bad configuration left to a person,
+ * `unknown` never guessed. Copied here rather than imported because this package depends on nothing.
  */
-export type FailureCause = 'verification' | 'conflict' | 'denied' | 'config' | 'transport' | 'unknown';
+export type FailureCause = 'verification' | 'conflict' | 'denied' | 'config' | 'transport' | 'environment' | 'unknown';
 
 /**
  * The attempt's evidence record, reported with the verdict: the tree fingerprint the run started

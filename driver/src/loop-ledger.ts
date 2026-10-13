@@ -7,6 +7,7 @@
 
 import type { FailureCause, FailureKind } from './board.js';
 import type { HelperFailureReason, HelperFailureReport } from './helpers.js';
+import { gateCauseOf } from './gate-cause.js';
 import type { GateFailure } from './loop-gates.js';
 import type { PublishResult } from './publish.js';
 import { serviceHint } from './runner.js';
@@ -222,7 +223,7 @@ export function ledgerOf(parts: LedgerParts): Ledger {
             note: `gate "${failure.name}" failed (exit ${failure.exitCode})\n${failure.output}`,
             ...done,
             // A gate failure always carries the gate's real exit; a harness that lost it threw instead.
-            cause: 'verification',
+            cause: gateCauseOf(failure),
         });
     }
     if (helperFailure) {
