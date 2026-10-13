@@ -152,12 +152,28 @@ describe('ci workflows', () => {
             for (const ref of refs) expect(ref, path).toMatch(/^public\.ecr\.aws\/docker\/library\//);
         }
         expect(workflow(CI).jobs.e2e!.services!.postgres!.image).toMatch(/^public\.ecr\.aws\/docker\/library\//);
+        expect(workflow(CI).jobs['test-db']!.services!.postgres!.image).toMatch(/^public\.ecr\.aws\/docker\/library\//);
         expect(workflow(NIGHTLY).jobs.nightly!.services!.postgres!.image).toMatch(
             /^public\.ecr\.aws\/docker\/library\//
         );
         // The docker-container builder runs buildkit as an image of its own, Docker Hub's by default.
         const create = runs(workflow(RELEASE).jobs.build!).find((run) => run.startsWith('docker buildx create'));
         expect(create).toContain('--driver-opt image=public.ecr.aws/vend/moby/buildkit:');
+    });
+
+    // The db suite is the only coverage the SQL and the migrations have; it gates every pull
+    // request, on the compose postgres, against a database name test:db accepts.
+    it('runs the db suite on every pull request against a disposable postgres', () => {
+        const job = workflow(CI).jobs['test-db']!;
+        expect(job.if).toBeUndefined();
+        const compose = load<{ services: Record<string, { image: string }> }>('docker-compose.yml');
+        const postgres = job.services!.postgres! as { image: string; env: Record<string, string> };
+        expect(postgres.image).toBe(compose.services.postgres!.image);
+        expect(postgres.env.POSTGRES_DB).toMatch(/_test$/);
+        expect(job.env!.DATABASE_URL).toBe(`postgres://factory:factory@127.0.0.1:5432/${postgres.env.POSTGRES_DB}`);
+        const commands = runs(job);
+        expect(commands[0]).toBe('npm ci');
+        expect(commands).toContain('npm run test:db');
     });
 
     it('runs the browser suite only on merges to main', () => {
