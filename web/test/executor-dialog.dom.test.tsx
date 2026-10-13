@@ -24,7 +24,7 @@ import {
     SAVE_LABEL,
 } from '../src/workspace/executors.js';
 import { renderApp, stubFetch } from './dom.js';
-import { boardHandler, settingsBoard } from './settings-board.js';
+import { boardHandler, personalExecutor, settingsBoard } from './settings-board.js';
 
 /**
  * The personal executor dialog on the real Executors page, over a stubbed board that stores what
@@ -71,6 +71,7 @@ describe('the executor dialog', () => {
         const board = settingsBoard();
         stubFetch(boardHandler(board));
         // No inter-action timer: each step below waits on the element or request it needs, not on wall time.
+        // The flow is split across three tests so no one test renders ~60 steps under a loaded runner (#662).
         const user = userEvent.setup({ delay: null });
         renderApp('/settings/executors');
 
@@ -110,6 +111,14 @@ describe('the executor dialog', () => {
         expect(row.querySelector('.pill')?.textContent).toBe('Claude Code');
         expect(screen.getAllByText(DEFAULT_CAPTION)).toHaveLength(1);
         expect(board.executors.map((executor) => executor.name)).toEqual(['main']);
+    });
+
+    it('refuses a duplicate name, and asks before discarding a dirty dialog', async () => {
+        stubFetch(boardHandler(settingsBoard({ executors: [personalExecutor('main')] })));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await editButton('main');
+        const add = screen.getByRole('button', { name: ADD_LABEL });
 
         // A duplicate name is refused beside the Name field, before any save.
         await openAdd(user);
@@ -134,6 +143,12 @@ describe('the executor dialog', () => {
         );
         await dialogGone();
         await waitFor(() => expect(document.activeElement).toBe(add));
+    });
+
+    it('edits the model through the guided control, and reopens with the same settings', async () => {
+        stubFetch(boardHandler(settingsBoard({ executors: [personalExecutor('main')] })));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
 
         // Edit: nothing changed, nothing to save.
         await user.click(await editButton('main'));
