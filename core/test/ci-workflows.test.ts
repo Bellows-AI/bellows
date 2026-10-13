@@ -38,6 +38,7 @@ const workflow = (path: string) => load<Workflow>(path);
 
 const CI = '.github/workflows/ci.yml';
 const RELEASE = '.github/workflows/release-image.yml';
+const NIGHTLY = '.github/workflows/ui-nightly.yml';
 
 // yaml parses with the 1.2 core schema, so the `on:` key stays the string 'on' rather than
 // folding to the boolean true the way a 1.1 parser would.
@@ -105,7 +106,7 @@ describe('ci workflows', () => {
     // A failing job reports its step name, so an unnamed step hides the gate that broke; the
     // validation steps carry their command verbatim as the name.
     it('names every step after the command it runs', () => {
-        for (const path of [CI, RELEASE]) {
+        for (const path of [CI, RELEASE, NIGHTLY]) {
             for (const job of Object.values(workflow(path).jobs)) {
                 for (const step of runSteps(job)) {
                     expect(step.name, `${path}: unnamed step running: ${step.run}`).toBeTruthy();
@@ -151,6 +152,9 @@ describe('ci workflows', () => {
             for (const ref of refs) expect(ref, path).toMatch(/^public\.ecr\.aws\/docker\/library\//);
         }
         expect(workflow(CI).jobs.e2e!.services!.postgres!.image).toMatch(/^public\.ecr\.aws\/docker\/library\//);
+        expect(workflow(NIGHTLY).jobs.nightly!.services!.postgres!.image).toMatch(
+            /^public\.ecr\.aws\/docker\/library\//
+        );
         // The docker-container builder runs buildkit as an image of its own, Docker Hub's by default.
         const create = runs(workflow(RELEASE).jobs.build!).find((run) => run.startsWith('docker buildx create'));
         expect(create).toContain('--driver-opt image=public.ecr.aws/vend/moby/buildkit:');
@@ -163,17 +167,26 @@ describe('ci workflows', () => {
         expect(e2e.if).toContain('push');
     });
 
-    it('gives the browser suite a postgres service and the two databases it names', () => {
-        const e2e = workflow(CI).jobs.e2e!;
+    it.each([
+        ['the merge lane', workflow(CI).jobs.e2e!, 'npm run verify:ui'],
+        ['the nightly lane', workflow(NIGHTLY).jobs.nightly!, 'npm run verify:ui:nightly'],
+    ])('gives %s a postgres service and the two databases it names', (_, job, script) => {
         const compose = load<{ services: Record<string, { image: string }> }>('docker-compose.yml');
-        expect(e2e.services!.postgres!.image).toBe(compose.services.postgres!.image);
+        expect(job.services!.postgres!.image).toBe(compose.services.postgres!.image);
         // Plain PostgreSQL since #371 dropped the extension: no TimescaleDB image anywhere.
-        expect(e2e.services!.postgres!.image).not.toMatch(/timescale/i);
-        const commands = runs(e2e).join('\n');
-        expect(commands).toContain('create database factory_e2e');
-        expect(commands).toContain('create database factory_auth_e2e');
-        expect(commands).toContain('playwright install');
-        expect(commands).toContain('npm run verify:ui');
+        expect(job.services!.postgres!.image).not.toMatch(/timescale/i);
+        const commands = runs(job);
+        expect(commands.join('\n')).toContain('create database factory_e2e');
+        expect(commands.join('\n')).toContain('create database factory_auth_e2e');
+        expect(commands.join('\n')).toContain('playwright install');
+        expect(commands).toContain(script);
+        expect(job.steps!.some((step) => step.uses?.startsWith('actions/upload-artifact@'))).toBe(true);
+    });
+
+    // The @nightly captures never gate a merge: scheduled and on demand, nothing else.
+    it('runs the nightly browser set on a schedule and on demand only', () => {
+        expect(Object.keys(triggers(workflow(NIGHTLY))).sort()).toEqual(['schedule', 'workflow_dispatch']);
+        expect(runs(workflow(CI).jobs.e2e!)).not.toContain('npm run verify:ui:nightly');
     });
 
     it('builds every image the chart renders, on a v* tag', () => {
@@ -332,7 +345,7 @@ describe('ci workflows', () => {
     // `github.token` is the installation token the run already carries. Nothing on either path is
     // a credential somebody has to mint, store and rotate.
     it('needs no configured secret on the validation or publish path', () => {
-        for (const path of [CI, RELEASE]) {
+        for (const path of [CI, RELEASE, NIGHTLY]) {
             expect(read(path), `${path} reads a repository secret`).not.toMatch(/secrets\./);
         }
         expect(read(RELEASE)).toMatch(/\$\{\{ github\.token \}\}/);
@@ -340,6 +353,7 @@ describe('ci workflows', () => {
 
     it('grants each workflow only the access its job needs', () => {
         expect(workflow(CI).permissions, CI).toEqual({ contents: 'read' });
+        expect(workflow(NIGHTLY).permissions, NIGHTLY).toEqual({ contents: 'read' });
         // Packages for the push, security-events for the scan's SARIF, and no contents: write —
         // so a release can never move a ref.
         expect(workflow(RELEASE).permissions, RELEASE).toEqual({
@@ -439,7 +453,7 @@ describe('ci workflows', () => {
     });
 
     it('pins every action to a major version', () => {
-        for (const path of [CI, RELEASE]) {
+        for (const path of [CI, RELEASE, NIGHTLY]) {
             for (const job of Object.values(workflow(path).jobs)) {
                 for (const step of job.steps ?? []) {
                     if (step.uses) expect(step.uses, `${path}: ${step.uses} is not pinned`).toMatch(/@v\d+$/);

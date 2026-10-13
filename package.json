@@ -30,6 +30,7 @@
         "test:jobs": "bash scripts/test-jobs.sh",
         "test:k8s": "bash scripts/test-k8s.sh",
         "verify:ui": "playwright test",
+        "verify:ui:nightly": "playwright test --config playwright.nightly.config.ts",
         "typecheck": "tsc -b",
         "lint": "biome check .",
         "lint:changed": "sh scripts/lint-changed.sh",

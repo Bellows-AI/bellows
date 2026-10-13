@@ -6,16 +6,16 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 /**
  * Every port this run binds derives from one base, and every database from one prefix, so two
  * worktrees can run verify:ui at the same time: `E2E_PORT_BASE=8143 E2E_DB_PREFIX=factory_l2`.
- * The open board, the auth board, the stub IdP and the specimen page sit at +0 / +1 / +2 / +3.
+ * The open board, the auth board and the stub IdP sit at +0 / +1 / +2; the nightly specimen page at
+ * +3 (playwright.nightly.config.ts).
  */
 const DEFAULT_PORT_BASE = 8123;
-const PORT_BASE = Number(process.env.E2E_PORT_BASE ?? DEFAULT_PORT_BASE);
+export const PORT_BASE = Number(process.env.E2E_PORT_BASE ?? DEFAULT_PORT_BASE);
 if (!Number.isInteger(PORT_BASE) || PORT_BASE <= 0) {
     throw new Error(`E2E_PORT_BASE must be a positive integer, got ${process.env.E2E_PORT_BASE}`);
 }
 const AUTH_PORT_OFFSET = 1;
 const IDP_PORT_OFFSET = 2;
-const SPECIMEN_PORT_OFFSET = 3;
 const PORT = PORT_BASE;
 
 /**
@@ -29,8 +29,6 @@ const PORT = PORT_BASE;
  */
 export const AUTH_PORT = PORT_BASE + AUTH_PORT_OFFSET;
 const IDP_PORT = PORT_BASE + IDP_PORT_OFFSET;
-/** The component-state specimen's test-only Vite server (#275): no database, nothing built. */
-export const SPECIMEN_PORT = PORT_BASE + SPECIMEN_PORT_OFFSET;
 /** Exported with the auth database below: org-executors.spec.ts promotes exactly this member. */
 export const E2E_LOGIN = 'e2e-user';
 /**
@@ -64,8 +62,13 @@ export const AUTH_DATABASE_URL = databaseUrl(`${DB_PREFIX}_auth_e2e`);
 
 /** The specs that need a signed-in member. */
 const AUTH_SPECS = /\/(auth|workspace|follow-up-auth|org-executors|jira-connections)\.spec\.ts$/;
+/**
+ * Heavy captures that gate nothing — the baseline gallery, the fixed-seed gremlins — carry this tag
+ * and run only under playwright.nightly.config.ts (`npm run verify:ui:nightly`), with the specimen.
+ */
+export const NIGHTLY_TAG = /@nightly/;
 /** The specimen browses its own server, never a board, so no board project may pick it up. */
-const SPECIMEN_SPEC = /\/specimen\.spec\.ts$/;
+export const SPECIMEN_SPEC = /\/specimen\.spec\.ts$/;
 
 /**
  * The built SPA is served by the API rather than by Vite, so the suite exercises the same
@@ -85,6 +88,7 @@ export default defineConfig({
     outputDir: './artifacts/ui/trace',
     // A visual check that passes on a retry is not a visual check.
     retries: 0,
+    grepInvert: NIGHTLY_TAG,
     // One worker, and this is not about speed: the auth project's spec files sign in as the SAME
     // stub account, so the first sign-in's selection screen (issue 125) and the stored choice the
     // later sign-ins reuse must not race each other. Serial is the deterministic arrangement.
@@ -109,14 +113,6 @@ export default defineConfig({
             name: 'auth',
             testMatch: AUTH_SPECS,
             use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${AUTH_PORT}` },
-        },
-        {
-            // The design-system reference sheet (redesign plan §1.7): real primitives on a Vite
-            // server outside web/, because the API serves only web/dist and a second entry there
-            // would ship publicly.
-            name: 'specimen',
-            testMatch: SPECIMEN_SPEC,
-            use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${SPECIMEN_PORT}` },
         },
     ],
     webServer: [
@@ -197,18 +193,6 @@ export default defineConfig({
                 SEED_ORGS: '999999,888888',
             },
             timeout: 180_000,
-            reuseExistingServer: false,
-            stdout: 'ignore',
-            stderr: 'pipe',
-        },
-        {
-            // Served, never built: nothing it renders reaches web/dist. Playwright starts every
-            // webServer whatever --project says, so `--project specimen` still boots the boards
-            // above; for a look without them, run this command by hand.
-            command: 'npx vite --config e2e/specimen/vite.config.ts',
-            url: `http://127.0.0.1:${SPECIMEN_PORT}/`,
-            cwd: root,
-            env: { SPECIMEN_PORT: String(SPECIMEN_PORT) },
             reuseExistingServer: false,
             stdout: 'ignore',
             stderr: 'pipe',

@@ -107,6 +107,7 @@ npm run typecheck               # tsc -b, plus server/tsconfig.test.json and e2e
 npm run lint                    # biome check; npm run format / lint:fix are the fixers
 npm run lint:changed            # biome on the branch's files only (vs origin/main), niced
 npm run verify:ui               # real chromium; needs postgres + playwright install chromium
+npm run verify:ui:nightly       # @nightly-tagged specs + the specimen; same needs, never gates a merge
 
 DATABASE_URL=…/factory_seed npm run seed        # synthetic sessions, disposable names only
 DATABASE_URL=…/factory_test  npm run test:db    # resets every table

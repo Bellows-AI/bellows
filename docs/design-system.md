@@ -21,7 +21,7 @@ never utilities, and every color it renders resolves through a token.
 | Table sorting, row actions, ≤640px card reflow | `web/src/components/DataTable.tsx`, `RowActions.tsx` | `web/test/data-table.test.tsx`, `web/test/dashboard.dom.test.tsx`, `web/test/row-actions.render.test.tsx` |
 | Shell, sidenav, drawer | `web/src/components/AppShell.tsx`, `SideNav.tsx`, `MobileNavDialog.tsx` | `web/test/shell.test.tsx`, `web/test/navigation.dom.test.tsx`, `web/test/sidenav.test.tsx`, `web/test/mobile-nav.test.tsx` |
 | Component interaction under jsdom + Testing Library (the `dom` project) | `web/test/dom.tsx`, `vitest.config.ts` | `web/test/*.dom.test.tsx` |
-| Primitive-state reference sheet | `e2e/specimen/main.tsx`, `e2e/specimen/specimen.css` | `e2e/specimen.spec.ts` |
+| Primitive-state reference sheet | `e2e/specimen/main.tsx`, `e2e/specimen/specimen.css` | `e2e/specimen.spec.ts` (`npm run verify:ui:nightly`) |
 | Every route family's overflow at 4 widths in one theme; rendered contrast in both themes | — | `e2e/matrix.spec.ts` |
 
 ## Invariants
@@ -59,7 +59,7 @@ never utilities, and every color it renders resolves through a token.
 ## Stated limits
 
 - The specimen sheet is test-only: it is served by `e2e/specimen/vite.config.ts` and never built
-  into `web/dist`. `npm run verify:ui` writes its shots to `artifacts/ui/` (gitignored); none are
+  into `web/dist`. `npm run verify:ui:nightly` writes its shots to `artifacts/ui/` (gitignored); none are
   committed.
 - A popover never flips above its trigger — `useDownwardAnchor` omits floating-ui's `flip`
   deliberately and caps the panel to the space below.

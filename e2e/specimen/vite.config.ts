@@ -10,7 +10,7 @@ import { defineConfig } from 'vite';
  * ship publicly, so the specimen lives outside `web/` and is never built — nothing here lands in
  * `web/dist`.
  *
- * The port mirrors `playwright.config.ts`: Playwright passes SPECIMEN_PORT, and a standalone
+ * The port mirrors `playwright.nightly.config.ts`: Playwright passes SPECIMEN_PORT, and a standalone
  * `npx vite --config e2e/specimen/vite.config.ts` derives it from E2E_PORT_BASE the same way.
  */
 const DEFAULT_PORT_BASE = 8123;
