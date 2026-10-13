@@ -380,6 +380,24 @@ function assertCacheWatchSupported(cacheWatch: boolean, executor: (typeof EXECUT
     }
 }
 
+const DOCKER_DEFAULT_NETWORKS = ['bridge', 'host', 'none'];
+
+// The docker executor attaches a runner to RUNNER_NETWORK and to the per-attempt services
+// network; docker refuses to combine a default network with a user-defined one, per task.
+function assertNetworkAllowsServices(
+    network: string | null,
+    servicesEnabled: boolean,
+    executor: (typeof EXECUTORS)[number]
+): void {
+    if (servicesEnabled && executor === 'docker' && network && DOCKER_DEFAULT_NETWORKS.includes(network)) {
+        throw new Error(
+            `RUNNER_NETWORK=${network} cannot be combined with RUNNER_SERVICES: docker refuses to attach ` +
+                `a default network (${DOCKER_DEFAULT_NETWORKS.join(', ')}) next to the services network. ` +
+                'Name a user-defined network in RUNNER_NETWORK, or set RUNNER_SERVICES=0.'
+        );
+    }
+}
+
 // The cluster domain ends up in `dnsConfig.searches` as `<attempt subdomain>.<namespace>.svc.
 // <domain>` (fleetDnsField), and kubernetes rejects any search entry that is not a lowercase DNS
 // subdomain of at most 253 bytes — on every runner and gate Job, never at boot. So the complete
@@ -632,6 +650,9 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
     const cacheWatch = flag(env.RUNNER_CACHE_WATCH);
     assertCacheWatchSupported(cacheWatch, executor);
 
+    const network = (env.RUNNER_NETWORK ?? '').trim() || null;
+    assertNetworkAllowsServices(network, servicesEnabled, executor);
+
     return {
         boardUrl,
         boardToken: (env.JOB_BOARD_TOKEN ?? '').trim(),
@@ -646,7 +667,7 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         // compose network, so the endpoint is always provided to the runner.
         otelEndpoint: (env.RUNNER_OTEL_ENDPOINT ?? '').trim() || DEFAULTS.otelEndpoint,
         statsUrl,
-        network: (env.RUNNER_NETWORK ?? '').trim() || null,
+        network,
         concurrency: int(env.DRIVER_CONCURRENCY, 'DRIVER_CONCURRENCY', DEFAULTS.concurrency, {
             min: 1,
             max: MAX_CONCURRENCY,
