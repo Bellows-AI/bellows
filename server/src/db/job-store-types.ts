@@ -441,6 +441,7 @@ export interface Claim {
     id: string;
     command: string;
     attempts: number;
+    maxAttempts: number;
     /** The row's claim sequence (057): bumped by every claim, never refunded like `attempts`. */
     claimSeq: number;
     leaseToken: string;

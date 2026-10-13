@@ -34,6 +34,7 @@ export interface ClaimCandidateRow {
     id: string;
     command: string;
     attempts: number;
+    max_attempts: number;
     claim_seq: string;
     lease_token: string;
     lease_expires_at: Date;
@@ -193,6 +194,7 @@ async function claimNextCandidate(
                     id: string;
                     command: string;
                     attempts: number;
+                    max_attempts: number;
                     claim_seq: string;
                     lease_token: string;
                     lease_expires_at: Date;
@@ -263,7 +265,7 @@ async function claimNextCandidate(
                 -- least once with its command in the transcript". A fresh or crashed follow-up has
                 -- never been parked, so its command still has to go out; a suspended one settles
                 -- stopped, and is never claimed again.
-                returning id, command, attempts, claim_seq, lease_token, lease_expires_at, created_by,
+                returning id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, created_by,
                           session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                           review_of, review_spec, review_ref,
                           (parent_job_id is not null and command_delivered_at is null) as follow_up,
@@ -730,6 +732,7 @@ export function buildClaimResult(
         id: row.id,
         command: row.command,
         attempts: row.attempts,
+        maxAttempts: row.max_attempts,
         claimSeq: Number(row.claim_seq),
         leaseToken: row.lease_token,
         leaseExpiresAt: row.lease_expires_at.toISOString(),

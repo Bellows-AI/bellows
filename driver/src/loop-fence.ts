@@ -101,3 +101,29 @@ export async function concludeSetup(ctx: AttemptCtx, halt: SetupHalt): Promise<v
         rt.log(`job ${job.id}: could not report the ${what}: ${e.message}`)
     );
 }
+
+/**
+ * Leaves an attempt that ended without a verdict to the lease, saying why in the log. The board
+ * retires a job whose attempts ran out with no output at all, so the LAST attempt reports a failed
+ * verdict carrying `reason` instead: the reason is what `job investigate`, the web and a batch
+ * report show for the dead job.
+ */
+export async function leaveToLease(
+    ctx: AttemptCtx,
+    reason: string,
+    leaveLog: string,
+    exitCode: number | null
+): Promise<void> {
+    const { job } = ctx;
+    if (job.attempts < job.maxAttempts) return concludeSetup(ctx, { halt: 'leave', log: leaveLog });
+    await concludeSetup(ctx, {
+        halt: 'fault',
+        log: `${reason}, and no attempts are left: reporting it`,
+        verdict: {
+            status: 'failed',
+            exitCode,
+            output: `[driver] ${reason} (attempt ${job.attempts} of ${job.maxAttempts})`,
+            failureKind: 'runner_error',
+        },
+    });
+}

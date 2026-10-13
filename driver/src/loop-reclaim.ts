@@ -28,6 +28,7 @@ function reclaimJob(reclaim: Reclaim): BoardJob {
         id: reclaim.rootJobId,
         command: '',
         attempts: 1,
+        maxAttempts: 1,
         claimSeq: 1,
         leaseToken: reclaim.id,
         leaseExpiresAt: reclaim.leaseExpiresAt,
