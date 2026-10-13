@@ -7,6 +7,8 @@
  * an unknown field (a `dependsOn` above all) is refused rather than ignored.
  */
 
+import { EXECUTOR_SCOPES, type ExecutorScope, USER_SCOPE } from './executors.js';
+
 export const BATCH_PLAN_VERSION = 1;
 
 export const BATCH_POLICIES = ['automerge', 'human'] as const;
@@ -58,6 +60,8 @@ export interface BatchTask {
     /** Omitted means the batch's `defaultTarget`. */
     target?: string;
     executor?: string;
+    /** Whose executor profile `executor` names; omitted means the batch's, else `user`. */
+    executorScope?: ExecutorScope;
     objective: string;
     acceptance: string;
     verification: string;
@@ -78,6 +82,8 @@ export interface BatchPlan {
     defaultTarget?: string;
     /** The task default. */
     executor?: string;
+    /** The task default for `executorScope`. */
+    executorScope?: ExecutorScope;
     policy: BatchPolicy;
     concurrency: number;
     /** Automatic retries per task after an infrastructure failure. */
@@ -89,12 +95,16 @@ export interface BatchPlan {
     stages: BatchStage[];
 }
 
-/** A plan at freeze: every target names its branch, every task its target, stage and executor. */
+/** A plan at freeze: every target names its branch, every task its target, stage, executor and scope. */
 export interface ResolvedBatchPlan extends Omit<BatchPlan, 'targets' | 'stages'> {
     targets: (BatchTarget & { branch: string })[];
     stages: (Omit<BatchStage, 'policy' | 'tasks'> & {
         policy: BatchPolicy;
-        tasks: (Omit<BatchTask, 'target' | 'executor'> & { target: string; executor: string | null })[];
+        tasks: (Omit<BatchTask, 'target' | 'executor' | 'executorScope'> & {
+            target: string;
+            executor: string | null;
+            executorScope: ExecutorScope;
+        })[];
     })[];
 }
 
@@ -176,6 +186,13 @@ function optionalKey(raw: unknown, path: string, issues: Issues): string | undef
     return raw === undefined ? undefined : key(raw, path, issues);
 }
 
+function optionalScope(raw: unknown, path: string, issues: Issues): ExecutorScope | undefined {
+    if (raw === undefined) return undefined;
+    if (EXECUTOR_SCOPES.includes(raw as ExecutorScope)) return raw as ExecutorScope;
+    issues.add(path, `must be one of: ${EXECUTOR_SCOPES.join(', ')}`);
+    return undefined;
+}
+
 function policy(raw: unknown, path: string, issues: Issues): BatchPolicy | undefined {
     if (!BATCH_POLICIES.includes(raw as BatchPolicy)) {
         issues.add(path, `must be one of: ${BATCH_POLICIES.join(', ')}`);
@@ -213,7 +230,17 @@ function objectAt(raw: unknown, known: readonly string[], path: string, issues: 
 
 const TARGET_FIELDS = ['key', 'repo', 'branch'];
 const COMPLETION_FIELDS = ['kind', 'condition'];
-const TASK_FIELDS = ['key', 'target', 'executor', 'objective', 'acceptance', 'verification', 'required', 'completion'];
+const TASK_FIELDS = [
+    'key',
+    'target',
+    'executor',
+    'executorScope',
+    'objective',
+    'acceptance',
+    'verification',
+    'required',
+    'completion',
+];
 const STAGE_FIELDS = ['key', 'policy', 'tasks'];
 const PLAN_FIELDS = [
     'planVersion',
@@ -221,6 +248,7 @@ const PLAN_FIELDS = [
     'targets',
     'defaultTarget',
     'executor',
+    'executorScope',
     'policy',
     'concurrency',
     'infraRetries',
@@ -267,10 +295,12 @@ function parseTask(raw: unknown, path: string, issues: Issues): BatchTask | unde
     if (!fields) return undefined;
     const target = optionalKey(fields.target, `${path}.target`, issues);
     const executor = optionalText(fields.executor, `${path}.executor`, BATCH_EXECUTOR_LIMIT, issues);
+    const executorScope = optionalScope(fields.executorScope, `${path}.executorScope`, issues);
     return {
         key: key(fields.key, `${path}.key`, issues)!,
         ...(target === undefined ? {} : { target }),
         ...(executor === undefined ? {} : { executor }),
+        ...(executorScope === undefined ? {} : { executorScope }),
         objective: text(fields.objective, `${path}.objective`, BATCH_TEXT_LIMIT, issues)!,
         acceptance: text(fields.acceptance, `${path}.acceptance`, BATCH_TEXT_LIMIT, issues)!,
         verification: text(fields.verification, `${path}.verification`, BATCH_TEXT_LIMIT, issues)!,
@@ -353,6 +383,21 @@ function checkTargetReferences(plan: BatchPlan, issues: Issues): void {
     }
 }
 
+/** A scope names whose profile an executor is: one with no executor anywhere to apply to is refused. */
+function checkExecutorScopes(plan: BatchPlan, issues: Issues): void {
+    const tasks = plan.stages.flatMap((stage, stageIndex) =>
+        stage.tasks.map((task, taskIndex) => ({ task, path: `stages[${stageIndex}].tasks[${taskIndex}]` }))
+    );
+    if (plan.executorScope !== undefined && plan.executor === undefined && !tasks.some(({ task }) => task.executor)) {
+        issues.add('executorScope', 'names a scope, but no executor in the plan names a profile');
+    }
+    for (const { task, path } of tasks) {
+        if (task.executorScope !== undefined && task.executor === undefined && plan.executor === undefined) {
+            issues.add(`${path}.executorScope`, 'names a scope, but neither the task nor the batch names an executor');
+        }
+    }
+}
+
 /**
  * Reads a plan document. On success the plan is normalized — defaults filled in (`policy`,
  * `concurrency`, `required`, `completion`) — so what is stored and echoed back is one shape.
@@ -365,12 +410,14 @@ export function validateBatchPlan(raw: unknown): BatchPlanResult {
     if (fields.planVersion !== BATCH_PLAN_VERSION) issues.add('planVersion', `must be ${BATCH_PLAN_VERSION}`);
     const defaultTarget = optionalKey(fields.defaultTarget, 'defaultTarget', issues);
     const executor = optionalText(fields.executor, 'executor', BATCH_EXECUTOR_LIMIT, issues);
+    const executorScope = optionalScope(fields.executorScope, 'executorScope', issues);
     const plan: BatchPlan = {
         planVersion: BATCH_PLAN_VERSION,
         title: text(fields.title, 'title', BATCH_TITLE_LIMIT, issues)!,
         targets: parseTargets(fields.targets, issues),
         ...(defaultTarget === undefined ? {} : { defaultTarget }),
         ...(executor === undefined ? {} : { executor }),
+        ...(executorScope === undefined ? {} : { executorScope }),
         policy: fields.policy === undefined ? DEFAULT_BATCH_POLICY : policy(fields.policy, 'policy', issues)!,
         concurrency: boundedInt(
             fields.concurrency,
@@ -415,6 +462,7 @@ export function validateBatchPlan(raw: unknown): BatchPlanResult {
         stages: parseStages(fields.stages, issues),
     };
     checkTargetReferences(plan, issues);
+    checkExecutorScopes(plan, issues);
     return issues.list.length > 0 ? { ok: false, issues: issues.list } : { ok: true, plan };
 }
 
@@ -424,7 +472,8 @@ export type DefaultBranches = Readonly<Record<string, string>>;
 /**
  * The plan as freeze writes it: an omitted branch becomes the repository's default, an omitted
  * task target the `defaultTarget`, a stage without a policy the batch's, a task without an
- * executor the batch's (or null — the claim's own default). `defaults` must hold every target's
+ * executor the batch's (or null — the claim's own default), and its scope the task's, else the
+ * batch's, else `user` (always `user` beside a null executor). `defaults` must hold every target's
  * repository; the caller refuses a repository with no default branch before getting here.
  */
 export function resolveBatchPlan(plan: BatchPlan, defaults: DefaultBranches): ResolvedBatchPlan {
@@ -434,11 +483,16 @@ export function resolveBatchPlan(plan: BatchPlan, defaults: DefaultBranches): Re
         stages: plan.stages.map((stage) => ({
             ...stage,
             policy: stage.policy ?? plan.policy,
-            tasks: stage.tasks.map((task) => ({
-                ...task,
-                target: task.target ?? plan.defaultTarget!,
-                executor: task.executor ?? plan.executor ?? null,
-            })),
+            tasks: stage.tasks.map((task) => {
+                const executor = task.executor ?? plan.executor ?? null;
+                return {
+                    ...task,
+                    target: task.target ?? plan.defaultTarget!,
+                    executor,
+                    executorScope:
+                        executor === null ? USER_SCOPE : (task.executorScope ?? plan.executorScope ?? USER_SCOPE),
+                };
+            }),
         })),
     };
 }

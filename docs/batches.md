@@ -10,7 +10,7 @@ recorded acceptance.
 | --- | --- | --- |
 | Plan contract v1: types, bounds, `validateBatchPlan`, `resolveBatchPlan`, `batchExecutionCapability` | `core/src/batch-plan.ts` | `core/test/batch-plan.test.ts` |
 | Error codes (`BAD_BATCH`, `BATCH_STALE`, `BATCH_STARTED`, `BATCH_UNSUPPORTED`, `BATCH_TASK_NOT_ACCEPTABLE`, `BATCH_NO_DEFAULT_BRANCH`, `BATCHES_UNAVAILABLE`) | `core/src/error-codes.ts` | `core/test/error-codes.test.ts` |
-| Schema: `batch`, `batch_target`, `batch_stage`, `batch_task`, `batch_idempotency`, the immutability triggers | `server/migrations/059_batches.sql` | `server/test-db/batch-store.test.ts` |
+| Schema: `batch`, `batch_target`, `batch_stage`, `batch_task`, `batch_idempotency`, the immutability triggers, `executor_scope` | `server/migrations/059_batches.sql`, `066_batch_executor_scope.sql` | `server/test-db/batch-store.test.ts` |
 | Store bound to `orgId`: create, get, list, replace, start | `server/src/db/batch-store.ts`, `batch-store-rows.ts`, `batch-store-types.ts` | `server/test-db/batch-store.test.ts` |
 | Idempotency records for create and start | `server/src/db/batch-store-idempotency.ts` | `server/test-db/batch-store.test.ts` |
 | Runtime tables: `batch_attempt`, `batch_decision`, `cancelled_at`, `completed_at` | `server/migrations/060_batch_runtime.sql` | `server/test-db/batch-dispatch.test.ts` |
@@ -54,12 +54,12 @@ recorded acceptance.
   the row lock, so exactly one of a concurrent start and `PUT` wins and the frozen plan is the
   version that won. `server/test-db/batch-store.test.ts`.
 - **Freeze resolves in place** — an explicit branch per target, a target per task, a policy per
-  stage, the executor stamped — and the 059 triggers refuse every later write to those columns;
-  the runtime columns (`root_job_id`, `execution`, `pr`, `gate`, `wait_reason`) stay writable.
-  `server/migrations/059_batches.sql`, `server/test-db/batch-store.test.ts`.
-- **Launch checks run in one order, for `validate` and `start` alike, and write nothing:**
-  structure, installation visibility per target (`checkReposVisible`), default-branch resolution,
-  capability, executors. A replayed `start` answers before any of them.
+  stage, the executor and its `executorScope` stamped (every attempt launches in it) — and the 066
+  triggers refuse later writes to them; the runtime columns (`root_job_id`, `execution`, `pr`,
+  `gate`, `wait_reason`) stay writable. `server/test-db/batch-store.test.ts`, `batch-dispatch.test.ts`.
+- **Launch checks run in one order, for `validate` and `start` alike, and write nothing:** structure,
+  installation visibility per target (`checkReposVisible`), default-branch resolution, capability,
+  executors (each exists in its scope, `404 UNKNOWN_EXECUTOR`, and is not suspended). A replayed `start` answers first.
   `server/src/routes/batch-launch.ts`, `server/test/routes.batches.test.ts`.
 - **Human credentials only.** No batch path is a worker route or on the organization-token
   allowlist, and the org comes from the credential: a body field naming `org` or `status` is

@@ -9,6 +9,7 @@ import {
     DEFAULT_BATCH_POLICY,
     isAccepted,
     isRetryable,
+    ORG_SCOPE,
     TASK_CANCELLED,
     TASK_FAILED,
     TASK_NO_PR,
@@ -157,9 +158,18 @@ export const stagePolicyOf = (plan: BatchPlan, stage: BatchStage): Inherited => 
     source: stage.policy === undefined ? 'inherited' : 'overridden',
 });
 
+/** The task's executor as it will launch: an organization profile names its scope. */
+/** An executor by name, an organization profile marked as such; `fallback` when none is named. */
+export const executorLabel = (name: string | undefined, scope: string | undefined, fallback: string): string =>
+    name === undefined ? fallback : `${name}${scope === ORG_SCOPE ? ' (organization)' : ''}`;
+
 export const taskExecutorOf = (plan: BatchPlan, task: BatchTask): Inherited => ({
-    value: task.executor ?? plan.executor ?? 'your default executor',
-    source: task.executor === undefined ? 'inherited' : 'overridden',
+    value: executorLabel(
+        task.executor ?? plan.executor,
+        task.executorScope ?? plan.executorScope,
+        'your default executor'
+    ),
+    source: task.executor === undefined && task.executorScope === undefined ? 'inherited' : 'overridden',
 });
 
 export const taskTargetOf = (plan: BatchPlan, task: BatchTask): Inherited => ({

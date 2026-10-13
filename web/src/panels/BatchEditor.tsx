@@ -2,15 +2,18 @@ import {
     BATCH_COMPLETION_ACCEPTED,
     BATCH_COMPLETION_PR,
     BATCH_POLICIES,
+    EXECUTOR_SCOPES,
     MAX_BATCH_CONCURRENCY,
     MAX_BATCH_STAGES,
     MAX_STAGE_TASKS,
     MIN_BATCH_CONCURRENCY,
+    USER_SCOPE,
     type BatchPlan,
     type BatchPlanIssue,
     type BatchPolicy,
     type BatchStage,
     type BatchTask,
+    type ExecutorScope,
 } from '@factory-ai/core';
 import { Children, isValidElement, useId, type ReactNode } from 'react';
 import {
@@ -34,6 +37,8 @@ import {
  */
 
 const INHERIT = '';
+/** Whose executor profile a name selects: a member's own, or one the organization manages. */
+const SCOPE_LABEL: Record<ExecutorScope, string> = { user: 'Personal', org: 'Organization' };
 
 interface EditorProps {
     plan: BatchPlan;
@@ -125,6 +130,22 @@ function TaskEditor({
                         {...invalid(issues, `${path}.executor`)}
                     />
                     <Problem issues={issues} path={`${path}.executor`} />
+                </Field>
+                <Field label="Executor scope">
+                    <select
+                        className="field"
+                        value={task.executorScope ?? INHERIT}
+                        onChange={(e) => set((t) => withOptional(t, 'executorScope', e.target.value))}
+                        {...invalid(issues, `${path}.executorScope`)}
+                    >
+                        <option value={INHERIT}>Inherit ({SCOPE_LABEL[plan.executorScope ?? USER_SCOPE]})</option>
+                        {EXECUTOR_SCOPES.map((scope) => (
+                            <option key={scope} value={scope}>
+                                {SCOPE_LABEL[scope]}
+                            </option>
+                        ))}
+                    </select>
+                    <Problem issues={issues} path={`${path}.executorScope`} />
                 </Field>
                 {plan.targets.length > 1 ? (
                     <Field label="Target">
@@ -324,6 +345,30 @@ export function BatchEditor(props: EditorProps) {
                             {...invalid(issues, 'executor')}
                         />
                         <Problem issues={issues} path="executor" />
+                    </Field>
+                    <Field label="Default executor scope">
+                        <select
+                            className="field"
+                            value={plan.executorScope ?? USER_SCOPE}
+                            disabled={disabled}
+                            onChange={(e) =>
+                                onChange(
+                                    withOptional(
+                                        plan,
+                                        'executorScope',
+                                        e.target.value === USER_SCOPE ? '' : e.target.value
+                                    )
+                                )
+                            }
+                            {...invalid(issues, 'executorScope')}
+                        >
+                            {EXECUTOR_SCOPES.map((scope) => (
+                                <option key={scope} value={scope}>
+                                    {SCOPE_LABEL[scope]}
+                                </option>
+                            ))}
+                        </select>
+                        <Problem issues={issues} path="executorScope" />
                     </Field>
                 </div>
                 <datalist id={reposId}>

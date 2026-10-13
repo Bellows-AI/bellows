@@ -7,6 +7,7 @@ import type {
     BatchReportTask,
     BatchStageVerification,
     BatchSummary,
+    BatchTaskPlan,
     BatchTaskState,
 } from './batch.js';
 
@@ -18,6 +19,7 @@ import type {
  */
 
 const DASH = '-';
+const USER_SCOPE = 'user';
 const HUMAN_POLICY = 'human';
 const NO_PR = 'none';
 
@@ -28,13 +30,25 @@ export const needsAction = (task: BatchTaskState): boolean => task.waitReason !=
 const verificationOf = (row: BatchStageVerification): string =>
     `verification ${row.state}${row.detail === null ? '' : `: ${row.detail}`}`;
 
+/** An executor and, beside a name, whose profile it is: `Main ORG (org)`. */
+const executorOf = (executor: string | undefined, scope: string | undefined): string =>
+    executor === undefined ? 'default' : `${executor} (${scope ?? USER_SCOPE})`;
+
 /** The plan's settings: effective policy per stage, concurrency, executor default. */
 export function renderPlanSettings(plan: BatchPlanView): string[] {
     const lines = [
-        `policy ${plan.policy} · concurrency ${plan.concurrency} · executor ${plan.executor ?? 'default'}`,
+        `policy ${plan.policy} · concurrency ${plan.concurrency} · executor ${executorOf(plan.executor, plan.executorScope)}`,
         ...plan.targets.map((target) => `target ${target.key}: ${target.repo}@${target.branch ?? 'default branch'}`),
     ];
     return lines;
+}
+
+/** A task's executor when it is not the batch's own; empty when it follows the batch. */
+function taskExecutorOf(plan: BatchPlanView, task: BatchTaskPlan | undefined): string {
+    if (task?.executor === undefined) return '';
+    const batch = executorOf(plan.executor, plan.executorScope);
+    const own = executorOf(task.executor, task.executorScope ?? plan.executorScope);
+    return own === batch ? '' : ` · executor ${own}`;
 }
 
 function renderStage(
@@ -54,8 +68,9 @@ function renderStage(
         const accepted = task?.completion.kind === 'accepted' ? ` · accepted when: ${task.completion.condition}` : '';
         const pr = state.pr === NO_PR ? '' : ` · pr ${state.pr}`;
         const thread = state.rootJobId ? ` · task ${state.rootJobId}` : '';
+        const executor = taskExecutorOf(plan, task);
         lines.push(
-            `  ${state.key} ${state.execution} · gate ${state.gate} · target ${target}${pr}${thread}${accepted}`
+            `  ${state.key} ${state.execution} · gate ${state.gate} · target ${target}${executor}${pr}${thread}${accepted}`
         );
         if (state.waitReason !== null) lines.push(`    needs action: ${state.waitReason}`);
     }

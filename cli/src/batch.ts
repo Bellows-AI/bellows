@@ -16,6 +16,8 @@ export interface BatchTaskPlan {
     key: string;
     target?: string;
     executor?: string;
+    /** Whose profile `executor` names (`user` or `org`); omitted means the batch's, else `user`. */
+    executorScope?: string;
     objective: string;
     required: boolean;
     completion: { kind: string; condition?: string };
@@ -26,6 +28,7 @@ export interface BatchPlanView {
     targets: { key: string; repo: string; branch?: string }[];
     defaultTarget?: string;
     executor?: string;
+    executorScope?: string;
     policy: string;
     concurrency: number;
     stages: { key: string; policy?: string; tasks: BatchTaskPlan[] }[];

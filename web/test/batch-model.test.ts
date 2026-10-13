@@ -116,6 +116,20 @@ describe('inherited versus overridden', () => {
         delete inherited.executor;
         expect(taskExecutorOf(plan, inherited)).toEqual({ value: 'claude', source: 'inherited' });
     });
+
+    it('names an organization executor’s scope, inherited from the batch or set on the task', () => {
+        const task = filled().stages[0]!.tasks[0]!;
+        const plan: BatchPlan = { ...filled(), executor: 'Main ORG', executorScope: 'org' };
+        expect(taskExecutorOf(plan, task)).toEqual({ value: 'Main ORG (organization)', source: 'inherited' });
+        expect(taskExecutorOf(plan, { ...task, executorScope: 'user' })).toEqual({
+            value: 'Main ORG',
+            source: 'overridden',
+        });
+        expect(taskExecutorOf(filled(), { ...task, executor: 'Main ORG', executorScope: 'org' })).toEqual({
+            value: 'Main ORG (organization)',
+            source: 'overridden',
+        });
+    });
 });
 
 describe('a started batch', () => {

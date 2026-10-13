@@ -275,6 +275,38 @@ describe('batch validate / start / inspect / list', () => {
         expect(result.out).toContain('target web: o/web@dev');
     });
 
+    it('names the executor scope beside the executor, for the batch and a task that differs', async () => {
+        const scoped = {
+            ...PLAN,
+            executor: 'Main ORG',
+            executorScope: 'org',
+            stages: [
+                {
+                    key: 'build',
+                    tasks: [
+                        { key: 'a', objective: 'o', required: true, completion: { kind: 'pr' } },
+                        {
+                            key: 'b',
+                            objective: 'o',
+                            executor: 'mine',
+                            executorScope: 'user',
+                            required: true,
+                            completion: { kind: 'pr' },
+                        },
+                    ],
+                },
+            ],
+        };
+        const result = await cli(['batch', 'validate', ID], () => json({ valid: true, version: 3, plan: scoped }));
+        expect(result.out).toContain('executor Main ORG (org)');
+        const inspected = await cli(['batch', 'inspect', ID], () =>
+            json(record('draft', [task('a', 'pending'), task('b', 'pending')], { plan: scoped }))
+        );
+        expect(inspected.out).toContain('executor Main ORG (org)');
+        expect(inspected.out).toContain('b pending · gate open · target api · executor mine (user)');
+        expect(inspected.out).toMatch(/a pending · gate open · target api\n/);
+    });
+
     it('round-trips a multi-repository draft on inspect, with each task target and the human gate', async () => {
         const result = await cli(['batch', 'inspect', ID, '--json'], () =>
             json(record('draft', [task('a', 'pending'), task('b', 'pending')]))

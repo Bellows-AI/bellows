@@ -12,4 +12,8 @@ describe('ERROR_CODES', () => {
         expect(ERROR_CODES.REPO_SELECTED).toBe('REPO_SELECTED');
         expect(ERROR_CODES.REPO_CLONING).toBe('REPO_CLONING');
     });
+
+    it('carries the batch launch check’s unknown-executor refusal', () => {
+        expect(ERROR_CODES.UNKNOWN_EXECUTOR).toBe('UNKNOWN_EXECUTOR');
+    });
 });

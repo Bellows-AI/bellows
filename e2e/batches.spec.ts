@@ -84,6 +84,8 @@ test.describe('batch pages', () => {
         await page.getByLabel('Title').fill(`Upgrade the SDK (${theme})`);
         await page.getByLabel('Concurrency').fill('2');
         await page.getByLabel('Repository (main)').fill('acme/widgets');
+        await page.getByLabel('Default executor (optional)').fill('Main ORG');
+        await page.getByLabel('Default executor scope').selectOption('org');
         await fillTask(page, 'Stage 1', 0, 'first');
         await page.getByRole('button', { name: 'Add task to stage 1' }).click();
         await fillTask(page, 'Stage 1', 1, 'second');
@@ -98,6 +100,7 @@ test.describe('batch pages', () => {
         const saved = (await page.request.get(`/api/batches/${id}`).then((r) => r.json())) as BatchRecord;
         expect(saved.status).toBe('draft');
         expect(saved.tasks).toHaveLength(3);
+        expect(saved.plan).toMatchObject({ executor: 'Main ORG', executorScope: 'org' });
 
         // The review before launch: every effective value says where it came from.
         board.adopt({
@@ -111,6 +114,7 @@ test.describe('batch pages', () => {
         const review = page.getByRole('region', { name: 'Before launch' });
         await expect(review).toContainText('inherited');
         await expect(review).toContainText('2 at a time');
+        await expect(review).toContainText('Main ORG (organization)');
         await shoot(page, 'review', theme);
 
         // An edit unsaved keeps check and start off until it is saved.

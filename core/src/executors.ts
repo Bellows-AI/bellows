@@ -28,12 +28,18 @@ export type ExecutorScope = (typeof EXECUTOR_SCOPES)[number];
 /** The scopes by name, destructured from the one list so no second copy can drift. */
 export const [USER_SCOPE, ORG_SCOPE] = EXECUTOR_SCOPES;
 
+const scopeLabel = (scope: ExecutorScope): string => (scope === ORG_SCOPE ? 'organization' : 'personal');
+
+/** The sentence a selection naming no profile in its scope is refused with, before anything launches. */
+export const executorMissingMessage = (scope: ExecutorScope, name: string): string =>
+    `There is no ${scopeLabel(scope)} executor "${name}". Choose one that exists, or name its scope.`;
+
 /**
  * The sentence a suspended profile is refused with (issue 440) — at submission (409) and at claim
  * (the task fails before a runner starts) — one spelling so the two cannot drift.
  */
 export const executorSuspendedMessage = (scope: ExecutorScope, name: string): string =>
-    `The ${scope === ORG_SCOPE ? 'organization' : 'personal'} executor "${name}" is suspended. ` +
+    `The ${scopeLabel(scope)} executor "${name}" is suspended. ` +
     'Resume it or choose another executor, then start a new task.';
 
 /**

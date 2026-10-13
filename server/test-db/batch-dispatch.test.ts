@@ -148,6 +148,25 @@ describe.skipIf(!enabled)('batch dispatch', () => {
         });
     });
 
+    it('launches each task in its frozen executor scope, and a retry keeps it', async () => {
+        const id = await frozen(plan([{ key: 'build', tasks: [task('a', { executorScope: 'org' }), task('b')] }]));
+        await store.reconcile(id);
+        const scopeOf = async (jobId: string) =>
+            (await sql<{ executor_scope: string }[]>`select executor_scope from job where id = ${jobId}`)[0]!
+                .executor_scope;
+        const { a, b } = await stateOf(id);
+        expect(await scopeOf(a!.rootJobId!)).toBe('org');
+        expect(await scopeOf(b!.rootJobId!)).toBe('user');
+
+        await setStatus(a!.rootJobId!, 'failed');
+        await store.reconcile(id);
+        expect(await store.retry(id, 'a')).toEqual({ result: 'ok' });
+        await store.reconcile(id);
+        const retried = await headOf(a!.rootJobId!);
+        expect(retried.id).not.toBe(a!.rootJobId);
+        expect(await scopeOf(retried.id)).toBe('org');
+    });
+
     it('holds the concurrency limit, counting a moving task', async () => {
         const id = await frozen(parallelThenJoin(1));
         await store.reconcile(id);

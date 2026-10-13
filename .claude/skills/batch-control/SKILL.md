@@ -11,7 +11,8 @@ plan and reacts to what the board reports; it never schedules, merges or answers
 
 Setup, discovery and the CLI rules are the `task-control` skill's sections 1 and 2: the same
 `FACTORY_URL` and `FACTORY_TOKEN`, the same `GET /api/repos` and `GET /api/workspace/executors`
-reads before a plan names a repo or an executor, the same ONE npm layer
+reads before a plan names a repo or an executor — plus `GET /api/org/executors` for the
+organization's profiles — the same ONE npm layer
 (`npm run dev -w cli -- batch …`). Batch routes take a person's credential only: a `fat_`
 personal token, never an `oat_` organization token or the driver's worker token.
 
@@ -28,6 +29,10 @@ Start from `plan.example.json` beside this file and keep its shape. The contract
 - Keys (`targets`, `stages`, `tasks`) match `^[a-z0-9][a-z0-9-]*$`, at most 40 characters, unique.
 - `completion` is `{ "kind": "pr" }` for code changes. `{ "kind": "accepted", "condition": "…" }`
   is only for a task that changes no code, and a person must accept it.
+- **`executor` names a profile in a scope.** `executorScope` beside it is `user` (a personal
+  profile, from `GET /api/workspace/executors`) or `org` (the organization's, from
+  `GET /api/org/executors`), at the batch and on a task; omitted means the batch's, else `user`.
+  A name its scope does not hold is refused at validate with `404 UNKNOWN_EXECUTOR`.
 - `policy` is `human` (the board opens PRs; people merge them) or `automerge` (the board merges
   once GitHub's requirements pass). A stage may override it. Default to `human` unless the user
   asks for automerge.
