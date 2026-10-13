@@ -158,11 +158,11 @@ export const stagePolicyOf = (plan: BatchPlan, stage: BatchStage): Inherited => 
     source: stage.policy === undefined ? 'inherited' : 'overridden',
 });
 
-/** The task's executor as it will launch: an organization profile names its scope. */
 /** An executor by name, an organization profile marked as such; `fallback` when none is named. */
 export const executorLabel = (name: string | undefined, scope: string | undefined, fallback: string): string =>
     name === undefined ? fallback : `${name}${scope === ORG_SCOPE ? ' (organization)' : ''}`;
 
+/** The task's executor as it will launch: an organization profile names its scope. */
 export const taskExecutorOf = (plan: BatchPlan, task: BatchTask): Inherited => ({
     value: executorLabel(
         task.executor ?? plan.executor,

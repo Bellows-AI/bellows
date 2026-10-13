@@ -54,12 +54,14 @@ recorded acceptance.
   the row lock, so exactly one of a concurrent start and `PUT` wins and the frozen plan is the
   version that won. `server/test-db/batch-store.test.ts`.
 - **Freeze resolves in place** — an explicit branch per target, a target per task, a policy per
-  stage, the executor and its `executorScope` stamped (every attempt launches in it) — and the 066
+  stage, the executor and its `executorScope` stamped (every attempt launches in it) — and the
   triggers refuse later writes to them; the runtime columns (`root_job_id`, `execution`, `pr`,
-  `gate`, `wait_reason`) stay writable. `server/test-db/batch-store.test.ts`, `batch-dispatch.test.ts`.
+  `gate`, `wait_reason`) stay writable. `server/migrations/059_batches.sql`,
+  `066_batch_executor_scope.sql`, `server/test-db/batch-store.test.ts`, `batch-dispatch.test.ts`.
 - **Launch checks run in one order, for `validate` and `start` alike, and write nothing:** structure,
   installation visibility per target (`checkReposVisible`), default-branch resolution, capability,
-  executors (each exists in its scope, `404 UNKNOWN_EXECUTOR`, and is not suspended). A replayed `start` answers first.
+  executors (each exists in its scope, `404 UNKNOWN_EXECUTOR`, and is not suspended). A replayed
+  `start` answers first.
   `server/src/routes/batch-launch.ts`, `server/test/routes.batches.test.ts`.
 - **Human credentials only.** No batch path is a worker route or on the organization-token
   allowlist, and the org comes from the credential: a body field naming `org` or `status` is

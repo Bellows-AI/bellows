@@ -437,6 +437,21 @@ describe('launch checks: validate and start', () => {
         expect(asked).toEqual([['Main ORG', 'org']]);
     });
 
+    it('asks nothing of a plan that names no executor: the claim’s default needs no profile', async () => {
+        let asked = 0;
+        const userExecutors = {
+            async configFor() {
+                asked += 1;
+                return null;
+            },
+        } as unknown as UserExecutorStore;
+        const { call, create } = await setup({ userExecutors });
+        const { id } = await create(plan());
+        expect((await call('POST', `/api/batches/${id}/validate`, {})).statusCode).toBe(HTTP_OK);
+        expect((await call('POST', `/api/batches/${id}/start`, { version: 1 })).statusCode).toBe(HTTP_OK);
+        expect(asked).toBe(0);
+    });
+
     it('refuses an executor the named scope does not hold, on validate and on start, before anything dispatches', async () => {
         const userExecutors = {
             async configFor() {

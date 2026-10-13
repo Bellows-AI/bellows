@@ -703,6 +703,34 @@ describe.skipIf(!enabled)('bounded recovery', () => {
         expect((await decisions(id)).filter((key) => key === 'advance:one')).toHaveLength(1);
     });
 
+    it('keeps an org task’s executor scope on its infra retry and its repair', async () => {
+        const scopeOfHead = async (root: string) =>
+            (
+                await sql<{ executor_scope: string }[]>`
+                    select executor_scope from job where root_job_id = ${root} order by created_at desc, id desc limit 1
+                `
+            )[0]!.executor_scope;
+        const { clock, store: timed } = clockedStore();
+        const id = await frozen(
+            planWith([{ key: 'one', tasks: [task('a', { completion: { kind: 'pr' }, executorScope: 'org' })] }]),
+            timed
+        );
+        await timed.reconcile(id);
+        const root = (await stateOf(id)).a!.rootJobId!;
+
+        await failWith(root, 'timeout');
+        await timed.reconcile(id);
+        clock.ms += 61_000;
+        await timed.reconcile(id);
+        expect(await kindsOf('a', id)).toEqual(['launch', 'infra_retry']);
+        expect(await scopeOfHead(root)).toBe('org');
+
+        await failWith(root, 'gate', 'failed', 'verification');
+        await timed.reconcile(id);
+        expect(await kindsOf('a', id)).toEqual(['launch', 'infra_retry', 'repair']);
+        expect(await scopeOfHead(root)).toBe('org');
+    });
+
     it('repairs a failed check with a follow-up in the same thread, then judges the repaired run afresh', async () => {
         const id = await frozen(planWith([{ key: 'one', tasks: [prTask('a')] }]));
         await store.reconcile(id);
