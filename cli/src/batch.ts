@@ -180,15 +180,31 @@ const TASK_TERMINAL: readonly string[] = [TASK_SUCCEEDED, TASK_FAILED, TASK_CANC
 
 export type BatchVerdict = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'needs_attention';
 
+/** The report's subset the verdict reads: each task's `next`, the board's own word on who acts. */
+export type BatchNextOf = Pick<BatchReport, 'tasks'> | null | undefined;
+
+const NEXT_WAIT = 'wait';
+
+/** The board still acting on a task — moving work, or an automerge PR it is merging or repairing (#688). */
+const boardActing = (task: BatchTaskState, report: BatchNextOf): boolean =>
+    report?.tasks.find((entry) => entry.key === task.key)?.next.action === NEXT_WAIT;
+
+/** A task whose wait reason names a person to act: any, unless the report's `next` says the board is on it. */
+export const needsPerson = (task: BatchTaskState, report?: BatchNextOf): boolean =>
+    task.waitReason !== null && !boardActing(task, report);
+
 /**
  * Where a started batch stands. A task with a `waitReason` needs a person (a human review gate, a
- * question), as does a stage whose combined verification failed, and those outrank everything:
+ * question) unless the report's `next` says the board is on it (`needsPerson`), as does a stage
+ * whose combined verification failed, and those outrank everything:
  * nothing a wait does moves it. Otherwise the batch is settled only when every task is, and then a
  * failed task beats a cancelled one beats success — which also needs every stage verified.
  */
-export function batchVerdict(batch: BatchRecord): BatchVerdict {
-    if (batch.tasks.some((task) => task.waitReason !== null)) return 'needs_attention';
+export function batchVerdict(batch: BatchRecord, report?: BatchNextOf): BatchVerdict {
+    if (batch.tasks.some((task) => needsPerson(task, report))) return 'needs_attention';
     if (batch.verification.some((stage) => stage.state === VERIFY_FAILED)) return 'needs_attention';
+    // A succeeded run whose PR the board is still merging is not settled: its gate is open.
+    if (batch.tasks.some((task) => boardActing(task, report))) return 'running';
     if (!batch.tasks.every((task) => TASK_TERMINAL.includes(task.execution))) return 'running';
     if (batch.tasks.some((task) => task.execution === TASK_FAILED)) return 'failed';
     // A task a person force-closed in a batch that still completed was settled by that person.

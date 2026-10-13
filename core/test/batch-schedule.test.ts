@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+    awaitsBoardMerge,
     batchTaskCommand,
     batchWaitResult,
     decideSchedule,
@@ -167,6 +168,34 @@ describe('task predicates', () => {
         expect(isRetryable({ execution: TASK_SUCCEEDED, gate: GATE_OPEN })).toBe(true);
         expect(isRetryable({ execution: TASK_SUCCEEDED, gate: GATE_PASSED })).toBe(false);
         expect(isRetryable({ execution: TASK_RUNNING, gate: GATE_OPEN })).toBe(false);
+    });
+
+    it("leaves an automerge task's open PR to the board until attention hands it to a person (#688)", () => {
+        const open = {
+            policy: 'automerge',
+            completionKind: 'pr',
+            execution: TASK_SUCCEEDED,
+            gate: GATE_OPEN,
+            attention: null,
+            prUrl: 'https://x/pull/1',
+            outcome: null as string | null,
+            stageAdvanced: false,
+        };
+        expect(awaitsBoardMerge(open)).toBe(true);
+        for (const outcome of ['ready', 'checks_pending', 'unknown', 'checks_failing', 'conflicting']) {
+            expect(awaitsBoardMerge({ ...open, outcome })).toBe(true);
+        }
+        // GitHub waits on a person's review, or on checks nobody reports; the board does not act on either.
+        expect(awaitsBoardMerge({ ...open, outcome: 'review_required' })).toBe(false);
+        expect(awaitsBoardMerge({ ...open, outcome: 'checks_missing' })).toBe(false);
+        // An optional task left behind by an advanced stage is neither merged nor repaired.
+        expect(awaitsBoardMerge({ ...open, stageAdvanced: true })).toBe(false);
+        expect(awaitsBoardMerge({ ...open, policy: 'human' })).toBe(false);
+        expect(awaitsBoardMerge({ ...open, completionKind: 'accepted' })).toBe(false);
+        expect(awaitsBoardMerge({ ...open, execution: TASK_RUNNING })).toBe(false);
+        expect(awaitsBoardMerge({ ...open, gate: GATE_PASSED })).toBe(false);
+        expect(awaitsBoardMerge({ ...open, attention: 'refused' })).toBe(false);
+        expect(awaitsBoardMerge({ ...open, prUrl: null })).toBe(false);
     });
 });
 

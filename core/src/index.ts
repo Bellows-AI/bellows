@@ -179,6 +179,7 @@ export type {
     ScheduleTask,
 } from './batch-schedule.js';
 export {
+    awaitsBoardMerge,
     batchTaskCommand,
     batchWaitResult,
     decideSchedule,

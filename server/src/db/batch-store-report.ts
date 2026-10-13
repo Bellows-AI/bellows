@@ -9,7 +9,7 @@ import {
 } from '@factory-ai/core';
 import type { Sql } from 'postgres';
 import { type BatchPrObservation, readObservations } from './batch-store-observation.js';
-import { readVerification } from './batch-store-rows.js';
+import { type BoardMergeRow, boardMergeColumns, boardMerging, readVerification } from './batch-store-rows.js';
 import {
     ACCEPTANCE_PR_MERGED,
     BATCH_DRAFT,
@@ -40,7 +40,7 @@ interface ReportBatch {
     completed_at: Date | null;
 }
 
-interface ReportTaskRow {
+interface ReportTaskRow extends BoardMergeRow {
     key: string;
     stage_key: string;
     required: boolean;
@@ -84,7 +84,9 @@ function stateOf(batch: ReportBatch, tasks: readonly ReportTaskRow[]): BatchRepo
     if (batch.cancelled_at) return 'cancelled';
     if (batch.expired_at) return 'expired';
     if (batch.completed_at) return 'completed';
-    const moving = tasks.some((task) => holdsSlot(task.execution) || task.execution === TASK_RETRY);
+    const moving = tasks.some(
+        (task) => holdsSlot(task.execution) || task.execution === TASK_RETRY || boardMerging(task)
+    );
     return moving ? 'running' : 'parked';
 }
 
@@ -99,7 +101,7 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
         sql<ReportTaskRow[]>`
             select t.key, t.stage_key, t.required, t.execution, t.gate, t.attention, t.wait_reason, t.closed_at,
                    t.closed_by, t.pr,
-                   t.root_job_id, t.completion_kind,
+                   t.root_job_id, t.completion_kind, s.policy, ${boardMergeColumns(sql)},
                    (select count(*)::int from batch_attempt a
                     where a.org_id = t.org_id and a.batch_id = t.batch_id and a.task_key = t.key) as attempts,
                    (select count(*)::int from batch_attempt a
@@ -179,6 +181,9 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
                     questionId: task.pending_question,
                     completionKind: task.completion_kind,
                     prUrl,
+                    policy: task.policy,
+                    outcome: task.outcome,
+                    stageAdvanced: task.stage_advanced,
                 },
             }),
         };

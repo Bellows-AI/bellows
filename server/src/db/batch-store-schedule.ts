@@ -28,6 +28,7 @@ import {
 } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
 import { judgeGates } from './batch-store-gates.js';
+import { type BoardMergeRow, boardMergeColumns, boardMerging } from './batch-store-rows.js';
 import { recoverObserved, withdrawRepair } from './batch-store-observed.js';
 import { decide, failedAttentionReason, recoveriesUsed, repairInTx, type Tx } from './batch-store-repair.js';
 import { insertJobInTx, retryInTx } from './job-store-actions.js';
@@ -96,7 +97,7 @@ interface LockedBatch {
     threads_closed_at: Date | null;
 }
 
-interface StateTask {
+interface StateTask extends BoardMergeRow {
     key: string;
     stage_key: string;
     target_key: string;
@@ -324,7 +325,8 @@ async function loadSnapshot({ tx, orgId, id }: Tx): Promise<Snapshot> {
         `,
         tx<StateTask[]>`
             select t.key, t.stage_key, t.target_key, t.executor, t.executor_scope, t.objective, t.acceptance,
-                   t.verification, t.required, t.root_job_id, t.execution, t.gate, t.recovery, t.not_before
+                   t.verification, t.required, t.root_job_id, t.execution, t.gate, t.recovery, t.not_before,
+                   t.attention, t.pr, t.completion_kind, s.policy, ${boardMergeColumns(tx)}
             from batch_task t
             join batch_stage s on s.org_id = t.org_id and s.batch_id = t.batch_id and s.key = t.stage_key
             where t.org_id = ${orgId} and t.batch_id = ${id}
@@ -446,7 +448,7 @@ function resultOf(batch: LockedBatch, snapshot: Snapshot, decision: ScheduleDeci
             cancelled,
             expired,
             active: decision.active,
-            waiting: snapshot.tasks.filter((task) => task.execution === TASK_RETRY).length,
+            waiting: snapshot.tasks.filter((task) => task.execution === TASK_RETRY || boardMerging(task)).length,
         },
         ...threadActs(open, { roots: cancelled || expired ? movingRoots(snapshot) : [], by: batch.cancelled_by }),
     };

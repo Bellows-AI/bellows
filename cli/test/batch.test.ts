@@ -459,6 +459,25 @@ describe('batch wait', () => {
         expect(JSON.parse(asJson.out).data.needsAction.map((entry: { key: string }) => entry.key)).toEqual(['a']);
     });
 
+    it("keeps waiting while the report's next says the board merges an open PR, and exits 6 once it hands it over (#688)", async () => {
+        const pr = 'https://github.com/o/api/pull/9';
+        const merging = record('running', [
+            task('a', 'succeeded', { pr, waitReason: `waiting for the board to merge ${pr}` }),
+        ]);
+        const reportWith = (next: Record<string, unknown>) => {
+            const report = REPORT();
+            return { ...report, tasks: [{ ...report.tasks[0]!, next }] };
+        };
+
+        const board = await wait([merging], ['--timeout', '12'], reportWith({ action: 'wait' }));
+        expect(board.code).toBe(3);
+        expect(JSON.parse(board.out).data.needsAction).toEqual([]);
+
+        const person = await wait([merging], [], reportWith({ action: 'merge', url: pr }));
+        expect(person.code).toBe(6);
+        expect(JSON.parse(person.out).data.needsAction.map((entry: { key: string }) => entry.key)).toEqual(['a']);
+    });
+
     it('exits 6 on a failed stage verification, naming the stage and why, though no task waits', async () => {
         const parked = record('running', [task('a', 'succeeded', { gate: 'passed' })], {
             verification: [verified('failed', 'checks on main at cd89f3d2 fail: e2e failing')],

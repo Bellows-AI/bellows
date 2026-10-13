@@ -320,6 +320,67 @@ describe.skipIf(!enabled)('automerge', () => {
         expect(await task(id, 'a')).toMatchObject({ gate: 'open' });
     });
 
+    it("reports an automerge task's open PR as the board's to merge, not parked, until a refusal hands it to a person (#688)", async () => {
+        const { id, number } = await readyBatch(plan([policyStage('automerge', ['a'])]));
+
+        expect(await store.reconcile(id)).toMatchObject({ active: 0, waiting: 1 });
+        const waiting = (await store.report(id))!;
+        expect(waiting.state).toBe('running');
+        expect(waiting.tasks[0]).toMatchObject({ execution: 'succeeded', gate: 'open', next: { action: 'wait' } });
+
+        github.mergeFails.set(number, new GitHubMergeError('405 required checks', 'refused'));
+        await merger.mergeDue();
+
+        expect(await store.reconcile(id)).toMatchObject({ active: 0, waiting: 0 });
+        const refused = (await store.report(id))!;
+        expect(refused.state).toBe('parked');
+        expect(refused.tasks[0]).toMatchObject({ attention: 'refused', next: { action: 'merge' } });
+    });
+
+    it('hands an automerge PR waiting on a review to a person: the board does not act on it (#688)', async () => {
+        const { id, number } = await readyBatch(plan([policyStage('automerge', ['a'])]));
+        github.replies.set(number, facts(number, { requiredApprovals: 1 }));
+        clock.offset += 61_000;
+        await observer.observeDue();
+
+        expect(await store.reconcile(id)).toMatchObject({ active: 0, waiting: 0 });
+        const report = (await store.report(id))!;
+        expect(report.state).toBe('parked');
+        expect(report.tasks[0]).toMatchObject({
+            observation: { outcome: 'review_required' },
+            next: { action: 'merge' },
+        });
+        expect(report.tasks[0]!.waitReason).toContain('approving review');
+    });
+
+    it("hands an optional task's open PR to a person once its stage advanced without it (#688)", async () => {
+        const optional = { ...prTask('b'), required: false };
+        const source = plan([{ key: 'one', policy: 'automerge', tasks: [prTask('a'), optional] }]);
+        const { id } = await readyBatch(source);
+        const pending = await publish(await rootOf(id, 'b'));
+        await setSucceeded(await rootOf(id, 'b'));
+        github.replies.set(pending, facts(pending, { checks: checks('pending') }));
+        await store.reconcile(id);
+        await observer.observeDue();
+        expect((await store.report(id))!.tasks[1]).toMatchObject({ next: { action: 'wait' } });
+
+        await merger.mergeDue();
+        await store.reconcile(id);
+
+        const report = (await store.report(id))!;
+        expect(report.tasks[0]).toMatchObject({ gate: 'passed' });
+        expect(report.tasks[1]).toMatchObject({ gate: 'open', next: { action: 'merge' } });
+    });
+
+    it("reports a human stage's open PR as a person's to merge, and the batch parked", async () => {
+        const { id } = await readyBatch(plan([policyStage('human', ['a'])]));
+
+        expect(await store.reconcile(id)).toMatchObject({ active: 0, waiting: 0 });
+        const report = (await store.report(id))!;
+        expect(report.state).toBe('parked');
+        expect(report.tasks[0]).toMatchObject({ next: { action: 'merge' } });
+    });
+
     it('refuses to merge past a protection GitHub enforces, parks the task, and does not repeat the same observation', async () => {
         const { id, number } = await readyBatch(plan([policyStage('automerge', ['a'])]));
         github.mergeFails.set(number, new GitHubMergeError('405 required checks', 'refused'));

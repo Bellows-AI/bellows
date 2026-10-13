@@ -8,6 +8,8 @@ import {
     MERGE_LAPSED,
     MERGE_REFUSED,
     MERGE_UNCERTAIN,
+    OUTCOME_CHECKS_MISSING,
+    OUTCOME_REVIEW_REQUIRED,
     TASK_NO_PR,
     TASK_SUCCEEDED,
 } from '@factory-ai/core';
@@ -40,6 +42,7 @@ interface GateRow {
     policy: string;
     merge_state: string | null;
     merge_detail: string | null;
+    outcome: string | null;
 }
 
 /** The board's own word on its merge request, as the task's wait reason carries it; null once it says nothing. */
@@ -60,13 +63,25 @@ function mergeNoteOf(state: string | null, detail: string | null): string | null
     }
 }
 
+/** Why the board cannot merge an observed PR by itself (`awaitsBoardMerge`), as the task's wait reason carries it. */
+function observedNoteOf(outcome: string | null): string | null {
+    switch (outcome) {
+        case OUTCOME_REVIEW_REQUIRED:
+            return 'the PR needs an approving review from a person before the board can merge it';
+        case OUTCOME_CHECKS_MISSING:
+            return "the PR's required checks never reported; the board cannot merge it until they do";
+        default:
+            return null;
+    }
+}
+
 /** True only when a task's row changed: a pass that rewrites nothing must end the reconcile loop. */
 export async function judgeGates(tx: TransactionSql, orgId: string, id: string): Promise<boolean> {
     const rows = await tx<GateRow[]>`
         select t.key, t.completion_kind, t.completion_condition, tg.branch as target_branch, t.pr, t.wait_reason, t.attention,
                p.repo, p.pr_number, p.pr_url, p.base_branch, m.merged_at,
                a.attempt, a.created_at as attempt_started_at, s.policy, mg.state as merge_state,
-               mg.detail as merge_detail
+               mg.detail as merge_detail, o.outcome
         from batch_task t
         join batch_stage s on s.org_id = t.org_id and s.batch_id = t.batch_id and s.key = t.stage_key
         join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id and tg.key = t.target_key
@@ -80,6 +95,7 @@ export async function judgeGates(tx: TransactionSql, orgId: string, id: string):
             where org_id = t.org_id and batch_id = t.batch_id and task_key = t.key and attempt = a.attempt
             order by id desc limit 1
         ) mg on true
+        left join batch_pr_observation o on o.org_id = t.org_id and o.batch_id = t.batch_id and o.task_key = t.key
         left join job_pr p on p.org_id = t.org_id and p.root_job_id = t.root_job_id
         left join pr_merge m on m.org_id = p.org_id and m.repo = p.repo and m.pr_number = p.pr_number
         where t.org_id = ${orgId} and t.batch_id = ${id} and t.execution = ${TASK_SUCCEEDED}
@@ -101,7 +117,7 @@ export async function judgeGates(tx: TransactionSql, orgId: string, id: string):
             attempt: row.attempt,
             attemptStartedAt: row.attempt_started_at.getTime(),
             automerge: row.policy === AUTOMERGE,
-            mergeNote: mergeNoteOf(row.merge_state, row.merge_detail),
+            mergeNote: mergeNoteOf(row.merge_state, row.merge_detail) ?? observedNoteOf(row.outcome),
         });
         if (judgement.pass) {
             await tx`
