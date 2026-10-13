@@ -100,12 +100,6 @@ const finishPublished = async (command: string, status: 'succeeded' | 'failed' =
     return id;
 };
 
-const mustFollowUp = (root: string, command: string): Promise<{ id: string }> =>
-    store.createFollowUp(root, command, null).then((ref) => {
-        if (typeof ref === 'string') throw new Error(`createFollowUp refused: ${ref}`);
-        return ref;
-    });
-
 const mustRetry = (id: string): Promise<{ id: string }> =>
     store.createRetry(id, null).then((ref) => {
         if (typeof ref === 'string') throw new Error(`createRetry refused: ${ref}`);
@@ -527,10 +521,10 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
             select count(*)::int as n from job_merge_close where org_id = ${ORG} and root_job_id = ${root}
         `;
         expect(marker[0]!.n).toBe(0);
-        // Retry first: the retry's head-eligibility reads the thread head, and the follow-up
-        // queued below would otherwise be that head.
+        // The retry lands; the follow-up behind it now names the queued retry, not task_done —
+        // both read the thread, and a queued member owns the turn (#698).
         await mustRetry(root);
-        await mustFollowUp(root, 'after reopen');
+        expect(await store.createFollowUp(root, 'after reopen', null)).toBe('not_finished');
 
         // The ledger row survives reopen: the redelivered merge cannot re-close the thread.
         expect(await store.closeMergedPr(REPO, PULL, 'guid-reopen-again')).toEqual({

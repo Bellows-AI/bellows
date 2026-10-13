@@ -171,20 +171,23 @@ describe.skipIf(!enabled)('the purge races', () => {
     });
 
     it('a follow-up whose checkout row is absent still queues — the existing task contract', async () => {
-        const parentId = randomUUID();
-        await sql`
-            insert into job (org_id, id, command, status, repo, created_by, session_id, root_job_id)
-            values (${ORG}, ${parentId}, 'root', 'succeeded', 'ghost/repo', ${ALICE},
-                    ${'33333333-3333-4333-8333-333333333333'}, ${parentId})
-        `;
+        const finishedRoot = async () => {
+            const parentId = randomUUID();
+            await sql`
+                insert into job (org_id, id, command, status, repo, created_by, session_id, root_job_id)
+                values (${ORG}, ${parentId}, 'root', 'succeeded', 'ghost/repo', ${ALICE},
+                        ${'33333333-3333-4333-8333-333333333333'}, ${parentId})
+            `;
+            return parentId;
+        };
 
-        // The retry path reads the same absent row as no refusal, the same contract — probed
-        // while the parent is still the thread's head, which is what makes it retry-eligible
-        // (a queued follow-up head owns the turn and answers not_finished instead).
-        const retry = await jobs.createRetry(parentId, ALICE);
+        // The retry path reads the same absent row as no refusal, the same contract — each on a
+        // thread of its own, since a queued member owns the turn and the other would answer
+        // not_finished instead (#698).
+        const retry = await jobs.createRetry(await finishedRoot(), ALICE);
         expect(retry).toHaveProperty('id');
 
-        const followUp = await jobs.createFollowUp(parentId, 'again', ALICE);
+        const followUp = await jobs.createFollowUp(await finishedRoot(), 'again', ALICE);
         expect(followUp).toHaveProperty('id');
     });
 });
