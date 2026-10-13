@@ -40,4 +40,5 @@ Three workflows and no configured secret — the only credential any uses is `gi
 - `driver/test/executor-images.test.ts` and `driver/test/review-reply-script.test.ts` spawn real processes and can
   time out on a contended runner; re-run the job.
 - CI never runs `npm run test:db`, `npm run test:jobs` or `npm run test:k8s`, and no lane runs a real cloud cluster
-  ([eks-runbook.md](eks-runbook.md)).
+  ([eks-runbook.md](eks-runbook.md)). `test:jobs` cannot pass on ubuntu-latest's daemon
+  ([executor-testing.md](executor-testing.md), "What no lane covers").
