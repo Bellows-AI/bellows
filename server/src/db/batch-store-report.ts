@@ -181,10 +181,7 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
                     questionId: task.pending_question,
                     completionKind: task.completion_kind,
                     prUrl,
-                    policy: task.policy,
-                    outcome: task.outcome,
-                    readError: task.read_error,
-                    stageAdvanced: task.stage_advanced,
+                    boardMerging: boardMerging(task),
                 },
             }),
         };

@@ -5,7 +5,6 @@
  * batch's row lock. A budget is counted from the durable attempt rows, so a restart cannot reset it.
  */
 import type { CheckEvidence, ObservationOutcome } from './batch-observation.js';
-import { awaitsBoardMerge } from './batch-schedule.js';
 
 /** `batch_attempt.kind` of a retry the board queued itself: a transient infrastructure failure. */
 export const RECOVERY_INFRA = 'infra_retry';
@@ -228,12 +227,11 @@ export function batchNextAction(input: {
         questionId: string | null;
         completionKind: string;
         prUrl: string | null;
-        /** The stage's effective policy: an `automerge` stage's open PR is the board's to merge (`awaitsBoardMerge`). */
-        policy: string;
-        /** The current attempt's observed PR outcome and read error, null before the first read. */
-        outcome: string | null;
-        readError: string | null;
-        stageAdvanced: boolean;
+        /**
+         * `awaitsBoardMerge` over the task, its stage's effective policy and its observed PR: the board
+         * merges or repairs it by itself. A boolean, so this module needs no observation constants.
+         */
+        boardMerging: boolean;
     };
 }): BatchNextAction {
     const { batchId, batchState, task } = input;
@@ -265,7 +263,7 @@ export function batchNextAction(input: {
         };
     }
     if (task.execution === 'failed' || task.execution === 'stopped') return retry;
-    if (awaitsBoardMerge(task)) return { action: 'wait' };
+    if (task.boardMerging) return { action: 'wait' };
     if (task.execution === 'succeeded') return finished ?? retry;
     return unsettledAction(batchId, task);
 }

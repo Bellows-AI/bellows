@@ -4,7 +4,6 @@ import {
     ATTENTION_CLOSED,
     ATTENTION_REASONS,
     ATTENTION_QUESTION,
-    ATTENTION_REFUSED,
     attentionWaitReason,
     BATCH_RETRY_BACKOFF_BASE_MS,
     BATCH_RETRY_BACKOFF_MAX_MS,
@@ -283,10 +282,7 @@ describe('batchNextAction', () => {
         questionId: null as string | null,
         completionKind: 'pr',
         prUrl: null as string | null,
-        policy: 'human',
-        outcome: null as string | null,
-        readError: null as string | null,
-        stageAdvanced: false,
+        boardMerging: false,
     };
     const next = (batchState: 'running' | 'parked' | 'completed' | 'cancelled' | 'expired', over = {}) =>
         batchNextAction({ batchId: 'b1', batchState, task: { ...task, ...over } });
@@ -320,16 +316,10 @@ describe('batchNextAction', () => {
     });
 
     it("waits while the board can still merge an automerge task's open PR, and hands it over once it cannot (#688)", () => {
-        const open = { execution: 'succeeded', prUrl: 'https://x/pull/1', policy: 'automerge' };
+        const open = { execution: 'succeeded', prUrl: 'https://x/pull/1', boardMerging: true };
         expect(next('running', open)).toEqual({ action: 'wait' });
-        expect(next('running', { ...open, attention: ATTENTION_REFUSED })).toEqual({
-            action: 'merge',
-            url: 'https://x/pull/1',
-        });
-        expect(next('parked', { ...open, attention: ATTENTION_BUDGET })).toMatchObject({ action: 'merge' });
-        expect(next('parked', { ...open, completionKind: 'accepted' })).toMatchObject({ action: 'accept' });
-        expect(next('running', { ...open, outcome: 'conflicting' })).toEqual({ action: 'wait' });
-        expect(next('parked', { ...open, outcome: 'review_required' })).toMatchObject({ action: 'merge' });
+        expect(next('parked', { ...open, boardMerging: false })).toEqual({ action: 'merge', url: 'https://x/pull/1' });
+        // A fence ends the board's merging: the PR is a person's.
         expect(next('expired', open)).toMatchObject({ action: 'merge' });
         expect(next('cancelled', open)).toMatchObject({ action: 'merge' });
     });

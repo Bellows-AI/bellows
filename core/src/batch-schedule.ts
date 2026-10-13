@@ -4,7 +4,15 @@
  * read the state, ask here, and write the answer under the batch's row lock. Stage order is the
  * only dependency model, so the active stage is the first one without an advance decision.
  */
-import type { ObservationOutcome, ReadErrorKind } from './batch-observation.js';
+import {
+    OUTCOME_CHECKS_FAILING,
+    OUTCOME_CHECKS_PENDING,
+    OUTCOME_CONFLICTING,
+    OUTCOME_READY,
+    OUTCOME_UNKNOWN,
+    READ_RATE_LIMITED,
+    READ_TRANSPORT,
+} from './batch-observation.js';
 import { AUTOMERGE, BATCH_COMPLETION_ACCEPTED, BATCH_COMPLETION_PR } from './batch-plan.js';
 
 /** A task's execution state: the thread head's status folded to what the scheduler branches on. */
@@ -98,16 +106,16 @@ export const isRetryable = (task: Pick<ScheduleTask, 'execution' | 'gate'>): boo
  * re-read an `unknown`, repair a failing check or a conflict (or set `attention` when it cannot).
  * `review_required` and `checks_missing` wait on a person.
  */
-const BOARD_OUTCOMES: readonly ObservationOutcome[] = [
-    'ready',
-    'checks_pending',
-    'unknown',
-    'checks_failing',
-    'conflicting',
+const BOARD_OUTCOMES: readonly string[] = [
+    OUTCOME_READY,
+    OUTCOME_CHECKS_PENDING,
+    OUTCOME_UNKNOWN,
+    OUTCOME_CHECKS_FAILING,
+    OUTCOME_CONFLICTING,
 ];
 
 /** Read errors the observer retries by itself; any other (`not_found`, `forbidden`, `binding`) is a person's. */
-const BOARD_READ_ERRORS: readonly ReadErrorKind[] = ['rate_limited', 'transport'];
+const BOARD_READ_ERRORS: readonly string[] = [READ_RATE_LIMITED, READ_TRANSPORT];
 
 /**
  * A succeeded task of an `automerge` stage whose PR the board is still merging or repairing: moving,
@@ -135,8 +143,8 @@ export const awaitsBoardMerge = (task: {
     task.attention === null &&
     task.prUrl !== null &&
     !task.stageAdvanced &&
-    (task.readError === null || (BOARD_READ_ERRORS as readonly string[]).includes(task.readError)) &&
-    (task.outcome === null || (BOARD_OUTCOMES as readonly string[]).includes(task.outcome));
+    (task.readError === null || BOARD_READ_ERRORS.includes(task.readError)) &&
+    (task.outcome === null || BOARD_OUTCOMES.includes(task.outcome));
 
 /** What `batch_task.pr` holds for a task with no recorded PR. */
 export const TASK_NO_PR = 'none';
