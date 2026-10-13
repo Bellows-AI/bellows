@@ -5,9 +5,9 @@ Telemetry and charts. `web/src/styles/regions/dashboard.css`; shared system:
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Page frame, control row, and the toolbar's range, scope, coverage and freshness | `web/src/pages/DashboardPage.tsx`, `web/src/components/AnalyticsToolbar.tsx`, `RangeSelector.tsx`, `ScopeToggle.tsx` | `e2e/dashboard.spec.ts`, `web/test/range-selector.test.tsx`, `web/test/scope-toggle.test.tsx` |
+| Page frame, control row, and the toolbar's range, scope, coverage and freshness | `web/src/pages/DashboardPage.tsx`, `web/src/components/AnalyticsToolbar.tsx`, `RangeSelector.tsx`, `ScopeToggle.tsx` | `e2e/dashboard.spec.ts`, `web/test/dashboard.dom.test.tsx`, `web/test/range-selector.test.tsx`, `web/test/scope-toggle.test.tsx` |
 | Metric cards, the one empty state, telemetry panels, the task board section | `web/src/panels/UsageSummaryPanel.tsx`, `TelemetryFrame.tsx`, `TokenUsagePanel.tsx`, `TaskUsagePanel.tsx`, `ByUserPanel.tsx`, `RecentTasksPanel.tsx` | `web/test/dashboard-summary.test.ts`, `web/test/panels.render.test.tsx`, `web/test/dashboard-telemetry.test.tsx`, `web/test/recent-tasks.render.test.tsx` |
-| Chart marks, axes, scales | `web/src/charts/BarChart.tsx`, `Axes.tsx`, `scale.ts` | `web/test/bar-chart.test.tsx` |
+| Chart marks, axes, scales | `web/src/charts/BarChart.tsx`, `Axes.tsx`, `scale.ts` | `web/test/bar-chart.test.tsx`, `web/test/dashboard.dom.test.tsx` |
 
 ## Invariants
 

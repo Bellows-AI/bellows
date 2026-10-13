@@ -8,7 +8,7 @@ import { TaskActivity } from '../src/panels/TaskActivity.js';
  * The task activity summary (issues #339, #530): the latest run's pulse by token type, and the
  * thread's counts, as ONE button that opens the statistics modal. Props in, markup out — the hook
  * is the page's. The modal's open interaction (click, Enter, Space, Escape, focus return) lives in
- * `e2e/task-detail.spec.ts`; effects and portals never run under `renderToStaticMarkup`.
+ * `web/test/task-detail.dom.test.tsx`; effects and portals never run under `renderToStaticMarkup`.
  */
 
 const RUN_ID = '11111111-1111-4111-8111-111111111111';

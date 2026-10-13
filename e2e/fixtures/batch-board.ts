@@ -1,12 +1,11 @@
 import type { Page, Route } from '@playwright/test';
-import type { BatchRecord, BatchSummary, BatchTaskState } from '../../web/src/batch-model.js';
+import type { BatchRecord, BatchSummary } from '../../web/src/batch-model.js';
 
 /**
  * A stand-in for the board's scheduler on the open e2e board, where no driver runs a task: it
- * answers the batch routes from held records, so a spec moves a batch on by patching task states
- * the way the real scheduler would, and the buttons the page presses (start, retry, accept,
- * cancel) mutate the held record the way the board's own store does. It judges nothing the
- * page does not ask for — the browser under test is the only thing being verified.
+ * answers the batch routes from held records, and the start the page presses mutates the held
+ * record the way the board's own store does. It judges nothing the page does not ask for — the
+ * browser under test is the only thing being verified.
  *
  * A route this does not hold falls through to the real board, so a draft is created and saved
  * against the real API and only adopted here once it exists.
@@ -14,8 +13,6 @@ import type { BatchRecord, BatchSummary, BatchTaskState } from '../../web/src/ba
 
 const HTTP_OK = 200;
 const HTTP_NOT_FOUND = 404;
-
-export type TaskPatch = Partial<Omit<BatchTaskState, 'key'>>;
 
 const summaryOf = (record: BatchRecord): BatchSummary => ({
     id: record.id,
@@ -52,16 +49,6 @@ export class BatchBoard {
         return record;
     }
 
-    /** What the scheduler would write: task states and the active stage. */
-    update(id: string, tasks: Record<string, TaskPatch>, activeStage?: string | null): void {
-        const record = this.held(id);
-        this.records.set(id, {
-            ...record,
-            ...(activeStage === undefined ? {} : { activeStage }),
-            tasks: record.tasks.map((task) => ({ ...task, ...(tasks[task.key] ?? {}) })),
-        });
-    }
-
     private mutate(id: string, change: (record: BatchRecord) => BatchRecord): BatchRecord {
         const next = change(this.held(id));
         this.records.set(id, next);
@@ -71,7 +58,7 @@ export class BatchBoard {
     private async handle(route: Route): Promise<void> {
         const request = route.request();
         const url = new URL(request.url());
-        // `/api/batches/<id>/<action>[/<task>/<action>]`
+        // `/api/batches/<id>/<action>`
         const [, , id, ...rest] = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
         const method = request.method();
         if (id === undefined) {
@@ -89,7 +76,7 @@ export class BatchBoard {
 
     private answer(id: string, method: string, rest: string[], body: { version?: number; plan?: BatchRecord['plan'] }) {
         const now = new Date().toISOString();
-        const [action, taskKey, taskAction] = rest;
+        const [action] = rest;
         if (method === 'GET') return this.held(id);
         if (method === 'PUT') {
             const next = this.mutate(id, (record) => ({
@@ -108,35 +95,6 @@ export class BatchBoard {
                 startedAt: now,
                 activeStage: record.plan.stages[0]?.key ?? null,
                 tasks: record.tasks.map((task) => ({ ...task, execution: 'pending' })),
-            }));
-        }
-        if (action === 'cancel') {
-            return this.mutate(id, (record) => ({
-                ...record,
-                cancelledAt: now,
-                tasks: record.tasks.map((task) =>
-                    ['queued', 'running', 'pending', 'retry'].includes(task.execution)
-                        ? { ...task, execution: 'cancelled' }
-                        : task
-                ),
-            }));
-        }
-        if (action === 'tasks' && taskAction === 'retry') {
-            return this.mutate(id, (record) => ({
-                ...record,
-                tasks: record.tasks.map((task) =>
-                    task.key === taskKey
-                        ? { ...task, execution: 'queued', gate: 'open', waitReason: null, attempt: task.attempt + 1 }
-                        : task
-                ),
-            }));
-        }
-        if (action === 'tasks' && taskAction === 'accept') {
-            return this.mutate(id, (record) => ({
-                ...record,
-                tasks: record.tasks.map((task) =>
-                    task.key === taskKey ? { ...task, gate: 'passed', waitReason: null } : task
-                ),
             }));
         }
         throw new Error(`the fake board has no answer for ${method} ${rest.join('/')} (${HTTP_NOT_FOUND})`);

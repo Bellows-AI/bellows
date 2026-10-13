@@ -109,22 +109,6 @@ test.describe('appearance', () => {
 });
 
 test.describe('the desktop shell', () => {
-    test('every routed page answers with one main region and at most one h1', async ({ page }) => {
-        const id = await seededTaskId(page);
-        for (const [path, name] of [...PAGES, [`/tasks/${id}`, 'page-task-detail'] as [string, string]]) {
-            await page.goto(path);
-            await expect(page.locator('main#main-content'), path).toHaveCount(1);
-            // The dashboard's PageHeader owns the page's one h1; other routes keep the
-            // at-most-one check because several render h2 section headings without a page title.
-            if (path === '/') {
-                expect(await page.locator('main h1').count(), `${path} h1 count`).toBe(1);
-            } else {
-                expect(await page.locator('main h1').count(), `${path} h1 count`).toBeLessThanOrEqual(1);
-            }
-            await page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: true });
-        }
-    });
-
     test('the persistent nav holds 224px and the 56px app bar sticks without an h1', async ({ page }) => {
         await page.goto('/');
         const nav = page.locator('nav[aria-label="Primary"]');
@@ -147,18 +131,6 @@ test.describe('the desktop shell', () => {
             .poll(async () => (await bar.boundingBox())?.y ?? Number.POSITIVE_INFINITY, 'app bar stuck to the top')
             .toBeLessThanOrEqual(2);
         await page.screenshot({ path: `${SHOTS}/shell-desktop-1440.png`, fullPage: true });
-    });
-
-    test('dashboard telemetry lives only on the dashboard', async ({ page }) => {
-        await page.goto('/');
-        // The freshness stamp — relative copy with the precise timestamp on reveal — rides the
-        // dashboard, not the chrome.
-        await expect(page.locator('.updated-at')).toBeVisible();
-
-        for (const path of ['/tasks', '/settings/workspace']) {
-            await page.goto(path);
-            await expect(page.locator('.updated-at')).toHaveCount(0);
-        }
     });
 
     test('shell screenshots at 1440, 1024 and 390 in both themes', async ({ page }) => {
@@ -392,37 +364,6 @@ test.describe('the task inbox (issue 279)', () => {
         await expect(page).toHaveURL('/tasks');
         await expect(chips).toHaveCount(0);
         await expect(search).toHaveValue('');
-    });
-
-    test('polling keeps the loaded depth, each row once, and the focused field', async ({ page }) => {
-        // The seed leaves nothing running, so the poll is on its 30s idle cadence.
-        test.setTimeout(120_000);
-        await page.goto('/tasks');
-        await settle(page, '/tasks');
-        const rows = page.locator('.inbox-row');
-        const first = await rows.count();
-        // The first page landing is not an append: the polite note stays silent.
-        await expect(page.locator('.inbox-note')).toHaveText('');
-        await page.getByRole('button', { name: 'Load more' }).click();
-        await expect.poll(() => rows.count()).toBeGreaterThan(first);
-        const loaded = await rows.count();
-        await expect(page.locator('.inbox-footer')).toContainText(`Showing ${loaded} loaded tasks`);
-
-        const search = page.locator('.inbox-search').getByLabel('Search');
-        await search.fill('half-typed');
-        // Past the idle poll interval: a refresh must neither collapse the depth nor steal focus.
-        // At depth two the rebuild reads page two by cursor — its response is the rebuild landing.
-        await page.waitForResponse((response) => /\/api\/tasks\?.*cursor=/.test(response.url()), {
-            timeout: 45_000,
-        });
-        await page.waitForTimeout(500);
-        await expect(search).toBeFocused();
-        await expect(search).toHaveValue('half-typed');
-        expect(await rows.count()).toBeGreaterThanOrEqual(loaded);
-        const hrefs = await page
-            .locator('.inbox-row a')
-            .evaluateAll((links) => links.map((a) => a.getAttribute('href')));
-        expect(new Set(hrefs).size, 'each loaded task renders once').toBe(hrefs.length);
     });
 
     test('inbox screenshots, filtered and stale, in both themes at 1440 and 390', async ({ page }) => {

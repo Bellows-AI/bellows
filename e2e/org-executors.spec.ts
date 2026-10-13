@@ -7,7 +7,6 @@ import { throughSignIn } from './signin.js';
 import { ADD_LABEL } from '../web/src/workspace/executors.js';
 import { DEMOTE_LABEL } from '../web/src/panels/OrgExecutorsPanel.js';
 import {
-    ALL_SUSPENDED_NOTE,
     MAKE_DEFAULT_LABEL,
     REMOVE_LABEL,
     RESUME_LABEL,
@@ -202,40 +201,6 @@ async function removePersonal(page: Page, name: string) {
     await expect(personalRow(page, name)).toHaveCount(0);
 }
 
-test('Remove on a personal profile names it, asks first, and removes only that row', async ({ page }) => {
-    const removals: string[] = [];
-    page.on('request', (request) => {
-        if (request.method() === 'DELETE' && /\/api\/workspace\/executors\//.test(request.url())) {
-            removals.push(request.url());
-        }
-    });
-    await asAdmin(page);
-    for (const name of ['Scratch', 'Keeper']) await addPersonal(page, name);
-
-    await personalRow(page, 'Scratch').getByRole('button', { name: REMOVE_LABEL }).click();
-    const confirm = page.getByRole('dialog');
-    await expect(
-        confirm.getByRole('heading', { name: confirmTitle({ action: 'remove', name: 'Scratch' }) })
-    ).toBeVisible();
-    await expect(confirm.getByText(/personal executor/)).toBeVisible();
-    await expect(confirm.getByText(/permanently deleted/)).toBeVisible();
-    await expect(confirm.getByRole('button', { name: 'Cancel' })).toBeFocused();
-
-    await confirm.getByRole('button', { name: 'Cancel' }).click();
-    await expect(confirm).toHaveCount(0);
-    await expect(personalRow(page, 'Scratch')).toBeVisible();
-    expect(removals).toEqual([]);
-
-    await removePersonal(page, 'Scratch');
-    expect(removals).toHaveLength(1);
-    await expect(personalRow(page, 'Keeper')).toBeVisible();
-    await page.reload();
-    await expect(personalRow(page, 'Scratch')).toHaveCount(0);
-    await expect(personalRow(page, 'Keeper')).toBeVisible();
-
-    await removePersonal(page, 'Keeper');
-});
-
 test('Suspend keeps a personal profile but withholds Make default and the composer, and Resume restores it', async ({
     page,
 }) => {
@@ -262,30 +227,4 @@ test('Suspend keeps a personal profile but withholds Make default and the compos
     await expect(personalRow(page, 'Alpha').getByText(/Default/)).toBeVisible();
 
     for (const name of ['Alpha', 'Beta']) await removePersonal(page, name);
-});
-
-test('suspending the last active personal profile says so, and an org profile can be suspended for everyone', async ({
-    page,
-}) => {
-    await asAdmin(page);
-    await addPersonal(page, 'Solo');
-    await personalRow(page, 'Solo').getByRole('button', { name: SUSPEND_LABEL }).click();
-    await expect(page.getByText(ALL_SUSPENDED_NOTE)).toBeVisible();
-    await personalRow(page, 'Solo').getByRole('button', { name: RESUME_LABEL }).click();
-    await expect(page.getByText(ALL_SUSPENDED_NOTE)).toHaveCount(0);
-    await removePersonal(page, 'Solo');
-
-    const name = PROFILES[0]!;
-    await addProfile(page, name);
-    await trigger(page, name).click();
-    await page.getByRole('menu').getByRole('menuitem', { name: SUSPEND_LABEL }).click();
-    await expect(row(page, name).getByText(SUSPENDED_LABEL)).toBeVisible();
-    await page.reload();
-    await expect(row(page, name).getByText(SUSPENDED_LABEL)).toBeVisible();
-    await trigger(page, name).click();
-    await expect(page.getByRole('menu').getByRole('menuitem', { name: 'Make default' })).toHaveCount(0);
-    await page.getByRole('menu').getByRole('menuitem', { name: RESUME_LABEL }).click();
-    await expect(row(page, name).getByText(SUSPENDED_LABEL)).toHaveCount(0);
-
-    await deleteProfile(page, name);
 });

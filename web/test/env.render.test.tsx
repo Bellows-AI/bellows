@@ -6,12 +6,12 @@ import { EnvVarsPanel } from '../src/panels/EnvVarsPanel.js';
 import { AdvancedEnvEditor } from '../src/panels/env-vars-panel-parts.js';
 
 /**
- * The env draft editor, server-render-tested by markup assertions — the repo's suite has no DOM,
- * so this file holds everything REACHABLE from props: roles, relationships, counts, labels,
- * masking and the save button's clean-state posture. Every INTERACTION state — pending removal
- * and Undo, a typed secret's Will replace, a new row's Not set, an open advanced editor, the
- * save lifecycle itself — is decided by the pure layer in `env-draft.ts` (pinned by
- * `env-draft.test.ts`) and exercised end to end by `e2e/env.spec.ts`.
+ * The env draft editor, server-render-tested by markup assertions — this file holds everything
+ * REACHABLE from props: roles, relationships, counts, labels, masking and the save button's
+ * clean-state posture. Every INTERACTION state — pending removal and Undo, a typed secret's Will
+ * replace, a new row's Not set, an open advanced editor, the save lifecycle itself — is decided by
+ * the pure layer in `env-draft.ts` (pinned by `env-draft.test.ts`) and driven under jsdom by
+ * `env.dom.test.tsx`.
  */
 
 /** The same contract panels.render.test.tsx pins: a placeholder never leaks into the markup. */

@@ -10,7 +10,7 @@ the batch contract: [../batches.md](../batches.md).
 | Draft: save, check launch, start | `web/src/panels/BatchDraft.tsx`, `web/src/api/useBatches.ts` | `web/test/batch-pages.render.test.tsx`, `e2e/batches.spec.ts` |
 | Draft form: stages, parallel tasks, policies, per-field issues | `web/src/panels/BatchEditor.tsx`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts` |
 | Inherited versus overridden, shown before launch | `web/src/panels/BatchPlanReview.tsx`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts`, `e2e/batches.spec.ts` |
-| Monitor: stage rows, task cards, human gate, retry, accept, report | `web/src/panels/BatchMonitor.tsx` | `web/test/batch-pages.render.test.tsx`, `e2e/batches.spec.ts` |
+| Monitor: stage rows, task cards, human gate, retry, accept, report | `web/src/panels/BatchMonitor.tsx` | `web/test/batch-pages.render.test.tsx`, `web/test/batch-detail.dom.test.tsx` |
 | Verdict, task state labels, retry eligibility, morning report | `web/src/batch-model.ts` | `web/test/batch-model.test.ts` |
 | Task page backlink | `web/src/components/BatchBacklink.tsx`, `server/src/routes/batch-handlers.ts` (`?task=`) | `server/test/routes.batches.test.ts`, `e2e/batches.spec.ts` |
 | Sidenav item | `web/src/nav-model.ts` | `web/test/nav-model.test.ts` |

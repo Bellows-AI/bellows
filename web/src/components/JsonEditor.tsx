@@ -35,6 +35,12 @@ export interface JsonEditorProps {
     describedBy: string;
 }
 
+/** The leading whitespace of the caret's line, up to the caret — the indent Enter carries. */
+export function indentAt(value: string, caret: number): string {
+    const lineStart = value.lastIndexOf('\n', caret - 1) + 1;
+    return /^[ \t]*/.exec(value.slice(lineStart, caret))![0];
+}
+
 export function JsonEditor({ id, value, onChange, invalid, describedBy }: JsonEditorProps) {
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const gutterRef = useRef<HTMLDivElement>(null);
@@ -64,8 +70,7 @@ export function JsonEditor({ id, value, onChange, invalid, describedBy }: JsonEd
         if (event.nativeEvent.isComposing) return;
         const input = event.currentTarget;
         const { selectionStart, selectionEnd } = input;
-        const lineStart = value.lastIndexOf('\n', selectionStart - 1) + 1;
-        const indent = /^[ \t]*/.exec(value.slice(lineStart, selectionStart))![0];
+        const indent = indentAt(value, selectionStart);
         event.preventDefault();
         // insertText goes through the browser's own editing, so undo still steps back over it and
         // over everything typed before; only where it is refused does the value get replaced.
