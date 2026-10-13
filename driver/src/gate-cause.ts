@@ -15,19 +15,23 @@ const ANSI = /\u001b\[[0-9;]*m/g;
 const SUMMARY_LINE = /^\s*(Tests|Test Files)\s/;
 const PASSED = /\b\d+ passed\b/;
 const FAILED = /\b\d+ failed\b/;
+const ERRORS = /^\s*Errors\s+(\d+) errors?\b/;
+const WORKER_TIMEOUT = /\[vitest-worker\]: Timeout calling/g;
 
 /**
- * Whether vitest's summary says every test and file passed — so a non-zero exit came from the
- * runner (worker timeouts, `Errors N`), not an assertion. The summary is the last thing printed,
- * so it survives the tail the board keeps even when the errors above it do not.
+ * Whether vitest's summary says every test and file passed, and every error it counted is its own
+ * worker timing out under load (`[vitest-worker]: Timeout calling …`). Any other non-zero exit with
+ * every test passed — an unhandled error the diff throws, a coverage threshold, a command chained
+ * after the suite — is the change's, so it stays `verification`.
  */
-function everyTestPassed(output: string): boolean {
-    const summary = output
-        .replace(ANSI, '')
-        .split('\n')
-        .filter((line) => SUMMARY_LINE.test(line));
+function onlyWorkerTimeouts(output: string): boolean {
+    const lines = output.replace(ANSI, '').split('\n');
+    const summary = lines.filter((line) => SUMMARY_LINE.test(line));
     const tests = summary.find((line) => /^\s*Tests\s/.test(line));
-    return tests !== undefined && PASSED.test(tests) && !summary.some((line) => FAILED.test(line));
+    if (tests === undefined || !PASSED.test(tests) || summary.some((line) => FAILED.test(line))) return false;
+    const errors = lines.map((line) => ERRORS.exec(line)).find((match) => match !== null);
+    if (!errors) return false;
+    return (output.match(WORKER_TIMEOUT)?.length ?? 0) >= Number(errors[1]);
 }
 
 /**
@@ -38,5 +42,5 @@ function everyTestPassed(output: string): boolean {
  */
 export function gateCauseOf(failure: { exitCode: number; output: string }): FailureCause {
     if (ENVIRONMENT_EXITS.includes(failure.exitCode)) return 'environment';
-    return everyTestPassed(failure.output) ? 'environment' : 'verification';
+    return onlyWorkerTimeouts(failure.output) ? 'environment' : 'verification';
 }

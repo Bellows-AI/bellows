@@ -2,13 +2,35 @@ import { describe, expect, it } from 'vitest';
 import { gateCauseOf } from '../src/gate-cause.js';
 import { causeOf, ledgerOf } from '../src/loop-ledger.js';
 
-/** vitest's tail after 80 `[vitest-worker]` timeouts: every test passed, the runner still exited 1. */
-const WORKER_TIMEOUTS = [
+const WORKER_TIMEOUT_ERROR = 'Error: [vitest-worker]: Timeout calling "onTaskUpdate" with "[]"';
+const passedSummary = (errors: number) =>
+    [
+        ' Test Files  412 passed (412)',
+        '      Tests  5603 passed (5603)',
+        `     Errors  ${errors} error${errors === 1 ? '' : 's'}`,
+        '   Duration  1204.55s',
+    ].join('\n');
+/** vitest after two `[vitest-worker]` timeouts: every test passed, the runner still exited 1. */
+const WORKER_TIMEOUTS = [WORKER_TIMEOUT_ERROR, WORKER_TIMEOUT_ERROR, passedSummary(2)].join('\n');
+/** Every test passed, but the diff's code threw outside a test: the change's fault. */
+const UNHANDLED_ERROR = [
+    'Unhandled Rejection',
+    'TypeError: Cannot read properties of undefined',
+    passedSummary(1),
+].join('\n');
+/** One worker timeout beside an error the diff threw: not only the environment. */
+const MIXED_ERRORS = [WORKER_TIMEOUT_ERROR, 'TypeError: Cannot read properties of undefined', passedSummary(2)].join(
+    '\n'
+);
+const COVERAGE_THRESHOLD = [
     ' Test Files  412 passed (412)',
     '      Tests  5603 passed (5603)',
-    '     Errors  80 errors',
-    '   Duration  1204.55s',
+    'ERROR: Coverage for lines (71.2%) does not meet global threshold (80%)',
 ].join('\n');
+/** `npm test && npm run lint`: the suite passed, the lint after it failed. */
+const CHAINED_LINT = [' Test Files  412 passed (412)', '      Tests  5603 passed (5603)', 'lint/style/useConst'].join(
+    '\n'
+);
 const FAILING_ASSERTION = [
     ' FAIL  core/test/metrics.test.ts > sums',
     'AssertionError: expected 3 to be 4',
@@ -38,6 +60,10 @@ describe('gateCauseOf (issue #653)', () => {
         ['a test file that failed to load', 1, FILE_FAILED_TO_LOAD],
         ['output with no test summary', 1, 'error TS2322: Type string is not assignable to type number'],
         ['a lint failure', 2, 'src/a.ts:1:1 lint/style/useConst'],
+        ['an unhandled error with every test passed', 1, UNHANDLED_ERROR],
+        ['a worker timeout beside an unhandled error', 1, MIXED_ERRORS],
+        ['a coverage threshold miss with every test passed', 1, COVERAGE_THRESHOLD],
+        ['a command chained after a passing suite', 1, CHAINED_LINT],
     ])('keeps %s a verification failure', (_name, exitCode, output) => {
         expect(gateCauseOf({ exitCode, output })).toBe('verification');
     });
