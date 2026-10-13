@@ -1016,8 +1016,17 @@ describe('the gate server: a repeat while the forward is in flight (issue #226)'
 
         const first = post();
         while (calls === 0) await new Promise((resolve) => setTimeout(resolve, 1));
+        // The server parses a POST body synchronously before it joins an in-flight id, so the first
+        // parse of this body after `first` is the repeat having reached the server: a fact, not a sleep.
+        const parse = vi.spyOn(JSON, 'parse');
         const repeat = post();
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        try {
+            while (!parse.mock.calls.some(([text]) => text === body)) {
+                await new Promise((resolve) => setTimeout(resolve, 1));
+            }
+        } finally {
+            parse.mockRestore();
+        }
         fail(new Error('board unreachable'));
 
         expect((await first).status).toBe(500);

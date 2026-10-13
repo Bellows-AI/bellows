@@ -70,7 +70,8 @@ describe('the executor dialog', () => {
     it('adds an executor through guided setup, with no JSON typed', async () => {
         const board = settingsBoard();
         stubFetch(boardHandler(board));
-        const user = userEvent.setup();
+        // No inter-action timer: each step below waits on the element or request it needs, not on wall time.
+        const user = userEvent.setup({ delay: null });
         renderApp('/settings/executors');
 
         // The page's scope sentence and the panel's guidance, asserted against the constants they render.
