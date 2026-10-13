@@ -43,6 +43,7 @@ function matchHeredoc(command, i) {
     const strip = command[j] === '-';
     if (strip) j += 1;
     while (command[j] === ' ' || command[j] === '\t') j += 1;
+    const word = j;
     let delim = '';
     let literal = false;
     while (j < command.length && !/[\s;&|<>()]/.test(command[j])) {
@@ -62,7 +63,8 @@ function matchHeredoc(command, i) {
             j += 1;
         }
     }
-    return delim ? { delim, literal, strip, end: j } : null;
+    // A quoted empty word (`<<''`) is a delimiter, the empty line; no word at all is none.
+    return j > word ? { delim, literal, strip, end: j } : null;
 }
 
 // At j: a `#` that starts a word opens a comment — after a blank or an operator that is not itself
@@ -106,9 +108,19 @@ function readHeredocs(command, start, docs) {
         const lines = [];
         for (;;) {
             if (pos >= command.length) return null;
-            const nl = command.indexOf('\n', pos);
-            const line = command.slice(pos, nl === -1 ? command.length : nl);
-            pos = nl === -1 ? command.length : nl + 1;
+            let line = '';
+            // An unquoted body joins a backslash-newline before the terminator check, as bash does.
+            for (;;) {
+                const nl = command.indexOf('\n', pos);
+                const piece = command.slice(pos, nl === -1 ? command.length : nl);
+                pos = nl === -1 ? command.length : nl + 1;
+                const escapes = piece.length - piece.replace(/\\+$/, '').length;
+                if (doc.literal || nl === -1 || escapes % 2 === 0) {
+                    line += piece;
+                    break;
+                }
+                line += piece.slice(0, -1);
+            }
             if ((doc.strip ? line.replace(/^\t+/, '') : line) === doc.delim) break;
             lines.push(line);
         }
@@ -294,14 +306,16 @@ function segmentsOf(command, depth) {
             i = end + 1;
             continue;
         }
-        const sub = matchSubstitution(command, i);
+        // Inside double quotes `<(` is literal text; only `$(` and a backtick still expand.
+        const opens = c !== '<' || !inDouble;
+        const sub = opens ? matchSubstitution(command, i) : null;
         if (sub) {
             subs.push(sub.body);
             outer += '""';
             i = sub.end;
             continue;
         }
-        if ((c === '$' || c === '<') && command[i + 1] === '(') return { ok: false };
+        if (opens && (c === '$' || c === '<') && command[i + 1] === '(') return { ok: false };
         if (!inDouble) {
             const comment = commentEnd(command, i);
             if (comment !== -1) {
@@ -725,6 +739,16 @@ const CASES = [
     ['deny', 'cat <<.\n<<EOF\n.\ngit switch main\nEOF'],
     ['deny', 'cat <<\ngit switch main'],
     ['allow', "cat <<1\nit's\n1"],
+    // An empty quoted word is a delimiter too: the body ends at the first empty line.
+    ['allow', "git commit -F - <<''\nit's a message\n\n"],
+    ['deny', "cat <<''\nit's\n\ngit switch main"],
+    // An unquoted body joins a backslash-newline before the terminator check; a quoted one does not.
+    ['deny', 'git commit -F - <<EOF\nE\\\nOF\ngit switch main\nEOF'],
+    ['allow', "git commit -F - <<'EOF'\nE\\\nOF\ngit switch main\nEOF"],
+    // `<(` inside double quotes is literal text, no process substitution.
+    ['allow', 'git commit -m "<("'],
+    ['allow', 'echo "<(git switch main)"'],
+    ['deny', 'cat <(git switch main)'],
     // An escaped blank starts no word, so the `#` after it is text and what follows runs.
     ['deny', 'echo \\ #; git switch main'],
     ['deny', 'echo $(echo \\ #; git switch main)'],
