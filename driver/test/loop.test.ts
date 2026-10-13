@@ -1365,6 +1365,42 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.output).toContain(reason);
     });
 
+    // Issue #661: a conflict the sync left in the tree is not a refusal — the agent runs, with the
+    // conflicting paths appended to the turn context the board sent.
+    it('starts the run with the conflicting paths in its turn context when the sync leaves a conflict', async () => {
+        const board = stubBoard([{ ...job(1), turnContext: 'Factory turn context' }]);
+        let seen: string | undefined;
+        const runner = stubRunner(
+            async (j) => {
+                seen = j.turnContext;
+                return ok();
+            },
+            { sync: { ok: true, reason: null, conflicts: ['src/a.ts', 'src/b.ts'] } }
+        );
+
+        await drive({ ...board, runner });
+
+        expect(seen).toContain('Factory turn context');
+        expect(seen).toContain('- src/a.ts\n- src/b.ts');
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+    });
+
+    it('leaves the turn context alone when the sync found no conflict', async () => {
+        const board = stubBoard([{ ...job(1), turnContext: 'Factory turn context' }]);
+        let seen: string | undefined;
+        const runner = stubRunner(
+            async (j) => {
+                seen = j.turnContext;
+                return ok();
+            },
+            { sync: { ok: true, reason: null } }
+        );
+
+        await drive({ ...board, runner });
+
+        expect(seen).toBe('Factory turn context');
+    });
+
     it('reports the verdict untouched when the reclaim refuses, and logs the reason', async () => {
         const logs: string[] = [];
         const board = stubBoard([job(1)], { threadDone: true });

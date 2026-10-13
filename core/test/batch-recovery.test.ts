@@ -113,6 +113,27 @@ describe('planRecovery', () => {
         ).toEqual(spent);
     });
 
+    // Issue #661: a sync conflict reaches the agent and a publish over an unresolved one reports
+    // cause `conflict`, so it spends `repairs` and never `infraRetries`; `runner_error` would not.
+    it('routes a conflict to the repairs budget, never the infra budget', () => {
+        const conflict = classifyTaskFailure({
+            status: 'failed',
+            failureKind: 'publish',
+            failureCause: 'conflict',
+            unansweredQuestion: false,
+        });
+        const noInfra = { infraRetries: 0, repairs: 1 };
+
+        expect(planRecovery({ failure: conflict, used: { infra: 0, repairs: 0 }, budgets: noInfra })).toEqual({
+            action: 'repair',
+        });
+        expect(planRecovery({ failure: conflict, used: { infra: 0, repairs: 1 }, budgets: noInfra })).toEqual({
+            action: 'attention',
+            reason: ATTENTION_BUDGET,
+        });
+        expect(failed('runner_error')).toEqual({ kind: 'infra' });
+    });
+
     it('passes an attention classification through untouched', () => {
         expect(
             planRecovery({

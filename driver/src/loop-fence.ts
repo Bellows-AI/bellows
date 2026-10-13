@@ -8,7 +8,7 @@
 import { down } from './loop-attempt.js';
 import { withBoardRetry } from './board-retry.js';
 import type { BoardJob } from './board.js';
-import type { SyncResult } from './publish.js';
+import { withConflictContext, type SyncResult } from './publish.js';
 import type { AttemptCtx, LoopRuntime, SetupHalt } from './loop-types.js';
 import { report } from './loop-verdict.js';
 
@@ -22,6 +22,14 @@ export async function handBackFence(ctx: AttemptCtx): Promise<void> {
     if (!ctx.fenced) return;
     ctx.fenced = false;
     await ctx.rt.runner.releaseFence?.(ctx.job);
+}
+
+/**
+ * A conflict the sync left in the tree reaches the agent through this attempt's turn context, which
+ * the runner reads from the job at launch (master-prompt.ts); a sync with none changes nothing.
+ */
+export function handOverConflict(job: BoardJob, synced: SyncResult): void {
+    if (synced.conflicts?.length) job.turnContext = withConflictContext(job.turnContext, synced.conflicts);
 }
 
 /**

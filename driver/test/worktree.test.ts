@@ -57,19 +57,15 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
         );
     });
 
-    it('answers a conflicted rebase with a reason and never leaves the worktree mid-rebase', () => {
+    it('answers a conflicted rebase with its paths and leaves the rebase stopped for the agent', () => {
         expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'README.md', 'task rewrites the readme\n', 'conflicting task commit');
         fx.pushToOrigin('README.md', 'upstream rewrites the readme\n', 'conflicting upstream commit');
 
-        const result = fx.sync();
-        expect(result.ok).toBe(false);
-        expect(result.reason).toContain('rebased onto');
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null, conflicts: ['README.md'] });
 
-        // No rebase in progress: the next attempt (or the agent) finds a tree, not a trap.
-        const gitDir = git(fx.worktree(), 'rev-parse', '--git-dir');
-        expect(existsSync(join(gitDir, 'rebase-merge'))).toBe(false);
-        expect(existsSync(join(gitDir, 'rebase-apply'))).toBe(false);
+        const gitDir = git(fx.worktree(), 'rev-parse', '--absolute-git-dir');
+        expect(existsSync(join(gitDir, 'rebase-merge'))).toBe(true);
     });
 
     it('replaces garbage at the worktree path instead of failing forever', () => {
@@ -131,16 +127,14 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
     it('keeps the uncommitted edits when the autostash rebase conflicts with upstream', () => {
         // The nastiest legitimate state: upstream rewrote the very file the agent has mid-edit.
         // The rebase itself succeeds and git exits 0 even though the reapplied STASH conflicts —
-        // the script must catch the unmerged entries and refuse, leaving the tree (and the
-        // stash git kept) for recovery instead of running on conflict markers.
+        // the script must catch the unmerged entries and hand them over (issue #661), leaving the
+        // tree (and the stash git kept) for the agent instead of refusing the run.
         expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'TASK.md', 'task work\n', 'the task commit');
         writeFileSync(join(fx.worktree(), 'README.md'), 'an agent was here\n');
         fx.pushToOrigin('README.md', 'upstream rewrites the readme\n', 'conflicting upstream commit');
 
-        const result = fx.sync();
-        expect(result.ok).toBe(false);
-        expect(result.reason).toContain('conflict');
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null, conflicts: ['README.md'] });
         // The edit survived, as conflict markers in the tree, and the autostash is retained.
         expect(readFileSync(join(fx.worktree(), 'README.md'), 'utf8')).toContain('an agent was here');
         expect(git(fx.worktree(), 'stash', 'list')).toContain('autostash');
@@ -252,6 +246,8 @@ describe.skipIf(!hasGit())('the publish probe script', () => {
             unpushed: 0,
             hasIdentity: false,
             fingerprint: null,
+            conflicts: [],
+            rebasing: false,
         });
         // The constant is the file — asserting the executed path is the artifact (parity with
         // the loader is pinned in scripts.test.ts).

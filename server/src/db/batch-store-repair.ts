@@ -122,7 +122,12 @@ export function failedAttentionReason(
 ): string {
     let detail: string | undefined;
     if (reason === ATTENTION_QUESTION) detail = 'a question of this run was never answered';
-    if (reason === ATTENTION_BUDGET) detail = 'no automatic attempts left';
+    if (reason === ATTENTION_BUDGET) {
+        detail =
+            head.failure_cause === 'conflict'
+                ? 'a merge conflict is still unresolved and no repairs are left'
+                : 'no automatic attempts left';
+    }
     if (reason === ATTENTION_UNCLASSIFIED && head.failure_kind !== null) {
         detail = `${head.failure_kind} (cause ${head.failure_cause ?? 'not recorded'})`;
     }

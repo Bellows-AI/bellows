@@ -4657,6 +4657,8 @@ describe('publishing the produced work', () => {
             unpushed: 2,
             hasIdentity: false,
             fingerprint: null,
+            conflicts: [],
+            rebasing: false,
         });
         expect(parseGitState('{"cloned":true,"fingerprint":"abc:def"}').fingerprint).toBe('abc:def');
         expect(parseGitState('')).toEqual({
@@ -4667,6 +4669,8 @@ describe('publishing the produced work', () => {
             unpushed: 0,
             hasIdentity: false,
             fingerprint: null,
+            conflicts: [],
+            rebasing: false,
         });
     });
 

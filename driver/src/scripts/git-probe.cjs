@@ -60,6 +60,7 @@ const fingerprintOf = (cwd) => {
         return null;
     }
 };
+const CONFLICTING_PATHS_MAX = 50;
 const out = {
     cloned: false,
     branch: '',
@@ -68,6 +69,8 @@ const out = {
     unpushed: 0,
     hasIdentity: false,
     fingerprint: null,
+    conflicts: [],
+    rebasing: false,
 };
 try {
     const git = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' }).trim();
@@ -86,6 +89,15 @@ try {
         out.unpushed = 0;
     }
     out.fingerprint = fingerprintOf(repo);
+    // A tree the agent left conflicted, or a rebase it left stopped, is not publishable work.
+    out.conflicts = git('diff', '--name-only', '--diff-filter=U')
+        .split('\n')
+        .filter(Boolean)
+        .slice(0, CONFLICTING_PATHS_MAX);
+    out.rebasing = ['rebase-merge', 'rebase-apply'].some((name) => {
+        const resolved = git('rev-parse', '--git-path', name);
+        return require('node:fs').existsSync(require('node:path').resolve(repo, resolved));
+    });
     out.hasIdentity = (() => {
         try {
             return git('config', 'user.email').length > 0;
