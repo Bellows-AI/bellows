@@ -98,6 +98,54 @@ function arithmeticEnd(command, j) {
     return -1;
 }
 
+// At i: a `${…}` parameter expansion, where `<<` and `#` are text, never a heredoc or a comment.
+// Returns { text, subs, end } — text the span with each substitution as `""`, subs their bodies,
+// end one past the first unquoted `}` (bash counts no bare braces, only a nested `${`) — -1 when
+// this is no expansion, or null when it never closes.
+function parameterEnd(command, i) {
+    if (!command.startsWith('${', i)) return -1;
+    let text = '${';
+    const subs = [];
+    let inDouble = false;
+    let j = i + 2;
+    while (j < command.length) {
+        const d = command[j];
+        if (d === '\\') {
+            text += command.slice(j, j + 2);
+            j += 2;
+            continue;
+        }
+        if (d === "'" && !inDouble) {
+            const close = command.indexOf("'", j + 1);
+            if (close === -1) return null;
+            text += command.slice(j, close + 1);
+            j = close + 1;
+            continue;
+        }
+        if (d === '"') inDouble = !inDouble;
+        const param = parameterEnd(command, j);
+        if (param === null) return null;
+        if (param !== -1) {
+            text += param.text;
+            subs.push(...param.subs);
+            j = param.end;
+            continue;
+        }
+        const sub = d !== '<' || !inDouble ? matchSubstitution(command, j) : null;
+        if (sub) {
+            subs.push(sub.body);
+            text += '""';
+            j = sub.end;
+            continue;
+        }
+        if (command[j + 1] === '(' && (d === '$' || (d === '<' && !inDouble))) return null;
+        text += d;
+        j += 1;
+        if (d === '}' && !inDouble) return { text, subs, end: j };
+    }
+    return null;
+}
+
 // From start (the line after the one that opened them), the bodies of the pending heredocs in
 // order. Returns { bodies, end } — end past the last terminator line — or null when a terminator
 // is missing: a body that never ends cannot be told apart from the commands after it.
@@ -182,6 +230,12 @@ function matchSubstitution(command, i) {
             if (d === '"') {
                 inDouble = !inDouble;
                 j += 1;
+                continue;
+            }
+            const param = parameterEnd(command, j);
+            if (param === null) return null;
+            if (param !== -1) {
+                j = param.end;
                 continue;
             }
             const nested = d === '$' || d === '`' || (d === '<' && !inDouble) ? matchSubstitution(command, j) : null;
@@ -304,6 +358,14 @@ function segmentsOf(command, depth) {
             if (end === -1) return { ok: false };
             outer += command.slice(i, end + 1);
             i = end + 1;
+            continue;
+        }
+        const param = parameterEnd(command, i);
+        if (param === null) return { ok: false };
+        if (param !== -1) {
+            subs.push(...param.subs);
+            outer += param.text;
+            i = param.end;
             continue;
         }
         // Inside double quotes `<(` is literal text; only `$(` and a backtick still expand.
@@ -742,6 +804,14 @@ const CASES = [
     // An empty quoted word is a delimiter too: the body ends at the first empty line.
     ['allow', "git commit -F - <<''\nit's a message\n\n"],
     ['deny', "cat <<''\nit's\n\ngit switch main"],
+    // Inside `${…}` a `<<` or `#` is text, no heredoc or comment; its substitutions still run.
+    ['deny', "echo ${x:-<<'' }\ngit switch main\n\n"],
+    ['deny', 'echo ${x:-<<EOF }\ngit switch main\nEOF'],
+    ['deny', 'echo ${x:- #}; git switch main'],
+    ['deny', 'echo $(echo ${x:-<<EOF }\ngit switch main\nEOF\n)'],
+    ['deny', 'echo ${x:-$(git switch main)}'],
+    ['deny', 'echo ${x:-<<EOF'],
+    ['allow', "echo ${x:-default} <<'EOF'\nit's\nEOF"],
     // An unquoted body joins a backslash-newline before the terminator check; a quoted one does not.
     ['deny', 'git commit -F - <<EOF\nE\\\nOF\ngit switch main\nEOF'],
     ['allow', "git commit -F - <<'EOF'\nE\\\nOF\ngit switch main\nEOF"],
