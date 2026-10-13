@@ -1,5 +1,6 @@
 /**
- * Empty the synthetic-data tables verify:ui is about to reseed.
+ * Empty every table verify:ui is about to reseed and drive, so a local run starts from the same
+ * state as CI's new database.
  *
  * The seed is additive (`on conflict do nothing`) and every run generates fresh session ids, so
  * without this the databases accumulate one generator window per run: the "All time" range grows
@@ -7,6 +8,11 @@
  * failure that looks like a UI bug and is really six months of stacked synthetic Marches. The
  * config comment promises every run reads exactly what this run's generator produces; the TRUNCATE
  * below is what keeps that promise true. It runs before the seed, which runs before any server.
+ *
+ * Specs write rows too, and the auth board keeps them: an org's first materialized membership
+ * lands `admin`, so a membership left by the previous run turns the next run's sign-in into a
+ * `member` and fails a first-member assertion. Hence the whole schema rather than the seed's
+ * tables — only the migration ledger survives, so the schema is not re-applied over itself.
  *
  * The same disposable-name rule as the seed's guard, one step earlier — this script deletes, so
  * it refuses louder.
@@ -34,17 +40,16 @@ if (!DISPOSABLE.test(name)) {
 
 const sql = postgres(url, { max: 1 });
 try {
-    // The three tables the seed writes, including dependent rows such as job_artifact through
-    // CASCADE. The disposable-name guard above bounds every deletion to test data. A database that
-    // has never been seeded has none of them yet — "nothing to reset" is success, not an error.
-    for (const table of ['metric_point', 'session_branch', 'job']) {
-        try {
-            await sql.unsafe(`truncate table ${table} cascade`);
-        } catch (e) {
-            if (e?.code !== '42P01') throw e;
-        }
-    }
-    console.log(`[reset-db] ${name}: synthetic tables truncated`);
+    // The disposable-name guard above bounds every deletion to test data. A database that has
+    // never been migrated has no tables yet — "nothing to reset" is success, not an error.
+    const tables = (
+        await sql`
+            select tablename from pg_tables
+            where schemaname = current_schema() and tablename <> 'schema_migrations'
+        `
+    ).map((row) => row.tablename);
+    if (tables.length) await sql`truncate table ${sql(tables)} restart identity cascade`;
+    console.log(`[reset-db] ${name}: ${tables.length} tables truncated`);
 } finally {
     await sql.end();
 }
