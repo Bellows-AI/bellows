@@ -474,11 +474,32 @@ export function taskPreviewColumnsFragment(sql: Sql): Fragment {
 
 /**
  * A thread that backs a batch task is the batch's history and a completed stage's evidence
- * (docs/batches.md): marking it done, removing it, reopening it or closing it on a PR merge would
- * rewrite what the batch already decided, or block the task's retry. The batch's retry and cancel
- * are the sanctioned paths.
+ * (docs/batches.md): removing it, reopening it or closing it on a PR merge would rewrite what the
+ * batch already decided, or block the task's retry. The batch's retry and cancel are the sanctioned
+ * paths; done is `batchThreadState`'s.
  */
 export async function backsBatchTask(tx: TransactionSql, orgId: string, rootJobId: string): Promise<boolean> {
     const rows = await tx`select 1 from batch_task where org_id = ${orgId} and root_job_id = ${rootJobId}`;
     return rows.length > 0;
+}
+
+/**
+ * Whether Done may close a batch task's thread: null when no task backs it, `closed` once the
+ * batch ended (completed, cancelled or expired) or a person force-closed the task — nothing will
+ * retry it — and `live` otherwise, where Done would block the task's retry (docs/batches.md).
+ */
+export async function batchThreadState(
+    tx: TransactionSql,
+    orgId: string,
+    rootJobId: string
+): Promise<'closed' | 'live' | null> {
+    const [row] = await tx<{ closed: boolean }[]>`
+        select (b.completed_at is not null or b.cancelled_at is not null or b.expired_at is not null
+                or t.closed_at is not null) as closed
+        from batch_task t
+        join batch b on b.org_id = t.org_id and b.id = t.batch_id
+        where t.org_id = ${orgId} and t.root_job_id = ${rootJobId}
+    `;
+    if (!row) return null;
+    return row.closed ? 'closed' : 'live';
 }

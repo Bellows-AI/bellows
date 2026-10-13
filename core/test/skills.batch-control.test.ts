@@ -82,6 +82,13 @@ describe('the batch-control skill', () => {
         expect(skill).toContain('means wait again');
     });
 
+    it('reads a force-closed task, and confirms before forcing one (#676)', () => {
+        expect(skill).toContain('`cancel` —');
+        const force = skill.slice(skill.indexOf('## 6. Cancel'));
+        expect(force).toContain('npm run dev -w cli -- job done <job> --force');
+        expect(force).toContain('Confirm with the user');
+    });
+
     it('confirms with the user before start and cancel, and never merges or answers on its own', () => {
         const start = skill.slice(skill.indexOf('## 3. Start'));
         expect(start).toMatch(/^## 3\. Start\n\nConfirm with the user/);

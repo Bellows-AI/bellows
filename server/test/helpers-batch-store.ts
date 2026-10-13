@@ -4,6 +4,7 @@ import {
     GATE_PASSED,
     holdsSlot,
     isRetryable,
+    TASK_CANCELLED,
     TASK_RETRY,
     TASK_SUCCEEDED,
     type BatchPlan,
@@ -56,6 +57,7 @@ export function memoryBatchStore(): MemoryBatchStore {
                 gate: 'open',
                 waitReason: null,
                 attention: null,
+                closedAt: null,
                 rootJobId: null,
                 attempt: 0,
             }))
@@ -225,6 +227,16 @@ export function memoryBatchStore(): MemoryBatchStore {
                     agentTurns: 0,
                 },
             };
+        },
+        async closeTask(jobId, closedBy) {
+            for (const [id, batch] of batches) {
+                const task = batch.tasks.find((candidate) => candidate.rootJobId === jobId);
+                if (!task) continue;
+                if (!(task.execution === TASK_SUCCEEDED && task.gate === GATE_PASSED)) task.execution = TASK_CANCELLED;
+                writes.push(`close:${task.key}:${closedBy}`);
+                return { batchId: id, task: task.key, pr: null, doneAt: new Date().toISOString() };
+            }
+            return null;
         },
         expire(id) {
             const batch = batches.get(id)!;

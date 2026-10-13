@@ -179,14 +179,15 @@ function buildOrgStores({
         // transaction as the verdict (and cancel/remove sweep the thread's waits).
         prs,
     });
-    // Batches (059, 060): dispatch creates task roots in the job table and settles a cancelled
-    // batch through the job store's own stop.
+    // Batches (059, 060): dispatch creates task roots in the job table, settles a cancelled
+    // batch through the job store's own stop and closes an ended batch's threads through its Done.
     // The attempt record names the target's head commit, resolved from the installation when there is one.
     const batches = createBatchStore({
         sql,
         orgId,
         ready,
         stop: (id, by) => jobs.stop(id, by),
+        close: (id, by) => jobs.markDone(id, by),
         ...(client ? { revisionOf: (repo: string, branch: string) => client.readBranchHead(repo, branch) } : {}),
     });
     // The PR observer (063): reads the org's installation, records merges through the job store and

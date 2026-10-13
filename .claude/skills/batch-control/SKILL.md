@@ -126,6 +126,8 @@ what `next.action` says and nothing else:
   `job`), confirm with the user, then `npm run dev -w cli -- batch retry <id> <task>`
   (`POST /api/batches/<id>/tasks/<task>/retry`). A configuration failure needs the configuration
   fixed, not a retry.
+- `cancel` — a person force-closed this required task (it reads `cancelled by a person`), so its
+  stage cannot advance: tell the user, and cancel the batch (section 6) on their word.
 - `wait` — the board is still on it, recovery included; go back to section 4.
 - `new_batch` — the batch is fenced; the remaining work needs a new plan.
 
@@ -140,6 +142,16 @@ npm run dev -w cli -- batch cancel <id>                                         
 ```
 
 Cancel fences first, then stops moving tasks; merges that land afterwards are still recorded.
+A batch that ends — completed, cancelled or expired — marks every task thread done.
+
+To drop one task instead, force-close its thread. Confirm with the user, quoting the task key:
+
+```bash
+npm run dev -w cli -- job done <job> --force                                         # POST /api/jobs/<job>/done {"force": true}
+```
+
+It stops the run and cancels the task for good — no retry, no repair; its PR stays open. A required
+task then holds its stage until the batch is cancelled; an optional one lets the stage go on.
 
 ## Reporting back
 

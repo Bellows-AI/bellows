@@ -1,5 +1,6 @@
 import type {
     ArtifactPage,
+    BatchThreadClosed,
     BoardJobRecord,
     BoardTaskPage,
     ConnectionView,
@@ -50,8 +51,12 @@ export function renderStopped(stopped: JobStopped): string {
 }
 
 /** The answer to a done: the user's stamp, beside the run's own untouched verdict. */
-export function renderDone(done: JobDone): string {
-    return `done ${done.doneAt ?? DASH} ${done.id} (run ${done.status})`;
+export function renderDone(done: JobDone | BatchThreadClosed): string {
+    if (!('batch' in done)) return `done ${done.doneAt ?? DASH} ${done.id} (run ${done.status})`;
+    const closed = done.doneAt ? `done ${done.doneAt}` : 'stopping — done once the run settles';
+    const pr = done.pr ? `; PR left open: ${done.pr}` : '';
+    const fate = done.outcome === 'kept' ? 'kept its outcome' : 'cancelled';
+    return `${closed} ${done.id}: batch ${done.batch} task ${done.task} ${fate}${pr}`;
 }
 
 /** The answer to a reopen: the task is open to a follow-up again. */

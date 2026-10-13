@@ -68,6 +68,7 @@ interface TaskRow {
     gate: string;
     wait_reason: string | null;
     attention: string | null;
+    closed_at: Date | null;
     attempt: number;
 }
 
@@ -157,7 +158,7 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
             select t.key, t.stage_key, t.target_key, t.executor, t.executor_scope, t.objective, t.acceptance,
                    t.verification,
                    t.required, t.completion_kind, t.completion_condition, t.root_job_id, t.execution,
-                   t.pr, t.gate, t.wait_reason, t.attention,
+                   t.pr, t.gate, t.wait_reason, t.attention, t.closed_at,
                    (select coalesce(max(a.attempt), 0)::int from batch_attempt a
                     where a.org_id = t.org_id and a.batch_id = t.batch_id and a.task_key = t.key) as attempt
             from batch_task t
@@ -196,6 +197,7 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
             gate: task.gate,
             waitReason: task.wait_reason,
             attention: task.attention,
+            closedAt: task.closed_at ? task.closed_at.toISOString() : null,
             rootJobId: task.root_job_id,
             attempt: task.attempt,
         })),

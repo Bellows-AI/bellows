@@ -580,6 +580,43 @@ describe('factory job done', () => {
         expect(out.join('')).toContain('2026-09-29T13:02:00.000Z');
         expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/done');
         expect(calls[0]!.method).toBe('POST');
+        expect(calls[0]!.body).toBeUndefined();
+    });
+
+    it('force-closes a live batch thread with --force and names the PR it left open (#676)', async () => {
+        const { out, calls, io } = harness(ENV, () =>
+            json(
+                {
+                    id: 'job-1',
+                    batch: 'b1',
+                    task: 'a',
+                    outcome: 'cancelled',
+                    pr: 'https://github.com/o/r/pull/7',
+                    doneAt: null,
+                },
+                202
+            )
+        );
+
+        const code = await run(['job', 'done', 'job-1', '--force'], io);
+
+        expect(code).toBe(0);
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/done');
+        expect(calls[0]!.body).toEqual({ force: true });
+        const text = out.join('');
+        expect(text).toContain('batch b1 task a cancelled');
+        expect(text).toContain('https://github.com/o/r/pull/7');
+        expect(text).toContain('settles');
+    });
+
+    it('does not call a task cancelled when it kept its outcome', async () => {
+        const { out, io } = harness(ENV, () =>
+            json({ id: 'job-1', batch: 'b1', task: 'a', outcome: 'kept', pr: null, doneAt: '2026-10-13T12:00:00.000Z' })
+        );
+        expect(await run(['job', 'done', 'job-1', '--force'], io)).toBe(0);
+        const text = out.join('');
+        expect(text).toContain('batch b1 task a kept its outcome');
+        expect(text).not.toContain('cancelled');
     });
 });
 

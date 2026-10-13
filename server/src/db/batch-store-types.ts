@@ -40,6 +40,8 @@ export interface BatchTaskState {
     waitReason: string | null;
     /** Why the task needs a person (core's ATTENTION_REASONS), or null. */
     attention: string | null;
+    /** When a person force-closed the task's thread while the batch ran, or null. */
+    closedAt: string | null;
     rootJobId: string | null;
     /** Launches of the task's thread so far: 0 until dispatched, then one per retry. */
     attempt: number;
@@ -160,6 +162,9 @@ export interface BatchReportTask {
     remaining: { infraRetries: number; repairs: number };
     attention: string | null;
     waitReason: string | null;
+    /** When a person force-closed the task's thread while the batch ran, and who; null otherwise. */
+    closedAt: string | null;
+    closedBy: string | null;
     pr: string | null;
     /** The task's thread, as the board's job path. */
     job: string | null;
@@ -225,7 +230,7 @@ export interface BatchStore {
      * Null when the batch is missing or still a draft.
      */
     reconcile(id: string): Promise<BatchProgress | null>;
-    /** `reconcile` over every started, unfinished batch of this org. */
+    /** `reconcile` over every started batch of this org with work to schedule, stop or a thread to close. */
     reconcileOpen(): Promise<void>;
     /**
      * Fences the batch against scheduling, retries and advancement, then settles its active tasks
@@ -238,4 +243,23 @@ export interface BatchStore {
     report(id: string): Promise<BatchReport | null>;
     /** Records a person's acceptance of a finished `accepted`-completion task, passing its gate. */
     accept(id: string, taskKey: string, acceptedBy: string | null): Promise<{ result: 'ok' } | BatchAcceptRefusal>;
+    /**
+     * A person's force-close of the batch task a thread backs: cancels the task (an accepted one
+     * keeps its outcome), stops the thread and marks it done once it settles. Null when no task
+     * backs the thread.
+     */
+    closeTask(jobId: string, closedBy: string | null): Promise<BatchTaskClosed | null>;
+}
+
+/**
+ * A force-close's answer: the task, whether it was `cancelled` or `kept` its outcome (already
+ * accepted, or its batch ended first), its PR left open, and the thread's done stamp — null while
+ * its run settles.
+ */
+export interface BatchTaskClosed {
+    batchId: string;
+    task: string;
+    outcome: 'cancelled' | 'kept';
+    pr: string | null;
+    doneAt: string | null;
 }

@@ -7,6 +7,8 @@ import { claimDue, commitObservation } from '../src/db/batch-store-observation.j
 import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
+import { createOrgRegistry } from '../src/orgs.js';
+import { testConfig } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -31,7 +33,12 @@ beforeAll(async () => {
     sql = db.sql;
     prs = createPrLifecycleStore({ sql, orgId: ORG });
     jobs = createJobStore({ sql, orgId: ORG, prs });
-    store = createBatchStore({ sql, orgId: ORG, stop: (id, by) => jobs.stop(id, by) });
+    store = createBatchStore({
+        sql,
+        orgId: ORG,
+        stop: (id, by) => jobs.stop(id, by),
+        close: (id, by) => jobs.markDone(id, by),
+    });
 });
 
 const task = (key: string, extra: Record<string, unknown> = {}) => ({
@@ -467,6 +474,292 @@ describe.skipIf(!enabled)('batch threads are batch history', () => {
     });
 });
 
+/** The done stamp of a thread's head: the run the task lists bucket by. */
+const doneAtOf = async (root: string) =>
+    (await sql<{ done_at: Date | null }[]>`select done_at from job where id = ${(await headOf(root)).id}`)[0]!.done_at;
+
+const listed = async (state: 'review' | 'past') =>
+    (await jobs.listTasks({ state, sort: 'newest', limit: 50 })).page.items.map((item) => item.id);
+
+/** The head runs under a live lease, so a stop is only requested and the worker settles it later. */
+const runUnderLease = async (root: string) => {
+    const head = await headOf(root);
+    await sql`
+        update job set status = 'running', claimed_by = 'w1', started_at = now(), lease_token = ${randomUUID()},
+            lease_expires_at = now() + interval '10 minutes'
+        where id = ${head.id}
+    `;
+};
+
+/** The worker honours a requested stop: the head parks `stopped`, as suspend does. */
+const settleStopped = async (root: string) => {
+    const head = await headOf(root);
+    await sql`
+        update job set status = 'stopped', finished_at = now(), lease_token = null, cancel_requested_at = null
+        where id = ${head.id}
+    `;
+};
+
+/** A store with no `close`: the board as it ran before batches closed their threads. */
+const unclosingStore = () => createBatchStore({ sql, orgId: ORG, stop: (id, by) => jobs.stop(id, by) });
+
+describe.skipIf(!enabled)('a finished batch closes its threads', () => {
+    it('marks every thread done when the batch completes, so review drops them and past shows them', async () => {
+        const id = await frozen(plan([{ key: 'only', tasks: [task('a'), task('b')] }]));
+        await store.reconcile(id);
+        const { a, b } = await stateOf(id);
+        for (const root of [a!.rootJobId!, b!.rootJobId!]) await setStatus(root, 'succeeded');
+        await store.accept(id, 'a', ALICE);
+        expect(await doneAtOf(a!.rootJobId!)).toBeNull();
+        await store.accept(id, 'b', ALICE);
+
+        expect((await store.get(id))!.completedAt).not.toBeNull();
+        for (const root of [a!.rootJobId!, b!.rootJobId!]) {
+            expect(await doneAtOf(root)).not.toBeNull();
+            expect(await listed('past')).toContain(root);
+            expect(await listed('review')).not.toContain(root);
+        }
+    });
+
+    it('closes a cancelled batch’s threads once their stopped heads settle', async () => {
+        const id = await frozen(parallelThenJoin());
+        await store.reconcile(id);
+        const { a, b } = await stateOf(id);
+        await setStatus(a!.rootJobId!, 'failed');
+        await runUnderLease(b!.rootJobId!);
+
+        await store.cancel(id, ALICE);
+        expect(await doneAtOf(a!.rootJobId!)).not.toBeNull();
+        // Still running under its lease: the stop is requested and the thread stays open until it lands.
+        expect((await headOf(b!.rootJobId!)).status).toBe('running');
+        expect(await doneAtOf(b!.rootJobId!)).toBeNull();
+
+        await settleStopped(b!.rootJobId!);
+        await store.reconcileOpen();
+        expect(await doneAtOf(b!.rootJobId!)).not.toBeNull();
+    });
+
+    it('closes an expired batch’s threads', async () => {
+        const { clock, store: timed } = clockedStore();
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }], { timeLimitMinutes: 1 }), timed);
+        await timed.reconcile(id);
+        const { a } = await stateOf(id);
+        await setStatus(a!.rootJobId!, 'succeeded');
+        await timed.reconcile(id);
+        expect(await doneAtOf(a!.rootJobId!)).toBeNull();
+
+        clock.ms += 120_000;
+        await timed.reconcile(id);
+        expect(await doneAtOf(a!.rootJobId!)).not.toBeNull();
+    });
+
+    it('closes the threads of a batch that was already finished, on the boot reconcile', async () => {
+        const before = unclosingStore();
+        const id = await frozen(plan([{ key: 'only', tasks: [task('a')] }]), before);
+        await before.reconcile(id);
+        const { a } = await stateOf(id);
+        await setStatus(a!.rootJobId!, 'succeeded');
+        await before.accept(id, 'a', ALICE);
+        expect((await store.get(id))!.completedAt).not.toBeNull();
+        expect(await doneAtOf(a!.rootJobId!)).toBeNull();
+
+        await store.reconcileOpen();
+        expect(await doneAtOf(a!.rootJobId!)).not.toBeNull();
+        // Once every thread is closed the batch says so, and later sweeps skip it.
+        await store.reconcileOpen();
+        const [batch] = await sql`select threads_closed_at from batch where id = ${id}`;
+        expect(batch!.threads_closed_at).not.toBeNull();
+    });
+
+    it('takes a plain done on a finished batch’s thread, refuses it while the batch is live', async () => {
+        const before = unclosingStore();
+        const id = await frozen(plan([{ key: 'only', tasks: [task('a')] }]), before);
+        await before.reconcile(id);
+        const { a } = await stateOf(id);
+        await setStatus(a!.rootJobId!, 'succeeded');
+        expect(await jobs.markDone(a!.rootJobId!, ALICE)).toBe('batch');
+
+        await before.accept(id, 'a', ALICE);
+        expect(await jobs.markDone(a!.rootJobId!, ALICE)).toMatchObject({ status: 'succeeded' });
+    });
+
+    it('still refuses to remove or reopen a finished batch’s thread', async () => {
+        const id = await frozen(plan([{ key: 'only', tasks: [task('a')] }]));
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        await setStatus(a!.rootJobId!, 'succeeded');
+        await store.accept(id, 'a', ALICE);
+        expect(await doneAtOf(a!.rootJobId!)).not.toBeNull();
+
+        expect(await jobs.removeThread(a!.rootJobId!, ALICE)).toBe('batch');
+        expect(await jobs.reopen(a!.rootJobId!)).toBe('batch');
+    });
+});
+
+describe.skipIf(!enabled)('force-closing a live batch’s thread', () => {
+    const staged = () =>
+        plan(
+            [
+                { key: 'one', tasks: [task('a'), task('o', { required: false })] },
+                { key: 'two', tasks: [task('j')] },
+            ],
+            3
+        );
+
+    it('stops a required task, closes it, cancels it as that person’s and holds its stage', async () => {
+        const id = await frozen(staged());
+        await store.reconcile(id);
+        const { a, o } = await stateOf(id);
+
+        const closed = await store.closeTask(a!.rootJobId!, ALICE);
+        expect(closed).toMatchObject({ batchId: id, task: 'a', pr: null, outcome: 'cancelled' });
+        expect(closed!.doneAt).not.toBeNull();
+        expect((await headOf(a!.rootJobId!)).status).toBe('stopped');
+        expect(await doneAtOf(a!.rootJobId!)).not.toBeNull();
+
+        let tasks = await stateOf(id);
+        expect(tasks.a!.execution).toBe('cancelled');
+        expect(tasks.a!.waitReason).toContain('cancel the batch');
+        // Siblings keep running, and the batch itself is not cancelled.
+        expect(tasks.o!.execution).toBe('queued');
+        expect((await store.get(id))!.cancelledAt).toBeNull();
+
+        await setStatus(o!.rootJobId!, 'succeeded');
+        await store.accept(id, 'o', ALICE);
+        tasks = await stateOf(id);
+        expect(tasks.j!.execution).toBe('pending');
+        expect(await decisions(id)).not.toContain('advance:one');
+
+        // Never retried or repaired: no pass and no person's retry launches it again.
+        expect(await store.retry(id, 'a')).toEqual({ result: 'not_retryable' });
+        await store.reconcile(id);
+        expect(await kindsOf('a', id)).toEqual(['launch']);
+
+        const report = (await store.report(id))!;
+        expect(report.tasks.find((t) => t.key === 'a')).toMatchObject({
+            execution: 'cancelled',
+            closedBy: ALICE,
+            next: { action: 'cancel', path: `/api/batches/${id}/cancel` },
+        });
+        expect(report.tasks.find((t) => t.key === 'a')!.closedAt).not.toBeNull();
+        expect(report.tasks.find((t) => t.key === 'o')).toMatchObject({ closedAt: null, closedBy: null });
+    });
+
+    it('lets an optional task’s stage go on without it', async () => {
+        const id = await frozen(staged());
+        await store.reconcile(id);
+        const { a, o } = await stateOf(id);
+        await setStatus(o!.rootJobId!, 'failed');
+        await store.reconcile(id);
+
+        const closed = await store.closeTask(o!.rootJobId!, ALICE);
+        expect(closed!.doneAt).not.toBeNull();
+        expect((await stateOf(id)).o).toMatchObject({ execution: 'cancelled', waitReason: null });
+
+        await setStatus(a!.rootJobId!, 'succeeded');
+        await store.accept(id, 'a', ALICE);
+        expect((await stateOf(id)).j!.execution).toBe('queued');
+        expect(await kindsOf('o', id)).toEqual(['launch']);
+    });
+
+    it('answers before a run under a live lease settles, and closes the thread once it does', async () => {
+        const id = await frozen(staged());
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        await runUnderLease(a!.rootJobId!);
+
+        const closed = await store.closeTask(a!.rootJobId!, ALICE);
+        expect(closed).toMatchObject({ task: 'a', doneAt: null, outcome: 'cancelled' });
+        // Still moving: it keeps its slot until the stop lands.
+        expect((await stateOf(id)).a!.execution).toBe('running');
+        const [head] = await sql`select cancel_requested_at from job where id = ${(await headOf(a!.rootJobId!)).id}`;
+        expect(head!.cancel_requested_at).not.toBeNull();
+
+        await settleStopped(a!.rootJobId!);
+        await store.reconcileOpen();
+        expect(await doneAtOf(a!.rootJobId!)).not.toBeNull();
+        expect((await stateOf(id)).a!.execution).toBe('cancelled');
+        expect(await kindsOf('a', id)).toEqual(['launch']);
+    });
+
+    it('keeps a force-closed task’s slot until its run settles, so a sibling waits under concurrency 1', async () => {
+        const id = await frozen(plan([{ key: 'one', tasks: [task('a'), task('b', { required: false })] }], 1));
+        await store.reconcile(id);
+        const first = Object.values(await stateOf(id)).find((t) => t.execution === 'queued')!;
+        const second = first.key === 'a' ? 'b' : 'a';
+        await runUnderLease(first.rootJobId!);
+
+        await store.closeTask(first.rootJobId!, ALICE);
+        await store.reconcile(id);
+        expect((await stateOf(id))[second]!.execution).toBe('pending');
+        expect(await jobCount()).toBe(1);
+        expect((await store.report(id))!.state).toBe('running');
+
+        await settleStopped(first.rootJobId!);
+        await store.reconcileOpen();
+        expect((await stateOf(id))[second]!.execution).toBe('queued');
+    });
+
+    it('closes an accepted task’s thread and leaves its outcome alone', async () => {
+        const id = await frozen(staged());
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        await setStatus(a!.rootJobId!, 'succeeded');
+        await store.accept(id, 'a', ALICE);
+
+        const closed = await store.closeTask(a!.rootJobId!, ALICE);
+        expect(closed).toMatchObject({ outcome: 'kept' });
+        expect(closed!.doneAt).not.toBeNull();
+        expect((await stateOf(id)).a).toMatchObject({ execution: 'succeeded', gate: 'passed', waitReason: null });
+    });
+
+    it('keeps the outcome of a task whose batch ended before the force landed', async () => {
+        const before = unclosingStore();
+        const id = await frozen(plan([{ key: 'only', tasks: [task('a')] }]), before);
+        await before.reconcile(id);
+        const { a } = await stateOf(id);
+        await setStatus(a!.rootJobId!, 'failed');
+        await before.cancel(id, ALICE);
+
+        const closed = await store.closeTask(a!.rootJobId!, ALICE);
+        expect(closed).toMatchObject({ outcome: 'kept' });
+        expect(closed!.doneAt).not.toBeNull();
+        expect((await stateOf(id)).a!.execution).toBe('failed');
+    });
+
+    it('is wired to the job store’s Done on the board’s own org runtime', async () => {
+        const config = testConfig();
+        const registry = createOrgRegistry({ sql, ready: Promise.resolve(), config, withStores: true });
+        const runtime = (await registry.for(ORG))!;
+        const board = runtime.batches!;
+        const id = await frozen(plan([{ key: 'only', tasks: [task('a')] }]), board);
+        await board.reconcile(id);
+        const { a } = await stateOf(id);
+        await setStatus(a!.rootJobId!, 'succeeded');
+        await board.accept(id, 'a', ALICE);
+        expect(await doneAtOf(a!.rootJobId!)).not.toBeNull();
+    });
+
+    it('names the task’s open PR and leaves it open', async () => {
+        const id = await frozen(plan([{ key: 'one', tasks: [prTask('a')] }]));
+        await store.reconcile(id);
+        const { a } = await stateOf(id);
+        await setStatus(a!.rootJobId!, 'succeeded');
+        const number = await publish(a!.rootJobId!);
+        await store.reconcile(id);
+
+        const closed = await store.closeTask(a!.rootJobId!, ALICE);
+        expect(closed).toMatchObject({ task: 'a', pr: prUrlOf(REPO, number) });
+        expect((await stateOf(id)).a!.execution).toBe('cancelled');
+    });
+
+    it('answers null for a thread no batch task backs', async () => {
+        const ref = await jobs.create('echo', ALICE, { repo: null, executor: null });
+        if (typeof ref === 'string') throw new Error(ref);
+        expect(await store.closeTask(ref.id, ALICE)).toBeNull();
+    });
+});
+
 const REPO = 'acme/web';
 let nextPr = 1000;
 
@@ -628,6 +921,7 @@ function clockedStore() {
             sql,
             orgId: ORG,
             stop: (id, by) => jobs.stop(id, by),
+            close: (id, by) => jobs.markDone(id, by),
             now: () => new Date(clock.ms),
         }),
     };

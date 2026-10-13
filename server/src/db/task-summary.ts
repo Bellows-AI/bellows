@@ -12,7 +12,7 @@ import type { TaskBucket, TaskListFilters, TaskListResponse, TaskState, TaskSumm
  */
 
 /** The terminal set: the statuses a run ends with. `dead` is the board's verdict, never a worker's. */
-const TERMINAL: readonly JobStatus[] = ['succeeded', 'failed', 'dead', 'stopped'];
+export const TERMINAL_STATUSES: readonly JobStatus[] = ['succeeded', 'failed', 'dead', 'stopped'];
 
 /**
  * The bucket of a task whose newest run has `status` and the user's done stamp `doneAt` — the
@@ -31,7 +31,7 @@ export function taskBucket(
     waitReason: string | null,
     waitTerminalReason: string | null
 ): TaskBucket {
-    const terminal = TERMINAL.includes(status) || (waitReason !== null && waitTerminalReason === null);
+    const terminal = TERMINAL_STATUSES.includes(status) || (waitReason !== null && waitTerminalReason === null);
     return terminal ? (doneAt === null ? 'review' : 'past') : 'running';
 }
 

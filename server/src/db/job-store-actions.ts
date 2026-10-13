@@ -7,6 +7,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
 import {
     backsBatchTask,
+    batchThreadState,
     exists,
     queueReclaimIfThreadDone,
     stopRows,
@@ -14,6 +15,7 @@ import {
     hasRunningMember,
 } from './job-store-rows.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
+import { TERMINAL_STATUSES } from './task-summary.js';
 import { stopReviewsOf } from './job-store-reviews.js';
 import { type IdempotencyInput, replayOf, stampKey } from './job-store-idempotency.js';
 import type { EditCommandResult, JobStore, JobStoreContext, JobStatus } from './job-store-types.js';
@@ -480,16 +482,17 @@ export async function markJobDone(
         // could decide against a thread whose done it could not see. It also serializes done
         // against remove and reopen, which row-locking alone never did.
         await tx`select pg_advisory_xact_lock(hashtextextended(${named.root_job_id}::text, 0))`;
-        // A batch task's thread is closed by the batch, never by Done: Done would block the task's
-        // retry and queue the reclaim of the tree that retry runs in.
-        if (await backsBatchTask(tx, orgId, named.root_job_id)) return 'batch';
+        // A live batch task's thread is closed by the batch, never by a plain Done: Done would block
+        // the task's retry and queue the reclaim of the tree that retry runs in. Once the batch ended
+        // or a person force-closed the task, nothing retries it and Done closes it.
+        if ((await batchThreadState(tx, orgId, named.root_job_id)) === 'live') return 'batch';
         // coalesce, not assignment: the second "done" answers the first one's instant,
         // which is what makes the route idempotent rather than silently rewriting history.
         // done_by rides the same rule: the first writer's actor survives a retried click.
         const rows = await tx<{ status: JobStatus; done_at: Date; root_job_id: string }[]>`
             update job set done_at = coalesce(done_at, now()), done_by = coalesce(done_by, ${doneBy})
             where org_id = ${orgId} and id = ${id}
-              and status in ('succeeded','failed','dead','stopped')
+              and status in ${tx([...TERMINAL_STATUSES])}
             returning status, done_at, root_job_id
         `;
         const row = rows[0];

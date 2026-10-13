@@ -42,6 +42,8 @@ export interface BatchTaskState {
     pr: string;
     gate: string;
     waitReason: string | null;
+    /** When a person force-closed the task's thread while the batch ran, or null. */
+    closedAt?: string | null;
     rootJobId: string | null;
 }
 
@@ -69,6 +71,7 @@ export interface BatchRecord {
     /** The fences: once either is set the board starts nothing new for the batch. */
     cancelledAt: string | null;
     expiredAt: string | null;
+    completedAt?: string | null;
     plan: BatchPlanView;
     tasks: BatchTaskState[];
     verification: BatchStageVerification[];
@@ -109,6 +112,9 @@ export interface BatchReportTask {
     remaining: { infraRetries: number; repairs: number };
     attention: string | null;
     waitReason: string | null;
+    /** When a person force-closed the task's thread while the batch ran, and who; null otherwise. */
+    closedAt: string | null;
+    closedBy: string | null;
     pr: string | null;
     job: string | null;
     usage: { wallClockMs: number; agentTurns: number; tokens: number | null };
@@ -185,7 +191,9 @@ export function batchVerdict(batch: BatchRecord): BatchVerdict {
     if (batch.verification.some((stage) => stage.state === VERIFY_FAILED)) return 'needs_attention';
     if (!batch.tasks.every((task) => TASK_TERMINAL.includes(task.execution))) return 'running';
     if (batch.tasks.some((task) => task.execution === TASK_FAILED)) return 'failed';
-    if (batch.tasks.some((task) => task.execution === TASK_CANCELLED)) return 'cancelled';
+    // A task a person force-closed in a batch that still completed was settled by that person.
+    const settledByPerson = (task: BatchTaskState) => task.closedAt != null && batch.completedAt != null;
+    if (batch.tasks.some((task) => task.execution === TASK_CANCELLED && !settledByPerson(task))) return 'cancelled';
     // The last automerge stage's tasks are all done while its verification is still being read.
     if (batch.verification.some((stage) => stage.state !== VERIFY_PASSED)) return 'running';
     return 'succeeded';

@@ -8,10 +8,12 @@ import {
     refusalOf,
     writeResolved,
 } from './batch-store-rows.js';
+import { closeBatchTask } from './batch-store-close.js';
 import { readReport } from './batch-store-report.js';
 import {
     acceptBatchTask,
     cancelBatch,
+    type CloseThread,
     reconcileBatch,
     reconcileOpenBatches,
     retryBatchTask,
@@ -34,6 +36,7 @@ export function createBatchStore({
     orgId,
     ready,
     stop,
+    close,
     revisionOf,
     now,
 }: {
@@ -42,6 +45,8 @@ export function createBatchStore({
     ready?: Promise<unknown>;
     /** The job store's stop, which settles a cancelled batch's moving tasks. */
     stop?: StopThread;
+    /** The job store's Done, which closes an ended batch's threads and a force-closed task's. */
+    close?: CloseThread;
     /** Resolves a target branch's head commit for the attempt record; absent records none. */
     revisionOf?: RevisionOf;
     /** The clock the time limit and the retry backoff are read against; production leaves it unset. */
@@ -50,7 +55,7 @@ export function createBatchStore({
     const gate = async () => {
         if (ready) await ready;
     };
-    const deps = { sql, orgId, stop, revisionOf, now };
+    const deps = { sql, orgId, stop, close, revisionOf, now };
 
     return {
         async create(plan, createdBy, idempotency) {
@@ -169,6 +174,11 @@ export function createBatchStore({
         async accept(id, taskKey, acceptedBy) {
             await gate();
             return acceptBatchTask(deps, id, taskKey, acceptedBy);
+        },
+
+        async closeTask(jobId, closedBy) {
+            await gate();
+            return closeBatchTask(deps, jobId, closedBy);
         },
     };
 }

@@ -1,4 +1,4 @@
-import { BATCH_DRAFT, batchVerdict, VERIFY_FAILED } from './batch.js';
+import { BATCH_DRAFT, batchVerdict, TASK_CANCELLED, VERIFY_FAILED } from './batch.js';
 import type {
     BatchNextAction,
     BatchPlanView,
@@ -144,8 +144,11 @@ const nextOf = (next: BatchNextAction): string =>
     [next.action, next.method, next.path ?? next.url].filter((part) => part !== undefined).join(' ');
 
 function renderReportTask(task: BatchReportTask, now: number): string[] {
+    // Cancelled while the batch is live means a person force-closed the task's thread (#676).
+    const execution =
+        task.execution === TASK_CANCELLED && task.closedAt !== null ? 'cancelled by a person' : task.execution;
     const lines = [
-        `  ${task.key} ${task.execution} · gate ${task.gate} · attempts ${task.attempts} ` +
+        `  ${task.key} ${execution} · gate ${task.gate} · attempts ${task.attempts} ` +
             `(infra ${task.infraRetries}, repairs ${task.repairs}, manual ${task.manualRetries}) · ` +
             `remaining infra ${task.remaining.infraRetries}, repairs ${task.remaining.repairs}`,
     ];

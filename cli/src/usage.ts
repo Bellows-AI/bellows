@@ -14,7 +14,7 @@ export const USAGE = `usage: factory job create (<command...> | --file <path> | 
        factory job questions <id> [--json]
        factory job answer <id> <question-id> --answer <text>... [--json]
        factory job stop <id> [--json]
-       factory job done <id> [--json]
+       factory job done <id> [--force] [--json]
        factory job reopen <id> [--json]
        factory job remove <id> --yes [--json]
        factory repo list [--json]          repositories visible to the board, and which are synced
@@ -80,6 +80,10 @@ naming the page that could not be read rather than printing a partial artifact. 
 retry queues a fresh attempt of the task's existing command; follow-up queues NEW instructions.
 edit replaces the command of a queued run you created, in place; the board refuses it once the run
 is claimed. reopen undoes done. The board decides every refusal.
+
+done on a live batch's thread is refused: the batch closes it when it ends. --force closes it now:
+the board stops the run, cancels its batch task (never retried; a required one holds its stage until
+the batch is cancelled) and leaves its PR open.
 
 A question's --answer values go one per prompt, in the order \`job questions\` lists them: an
 option's label, or free text (a multi-select joins its picks with ", "). The board is the

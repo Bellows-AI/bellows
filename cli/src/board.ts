@@ -172,6 +172,20 @@ export interface JobDone {
     doneAt: string | null;
 }
 
+/**
+ * A forced done on a live batch's thread: its batch task is `cancelled` (or `kept` its outcome when
+ * already accepted or its batch ended first), the PR it opened is left open, and `doneAt` is null
+ * (a 202) while the stopped run is still settling.
+ */
+export interface BatchThreadClosed {
+    id: string;
+    batch: string;
+    task: string;
+    outcome: 'cancelled' | 'kept';
+    pr: string | null;
+    doneAt: string | null;
+}
+
 /** The 200 body of a queued-command edit: the same run, still queued, with its new command. */
 export interface JobEdited {
     id: string;
@@ -304,7 +318,8 @@ export interface BoardClient extends BatchRoutes {
     editJob(id: string, command: string): Promise<JobEdited>;
     stopJob(id: string): Promise<JobStopped>;
     reopenJob(id: string): Promise<JobReopened>;
-    markDone(id: string): Promise<JobDone>;
+    /** `force` also closes a live batch's thread, cancelling its batch task. */
+    markDone(id: string, force?: boolean): Promise<JobDone | BatchThreadClosed>;
     removeJob(id: string): Promise<JobRemoved>;
     /**
      * A member's answer to one pending question of run `id` (`questionId` is the agent's tool-use
@@ -641,13 +656,20 @@ export function createBoardClient({
             })) as JobReopened;
         },
 
-        // The three actions take no body, so they send no content-type either.
+        // The three actions take no body, so they send no content-type either — a forced done aside.
         async stopJob(id) {
             return (await request(at(`${jobPath(id)}/stop`), { method: 'POST', headers: authHeaders() })) as JobStopped;
         },
 
-        async markDone(id) {
-            return (await request(at(`${jobPath(id)}/done`), { method: 'POST', headers: authHeaders() })) as JobDone;
+        async markDone(id, force = false) {
+            const init = force
+                ? {
+                      method: 'POST',
+                      headers: { ...authHeaders(), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
+                      body: JSON.stringify({ force: true }),
+                  }
+                : { method: 'POST', headers: authHeaders() };
+            return (await request(at(`${jobPath(id)}/done`), init)) as JobDone | BatchThreadClosed;
         },
 
         async removeJob(id) {
