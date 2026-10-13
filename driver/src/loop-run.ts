@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob, VerdictEvidence } from './board.js';
+import { withBoardRetry } from './board-retry.js';
 import { evidenceDecision, evidencePolicyActive, type GatesOutcome, gatesEvidenceOf } from './evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from './runner.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
@@ -159,7 +160,12 @@ async function rereadGatesStep(ctx: AttemptCtx): Promise<SetupConclusion | null>
     const { rt, job, state } = ctx;
     const { board, log } = rt;
 
-    const freshOut = await raceStep(state.signal, board.rereadGates(job, state.signal));
+    // A board restart is seconds of refused connections, not a refusal: retried through, and only
+    // a board that stays unreachable is read as one. A stood-down attempt stops asking.
+    const reread = withBoardRetry(rt, `job ${job.id}: the gates re-read was not answered`, () =>
+        state.signal.aborted ? Promise.resolve(null) : board.rereadGates(job, state.signal)
+    ).catch(() => null);
+    const freshOut = await raceStep(state.signal, reread);
     if (freshOut === null) return STOOD_DOWN;
     const fresh = freshOut.value;
     if (fresh) {
@@ -175,7 +181,7 @@ async function rereadGatesStep(ctx: AttemptCtx): Promise<SetupConclusion | null>
                 status: 'failed',
                 exitCode: null,
                 output:
-                    "The board refused the post-sync .bellows.yaml re-read, and this claim's gates were read from " +
+                    "The board refused or never answered the post-sync .bellows.yaml re-read, and this claim's gates were read from " +
                     'the base clone, not the task worktree — the run will not be gated against a stale declaration.',
                 failureKind: 'runner_error',
             },

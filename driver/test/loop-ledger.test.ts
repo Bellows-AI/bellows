@@ -173,6 +173,15 @@ describe('the fault ledger', () => {
         expect(agentFaults(outcome({ blockedLine: '   ' }))[0]?.note).toContain('no reason given');
     });
 
+    // Seen live (opencode, 2026-10-13): a finished run ended on `FACTORY_BLOCKED: Not blocked`.
+    it('reads a "not blocked" marker as not blocked, and still a real reason that starts with "no"', () => {
+        expect(agentFaults(outcome({ blockedLine: 'Not blocked' }))).toEqual([]);
+        expect(agentFaults(outcome({ output: 'done\nFACTORY_BLOCKED: not blocked — task complete' }))).toEqual([]);
+        expect(
+            agentFaults(outcome({ blockedLine: 'not blocking anything, but no access to the registry' }))[0]?.note
+        ).toBe('the agent reported it is blocked: not blocking anything, but no access to the registry');
+    });
+
     it('reads a "none" marker as not blocked, on either path', () => {
         expect(agentFaults(outcome({ blockedLine: 'none — work complete and committed locally' }))).toEqual([]);
         expect(agentFaults(outcome({ blockedLine: 'None.' }))).toEqual([]);

@@ -401,7 +401,7 @@ describe('rereading the gates after the startup sync', () => {
         });
     });
 
-    it('answers null — keep the claim’s decision — when the board refuses or fails', async () => {
+    it('answers null — keep the claim’s decision — when the board refuses', async () => {
         const lost = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
         expect(
             await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: lost.fetch }).rereadGates(job)
@@ -411,13 +411,20 @@ describe('rereading the gates after the startup sync', () => {
         expect(
             await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: dead.fetch }).rereadGates(job)
         ).toBeNull();
+    });
 
+    it('throws when the board could not answer, so the caller can retry it', async () => {
         const broken = recorder(() => {
             throw new Error('board unreachable');
         });
-        expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: broken.fetch }).rereadGates(job)
-        ).toBeNull();
+        await expect(
+            createBoard({ url: 'http://board', leaseSeconds: 300, fetch: broken.fetch }).rereadGates(job)
+        ).rejects.toThrow('board unreachable');
+
+        const down = recorder(() => new Response('bad gateway', { status: 502 }));
+        await expect(
+            createBoard({ url: 'http://board', leaseSeconds: 300, fetch: down.fetch }).rereadGates(job)
+        ).rejects.toThrow(/answered 502/);
     });
 });
 
@@ -472,9 +479,8 @@ describe('asking for a publish-fresh credential', () => {
 
 describe('asking the board for the orphan reaper lease lookups', () => {
     // Issue #301: one batched worker route, so a reaper sweep is one request per 100 job ids,
-    // not one per object. The driver's whole posture here is the rereadGates contract: null —
-    // a refused, lost, or failed answer — means "board cannot answer", and the reaper reaps
-    // NOTHING on it.
+    // not one per object. Null — a refused, lost, or failed answer — means "board cannot
+    // answer", and the reaper reaps NOTHING on it.
     const ID_A = '11111111-1111-4111-8111-111111111111';
     const ID_B = '44444444-4444-4444-8444-444444444444';
 
