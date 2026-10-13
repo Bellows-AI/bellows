@@ -19,7 +19,7 @@ import { concludeSetup, handBackFence, releaseAbandonedSync, standDown } from '.
 import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import type { HelperFailureReport } from './helpers.js';
-import { TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
+import { SYNC_FAILURE_KINDS, TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
 import { agentFaults, gatesEligible, ledgerOf, postHelperSkipWhy, skipWhyOf } from './loop-ledger.js';
 import {
     askPublishToken,
@@ -140,6 +140,8 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
          */
         return { halt: 'requeue', log: `checkout sync was lock-blocked, requeueing: ${synced.reason}` };
     }
+    // A kind the script named is a refusal no retry fixes: a person acts on it, so it is config.
+    const deterministic = synced.kind !== undefined && SYNC_FAILURE_KINDS.includes(synced.kind);
     return {
         halt: 'fault',
         log: `checkout sync failed: ${synced.reason}`,
@@ -147,7 +149,7 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
             status: 'failed',
             exitCode: null,
             output: `The checkout could not be synced with the remote before the run: ${synced.reason}`,
-            failureKind: 'runner_error',
+            failureKind: deterministic ? 'config' : 'runner_error',
         },
     };
 }

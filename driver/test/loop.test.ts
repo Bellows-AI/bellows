@@ -1357,6 +1357,23 @@ describe('the poll loop', () => {
         expect(runner.reclaimed).toEqual([repoJob]);
     });
 
+    // Issue #666: a sync refusal the script names is deterministic — config, with its message
+    // intact; anything unnamed (a conflict, a stray error) stays infrastructure.
+    it.each([
+        ['missing_workspace', 'the member workspace /w/bellows/u does not exist — the board creates it', 'config'],
+        ['missing_clone', 'the repository clone /w/bellows/u/r does not exist — the board clones it', 'config'],
+        ['branch_unrestorable', 'the task branch factory/x could not be restored (re-queue the task)', 'config'],
+        [undefined, 'the task worktree could not be rebased onto origin/main: conflict', 'runner_error'],
+    ] as const)('reports a sync refusal of kind %s as %s', async (kind, reason, failureKind) => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok(), { sync: { ok: false, reason, ...(kind ? { kind } : {}) } });
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind });
+        expect(board.board.completed[0]?.output).toContain(reason);
+    });
+
     it('reports the verdict untouched when the reclaim refuses, and logs the reason', async () => {
         const logs: string[] = [];
         const board = stubBoard([job(1)], { threadDone: true });
