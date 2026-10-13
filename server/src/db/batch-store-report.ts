@@ -48,6 +48,8 @@ interface ReportTaskRow {
     gate: string;
     attention: string | null;
     wait_reason: string | null;
+    closed_at: Date | null;
+    closed_by: string | null;
     pr: string;
     root_job_id: string | null;
     completion_kind: string;
@@ -95,7 +97,8 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
     if (!batch || batch.status !== BATCH_STARTED) return null;
     const [tasks, merged, verification, observations] = await Promise.all([
         sql<ReportTaskRow[]>`
-            select t.key, t.stage_key, t.required, t.execution, t.gate, t.attention, t.wait_reason, t.pr,
+            select t.key, t.stage_key, t.required, t.execution, t.gate, t.attention, t.wait_reason, t.closed_at,
+                   t.closed_by, t.pr,
                    t.root_job_id, t.completion_kind,
                    (select count(*)::int from batch_attempt a
                     where a.org_id = t.org_id and a.batch_id = t.batch_id and a.task_key = t.key) as attempts,
@@ -157,6 +160,8 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
             },
             attention: task.attention,
             waitReason: task.wait_reason,
+            closedAt: task.closed_at ? iso(task.closed_at) : null,
+            closedBy: task.closed_by,
             pr: prUrl,
             job: task.root_job_id ? `/api/jobs/${task.root_job_id}` : null,
             usage: { wallClockMs: Number(task.wall_clock_ms), agentTurns: Number(task.agent_turns), tokens: null },
@@ -166,6 +171,7 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
                 batchState: state,
                 task: {
                     key: task.key,
+                    required: task.required,
                     execution: task.execution,
                     gate: task.gate,
                     attention: task.attention,

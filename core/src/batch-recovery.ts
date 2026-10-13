@@ -185,6 +185,7 @@ export type BatchNextAction =
     | { action: 'accept'; method: 'POST'; path: string }
     | { action: 'retry'; method: 'POST'; path: string }
     | { action: 'merge'; url: string }
+    | { action: 'cancel'; method: 'POST'; path: string }
     | { action: 'new_batch'; method: 'POST'; path: string };
 
 const batchPath = (batchId: string) => `/api/batches/${batchId}`;
@@ -195,6 +196,7 @@ export function batchNextAction(input: {
     batchState: 'running' | 'parked' | 'completed' | 'cancelled' | 'expired';
     task: {
         key: string;
+        required: boolean;
         execution: string;
         gate: string;
         attention: string | null;
@@ -235,7 +237,19 @@ export function batchNextAction(input: {
     }
     if (task.execution === 'failed' || task.execution === 'stopped') return retry;
     if (task.execution === 'succeeded') return finished ?? retry;
-    return { action: 'wait' };
+    return unsettledAction(batchId, task);
+}
+
+/**
+ * A task neither finished nor failed in a live batch: moving, so wait — unless cancelled, which in a
+ * live batch is a person's force-close (#676). That is never retried, so a required one is past only
+ * by cancelling the batch, and an optional one asks for nothing.
+ */
+function unsettledAction(batchId: string, task: { execution: string; required: boolean }): BatchNextAction {
+    if (task.execution !== 'cancelled') return { action: 'wait' };
+    return task.required
+        ? { action: 'cancel', method: 'POST', path: `${batchPath(batchId)}/cancel` }
+        : { action: 'none' };
 }
 
 /** What a person does with a finished run: accept it, or merge the PR it opened. Null when neither applies. */

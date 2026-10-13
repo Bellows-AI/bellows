@@ -93,6 +93,13 @@ describe('the task-control skill', () => {
         expect(create).toBeGreaterThan(discovery);
     });
 
+    it('names what done does to a batch thread, and that force cancels its batch task (#676)', () => {
+        const done = skill.slice(skill.indexOf('**Done**'), skill.indexOf('**Remove**'));
+        expect(done).toContain('BATCH_TASK_THREAD');
+        expect(done).toContain('npm run dev -w cli -- job done <id> --force');
+        expect(done).toContain('cancels its batch task');
+    });
+
     it('confirms with the user before the two destructive steps', () => {
         const destructive = skill.slice(skill.indexOf('POST /api/jobs/<id>/stop'));
         expect(destructive).toMatch(/confirm/i);

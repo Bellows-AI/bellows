@@ -92,6 +92,8 @@ const REPORT = (state = 'running') => ({
             remaining: { infraRetries: 2, repairs: 1 },
             attention: null,
             waitReason: 'waiting for a person to merge https://github.com/o/api/pull/9',
+            closedAt: null,
+            closedBy: null,
             pr: 'https://github.com/o/api/pull/9',
             job: '/api/jobs/j1',
             usage: { wallClockMs: 5000, agentTurns: 7, tokens: null },
@@ -121,6 +123,8 @@ const REPORT = (state = 'running') => ({
             remaining: { infraRetries: 2, repairs: 2 },
             attention: 'configuration',
             waitReason: 'failed on configuration or permission, which a retry cannot fix (job j2)',
+            closedAt: null,
+            closedBy: null,
             pr: null,
             job: '/api/jobs/j2',
             usage: { wallClockMs: 0, agentTurns: 0, tokens: null },
@@ -414,6 +418,13 @@ describe('batch wait', () => {
         expect(cancelled.code).toBe(5);
     });
 
+    it('reads a completed batch whose optional task a person force-closed as succeeded, not cancelled (#676)', async () => {
+        const closed = task('b', 'cancelled', { closedAt: '2026-10-12T06:00:00.000Z' });
+        const result = await wait([record('started', [task('a', 'succeeded'), closed], { completedAt: 'done' })]);
+        expect(result.code).toBe(0);
+        expect(JSON.parse(result.out).outcome).toBe('succeeded');
+    });
+
     it('exits 6 naming the human review gate and the PR needing action', async () => {
         const waiting = record('started', [
             task('a', 'running', { waitReason: 'human review', pr: 'https://github.com/o/api/pull/9' }),
@@ -530,6 +541,23 @@ describe('batch report', () => {
         expect(result.out).toContain('manual 1');
         // A task with no PR has nothing to observe, and says nothing about it.
         expect(result.out).not.toContain('observed: none yet');
+    });
+
+    it('reads a force-closed task as cancelled by a person, and points at cancelling the batch (#676)', async () => {
+        const base = REPORT('parked');
+        const closed = {
+            ...base.tasks[1]!,
+            execution: 'cancelled',
+            attention: null,
+            waitReason: 'closed by a person while the batch ran; its stage cannot advance without it',
+            closedAt: '2026-10-12T06:00:00.000Z',
+            closedBy: 'u1',
+            next: { action: 'cancel', method: 'POST', path: `/api/batches/${ID}/cancel` },
+        };
+        const result = await cli(['batch', 'report', ID], () => json({ ...base, tasks: [base.tasks[0]!, closed] }));
+        expect(result.out).toContain('b cancelled by a person');
+        expect(result.out).toContain(`next: cancel POST /api/batches/${ID}/cancel`);
+        expect(result.out).not.toContain('a cancelled by a person');
     });
 
     it('prints each stage verification, a failed one with why', async () => {

@@ -118,7 +118,7 @@ function onlyId(args: readonly string[], verb: string, options: Record<string, {
     if (parsed.positionals.length !== 1) {
         throw new UsageError(`${verb} needs exactly one job id\n\n${USAGE}`);
     }
-    return { id: parsed.positionals[0]!, values: parsed.values as { json?: boolean; yes?: boolean } };
+    return { id: parsed.positionals[0]!, values: parsed.values as { json?: boolean; yes?: boolean; force?: boolean } };
 }
 
 /** A command that did what it was asked: the board's payload, and its one-line rendering. */
@@ -431,8 +431,9 @@ async function runStop(args: readonly string[], io: RunIo): Promise<CommandResul
 }
 
 async function runDone(args: readonly string[], io: RunIo): Promise<CommandResult> {
-    const { id } = onlyId(args, 'done');
-    const done = await boardFor(io).markDone(id);
+    // --force also closes a live batch's thread: the batch stops it and cancels its task.
+    const { id, values } = onlyId(args, 'done', { force: { type: 'boolean' } });
+    const done = await boardFor(io).markDone(id, values.force === true);
     return ok(done, renderDone(done));
 }
 

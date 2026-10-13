@@ -42,6 +42,8 @@ import type {
     StoredArtifact,
 } from '../src/db/job-store-types.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
+import type { BatchStore } from '../src/db/batch-store.js';
+import { memoryBatchStore } from './helpers-batch-store.js';
 import {
     githubAuth,
     memoryAuthStore,
@@ -189,7 +191,7 @@ function stubStore(
         replayed?: boolean;
         /** The store finds the request's key already used for a different request (#589). */
         keyReused?: boolean;
-        done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict';
+        done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict' | 'batch';
         reread?: { result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | 'lost' | 'missing';
         publish?: { result: 'ok'; token: string | null } | 'lost' | 'missing';
         /** Where the board says the suspend landed, on the 'ok' path. */
@@ -2693,6 +2695,84 @@ describe('POST /api/jobs/:id/done', () => {
         const response = await post(instance, '/api/jobs/nope/done', {});
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_ID');
+    });
+
+    /** A harness whose org has a batch store answering the force-close with `closed`, recording each call. */
+    async function harnessWithBatches(jobs: StoreStub, closed: Awaited<ReturnType<BatchStore['closeTask']>>) {
+        const calls: { jobId: string; closedBy: string | null }[] = [];
+        const batches: BatchStore = {
+            ...memoryBatchStore(),
+            async closeTask(jobId, closedBy) {
+                calls.push({ jobId, closedBy });
+                return closed;
+            },
+        };
+        const config = testConfig();
+        app = await buildApp({ config, orgs: staticRegistry({ config, jobs, batches }) });
+        return { instance: app, calls };
+    }
+
+    const CLOSED = {
+        batchId: 'b1',
+        task: 'a',
+        outcome: 'cancelled' as const,
+        pr: 'https://github.com/acme/web/pull/7',
+        doneAt: '2026-10-13T12:00:00.000Z',
+    };
+
+    it('refuses a plain done on a live batch thread, naming --force (#676)', async () => {
+        const { instance, calls } = await harnessWithBatches(stubStore({ done: 'batch' }), CLOSED);
+        const response = await post(instance, `/api/jobs/${ID}/done`, {});
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('BATCH_TASK_THREAD');
+        expect(response.json().error).toContain('--force');
+        expect(calls).toEqual([]);
+    });
+
+    it('force-closes a live batch thread and names the PR it left open', async () => {
+        const { instance, calls } = await harnessWithBatches(stubStore({ done: 'batch' }), CLOSED);
+        const response = await post(instance, `/api/jobs/${ID}/done`, { force: true });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({
+            id: ID,
+            batch: 'b1',
+            task: 'a',
+            outcome: 'cancelled',
+            pr: 'https://github.com/acme/web/pull/7',
+            doneAt: '2026-10-13T12:00:00.000Z',
+        });
+        expect(calls).toEqual([{ jobId: ID, closedBy: null }]);
+    });
+
+    it('says the task kept its outcome when it was accepted or its batch ended first', async () => {
+        const { instance } = await harnessWithBatches(stubStore({ done: 'batch' }), { ...CLOSED, outcome: 'kept' });
+        const response = await post(instance, `/api/jobs/${ID}/done`, { force: true });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({ batch: 'b1', task: 'a', outcome: 'kept' });
+    });
+
+    it('answers 202 while the force-closed run is still settling', async () => {
+        const { instance } = await harnessWithBatches(stubStore({ done: 'batch' }), { ...CLOSED, doneAt: null });
+        const response = await post(instance, `/api/jobs/${ID}/done`, { force: true });
+        expect(response.statusCode).toBe(202);
+        expect(response.json()).toMatchObject({ id: ID, batch: 'b1', doneAt: null });
+    });
+
+    it('takes force on a thread no live batch backs as a plain done', async () => {
+        const { instance, calls } = await harnessWithBatches(stubStore(), CLOSED);
+        const response = await post(instance, `/api/jobs/${ID}/done`, { force: true });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ id: ID, status: 'succeeded', doneAt: '2026-08-21T12:10:00.000Z' });
+        expect(calls).toEqual([]);
+    });
+
+    it('refuses a force that is not a boolean before touching the store', async () => {
+        const store = stubStore();
+        const { instance } = await harnessWithBatches(store, CLOSED);
+        const response = await post(instance, `/api/jobs/${ID}/done`, { force: 'yes' });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_BODY');
+        expect(store.markedDone).toEqual([]);
     });
 });
 

@@ -32,6 +32,15 @@ import { recoverObserved, withdrawRepair } from './batch-store-observed.js';
 import { decide, failedAttentionReason, recoveriesUsed, repairInTx, type Tx } from './batch-store-repair.js';
 import { insertJobInTx, retryInTx } from './job-store-actions.js';
 import {
+    openBatches,
+    settleThreads,
+    syncClosed,
+    openThreads,
+    threadActs,
+    type OpenThread,
+    type ThreadAct,
+} from './batch-store-threads.js';
+import {
     ACCEPTANCE_ACCEPTED,
     BATCH_STARTED,
     DECISION_ADVANCE,
@@ -53,6 +62,8 @@ import {
  */
 
 export type StopThread = (jobId: string, stoppedBy: string | null) => Promise<unknown>;
+/** The job store's Done: marks a settled thread head done and queues its worktree reclaim. */
+export type CloseThread = (jobId: string, closedBy: string | null) => Promise<unknown>;
 /** The head commit of a repository's branch, or null when it cannot be resolved. */
 export type RevisionOf = (repo: string, branch: string) => Promise<string | null>;
 
@@ -60,6 +71,7 @@ export interface ScheduleDeps {
     sql: Sql;
     orgId: string;
     stop?: StopThread | undefined;
+    close?: CloseThread | undefined;
     revisionOf?: RevisionOf | undefined;
     /** The clock the deadline and the retry backoff are read against; absent is the wall clock. Tests move it. */
     now?: (() => Date) | undefined;
@@ -81,6 +93,7 @@ interface LockedBatch {
     repairs: number;
     deadline_at: Date | null;
     expired_at: Date | null;
+    threads_closed_at: Date | null;
 }
 
 interface StateTask {
@@ -109,10 +122,10 @@ const rootTargetOf = (task: StateTask, repo: string) => ({
 });
 
 /** The batch row, locked. Everything the scheduler writes happens after this. */
-async function lockBatch(tx: TransactionSql, orgId: string, id: string): Promise<LockedBatch | null> {
+export async function lockBatch(tx: TransactionSql, orgId: string, id: string): Promise<LockedBatch | null> {
     const [row] = await tx<LockedBatch[]>`
         select status, concurrency, started_by, cancelled_at, cancelled_by, completed_at, infra_retries, repairs,
-               deadline_at, expired_at
+               deadline_at, expired_at, threads_closed_at
         from batch where org_id = ${orgId} and id = ${id} for update
     `;
     return row ?? null;
@@ -148,6 +161,8 @@ interface MovingTask {
     pending_question: string | null;
     /** A question the thread asked that no person ever answered: pending, or expired unanswered. */
     unanswered: boolean;
+    /** A person force-closed the thread: its settle cancels the task, never recovers it. */
+    closed_at: Date | null;
 }
 
 /**
@@ -192,7 +207,8 @@ async function syncTasks(at: Tx, run: { batch: LockedBatch; now: Date }): Promis
     const { tx, orgId, id } = at;
     const { batch, now } = run;
     const moving = await tx<MovingTask[]>`
-        select t.key, t.execution, t.attention, head.id as head_id, head.status, head.failure_kind, head.failure_cause,
+        select t.key, t.execution, t.attention, t.closed_at, head.id as head_id, head.status, head.failure_kind,
+               head.failure_cause,
                (select q.question_id from job_question q
                 where q.org_id = t.org_id and q.job_id = head.id and q.state = 'pending'
                   and q.lease_token = head.lease_token
@@ -215,6 +231,10 @@ async function syncTasks(at: Tx, run: { batch: LockedBatch; now: Date }): Promis
     for (const task of moving) {
         // No head: the thread is gone (its job rows were deleted), so the attempt can never finish.
         const next = task.status === null ? TASK_FAILED : executionOf(task.status);
+        if (task.closed_at !== null) {
+            changed = (await syncClosed(at, task, next)) || changed;
+            continue;
+        }
         if (next === task.execution) {
             changed = (await syncQuestion(at, task)) || changed;
             continue;
@@ -268,9 +288,10 @@ async function syncQuestion(at: Tx, task: MovingTask): Promise<boolean> {
 interface PassResult {
     changed: boolean;
     progress: BatchProgress;
-    /** Thread roots still moving in a cancelled batch: the caller stops them after the commit. */
-    toStop: string[];
-    cancelledBy: string | null;
+    /** Thread roots still moving in a fenced batch or a force-closed task: stopped after the commit. */
+    toStop: ThreadAct[];
+    /** Settled thread roots of an ended batch or a force-closed task not yet done: closed after the commit. */
+    toClose: ThreadAct[];
 }
 
 interface Snapshot {
@@ -415,8 +436,8 @@ async function launch(
     return 'launched';
 }
 
-/** What a pass reports: the long-poll's progress and the moving threads of a fenced batch to stop once it commits. */
-function resultOf(batch: LockedBatch, snapshot: Snapshot, decision: ScheduleDecision) {
+/** What a pass reports: the long-poll's progress, the moving threads to stop and the settled ones to close once it commits. */
+function resultOf(batch: LockedBatch, snapshot: Snapshot, decision: ScheduleDecision, open: OpenThread[]) {
     const cancelled = batch.cancelled_at !== null;
     const expired = batch.expired_at !== null;
     return {
@@ -427,8 +448,7 @@ function resultOf(batch: LockedBatch, snapshot: Snapshot, decision: ScheduleDeci
             active: decision.active,
             waiting: snapshot.tasks.filter((task) => task.execution === TASK_RETRY).length,
         },
-        toStop: cancelled || expired ? movingRoots(snapshot) : [],
-        cancelledBy: batch.cancelled_by,
+        ...threadActs(open, { roots: cancelled || expired ? movingRoots(snapshot) : [], by: batch.cancelled_by }),
     };
 }
 
@@ -447,7 +467,8 @@ async function pass(deps: ScheduleDeps, id: string, revisions: Map<string, strin
 
         const snapshot = await loadSnapshot(at);
         const decision = decideFor(batch, snapshot, now);
-        const result = resultOf(batch, snapshot, decision);
+        const open = await openThreads(at, batch);
+        const result = resultOf(batch, snapshot, decision, open);
         if (batch.completed_at !== null) return { ...result, changed };
 
         changed = (await settle(at, decision, batch.completed_at)) || changed;
@@ -556,16 +577,6 @@ async function resolveRevisions(deps: ScheduleDeps, id: string): Promise<Map<str
     return revisions;
 }
 
-/** The head job of a thread, the row a stop addresses. */
-async function headOf(sql: Sql, orgId: string, rootJobId: string): Promise<string | null> {
-    const [row] = await sql<{ id: string }[]>`
-        select id from job
-        where org_id = ${orgId} and root_job_id = ${rootJobId} and review_of is null
-        order by created_at desc, id desc limit 1
-    `;
-    return row?.id ?? null;
-}
-
 export async function reconcileBatch(deps: ScheduleDeps, id: string): Promise<BatchProgress | null> {
     const revisions = await resolveRevisions(deps, id);
     let last: PassResult | null = null;
@@ -576,29 +587,11 @@ export async function reconcileBatch(deps: ScheduleDeps, id: string): Promise<Ba
         if (!next.changed) break;
     }
     if (!last) return null;
-    if (last.toStop.length > 0 && deps.stop) {
-        // Cancellation settles active tasks through the job store's own stop, after the fence
-        // committed: nothing launches behind it, and a repeat pass stops whatever is still moving.
-        for (const root of last.toStop) {
-            const head = await headOf(deps.sql, deps.orgId, root);
-            if (head) await deps.stop(head, last.cancelledBy);
-        }
-        const settled = await pass(deps, id, revisions);
-        if (settled) return settled.progress;
-    }
-    return last.progress;
+    return settleThreads(deps, last, () => pass(deps, id, revisions));
 }
 
 export async function reconcileOpenBatches(deps: ScheduleDeps): Promise<void> {
-    const open = await deps.sql<{ id: string }[]>`
-        select b.id from batch b
-        where b.org_id = ${deps.orgId} and b.status = ${BATCH_STARTED} and b.completed_at is null
-          and ((b.cancelled_at is null and b.expired_at is null) or exists (
-              select 1 from batch_task t
-              where t.org_id = b.org_id and t.batch_id = b.id and t.execution in (${TASK_QUEUED}, ${TASK_RUNNING})
-          ))
-        order by b.started_at, b.id
-    `;
+    const open = await openBatches(deps.sql, deps.orgId);
     for (const batch of open) {
         try {
             await reconcileBatch(deps, batch.id);

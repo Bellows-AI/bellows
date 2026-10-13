@@ -218,6 +218,7 @@ describe('attentionWaitReason', () => {
 describe('batchNextAction', () => {
     const task = {
         key: 'a',
+        required: true,
         execution: 'failed',
         gate: 'open',
         attention: null as string | null,
@@ -276,6 +277,15 @@ describe('batchNextAction', () => {
             method: 'POST',
             path: '/api/batches',
         });
+    });
+
+    it('points a force-closed required task at cancelling its batch, and an optional one at nothing (#676)', () => {
+        expect(next('parked', { execution: 'cancelled' })).toEqual({
+            action: 'cancel',
+            method: 'POST',
+            path: '/api/batches/b1/cancel',
+        });
+        expect(next('running', { execution: 'cancelled', required: false })).toEqual({ action: 'none' });
     });
 
     it('has nothing to do for a passed gate and waits for moving work', () => {

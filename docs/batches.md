@@ -15,9 +15,9 @@ recorded acceptance.
 | Idempotency records for create and start | `server/src/db/batch-store-idempotency.ts` | `server/test-db/batch-store.test.ts` |
 | Runtime tables: `batch_attempt`, `batch_decision`, `cancelled_at`, `completed_at` | `server/migrations/060_batch_runtime.sql` | `server/test-db/batch-dispatch.test.ts` |
 | Pure readiness, capacity, advancement and wait decisions | `core/src/batch-schedule.ts` | `core/test/batch-schedule.test.ts` |
-| Scheduling transactions: reconcile, retry, cancel, accept | `server/src/db/batch-store-schedule.ts` | `server/test-db/batch-dispatch.test.ts` |
+| Scheduling transactions: reconcile, retry, cancel, accept, force-close; threads to stop and close | `server/src/db/batch-store-schedule.ts`, `batch-store-close.ts`, `batch-store-threads.ts` | `server/test-db/batch-dispatch.test.ts` |
 | Periodic and startup reconcile | `server/src/batch-reconciler.ts`, `server/src/orgs.ts` | `server/test/batch-reconciler.test.ts` |
-| Roots created in the scheduler's transaction; remove/reopen refuse a batch thread | `server/src/db/job-store-actions.ts` | `server/test-db/batch-dispatch.test.ts` |
+| Roots created in the scheduler's transaction; remove/reopen refuse a batch thread, done a live batch's (`batchThreadState`); `batch_task.closed_at`/`closed_by`; `job done --force` | `server/src/db/job-store-actions.ts`, `job-store-rows.ts`, `server/migrations/068_batch_task_closed.sql`, `server/src/routes/job-handlers-actions.ts`, `cli/src/run.ts` | `server/test-db/batch-dispatch.test.ts`, `server/test/routes.jobs.test.ts`, `cli/test/commands.test.ts` |
 | Human PR gate: `judgeTaskGate` (pure), `judgeGates` (reads `job_pr` + `pr_merge` per pass) | `core/src/batch-schedule.ts`, `server/src/db/batch-store-gates.ts` | `core/test/batch-schedule.test.ts`, `server/test-db/batch-dispatch.test.ts` |
 | Gate evidence: `batch_acceptance` | `server/migrations/061_batch_acceptance.sql` | `server/test-db/batch-dispatch.test.ts` |
 | Recovery: classification by `job.failure_cause` under `gate`/`publish`/`helper` (`conflict`/`verification` repair, `transport` infra retry, `environment` — a gate that failed only on vitest worker timeouts with every test passed, or exited 124/125/137 (timeout, no runner, kill), classified by `driver/src/gate-cause.ts` for both executors — infra retry (parks as `budget` when they run out; the base-is-red rerun is not built), `denied`/`config` attention `configuration`, else `unclassified`; a startup sync refusal the script names — `missing_workspace`, `missing_clone`, `branch_unrestorable` — reports `config`, an unnamed one `runner_error`; a sync rebase conflict, or a tree a previous attempt left conflicted, is no failure: the sync leaves it in place and the run starts with the paths in its turn context, and a publish over a conflict still unresolved is `publish` cause `conflict`, a repair that spends `repairs` and parks naming the conflict when they run out), backoff, repair command, attention reasons, next action | `core/src/batch-recovery.ts`, `driver/src/loop-ledger.ts`, `driver/src/gate-cause.ts`, `driver/src/scripts/git-worktree.cjs`, `driver/src/publish.ts`, `server/src/db/batch-store-repair.ts` | `core/test/batch-recovery.test.ts`, `driver/test/loop-ledger.test.ts`, `driver/test/gate-cause.test.ts` |
@@ -43,9 +43,8 @@ recorded acceptance.
   refused at every level of the plan, never ignored. `core/test/batch-plan.test.ts`.
 - **Structural validity is independent of execution capability.** A two-repository plan is valid,
   persists and round-trips; only `start` and `validate` refuse it, with `409 BATCH_UNSUPPORTED` and
-  `reason` `multi_target`, `non_default_branch` (checkout and verification are default-branch only;
-  remaining work is tracked under #233) or `automerge` (only a board with no GitHub installation).
-  `server/test/routes.batches.test.ts`.
+  `reason` `multi_target`, `non_default_branch` (checkout and verification are default-branch only)
+  or `automerge` (only a board with no GitHub installation). `server/test/routes.batches.test.ts`.
 - **The schema encodes no runtime limit:** no uniqueness on `repo`, no single-target constraint.
   A task's target is a composite foreign key into its own batch's targets, and `(org_id,
   root_job_id)` is unique, so one thread backs at most one task and a task's thread is set once.
@@ -75,10 +74,10 @@ recorded acceptance.
   with a `batch_acceptance` row:** `pr_merged`, written by the reconcile pass when the task's
   recorded PR is merged (matched on repo AND number, base branch equal to the task's target, merge
   observed after the current attempt began), or `accepted`, written by the accept route for an
-  `accepted`-completion task. A run's verdict never satisfies the gate, and Done, remove, reopen
-  and a PR-merge close all refuse a batch thread. Evidence is judged from durable rows on every
-  pass, so a merge before the verdict, a duplicate delivery and a restart converge, and a
-  cancelled or finished batch judges nothing. The next stage starts only after every required task
+  `accepted`-completion task. A run's verdict never satisfies the gate; remove, reopen and a
+  PR-merge close refuse a batch thread, Done a live batch's. Evidence is judged from durable
+  rows on every pass, so a merge before the verdict, a duplicate delivery and a restart converge,
+  and a cancelled or finished batch judges nothing. The next stage starts only after every required task
   of the active stage is accepted. `core/test/batch-schedule.test.ts`,
   `server/test-db/batch-dispatch.test.ts`.
 - **Limits of the human gate:** a merge after which more commits were pushed is not detected;
@@ -133,8 +132,9 @@ recorded acceptance.
   or advances behind it; moving tasks are stopped through the job store's stop, repeated by every
   later pass until nothing moves. `server/test-db/batch-dispatch.test.ts`.
 - **A thread that backs a batch task is batch history:** `removeThread` and `reopen` refuse it
-  (`BATCH_TASK_THREAD`); a retry is a new job of the same thread, never a new root.
-  `server/test-db/batch-dispatch.test.ts`.
+  (`BATCH_TASK_THREAD`); a retry is a new job of the same thread, never a new root. An ended batch
+  closes its threads through Done, at boot too; `done --force` sets `closed_at`, never retried, a
+  required task holding its stage. `server/test-db/batch-dispatch.test.ts`.
 - **A missed callback cannot strand a batch:** `reconcileBatches` runs at boot and every
   `BATCH_RECONCILE_INTERVAL_MS`, and a held `waitFor` reconciles on every beat.
   `server/test/batch-reconciler.test.ts`.

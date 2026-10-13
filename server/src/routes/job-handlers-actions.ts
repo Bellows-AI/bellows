@@ -1,6 +1,6 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { callerOf } from '../auth/plugin.js';
+import { callerOf, orgOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
 import { type BoardScanner, storeFor, telemetryFor } from './job-context.js';
 import { pickBucketMs, totalTokens } from '../telemetry/run-activity.js';
@@ -138,21 +138,28 @@ export async function handleEditJob(orgs: OrgRegistry, request: FastifyRequest, 
 }
 
 // The user's verdict that the task is done — the one no run can make. Idempotent in the store, so
-// a retried click answers the same instant rather than rewriting it.
+// a retried click answers the same instant rather than rewriting it. `force` closes a live batch's
+// thread too (docs/batches.md): the batch stops it and cancels its task, 202 while the stopped run
+// settles, and the PR it opened stays open, named in the answer.
 export async function handleDone(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveJobRoute(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
+    const { force = false } = body(request.body);
+    if (typeof force !== 'boolean') return bad(reply, ERROR_CODES.BAD_BODY, 'force must be a boolean');
+    // The actor comes from the session, never a body — the same rule as create.
+    const by = callerOf(request)?.user.id ?? null;
 
     const result = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'job done failed'),
-        // The actor comes from the session, never a body — the same rule as create.
-        () => store.markDone(id, callerOf(request)?.user.id ?? null)
+        () => store.markDone(id, by)
     );
     if (!result.ok) return reply;
     if (result.value === 'missing') return notFoundJob(reply);
-    if (result.value === 'batch') return batchThreadRefusal(reply);
+    if (result.value === 'batch') {
+        return force ? forceCloseBatchThread(orgs, { request, reply }, { id, by }) : liveBatchThreadRefusal(reply);
+    }
     if (result.value === 'conflict') {
         return reply.code(HTTP_CONFLICT).send({ error: 'Task is not finished', code: ERROR_CODES.NOT_FINISHED });
     }
@@ -198,6 +205,37 @@ export async function handleStop(orgs: OrgRegistry, request: FastifyRequest, rep
 const batchThreadRefusal = (reply: FastifyReply) =>
     reply.code(HTTP_CONFLICT).send({
         error: 'This task is part of a batch — cancel or retry it through the batch',
+        code: ERROR_CODES.BATCH_TASK_THREAD,
+    });
+
+// A forced done on a live batch's thread: the batch stops it, cancels its task and closes it — 202
+// while the stopped run settles. `outcome` is `kept` when the task was already accepted or its batch
+// ended first. The PR it opened stays open, named in the answer.
+async function forceCloseBatchThread(
+    orgs: OrgRegistry,
+    { request, reply }: { request: FastifyRequest; reply: FastifyReply },
+    { id, by }: { id: string; by: string | null }
+) {
+    const batches = (await orgs.for(orgOf(request)))?.batches;
+    if (!batches) return liveBatchThreadRefusal(reply);
+    const closed = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'batch thread close failed'),
+        () => batches.closeTask(id, by)
+    );
+    if (!closed.ok) return reply;
+    if (!closed.value) return liveBatchThreadRefusal(reply);
+    const { batchId, task, outcome, pr, doneAt } = closed.value;
+    return reply.code(doneAt ? HTTP_OK : HTTP_ACCEPTED).send({ id, batch: batchId, task, outcome, pr, doneAt });
+}
+
+// A plain done on a live batch's thread: the batch closes it when it ends, or a person forces it.
+const liveBatchThreadRefusal = (reply: FastifyReply) =>
+    reply.code(HTTP_CONFLICT).send({
+        error:
+            'This task is part of a live batch — the batch closes it when it ends. Pass --force (force: true) ' +
+            'to stop it and cancel its batch task now: never retried, and a required task holds its stage ' +
+            'until the batch is cancelled',
         code: ERROR_CODES.BATCH_TASK_THREAD,
     });
 

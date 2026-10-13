@@ -157,6 +157,13 @@ is orthogonal to how the run ended — a `failed` run can be marked done, and `d
 status. `200 { id, status, doneAt }`, idempotent. `409 NOT_FINISHED` while a turn is still
 running. A done thread takes no more follow-ups.
 
+A thread that backs a batch task is closed by its batch when the batch ends; while the batch is
+live, done answers `409 BATCH_TASK_THREAD`. `npm run dev -w cli -- job done <id> --force` closes it
+anyway: the board stops the run, cancels its batch task (never retried; a required one holds its
+stage until the batch is cancelled) and leaves its PR open, naming it. `200 { id, batch, task, pr,
+doneAt }`, or `202` with `doneAt: null` while the stopped run settles. Prefer the batch-control
+skill's actions; force only on the user's explicit word.
+
 **Remove** deletes the whole thread — every run, every output, the audit rows — and queues the
 worktree for reclaim. It **cannot be undone**, which is why the CLI demands `--yes` on top of
 the user's confirmation. `200 { id, removed: true }`. `409 TASK_RUNNING` means a turn is live:
