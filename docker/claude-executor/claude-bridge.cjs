@@ -115,6 +115,12 @@ function main() {
     const prompt = args.at(-1);
     const rest = args.slice(0, -2);
 
+    // TERM and INT go to the CLI; the bridge leaves only when the CLI has. Installed BEFORE the
+    // spawn: the entrypoint forwards a TERM as soon as the CLI is up, and one landing between the
+    // spawn and a later listener would take Node's default action and kill the bridge, leaving
+    // the CLI unsignalled. A handler runs from the event loop, never mid-main, so `cli` is set.
+    for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => cli.kill(signal));
+
     const cli = spawn(
         'claude',
         ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--permission-prompt-tool', 'stdio', ...rest],
@@ -138,9 +144,6 @@ function main() {
     };
     const respond = (requestId, response) =>
         send({ type: 'control_response', response: { subtype: 'success', request_id: requestId, response } });
-
-    // TERM and INT go to the CLI; the bridge leaves only when the CLI has.
-    for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => cli.kill(signal));
 
     send({ type: 'control_request', request_id: 'factory-init', request: { subtype: 'initialize', hooks: null } });
     send({ type: 'user', message: { role: 'user', content: prompt }, parent_tool_use_id: null, session_id: '' });

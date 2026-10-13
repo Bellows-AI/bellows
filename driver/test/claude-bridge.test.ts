@@ -23,6 +23,7 @@ const RUN_TIMEOUT_MS = 20_000;
 const USAGE_EXIT = 64;
 const SIGNAL_EXIT_BASE = 128;
 const SIGKILL_NUMBER = 9;
+const SIGTERM_NUMBER = 15;
 const QUESTION = 'Which colour is the SECRETQ?';
 const QUESTIONS = [{ question: QUESTION, options: [{ label: 'Red' }, { label: 'Blue' }] }];
 const TOOL_USE_ID = 'toolu_ask_1';
@@ -196,7 +197,9 @@ function launch(args: string[], env: Record<string, string>, dir: string, bin: s
     let stderr = '';
     child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
     child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
-    const exited = new Promise<{ code: number | null }>((resolve) => child.once('exit', (code) => resolve({ code })));
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+        child.once('exit', (code, signal) => resolve({ code, signal }))
+    );
     return { child, exited, output: () => ({ stdout, stderr }) };
 }
 
@@ -507,5 +510,38 @@ describe('claude-bridge exit and signals', () => {
 
         expect(existsSync(join(dir, 'termed'))).toBe(true);
         expect(code).toBe(0);
+    });
+
+    // Issue #506: the entrypoint forwards a TERM the moment the CLI is up, which can be before the
+    // bridge has run a line past its spawn. The preload sends that TERM inside the spawn call, so
+    // it lands deterministically where a listener installed after the spawn would not yet exist —
+    // and Node's default action would kill the bridge, leaving the CLI unsignalled.
+    it('forwards a TERM that lands while it is still spawning the CLI', async () => {
+        const { dir, bin } = sandbox();
+        // NODE_OPTIONS reaches the fake CLI too; it never spawns, so the preload is inert there.
+        const preload = join(dir, 'term-at-spawn.cjs');
+        writeFileSync(
+            preload,
+            `const cp = require('node:child_process');
+const spawn = cp.spawn;
+cp.spawn = (...args) => {
+    cp.spawn = spawn;
+    const child = spawn(...args);
+    process.kill(process.pid, 'SIGTERM');
+    return child;
+};
+`
+        );
+        const { exited } = launch(['-p', 'p'], { FAKE_HANG: '1', NODE_OPTIONS: `--require ${preload}` }, dir, bin);
+        const { code, signal } = await exited;
+
+        // The bridge itself survived the TERM, and left only once the CLI had: either the CLI
+        // handled the forward (exit 0, marker written) or it died to it before its own handler
+        // was up (128 + TERM, re-raised). An unforwarded TERM is neither — the bridge dies to it.
+        expect(signal).toBeNull();
+        expect([
+            { code: 0, termed: true },
+            { code: SIGNAL_EXIT_BASE + SIGTERM_NUMBER, termed: false },
+        ]).toContainEqual({ code, termed: existsSync(join(dir, 'termed')) });
     });
 });
