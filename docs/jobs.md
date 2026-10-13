@@ -13,7 +13,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | Schema | `server/migrations/006_jobs.sql` and later `0*_job_*.sql` | `server/test-db/job-store.test.ts` |
 | `failure_cause` under a `gate`/`publish`/`helper` kind: validated (`BAD_FAILURE_KIND`), written with the verdict, nulled by a completion refusal, decided on by batch recovery, served as `failureCause` on job reads | `server/migrations/065_batch_recovery_evidence.sql`, `server/src/routes/job-field-validation.ts`, `server/src/db/job-store-worker.ts`, `job-store-evidence.ts`, `job-store-reads.ts` | `server/test/routes.jobs.test.ts`, `server/test-db/job-store.test.ts` |
 | Claim, lease, fencing, `claim_seq`, contention requeue, settle long-poll | `server/src/db/job-store-claim.ts`, `job-store-actions.ts`, `job-store.ts`, `job-store-reads.ts` | `server/test-db/job-store.test.ts`, `job-store.thread-claim.test.ts`, `job-store.settle.test.ts`, `job-store.requeue.test.ts` |
-| Follow-up, done, retry, command edit, sessionless recap | `server/src/db/job-store-actions.ts`, `follow-up-recap.ts` | `server/test-db/job-store.follow-ups.test.ts`, `job-store.retries.test.ts`, `job-store.command-edit.test.ts`, `server/test/follow-up-recap.test.ts` |
+| Follow-up (`409 NOT_FINISHED` while any thread member is unfinished, as a retry; a keyed replay answers first), done, retry, command edit, sessionless recap | `server/src/db/job-store-actions.ts`, `follow-up-recap.ts` | `server/test-db/job-store.follow-ups.test.ts`, `job-store.retries.test.ts`, `job-store.command-edit.test.ts`, `server/test/follow-up-recap.test.ts` |
 | Stop, remove, reopen, worktree reclaim | `server/src/db/job-store-actions.ts` | `server/test-db/job-store.stop-remove.test.ts`, `job-store.stop-remove.zombie-recovery.test.ts` |
 | Merged PR closing its threads | `server/src/db/job-store-merge.ts` | `server/test-db/job-store.merge-close.test.ts` |
 | Task summary (`GET /api/tasks`) | `server/src/db/task-summary.ts`, `server/src/routes/tasks.ts` | `server/test/task-summary.test.ts`, `server/test/routes.tasks.test.ts` |
@@ -95,8 +95,6 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
   `server/test-db/job-store.attribution.test.ts`.
 - **The executor label resolves at claim in the task's stamped scope**; a missing profile fails the
   task rather than defaulting — `server/test-db/job-store.executor-scope.test.ts`.
-- **A follow-up refuses `409 NOT_FINISHED` while any thread member is unfinished, as a retry does**; a
-  keyed replay answers first — `server/src/db/job-store-actions.ts`, `server/test-db/job-store.follow-ups.test.ts`.
 - **Lease rules are tested only against a real database**, expiry by ageing `lease_expires_at`.
 
 ## Operational facts

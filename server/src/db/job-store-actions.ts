@@ -223,7 +223,7 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
             where not exists (
                 select 1 from job m
                 where m.org_id = ${orgId} and m.root_job_id = parent.root_job_id
-                  and m.status not in ('succeeded','failed','dead','stopped')
+                  and m.status not in ${tx([...TERMINAL_STATUSES])}
             )
             returning id
         `;
@@ -272,7 +272,7 @@ async function followUpRefusalOf(
         select exists (
             select 1 from job m
             where m.org_id = ${orgId} and m.root_job_id = p.root_job_id
-              and m.status not in ('succeeded','failed','dead','stopped')
+              and m.status not in ${tx([...TERMINAL_STATUSES])}
         ) as busy,
         p.done_at
         from job p where p.org_id = ${orgId} and p.id = ${parentId}
