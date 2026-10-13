@@ -3,7 +3,6 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { UUID } from '../config.js';
 import type { BatchRecord, BatchStore, BatchWriteRefusal } from '../db/batch-store.js';
-import { BATCH_STARTED } from '../db/batch-store.js';
 import type { OrgRegistry, OrgRuntime } from '../orgs.js';
 import { bad, body, guard } from './helpers.js';
 import { HTTP_CONFLICT, HTTP_FORBIDDEN, HTTP_NOT_FOUND, HTTP_UNAVAILABLE } from './job-limits.js';
@@ -89,7 +88,7 @@ export function planOf(reply: FastifyReply, raw: unknown): BatchPlan | null {
 
 export function refuseWrite(reply: FastifyReply, refusal: BatchWriteRefusal) {
     if (refusal.result === 'missing') return notFoundBatch(reply);
-    if (refusal.result === BATCH_STARTED) return startedConflict(reply);
+    if (refusal.result === 'started') return startedConflict(reply);
     return reply.code(HTTP_CONFLICT).send({
         error: `The draft is at version ${refusal.version}; read it again before writing`,
         code: ERROR_CODES.BATCH_STALE,

@@ -183,7 +183,7 @@ describe.skipIf(!enabled)('the batch store', () => {
         expect(await freeze(id, twoRepoPlan())).toEqual({ result: 'ok' });
 
         const record = (await store.get(id))!;
-        expect(record).toMatchObject({ status: 'started', version: 1, startedBy: ALICE });
+        expect(record).toMatchObject({ status: 'running', version: 1, startedBy: ALICE });
         expect(record.startedAt).not.toBeNull();
         expect(record.plan.targets).toEqual([
             { key: 'web', repo: 'acme/web', branch: 'main' },
@@ -279,7 +279,7 @@ describe.skipIf(!enabled)('the batch store', () => {
             const record = (await store.get(id))!;
             if (started.result === 'ok') {
                 expect(replaced).toEqual({ result: 'started' });
-                expect(record.status).toBe('started');
+                expect(record.status).toBe('running');
                 expect(record.plan.title).toBe(draft.title);
                 expect(record.version).toBe(1);
             } else {

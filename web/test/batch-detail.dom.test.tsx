@@ -48,7 +48,7 @@ const state = (key: string, stage: string, over: Partial<BatchTaskState> = {}): 
 function started(plan: BatchPlan, tasks: BatchTaskState[], activeStage: string | null = 'stage-1'): BatchRecord {
     return {
         id: ID,
-        status: 'started',
+        status: 'running',
         version: 3,
         createdBy: null,
         startedBy: null,
@@ -57,6 +57,7 @@ function started(plan: BatchPlan, tasks: BatchTaskState[], activeStage: string |
         startedAt: '2026-09-01T00:00:00.000Z',
         cancelledAt: null,
         completedAt: null,
+        expiredAt: null,
         activeStage,
         plan,
         tasks,
@@ -79,6 +80,7 @@ function board(initial: BatchRecord) {
         if (action === 'cancel') {
             record = {
                 ...record,
+                status: 'cancelled',
                 cancelledAt: '2026-09-01T01:00:00.000Z',
                 tasks: record.tasks.map((task) =>
                     ['queued', 'running', 'pending'].includes(task.execution)

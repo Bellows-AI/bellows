@@ -1,6 +1,6 @@
 import { ERROR_CODES, JSON_HEADERS, type BatchPlan, type BatchPlanIssue } from '@factory-ai/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BATCH_STARTED, batchVerdict, isSettled, type BatchRecord, type BatchSummary } from '../batch-model.js';
+import { BATCH_RUNNING, type BatchRecord, type BatchSummary } from '../batch-model.js';
 import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
@@ -150,9 +150,7 @@ export function useBatchList(): Polled<BatchSummary[]> {
 
 /** One batch. Polled until it settles; a draft is read once, since nothing moves in it. */
 export function useBatch(id: string | null): Polled<BatchRecord> {
-    return usePolled<BatchRecord>(id === null ? null : batchPath(id), (batch) => {
-        return batch.status === BATCH_STARTED && !isSettled(batchVerdict(batch));
-    });
+    return usePolled<BatchRecord>(id === null ? null : batchPath(id), (batch) => batch.status === BATCH_RUNNING);
 }
 
 /** The batches a task's thread backs a task of, for the task page's backlink. Read once per task. */

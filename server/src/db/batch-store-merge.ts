@@ -24,7 +24,7 @@ import {
     type StageVerification,
 } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
-import { ACCEPTANCE_PR_MERGED, BATCH_STARTED, DECISION_ADVANCE } from './batch-store-types.js';
+import { ACCEPTANCE_PR_MERGED, BATCH_ROW_STARTED, DECISION_ADVANCE } from './batch-store-types.js';
 
 /**
  * Merge intents and stage verification (064; docs/batches.md). Phase one runs under the batch row's
@@ -116,7 +116,7 @@ function candidateRows(
             where org_id = t.org_id and batch_id = t.batch_id and task_key = t.key
         ) a on a.attempt is not null
         join batch_pr_observation o on o.org_id = t.org_id and o.batch_id = t.batch_id and o.task_key = t.key
-        where t.org_id = ${orgId} and b.status = ${BATCH_STARTED} and ${unfenced(db, now)}
+        where t.org_id = ${orgId} and b.status = ${BATCH_ROW_STARTED} and ${unfenced(db, now)}
           and s.policy = ${AUTOMERGE} and t.completion_kind = ${BATCH_COMPLETION_PR}
           and t.execution = ${TASK_SUCCEEDED} and t.gate = ${GATE_OPEN}
           -- Only rows judgeMergeCandidate can accept count against the limit, so a backlog of
@@ -186,7 +186,7 @@ export async function claimMerges(deps: MergeDeps, limit: number): Promise<Merge
         const intent = await sql.begin(async (tx) => {
             const [batch] = await tx<{ id: string }[]>`
                 select b.id from batch b
-                where b.org_id = ${orgId} and b.id = ${row.batch_id} and b.status = ${BATCH_STARTED}
+                where b.org_id = ${orgId} and b.id = ${row.batch_id} and b.status = ${BATCH_ROW_STARTED}
                   and ${unfenced(tx, now)}
                 for update
             `;
@@ -234,7 +234,7 @@ export async function claimMerges(deps: MergeDeps, limit: number): Promise<Merge
 /** True when the batch is cancelled, expired, past its deadline or finished: nothing is requested behind a fence. */
 export async function batchFenced(deps: MergeDeps, batchId: string): Promise<boolean> {
     const [row] = await deps.sql<{ fenced: boolean }[]>`
-        select (b.status <> ${BATCH_STARTED} or not (${unfenced(deps.sql, nowOf(deps))})) as fenced
+        select (b.status <> ${BATCH_ROW_STARTED} or not (${unfenced(deps.sql, nowOf(deps))})) as fenced
         from batch b where b.org_id = ${deps.orgId} and b.id = ${batchId}
     `;
     return row?.fenced ?? true;
@@ -389,7 +389,7 @@ export async function dueVerifications(deps: MergeDeps, limit: number): Promise<
         join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id and tg.key = t.target_key
         left join batch_stage_verification v
             on v.org_id = s.org_id and v.batch_id = s.batch_id and v.stage_key = s.key
-        where b.org_id = ${orgId} and b.status = ${BATCH_STARTED} and ${unfenced(sql, now)}
+        where b.org_id = ${orgId} and b.status = ${BATCH_ROW_STARTED} and ${unfenced(sql, now)}
           and s.policy = ${AUTOMERGE}
           and (v.stage_key is null or (v.state <> ${VERIFY_PASSED} and v.next_check_at <= ${now}))
           and not exists (
@@ -454,7 +454,7 @@ export async function recordVerification(
     return sql.begin(async (tx) => {
         const [batch] = await tx<{ id: string }[]>`
             select b.id from batch b
-            where b.org_id = ${orgId} and b.id = ${batchId} and b.status = ${BATCH_STARTED} and ${unfenced(tx, now)}
+            where b.org_id = ${orgId} and b.id = ${batchId} and b.status = ${BATCH_ROW_STARTED} and ${unfenced(tx, now)}
             for update
         `;
         if (!batch) return false;

@@ -4,19 +4,20 @@ import type { Sql, TransactionSql } from 'postgres';
 import {
     BATCH_LIST_LIMIT,
     DECISION_ADVANCE,
-    BATCH_STARTED,
+    BATCH_DRAFT,
     type BatchRecord,
     type BatchStageVerification,
-    type BatchStatus,
+    type BatchRowStatus,
     type BatchSummary,
     type BatchWriteRefusal,
+    lifecycleOf,
 } from './batch-store-types.js';
 
 /** The SQL behind `batch-store.ts`: row shapes, the plan's rows in and out, and the freeze writes. */
 
 interface BatchRow {
     id: string;
-    status: BatchStatus;
+    status: BatchRowStatus;
     version: number;
     plan_version: number;
     title: string;
@@ -175,7 +176,12 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
     const done = new Set(advanced.map((row) => row.subject));
     return {
         id: batch.id,
-        status: batch.status,
+        status: lifecycleOf({
+            status: batch.status,
+            cancelledAt: batch.cancelled_at,
+            expiredAt: batch.expired_at,
+            completedAt: batch.completed_at,
+        }),
         version: batch.version,
         createdBy: batch.created_by,
         startedBy: batch.started_by,
@@ -186,8 +192,7 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
         completedAt: iso(batch.completed_at),
         deadlineAt: iso(batch.deadline_at),
         expiredAt: iso(batch.expired_at),
-        activeStage:
-            batch.status === BATCH_STARTED ? (stages.find((stage) => !done.has(stage.key))?.key ?? null) : null,
+        activeStage: batch.status !== BATCH_DRAFT ? (stages.find((stage) => !done.has(stage.key))?.key ?? null) : null,
         plan: planOf(batch, targets, stages, tasks),
         tasks: tasks.map((task) => ({
             key: task.key,
@@ -208,7 +213,7 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
 export async function listSummaries(sql: Sql, orgId: string, rootJobId?: string): Promise<BatchSummary[]> {
     const rows = await sql<(BatchRow & { task_count: number })[]>`
         select b.id, b.status, b.version, b.title, b.created_by, b.created_at, b.updated_at, b.started_at,
-               b.cancelled_at, b.completed_at,
+               b.cancelled_at, b.completed_at, b.expired_at,
                (select count(*)::int from batch_task t where t.org_id = b.org_id and t.batch_id = b.id)
                    as task_count
         from batch b
@@ -222,7 +227,12 @@ export async function listSummaries(sql: Sql, orgId: string, rootJobId?: string)
     return rows.map((row) => ({
         id: row.id,
         title: row.title,
-        status: row.status,
+        status: lifecycleOf({
+            status: row.status,
+            cancelledAt: row.cancelled_at,
+            expiredAt: row.expired_at,
+            completedAt: row.completed_at,
+        }),
         version: row.version,
         taskCount: row.task_count,
         createdBy: row.created_by,
@@ -231,6 +241,7 @@ export async function listSummaries(sql: Sql, orgId: string, rootJobId?: string)
         startedAt: iso(row.started_at),
         cancelledAt: iso(row.cancelled_at),
         completedAt: iso(row.completed_at),
+        expiredAt: iso(row.expired_at),
     }));
 }
 
@@ -328,10 +339,10 @@ export async function writeResolved(
 
 /** Why a conditional draft write matched nothing. */
 export async function refusalOf(tx: TransactionSql, { orgId, id }: BatchAddress): Promise<BatchWriteRefusal> {
-    const [row] = await tx<{ status: BatchStatus; version: number }[]>`
+    const [row] = await tx<{ status: BatchRowStatus; version: number }[]>`
         select status, version from batch where org_id = ${orgId} and id = ${id}
     `;
     if (!row) return { result: 'missing' };
-    if (row.status === BATCH_STARTED) return { result: 'started' };
+    if (row.status !== BATCH_DRAFT) return { result: 'started' };
     return { result: 'stale', version: row.version };
 }

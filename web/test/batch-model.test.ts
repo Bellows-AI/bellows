@@ -15,6 +15,7 @@ import {
     retryLabel,
     stagePolicyOf,
     summaryVerdict,
+    VERDICT_LABEL,
     taskExecutorOf,
     taskStateLabel,
     updateTask,
@@ -47,7 +48,7 @@ const filled = (): BatchPlan => {
 
 const record = (over: Partial<BatchRecord> = {}): BatchRecord => ({
     id: 'b1',
-    status: 'started',
+    status: 'running',
     version: 2,
     createdBy: null,
     startedBy: null,
@@ -56,6 +57,7 @@ const record = (over: Partial<BatchRecord> = {}): BatchRecord => ({
     startedAt: '2026-09-01T00:00:00.000Z',
     cancelledAt: null,
     completedAt: null,
+    expiredAt: null,
     activeStage: 'stage-1',
     plan: filled(),
     tasks: [state()],
@@ -146,8 +148,12 @@ describe('inherited versus overridden', () => {
 describe('a started batch', () => {
     it('wears one verdict: the board’s stamps first, then whether anyone is needed', () => {
         expect(batchVerdict(record({ status: 'draft' }))).toBe('draft');
-        expect(batchVerdict(record({ cancelledAt: '2026-09-02T00:00:00.000Z' }))).toBe('cancelled');
-        expect(batchVerdict(record({ completedAt: '2026-09-02T00:00:00.000Z' }))).toBe('completed');
+        const at = '2026-09-02T00:00:00.000Z';
+        expect(batchVerdict(record({ status: 'cancelled', cancelledAt: at }))).toBe('cancelled');
+        expect(batchVerdict(record({ status: 'completed', completedAt: at }))).toBe('completed');
+        expect(batchVerdict(record({ status: 'expired', expiredAt: at }))).toBe('expired');
+        // Cancelled after the deadline fenced it: the board answers cancelled, and so does the verdict.
+        expect(batchVerdict(record({ status: 'cancelled', cancelledAt: at, expiredAt: at }))).toBe('cancelled');
         expect(batchVerdict(record({ tasks: [state({ execution: 'running' })] }))).toBe('running');
         expect(batchVerdict(record({ tasks: [state({ execution: 'failed' })] }))).toBe('needs_attention');
         expect(
@@ -155,7 +161,9 @@ describe('a started batch', () => {
                 record({ tasks: [state({ execution: 'succeeded', waitReason: 'waiting for a person to merge x' })] })
             )
         ).toBe('needs_attention');
-        expect(summaryVerdict({ status: 'started', cancelledAt: null, completedAt: null })).toBe('running');
+        expect(summaryVerdict({ status: 'running' })).toBe('running');
+        expect(summaryVerdict({ status: 'expired' })).toBe('expired');
+        expect(VERDICT_LABEL.expired).toBe('Expired');
     });
 
     it('labels a task by its run and its gate, never the run alone', () => {
@@ -172,7 +180,12 @@ describe('a started batch', () => {
         expect(retryLabel(failed)).toBe('Retry');
         expect(retryLabel(state({ execution: 'succeeded' }))).toBe('Run again');
         expect(canRetry(record({ tasks: [failed], activeStage: 'stage-2' }), failed)).toBe(false);
-        expect(canRetry(record({ tasks: [failed], cancelledAt: '2026-09-02T00:00:00.000Z' }), failed)).toBe(false);
+        expect(
+            canRetry(record({ tasks: [failed], status: 'cancelled', cancelledAt: '2026-09-02T00:00:00.000Z' }), failed)
+        ).toBe(false);
+        expect(
+            canRetry(record({ tasks: [failed], status: 'expired', expiredAt: '2026-09-02T00:00:00.000Z' }), failed)
+        ).toBe(false);
         const running = state({ execution: 'running' });
         expect(canRetry(record({ tasks: [running] }), running)).toBe(false);
     });
@@ -200,7 +213,9 @@ describe('a started batch', () => {
             expect(batchVerdict(batch)).toBe('running');
             expect(morningReport(batch).needsYou).toBe(0);
         }
-        expect(batchVerdict({ ...failed, completedAt: '2026-09-02T00:00:00.000Z' })).toBe('completed');
+        expect(batchVerdict({ ...failed, status: 'completed', completedAt: '2026-09-02T00:00:00.000Z' })).toBe(
+            'completed'
+        );
     });
 
     it('counts the morning report from the same predicates the rows use', () => {

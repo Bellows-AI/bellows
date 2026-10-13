@@ -26,6 +26,7 @@ const summaryOf = (record: BatchRecord): BatchSummary => ({
     startedAt: record.startedAt,
     cancelledAt: record.cancelledAt,
     completedAt: record.completedAt,
+    expiredAt: record.expiredAt,
 });
 
 export class BatchBoard {
@@ -91,7 +92,7 @@ export class BatchBoard {
         if (action === 'start') {
             return this.mutate(id, (record) => ({
                 ...record,
-                status: 'started',
+                status: 'running',
                 startedAt: now,
                 activeStage: record.plan.stages[0]?.key ?? null,
                 tasks: record.tasks.map((task) => ({ ...task, execution: 'pending' })),

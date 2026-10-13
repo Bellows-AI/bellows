@@ -1474,3 +1474,53 @@ describe.skipIf(!enabled)('the morning report', () => {
         expect(await store.report(id)).toBeNull();
     });
 });
+
+describe.skipIf(!enabled)('batch lifecycle status', () => {
+    /** The record and the list must answer the same status, the list carrying `expiredAt`. */
+    const statusOf = async (id: string, target: BatchStore = store) => {
+        const record = (await target.get(id))!;
+        const summary = (await target.list()).find((batch) => batch.id === id)!;
+        expect(summary.status).toBe(record.status);
+        expect(summary.expiredAt).toBe(record.expiredAt);
+        return record.status;
+    };
+    const oneTask = (budgets: Record<string, number> = {}) => planWith([{ key: 'one', tasks: [task('a')] }], budgets);
+
+    it('reads draft before start and running once started', async () => {
+        const source = oneTask();
+        const { id } = await store.create(source, ALICE);
+        expect(await statusOf(id)).toBe('draft');
+        const plan = resolveBatchPlan(source, { 'acme/web': 'main' });
+        expect(await store.start({ id, version: 1, plan, startedBy: ALICE })).toMatchObject({ result: 'ok' });
+        expect(await statusOf(id)).toBe('running');
+    });
+
+    it('reads completed once the last task is accepted', async () => {
+        const id = await frozen(oneTask());
+        await store.reconcile(id);
+        await setStatus((await stateOf(id)).a!.rootJobId!, 'succeeded');
+        await store.accept(id, 'a', ALICE);
+        expect(await statusOf(id)).toBe('completed');
+    });
+
+    it('reads cancelled after a cancel', async () => {
+        const id = await frozen(oneTask());
+        await store.reconcile(id);
+        await store.cancel(id, ALICE);
+        expect(await statusOf(id)).toBe('cancelled');
+    });
+
+    it('reads expired once the deadline passes, and cancelled when cancelled after expiry', async () => {
+        const { clock, store: timed } = clockedStore();
+        const id = await frozen(oneTask({ timeLimitMinutes: 1 }), timed);
+        await timed.reconcile(id);
+        clock.ms += 120_000;
+        await timed.reconcile(id);
+        expect(await statusOf(id, timed)).toBe('expired');
+
+        expect(await timed.cancel(id, ALICE)).toMatchObject({ result: 'ok' });
+        expect(await statusOf(id, timed)).toBe('cancelled');
+        expect((await timed.get(id))!.expiredAt).not.toBeNull();
+        expect((await timed.report(id))!.state).toBe('cancelled');
+    });
+});

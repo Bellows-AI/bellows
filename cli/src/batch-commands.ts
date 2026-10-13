@@ -1,5 +1,5 @@
 import { parseArgs } from 'node:util';
-import { BATCH_DRAFT, BATCH_UNSUPPORTED_CODE, batchVerdict, REPORT_CANCELLED, REPORT_EXPIRED } from './batch.js';
+import { BATCH_CANCELLED, BATCH_DRAFT, BATCH_EXPIRED, BATCH_UNSUPPORTED_CODE, batchVerdict } from './batch.js';
 import type { BatchRecord } from './batch.js';
 import {
     needsAction,
@@ -230,7 +230,7 @@ async function runWait(args: readonly string[], io: BatchIo, boardFor: BoardFor)
     }
 }
 
-const FENCED: readonly string[] = [REPORT_CANCELLED, REPORT_EXPIRED];
+const FENCED: readonly string[] = [BATCH_CANCELLED, BATCH_EXPIRED];
 
 /**
  * How a wait ends, with the report beside the batch; null while it keeps watching. A fenced batch
@@ -243,7 +243,7 @@ async function waitEnd(
     const { batch, total, timedOut } = run;
     const verdict = batchVerdict(batch);
     const settled = SETTLED[verdict];
-    const fenced = Boolean(batch.cancelledAt) || Boolean(batch.expiredAt);
+    const fenced = FENCED.includes(batch.status);
     if (!fenced && !settled && !timedOut) return null;
     const report = await client.getBatchReport(batch.id);
     const data = { verdict, budgetSeconds: total, batch, needsAction: actionOf(batch), report };

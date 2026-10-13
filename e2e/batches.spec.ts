@@ -107,6 +107,7 @@ test.describe('batch pages', () => {
             ...saved,
             cancelledAt: null,
             completedAt: null,
+            expiredAt: null,
             activeStage: null,
             tasks: saved.tasks.map((task, index) => ({ ...task, rootJobId: index === 2 ? rootTask : null })),
         });
@@ -157,7 +158,7 @@ for (const theme of ['light', 'dark'] as const) {
         const now = new Date().toISOString();
         board.adopt({
             id,
-            status: 'started',
+            status: 'running',
             version: 3,
             createdBy: null,
             startedBy: null,
@@ -166,6 +167,7 @@ for (const theme of ['light', 'dark'] as const) {
             startedAt: now,
             cancelledAt: null,
             completedAt: null,
+            expiredAt: null,
             activeStage: 'stage-1',
             plan,
             tasks: [

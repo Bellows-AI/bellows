@@ -1,8 +1,35 @@
 import type { BatchNextAction, BatchPlan, ResolvedBatchPlan } from '@factory-ai/core';
 
 export const BATCH_DRAFT = 'draft';
-export const BATCH_STARTED = 'started';
-export type BatchStatus = typeof BATCH_DRAFT | typeof BATCH_STARTED;
+/** The stored freeze flag (`batch_status_ck`, 059): a row is `draft` or `started`, never an end state. */
+export const BATCH_ROW_STARTED = 'started';
+export type BatchRowStatus = typeof BATCH_DRAFT | typeof BATCH_ROW_STARTED;
+
+/** The lifecycle the API answers as `status`, derived on read by `lifecycleOf`. */
+export const BATCH_RUNNING = 'running';
+export const BATCH_COMPLETED = 'completed';
+export const BATCH_CANCELLED = 'cancelled';
+export const BATCH_EXPIRED = 'expired';
+export type BatchStatus =
+    | typeof BATCH_DRAFT
+    | typeof BATCH_RUNNING
+    | typeof BATCH_COMPLETED
+    | typeof BATCH_CANCELLED
+    | typeof BATCH_EXPIRED;
+
+/** Cancelled outranks expired, which outranks completed: the report's `stateOf` ranks them the same way. */
+export function lifecycleOf(batch: {
+    status: BatchRowStatus;
+    cancelledAt: unknown;
+    expiredAt: unknown;
+    completedAt: unknown;
+}): BatchStatus {
+    if (batch.status === BATCH_DRAFT) return BATCH_DRAFT;
+    if (batch.cancelledAt) return BATCH_CANCELLED;
+    if (batch.expiredAt) return BATCH_EXPIRED;
+    if (batch.completedAt) return BATCH_COMPLETED;
+    return BATCH_RUNNING;
+}
 
 /** Newest first; the list is a board overview, not a report. */
 export const BATCH_LIST_LIMIT = 100;
@@ -59,14 +86,14 @@ export interface BatchSummary {
     startedAt: string | null;
     cancelledAt: string | null;
     completedAt: string | null;
+    /** When the pass that found the deadline passed fenced the batch, or null. */
+    expiredAt: string | null;
 }
 
 export interface BatchRecord extends Omit<BatchSummary, 'title' | 'taskCount'> {
     startedBy: string | null;
     /** When the frozen time limit ends; null for a draft. */
     deadlineAt: string | null;
-    /** When the pass that found the deadline passed fenced the batch, or null. */
-    expiredAt: string | null;
     /** The first stage not yet advanced past; null for a draft and once every stage has advanced. */
     activeStage: string | null;
     /** As written while a draft; the resolved plan once started. */

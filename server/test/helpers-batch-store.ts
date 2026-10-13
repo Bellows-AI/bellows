@@ -11,7 +11,9 @@ import {
 } from '@factory-ai/core';
 import {
     BATCH_DRAFT,
-    BATCH_STARTED,
+    BATCH_ROW_STARTED,
+    BATCH_RUNNING,
+    lifecycleOf,
     type BatchIdempotency,
     type BatchRecord,
     type BatchStore,
@@ -30,7 +32,13 @@ export interface MemoryBatchStore extends BatchStore {
     mark(id: string, taskKey: string, state: Partial<BatchTaskState>): void;
     /** Stamps the batch's time limit as passed, standing in for the scheduler pass the SQL suite pins. */
     expire(id: string): void;
+    /** Stamps the batch complete, standing in for the scheduler pass the SQL suite pins. */
+    complete(id: string): void;
 }
+
+/** Held records keep `draft` or `running`; reads answer the lifecycle the SQL store derives. */
+const statusOf = (batch: BatchRecord) =>
+    lifecycleOf({ ...batch, status: batch.status === BATCH_DRAFT ? BATCH_DRAFT : BATCH_ROW_STARTED });
 
 export function memoryBatchStore(): MemoryBatchStore {
     const batches = new Map<string, BatchRecord>();
@@ -93,7 +101,8 @@ export function memoryBatchStore(): MemoryBatchStore {
             return { id, version: 1 };
         },
         async get(id) {
-            return batches.get(id) ?? null;
+            const batch = batches.get(id);
+            return batch ? { ...batch, status: statusOf(batch) } : null;
         },
         async list(rootJobId) {
             const matching = [...batches.values()].filter(
@@ -102,7 +111,7 @@ export function memoryBatchStore(): MemoryBatchStore {
             return matching.map((batch) => ({
                 id: batch.id,
                 title: batch.plan.title,
-                status: batch.status,
+                status: statusOf(batch),
                 version: batch.version,
                 taskCount: batch.tasks.length,
                 createdBy: batch.createdBy,
@@ -111,12 +120,13 @@ export function memoryBatchStore(): MemoryBatchStore {
                 startedAt: batch.startedAt,
                 cancelledAt: batch.cancelledAt,
                 completedAt: batch.completedAt,
+                expiredAt: batch.expiredAt,
             }));
         },
         async replace(id, version, plan) {
             const batch = batches.get(id);
             if (!batch) return { result: 'missing' };
-            if (batch.status === BATCH_STARTED) return { result: 'started' };
+            if (batch.status !== BATCH_DRAFT) return { result: 'started' };
             if (batch.version !== version) return { result: 'stale', version: batch.version };
             batches.set(id, { ...batch, version: version + 1, plan, tasks: taskStates(plan) });
             writes.push('replace');
@@ -129,11 +139,11 @@ export function memoryBatchStore(): MemoryBatchStore {
             if (recorded(startedBy, idempotency)) return { result: 'ok', replayed: true };
             const batch = batches.get(id);
             if (!batch) return { result: 'missing' };
-            if (batch.status === BATCH_STARTED) return { result: 'started' };
+            if (batch.status !== BATCH_DRAFT) return { result: 'started' };
             if (batch.version !== version) return { result: 'stale', version: batch.version };
             batches.set(id, {
                 ...batch,
-                status: BATCH_STARTED,
+                status: BATCH_RUNNING,
                 startedBy,
                 startedAt: new Date().toISOString(),
                 deadlineAt: new Date(Date.now() + plan.timeLimitMinutes * 60_000).toISOString(),
@@ -145,7 +155,7 @@ export function memoryBatchStore(): MemoryBatchStore {
         },
         async reconcile(id) {
             const batch = batches.get(id);
-            if (!batch || batch.status !== BATCH_STARTED) return null;
+            if (!batch || batch.status === BATCH_DRAFT) return null;
             writes.push('reconcile');
             return {
                 complete: batch.completedAt !== null,
@@ -161,7 +171,7 @@ export function memoryBatchStore(): MemoryBatchStore {
         async cancel(id) {
             const batch = batches.get(id);
             if (!batch) return { result: 'missing' };
-            if (batch.status !== BATCH_STARTED) return { result: 'not_started' };
+            if (batch.status === BATCH_DRAFT) return { result: 'not_started' };
             if (batch.cancelledAt) return { result: 'ok', replayed: true };
             if (batch.completedAt) return { result: 'finished' };
             batches.set(id, { ...batch, cancelledAt: new Date().toISOString() });
@@ -171,7 +181,7 @@ export function memoryBatchStore(): MemoryBatchStore {
         async retry(id, taskKey) {
             const batch = batches.get(id);
             if (!batch) return { result: 'missing' };
-            if (batch.status !== BATCH_STARTED) return { result: 'not_started' };
+            if (batch.status === BATCH_DRAFT) return { result: 'not_started' };
             if (batch.cancelledAt) return { result: 'cancelled' };
             if (batch.expiredAt) return { result: 'expired' };
             const task = batch.tasks.find((candidate) => candidate.key === taskKey);
@@ -184,7 +194,7 @@ export function memoryBatchStore(): MemoryBatchStore {
         async accept(id, taskKey, acceptedBy) {
             const batch = batches.get(id);
             if (!batch) return { result: 'missing' };
-            if (batch.status !== BATCH_STARTED) return { result: 'not_started' };
+            if (batch.status === BATCH_DRAFT) return { result: 'not_started' };
             if (batch.cancelledAt) return { result: 'cancelled' };
             const task = batch.tasks.find((candidate) => candidate.key === taskKey);
             if (!task) return { result: 'no_task' };
@@ -197,11 +207,11 @@ export function memoryBatchStore(): MemoryBatchStore {
         },
         async report(id) {
             const batch = batches.get(id);
-            if (!batch || batch.status !== BATCH_STARTED) return null;
+            if (!batch || batch.status === BATCH_DRAFT) return null;
             return {
                 id,
                 title: batch.plan.title,
-                state: batch.expiredAt ? 'expired' : batch.cancelledAt ? 'cancelled' : 'parked',
+                state: batch.cancelledAt ? 'cancelled' : batch.expiredAt ? 'expired' : 'parked',
                 startedAt: batch.startedAt!,
                 deadlineAt: batch.deadlineAt!,
                 expiredAt: batch.expiredAt,
@@ -243,6 +253,10 @@ export function memoryBatchStore(): MemoryBatchStore {
         expire(id) {
             const batch = batches.get(id)!;
             batches.set(id, { ...batch, expiredAt: new Date().toISOString() });
+        },
+        complete(id) {
+            const batch = batches.get(id)!;
+            batches.set(id, { ...batch, completedAt: new Date().toISOString() });
         },
         mark(id, taskKey, state) {
             const task = batches.get(id)!.tasks.find((candidate) => candidate.key === taskKey)!;

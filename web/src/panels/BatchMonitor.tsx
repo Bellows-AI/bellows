@@ -1,6 +1,7 @@
 import { BATCH_COMPLETION_ACCEPTED, TASK_NO_PR, isAccepted, type BatchPlan } from '@factory-ai/core';
 import { Link } from 'react-router-dom';
 import {
+    BATCH_CANCELLED,
     GATE_RESUMES_AUTOMATICALLY,
     canRetry,
     effectivePolicy,
@@ -58,7 +59,7 @@ function TaskCard({
         state.stage === batch.activeStage &&
         state.execution === 'succeeded' &&
         !isAccepted(state) &&
-        batch.cancelledAt === null;
+        batch.status !== BATCH_CANCELLED;
     const busy = pending === state.key;
     return (
         <li className="batch-task" data-task={state.key}>
@@ -118,7 +119,7 @@ function StageRow({
 }) {
     const { stage, tasks } = view;
     const done = tasks.filter(({ state }) => state && isAccepted(state)).length;
-    const active = batch.activeStage === stage.key && batch.cancelledAt === null;
+    const active = batch.activeStage === stage.key && batch.status !== BATCH_CANCELLED;
     const humanGate = effectivePolicy(batch.plan, stage) === 'human';
     const waiting = tasks.some(({ state }) => state?.waitReason != null);
     const verification = batch.verification.find((row) => row.stage === stage.key);

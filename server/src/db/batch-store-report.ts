@@ -12,7 +12,7 @@ import { type BatchPrObservation, readObservations } from './batch-store-observa
 import { readVerification } from './batch-store-rows.js';
 import {
     ACCEPTANCE_PR_MERGED,
-    BATCH_STARTED,
+    BATCH_DRAFT,
     type BatchReport,
     type BatchReportObservation,
     type BatchReportState,
@@ -94,7 +94,7 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
                cancelled_at, completed_at
         from batch where org_id = ${orgId} and id = ${id}
     `;
-    if (!batch || batch.status !== BATCH_STARTED) return null;
+    if (!batch || batch.status === BATCH_DRAFT) return null;
     const [tasks, merged, verification, observations] = await Promise.all([
         sql<ReportTaskRow[]>`
             select t.key, t.stage_key, t.required, t.execution, t.gate, t.attention, t.wait_reason, t.closed_at,

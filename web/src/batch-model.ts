@@ -35,8 +35,12 @@ import {
  * only names them for a reader (docs/batches.md).
  */
 
+/** The board's lifecycle `status`; the end states are its stamps, cancelled outranking expired. */
 export const BATCH_DRAFT = 'draft';
-export const BATCH_STARTED = 'started';
+export const BATCH_RUNNING = 'running';
+export const BATCH_COMPLETED = 'completed';
+export const BATCH_CANCELLED = 'cancelled';
+export const BATCH_EXPIRED = 'expired';
 
 /** A task's runtime state, as the board's read model carries it. */
 export interface BatchTaskState {
@@ -62,6 +66,7 @@ export interface BatchSummary {
     startedAt: string | null;
     cancelledAt: string | null;
     completedAt: string | null;
+    expiredAt: string | null;
 }
 
 /** An automerge stage's combined verification, as the record carries it (server `BatchStageVerification`). */
@@ -81,7 +86,7 @@ export interface BatchRecord extends Omit<BatchSummary, 'title' | 'taskCount'> {
     verification: StageVerificationState[];
 }
 
-export type BatchVerdict = 'draft' | 'running' | 'needs_attention' | 'completed' | 'cancelled';
+export type BatchVerdict = 'draft' | 'running' | 'needs_attention' | 'completed' | 'cancelled' | 'expired';
 
 export const VERDICT_LABEL: Record<BatchVerdict, string> = {
     draft: 'Draft',
@@ -89,6 +94,7 @@ export const VERDICT_LABEL: Record<BatchVerdict, string> = {
     needs_attention: 'Needs attention',
     completed: 'Completed',
     cancelled: 'Cancelled',
+    expired: 'Expired',
 };
 
 /** The pill skin per verdict; the label beside it always renders, so color never carries the state alone. */
@@ -98,6 +104,7 @@ export const VERDICT_PILL: Record<BatchVerdict, string> = {
     needs_attention: 'pill pill-accent',
     completed: 'pill pill-done',
     cancelled: 'pill pill-warn',
+    expired: 'pill pill-warn',
 };
 
 const PARKED_EXECUTIONS: readonly string[] = [TASK_FAILED, TASK_STOPPED];
@@ -112,23 +119,19 @@ export const verificationFailed = (row: StageVerificationState): boolean => row.
 /** A verification the board is still judging; it needs no one. */
 export const verificationPending = (row: StageVerificationState): boolean => row.state === VERIFY_PENDING;
 
-/** Where a batch stands: cancelled and completed are the board's own stamps; the rest is read off the tasks. */
-export function batchVerdict(
-    batch: Pick<BatchRecord, 'status' | 'cancelledAt' | 'completedAt' | 'tasks' | 'verification'>
-): BatchVerdict {
+/** Where a batch stands: every status but running is the board's own; a running one is read off the tasks. */
+export function batchVerdict(batch: Pick<BatchRecord, 'status' | 'tasks' | 'verification'>): BatchVerdict {
     if (batch.status === BATCH_DRAFT) return 'draft';
-    if (batch.cancelledAt !== null) return 'cancelled';
-    if (batch.completedAt !== null) return 'completed';
+    if (batch.status === BATCH_CANCELLED) return 'cancelled';
+    if (batch.status === BATCH_EXPIRED) return 'expired';
+    if (batch.status === BATCH_COMPLETED) return 'completed';
     return batch.tasks.some(needsPerson) || batch.verification.some(verificationFailed) ? 'needs_attention' : 'running';
 }
 
 /** A list row's verdict: the summary carries no tasks, so a started batch not yet finished reads as running. */
-export function summaryVerdict(batch: Pick<BatchSummary, 'status' | 'cancelledAt' | 'completedAt'>): BatchVerdict {
+export function summaryVerdict(batch: Pick<BatchSummary, 'status'>): BatchVerdict {
     return batchVerdict({ ...batch, tasks: [], verification: [] });
 }
-
-/** Whether polling can stop: a cancelled batch settles and a completed one is history. */
-export const isSettled = (verdict: BatchVerdict): boolean => verdict === 'completed' || verdict === 'cancelled';
 
 export type TaskTone = 'ok' | 'warn' | 'bad' | 'done' | 'accent';
 
@@ -157,7 +160,7 @@ export function taskStateLabel(task: BatchTaskState): { label: string; tone: Tas
 
 /** Retry is the active stage's, and only while the batch still schedules; the server judges the rest. */
 export const canRetry = (batch: BatchRecord, task: BatchTaskState): boolean =>
-    batchVerdict(batch) !== 'cancelled' && task.stage === batch.activeStage && isRetryable(task);
+    batch.status === BATCH_RUNNING && task.stage === batch.activeStage && isRetryable(task);
 
 /** A run that finished but was not accepted is re-run as a repair; a failed or stopped one is retried. */
 export const retryLabel = (task: BatchTaskState): string =>

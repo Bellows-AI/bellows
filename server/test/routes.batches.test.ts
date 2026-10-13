@@ -362,7 +362,7 @@ describe('launch checks: validate and start', () => {
         const { id } = await create(plan({ policy: 'automerge' }));
         const response = await call('POST', `/api/batches/${id}/start`, { version: 1 });
         expect(response.statusCode).toBe(HTTP_OK);
-        expect(response.json()).toMatchObject({ id, status: 'started' });
+        expect(response.json()).toMatchObject({ id, status: 'running' });
     });
 
     it('freezes a single-target batch through the same shape; dispatch is the store’s, not the route’s', async () => {
@@ -371,7 +371,7 @@ describe('launch checks: validate and start', () => {
         const response = await call('POST', `/api/batches/${id}/start`, { version: 1 });
         expect(response.statusCode).toBe(HTTP_OK);
         const record = response.json();
-        expect(record).toMatchObject({ id, status: 'started', version: 1 });
+        expect(record).toMatchObject({ id, status: 'running', version: 1 });
         expect(record.startedBy).not.toBeNull();
         expect(record.plan.targets[0].branch).toBe('main');
         expect(record.plan.stages.map((stage: { policy: string }) => stage.policy)).toEqual(['human', 'human']);
@@ -402,7 +402,7 @@ describe('launch checks: validate and start', () => {
         expect(first.statusCode).toBe(HTTP_OK);
         expect(second.statusCode).toBe(HTTP_OK);
         expect(second.headers['idempotency-replayed']).toBe('true');
-        expect(second.json().status).toBe('started');
+        expect(second.json().status).toBe('running');
         // The replay answered before any launch check, write or dispatch: one start, one pass.
         expect(batches.writes).toEqual(['create', 'start', 'reconcile']);
     });
@@ -520,6 +520,54 @@ describe('dispatch, wait, retry and cancel', () => {
         return id;
     };
 
+    it('answers each lifecycle status on the list and the record; cancel after expiry reads cancelled', async () => {
+        const s = await setup();
+        const draft = (await s.create()).id;
+        const running = await start(s);
+        const completed = await start(s);
+        s.batches.complete(completed);
+        const cancelled = await start(s);
+        await s.call('POST', `/api/batches/${cancelled}/cancel`, {});
+        const expired = await start(s);
+        s.batches.expire(expired);
+        const cancelledAfterExpiry = await start(s);
+        s.batches.expire(cancelledAfterExpiry);
+        await s.call('POST', `/api/batches/${cancelledAfterExpiry}/cancel`, {});
+        const want = {
+            [draft]: 'draft',
+            [running]: 'running',
+            [completed]: 'completed',
+            [cancelled]: 'cancelled',
+            [expired]: 'expired',
+            [cancelledAfterExpiry]: 'cancelled',
+        };
+
+        const listed = (await s.call('GET', '/api/batches')).json().batches as {
+            id: string;
+            status: string;
+            expiredAt: string | null;
+        }[];
+        expect(Object.fromEntries(listed.map((batch) => [batch.id, batch.status]))).toEqual(want);
+        const expiredAt = (id: string) => listed.find((batch) => batch.id === id)?.expiredAt;
+        expect(expiredAt(expired)).toEqual(expect.any(String));
+        expect(expiredAt(running)).toBeNull();
+        for (const [id, status] of Object.entries(want)) {
+            expect((await s.call('GET', `/api/batches/${id}`)).json().status).toBe(status);
+        }
+    });
+
+    it('draft-only writes refuse an ended batch with BATCH_STARTED', async () => {
+        const s = await setup();
+        const id = await start(s);
+        s.batches.expire(id);
+        const put = await s.call('PUT', `/api/batches/${id}`, { version: 1, plan: plan({ title: 'Late' }) });
+        expect(put.statusCode).toBe(HTTP_CONFLICT);
+        expect(put.json().code).toBe('BATCH_STARTED');
+        const again = await s.call('POST', `/api/batches/${id}/start`, { version: 1 });
+        expect(again.statusCode).toBe(HTTP_CONFLICT);
+        expect(again.json().code).toBe('BATCH_STARTED');
+    });
+
     it('start runs the first scheduling pass after it freezes the plan', async () => {
         const s = await setup();
         await start(s);
@@ -531,7 +579,7 @@ describe('dispatch, wait, retry and cancel', () => {
         const id = await start(s);
         const response = await s.call('GET', `/api/batches/${id}?waitFor=terminal&timeout=1`);
         expect(response.statusCode).toBe(HTTP_OK);
-        expect(response.json()).toMatchObject({ result: 'parked', batch: { id, status: 'started' } });
+        expect(response.json()).toMatchObject({ result: 'parked', batch: { id, status: 'running' } });
     });
 
     it('wait answers timeout while a task still moves', async () => {

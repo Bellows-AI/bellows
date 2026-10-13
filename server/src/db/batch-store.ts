@@ -20,7 +20,7 @@ import {
     type RevisionOf,
     type StopThread,
 } from './batch-store-schedule.js';
-import { BATCH_DRAFT, BATCH_STARTED, type BatchStore } from './batch-store-types.js';
+import { BATCH_DRAFT, BATCH_ROW_STARTED, type BatchStore } from './batch-store-types.js';
 
 export * from './batch-store-types.js';
 
@@ -131,13 +131,13 @@ export function createBatchStore({
                     select status, version from batch where org_id = ${orgId} and id = ${id} for update
                 `;
                 if (!row) return { result: 'missing' as const };
-                if (row.status === BATCH_STARTED) return { result: 'started' as const };
+                if (row.status !== BATCH_DRAFT) return { result: 'started' as const };
                 if (row.version !== version) return { result: 'stale' as const, version: row.version };
 
                 await writeResolved(tx, { orgId, id }, plan);
                 await tx`
                     update batch
-                    set status = ${BATCH_STARTED}, started_by = ${startedBy}, started_at = now(),
+                    set status = ${BATCH_ROW_STARTED}, started_by = ${startedBy}, started_at = now(),
                         deadline_at = now() + make_interval(mins => time_limit_minutes), updated_at = now()
                     where org_id = ${orgId} and id = ${id}
                 `;
