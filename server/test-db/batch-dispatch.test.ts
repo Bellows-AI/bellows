@@ -1053,6 +1053,28 @@ describe.skipIf(!enabled)('bounded recovery', () => {
         expect((await stateOf(id)).a).toMatchObject({ gate: 'passed' });
     });
 
+    it('repairs a failed gate with its name, exit code and output tail in the follow-up (#687)', async () => {
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }]));
+        await store.reconcile(id);
+        const root = (await stateOf(id)).a!.rootJobId!;
+        const failedHead = await headOf(root);
+        const gates = [
+            { name: 'lint', status: 'passed', exitCode: 0, output: 'lint clean' },
+            { name: 'test', status: 'failed', exitCode: 1, output: 'FAIL x.test.ts: expected 2, got 3' },
+        ];
+        await sql`update job set gates = ${sql.json(gates)} where id = ${failedHead.id}`;
+        await failWith(root, 'gate', 'failed', 'verification');
+
+        await store.reconcile(id);
+        const head = await headOf(root);
+        const [row] = await sql<{ command: string }[]>`select command from job where id = ${head.id}`;
+        expect(head.id).not.toBe(failedHead.id);
+        expect(row!.command).toContain('Gates that failed:\n- test: exit 1');
+        expect(row!.command).toContain('expected 2, got 3');
+        expect(row!.command).not.toContain('- lint:');
+        expect(row!.command).not.toContain('lint clean');
+    });
+
     it('sends a stale-branch publish failure to the agent as a rebase request', async () => {
         const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }]));
         await store.reconcile(id);

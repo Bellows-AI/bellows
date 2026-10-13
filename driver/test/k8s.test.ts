@@ -370,9 +370,9 @@ describe('the runner job spec', () => {
             name: 'ANTHROPIC_API_KEY',
             valueFrom: { secretKeyRef: { name: 'claude-credentials', key: 'ANTHROPIC_API_KEY', optional: true } },
         });
-        // WORKDIR, the OTLP endpoint, the board URL and the transcript store are the only literal
-        // values a runner env carries, and all are paths/URLs, not secrets — the object of the
-        // pin above.
+        // WORKDIR, the OTLP endpoint, the board URL, the transcript store and the npm notice
+        // switch are the only literal values a runner env carries, none of them secrets — the
+        // object of the pin above.
         expect(container.env.filter((entry) => 'value' in entry)).toEqual([
             { name: 'WORKDIR', value: `/workspaces/bellows/${USER}` },
             { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' },
@@ -382,6 +382,33 @@ describe('the runner job spec', () => {
                 value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
             },
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
+            { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
+        ]);
+    });
+
+    // npm's update notice is the last thing every npm call prints, burying the summary the
+    // output tail exists to show (#511) — the docker runner's twin, for both executors.
+    it('silences npm update notices in the claude and opencode runner', () => {
+        const opencode = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), opencodeJob, null);
+        for (const s of [spec(), opencode]) {
+            expect(s.spec.template.spec.containers[0].env).toContainEqual({
+                name: 'NPM_CONFIG_UPDATE_NOTIFIER',
+                value: 'false',
+            });
+        }
+    });
+
+    // A default only: the claim's own value rides the Secret by reference, and the pod spec never
+    // states the name a second time beside it.
+    it('leaves the npm notice to a claim that names it', () => {
+        const envJob: BoardJob = { ...job, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } };
+        const env = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), envJob, { id: SESSION, resume: false })
+            .spec.template.spec.containers[0].env;
+        expect(env.filter((entry) => entry.name === 'NPM_CONFIG_UPDATE_NOTIFIER')).toEqual([
+            {
+                name: 'NPM_CONFIG_UPDATE_NOTIFIER',
+                valueFrom: { secretKeyRef: { name: secretName(envJob), key: 'NPM_CONFIG_UPDATE_NOTIFIER' } },
+            },
         ]);
     });
 
@@ -427,6 +454,7 @@ describe('the runner job spec', () => {
                 value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
             },
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
+            { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
         ]);
     });
 
@@ -479,8 +507,8 @@ describe('the runner job spec', () => {
         expect(JSON.stringify(container.env)).not.toContain('CORE_TOKEN');
         // The literal values: WORKDIR, the two URLs every runner is pointed somewhere by —
         // the collector for OTLP metrics, the board for the branch reporter's attribution
-        // reports — and the transcript store path, all paths/URLs, not credentials, in a spec
-        // anyone with `get pods` can read.
+        // reports — the transcript store path and the npm notice switch, none of them
+        // credentials, in a spec anyone with `get pods` can read.
         expect(container.env.filter((entry) => 'value' in entry)).toEqual([
             { name: 'WORKDIR', value: `/workspaces/bellows/${USER}` },
             { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' },
@@ -490,6 +518,7 @@ describe('the runner job spec', () => {
                 value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
             },
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
+            { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
         ]);
     });
 
@@ -708,6 +737,37 @@ describe('resources on every pod the driver specs', () => {
             { name: 'cache', image: 'redis', environment: [] }
         );
         expect(pod.spec.containers[0].resources).toEqual(REQUESTS);
+    });
+
+    // Issue #507: a gate runs the whole suite, so it is sized by GATE_* — every other aux Job
+    // keeps the runner's sizing, and an unset GATE_ slot inherits the runner's.
+    it('sizes the gate Job by GATE_* while every other aux Job keeps the runner resources', () => {
+        const config = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            K8S_NAMESPACE: namespace,
+            RUNNER_CPU_REQUEST: '500m',
+            RUNNER_MEMORY_REQUEST: '1Gi',
+            RUNNER_CPU_LIMIT: '4',
+            GATE_CPU_REQUEST: '2',
+            GATE_MEMORY_REQUEST: '2Gi',
+        });
+        const gate = gateJobSpec(config, job, {
+            key: `bellows/${USER}/.worktrees/${job.id}`,
+            image: 'node:24',
+            gateName: 't',
+            command: 'npm test',
+            run: 1,
+            envSecretName: null,
+            gateTimeoutMs: 30_000,
+        });
+        expect(gate.spec.template.spec.containers[0].resources).toEqual({
+            requests: { cpu: '2', memory: '2Gi' },
+            limits: { cpu: '4' },
+        });
+        expect(syncJobSpec(config, repoJob, null).spec.template.spec.containers[0].resources).toEqual({
+            requests: { cpu: '500m', memory: '1Gi' },
+            limits: { cpu: '4' },
+        });
     });
 
     it('carries no resources on any of them when none are configured', () => {
@@ -6296,14 +6356,18 @@ describe('the gate job spec', () => {
     });
 
     // The env travels by reference and never as literals — the same rule that keeps claim
-    // values out of the runner pod spec keeps them out of a gate pod spec. The one literal is
-    // the driver's own HOME for the non-root uid (below), the sync's three paths' class.
+    // values out of the runner pod spec keeps them out of a gate pod spec. The literals are the
+    // driver's own: HOME for the non-root uid (below) and the npm notice switch.
     it('reads the env from a Secret by reference, and skips envFrom entirely when there is none', () => {
         const container = gateSpec().spec.template.spec.containers[0];
         expect(container.envFrom).toEqual([{ secretRef: { name: 'the-secret' } }]);
-        expect(container.env).toEqual([{ name: 'HOME', value: '/tmp' }]);
+        expect(container.env).toEqual([
+            { name: 'HOME', value: '/tmp' },
+            { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
+        ]);
         expect(gateSpec(1, null).spec.template.spec.containers[0].envFrom).toBeUndefined();
-        expect(JSON.stringify(gateSpec()).replace('"value":"/tmp"', '')).not.toContain('"value":');
+        // The two pinned just above are the only literal values anywhere in the spec.
+        expect(JSON.stringify(gateSpec()).match(/"value":/g)).toHaveLength(2);
     });
 
     // The gate writes the shared task worktree, so it writes as the uid:gid every other writer
@@ -6317,7 +6381,34 @@ describe('the gate job spec', () => {
         // merge with these two is pinned in 'keeps the gate uid:gid beside the seccomp profile'.
         expect(s.spec.template.spec.securityContext).toMatchObject({ runAsUser: 1000, runAsGroup: 1000 });
         const container = s.spec.template.spec.containers[0];
-        expect(container.env).toEqual([{ name: 'HOME', value: '/tmp' }]);
+        expect(container.env).toEqual([
+            { name: 'HOME', value: '/tmp' },
+            { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
+        ]);
+    });
+
+    // A gate's tail is what the job output shows; npm's update notice must not be its last word
+    // (#511) — the docker gate env's twin.
+    it('silences npm update notices for every gate run', () => {
+        expect(gateSpec().spec.template.spec.containers[0].env).toContainEqual({
+            name: 'NPM_CONFIG_UPDATE_NOTIFIER',
+            value: 'false',
+        });
+    });
+
+    // The claim's value arrives by envFrom, which an explicit `env` entry would beat.
+    it('leaves the npm notice to a claim that names it, in the gate env Secret', () => {
+        const envJob: BoardJob = { ...job, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } };
+        const s = gateJobSpec(gatedConfig, envJob, {
+            key: `bellows/${USER}/.worktrees/${ROOT_KEY}`,
+            image: 'node:24',
+            gateName: 'test',
+            command: 'npm test',
+            run: 1,
+            envSecretName: 'the-secret',
+            gateTimeoutMs: 30_000,
+        });
+        expect(s.spec.template.spec.containers[0].env).toEqual([{ name: 'HOME', value: '/tmp' }]);
     });
 
     it('sanitizes a hostile gate name into a legal k8s name without carrying it raw', () => {

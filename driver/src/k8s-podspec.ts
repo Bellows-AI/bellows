@@ -4,7 +4,7 @@ import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import {
     GATE_GID,
-    GATE_HOME,
+    gateEnv,
     GATE_UID,
     opencodeDbPath,
     runnerClaimEnv,
@@ -469,8 +469,9 @@ export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpe
                     ...(input.dnsConfig ? { dnsConfig: input.dnsConfig } : {}),
                     // One spread covers every aux Job — the gates, the readouts, the sync, the
                     // reclaim, the publish steps, the block helpers — the same way
-                    // pullSecretsField above covers their image pulls.
-                    containers: [{ ...input.container, ...resourcesField(config), ...containerHardeningField() }],
+                    // pullSecretsField above covers their image pulls. A builder's own sizing
+                    // (the gate's, issue #507) wins over the runner's.
+                    containers: [{ ...resourcesField(config), ...input.container, ...containerHardeningField() }],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
                 },
             },
@@ -595,9 +596,6 @@ export function gateJobSpec(config: DriverConfig, job: BoardJob, gate: GateJobSp
         throw new Error(`refusing to run a gate in an image that is not a plain image reference: "${image}"`);
     }
     const jobName = gateJobName(job, gateName, run);
-    // The mount is scoped to the checkout key's own `<orgId>/<userId>` half — the same subtree
-    // the job's runner mounts. Both segments are asserted by GATE_KEY before the split.
-    const subPath = key.split('/').slice(0, 2).join('/');
     return auxJobSpec(config, job, {
         name: jobName,
         deadlineSeconds: Math.max(1, Math.round(gateTimeoutMs / MS_PER_SECOND)),
@@ -611,6 +609,7 @@ export function gateJobSpec(config: DriverConfig, job: BoardJob, gate: GateJobSp
         securityContext: { runAsUser: GATE_UID, runAsGroup: GATE_GID },
         ...fleetDnsField(config, job),
         container: {
+            ...resourcesField(config, config.gateResources), // GATE_*, issue #507
             // A container name is a 63-char DNS label — the Job name's roomy subdomain bound
             // does not apply to it, so the short hash stands in.
             name: `gate-${hash16(`${jobName}|${command}`)}`,
@@ -618,9 +617,11 @@ export function gateJobSpec(config: DriverConfig, job: BoardJob, gate: GateJobSp
             imagePullPolicy: config.imagePullPolicy,
             command: ['sh', '-c', command],
             workingDir: `${config.workspaceMount}/${key}`,
-            env: [{ name: 'HOME', value: GATE_HOME }],
+            env: gateEnv(job).map(([name, value]) => ({ name, value })),
             ...(envSecretName ? { envFrom: [{ secretRef: { name: envSecretName } }] } : {}),
-            volumeMounts: [workspaceMount(config, subPath)],
+            // The mount is scoped to the checkout key's own `<orgId>/<userId>` half — the same subtree
+            // the job's runner mounts. Both segments are asserted by GATE_KEY before the split.
+            volumeMounts: [workspaceMount(config, key.split('/').slice(0, 2).join('/'))],
         },
     });
 }

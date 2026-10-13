@@ -14,6 +14,10 @@
         "OTEL_LOG_ASSISTANT_RESPONSES": "0",
         "OTEL_LOG_TOOL_DETAILS": "0"
     },
+    "permissions": {
+        "additionalDirectories": ["/workspaces", "/tmp"],
+        "allow": ["Bash(sed -i *)", "Bash(grep *)", "Edit(//tmp/**)", "Write(//tmp/**)"]
+    },
     "autoMode": {
         "environment": [
             "$defaults",
@@ -23,7 +27,8 @@
         "allow": [
             "$defaults",
             "Task Dependency Changes: Adding, upgrading or removing a package with npm, yarn or pnpm in the task worktree, from the project's configured registry, when the task calls for that dependency change — the lockfile update and the package's install scripts included. Registry overrides and packages from git URLs or tarballs are not covered.",
-            "Credential Presence Checks: Listing the NAMES of environment variables with their values removed or masked, and calling a task-provided credential's own service (its whoami, myself or current-user endpoint) to test that it authenticates — as long as the value itself is never printed or written anywhere."
+            "Credential Presence Checks: Listing the NAMES of environment variables with their values removed or masked, and calling a task-provided credential's own service (its whoami, myself or current-user endpoint) to test that it authenticates — as long as the value itself is never printed or written anywhere.",
+            "Project Subagents: Launching a subagent the task worktree or the runner defines (its .claude/agents) with the Agent tool, to do part of the task."
         ]
     }
 }

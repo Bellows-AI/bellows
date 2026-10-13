@@ -4,7 +4,7 @@ Who a caller is, and which credential each route accepts.
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Route credentials; question reports accept workers, answers require members | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts` |
+| Route credentials; question reports accept workers, answers require members; a credential lookup the database cannot answer is a 503 | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts`, `server/test/auth.tokens.test.ts` |
 | `AUTH_MODE`, its boot refusals, `AUTH_ALLOW_PUBLIC_BIND` | `server/src/config.ts` | `server/test/config.auth.test.ts` |
 | Session cookie: signing, flags, expiry | `server/src/auth/session.ts` | `server/test/auth.session.test.ts` |
 | OAuth round trip, state, redirect validation, `/me` (a present bearer is its credential — the CLI's `auth status`) | `server/src/routes/auth.ts`, `auth-shared.ts`, `server/src/auth/github.ts` | `server/test/auth.oauth*.test.ts`, `server/test/auth.github-client.test.ts`, `server/test/auth.tokens.test.ts` |

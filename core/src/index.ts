@@ -51,6 +51,7 @@ export {
 export type {
     AttentionReason,
     BatchNextAction,
+    FailedGate,
     FailureClass,
     RecoveryKind,
     RecoveryPlan,
@@ -72,6 +73,7 @@ export {
     batchRepairCommand,
     classifyTaskFailure,
     MAX_EVIDENCE_ITEMS,
+    MAX_EVIDENCE_OUTPUT_CHARS,
     planRecovery,
     RECOVERY_INFRA,
     RECOVERY_REPAIR,

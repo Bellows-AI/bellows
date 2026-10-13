@@ -12,6 +12,7 @@ import {
     batchRepairCommand,
     classifyTaskFailure,
     MAX_EVIDENCE_ITEMS,
+    MAX_EVIDENCE_OUTPUT_CHARS,
     planRecovery,
     recoveryBackoffMs,
 } from '../src/index.js';
@@ -158,8 +159,8 @@ describe('batchRepairCommand', () => {
         }));
 
     it.each([
-        { source: 'run', cause: 'verification' },
-        { source: 'run', cause: 'conflict' },
+        { source: 'run', cause: 'verification', gates: [] },
+        { source: 'run', cause: 'conflict', gates: [] },
         { source: 'observed', outcome: 'checks_failing', evidence: failing(1) },
         { source: 'observed', outcome: 'conflicting', evidence: [] },
     ] as const)('restates acceptance and verification and demands a fresh run (%o)', (evidence) => {
@@ -170,11 +171,66 @@ describe('batchRepairCommand', () => {
     });
 
     it('names failed checks for a run that failed verification', () => {
-        expect(batchRepairCommand(task, { source: 'run', cause: 'verification' })).toContain('failed its checks');
+        expect(batchRepairCommand(task, { source: 'run', cause: 'verification', gates: [] })).toContain(
+            'failed its checks'
+        );
     });
 
     it('names a stale or conflicting branch for a run that hit a conflict', () => {
-        expect(batchRepairCommand(task, { source: 'run', cause: 'conflict' })).toContain('stale or conflicts');
+        expect(batchRepairCommand(task, { source: 'run', cause: 'conflict', gates: [] })).toContain(
+            'stale or conflicts'
+        );
+    });
+
+    const failedGates = (n: number) =>
+        Array.from({ length: n }, (_, i) => ({ name: `gate-${i}`, exitCode: i + 1, output: `out-${i}` }));
+
+    it("lists a failed run's gates by name, exit code and output tail (#687)", () => {
+        const command = batchRepairCommand(task, {
+            source: 'run',
+            cause: 'verification',
+            gates: [{ name: 'test', exitCode: 1, output: 'FAIL core/test/x.test.ts\nexpected 2, got 3' }],
+        });
+        expect(command).toContain('failed its checks');
+        expect(command).toContain('Gates that failed:\n- test: exit 1');
+        expect(command).toContain('expected 2, got 3');
+    });
+
+    it('bounds the listed gates to MAX_EVIDENCE_ITEMS', () => {
+        const command = batchRepairCommand(task, {
+            source: 'run',
+            cause: 'verification',
+            gates: failedGates(MAX_EVIDENCE_ITEMS + 5),
+        });
+        expect(command).toContain(`- gate-${MAX_EVIDENCE_ITEMS - 1}: exit ${MAX_EVIDENCE_ITEMS}`);
+        expect(command).not.toContain(`gate-${MAX_EVIDENCE_ITEMS}:`);
+    });
+
+    it("keeps only the end of a gate's output, at most MAX_EVIDENCE_OUTPUT_CHARS", () => {
+        const output = `HEAD${'A'.repeat(MAX_EVIDENCE_OUTPUT_CHARS * 2)}TAIL`;
+        const command = batchRepairCommand(task, {
+            source: 'run',
+            cause: 'verification',
+            gates: [{ name: 'test', exitCode: 1, output }],
+        });
+        expect(command).toContain('TAIL');
+        expect(command).not.toContain('HEAD');
+        expect(command.match(/A+TAIL/)?.[0]).toHaveLength(MAX_EVIDENCE_OUTPUT_CHARS);
+    });
+
+    it('names an unknown exit code and a gate with no output', () => {
+        const command = batchRepairCommand(task, {
+            source: 'run',
+            cause: 'verification',
+            gates: [{ name: 'lint', exitCode: null, output: null }],
+        });
+        expect(command).toContain('- lint: exit unknown');
+    });
+
+    it('lists no gates for a conflict', () => {
+        const command = batchRepairCommand(task, { source: 'run', cause: 'conflict', gates: failedGates(1) });
+        expect(command).toContain('stale or conflicts');
+        expect(command).not.toContain('gate-0');
     });
 
     it('lists the observed failing checks by name and state, bounded', () => {

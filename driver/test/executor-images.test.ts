@@ -818,6 +818,25 @@ describe('the claude-executor managed settings', () => {
     it('are never rewritten by the entrypoint, which runs as the agent uid', () => {
         expect(read('docker/claude-executor/entrypoint.sh')).not.toContain('/etc/claude-code');
     });
+
+    // Issue #505: a headless run's permission prompt ends in a deny (claude-bridge.cjs), so the
+    // routine commands it kept prompting on are allowed here — managed settings, because the
+    // entrypoint lets a member's `permissions` key replace the baked settings.json's outright.
+    // /workspaces is only ever the member's own mounted subtree (docker.ts, k8s-podspec.ts).
+    // Interpreters and env dumps (`python3 *`, `env`, `printenv`) stay with the auto-mode
+    // classifier. Limit: sed's own `e`/`w` commands can run and write, and the git guard reads no
+    // sed script — like any interpreter, sed is outside what the guardrail sees.
+    it('allow the routine commands a headless run cannot be asked about', () => {
+        const settings = JSON.parse(read('docker/claude-executor/managed-settings.json'));
+        expect(settings.permissions).toEqual({
+            additionalDirectories: ['/workspaces', '/tmp'],
+            allow: ['Bash(sed -i *)', 'Bash(grep *)', 'Edit(//tmp/**)', 'Write(//tmp/**)'],
+        });
+        expect(settings.autoMode.allow).toContain(
+            'Project Subagents: Launching a subagent the task worktree or the runner defines (its .claude/agents) with the Agent tool, to do part of the task.'
+        );
+        expect(JSON.parse(read('docker/claude-executor/claude-home/settings.json'))).not.toHaveProperty('permissions');
+    });
 });
 
 // `claude plugin install` bakes context-mode without its node_modules, and the plugin's MCP boot

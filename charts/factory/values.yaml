@@ -301,7 +301,7 @@ runner:
     affinity: {}
     # Names forwarded to the runner; the VALUES live in the Secret below, one key per name.
     env: CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY
-    # Requests and limits on every pod the driver specs — the runner, the gates, the sync, the
+    # Requests and limits on every pod the driver specs but the gates — the runner, the sync, the
     # reclaim, the publish steps, the block helpers and the declared services — forwarded as
     # RUNNER_CPU_REQUEST / RUNNER_MEMORY_REQUEST / RUNNER_CPU_LIMIT / RUNNER_MEMORY_LIMIT
     # (kubernetes quantities: "500m", "1Gi"). Requests keep a runner fleet Burstable rather than
@@ -318,6 +318,16 @@ runner:
         limits:
             cpu: '4'
             memory: 8Gi
+    # The gate Jobs' own requests and limits (issue #507), forwarded as GATE_CPU_REQUEST /
+    # GATE_MEMORY_REQUEST / GATE_CPU_LIMIT / GATE_MEMORY_LIMIT. A gate runs the whole test suite
+    # while the runner mostly waits on a model, and a 500m floor starves vitest's workers into
+    # RPC timeouts on a busy node. Each unset slot falls back to `resources` above — the limits
+    # here are the runner's. null / empty behave as they do there. Runner limits below these
+    # requests refuse the driver's boot, naming both variables: lower these, or set gate limits.
+    gateResources:
+        requests:
+            cpu: '2'
+            memory: 2Gi
     # Created by this chart when secret.create is true, with one key per `env` name, valued from
     # `credentials` (empty when absent). Referencing the Secret by name is the whole point: the
     # credential never appears in the pod spec, which anyone who can `get pods` can read.
