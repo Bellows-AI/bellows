@@ -20,6 +20,20 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).toContain('env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1');
     });
 
+    // /api/health answers while the migrations still run; the truncate needs the schema they create.
+    it('waits for the migrated board, not the live one, before it touches the schema', () => {
+        const boot = SCRIPT.slice(0, SCRIPT.indexOf("-c 'truncate job, workflow cascade'"));
+        expect(boot).toContain('[ "$(status "$(api GET /api/ready)")" = \'200\' ]');
+        expect(boot).not.toContain('api GET /api/health)")" = \'200\'');
+    });
+
+    // job_question and the batch tables reference job: a plain truncate of a named list is refused
+    // by postgres the day a migration adds a referencing table, which is how the harness broke.
+    it('empties every table that references a job, not a list that rots', () => {
+        expect(SCRIPT).toContain("-c 'truncate job, workflow cascade'");
+        expect(SCRIPT).not.toMatch(/truncate job, workflow, /);
+    });
+
     // The route is gone from the board (404 Route not found); the claim's resumeSessionId has no
     // slash, so the legitimate field assertion cannot trip this.
     it('scripts/ holds no reference to the removed /resume route', () => {
