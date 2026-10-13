@@ -34,22 +34,251 @@ const DENY_PR_CHECKOUT = {
         'checkout must stay on it. Read the PR with `gh pr view` / `gh pr diff` instead.',
 };
 
+// At i: a heredoc operator (`<<` or `<<-`, never the `<<<` here-string). Returns
+// { delim, literal, strip, end } — end one past the delimiter word — or null. Any quoting in the
+// word makes the body literal; an unquoted word leaves its substitutions live (issue #504).
+function matchHeredoc(command, i) {
+    if (!command.startsWith('<<', i) || command[i + 2] === '<' || command[i - 1] === '<') return null;
+    let j = i + 2;
+    const strip = command[j] === '-';
+    if (strip) j += 1;
+    while (command[j] === ' ' || command[j] === '\t') j += 1;
+    const word = j;
+    let delim = '';
+    let literal = false;
+    while (j < command.length && !/[\s;&|<>()]/.test(command[j])) {
+        const c = command[j];
+        if (c === "'" || c === '"') {
+            const close = command.indexOf(c, j + 1);
+            if (close === -1) return null;
+            delim += command.slice(j + 1, close);
+            literal = true;
+            j = close + 1;
+        } else if (c === '\\') {
+            delim += command[j + 1] ?? '';
+            literal = true;
+            j += 2;
+        } else {
+            delim += c;
+            j += 1;
+        }
+    }
+    // A quoted empty word (`<<''`) is a delimiter, the empty line; no word at all is none.
+    return j > word ? { delim, literal, strip, end: j } : null;
+}
+
+// At j: a `#` that starts a word opens a comment — after a blank or an operator that is not itself
+// backslash-escaped. Returns the index of the newline that ends it, or -1 when this is no comment.
+function commentEnd(command, j) {
+    if (command[j] !== '#') return -1;
+    if (j > 0) {
+        if (!/[\s;&|()]/.test(command[j - 1])) return -1;
+        let escapes = 0;
+        for (let k = j - 2; k >= 0 && command[k] === '\\'; k--) escapes += 1;
+        if (escapes % 2 === 1) return -1;
+    }
+    const nl = command.indexOf('\n', j);
+    return nl === -1 ? command.length : nl;
+}
+
+// At j: a `((` arithmetic span, where `<<` is a shift and no heredoc. Returns the index one past
+// its closing `))`, or -1 when this is no such span — a `((` closed by `) … )` is nested
+// subshells, whose commands run. Quotes are not tracked: a `)` in one ends the span early, and
+// what remains is read as command text, which errs toward a deny.
+function arithmeticEnd(command, j) {
+    if (!command.startsWith('((', j)) return -1;
+    let depth = 2;
+    for (let k = j + 2; k < command.length; k++) {
+        if (command[k] === '(') depth += 1;
+        else if (command[k] === ')') {
+            depth -= 1;
+            if (depth === 1) return command[k + 1] === ')' ? k + 2 : -1;
+        }
+    }
+    return -1;
+}
+
+// At i: a `${…}` parameter expansion, where `<<` and `#` are text, never a heredoc or a comment.
+// Returns { text, subs, end } — text the span with each substitution as `""`, subs their bodies,
+// end one past the first unquoted `}` (bash counts no bare braces, only a nested `${`) — -1 when
+// this is no expansion, or null when it never closes. Entered inside double quotes (quoted), a `'`
+// is literal text: it hides no substitution, so `"${x:-'$(cmd)'}"` still runs cmd.
+function parameterEnd(command, i, quoted) {
+    if (!command.startsWith('${', i)) return -1;
+    let text = '${';
+    const subs = [];
+    let inDouble = false;
+    let j = i + 2;
+    while (j < command.length) {
+        const d = command[j];
+        if (d === '\\') {
+            text += command.slice(j, j + 2);
+            j += 2;
+            continue;
+        }
+        if (d === "'" && !inDouble && !quoted) {
+            const close = command.indexOf("'", j + 1);
+            if (close === -1) return null;
+            text += command.slice(j, close + 1);
+            j = close + 1;
+            continue;
+        }
+        if (d === '"') inDouble = !inDouble;
+        const param = parameterEnd(command, j, quoted || inDouble);
+        if (param === null) return null;
+        if (param !== -1) {
+            text += param.text;
+            subs.push(...param.subs);
+            j = param.end;
+            continue;
+        }
+        const sub = d !== '<' || !inDouble ? matchSubstitution(command, j) : null;
+        if (sub) {
+            subs.push(sub.body);
+            text += '""';
+            j = sub.end;
+            continue;
+        }
+        if (command[j + 1] === '(' && (d === '$' || (d === '<' && !inDouble))) return null;
+        text += d;
+        j += 1;
+        if (d === '}' && !inDouble) return { text, subs, end: j };
+    }
+    return null;
+}
+
+// From start (the line after the one that opened them), the bodies of the pending heredocs in
+// order. Returns { bodies, end } — end past the last terminator line — or null when a terminator
+// is missing: a body that never ends cannot be told apart from the commands after it.
+function readHeredocs(command, start, docs) {
+    let pos = start;
+    const bodies = [];
+    for (const doc of docs) {
+        const lines = [];
+        for (;;) {
+            if (pos >= command.length) return null;
+            let line = '';
+            // An unquoted body joins a backslash-newline before the terminator check, as bash does.
+            for (;;) {
+                const nl = command.indexOf('\n', pos);
+                const piece = command.slice(pos, nl === -1 ? command.length : nl);
+                pos = nl === -1 ? command.length : nl + 1;
+                const escapes = piece.length - piece.replace(/\\+$/, '').length;
+                if (doc.literal || nl === -1 || escapes % 2 === 0) {
+                    line += piece;
+                    break;
+                }
+                line += piece.slice(0, -1);
+            }
+            if ((doc.strip ? line.replace(/^\t+/, '') : line) === doc.delim) break;
+            lines.push(line);
+        }
+        bodies.push({ text: lines.join('\n'), literal: doc.literal });
+    }
+    return { bodies, end: pos };
+}
+
+// The substitutions an unquoted heredoc body still expands — its quotes are literal text.
+// Null when one never closes.
+function substitutionsIn(text) {
+    const subs = [];
+    for (let i = 0; i < text.length; i++) {
+        if (text[i] === '\\') {
+            i += 1;
+            continue;
+        }
+        const sub = matchSubstitution(text, i);
+        if (sub) {
+            subs.push(sub.body);
+            i = sub.end - 1;
+        } else if (text[i] === '$' && text[i + 1] === '(') return null;
+    }
+    return subs;
+}
+
 // At i: a substitution opening ($( , <( or a backtick). Returns { body, end } — end one past
-// the closing delimiter — or null when this is not a substitution.
+// the closing delimiter — or null when this is not a substitution. A `)` inside quotes, a nested
+// substitution or a heredoc body closes nothing.
 function matchSubstitution(command, i) {
     const c = command[i];
     if (c === '`') {
         const end = command.indexOf('`', i + 1);
         return end === -1 ? null : { body: command.slice(i + 1, end), end: end + 1 };
     }
+    // `$((…))` is arithmetic: `<<` in it is a shift, and only its own substitutions can run.
+    const arithmetic = c === '$' ? arithmeticEnd(command, i + 1) : -1;
+    if (arithmetic !== -1) {
+        const live = substitutionsIn(command.slice(i + 3, arithmetic - 2));
+        return live ? { body: live.join('\n'), end: arithmetic } : null;
+    }
     if ((c === '$' || c === '<') && command[i + 1] === '(') {
-        let depth = 0;
-        for (let j = i + 1; j < command.length; j++) {
-            if (command[j] === '(') depth += 1;
-            else if (command[j] === ')') {
-                depth -= 1;
-                if (depth === 0) return { body: command.slice(i + 2, j), end: j + 1 };
+        let depth = 1;
+        let inDouble = false;
+        let pending = [];
+        let j = i + 2;
+        while (j < command.length) {
+            const d = command[j];
+            if (d === '\\') {
+                j += 2;
+                continue;
             }
+            if (d === "'" && !inDouble) {
+                const close = command.indexOf("'", j + 1);
+                if (close === -1) return null;
+                j = close + 1;
+                continue;
+            }
+            if (d === '"') {
+                inDouble = !inDouble;
+                j += 1;
+                continue;
+            }
+            const param = parameterEnd(command, j, inDouble);
+            if (param === null) return null;
+            if (param !== -1) {
+                j = param.end;
+                continue;
+            }
+            const nested = d === '$' || d === '`' || (d === '<' && !inDouble) ? matchSubstitution(command, j) : null;
+            if (nested) {
+                j = nested.end;
+                continue;
+            }
+            if (!inDouble) {
+                const comment = commentEnd(command, j);
+                if (comment !== -1) {
+                    j = comment;
+                    continue;
+                }
+                const arithmetic = arithmeticEnd(command, j);
+                if (arithmetic !== -1) {
+                    j = arithmetic;
+                    continue;
+                }
+                if (command.startsWith('<<<', j)) {
+                    j += 3;
+                    continue;
+                }
+                const doc = matchHeredoc(command, j);
+                if (doc) {
+                    pending.push(doc);
+                    j = doc.end;
+                    continue;
+                }
+                if (d === '\n' && pending.length > 0) {
+                    const read = readHeredocs(command, j + 1, pending);
+                    if (!read) return null;
+                    pending = [];
+                    j = read.end;
+                    continue;
+                }
+                if (d === '(') depth += 1;
+                else if (d === ')') {
+                    depth -= 1;
+                    if (depth === 0) return { body: command.slice(i + 2, j), end: j + 1 };
+                }
+            }
+            j += 1;
         }
     }
     return null;
@@ -107,12 +336,15 @@ function splitOuter(text) {
 // Split a command into its runnable segments. Operators bind only outside quotes; the
 // contents of $(…), <(…) and `…` cannot run as part of the surrounding command, so each span
 // is lifted out and recursed as segments of its own — inside double quotes too, where the shell
-// still expands them but a `'` is a literal. Unbalanced quoting means the command cannot be
-// proven safe — { ok: false } and the caller denies.
+// still expands them but a `'` is a literal. A heredoc body is dropped from the command text: a
+// literal one runs nothing, an expanding one contributes only its substitutions. Unbalanced
+// quoting, an unclosed substitution or an unterminated heredoc means the command cannot be proven
+// safe — { ok: false } and the caller denies.
 function segmentsOf(command, depth) {
     const subs = [];
     let outer = '';
     let inDouble = false;
+    let pending = [];
     let i = 0;
     while (i < command.length) {
         const c = command[i];
@@ -129,12 +361,65 @@ function segmentsOf(command, depth) {
             i = end + 1;
             continue;
         }
-        const sub = matchSubstitution(command, i);
+        const param = parameterEnd(command, i, inDouble);
+        if (param === null) return { ok: false };
+        if (param !== -1) {
+            subs.push(...param.subs);
+            outer += param.text;
+            i = param.end;
+            continue;
+        }
+        // Inside double quotes `<(` is literal text; only `$(` and a backtick still expand.
+        const opens = c !== '<' || !inDouble;
+        const sub = opens ? matchSubstitution(command, i) : null;
         if (sub) {
             subs.push(sub.body);
             outer += '""';
             i = sub.end;
             continue;
+        }
+        if (opens && (c === '$' || c === '<') && command[i + 1] === '(') return { ok: false };
+        if (!inDouble) {
+            const comment = commentEnd(command, i);
+            if (comment !== -1) {
+                i = comment;
+                continue;
+            }
+            const arithmetic = arithmeticEnd(command, i);
+            if (arithmetic !== -1) {
+                const live = substitutionsIn(command.slice(i + 2, arithmetic - 2));
+                if (!live) return { ok: false };
+                subs.push(...live);
+                outer += '""';
+                i = arithmetic;
+                continue;
+            }
+            if (command.startsWith('<<<', i)) {
+                outer += '<<<';
+                i += 3;
+                continue;
+            }
+            const doc = matchHeredoc(command, i);
+            if (doc) {
+                pending.push(doc);
+                outer += ' ';
+                i = doc.end;
+                continue;
+            }
+            if (c === '\n' && pending.length > 0) {
+                const read = readHeredocs(command, i + 1, pending);
+                if (!read) return { ok: false };
+                for (const body of read.bodies) {
+                    if (body.literal) continue;
+                    const live = substitutionsIn(body.text);
+                    if (!live) return { ok: false };
+                    subs.push(...live);
+                }
+                pending = [];
+                outer += '\n';
+                i = read.end;
+                continue;
+            }
         }
         outer += c;
         i += 1;
@@ -466,6 +751,90 @@ const CASES = [
     ['allow', 'git commit -m "don\'t move HEAD"'],
     ['deny', 'echo "it\'s" && git switch main'],
     ['deny', 'echo "it\'s $(git switch main)"'],
+    // Heredocs (issue #504): a body is data, not command text — an apostrophe or a `)` in it is
+    // no quote and no closer, so the commit forms agents type first are allowed. A quoted
+    // delimiter makes the body literal; an unquoted one still expands its substitutions.
+    ['allow', 'git add -A && git commit -q -m "fix: subject\n\nbody line"'],
+    ['allow', 'git add a && git commit -q -m "subject\n\nthe runner\'s body"'],
+    ['allow', "git commit -m \"$(cat <<'EOF'\nsubject\n\nit's the body (#504)\nEOF\n)\""],
+    ['allow', "git commit -m \"$(cat <<'EOF'\nsubject\n\n1) a stray closer\nEOF\n)\""],
+    ['allow', "git commit -F - <<'EOF'\nsubject\n\ndon't move HEAD\nEOF"],
+    ['allow', 'git commit -F /tmp/msg.txt'],
+    ['allow', "cat > notes.md <<'EOF'\nit's a doc\nEOF"],
+    ['allow', "cat > notes.md <<'EOF'\nit's a doc\nEOF\ngit add notes.md && git commit -q -m \"docs: notes\""],
+    ['allow', 'cat > notes.md <<"EOF"\nit\'s "quoted"\nEOF'],
+    ['allow', "cat <<-'EOF' > notes.md\n\tit's tab-stripped\n\tEOF"],
+    ['allow', "cat <<'EOF'\n$(git switch main)\nEOF"],
+    ['allow', "cat <<'A' <<'B'\nit's\nA\ndon't\nB"],
+    ['allow', 'cat <<EOF\nit\'s $HOME and $(date)\nEOF'],
+    ['allow', 'grep x <<< "it is"'],
+    ['allow', 'echo "a << b"'],
+    ['allow', 'echo "$(echo ")")"'],
+    ['deny', "cat <<'EOF'\nx\nEOF\ngit switch main"],
+    ['deny', "cat > notes.md <<'EOF'\nit's\nEOF\ngit checkout main"],
+    ['deny', 'cat <<EOF\n$(git switch main)\nEOF'],
+    ['deny', 'cat <<EOF\n`git checkout main`\nEOF'],
+    ['deny', "cat <<'EOF' && git switch main\nbody\nEOF"],
+    ['deny', "git commit -F - <<'EOF'\nm\nEOF\ngit rebase main"],
+    ['deny', "cat <<'EOF'\nx\nEOF\ngit reset --hard"],
+    ['deny', "git commit -m \"$(cat <<'EOF'\nit's\nEOF\n)\" && git checkout -b other"],
+    ['deny', "cat <<'A' <<'B'\nx\nA\ny\nB\ngit switch main"],
+    ['deny', 'grep x <<< "$(git switch main)"'],
+    ['deny', 'echo $(git switch main'],
+    // A shift is no heredoc: what follows it runs, and is read.
+    ['deny', '((x<<1))\ngit switch main\n1'],
+    ['deny', '((x<<y))\ngit switch main\ny'],
+    ['deny', 'echo $(( x << 1 ))\ngit switch main\n1'],
+    ['deny', '(( $(git switch main) ))'],
+    ['deny', '(( x = 1<<2 ))\ngit switch main\n2'],
+    ['allow', '(( x << 1 ))'],
+    ['allow', '(( (1+2) << 3 ))'],
+    // `((` closed by `) … )` rather than `))` is nested subshells, whose commands run.
+    ['deny', '((a) ; git switch main; (b))'],
+    ['deny', '((true)\ngit switch main\n)'],
+    ['deny', 'echo $((a) ; git switch main; (b))'],
+    // ...but a `$((` closed by `))` is arithmetic to bash too, and runs nothing.
+    ['allow', 'echo $(((a) ; git switch main; (b)))'],
+    ['deny', 'echo $(( $(git switch main) ))'],
+    ['allow', 'echo $(( x << 1 ))'],
+    // Any word delimits a heredoc, digits and punctuation included; no word at all reads nothing.
+    ['deny', 'cat <<1\n<<EOF\n1\ngit switch main\nEOF'],
+    ['deny', 'cat <<.\n<<EOF\n.\ngit switch main\nEOF'],
+    ['deny', 'cat <<\ngit switch main'],
+    ['allow', "cat <<1\nit's\n1"],
+    // An empty quoted word is a delimiter too: the body ends at the first empty line.
+    ['allow', "git commit -F - <<''\nit's a message\n\n"],
+    ['deny', "cat <<''\nit's\n\ngit switch main"],
+    // Inside `${…}` a `<<` or `#` is text, no heredoc or comment; its substitutions still run.
+    ['deny', "echo ${x:-<<'' }\ngit switch main\n\n"],
+    ['deny', 'echo ${x:-<<EOF }\ngit switch main\nEOF'],
+    ['deny', 'echo ${x:- #}; git switch main'],
+    ['deny', 'echo $(echo ${x:-<<EOF }\ngit switch main\nEOF\n)'],
+    ['deny', 'echo ${x:-$(git switch main)}'],
+    ['deny', 'echo ${x:-<<EOF'],
+    ['allow', "echo ${x:-default} <<'EOF'\nit's\nEOF"],
+    // Inside a double-quoted `${…}` a `'` is literal: it hides no substitution and no operator.
+    ['deny', 'git commit -m "${x:-\'$(git switch main)\'}"'],
+    ['deny', 'echo "${x:-\'`git checkout main`\'}"'],
+    ['deny', 'echo "${x:-\'}" ; git switch main'],
+    ['allow', 'git commit -m "${x:-\'it is\'}"'],
+    // An unquoted body joins a backslash-newline before the terminator check; a quoted one does not.
+    ['deny', 'git commit -F - <<EOF\nE\\\nOF\ngit switch main\nEOF'],
+    ['allow', "git commit -F - <<'EOF'\nE\\\nOF\ngit switch main\nEOF"],
+    // `<(` inside double quotes is literal text, no process substitution.
+    ['allow', 'git commit -m "<("'],
+    ['allow', 'echo "<(git switch main)"'],
+    ['deny', 'cat <(git switch main)'],
+    // An escaped blank starts no word, so the `#` after it is text and what follows runs.
+    ['deny', 'echo \\ #; git switch main'],
+    ['deny', 'echo $(echo \\ #; git switch main)'],
+    ['allow', 'echo \\\\ # git switch main'],
+    // A comment is no command text either: a `<<` in one opens nothing, a `'` in one quotes nothing.
+    ['deny', 'true # <<EOF\ngit switch main\nEOF'],
+    ['deny', 'echo $(true # <<EOF\ngit switch main\nEOF\n)'],
+    ['allow', "npm test # it's fine\ngit status"],
+    ['allow', 'echo a#b <<EOF\nx\nEOF'],
+    ['allow', 'echo ${#x}'],
     ['allow', 'git status'],
     ['allow', 'git status --short'],
     ['allow', 'git diff'],

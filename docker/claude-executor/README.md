@@ -13,7 +13,7 @@ this repo's application.
 | Cooperative Stop: the control-endpoint poller and the `PostToolUse` step-boundary hook | `stop-poller.cjs`, `stop-hook.cjs` | `driver/test/run-control.test.ts` |
 | Per-node turn context, the `UserPromptSubmit` hook | `turn-context-hook.cjs` | `driver/test/turn-context-hook.test.ts` |
 | Baked global instructions and config dir (`CLAUDE_CONFIG_DIR`) | `claude-home/` | `driver/test/executor-images.test.ts` |
-| OTLP exporter config, root-owned managed settings; the driver renders its endpoint | `managed-settings.json`, `driver/src/telemetry-config.ts` | `test.sh`, `driver/test/telemetry-shipping.test.ts` |
+| OTLP exporter config, root-owned managed settings and the runner permission allow-list; the driver renders its endpoint | `managed-settings.json`, `driver/src/telemetry-config.ts` | `test.sh`, `driver/test/telemetry-shipping.test.ts`, `driver/test/executor-images.test.ts` |
 | Skills, shared with opencode-executor | `../skills/` | `driver/test/executor-images.test.ts` |
 
 Master-prompt delivery and run control: [docs/jobs.md](../../docs/jobs.md). Managed-settings
