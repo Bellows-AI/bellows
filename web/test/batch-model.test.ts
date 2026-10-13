@@ -9,6 +9,7 @@ import {
     gateInstruction,
     moveStage,
     morningReport,
+    needsPerson,
     nextKey,
     removeStage,
     removeTask,
@@ -216,6 +217,30 @@ describe('a started batch', () => {
         expect(batchVerdict({ ...failed, status: 'completed', completedAt: '2026-09-02T00:00:00.000Z' })).toBe(
             'completed'
         );
+    });
+
+    it('reads an automerge PR the board is still merging as the board’s, not a person’s (#693)', () => {
+        const task = filled().stages[0]!.tasks[0]!;
+        const pr = 'https://github.com/acme/widgets/pull/9';
+        const merging = state({ execution: 'succeeded', pr, waitReason: `waiting for the board to merge ${pr}` });
+        const batch = record({ tasks: [merging] });
+        const boardOn = { tasks: [{ key: 'task-1', next: { action: 'wait' as const } }] };
+        expect(needsPerson(merging, boardOn)).toBe(false);
+        expect(batchVerdict(batch, boardOn)).toBe('running');
+        expect(morningReport(batch, boardOn).needsYou).toBe(0);
+        expect(taskStateLabel(merging, boardOn)).toEqual({ label: 'Board merging', tone: 'ok' });
+        expect(gateInstruction(task, merging, boardOn)).toBeNull();
+
+        // The board cannot merge it by itself: `next` hands it to a person, and the monitor says so.
+        const personOn = { tasks: [{ key: 'task-1', next: { action: 'merge' as const, url: pr } }] };
+        expect(needsPerson(merging, personOn)).toBe(true);
+        expect(batchVerdict(batch, personOn)).toBe('needs_attention');
+        expect(morningReport(batch, personOn).needsYou).toBe(1);
+        expect(taskStateLabel(merging, personOn).label).toBe('Waiting for you');
+        expect(gateInstruction(task, merging, personOn)).toBe('Review and merge the pull request.');
+
+        // No report yet: the record's own rule, as before the first report lands.
+        expect(needsPerson(merging, null)).toBe(true);
     });
 
     it('counts the morning report from the same predicates the rows use', () => {

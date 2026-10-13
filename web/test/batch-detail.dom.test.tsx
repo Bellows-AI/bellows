@@ -3,7 +3,15 @@ import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { BATCH_POLL_MS } from '../src/api/useBatches.js';
-import { addStage, addTask, blankPlan, type BatchRecord, type BatchTaskState, updateTask } from '../src/batch-model.js';
+import {
+    addStage,
+    addTask,
+    blankPlan,
+    type BatchRecord,
+    type BatchReportView,
+    type BatchTaskState,
+    updateTask,
+} from '../src/batch-model.js';
 import { renderApp, stubFetch } from './dom.js';
 
 /**
@@ -65,8 +73,8 @@ function started(plan: BatchPlan, tasks: BatchTaskState[], activeStage: string |
     };
 }
 
-/** The board's batch routes over one held record; writes mutate it the way the store does. */
-function board(initial: BatchRecord) {
+/** The board's batch routes over one held record and its report; writes mutate the record the way the store does. */
+function board(initial: BatchRecord, report: BatchReportView = { state: 'running', tasks: [] }) {
     let record = initial;
     const patchTask = (key: string, change: (task: BatchTaskState) => BatchTaskState) => {
         record = { ...record, tasks: record.tasks.map((task) => (task.key === key ? change(task) : task)) };
@@ -76,7 +84,7 @@ function board(initial: BatchRecord) {
         const prefix = `/api/batches/${ID}`;
         if (!url.startsWith(prefix)) return;
         const [action, key, taskAction] = url.slice(prefix.length).split('/').filter(Boolean);
-        if (method === 'GET') return record;
+        if (method === 'GET') return action === 'report' ? report : record;
         if (action === 'cancel') {
             record = {
                 ...record,
@@ -190,6 +198,36 @@ describe('a started batch', () => {
         expect(one.getByRole('note').textContent).toContain('next stage starts automatically');
         expect(one.getByText('Review and merge the pull request.')).toBeTruthy();
         expect(one.getByRole('link', { name: 'Pull request' }).getAttribute('href')).toBe(PR);
+    });
+
+    it('reads an automerge PR the board is still merging as the board’s, from the report’s next step (#693)', async () => {
+        const plan = twoStagePlan();
+        board(
+            started(plan, [
+                state('task-1', 'stage-1', {
+                    execution: 'succeeded',
+                    pr: PR,
+                    waitReason: `waiting for the board to merge ${PR}`,
+                }),
+                state('task-2', 'stage-1', { execution: 'running' }),
+                state('task-3', 'stage-2'),
+            ]),
+            {
+                state: 'running',
+                tasks: [
+                    { key: 'task-1', next: { action: 'wait' } },
+                    { key: 'task-2', next: { action: 'wait' } },
+                    { key: 'task-3', next: { action: 'wait' } },
+                ],
+            }
+        );
+        renderApp(`/batches/${ID}`);
+        await waitFor(() => expect(within(card('task-1')).getByText('Board merging')).toBeTruthy());
+        await headerPill('Running');
+        expect(within(card('task-1')).queryByText('Waiting for you')).toBeNull();
+        expect(screen.queryByText('Review and merge the pull request.')).toBeNull();
+        expect(screen.getByText(/0 need you/)).toBeTruthy();
+        expect(screen.queryByRole('heading', { name: 'Needs you' })).toBeNull();
     });
 
     it('retries a failed task through the board, and the retry reads as a new attempt', async () => {

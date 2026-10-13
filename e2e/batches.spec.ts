@@ -206,6 +206,63 @@ for (const theme of ['light', 'dark'] as const) {
     });
 }
 
+for (const theme of ['light', 'dark'] as const) {
+    test(`an automerge PR the board is still merging reads as the board's, not yours (${theme})`, async ({ page }) => {
+        const problems = watchConsole(page);
+        await atTheme(page, theme);
+        const board = new BatchBoard(page);
+        await board.install();
+        const id = '0f53d75f-0000-4000-8000-000000000693';
+        const pr = 'https://github.com/acme/widgets/pull/12';
+        const plan = updateTask(
+            { ...blankPlan('acme/widgets'), title: `Board merging (${theme})`, policy: 'automerge' },
+            'task-1',
+            (task) => ({ ...task, objective: 'Bump it', acceptance: 'Builds', verification: 'npm test' })
+        );
+        const now = new Date().toISOString();
+        board.adopt(
+            {
+                id,
+                status: 'running',
+                version: 3,
+                createdBy: null,
+                startedBy: null,
+                createdAt: now,
+                updatedAt: now,
+                startedAt: now,
+                cancelledAt: null,
+                completedAt: null,
+                expiredAt: null,
+                activeStage: 'stage-1',
+                plan,
+                tasks: [
+                    {
+                        key: 'task-1',
+                        stage: 'stage-1',
+                        execution: 'succeeded',
+                        pr,
+                        gate: 'open',
+                        waitReason: `waiting for the board to merge ${pr}`,
+                        rootJobId: null,
+                        attempt: 1,
+                    },
+                ],
+                verification: [],
+            },
+            { state: 'running', tasks: [{ key: 'task-1', next: { action: 'wait' } }] }
+        );
+        await page.goto(`/batches/${id}`);
+        const task = page.locator('[data-task="task-1"]');
+        await expect(task.getByText('Board merging')).toBeVisible();
+        await expect(page.locator('.page-header-meta .pill')).toHaveText('Running');
+        await expect(task.getByText('Waiting for you')).toHaveCount(0);
+        await expect(page.getByText('Review and merge the pull request.')).toHaveCount(0);
+        await expect(page.getByText(/0 need you/)).toBeVisible();
+        await shoot(page, 'board-merging', theme);
+        expect(problems.join('\n')).toBe('');
+    });
+}
+
 test('a refused plan shows each problem at its field and writes nothing', async ({ page }) => {
     await page.goto('/batches/new');
     await page.getByRole('button', { name: 'Save draft' }).click();
