@@ -144,7 +144,7 @@ export function renderJobDetail(job: BoardJobRecord): string {
         field('session:', job.sessionId),
         field('exit:', job.exitCode),
         // Why a FAILED run failed (issue #339) — the verdict's structured half.
-        field('failure:', job.failureKind),
+        field('failure:', job.failureCause ? `${job.failureKind} (cause ${job.failureCause})` : job.failureKind),
         // The run's last words: what was done, beside the command that asked for it.
         field('summary:', job.summary),
     ];

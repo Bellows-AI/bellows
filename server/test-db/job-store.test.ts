@@ -389,6 +389,9 @@ describe.skipIf(!enabled)('job store', () => {
             failureCause: 'conflict',
         });
         expect(await causeOf(first.id)).toBe('conflict');
+        // Read back beside the kind, so a reader sees why a batch chose repair over attention.
+        expect(await store.get(first.id)).toMatchObject({ failureKind: 'publish', failureCause: 'conflict' });
+        expect((await store.thread(first.id))?.[0]).toMatchObject({ failureCause: 'conflict' });
 
         const second = await queue('echo hi');
         const two = await store.claim('w2', LEASE_SECONDS);

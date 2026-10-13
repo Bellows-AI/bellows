@@ -35,7 +35,7 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
                -- scoped: every member carries the total, so the view reads it off any of
                -- them. A sum over all-null banks is null — nothing measurable, never zero.
                sum(wall_clock_ms) over () as task_wall_clock_ms,
-               wall_clock_ms, agent_turns, summary, failure_kind,
+               wall_clock_ms, agent_turns, summary, failure_kind, failure_cause,
                wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason
                ${publicationColumns}
                ${authorColumns}
@@ -64,7 +64,7 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                session_id, exit_code, output, gates, runtime, repo, executor, executor_scope,
                parent_job_id, root_job_id, workflow_node, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
-               summary, wall_clock_ms, agent_turns, failure_kind,
+               summary, wall_clock_ms, agent_turns, failure_kind, failure_cause,
                -- The thread's wait (036) and publication (#324), served by the detail reads on
                -- the same thread-wide rule thread() follows — the per-run lists answer null.
                wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason
@@ -255,7 +255,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
                    head.claimed_by as claimed_by, job.created_by as created_by,
                    head.session_id as session_id,
                    head.exit_code as exit_code, head.summary as summary, head.runtime as runtime,
-                   head.failure_kind as failure_kind,
+                   head.failure_kind as failure_kind, head.failure_cause as failure_cause,
                    head.wall_clock_ms as wall_clock_ms,
                    job.repo as repo, job.executor as executor, job.executor_scope as executor_scope,
                    job.parent_job_id as parent_job_id, job.root_job_id as root_job_id,
@@ -301,7 +301,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
                -- The close-time summary and the run's own banked clock ride beside the
                -- vitals, both bounded where output is not (#109); the structured failure
                -- kind (044) is what a list badge or a query reads.
-               summary, wall_clock_ms, agent_turns, failure_kind
+               summary, wall_clock_ms, agent_turns, failure_kind, failure_cause
                ${authorColumns}
         from job ${authorJoin}
         where org_id = ${orgId} ${

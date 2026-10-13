@@ -38,6 +38,7 @@ export interface JobRow {
     summary?: string | null;
     /** The structured terminal reason (044); null is "not a failure", never "unknown". */
     failure_kind?: string | null;
+    failure_cause?: string | null;
     /** Absent from the list() select — a list view shows no checks, and bounded is not free. */
     gates?: GateReport[] | null;
     /**
@@ -153,6 +154,12 @@ export function runtimePatch(runtime: RuntimeVitals): Record<string, unknown> {
     };
 }
 
+/** Why a failed run failed: the kind, and beside a `gate`/`publish`/`helper` kind its cause. */
+const failureOf = (row: JobRow): Pick<Job, 'failureKind' | 'failureCause'> => ({
+    failureKind: (row.failure_kind as Job['failureKind']) ?? null,
+    failureCause: (row.failure_cause as Job['failureCause']) ?? null,
+});
+
 export function toJob(orgId: string, hasWorkspaces: boolean, row: JobRow): Job {
     return {
         id: row.id,
@@ -169,7 +176,7 @@ export function toJob(orgId: string, hasWorkspaces: boolean, row: JobRow): Job {
         exitCode: row.exit_code,
         output: row.output ?? null,
         summary: row.summary ?? null,
-        failureKind: (row.failure_kind as Job['failureKind']) ?? null,
+        ...failureOf(row),
         gates: row.gates ?? null,
         runtime: row.runtime ?? null,
         repo: row.repo,

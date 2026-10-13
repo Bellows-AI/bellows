@@ -167,6 +167,11 @@ export interface Job {
      */
     failureKind: FailureKind | null;
     /**
+     * What caused a `gate`, `publish` or `helper` failure (#581) — the half a batch's recovery
+     * decides on. Null beside any other kind, on success, and when the worker reported none.
+     */
+    failureCause: FailureCause | null;
+    /**
      * The verification gates this run has run or is running — the checks the job's checkout
      * declares in `.bellows.yaml` and the driver executes in the declared environment image.
      * Current/last state only, replaced on every worker report: the UI deliberately shows no
