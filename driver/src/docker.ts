@@ -231,7 +231,12 @@ export function gateEnvContainerName(key: string): string {
  * NAME=value` — the values are member-scoped secrets and argv is world-readable. No env file, no
  * `--env-file`: the container then starts with the image's own environment.
  */
-export function gateEnvArgs(config: DriverConfig, key: string, image: string, envFile?: string): string[] {
+export function gateEnvArgs(
+    config: DriverConfig,
+    key: string,
+    image: string,
+    { envFile, job }: { envFile?: string | undefined; job?: Pick<BoardJob, 'id' | 'leaseToken'> | undefined } = {}
+): string[] {
     if (!GATE_KEY.test(key)) {
         throw new Error(
             `refusing to run a gate environment from a checkout key that is not <org>/<uuid>/.worktrees/<uuid>: ${key}`
@@ -250,6 +255,10 @@ export function gateEnvArgs(config: DriverConfig, key: string, image: string, en
         gateEnvContainerName(key),
         '--label',
         `${GATE_LABEL}=${key}`,
+        // The creating attempt, so the orphan reaper can ask the board whether it is still alive.
+        ...(job?.leaseToken
+            ? ['--label', `${JOB_LABEL}=${job.id}`, '--label', `${LEASE_LABEL}=${job.leaseToken}`]
+            : []),
         // The gate env is a WRITER on the shared task worktree, so it writes as the same
         // uid:gid every other writer on that tree uses — the executor images' `USER node`
         // (uid 1000), which the runner, the sync and the reclaim containers all run as.

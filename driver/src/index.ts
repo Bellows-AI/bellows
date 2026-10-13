@@ -51,6 +51,7 @@ const runner =
 // checkout and execs into it, kubernetes runs each gate as a Job in the declared image — the
 // runner decides, the loop does not. The endpoint is NOT opened here — the server listens
 // lazily on the first launched attempt (it also carries the run-control channel, issue #442).
+let holdsGateContainer = (_name: string): boolean => false;
 const gates: GateStack = (() => {
     if (config.executor === 'kubernetes') {
         const manager = createKubernetesGateManager({ config, request: request! });
@@ -65,6 +66,7 @@ const gates: GateStack = (() => {
         cooldownMs: config.gateCooldownMs,
         gateTimeoutMs: config.gateTimeoutMs,
     });
+    holdsGateContainer = manager.holds;
     return {
         manager,
         server: createGateServer({ host: config.gateListenHost, manager }),
@@ -90,7 +92,10 @@ const reaper = createReaper({
     arm:
         config.executor === 'kubernetes'
             ? createKubernetesReaper({ config, request: request! })
-            : createDockerReaper((args, options) => run('docker', args, { ...options, encoding: 'utf8' })),
+            : createDockerReaper(
+                  (args, options) => run('docker', args, { ...options, encoding: 'utf8' }),
+                  holdsGateContainer
+              ),
     intervalMs: config.reapIntervalMs,
     graceMs: config.reapGraceMs,
     log: (m) => console.log(`[driver] ${m}`),

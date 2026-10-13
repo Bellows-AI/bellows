@@ -3,7 +3,7 @@ import { networkName, serviceContainerName } from '../src/services.js';
 import type { BoardJob } from '../src/board.js';
 import { createDockerReaper, parseDockerCreatedAt } from '../src/docker-reaper.js';
 import type { ExecDocker } from '../src/docker-runner-support.js';
-import type { OrphanGroup } from '../src/reaper.js';
+import { createReaper, type OrphanGroup } from '../src/reaper.js';
 
 /**
  * The docker reaper arm, offline: the daemon seam is the same `ExecDocker` injected function the
@@ -96,7 +96,7 @@ describe('the docker reaper arm: scan', () => {
 
         const groups = await arm.scan();
 
-        expect(calls).toEqual([PS_ARGS]);
+        expect(calls).toEqual([PS_ARGS, ['ps', '-a', '--filter', 'label=factory.gates', '--format', '{{json .}}']]);
         expect(groups).toEqual([
             {
                 jobId: JOB,
@@ -120,6 +120,64 @@ describe('the docker reaper arm: scan', () => {
         const arm = createDockerReaper(execDocker);
 
         await expect(arm.scan()).resolves.toEqual([]);
+    });
+});
+
+describe('the docker reaper arm: gate environments (issue #667)', () => {
+    const OLD = '2026-09-01 00:00:00 +0000 UTC';
+    const gateLine = (id: string, name: string, jobId: string, lease: string) =>
+        JSON.stringify({
+            ID: id,
+            Names: name,
+            Labels: `factory.gates=k,factory.job=${jobId},factory.lease=${lease}`,
+            CreatedAt: OLD,
+        });
+
+    /** A sweep over one gate list, answering the board's lease for JOB and JOB2. */
+    const sweep = async (lines: string[], leases: { id: string; leaseToken: string | null }[], held: string[]) => {
+        const removed: string[] = [];
+        const execDocker: ExecDocker = async (args) => {
+            if (args[0] === 'ps') return { stdout: args.includes('label=factory.gates') ? lines.join('\n') : '' };
+            if (args[0] === 'rm') removed.push(args[2]!);
+            return { stdout: '' };
+        };
+        const reaper = createReaper({
+            board: { leases: async () => leases.map((l) => ({ ...l, status: 'running' as const })) },
+            arm: createDockerReaper(execDocker, (name) => held.includes(name)),
+            intervalMs: 0,
+            graceMs: 0,
+            log: () => undefined,
+            now: () => Date.now(),
+        });
+        await reaper.sweep();
+        return removed;
+    };
+
+    it('removes an environment whose creating attempt is dead and no live manager holds', async () => {
+        const removed = await sweep(
+            [gateLine('orphan', 'factory-env-a', JOB, LEASE)],
+            [{ id: JOB, leaseToken: LEASE2 }],
+            []
+        );
+        expect(removed).toEqual(['orphan']);
+    });
+
+    it('keeps an environment whose creating lease is still the live one', async () => {
+        const removed = await sweep(
+            [gateLine('live', 'factory-env-a', JOB, LEASE)],
+            [{ id: JOB, leaseToken: LEASE }],
+            []
+        );
+        expect(removed).toEqual([]);
+    });
+
+    it('keeps an environment this driver still holds in its cooldown, whatever its labels say', async () => {
+        const removed = await sweep(
+            [gateLine('warm', 'factory-env-a', JOB, LEASE)],
+            [{ id: JOB, leaseToken: LEASE2 }],
+            ['factory-env-a']
+        );
+        expect(removed).toEqual([]);
     });
 });
 
