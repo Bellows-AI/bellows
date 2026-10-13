@@ -15,6 +15,7 @@ import {
     taskExecutorOf,
     taskStateLabel,
     taskTargetOf,
+    type BatchNextOf,
     type BatchRecord,
     type BatchTaskState,
     type StageView,
@@ -38,12 +39,14 @@ const SHA_LENGTH = 8;
 
 function TaskCard({
     batch,
+    report,
     view,
     onRetry,
     onAccept,
     pending,
 }: {
     batch: BatchRecord;
+    report: BatchNextOf;
     view: StageView['tasks'][number];
     onRetry: TaskAction;
     onAccept: TaskAction;
@@ -52,8 +55,8 @@ function TaskCard({
     const { task, state } = view;
     const plan: BatchPlan = batch.plan;
     if (!state) return null;
-    const { label, tone } = taskStateLabel(state);
-    const instruction = gateInstruction(task, state);
+    const { label, tone } = taskStateLabel(state, report);
+    const instruction = gateInstruction(task, state, report);
     const acceptable =
         task.completion.kind === BATCH_COMPLETION_ACCEPTED &&
         state.stage === batch.activeStage &&
@@ -106,11 +109,13 @@ function TaskCard({
 
 function StageRow({
     batch,
+    report,
     view,
     index,
     ...actions
 }: {
     batch: BatchRecord;
+    report: BatchNextOf;
     view: StageView;
     index: number;
     onRetry: TaskAction;
@@ -163,7 +168,7 @@ function StageRow({
             ) : null}
             <ul className="batch-tasks">
                 {tasks.map((view) => (
-                    <TaskCard key={view.task.key} batch={batch} view={view} {...actions} />
+                    <TaskCard key={view.task.key} batch={batch} report={report} view={view} {...actions} />
                 ))}
             </ul>
         </section>
@@ -171,18 +176,18 @@ function StageRow({
 }
 
 /** What landed, what waits on you, what has not begun, and the pull requests merged so far. */
-export function BatchReport({ batch }: { batch: BatchRecord }) {
-    const report = morningReport(batch);
+export function BatchReport({ batch, report }: { batch: BatchRecord; report: BatchNextOf }) {
+    const counts = morningReport(batch, report);
     const merged = batch.tasks.filter(
         (task): task is BatchTaskState => isAccepted(task) && task.pr !== TASK_NO_PR && PR_URL.test(task.pr)
     );
-    const waiting = batch.tasks.filter((task) => !isAccepted(task) && needsPerson(task));
+    const waiting = batch.tasks.filter((task) => !isAccepted(task) && needsPerson(task, report));
     const failedStages = batch.verification.filter(verificationFailed);
     return (
         <section className="panel" aria-labelledby="batch-report-title">
             <h2 id="batch-report-title">Report</h2>
             <p>
-                {report.accepted} of {report.total} tasks accepted · {report.needsYou} need you · {report.notStarted}{' '}
+                {counts.accepted} of {counts.total} tasks accepted · {counts.needsYou} need you · {counts.notStarted}{' '}
                 not started
             </p>
             {waiting.length > 0 || failedStages.length > 0 ? (
@@ -196,7 +201,7 @@ export function BatchReport({ batch }: { batch: BatchRecord }) {
                         ))}
                         {waiting.map((task) => (
                             <li key={task.key}>
-                                {task.key}: {task.waitReason ?? taskStateLabel(task).label}
+                                {task.key}: {task.waitReason ?? taskStateLabel(task, report).label}
                             </li>
                         ))}
                     </ul>
@@ -224,22 +229,26 @@ export function BatchReport({ batch }: { batch: BatchRecord }) {
 
 export function BatchMonitor({
     batch,
+    report,
     onRetry,
     onAccept,
     pending,
 }: {
     batch: BatchRecord;
+    /** The board's report, for each task's `next`; null until the first one lands. */
+    report: BatchNextOf;
     onRetry: TaskAction;
     onAccept: TaskAction;
     pending: string | null;
 }) {
     return (
         <>
-            <BatchReport batch={batch} />
+            <BatchReport batch={batch} report={report} />
             {stageViews(batch).map((view, index) => (
                 <StageRow
                     key={view.stage.key}
                     batch={batch}
+                    report={report}
                     view={view}
                     index={index}
                     onRetry={onRetry}

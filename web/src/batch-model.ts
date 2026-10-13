@@ -21,6 +21,7 @@ import {
     TASK_SUCCEEDED,
     VERIFY_FAILED,
     VERIFY_PENDING,
+    type BatchNextAction,
     type BatchPlan,
     type BatchPolicy,
     type BatchStage,
@@ -86,6 +87,15 @@ export interface BatchRecord extends Omit<BatchSummary, 'title' | 'taskCount'> {
     verification: StageVerificationState[];
 }
 
+/** The subset of `GET /api/batches/:id/report` the monitor reads: each task's `next`, the board's word on who acts. */
+export interface BatchReportView {
+    state: string;
+    tasks: { key: string; next: BatchNextAction }[];
+}
+
+/** The report as the model reads it; null until the first one lands. */
+export type BatchNextOf = Pick<BatchReportView, 'tasks'> | null;
+
 export type BatchVerdict = 'draft' | 'running' | 'needs_attention' | 'completed' | 'cancelled' | 'expired';
 
 export const VERDICT_LABEL: Record<BatchVerdict, string> = {
@@ -109,9 +119,18 @@ export const VERDICT_PILL: Record<BatchVerdict, string> = {
 
 const PARKED_EXECUTIONS: readonly string[] = [TASK_FAILED, TASK_STOPPED];
 
-/** A task nothing will move without a person: a failed or stopped run, or a gate waiting on one. */
-export const needsPerson = (task: BatchTaskState): boolean =>
-    task.waitReason !== null || PARKED_EXECUTIONS.includes(task.execution);
+const NEXT_WAIT = 'wait';
+
+/** The board still acting on a task — moving work, or an automerge PR it is merging or repairing. */
+export const boardActing = (task: BatchTaskState, report: BatchNextOf): boolean =>
+    report?.tasks.find((entry) => entry.key === task.key)?.next.action === NEXT_WAIT;
+
+/**
+ * A task nothing will move without a person: a failed or stopped run, or a gate waiting on one —
+ * unless the report's `next` says the board is on it (the CLI's `needsPerson`, cli/src/batch.ts).
+ */
+export const needsPerson = (task: BatchTaskState, report: BatchNextOf): boolean =>
+    (task.waitReason !== null || PARKED_EXECUTIONS.includes(task.execution)) && !boardActing(task, report);
 
 /** A merged stage whose target failed its checks: the board holds the next stage until a person fixes it on GitHub. */
 export const verificationFailed = (row: StageVerificationState): boolean => row.state === VERIFY_FAILED;
@@ -120,23 +139,28 @@ export const verificationFailed = (row: StageVerificationState): boolean => row.
 export const verificationPending = (row: StageVerificationState): boolean => row.state === VERIFY_PENDING;
 
 /** Where a batch stands: every status but running is the board's own; a running one is read off the tasks. */
-export function batchVerdict(batch: Pick<BatchRecord, 'status' | 'tasks' | 'verification'>): BatchVerdict {
+export function batchVerdict(
+    batch: Pick<BatchRecord, 'status' | 'tasks' | 'verification'>,
+    report: BatchNextOf
+): BatchVerdict {
     if (batch.status === BATCH_DRAFT) return 'draft';
     if (batch.status === BATCH_CANCELLED) return 'cancelled';
     if (batch.status === BATCH_EXPIRED) return 'expired';
     if (batch.status === BATCH_COMPLETED) return 'completed';
-    return batch.tasks.some(needsPerson) || batch.verification.some(verificationFailed) ? 'needs_attention' : 'running';
+    return batch.tasks.some((task) => needsPerson(task, report)) || batch.verification.some(verificationFailed)
+        ? 'needs_attention'
+        : 'running';
 }
 
 /** A list row's verdict: the summary carries no tasks, so a started batch not yet finished reads as running. */
 export function summaryVerdict(batch: Pick<BatchSummary, 'status'>): BatchVerdict {
-    return batchVerdict({ ...batch, tasks: [], verification: [] });
+    return batchVerdict({ ...batch, tasks: [], verification: [] }, null);
 }
 
 export type TaskTone = 'ok' | 'warn' | 'bad' | 'done' | 'accent';
 
 /** A task's state as one label and one tone; the label always renders (design-system.md, status color). */
-export function taskStateLabel(task: BatchTaskState): { label: string; tone: TaskTone } {
+export function taskStateLabel(task: BatchTaskState, report: BatchNextOf): { label: string; tone: TaskTone } {
     if (isAccepted(task)) return { label: 'Accepted', tone: 'done' };
     switch (task.execution) {
         case TASK_RUNNING:
@@ -152,7 +176,9 @@ export function taskStateLabel(task: BatchTaskState): { label: string; tone: Tas
         case TASK_CANCELLED:
             return { label: 'Cancelled', tone: 'warn' };
         case TASK_SUCCEEDED:
-            return { label: 'Waiting for you', tone: 'accent' };
+            return boardActing(task, report)
+                ? { label: 'Board merging', tone: 'ok' }
+                : { label: 'Waiting for you', tone: 'accent' };
         default:
             return { label: 'Not started', tone: 'warn' };
     }
@@ -207,8 +233,8 @@ export const targetLabel = (plan: BatchPlan, key: string): string => {
  * What a person must do for a task's gate, in words: the PR to review and merge, or the condition
  * to confirm. Null when nothing waits on a person for it.
  */
-export function gateInstruction(task: BatchTask, state: BatchTaskState): string | null {
-    if (state.waitReason === null || state.execution !== TASK_SUCCEEDED) return null;
+export function gateInstruction(task: BatchTask, state: BatchTaskState, report: BatchNextOf): string | null {
+    if (state.waitReason === null || state.execution !== TASK_SUCCEEDED || boardActing(state, report)) return null;
     if (task.completion.kind === BATCH_COMPLETION_ACCEPTED) {
         return `Check that ${task.completion.condition} holds, then record your acceptance.`;
     }
@@ -245,11 +271,11 @@ export interface MorningReport {
 }
 
 /** The batch at a glance: what landed, what waits on a person, what has not begun. Counts only. */
-export function morningReport(batch: Pick<BatchRecord, 'tasks' | 'verification'>): MorningReport {
+export function morningReport(batch: Pick<BatchRecord, 'tasks' | 'verification'>, report: BatchNextOf): MorningReport {
     return {
         accepted: batch.tasks.filter(isAccepted).length,
         needsYou:
-            batch.tasks.filter((task) => !isAccepted(task) && needsPerson(task)).length +
+            batch.tasks.filter((task) => !isAccepted(task) && needsPerson(task, report)).length +
             batch.verification.filter(verificationFailed).length,
         notStarted: batch.tasks.filter((task) => task.execution === TASK_PENDING).length,
         total: batch.tasks.length,

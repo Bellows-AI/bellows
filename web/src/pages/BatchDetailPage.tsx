@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { batchActions, useBatch } from '../api/useBatches.js';
+import { batchActions, useBatch, useBatchReport } from '../api/useBatches.js';
 import { batchVerdict, BATCH_DRAFT, VERDICT_LABEL, VERDICT_PILL, type BatchRecord } from '../batch-model.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { RelativeTime } from '../components/RelativeTime.js';
@@ -17,7 +17,8 @@ function StartedBatch({ batch, refresh }: { batch: BatchRecord; refresh: () => v
     const [error, setError] = useState<string | null>(null);
     const [pending, setPending] = useState<string | null>(null);
     const [confirming, setConfirming] = useState(false);
-    const verdict = batchVerdict(batch);
+    const { data: report, refresh: refreshReport } = useBatchReport(batch.id);
+    const verdict = batchVerdict(batch, report);
 
     const act = async (key: string, request: () => Promise<{ ok: boolean; error?: string }>) => {
         setPending(key);
@@ -29,6 +30,7 @@ function StartedBatch({ batch, refresh }: { batch: BatchRecord; refresh: () => v
             return result.error ?? null;
         }
         refresh();
+        refreshReport();
         return null;
     };
 
@@ -84,6 +86,7 @@ function StartedBatch({ batch, refresh }: { batch: BatchRecord; refresh: () => v
             ) : null}
             <BatchMonitor
                 batch={batch}
+                report={report}
                 pending={pending}
                 onRetry={(key) => act(key, () => batchActions.retry(batch.id, key))}
                 onAccept={(key) => act(key, () => batchActions.accept(batch.id, key))}
