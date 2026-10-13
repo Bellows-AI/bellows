@@ -142,9 +142,11 @@ describe('the test-jobs harness', () => {
 
     // docker-compose.yml requires JOB_BOARD_TOKEN for the dashboard, and compose interpolates the
     // whole file to build the driver alone: with no .env (a worktree, CI) the build was refused.
-    it('every compose call of the driver phase can interpolate the compose file', () => {
-        const calls = SCRIPT.split('\n').filter((l) => l.includes('docker compose -p "$COMPOSE_PROJECT"'));
-        expect(calls.length).toBe(4);
+    it('every compose call that interpolates the compose file can, with no .env', () => {
+        const calls = SCRIPT.split('\n').filter(
+            (l) => l.includes('docker compose -p "$COMPOSE_PROJECT"') || l.includes('docker compose up')
+        );
+        expect(calls.length).toBe(5);
         for (const call of calls) expect(call).toContain('JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose');
         expect(SCRIPT).toContain('    -e JOB_BOARD_TOKEN= \\\n');
     });

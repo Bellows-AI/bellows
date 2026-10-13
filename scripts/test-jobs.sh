@@ -31,7 +31,7 @@ COMPOSE_DRIVER="factory-jobs-compose-driver"
 # torn down by name without touching the stack services the script itself started (postgres).
 COMPOSE_PROJECT="factory-jobs-smoke-compose"
 # docker-compose.yml requires JOB_BOARD_TOKEN for the dashboard service, and compose interpolates the
-# whole file even to build or run the driver alone. The phase's driver is started with the token
+# whole file even to start postgres or build or run the driver alone. The phase's driver is started with the token
 # cleared (`-e JOB_BOARD_TOKEN=`), like every host-driven one: this value only satisfies the parse.
 COMPOSE_TOKEN="${JOB_BOARD_TOKEN:-test-jobs-compose-interpolation-only}"
 # The repository every task runs against (issue #263): a ready selection on the board and, in the
@@ -175,7 +175,7 @@ command -v docker >/dev/null || {
 }
 
 echo 'starting postgres'
-docker compose up -d postgres >/dev/null 2>&1
+JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose up -d postgres >/dev/null 2>&1
 for _ in $(seq 1 30); do
     docker compose exec -T postgres pg_isready -U factory >/dev/null 2>&1 && break
     sleep 1
