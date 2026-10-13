@@ -36,6 +36,7 @@ const started = (over: Partial<BatchRecord> = {}): BatchRecord => ({
     completedAt: null,
     activeStage: 'stage-1',
     plan: plan(),
+    verification: [],
     tasks: [
         {
             key: 'task-1',

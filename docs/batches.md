@@ -34,7 +34,7 @@ recorded acceptance.
 | Auth wall: human credentials only | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts` |
 | CLI client: `factory batch …`, draft round-trip, `report`, wait exit codes (expired ends as cancelled, a failed stage verification needs attention, a pending one keeps waiting) | `cli/src/batch.ts`, `batch-commands.ts`, `batch-render.ts` | `cli/test/batch.test.ts` |
 | Local-session skill: plan authoring, launch, watch, act on `next`; its example plan | `.claude/skills/batch-control/` | `core/test/skills.batch-control.test.ts` |
-| Web: list, draft composer, monitor, human-gate and task backlink | `web/src/pages/Batch*Page.tsx`, `web/src/panels/Batch*.tsx`, `web/src/api/useBatches.ts`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts`, `web/test/batch-detail.dom.test.tsx`, `e2e/batches.spec.ts` ([design-system/batches.md](design-system/batches.md)) |
+| Web: list, draft composer, monitor, human-gate and task backlink | `web/src/pages/Batch*Page.tsx`, `web/src/panels/Batch*.tsx`, `web/src/api/useBatches.ts`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts` (stage verification: failed needs a person, pending and passed do not), `web/test/batch-detail.dom.test.tsx`, `e2e/batches.spec.ts` ([design-system/batches.md](design-system/batches.md)) |
 | In-memory store double for the offline route tests | `server/test/helpers-batch-store.ts` | `server/test/routes.batches.test.ts` |
 
 ## Invariants

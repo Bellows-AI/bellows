@@ -59,8 +59,19 @@ const record = (over: Partial<BatchRecord> = {}): BatchRecord => ({
     activeStage: 'stage-1',
     plan: filled(),
     tasks: [state()],
+    verification: [],
     ...over,
 });
+
+const verifying = (state: string): BatchRecord['verification'] => [
+    {
+        stage: 'stage-1',
+        state,
+        detail: 'checks on main fail',
+        headSha: 'cd89f3d2aa',
+        checkedAt: '2026-09-01T00:00:00.000Z',
+    },
+];
 
 describe('the draft edits', () => {
     it('starts from a plan the shared validator accepts once the text is filled', () => {
@@ -177,6 +188,19 @@ describe('a started batch', () => {
         expect(gateInstruction(task, state({ execution: 'running' }))).toBeNull();
         const accepted = { ...task, completion: { kind: 'accepted' as const, condition: 'the dashboard loads' } };
         expect(gateInstruction(accepted, waiting)).toContain('the dashboard loads');
+    });
+
+    it('reads a failed stage verification as needing a person, and pending or passed as not', () => {
+        const accepted = [state({ execution: 'succeeded', gate: 'passed' })];
+        const failed = record({ tasks: accepted, verification: verifying('failed') });
+        expect(batchVerdict(failed)).toBe('needs_attention');
+        expect(morningReport(failed).needsYou).toBe(1);
+        for (const ok of ['pending', 'passed']) {
+            const batch = record({ tasks: accepted, verification: verifying(ok) });
+            expect(batchVerdict(batch)).toBe('running');
+            expect(morningReport(batch).needsYou).toBe(0);
+        }
+        expect(batchVerdict({ ...failed, completedAt: '2026-09-02T00:00:00.000Z' })).toBe('completed');
     });
 
     it('counts the morning report from the same predicates the rows use', () => {

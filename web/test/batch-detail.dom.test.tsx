@@ -60,6 +60,7 @@ function started(plan: BatchPlan, tasks: BatchTaskState[], activeStage: string |
         activeStage,
         plan,
         tasks,
+        verification: [],
     };
 }
 
@@ -128,6 +129,43 @@ describe('a started batch', () => {
         renderApp(`/batches/${ID}`);
         await headerPill('Running');
         expect(within(stage(1)).getAllByText('Running', { selector: '.batch-task .pill-ok' })).toHaveLength(2);
+    });
+
+    it('shows a failed stage verification as needing a person, and clears it once the board passes it', async () => {
+        const plan = twoStagePlan();
+        const tasks = [
+            state('task-1', 'stage-1', { execution: 'succeeded', pr: PR, gate: 'passed' }),
+            state('task-2', 'stage-1', { execution: 'succeeded', pr: PR, gate: 'passed' }),
+            state('task-3', 'stage-2'),
+        ];
+        const verification = (state: string) => [
+            {
+                stage: 'stage-1',
+                state,
+                detail: 'checks on main at cd89f3d2 fail: e2e failing',
+                headSha: 'cd89f3d2aabbccdd',
+                checkedAt: '2026-09-01T00:30:00.000Z',
+            },
+        ];
+        const fake = board({ ...started(plan, tasks), verification: verification('failed') });
+        renderApp(`/batches/${ID}`);
+        await headerPill('Needs attention');
+        const notice = stage(1).querySelector('[data-verification="failed"]')!;
+        expect(notice.textContent).toContain('checks on main at cd89f3d2 fail: e2e failing');
+        expect(notice.textContent).toContain('cd89f3d2');
+        expect(screen.getByText(/1 need you/)).toBeTruthy();
+        expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull();
+
+        fake.set({ ...started(plan, tasks), verification: verification('pending') });
+        await waitFor(() => expect(document.querySelector('[data-verification="pending"]')).not.toBeNull(), {
+            timeout: 8000,
+        });
+        expect(document.querySelector('[data-verification="failed"]')).toBeNull();
+        await headerPill('Running');
+
+        fake.set({ ...started(plan, tasks), verification: verification('passed') });
+        await waitFor(() => expect(document.querySelector('[data-verification]')).toBeNull(), { timeout: 8000 });
+        expect(screen.getByText(/0 need you/)).toBeTruthy();
     });
 
     it('at the human gate names the pull request and says the next stage starts by itself', async () => {
