@@ -1580,6 +1580,23 @@ describe('the gate environment container', () => {
         expect(line).toEqual(expect.arrayContaining(['--user', '1000:1000', '-e', 'HOME=/tmp']));
     });
 
+    // Issue #507, the docker half: the gate container is sized by GATE_* (each slot falling back
+    // to the runner's), rendered as the runner's own flags; nothing configured leaves it unthrottled.
+    it('carries the gate resources as docker flags before the image, and none when unconfigured', () => {
+        const sized = gateEnvArgs(
+            loadDriverConfig({ RUNNER_CPU_LIMIT: '4', GATE_MEMORY_LIMIT: '8Gi', GATE_MEMORY_REQUEST: '2Gi' }),
+            KEY,
+            'node:24'
+        );
+        expect(sized.slice(0, sized.indexOf('node:24'))).toEqual(
+            expect.arrayContaining(['--cpus', '4', '--memory', '8589934592', '--memory-reservation', '2147483648'])
+        );
+        const plain = gateEnvArgs(config, KEY, 'node:24');
+        expect(plain).not.toContain('--cpus');
+        expect(plain).not.toContain('--memory');
+        expect(plain).not.toContain('--memory-reservation');
+    });
+
     // A gate's tail is what the job output shows; npm's update notice must not be its last word
     // (#511). Container env, so every `docker exec` of a gate inherits it.
     it('silences npm update notices for every gate exec', () => {

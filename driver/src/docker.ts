@@ -1,7 +1,13 @@
 import { GATE_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type DriverConfig, cpuQuantityToCores, executorImage, memoryQuantityToBytes } from './config.js';
+import {
+    type DriverConfig,
+    type RunnerResources,
+    cpuQuantityToCores,
+    executorImage,
+    memoryQuantityToBytes,
+} from './config.js';
 import type { BoardJob } from './board.js';
 import {
     UUID,
@@ -283,6 +289,8 @@ export function gateEnvArgs(
     ];
     if (envFile) args.push('--env-file', envFile);
     if (config.network) args.push('--network', config.network);
+    // Sized like the kubernetes gate Job (issue #507): GATE_*, each unset slot the runner's.
+    args.push(...resourceArgs(config.gateResources));
     args.push('--entrypoint', 'sleep', image, 'infinity');
     return args;
 }
@@ -359,15 +367,16 @@ export const envFilePath = (job: BoardJob): string => {
 };
 
 /**
- * The runner's resource caps (issue #360): the configured limits as docker's own flags, the
- * memory request as the soft `--memory-reservation` floor. Quantities are translated once, in
+ * A resource block's caps — the runner's (issue #360), the gate container's (issue #507): the
+ * configured limits as docker's own flags, the memory request as the soft `--memory-reservation`
+ * floor. Quantities are translated once, in
  * config.ts — the same values the kubernetes pod specs render verbatim. There is no cpu-request
  * flag by decision: docker has no absolute CPU floor (`--cpu-shares` is a relative weight), and
  * capping a runner at its request would throttle builds the kubernetes side leaves free. Empty
  * when nothing is configured — the dev daemon stays unthrottled.
  */
-export function runnerResourceArgs(config: DriverConfig): string[] {
-    const { cpuLimit, memoryLimit, memoryRequest } = config.runnerResources;
+export function resourceArgs(block: RunnerResources): string[] {
+    const { cpuLimit, memoryLimit, memoryRequest } = block;
     const args: string[] = [];
     if (cpuLimit) args.push('--cpus', cpuQuantityToCores(cpuLimit));
     if (memoryLimit) args.push('--memory', memoryQuantityToBytes(memoryLimit));
@@ -469,7 +478,7 @@ export function dockerArgs(
 
     // Issue #360 on this side too: the configured requests/limits as resource flags, before the
     // credentials. Nothing configured renders nothing — the argv is exactly what it always was.
-    args.push(...runnerResourceArgs(config));
+    args.push(...resourceArgs(config.runnerResources));
 
     pushRunnerCredentialArgs(args, config, job, envFile);
 

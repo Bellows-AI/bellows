@@ -195,6 +195,29 @@ spec:
                       {{- end }}
                       {{- end }}
                       {{- end }}
+                      {{- with $.Values.runner.gateResources }}
+                      # The gate Jobs' own sizing (issue #507); each unset slot is the runner's.
+                      {{- with .requests }}
+                      {{- with .cpu }}
+                      - name: GATE_CPU_REQUEST
+                        value: {{ . | quote }}
+                      {{- end }}
+                      {{- with .memory }}
+                      - name: GATE_MEMORY_REQUEST
+                        value: {{ . | quote }}
+                      {{- end }}
+                      {{- end }}
+                      {{- with .limits }}
+                      {{- with .cpu }}
+                      - name: GATE_CPU_LIMIT
+                        value: {{ . | quote }}
+                      {{- end }}
+                      {{- with .memory }}
+                      - name: GATE_MEMORY_LIMIT
+                        value: {{ . | quote }}
+                      {{- end }}
+                      {{- end }}
+                      {{- end }}
                       {{- if $.Values.driver.skipPermissions }}
                       - name: RUNNER_SKIP_PERMISSIONS
                         value: {{ $.Values.driver.skipPermissions | quote }}
