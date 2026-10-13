@@ -4,7 +4,7 @@ import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import {
     GATE_GID,
-    GATE_HOME,
+    GATE_ENV,
     GATE_UID,
     opencodeDbPath,
     runnerClaimEnv,
@@ -618,7 +618,7 @@ export function gateJobSpec(config: DriverConfig, job: BoardJob, gate: GateJobSp
             imagePullPolicy: config.imagePullPolicy,
             command: ['sh', '-c', command],
             workingDir: `${config.workspaceMount}/${key}`,
-            env: [{ name: 'HOME', value: GATE_HOME }],
+            env: GATE_ENV.map(([name, value]) => ({ name, value })),
             ...(envSecretName ? { envFrom: [{ secretRef: { name: envSecretName } }] } : {}),
             volumeMounts: [workspaceMount(config, subPath)],
         },

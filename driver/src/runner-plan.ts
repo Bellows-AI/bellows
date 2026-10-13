@@ -1,6 +1,6 @@
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { SESSION_ID, transcriptDir, workspacePath } from './claim.js';
+import { NPM_QUIET_ENV, SESSION_ID, transcriptDir, workspacePath } from './claim.js';
 import { OPENCODE } from './executors.js';
 import {
     claudeSystemPromptArgs,
@@ -73,6 +73,7 @@ function opencodePlan(config: DriverConfig, job: BoardJob, session: RunSession |
     }
     const envPairs: [string, string][] = [
         ['XDG_DATA_HOME', `${config.workspaceMount}/${workspacePath(job)}/.opencode`],
+        NPM_QUIET_ENV,
     ];
     const cliArgs = ['run', ...opencodeAgentArgs()];
     if (session) {
@@ -113,6 +114,7 @@ function claudePlan(config: DriverConfig, job: BoardJob, session: RunSession | n
         ['FACTORY_TRANSCRIPT_DIR', transcriptDir(config, job)],
         ['BELLOWS_SESSION_ID', session.id],
         ...claudeTurnContextEnv(job),
+        NPM_QUIET_ENV,
     ];
     const cliArgs = [session.resume ? '--resume' : '--session-id', session.id];
     if (config.skipPermissions) cliArgs.push('--dangerously-skip-permissions');

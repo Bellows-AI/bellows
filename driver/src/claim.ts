@@ -33,8 +33,16 @@ export const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
  */
 export const GATE_UID = 1000;
 export const GATE_GID = 1000;
-/** HOME for the gate env's non-root uid — /tmp is world-writable where the image's own is not. */
-export const GATE_HOME = '/tmp';
+/**
+ * Runner and gate env, both executors: npm's update notice is the last line every npm call prints,
+ * and it buries the summary a job's output tail exists to show (#511).
+ */
+export const NPM_QUIET_ENV: [string, string] = ['NPM_CONFIG_UPDATE_NOTIFIER', 'false'];
+/**
+ * The gate env's own literals, rendered as `-e` by docker and as container env by kubernetes. HOME
+ * for the non-root uid — /tmp is world-writable where the image's own is not.
+ */
+export const GATE_ENV: [string, string][] = [['HOME', '/tmp'], NPM_QUIET_ENV];
 
 /**
  * The session database opencode writes under XDG_DATA_HOME, as the runner sets it: one directory
