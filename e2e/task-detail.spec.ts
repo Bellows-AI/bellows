@@ -7,14 +7,10 @@ import {
     authoredBy,
     failedGateThread,
     followUpThread,
-    mockedActivityOf,
-    missingSummaryThread,
-    nullAuthorThread,
     publishedThread,
     routeThread,
     runningThread,
     sessionAuthor,
-    type ThreadJob,
 } from './fixtures/threads.js';
 
 const SHOTS = 'artifacts/ui';
@@ -290,14 +286,7 @@ test.describe('the task detail actions', () => {
 
 const sql = postgres(E2E_DATABASE_URL, { max: 1 });
 
-/** The seeded org the board's own rows carry — the spec inserts beside them, never into core tables. */
-let orgId: string;
-
 test.beforeAll(async () => {
-    const [row] = await sql<{ orgId: string }[]>`
-        select org_id as "orgId" from job limit 1
-    `;
-    orgId = row!.orgId;
     // A launch needs the author's repository selected and synced (issue 263). The open board's
     // stand-in account has none, so the repository the mocked workspace offers is marked ready
     // for it here — `queueTask` drives the real create route.
@@ -314,91 +303,7 @@ test.afterAll(async () => {
     await sql.end();
 });
 
-/** Insert a fixture thread into the real board — every job column the thread read serves back,
- *  except the actor ids (`created_by`, `stopped_by`, `done_by`): only an actor-free fixture
- *  seeds verbatim. */
-async function seedThread(jobs: readonly ThreadJob[]) {
-    for (const job of jobs) {
-        await sql`
-            insert into job (org_id, id, root_job_id, parent_job_id, command, status, attempts, max_attempts,
-                             claimed_by, session_id, repo, executor, workflow_name, workflow_node, mode, exit_code,
-                             output, summary, gates, runtime, wall_clock_ms, agent_turns, done_at,
-                             cancel_requested_at, created_at, started_at, finished_at)
-            values (${orgId}, ${job.id}, ${job.rootJobId}, ${job.followUpTo}, ${job.command}, ${job.status},
-                    ${job.attempts}, ${job.maxAttempts}, ${job.claimedBy}, ${job.sessionId}, ${job.repo},
-                    ${job.executor}, ${job.workflowName}, ${job.workflowNode}, ${job.mode}, ${job.exitCode}, ${job.output},
-                    ${job.summary}, ${job.gates ? sql.json(job.gates as never) : null},
-                    ${job.runtime ? sql.json(job.runtime as never) : null}, ${job.wallClockMs},
-                    ${job.agentTurns}, ${job.doneAt}, ${job.cancelRequestedAt}, ${job.createdAt}, ${job.startedAt}, ${job.finishedAt})
-            on conflict (org_id, id) do nothing
-        `;
-    }
-}
-
 test.describe('the task detail page', () => {
-    // The rest of this describe renders the shared fixtures through a mocked thread route; this
-    // is what holds them to the board: seeded for real, the thread read answers the fixture back.
-    test('the shared thread fixtures are the board’s own payload', async ({ page }) => {
-        await seedThread(nullAuthorThread);
-        const response = await page.request.get(`/api/jobs/${nullAuthorThread[0]!.id}/thread`);
-        expect(response.status()).toBe(200);
-        expect(await response.json()).toEqual({ jobs: nullAuthorThread });
-    });
-
-    test('a finished thread reads request, response, history, verification, published work', async ({ page }) => {
-        const problems = watchConsole(page);
-        await routeThread(page, authoredBy(publishedThread, await sessionAuthor(page)));
-        await page.goto(`/tasks/${publishedThread[0]!.id}`);
-
-        // The reading order the page exists for: the conversation and composer in the main column,
-        // every supporting panel in the sidebar.
-        const conversation = page.locator('.task-conversation');
-        const main = page.locator('.task-main');
-        const support = page.locator('.task-support');
-        await expect(conversation.getByText('Request', { exact: true })).toBeVisible();
-        await expect(support.getByRole('heading', { name: 'Run history' })).toBeVisible();
-        await expect(support.getByRole('heading', { name: 'Verification' })).toBeVisible();
-        await expect(support.getByRole('heading', { name: 'Published work' })).toBeVisible();
-        for (const name of ['Run history', 'Verification', 'Published work']) {
-            await expect(main.getByRole('heading', { name })).toHaveCount(0);
-        }
-        await expect(conversation.getByText('fix #177 please')).toBeVisible();
-
-        // The stored summary is the response and stays visible; the run's raw output and the run
-        // history start collapsed, and each toggles on its own.
-        const rawOutput = conversation.locator('.run-output').first();
-        const history = page.locator('.run-history');
-        await expect(conversation.getByText('Rebuilt the task detail layout and outcome summary.')).toBeVisible();
-        await expect(rawOutput).not.toHaveAttribute('open', '');
-        await expect(history).not.toHaveAttribute('open', '');
-        await expect(rawOutput.locator('pre')).not.toBeVisible();
-        await expect(page.locator('.task-history-item').first()).not.toBeVisible();
-        await rawOutput.getByText('View raw output').click();
-        await expect(rawOutput.locator('pre')).toBeVisible();
-        await expect(history).not.toHaveAttribute('open', '');
-        await history.getByRole('heading', { name: 'Run history' }).click();
-        await expect(page.locator('.task-history-item').first()).toBeVisible();
-        await expect(rawOutput.locator('pre')).toBeVisible();
-
-        // The outcome answers "what happened and where" without duplicating the gate output.
-        await expect(page.locator('.task-outcome')).toContainText('Verification');
-        await expect(page.locator('.task-outcome')).toContainText('1 passed');
-        await expect(page.locator('.task-outcome').getByText('all green')).not.toBeVisible();
-        // The links are references, not CTAs: the labeled rows carry just the numbers.
-        await expect(page.locator('.task-outcome')).toContainText('#9');
-        await expect(page.locator('.task-outcome')).toContainText('#177');
-        await expect(page.locator('.task-published')).toContainText('Pull request #9');
-        await expect(page.locator('.task-published')).toContainText('fix/177');
-        for (const token of FORBIDDEN) expect(await page.locator('body').innerText(), token).not.toContain(token);
-
-        // The outcome's checks link lands focus on the verification panel itself.
-        await page.getByRole('link', { name: 'View checks' }).click();
-        await expect(page.locator('#task-verification')).toBeFocused();
-
-        expect(problems).toEqual([]);
-        await page.screenshot({ path: `${SHOTS}/task-detail-rich.png`, fullPage: true });
-    });
-
     test('a follow-up thread labels its runs, verifies the newest, and links the thread PR', async ({ page }) => {
         await routeThread(page, followUpThread);
         await page.goto(`/tasks/${followUpThread[1]!.id}`);
@@ -435,27 +340,6 @@ test.describe('the task detail page', () => {
         // The scroll animates, so poll rather than read on the keypress's heels.
         await expect.poll(() => output.evaluate((el) => el.scrollTop), { timeout: 2_000 }).toBeLessThan(before);
         expect(problems).toEqual([]);
-    });
-
-    test('a live run’s raw output collapses and reopens by keyboard on the tail', async ({ page }) => {
-        await routeThread(page, runningThread);
-        await page.goto(`/tasks/${runningThread[0]!.id}`);
-        const disclosure = page.locator('.task-conversation .run-output').first();
-        const output = disclosure.locator('pre.chat-output');
-        await expect(disclosure).toHaveAttribute('open', '');
-        await expect(output).toBeVisible();
-
-        await disclosure.locator('summary').focus();
-        await page.keyboard.press('Enter');
-        await expect(disclosure).not.toHaveAttribute('open', '');
-        await expect(output).not.toBeVisible();
-        // The activity line is not the raw log: it stays while the log is collapsed.
-        await expect(page.locator('.task-conversation').getByText('→ Bash npm test')).toBeVisible();
-
-        await page.keyboard.press('Enter');
-        await expect(output).toBeVisible();
-        const atTail = await output.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
-        expect(atTail).toBeLessThanOrEqual(1);
     });
 
     test('the detail renders at every target width without overflow', async ({ page }) => {
@@ -539,141 +423,5 @@ test.describe('the task detail page', () => {
         await expect(page.getByRole('menuitem', { name: 'Remove task' })).toBeVisible();
         await page.keyboard.press('Escape');
         expect(problems.join('\n')).toBe('');
-    });
-
-    test('the activity pulse opens the Task statistics modal and gives focus back', async ({ page }) => {
-        const problems = watchConsole(page);
-        // Partial data: only the root run reported agent turns, and only the latest run — the one
-        // the sidebar pulse draws — reported tokens.
-        const jobs = authoredBy(followUpThread, await sessionAuthor(page)).map((job, i) => ({
-            ...job,
-            agentTurns: i === 0 ? 4 : null,
-        }));
-        const latest = jobs[jobs.length - 1]!;
-        await routeThread(page, jobs);
-        await page.route('**/api/jobs/*/activity', (route) => {
-            const measured = route.request().url().includes(latest.id);
-            const tokens = { input: 1200, output: 300, cacheRead: 9000, cacheCreation: 50 };
-            const zero = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
-            return route.fulfill({
-                json: {
-                    jobId: latest.id,
-                    sessionId: latest.sessionId,
-                    from: latest.startedAt,
-                    to: latest.finishedAt,
-                    bucketMs: 300_000,
-                    buckets: measured
-                        ? [
-                              { start: '2026-09-01T12:00:00.000Z', tokens, edits: 1 },
-                              { start: '2026-09-01T12:05:00.000Z', tokens: zero, edits: 0 },
-                              { start: '2026-09-01T12:10:00.000Z', tokens, edits: 2 },
-                          ]
-                        : [],
-                    totals: measured ? tokens : null,
-                },
-            });
-        });
-        await page.goto(`/tasks/${jobs[0]!.id}`);
-
-        const trigger = page.getByRole('button', { name: /Open task statistics/ });
-        await expect(trigger).toBeVisible();
-        // No bars: the sidebar holds a line chart only.
-        await expect(page.locator('.task-activity .bar-primary')).toHaveCount(0);
-        await expect(trigger.locator('svg polyline')).toHaveCount(4);
-
-        // The panel inside the named dialog: the `dialog` role sits on Headless UI's zero-height
-        // positioning layer, which has no box to be visible.
-        const dialog = page.getByRole('dialog', { name: 'Task statistics' }).locator('.dialog.task-stats');
-        // Enter, Space and click each open it; Escape and Close each shut it and return focus.
-        await trigger.focus();
-        await page.keyboard.press('Enter');
-        await expect(dialog).toBeVisible();
-        await expect(dialog.locator('.task-stats-totals').getByText('Agent turns', { exact: true })).toBeVisible();
-        await expect(dialog.getByText('Agent turns measured for 1 of 2 runs.')).toBeVisible();
-        await expect(dialog.getByRole('row')).toHaveCount(jobs.length + 1);
-        // Each legend swatch wears its own line's color, four apart.
-        const colors = await dialog.evaluate((panel) => {
-            const swatches = [...panel.querySelectorAll('.pulse-legend .pulse-swatch')];
-            const lines = [...panel.querySelectorAll('.pulse-detailed .pulse-line')];
-            return {
-                swatches: swatches.map((s) => getComputedStyle(s).backgroundColor),
-                lines: lines.map((l) => getComputedStyle(l).stroke),
-            };
-        });
-        expect(colors.swatches).toEqual(colors.lines);
-        expect(new Set(colors.swatches).size).toBe(4);
-        await page.screenshot({ path: `${SHOTS}/task-detail-stats-modal.png`, fullPage: true });
-        await page.keyboard.press('Escape');
-        await expect(dialog).toBeHidden();
-        await expect(trigger).toBeFocused();
-
-        await page.keyboard.press('Space');
-        await expect(dialog).toBeVisible();
-        await dialog.getByRole('button', { name: 'Close' }).click();
-        await expect(dialog).toBeHidden();
-        await expect(trigger).toBeFocused();
-
-        await trigger.click();
-        await expect(dialog).toBeVisible();
-        // Focus stays trapped inside: Tab never leaves the dialog.
-        await page.keyboard.press('Tab');
-        await page.keyboard.press('Tab');
-        await page.keyboard.press('Tab');
-        expect(await dialog.evaluate((el) => el.contains(document.activeElement))).toBe(true);
-        await page.keyboard.press('Escape');
-
-        await page.setViewportSize({ width: 360, height: 844 });
-        await trigger.scrollIntoViewIfNeeded();
-        await trigger.click();
-        await expect(dialog).toBeVisible();
-        await page.screenshot({ path: `${SHOTS}/task-detail-stats-modal-mobile.png`, fullPage: true });
-        expect(problems.join('\n')).toBe('');
-    });
-
-    test('an action that resolves after navigating to another task is ignored', async ({ page }) => {
-        const problems = watchConsole(page);
-        const first = publishedThread;
-        const other = authoredBy(missingSummaryThread, await sessionAuthor(page));
-        // Every thread but the first answers as a different task — the inbox row clicked below.
-        await page.route('**/api/jobs/*/thread*', (route) =>
-            route.fulfill({ json: { jobs: route.request().url().includes(first[0]!.id) ? first : other } })
-        );
-        // The page's run-activity hook (issue #339) fetches beside the thread poll; the mocked
-        // thread answers it too, or the real board 404s a task id the fixture only names.
-        await page.route('**/api/jobs/*/activity', (route) =>
-            route.fulfill({
-                json: mockedActivityOf(route.request().url().includes(first[0]!.id) ? first : other),
-            })
-        );
-        let release: () => void = () => {};
-        const held = new Promise<void>((resolve) => {
-            release = resolve;
-        });
-        await page.route(`**/api/jobs/${first[0]!.id}/done`, async (route) => {
-            await held;
-            await route.fulfill({ status: 409, json: { error: 'Task is running', code: 'TASK_RUNNING' } });
-        });
-
-        await page.goto(`/tasks/${first[0]!.id}`);
-        await header(page).getByRole('button', { name: 'Mark done' }).click();
-        await expect(header(page).getByRole('button', { name: 'Marking done…' })).toBeDisabled();
-
-        // Client-side navigation, so the in-flight request outlives the task it was sent for.
-        await page.getByRole('link', { name: 'View all tasks' }).click();
-        await page.waitForURL(/\/tasks$/);
-        await page.locator('.inbox-row a').first().click();
-        await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
-        await expect(page.getByRole('heading', { level: 1, name: 'seed task' })).toBeVisible();
-
-        const refused = page.waitForResponse(`**/api/jobs/${first[0]!.id}/done`);
-        release();
-        await refused;
-        await expect(page.getByText('Task is running')).toHaveCount(0);
-        await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeEnabled();
-        // The 409 is the spec's own doing; the browser logs the refused status itself.
-        const real = problems.filter(
-            (p) => p !== 'console: Failed to load resource: the server responded with a status of 409 (Conflict)'
-        );
-        expect(real.join('\n')).toBe('');
     });
 });

@@ -15,7 +15,7 @@ A per-member tree at `<root>/<orgId>/<userId>/`, one clone per repository that m
 | Executor profiles (user and org scope) | `server/src/db/user-executor-store.ts`, `server/src/routes/org-executors.ts`, `server/migrations/047_executor_profile_scope.sql` | `server/test-db/user-executor-store.test.ts`, `server/test/routes.org-executors.test.ts` |
 | Removing and suspending a profile; the refusal at submission | `server/src/routes/workspace.ts`, `server/src/routes/org-executors.ts`, `server/src/routes/job-handlers-worker.ts`, `server/migrations/049_executor_profile_suspended.sql` | `server/test/routes.executor-lifecycle.test.ts` |
 | Claim-time executor resolution in the stamped scope, and refusal, shared by both executors | `server/src/db/job-store-claim-executor.ts`, `driver/src/loop-run.ts` | `server/test-db/job-store.executor-scope.test.ts`, `driver/test/loop.test.ts` |
-| The executor dialog's client-side validation | `web/src/workspace/executors.ts`, `web/src/panels/WorkspaceExecutorsPanel.tsx` | `web/test/executors.test.ts`, `e2e/org-executors.spec.ts` |
+| The executor dialog's client-side validation | `web/src/workspace/executors.ts`, `web/src/panels/WorkspaceExecutorsPanel.tsx` | `web/test/executors.test.ts`, `web/test/executor-dialog.dom.test.tsx`, `e2e/org-executors.spec.ts` |
 | The composer's repo readiness (`repoReadiness`) | `web/src/task-composer.ts` | `web/test/task-composer-logic.test.ts` |
 | Real provisioning in a browser | `e2e/workspace.spec.ts` | the `chromium` Playwright project |
 

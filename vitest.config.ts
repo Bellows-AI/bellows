@@ -1,20 +1,45 @@
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
+
+/** Component suites driven through Testing Library under jsdom (`web/test/dom.tsx`). */
+const DOM_TESTS = 'web/test/**/*.dom.test.tsx';
 
 export default defineConfig({
     test: {
-        include: [
-            'core/test/**/*.test.ts',
-            'server/test/**/*.test.ts',
-            // Every docker call and every board request is injected; the one suite that spawns
-            // real processes (the branch reporter's node children, git fixtures, loopback HTTP)
-            // still touches nothing but its own temp dirs — offline, no daemon, no network.
-            'driver/test/**/*.test.ts',
-            'cli/test/**/*.test.ts',
-            // Renders panels with react-dom/server, so no DOM and no browser is needed.
-            'web/test/**/*.test.tsx',
-            // `.test.ts` too: web/test holds non-component suites (executor config validation)
-            // that a `.tsx`-only pattern silently dropped.
-            'web/test/**/*.test.ts',
+        projects: [
+            {
+                extends: true,
+                test: {
+                    name: 'node',
+                    include: [
+                        'core/test/**/*.test.ts',
+                        'server/test/**/*.test.ts',
+                        // Every docker call and every board request is injected; the one suite that
+                        // spawns real processes (the branch reporter's node children, git fixtures,
+                        // loopback HTTP) still touches nothing but its own temp dirs — offline, no
+                        // daemon, no network.
+                        'driver/test/**/*.test.ts',
+                        'cli/test/**/*.test.ts',
+                        // Renders panels with react-dom/server, so no DOM and no browser is needed.
+                        'web/test/**/*.test.tsx',
+                        // `.test.ts` too: web/test holds non-component suites (executor config
+                        // validation) that a `.tsx`-only pattern silently dropped.
+                        'web/test/**/*.test.ts',
+                    ],
+                    exclude: [...configDefaults.exclude, DOM_TESTS],
+                },
+            },
+            {
+                extends: true,
+                test: {
+                    name: 'dom',
+                    include: [DOM_TESTS],
+                    environment: 'jsdom',
+                    // The threads pool, whose root options isolate every file: Testing Library binds
+                    // `screen` to the document it was first imported under, so the forks pool's
+                    // shared module graph would query a previous file's dead jsdom.
+                    pool: 'threads',
+                },
+            },
         ],
         pool: 'forks',
         poolOptions: {
@@ -22,6 +47,13 @@ export default defineConfig({
                 // Default is one fork per core; watch idles hot without a cap.
                 minWorkers: 1,
                 maxWorkers: 2,
+            },
+            // The `dom` project's pool only; a project-level `isolate` does not reach the pool. One
+            // thread: it runs beside the forks, and more starved their RPC under a full run.
+            threads: {
+                minThreads: 1,
+                maxThreads: 1,
+                isolate: true,
             },
         },
         // The suite is spawn-heavy — real git fixtures, node children, loopback listeners, a

@@ -5,7 +5,7 @@ Gate, onboarding, account page. `web/src/styles/regions/entry.css`; shared syste
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Signed-out gate and the public chrome both public pages carry | `web/src/components/LoginGate.tsx`, `web/src/components/PublicPageHeader.tsx` | `e2e/auth.spec.ts`, `web/test/theme.test.tsx` |
+| Signed-out gate and the public chrome both public pages carry | `web/src/components/LoginGate.tsx`, `web/src/components/PublicPageHeader.tsx` | `e2e/auth.spec.ts`, `web/test/auth.dom.test.tsx`, `web/test/theme.test.tsx` |
 | Onboarding screen, one org's card, selection state and blockers | `web/src/pages/OnboardingPage.tsx`, `web/src/components/OnboardingOrganization.tsx`, `web/src/onboarding.ts` | `web/test/onboarding.render.test.tsx` |
 | Account page: identity, access tokens, tracked orgs | `web/src/pages/AccountPage.tsx`, `web/src/panels/IdentityPanel.tsx`, `web/src/panels/AccessTokensPanel.tsx`, `web/src/panels/TrackedOrgsPanel.tsx` | `web/test/settings.render.test.tsx` |
 

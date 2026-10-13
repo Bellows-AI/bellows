@@ -48,7 +48,7 @@ export async function recoveriesUsed(at: Tx, taskKey: string): Promise<{ infra: 
  * task's latest attempt, the PR it read is still the one the thread is bound to, and no merge of
  * that PR has been recorded since. The decision
  * and the launch both read it through this one predicate, so a repair decided on it and launched
- * on it judge the same evidence.
+ * on it judges the same evidence.
  */
 export const actionableObservation = (tx: TransactionSql) => tx`
     not o.stale
@@ -114,7 +114,7 @@ export async function repairInTx(
 
 /**
  * The wait reason of a failed run that needs a person: the question it left, the budget it spent,
- * or the kind and cause it failed with when neither was recognised (issue #581).
+ * or the kind and cause it failed with when neither was recognized (issue #581).
  */
 export function failedAttentionReason(
     reason: AttentionReason,

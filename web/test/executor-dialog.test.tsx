@@ -18,10 +18,10 @@ import {
  * `renderToStaticMarkup` does not render portals: an open dialog server-renders as Headless'
  * placeholder span, exactly like the RepoPickerDialog and the MobileNavDialog. The in-dialog
  * contracts (guided setup, the Advanced editor, focus trap, Escape and the discard confirmation,
- * input retention across a failed save, focus restoration) are a real browser's to assert, and
- * e2e/workspace.spec.ts owns them. What a static render CAN pin is the boundary — the component
- * server-renders whatever its `open` — the JSON editor, which does not portal, and the copy the
- * dialog carries, exported as the constants it renders and the e2e spec asserts.
+ * input retention across a failed save, focus restoration) need a DOM, and
+ * web/test/executor-dialog.dom.test.tsx owns them. What a static render CAN pin is the boundary —
+ * the component server-renders whatever its `open` — the JSON editor, which does not portal, and
+ * the copy the dialog carries, exported as the constants it renders and the DOM suite asserts.
  */
 
 const render = (open: boolean) =>
@@ -51,9 +51,9 @@ describe('ExecutorDialog', () => {
         }
     });
 
-    it('pins the action copy and the helps the mounted dialog is asserted against in e2e', () => {
-        // The dialog content is portal markup no offline render can see; these constants are the
-        // contract the component renders and e2e/workspace.spec.ts asserts by role and name.
+    it('pins the action copy and the helps the mounted dialog is asserted against in the DOM suite', () => {
+        // The dialog content is portal markup no static render can see; these constants are the
+        // contract the component renders and executor-dialog.dom.test.tsx asserts by role and name.
         expect(ADD_LABEL).toBe('Add executor');
         expect(SAVE_LABEL).toBe('Save changes');
         expect(EXECUTOR_SCOPE).toBe('Your saved agent settings for running tasks.');
