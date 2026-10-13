@@ -67,7 +67,7 @@ function mergeNoteOf(state: string | null, detail: string | null): string | null
     }
 }
 
-/** Why the board cannot merge an observed PR by itself (`awaitsBoardMerge`), as the task's wait reason carries it. */
+/** Why the board cannot merge an observed PR by itself (`awaitsBoardMerge`); outranks an earlier merge request's note. */
 function observedNoteOf(outcome: string | null, error: string | null): string | null {
     if (error === READ_NOT_FOUND || error === READ_FORBIDDEN || error === READ_BINDING) {
         return `the PR cannot be read (${error}); the board cannot merge it`;
@@ -124,7 +124,7 @@ export async function judgeGates(tx: TransactionSql, orgId: string, id: string):
             attempt: row.attempt,
             attemptStartedAt: row.attempt_started_at.getTime(),
             automerge: row.policy === AUTOMERGE,
-            mergeNote: mergeNoteOf(row.merge_state, row.merge_detail) ?? observedNoteOf(row.outcome, row.error_code),
+            mergeNote: observedNoteOf(row.outcome, row.error_code) ?? mergeNoteOf(row.merge_state, row.merge_detail),
         });
         if (judgement.pass) {
             await tx`

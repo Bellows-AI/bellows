@@ -372,6 +372,22 @@ describe.skipIf(!enabled)('automerge', () => {
         expect(report.tasks[0]!.waitReason).toContain('cannot be read (forbidden)');
     });
 
+    it("names what blocks the board now, not an earlier merge request's outcome (#688)", async () => {
+        const { id, number } = await readyBatch(plan([policyStage('automerge', ['a'])]));
+        github.mergeFails.set(number, new GitHubMergeError('405 required checks', 'refused'));
+        await merger.mergeDue();
+        expect((await task(id, 'a')).waitReason).toContain('merge refused');
+
+        github.replies.set(number, facts(number, { headSha: 'h2', requiredApprovals: 1 }));
+        clock.offset += 61_000;
+        await observer.observeDue();
+        await store.reconcile(id);
+
+        const report = (await store.report(id))!;
+        expect(report.tasks[0]).toMatchObject({ next: { action: 'merge' } });
+        expect(report.tasks[0]!.waitReason).toContain('approving review');
+    });
+
     it("hands an optional task's open PR to a person once its stage advanced without it (#688)", async () => {
         const optional = { ...prTask('b'), required: false };
         const source = plan([{ key: 'one', policy: 'automerge', tasks: [prTask('a'), optional] }]);
