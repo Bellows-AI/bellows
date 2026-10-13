@@ -17,7 +17,18 @@ const SCRIPT = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
 
 describe('the test-jobs harness', () => {
     it('pins the open board mode instead of inheriting a developer or compose auth mode', () => {
-        expect(SCRIPT).toContain('env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1');
+        expect(SCRIPT).toContain('env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST="$BIND_HOST"');
+    });
+
+    // host.docker.internal is the host's loopback only under Docker Desktop; a Linux daemon maps it
+    // to the bridge gateway, so the compose driver and the runners' control calls need a listener
+    // there — never 0.0.0.0, which would put an open board on the network.
+    it('binds the open board and the control server where containers reach the host', () => {
+        expect(SCRIPT).toContain('BIND_HOST=127.0.0.1\nif [ "$(uname -s)" = Linux ]; then');
+        expect(SCRIPT).toContain("docker network inspect bridge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}'");
+        expect(SCRIPT).toContain('BASE="http://$BIND_HOST:$PORT"');
+        expect(SCRIPT).toContain('GATE_LISTEN_HOST="$BIND_HOST"');
+        expect(SCRIPT).not.toMatch(/HOST="?0\.0\.0\.0/);
     });
 
     // /api/health answers while the migrations still run; the truncate needs the schema they create.
@@ -141,13 +152,15 @@ describe('the test-jobs harness', () => {
     });
 
     // docker-compose.yml requires JOB_BOARD_TOKEN for the dashboard, and compose interpolates the
-    // whole file to build the driver alone: with no .env (a worktree, CI) the build was refused.
-    it('every compose call that interpolates the compose file can, with no .env', () => {
-        const calls = SCRIPT.split('\n').filter(
-            (l) => l.includes('docker compose -p "$COMPOSE_PROJECT"') || l.includes('docker compose up')
-        );
-        expect(calls.length).toBe(5);
-        for (const call of calls) expect(call).toContain('JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose');
+    // whole file on every call (on ubuntu-latest even `exec`): with no .env (a worktree, CI) the
+    // postgres start and the driver build were refused.
+    it('every compose call goes through the helper that can interpolate the compose file', () => {
+        expect(SCRIPT).toContain('compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose "$@"; }');
+        const code = SCRIPT.split('\n').filter((l) => !l.trimStart().startsWith('#'));
+        expect(code.filter((l) => l.includes('docker compose'))).toEqual([
+            'compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose "$@"; }',
+        ]);
+        expect(SCRIPT).toContain('compose -p "$COMPOSE_PROJECT" build driver');
         expect(SCRIPT).toContain('    -e JOB_BOARD_TOKEN= \\\n');
     });
 

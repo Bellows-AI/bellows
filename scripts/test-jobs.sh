@@ -17,7 +17,6 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
 PORT="${PORT:-8129}"
-BASE="http://127.0.0.1:$PORT"
 DB="${JOBS_TEST_DB:-factory_jobs_test}"
 DATABASE_URL="postgres://factory:factory@127.0.0.1:5432/$DB"
 IMAGE_BASE="factory-jobs-smoke-base"
@@ -31,9 +30,11 @@ COMPOSE_DRIVER="factory-jobs-compose-driver"
 # torn down by name without touching the stack services the script itself started (postgres).
 COMPOSE_PROJECT="factory-jobs-smoke-compose"
 # docker-compose.yml requires JOB_BOARD_TOKEN for the dashboard service, and compose interpolates the
-# whole file even to start postgres or build or run the driver alone. The phase's driver is started with the token
-# cleared (`-e JOB_BOARD_TOKEN=`), like every host-driven one: this value only satisfies the parse.
+# whole file on every call (on a current compose even `exec` into postgres), so every call goes
+# through compose(). The compose phase's driver is started with the token cleared
+# (`-e JOB_BOARD_TOKEN=`), like every host-driven one: this value only satisfies the parse.
 COMPOSE_TOKEN="${JOB_BOARD_TOKEN:-test-jobs-compose-interpolation-only}"
+compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose "$@"; }
 # The repository every task runs against (issue #263): a ready selection on the board and, in the
 # driver volume, a clone whose origin is a bare repository beside it — no GitHub, no network.
 SMOKE_REPO="factory-smoke/demo"
@@ -63,10 +64,10 @@ cleanup() {
     wait 2>/dev/null
     docker rm -f "$COMPOSE_DRIVER" >/dev/null 2>&1
     # The compose phase's own project: its volumes and network, not the stack's postgres.
-    JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
+    compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
     # Only ever drops a database this run created, and only one named *_test.
     if [ -n "$db_created" ]; then
-        docker compose exec -T postgres psql -U factory -d postgres \
+        compose exec -T postgres psql -U factory -d postgres \
             -c "drop database if exists $DB" >/dev/null 2>&1
     fi
     docker volume rm "$VOLUME" >/dev/null 2>&1
@@ -174,20 +175,34 @@ command -v docker >/dev/null || {
     exit 1
 }
 
+# Where the open board and the driver's control server listen. Docker Desktop forwards
+# host.docker.internal to the host's loopback; a Linux daemon maps it (host-gateway) to the bridge
+# gateway, which a loopback listener never answers. There both bind that address instead: the host
+# and its containers reach it, nothing off the machine does.
+BIND_HOST=127.0.0.1
+if [ "$(uname -s)" = Linux ]; then
+    BIND_HOST="$(docker network inspect bridge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null)"
+    [ -n "$BIND_HOST" ] || {
+        echo 'test-jobs: could not read the docker bridge gateway'
+        exit 1
+    }
+fi
+BASE="http://$BIND_HOST:$PORT"
+
 echo 'starting postgres'
-JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose up -d postgres >/dev/null 2>&1
+compose up -d postgres >/dev/null 2>&1
 for _ in $(seq 1 30); do
-    docker compose exec -T postgres pg_isready -U factory >/dev/null 2>&1 && break
+    compose exec -T postgres pg_isready -U factory >/dev/null 2>&1 && break
     sleep 1
 done
 
 # The name ends in _test on purpose: it marks the database disposable, and the drop in cleanup()
 # refuses anything this run did not create.
-if docker compose exec -T postgres psql -U factory -d postgres -tAc \
+if compose exec -T postgres psql -U factory -d postgres -tAc \
     "select 1 from pg_database where datname = '$DB'" 2>/dev/null | grep -q 1; then
     echo "reusing database $DB"
 else
-    docker compose exec -T postgres psql -U factory -d postgres -c "create database $DB" >/dev/null 2>&1 ||
+    compose exec -T postgres psql -U factory -d postgres -c "create database $DB" >/dev/null 2>&1 ||
         {
             echo "test-jobs: could not create $DB"
             exit 1
@@ -233,7 +248,7 @@ docker build -q -t "$IMAGE_BASE" -f "$work/Dockerfile.base" "$work" >/dev/null &
 # disposable database name. It drives the whole lease protocol with no credential anywhere.
 
 start_open_board() { # boots the AUTH_MODE=none board on $BASE and waits until it is migrated
-    env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1 \
+    env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST="$BIND_HOST" \
         ORG_WORKSPACE_ROOT="$work/workspaces" \
         node server/dist/offline.js >>"$work/server.log" 2>&1 &
     server_pid=$!
@@ -269,7 +284,7 @@ echo '# board'
 # so the definitions the workflow phase creates below start from an empty table.
 # cascade, because every table that references a job (job_artifact, job_question, the batch tables)
 # must empty with it, and a named list rots the day a migration adds another.
-docker compose exec -T postgres psql -U factory -d "$DB" -c 'truncate job, workflow cascade' >/dev/null 2>&1 || {
+compose exec -T postgres psql -U factory -d "$DB" -c 'truncate job, workflow cascade' >/dev/null 2>&1 || {
     echo 'test-jobs: could not truncate job, workflow'
     exit 1
 }
@@ -291,7 +306,7 @@ default/????????-????-????-????-????????????) ;;
     exit 1
     ;;
 esac
-docker compose exec -T postgres psql -U factory -d "$DB" -v ON_ERROR_STOP=1 -c \
+compose exec -T postgres psql -U factory -d "$DB" -v ON_ERROR_STOP=1 -c \
     "insert into user_repo (org_id, user_id, repo_owner, repo_name, status, ready_at)
      values ('$member_org', '$member_user', '${SMOKE_REPO%%/*}', '${SMOKE_REPO#*/}', 'ready', now())
      on conflict (org_id, user_id, repo_owner, repo_name)
@@ -377,7 +392,7 @@ expect_field 'the output is kept'       "$done_body" output hello
 # Reclaim, proven by ageing the lease rather than by waiting one out.
 reclaim_id="$(create_job 'reclaim me')"
 stale="$(field "$(body "$(api POST /api/jobs/claim '{"worker":"dies","leaseSeconds":300}')")" leaseToken)"
-docker compose exec -T postgres psql -U factory -d "$DB" \
+compose exec -T postgres psql -U factory -d "$DB" \
     -c "update job set lease_expires_at = now() - interval '1 second' where id = '$reclaim_id'" >/dev/null 2>&1
 again="$(body "$(api POST /api/jobs/claim '{"worker":"takes-over","leaseSeconds":300}')")"
 expect_field 'an expired lease is reclaimed' "$again" id "$reclaim_id"
@@ -483,7 +498,7 @@ start_driver() { # start_driver <image> [RUNNER_SERVICES]
     # RUNNER_SERVICES defaults to on now; every phase but the services one passes 0 explicitly, so
     # what each phase asserts stays independent of the default.
     env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$1" OPENCODE_EXECUTOR_IMAGE="$1" \
-        RUNNER_SERVICES="${2:-0}" \
+        RUNNER_SERVICES="${2:-0}" GATE_LISTEN_HOST="$BIND_HOST" \
         WORKSPACE_VOLUME="$VOLUME" \
         DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=60 \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &
@@ -963,7 +978,7 @@ expect_status 'a rested thread offers nothing more' 204 POST /api/jobs/claim '{"
 echo
 echo '# compose driver'
 
-JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose -p "$COMPOSE_PROJECT" build driver >/dev/null 2>&1 || {
+compose -p "$COMPOSE_PROJECT" build driver >/dev/null 2>&1 || {
     echo 'test-jobs: could not build the compose driver image'
     exit 1
 }
@@ -972,7 +987,7 @@ ok 'the compose driver image builds'
 # RUNNER_SERVICES=0 like every host-driven phase above: the services phase seeded a malformed
 # .bellows.yaml into the stand-in author's tree, and the services readout failing is a verdict of
 # "failed" — the lifecycle here must be settled by the driver itself, not by that leftover.
-JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose -p "$COMPOSE_PROJECT" run --rm --name "$COMPOSE_DRIVER" --no-deps \
+compose -p "$COMPOSE_PROJECT" run --rm --name "$COMPOSE_DRIVER" --no-deps \
     -e JOB_BOARD_URL="http://host.docker.internal:$PORT" \
     -e CLAUDE_EXECUTOR_IMAGE="$IMAGE_OK" \
     -e OPENCODE_EXECUTOR_IMAGE="$IMAGE_OK" \
@@ -1009,7 +1024,7 @@ ran="$(body "$(api GET "/api/jobs/$compose_job")")"
 expect_contains 'the compose driver names itself' "$(field "$ran" claimedBy)" 'driver-'
 
 docker rm -f "$COMPOSE_DRIVER" >/dev/null 2>&1
-JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
+compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
 wait "$compose_pid" 2>/dev/null
 compose_pid=""
 
