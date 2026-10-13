@@ -113,8 +113,8 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
     // Stopped is the user's verdict on a turn they ended: terminal, so it blocks nothing and is
     // never handed out.
     it('a stopped row neither blocks nor is claimable', async () => {
-        await craft({ status: 'stopped', lease: 'expired' });
-        const followUp = await craft({ parent: '00000000-0000-4000-8000-000000000002', status: 'queued' });
+        const stopped = await craft({ status: 'stopped', lease: 'expired' });
+        const followUp = await craft({ parent: stopped, status: 'queued' });
 
         expect((await store.claim('w1', LEASE_SECONDS))?.id).toBe(followUp);
     });

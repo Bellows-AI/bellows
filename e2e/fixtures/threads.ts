@@ -88,6 +88,8 @@ export interface ThreadJob {
     // succeeded jobs, and a failed-with-kind run is a lane fixture's to add, never this file's
     // to retrofit.
     failureKind: string | null;
+    /** What caused a gate, publish or helper failure (#581, served by #652); null on every fixture here. */
+    failureCause: string | null;
     gates: ThreadGate[] | null;
     runtime: ThreadRuntime | null;
     repo: string | null;
@@ -189,6 +191,7 @@ function run(fields: RunFields): ThreadJob {
         output: null,
         summary: null,
         failureKind: null,
+        failureCause: null,
         gates: null,
         runtime: null,
         repo: null,

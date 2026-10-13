@@ -177,6 +177,14 @@ describe.skipIf(!enabled)('claim resolution against a suspended profile (issue 4
         expect(refused?.id).toBe(followUp.id);
         expect(refused?.executorType).toBeNull();
         expect(refused?.executorRefusal).toContain('suspended');
+        // The driver fails a refused claim as config (driver/src/loop-run.ts failOnClaimRefusal);
+        // until it does the follow-up is the thread's moving head and a retry is not_finished.
+        await store.complete(followUp.id, refused!.leaseToken, {
+            status: 'failed',
+            exitCode: null,
+            output: refused!.executorRefusal!,
+            failureKind: 'config',
+        });
 
         await suspend('org', 'team', false);
         const retry = await store.createRetry(parent.id, ALICE);
