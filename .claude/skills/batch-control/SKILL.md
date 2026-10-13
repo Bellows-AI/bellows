@@ -33,6 +33,11 @@ Start from `plan.example.json` beside this file and keep its shape. The contract
   asks for automerge.
 - Bounds: 10 targets, 20 stages, 20 tasks per stage, 100 tasks; `concurrency` 1..20,
   `infraRetries` and `repairs` 0..5, `timeLimitMinutes` 1..1440.
+- **Size `timeLimitMinutes` from the stages, not the task.** Stages run one after another, and each
+  lasts as long as its slowest task, a retry or repair included — a one-line change has taken 45
+  minutes once the repository's full test gate ran twice. An `automerge` stage then waits for the
+  target's CI on the merged commit, and a `human` stage for a person. Budget every stage that way,
+  with margin: past the limit nothing new launches.
 
 **What `start` refuses today** — a plan that validates structurally can still be refused at start
 with `409 BATCH_UNSUPPORTED`: more than one target (`multi_target`), a target `branch` other than

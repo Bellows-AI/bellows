@@ -25,6 +25,7 @@ import type { ControlEntry, QuestionRelay, QuestionResolution } from '../src/que
 import { servePublish, type PublishRelay } from '../src/publish-control.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
 import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
+import { BOARD_CALL_ATTEMPTS } from '../src/board-retry.js';
 import { createLoop, type Loop } from '../src/loop.js';
 import type { SyncQueue, SyncTurn } from '../src/sync-queue.js';
 import { processReclaim, type ReclaimContext } from '../src/loop-reclaim.js';
@@ -104,6 +105,8 @@ function stubBoard(
         failClaims?: number;
         failSession?: boolean;
         rereadGates?: { gates: BoardJob['gates']; gateError: string | null } | null;
+        /** The re-read throws (an unreachable board) this many times before it answers. */
+        rereadGatesThrows?: number;
         threadDone?: boolean;
         completeLease?: LeaseState;
         completeFor?: (claimed: BoardJob) => { state: LeaseState; threadDone: boolean };
@@ -208,6 +211,7 @@ function stubBoard(
         },
         async rereadGates(_claimed) {
             board.gatesReread += 1;
+            if (board.gatesReread <= (options.rereadGatesThrows ?? 0)) throw new Error('board unreachable');
             return options.rereadGates ?? null;
         },
         async publishToken(claimed) {
@@ -2470,6 +2474,33 @@ describe('the poll loop', () => {
         expect(events).toEqual([`release:${job(1).id}`, `complete:${job(1).id}`]);
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
         expect(board.board.completed[0]?.output).toContain('read from the base clone');
+    });
+
+    // A board restart is seconds of refused connections, not a refusal: the re-read is retried
+    // through it, and only a board that stays unreachable fails a base-clone claim.
+    it('retries a re-read the board could not answer, and runs once it does', async () => {
+        const board = stubBoard([{ ...job(1), gatesSource: 'clone' }], {
+            rereadGates: { gates: null, gateError: null },
+            rereadGatesThrows: 2,
+        });
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(board.board.gatesReread).toBe(3);
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+    });
+
+    it('fails a base-clone claim when the board stays unreachable through every re-read', async () => {
+        const board = stubBoard([{ ...job(1), gatesSource: 'clone' }], { rereadGatesThrows: Infinity });
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must never be reached');
+        });
+
+        await drive({ ...board, runner });
+
+        expect(board.board.gatesReread).toBe(BOARD_CALL_ATTEMPTS);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
     });
 
     it('releases the checkout fence before failing a job that declares gates this driver cannot run', async () => {

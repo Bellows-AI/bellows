@@ -61,6 +61,12 @@ describe('the batch-control skill', () => {
         }
     });
 
+    it('sizes the time limit from the stages, since nothing launches past it', () => {
+        // The live automerge batch finished two minutes inside a limit sized for its tasks alone.
+        expect(skill).toContain('Size `timeLimitMinutes` from the stages, not the task.');
+        expect(skill).toContain("waits for the\n  target's CI on the merged commit");
+    });
+
     it('reads a failed stage verification, which no task names, and waits again after a merge', () => {
         // Both were found driving a real batch: a red check on the target tip held the next stage
         // with every task's `next` at `none`, and a merge takes a poll to be observed.

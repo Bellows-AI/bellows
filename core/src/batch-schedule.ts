@@ -32,7 +32,11 @@ export const GATE_PASSED = 'passed';
 export const GATE_FAILED = 'failed';
 export type BatchGate = typeof GATE_OPEN | typeof GATE_PASSED | typeof GATE_FAILED;
 
-/** Executions that hold a concurrency slot: a launched run, or a retry/repair about to be one. */
+/**
+ * Executions that hold a concurrency slot: a launched run, a retry or repair included once it has
+ * launched. A task in `retry` is waiting out its backoff and holds none — it waits for a free slot
+ * like a pending one, so a sibling may take the slot meanwhile.
+ */
 const ACTIVE: readonly string[] = [TASK_QUEUED, TASK_RUNNING];
 const WAITING: readonly string[] = [TASK_PENDING, TASK_RETRY];
 
