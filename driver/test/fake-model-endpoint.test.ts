@@ -135,6 +135,16 @@ describe('the scripted model endpoint in ask mode (issue #226)', () => {
             answers: { 'Which colour should the report use?': 'Blue' },
         });
     });
+
+    // The executor entrypoint's stop poller reads /control too: a Stop raised here would make the
+    // bridge deny the question as stopped, and the ask lane would never see its answer.
+    it('never raises a Stop while it plays the question', async () => {
+        for (const mode of [{ ask: true }, { askProse: true }]) {
+            const { url } = await start(mode);
+            await askRequest(url, []);
+            expect(((await (await fetch(`${url}/control`)).json()) as { stop: boolean }).stop).toBe(false);
+        }
+    });
 });
 
 describe('the scripted model endpoint in ask-prose mode (issue #226)', () => {
@@ -162,8 +172,19 @@ describe('the scripted model endpoint in ask-prose mode (issue #226)', () => {
         expect(JSON.parse(verdict.content[0].text)).toMatchObject({ ok: false });
         expect(await hooks(url)).toBe(1);
 
-        const second = await agent(url);
+        // The CLI's continuation quotes the hook prompt back as "Stop hook feedback", tools attached:
+        // an agent step, not a second evaluation.
+        const second = await request(url, {
+            tools: [{ name: 'AskUserQuestion' }, { name: 'Bash' }],
+            messages: [
+                {
+                    role: 'user',
+                    content: 'Stop hook feedback:\n[You decide whether an autonomous coding agent may stop.]',
+                },
+            ],
+        });
         expect(second.content[0]).toMatchObject({ type: 'tool_use', name: 'AskUserQuestion' });
+        expect(await hooks(url)).toBe(1);
 
         // The evaluation after the answer is stop_hook_active territory: allowed, not an agent request.
         expect(JSON.parse((await hook(url)).content[0].text)).toEqual({ ok: true });

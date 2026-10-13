@@ -20,6 +20,7 @@ PORT="${PORT:-8129}"
 BASE="http://127.0.0.1:$PORT"
 DB="${JOBS_TEST_DB:-factory_jobs_test}"
 DATABASE_URL="postgres://factory:factory@127.0.0.1:5432/$DB"
+IMAGE_BASE="factory-jobs-smoke-base"
 IMAGE_OK="factory-jobs-smoke-ok"
 IMAGE_FAIL="factory-jobs-smoke-fail"
 IMAGE_SVC="factory-jobs-smoke-svc"
@@ -29,6 +30,13 @@ COMPOSE_DRIVER="factory-jobs-compose-driver"
 # The compose phase pins its own project name, so the volumes and network its `run` creates can be
 # torn down by name without touching the stack services the script itself started (postgres).
 COMPOSE_PROJECT="factory-jobs-smoke-compose"
+# docker-compose.yml requires JOB_BOARD_TOKEN for the dashboard service, and compose interpolates the
+# whole file even to build or run the driver alone. The phase's driver is started with the token
+# cleared (`-e JOB_BOARD_TOKEN=`), like every host-driven one: this value only satisfies the parse.
+COMPOSE_TOKEN="${JOB_BOARD_TOKEN:-test-jobs-compose-interpolation-only}"
+# The repository every task runs against (issue #263): a ready selection on the board and, in the
+# driver volume, a clone whose origin is a bare repository beside it — no GitHub, no network.
+SMOKE_REPO="factory-smoke/demo"
 
 pass=0
 fail=0
@@ -55,14 +63,14 @@ cleanup() {
     wait 2>/dev/null
     docker rm -f "$COMPOSE_DRIVER" >/dev/null 2>&1
     # The compose phase's own project: its volumes and network, not the stack's postgres.
-    docker compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
+    JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
     # Only ever drops a database this run created, and only one named *_test.
     if [ -n "$db_created" ]; then
         docker compose exec -T postgres psql -U factory -d postgres \
             -c "drop database if exists $DB" >/dev/null 2>&1
     fi
     docker volume rm "$VOLUME" >/dev/null 2>&1
-    docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" >/dev/null 2>&1
+    docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_BASE" >/dev/null 2>&1
     rm -rf "$work"
 }
 trap cleanup EXIT
@@ -128,7 +136,7 @@ create_job() { # create_job <command> [executor] [scope] -> id, recorded in $wor
     local id payload
     # One node call builds the whole body. Two `$(node -e '…')` spliced into an escaped JSON string
     # inside nested "$( … )" is a quoting shape macOS's bash 3.2 mis-parses into an invalid body.
-    payload="$(node -e 'process.stdout.write(JSON.stringify({ command: process.argv[1], executor: process.argv[2], ...(process.argv[3] ? { executorScope: process.argv[3] } : {}) }))' "$1" "${2:-claude}" "${3:-}")"
+    payload="$(node -e 'process.stdout.write(JSON.stringify({ command: process.argv[1], executor: process.argv[2], repo: process.argv[4], ...(process.argv[3] ? { executorScope: process.argv[3] } : {}) }))' "$1" "${2:-claude}" "${3:-}" "$SMOKE_REPO")"
     id="$(field "$(body "$(api POST /api/jobs "$payload")")" id)"
     # A file, not a variable: every caller captures this function's output by command substitution,
     # which runs it in a subshell — an assignment here would be thrown away.
@@ -202,9 +210,14 @@ echo 'building the stub runner images'
 # contract a real model honours by emitting the marker last), and the one-line `echo "$@"` puts
 # the driver's `--session-id <uuid> -p` flags ahead of the prompt on that line, so every marker
 # edge missed and the stub-walk graph stalled after its first review round.
-printf 'FROM alpine:3\nENTRYPOINT ["sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}; echo \\"$@\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' >"$work/Dockerfile.ok"
-printf 'FROM alpine:3\nENTRYPOINT ["sh","-c","echo boom >&2; exit 3"]\n' >"$work/Dockerfile.fail"
-docker build -q -t "$IMAGE_OK" -f "$work/Dockerfile.ok" "$work" >/dev/null &&
+# Every stub stands on node + git as the uid-1000 `node` user, like the executor images: the driver
+# runs the startup sync and the other git steps IN the job's executor image (`--entrypoint node`),
+# and every task now has a checkout to sync (issue #263).
+printf 'FROM public.ecr.aws/docker/library/node:24-alpine\nRUN apk add --no-cache git\nUSER node\n' >"$work/Dockerfile.base"
+printf 'FROM %s\nENTRYPOINT ["sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}; echo \\"$@\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' "$IMAGE_BASE" >"$work/Dockerfile.ok"
+printf 'FROM %s\nENTRYPOINT ["sh","-c","echo boom >&2; exit 3"]\n' "$IMAGE_BASE" >"$work/Dockerfile.fail"
+docker build -q -t "$IMAGE_BASE" -f "$work/Dockerfile.base" "$work" >/dev/null &&
+    docker build -q -t "$IMAGE_OK" -f "$work/Dockerfile.ok" "$work" >/dev/null &&
     docker build -q -t "$IMAGE_FAIL" -f "$work/Dockerfile.fail" "$work" >/dev/null || {
     echo 'test-jobs: could not build the stub images'
     exit 1
@@ -219,27 +232,31 @@ docker build -q -t "$IMAGE_OK" -f "$work/Dockerfile.ok" "$work" >/dev/null &&
 # code-only no-fetch arm, which is what lets them run with no App credential at all and against a
 # disposable database name. It drives the whole lease protocol with no credential anywhere.
 
-echo "starting the board on $BASE"
-env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1 \
-    ORG_WORKSPACE_ROOT="$work/workspaces" \
-    node server/dist/offline.js >"$work/server.log" 2>&1 &
-server_pid=$!
+start_open_board() { # boots the AUTH_MODE=none board on $BASE and waits until it is migrated
+    env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1 \
+        ORG_WORKSPACE_ROOT="$work/workspaces" \
+        node server/dist/offline.js >>"$work/server.log" 2>&1 &
+    server_pid=$!
 
-# /api/ready, not /api/health: health answers while the migrations still run, and the truncate below
-# needs the schema they create.
-up=""
-for _ in $(seq 1 40); do
-    [ "$(status "$(api GET /api/ready)")" = '200' ] && {
-        up=1
-        break
+    # /api/ready, not /api/health: health answers while the migrations still run, and the truncate
+    # below needs the schema they create.
+    local up=""
+    for _ in $(seq 1 40); do
+        [ "$(status "$(api GET /api/ready)")" = '200' ] && {
+            up=1
+            break
+        }
+        sleep 1
+    done
+    [ -n "$up" ] || {
+        echo 'test-jobs: the board never came up'
+        tail -20 "$work/server.log"
+        exit 1
     }
-    sleep 1
-done
-[ -n "$up" ] || {
-    echo 'test-jobs: the board never came up'
-    tail -20 "$work/server.log"
-    exit 1
 }
+
+echo "starting the board on $BASE"
+start_open_board
 
 # --- The board on its own --------------------------------------------------------------------
 
@@ -257,6 +274,50 @@ docker compose exec -T postgres psql -U factory -d "$DB" -c 'truncate job, workf
     exit 1
 }
 
+# A task runs against a checkout (issue #263, 372f5630): POST /api/jobs refuses a create whose repo
+# is not the author's own ready selection. With no GitHub there is nothing to clone, so the fixture
+# is what a finished clone leaves — the ready user_repo row and, in the driver volume, the clone —
+# with its origin a bare repository beside it, so every startup sync fetches and branches its task
+# worktree with no network. The author is AUTH_MODE=none's stand-in, read from /api/auth/me; the
+# board names its tree `<org>/<user id>` on every claim (asserted below).
+member="$(body "$(api GET /api/auth/me)")"
+member_org="$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).organization.id); } catch {}' "$member")"
+member_user="$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).user.id); } catch {}' "$member")"
+member_path="$member_org/$member_user"
+case "$member_path" in
+default/????????-????-????-????-????????????) ;;
+*)
+    echo "test-jobs: /api/auth/me named no stand-in member: $member"
+    exit 1
+    ;;
+esac
+docker compose exec -T postgres psql -U factory -d "$DB" -v ON_ERROR_STOP=1 -c \
+    "insert into user_repo (org_id, user_id, repo_owner, repo_name, status, ready_at)
+     values ('$member_org', '$member_user', '${SMOKE_REPO%%/*}', '${SMOKE_REPO#*/}', 'ready', now())
+     on conflict (org_id, user_id, repo_owner, repo_name)
+     do update set status = 'ready', deselected_at = null, ready_at = now()" >/dev/null 2>&1 || {
+    echo "test-jobs: could not select $SMOKE_REPO for the stand-in member"
+    exit 1
+}
+# Production provisioning creates this subtree in the same volume the driver mounts. The harness's
+# board uses a host tempdir while the driver uses a named volume, so bridge that boundary explicitly;
+# volume-subpath refuses a missing target instead of silently mounting a broader parent. Owned by
+# uid 1000, the user every runner, sync and gate container writes the tree as.
+docker volume create "$VOLUME" >/dev/null &&
+    docker run --rm -v "$VOLUME:/workspaces" alpine:3 \
+        sh -c "mkdir -p '/workspaces/$member_path' && chown 1000:1000 '/workspaces/$member_path'" &&
+    docker run --rm -v "$VOLUME:/workspaces" -w "/workspaces/$member_path" -e HOME=/tmp "$IMAGE_BASE" sh -c '
+        set -e
+        rm -rf .smoke-origin.git "$1" .worktrees /tmp/seed
+        git init -q --bare -b main .smoke-origin.git
+        git init -q -b main /tmp/seed
+        git -C /tmp/seed -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q --allow-empty -m init
+        git -C /tmp/seed push -q "$PWD/.smoke-origin.git" main
+        git clone -q "$PWD/.smoke-origin.git" "$1"' sh "${SMOKE_REPO#*/}" || {
+    echo 'test-jobs: could not provision the member workspace in the driver volume'
+    exit 1
+}
+
 expect_status 'stores the task-selectable executors' 200 PUT /api/workspace/executors \
     '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}'
 
@@ -270,7 +331,7 @@ expect_status 'stores an org executor as the admin' 201 POST /api/org/executors 
 expect_status 'refuses a duplicate org name'        409 POST /api/org/executors \
     "{\"name\":\"$ORG_EXECUTOR\",\"type\":\"claude-code\",\"config\":{}}"
 expect_status 'a scope outside the pair is refused' 400 POST /api/jobs \
-    "{\"command\":\"x\",\"executor\":\"$ORG_EXECUTOR\",\"executorScope\":\"repo\"}"
+    "{\"command\":\"x\",\"executor\":\"$ORG_EXECUTOR\",\"executorScope\":\"repo\",\"repo\":\"$SMOKE_REPO\"}"
 
 expect_status 'health answers'            200 GET /api/health
 expect_status 'refuses an empty command'  400 POST /api/jobs '{"command":""}'
@@ -371,14 +432,8 @@ expect_field  'the follow-up starts at attempt 1' "$fu_claim" attempts 1
 api POST "/api/jobs/$fu_id/complete" \
     "{\"leaseToken\":\"$(field "$fu_claim" leaseToken)\",\"status\":\"succeeded\",\"exitCode\":0,\"output\":\"ok\"}" >/dev/null
 
-# Production provisioning creates this subtree in the same volume the driver mounts. The harness's
-# board uses a host tempdir while the driver uses a named volume, so bridge that boundary explicitly;
-# volume-subpath refuses a missing target instead of silently mounting a broader parent.
-docker volume create "$VOLUME" >/dev/null &&
-    docker run --rm -v "$VOLUME:/workspaces" alpine:3 mkdir -p "/workspaces/$workspace_path" || {
-    echo 'test-jobs: could not provision the member workspace in the driver volume'
-    exit 1
-}
+[ "$workspace_path" = "$member_path" ] && ok 'the claim names the provisioned member tree' ||
+    bad 'the claim names the provisioned member tree' "claim '$workspace_path', provisioned '$member_path'"
 
 # Retry (issue #326): a finished run whose driver died before reporting a session queues a fresh
 # attempt of the thread head's command in the SAME thread: no session resumed, the command
@@ -497,8 +552,13 @@ oc="$(create_job 'opencode prompt' opencode)"
 expect_contains 'an opencode driver runs its job' "$(await_settled "$oc")" succeeded
 oc_body="$(body "$(api GET "/api/jobs/$oc")")"
 # The reserved `factory` primary agent carries the board's master prompt (issue #244), so the
-# headless form is `run --agent factory <prompt>`.
-expect_contains 'the opencode argv reached it' "$(field "$oc_body" output)" 'run --agent factory opencode prompt'
+# headless form is `run --agent factory <message>`. The message is the turn context, then the prompt
+# (#518, 87eaca1f): the stub re-echoes the last argument on its final line, so that line is the
+# prompt's own.
+expect_contains 'the opencode argv reached it' "$(field "$oc_body" output)" 'run --agent factory '
+oc_last="$(node -e 'process.stdout.write(process.argv[1].trimEnd().split("\n").at(-1))' "$(field "$oc_body" output)")"
+[ "$oc_last" = 'opencode prompt' ] && ok 'the opencode message ends with the prompt' ||
+    bad 'the opencode message ends with the prompt' "last line: '$oc_last'"
 expect_field    'no session was reported'      "$oc_body" sessionId ''
 
 # The org scope, end to end: the task stamps `executorScope: 'org'`, the claim resolves the ORG
@@ -552,20 +612,26 @@ docker build -q -t "$IMAGE_SVC" "$work/svc" >/dev/null || {
 mkdir -p "$work/run"
 printf '#!/bin/sh\nfor last in "$@"; do :; done\nexec sh -c "$last"\n' >"$work/run/run.sh"
 # `sh /run.sh` rather than exec-ing it: a file written by this script has no exec bit to copy in.
-printf 'FROM alpine:3\nCOPY run.sh /run.sh\nENTRYPOINT ["sh","/run.sh"]\n' >"$work/run/Dockerfile"
+printf 'FROM %s\nCOPY run.sh /run.sh\nENTRYPOINT ["sh","/run.sh"]\n' "$IMAGE_BASE" >"$work/run/Dockerfile"
 docker build -q -t "$IMAGE_RUN" "$work/run" >/dev/null || {
     echo 'test-jobs: could not build the runner-exec stub image'
     exit 1
 }
 
-# The file has to sit in the AUTHOR's tree on the volume the driver mounts — that is where the
-# readout container looks, and there is no host path into a named volume. A failed write fails the
-# run here, not later as a misleading job verdict.
+# The file has to be on the origin's default branch: every task's startup sync fetches it and
+# branches the task worktree from it, and the readout reads that worktree. There is no host path
+# into a named volume, so a container commits it. A failed write fails the run here, not later as a
+# misleading job verdict.
 write_bellows() { # write_bellows <contents>
-    docker run --rm -i -v "$VOLUME:/workspaces" alpine:3 \
-        sh -c "mkdir -p '/workspaces/$wp/demo' && cat > '/workspaces/$wp/demo/.bellows.yaml'" \
+    docker run --rm -i -v "$VOLUME:/workspaces" -e HOME=/tmp "$IMAGE_BASE" sh -c '
+        set -e
+        git clone -q "$1" /tmp/tree
+        cat >/tmp/tree/.bellows.yaml
+        git -C /tmp/tree add .bellows.yaml
+        git -C /tmp/tree -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q --allow-empty -m bellows
+        git -C /tmp/tree push -q origin HEAD:main' sh "/workspaces/$member_path/.smoke-origin.git" \
         <<<"$1" >/dev/null || {
-        echo 'test-jobs: could not write the .bellows.yaml fixture'
+        echo 'test-jobs: could not commit the .bellows.yaml fixture'
         exit 1
     }
 }
@@ -767,7 +833,7 @@ expect_status 'creates the stub workflow' 201 POST /api/workflows "$(cat "$work/
 expect_status 'the stub workflow is listed' 200 GET /api/workflows
 expect_status 'refuses a pasted foreign pipeline' 400 POST /api/workflows \
     '{"name":"foreign","scope":"org","definition":{"nodes":[],"edges":[],"trigger":"on-push"}}'
-expect_status 'refuses an unknown workflow name' 404 POST /api/jobs '{"command":"x","workflow":"ghost"}'
+expect_status 'refuses an unknown workflow name' 404 POST /api/jobs "{\"command\":\"x\",\"workflow\":\"ghost\",\"repo\":\"$SMOKE_REPO\"}"
 
 # Thread reads, in node, because the assertions below walk arrays — no jq in the harness.
 thread_nodes() { # thread_nodes <root-id> -> the node labels, oldest first, space-separated
@@ -784,7 +850,7 @@ thread_command() { # thread_command <root-id> <index> -> that row's command
 }
 
 start_driver "$IMAGE_OK"
-walked="$(api POST /api/jobs '{"command":"walk me end to end","executor":"claude","workflow":"stub-walk"}')"
+walked="$(api POST /api/jobs "{\"command\":\"walk me end to end\",\"executor\":\"claude\",\"workflow\":\"stub-walk\",\"repo\":\"$SMOKE_REPO\"}")"
 wf_id="$(field "$(body "$walked")" id)"
 printf '%s\n' "$wf_id" >>"$work/created-jobs"
 
@@ -849,7 +915,7 @@ walk_flag() { # walk_flag <name> <got> <want>
 
 # Task two: the publish flag. Every node's claim says false until the graph's publish node — six
 # claims to walk the whole graph: fetch, implement, review, fix, the second review, then publish.
-wf2="$(api POST /api/jobs '{"command":"flag walk","executor":"claude","workflow":"stub-walk"}')"
+wf2="$(api POST /api/jobs "{\"command\":\"flag walk\",\"executor\":\"claude\",\"workflow\":\"stub-walk\",\"repo\":\"$SMOKE_REPO\"}")"
 wf2_id="$(field "$(body "$wf2")" id)"
 printf '%s\n' "$wf2_id" >>"$work/created-jobs"
 walk_out="$(claim_walk 'fetch the issue')"
@@ -867,7 +933,7 @@ walk_flag 'the publish node claim may publish'  "$(printf '%s' "$walk_out" | cut
 
 # Task three: the loop bound. The second review names the fix marker AGAIN, but review→fix is
 # bounded at one and the fix row already exists — the board rests the thread instead.
-wf3="$(api POST /api/jobs '{"command":"bound walk","executor":"claude","workflow":"stub-walk"}')"
+wf3="$(api POST /api/jobs "{\"command\":\"bound walk\",\"executor\":\"claude\",\"workflow\":\"stub-walk\",\"repo\":\"$SMOKE_REPO\"}")"
 wf3_id="$(field "$(body "$wf3")" id)"
 printf '%s\n' "$wf3_id" >>"$work/created-jobs"
 claim_walk 'fetch the issue' >/dev/null
@@ -897,7 +963,7 @@ expect_status 'a rested thread offers nothing more' 204 POST /api/jobs/claim '{"
 echo
 echo '# compose driver'
 
-docker compose -p "$COMPOSE_PROJECT" build driver >/dev/null 2>&1 || {
+JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose -p "$COMPOSE_PROJECT" build driver >/dev/null 2>&1 || {
     echo 'test-jobs: could not build the compose driver image'
     exit 1
 }
@@ -906,13 +972,14 @@ ok 'the compose driver image builds'
 # RUNNER_SERVICES=0 like every host-driven phase above: the services phase seeded a malformed
 # .bellows.yaml into the stand-in author's tree, and the services readout failing is a verdict of
 # "failed" — the lifecycle here must be settled by the driver itself, not by that leftover.
-docker compose -p "$COMPOSE_PROJECT" run --rm --name "$COMPOSE_DRIVER" --no-deps \
+JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose -p "$COMPOSE_PROJECT" run --rm --name "$COMPOSE_DRIVER" --no-deps \
     -e JOB_BOARD_URL="http://host.docker.internal:$PORT" \
     -e CLAUDE_EXECUTOR_IMAGE="$IMAGE_OK" \
     -e OPENCODE_EXECUTOR_IMAGE="$IMAGE_OK" \
     -e WORKSPACE_VOLUME="$VOLUME" \
     -e RUNNER_NETWORK=bridge \
     -e RUNNER_SERVICES=0 \
+    -e JOB_BOARD_TOKEN= \
     driver >>"$work/compose-driver.log" 2>&1 &
 compose_pid=$!
 
@@ -942,7 +1009,7 @@ ran="$(body "$(api GET "/api/jobs/$compose_job")")"
 expect_contains 'the compose driver names itself' "$(field "$ran" claimedBy)" 'driver-'
 
 docker rm -f "$COMPOSE_DRIVER" >/dev/null 2>&1
-docker compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
+JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
 wait "$compose_pid" 2>/dev/null
 compose_pid=""
 
@@ -1015,6 +1082,13 @@ else
     fi
 fi
 
+# The phases below drive the open board again (the question round trip queues jobs on $BASE), so
+# the authenticated board hands the port pair back to it — same database, same stand-in member.
+kill "$server_pid" 2>/dev/null
+wait "$server_pid" 2>/dev/null
+server_pid=""
+start_open_board
+
 # --- A cooperative Stop at the model-step boundary (issue #442) --------------------------------
 #
 # The real `claude` and `opencode` binaries, in the real executor images (`make runners`), against
@@ -1047,16 +1121,25 @@ stop_lane() { # stop_lane <claude|opencode>
     run+=(-v "$dir:/workspace" -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key
         -e "BELLOWS_CONTROL_URL=$host" -e BELLOWS_CONTROL_TOKEN=lane -e BELLOWS_CONTROL_POLL_MS=200)
     if [ "$cli" = claude ]; then
-        run+=(-e "ANTHROPIC_BASE_URL=$host" "$image" -p 'touch the step markers' --dangerously-skip-permissions
-            --model fake-model)
+        # `-p <prompt>` last: the bridge the entrypoint execs refuses any other shape (#536), and it
+        # is the shape the driver passes.
+        run+=(-e "ANTHROPIC_BASE_URL=$host" "$image" --dangerously-skip-permissions --model fake-model
+            -p 'touch the step markers')
     else
         run+=(-e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
             "$image" run 'touch the step markers')
     fi
-    if timeout 180 "${run[@]}" >"$work/stop-$cli.log" 2>&1; then
+    # On its own: not the timeout's 124. opencode reports the session the stop plugin aborted as
+    # `Error: Aborted` and exits 1; claude ends the turn and exits 0. The driver parks a stopped
+    # attempt whatever the exit (driver/src/loop-fence.ts standDown), so each CLI's own is pinned.
+    local want_exit=0 status
+    [ "$cli" = opencode ] && want_exit=1
+    timeout 180 "${run[@]}" >"$work/stop-$cli.log" 2>&1
+    status=$?
+    if [ "$status" = "$want_exit" ]; then
         ok "$cli exits on its own after the stop"
     else
-        bad "$cli exits on its own after the stop" "$(tail -5 "$work/stop-$cli.log")"
+        bad "$cli exits on its own after the stop" "exit $status, wanted $want_exit: $(tail -5 "$work/stop-$cli.log")"
     fi
     requests="$(node -e 'fetch(process.argv[1] + "/requests").then((r) => r.json()).then((j) => console.log(j.agentRequests))' "http://127.0.0.1:$port")"
     kill "$fake_pid" 2>/dev/null
@@ -1111,7 +1194,7 @@ ask_lane() {
     if timeout 180 docker run --rm --add-host host.docker.internal:host-gateway -v "$dir:/workspace" -e WORKDIR=/workspace \
         -e ANTHROPIC_API_KEY=fake-key -e "ANTHROPIC_BASE_URL=$host" -e "BELLOWS_CONTROL_URL=$host" \
         -e BELLOWS_CONTROL_TOKEN=lane -e BELLOWS_CONTROL_POLL_MS=200 \
-        "$image" -p 'ask which colour' --dangerously-skip-permissions --model fake-model >"$log" 2>&1; then
+        "$image" --dangerously-skip-permissions --model fake-model -p 'ask which colour' >"$log" 2>&1; then
         ok "claude exits 0 after the question is answered ($mode)"
     else
         bad "claude exits 0 after the question is answered ($mode)" "$(tail -5 "$log")"
