@@ -1,6 +1,6 @@
 import { ERROR_CODES, JSON_HEADERS, type BatchPlan, type BatchPlanIssue } from '@factory-ai/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BATCH_RUNNING, type BatchRecord, type BatchSummary } from '../batch-model.js';
+import { BATCH_RUNNING, type BatchRecord, type BatchReportView, type BatchSummary } from '../batch-model.js';
 import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
@@ -151,6 +151,14 @@ export function useBatchList(): Polled<BatchSummary[]> {
 /** One batch. Polled until it settles; a draft is read once, since nothing moves in it. */
 export function useBatch(id: string | null): Polled<BatchRecord> {
     return usePolled<BatchRecord>(id === null ? null : batchPath(id), (batch) => batch.status === BATCH_RUNNING);
+}
+
+/** A live report state: the board still schedules, so a task's `next` can still change. */
+const REPORT_LIVE: readonly string[] = ['running', 'parked'];
+
+/** A started batch's report, for each task's `next` (whose move it is). Polled while the board still schedules. */
+export function useBatchReport(id: string): Polled<BatchReportView> {
+    return usePolled<BatchReportView>(`${batchPath(id)}/report`, (report) => REPORT_LIVE.includes(report.state));
 }
 
 /** The batches a task's thread backs a task of, for the task page's backlink. Read once per task. */

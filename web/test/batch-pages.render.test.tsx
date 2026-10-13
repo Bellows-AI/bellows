@@ -58,7 +58,9 @@ const noop = async () => null;
 
 describe('the batch monitor', () => {
     it('names the pull request to merge and says the gate resumes by itself', () => {
-        const html = render(<BatchMonitor batch={started()} onRetry={noop} onAccept={noop} pending={null} />);
+        const html = render(
+            <BatchMonitor batch={started()} report={null} onRetry={noop} onAccept={noop} pending={null} />
+        );
         expect(html).toContain('Human review gate.');
         expect(html).toContain(GATE_RESUMES_AUTOMATICALLY);
         expect(html).toContain('Review and merge the pull request.');
@@ -71,9 +73,9 @@ describe('the batch monitor', () => {
         const failed = started({
             tasks: [{ ...started().tasks[0]!, execution: 'failed', pr: 'none', waitReason: null }],
         });
-        expect(render(<BatchMonitor batch={failed} onRetry={noop} onAccept={noop} pending={null} />)).toContain(
-            'Retry task-1'
-        );
+        expect(
+            render(<BatchMonitor batch={failed} report={null} onRetry={noop} onAccept={noop} pending={null} />)
+        ).toContain('Retry task-1');
         const acceptedPlan = updateTask(plan(), 'task-1', (task) => ({
             ...task,
             completion: { kind: 'accepted', condition: 'the page loads' },
@@ -82,18 +84,20 @@ describe('the batch monitor', () => {
             plan: acceptedPlan,
             tasks: [{ ...started().tasks[0]!, pr: 'none', waitReason: 'waiting for acceptance: the page loads' }],
         });
-        const html = render(<BatchMonitor batch={waiting} onRetry={noop} onAccept={noop} pending={null} />);
+        const html = render(
+            <BatchMonitor batch={waiting} report={null} onRetry={noop} onAccept={noop} pending={null} />
+        );
         expect(html).toContain('Accept task-1');
         expect(html).toContain('the page loads');
         const later = started({ plan: acceptedPlan, activeStage: 'stage-2', tasks: waiting.tasks });
-        expect(render(<BatchMonitor batch={later} onRetry={noop} onAccept={noop} pending={null} />)).not.toContain(
-            'Accept task-1'
-        );
+        expect(
+            render(<BatchMonitor batch={later} report={null} onRetry={noop} onAccept={noop} pending={null} />)
+        ).not.toContain('Accept task-1');
     });
 
     it('reports partial progress with the merged pull requests', () => {
         const done = started({ tasks: [{ ...started().tasks[0]!, gate: 'passed', waitReason: null, attempt: 2 }] });
-        const html = render(<BatchMonitor batch={done} onRetry={noop} onAccept={noop} pending={null} />);
+        const html = render(<BatchMonitor batch={done} report={null} onRetry={noop} onAccept={noop} pending={null} />);
         expect(html).toContain('1 of 1 tasks accepted');
         expect(html).toContain('Merged so far');
         expect(html).toContain('repaired, attempt 2');

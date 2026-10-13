@@ -198,7 +198,11 @@ describe.skipIf(!enabled)('listTasks: organization-wide summary', () => {
             'executor',
             // The stamped scope beside the label (issue 391) — selection metadata, still bounded.
             'executorScope',
+            // The thread's newest run, so a status is never read off the root (#613).
+            'headRunId',
             'id',
+            // Whether any run of the thread holds an answerable agent question (#537).
+            'needsAnswer',
             'repo',
             'status',
             'summary',

@@ -1,5 +1,5 @@
 import type { Page, Route } from '@playwright/test';
-import type { BatchRecord, BatchSummary } from '../../web/src/batch-model.js';
+import type { BatchRecord, BatchReportView, BatchSummary } from '../../web/src/batch-model.js';
 
 /**
  * A stand-in for the board's scheduler on the open e2e board, where no driver runs a task: it
@@ -31,6 +31,8 @@ const summaryOf = (record: BatchRecord): BatchSummary => ({
 
 export class BatchBoard {
     private readonly records = new Map<string, BatchRecord>();
+    /** Each batch's report as the board would assemble it; a batch adopted without one names no task's next step. */
+    private readonly reports = new Map<string, BatchReportView>();
     /** The state-changing requests the page made, as `<method> <path after /api/batches>`. */
     readonly requests: string[] = [];
 
@@ -40,8 +42,9 @@ export class BatchBoard {
         await this.page.route(/\/api\/batches(\/|\?|$)/, (route) => this.handle(route));
     }
 
-    adopt(record: BatchRecord): void {
+    adopt(record: BatchRecord, report?: BatchReportView): void {
         this.records.set(record.id, record);
+        if (report) this.reports.set(record.id, report);
     }
 
     private held(id: string): BatchRecord {
@@ -78,6 +81,9 @@ export class BatchBoard {
     private answer(id: string, method: string, rest: string[], body: { version?: number; plan?: BatchRecord['plan'] }) {
         const now = new Date().toISOString();
         const [action] = rest;
+        if (method === 'GET' && action === 'report') {
+            return this.reports.get(id) ?? { state: this.held(id).status, tasks: [] };
+        }
         if (method === 'GET') return this.held(id);
         if (method === 'PUT') {
             const next = this.mutate(id, (record) => ({

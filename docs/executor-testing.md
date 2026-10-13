@@ -35,7 +35,8 @@ Which lane proves what for the board/driver/runner/telemetry control plane, list
 - **`npm run test:jobs` on a Linux docker daemon.** The compose-driver and question-round-trip phases
   reach the open board and the driver's control server through `host.docker.internal`, which only
   Docker Desktop forwards to the host's loopback, and `AUTH_MODE=none` refuses any other bind
-  (`assertNoneModeBindable`, `server/src/config.ts`) — so those phases fail there.
+  (`assertNoneModeBindable`, `server/src/config.ts`) — so those 9 checks of `scripts/test-jobs.sh`
+  need host networking there, and the lane is not in CI ([ci.md](ci.md)).
 - **The real collector** is in neither end-to-end path; `test:jobs` and `--cluster` assert the
   driver's export, not a stored-and-rolled-up datapoint.
 - **A cloud cluster.** `--cluster` refuses every non-kind context deliberately (it deletes runner

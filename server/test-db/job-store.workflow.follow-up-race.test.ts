@@ -48,8 +48,8 @@ const failGates = async (c: Claim, output: string) => {
 };
 
 describe.skipIf(!enabled)('a follow-up racing a queued gate-fix (issue #429)', () => {
-    // The follow-up is claimed between graph rows; its transition must rest, not insert a second
-    // gate-fix beside the one the graph already queued.
+    // A follow-up on a thread whose graph already queued a gate-fix refuses not_finished (#698),
+    // so it can never land between graph rows and queue a second gate-fix beside the first.
     it('never leaves two gate-fix rows queued in one thread', async () => {
         const root = await queueDefault(5);
         const task = await claim();
@@ -57,17 +57,9 @@ describe.skipIf(!enabled)('a follow-up racing a queued gate-fix (issue #429)', (
         await failGates(task, 'red');
         expect(await queuedGateFix(root)).toHaveLength(1);
 
-        const follow = await store.createFollowUp(task.id, 'also fix the lint', null);
-        if (typeof follow === 'string') throw new Error(`follow-up refused: ${follow}`);
+        expect(await store.createFollowUp(task.id, 'also fix the lint', null)).toBe('not_finished');
 
-        const g1 = await claim();
-        expect(g1.id).not.toBe(follow.id);
-        await failGates(g1, 'still red');
-
-        const f = await claim();
-        expect(f.id).toBe(follow.id);
-        await failGates(f, 'red again');
-
-        expect((await queuedGateFix(root)).length).toBeLessThanOrEqual(1);
+        expect(await store.thread(root)).toHaveLength(2);
+        expect(await queuedGateFix(root)).toHaveLength(1);
     });
 });

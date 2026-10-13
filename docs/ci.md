@@ -5,7 +5,7 @@ Three workflows and no configured secret — the only credential any uses is `gi
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Validation and the browser lane | `.github/workflows/ci.yml` | `core/test/ci-workflows.test.ts` |
+| Validation, the db suite (`test-db`) and the browser lane | `.github/workflows/ci.yml`, `vitest.db.config.ts` | `core/test/ci-workflows.test.ts` |
 | Tag fold, image matrix, scan gate, manifest, chart publish | `.github/workflows/release-image.yml`, `.trivyignore` | `core/test/ci-workflows.test.ts` |
 | Release command: patch bump, version-only commit, tag, atomic push | `scripts/release.sh`, `VERSION` | `core/test/release-script.test.ts` |
 | The images a release builds | `docker/Dockerfile`, `docker/driver.Dockerfile`, `docker/{claude,opencode}-executor/` | `driver/test/executor-images.test.ts` |
@@ -16,6 +16,9 @@ Three workflows and no configured secret — the only credential any uses is `gi
 
 - **`npm run build` precedes `npm test`**, so a broken `core/dist` reports as a build failure; `npm run typecheck`
   follows, covering `server/tsconfig.test.json` and `e2e/tsconfig.json`.
+- **The `test-db` job runs `npm run test:db` on every pull request**, beside `validate`, against a `postgres:17`
+  service whose database ends `_test` — the only coverage the SQL and the migrations have.
+  `.github/workflows/ci.yml`, `core/test/ci-workflows.test.ts`.
 - **The `e2e` job runs only on a push to `main`**, with a `postgres:17` service, `factory_e2e` and
   `factory_auth_e2e` created by hand (`e2e/reset-db.mjs` truncates but never creates), and chromium.
 - **A push to `main` that changes only `VERSION` skips CI; its tag still validates** through the `workflow_call`
@@ -39,6 +42,7 @@ Three workflows and no configured secret — the only credential any uses is `gi
 
 - `driver/test/executor-images.test.ts` and `driver/test/review-reply-script.test.ts` spawn real processes and can
   time out on a contended runner; re-run the job.
-- CI never runs `npm run test:db`, `npm run test:jobs` or `npm run test:k8s`, and no lane runs a real cloud cluster
-  ([eks-runbook.md](eks-runbook.md)). `test:jobs` cannot pass on ubuntu-latest's daemon
-  ([executor-testing.md](executor-testing.md), "What no lane covers").
+- CI never runs `npm run test:jobs` or `npm run test:k8s`, and no lane runs a real cloud cluster
+  ([eks-runbook.md](eks-runbook.md)). `test:jobs` is out because of Linux docker networking: on
+  ubuntu-latest 9 checks (the compose-driver and question-round-trip phases of `scripts/test-jobs.sh`)
+  need host networking to reach the loopback-only open board ([executor-testing.md](executor-testing.md)).

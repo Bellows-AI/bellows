@@ -135,11 +135,12 @@ describe.runIf(enabled)('mutation idempotency (#589)', () => {
             const bob = await account();
             const key = freshKey();
 
+            // Finished before a and b queue: finish() completes whatever the claim hands out first.
+            const finished = await createdOk(store, 'parent', alice);
+            await finish(finished.id);
             const a = await createdOk(store, 'echo hi', alice, idem('create', key));
             const b = await createdOk(store, 'echo hi', bob, idem('create', key));
             const elsewhere = await createdOk(otherOrgStore, 'echo hi', alice, idem('create', key));
-            const finished = await createdOk(store, 'parent', alice);
-            await finish(finished.id);
             const followUp = await store.createFollowUp(finished.id, 'echo hi', alice, idem('follow-up', key));
 
             expect(new Set([a.id, b.id, elsewhere.id]).size).toBe(3);
@@ -221,14 +222,15 @@ describe.runIf(enabled)('mutation idempotency (#589)', () => {
     });
 
     describe('follow-up', () => {
-        it('replays instead of refusing the parent as still unfinished', async () => {
+        it('replays instead of refusing the busy thread as still unfinished', async () => {
             const user = await account();
             const parent = await createdOk(store, 'first', user);
             await finish(parent.id);
             const input = idem('follow-up', freshKey());
 
             const first = await store.createFollowUp(parent.id, 'again', user, input);
-            // The follow-up is now queued, so a keyless repeat is refused...
+            // Eligibility is the THREAD's (#698), and the follow-up is now queued in it, so a
+            // keyless repeat is refused...
             expect(await store.createFollowUp(parent.id, 'again', user)).toBe('not_finished');
             // ...but the keyed repeat finds the row it already made.
             const repeat = await store.createFollowUp(parent.id, 'again', user, input);
