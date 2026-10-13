@@ -17,7 +17,10 @@ function StartedBatch({ batch, refresh }: { batch: BatchRecord; refresh: () => v
     const [error, setError] = useState<string | null>(null);
     const [pending, setPending] = useState<string | null>(null);
     const [confirming, setConfirming] = useState(false);
-    const { data: report, refresh: refreshReport } = useBatchReport(batch.id);
+    const reportRead = useBatchReport(batch.id);
+    // A failed read drops the last report: an old `wait` must not outlive the run it judged.
+    const report = reportRead.error === null ? reportRead.data : null;
+    const refreshReport = reportRead.refresh;
     const verdict = batchVerdict(batch, report);
 
     const act = async (key: string, request: () => Promise<{ ok: boolean; error?: string }>) => {

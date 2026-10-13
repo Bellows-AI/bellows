@@ -90,7 +90,8 @@ export interface BatchRecord extends Omit<BatchSummary, 'title' | 'taskCount'> {
 /** The subset of `GET /api/batches/:id/report` the monitor reads: each task's `next`, the board's word on who acts. */
 export interface BatchReportView {
     state: string;
-    tasks: { key: string; next: BatchNextAction }[];
+    /** `execution` and `attempts` name the run each `next` was judged on (server `BatchReportTask`). */
+    tasks: { key: string; execution: string; attempts: number; next: BatchNextAction }[];
 }
 
 /** The report as the model reads it; null until the first one lands. */
@@ -121,9 +122,15 @@ const PARKED_EXECUTIONS: readonly string[] = [TASK_FAILED, TASK_STOPPED];
 
 const NEXT_WAIT = 'wait';
 
-/** The board still acting on a task — moving work, or an automerge PR it is merging or repairing. */
-export const boardActing = (task: BatchTaskState, report: BatchNextOf): boolean =>
-    report?.tasks.find((entry) => entry.key === task.key)?.next.action === NEXT_WAIT;
+/**
+ * The board still acting on a task — moving work, or an automerge PR it is merging or repairing. The
+ * record and the report are read apart, so an entry judged on another run than the record's speaks
+ * for nothing: the record's own rule decides until the report catches up.
+ */
+export function boardActing(task: BatchTaskState, report: BatchNextOf): boolean {
+    const entry = report?.tasks.find((candidate) => candidate.key === task.key);
+    return entry?.next.action === NEXT_WAIT && entry.execution === task.execution && entry.attempts === task.attempt;
+}
 
 /**
  * A task nothing will move without a person: a failed or stopped run, or a gate waiting on one —

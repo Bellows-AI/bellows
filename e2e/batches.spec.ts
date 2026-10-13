@@ -249,7 +249,10 @@ for (const theme of ['light', 'dark'] as const) {
                 ],
                 verification: [],
             },
-            { state: 'running', tasks: [{ key: 'task-1', next: { action: 'wait' } }] }
+            {
+                state: 'running',
+                tasks: [{ key: 'task-1', execution: 'succeeded', attempts: 1, next: { action: 'wait' } }],
+            }
         );
         await page.goto(`/batches/${id}`);
         const task = page.locator('[data-task="task-1"]');
