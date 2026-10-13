@@ -1,14 +1,7 @@
 import { batchWaitResult, ERROR_CODES, type BatchWaitResult } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { UUID } from '../config.js';
-import {
-    BATCH_CREATE,
-    BATCH_DRAFT,
-    BATCH_START,
-    BATCH_STARTED,
-    type BatchIdempotency,
-    type BatchStore,
-} from '../db/batch-store.js';
+import { BATCH_CREATE, BATCH_DRAFT, BATCH_START, type BatchIdempotency, type BatchStore } from '../db/batch-store.js';
 import type { OrgRegistry } from '../orgs.js';
 import { launchChecks } from './batch-launch.js';
 import {
@@ -86,7 +79,7 @@ export async function handleGet(orgs: OrgRegistry, request: FastifyRequest, repl
     const wait = validateWaitQuery(request.query as { waitFor?: unknown; timeout?: unknown });
     if (!wait.ok) return bad(reply, wait.code, wait.message);
     if (!wait.value) return reply.code(HTTP_OK).send(record);
-    if (record.status !== BATCH_STARTED) return notStartedConflict(reply);
+    if (record.status === BATCH_DRAFT) return notStartedConflict(reply);
 
     const held = await guard(
         reply,
@@ -105,7 +98,7 @@ export async function handleReport(orgs: OrgRegistry, request: FastifyRequest, r
     if (!ctx) return reply;
     const record = await loadBatch(ctx, request, reply);
     if (!record) return reply;
-    if (record.status !== BATCH_STARTED) return notStartedConflict(reply);
+    if (record.status === BATCH_DRAFT) return notStartedConflict(reply);
     const report = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'batch report failed'),

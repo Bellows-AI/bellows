@@ -1,7 +1,7 @@
 import { holdsSlot, TASK_CANCELLED } from '@factory-ai/core';
 import type { Sql } from 'postgres';
 import type { Tx } from './batch-store-repair.js';
-import { BATCH_STARTED } from './batch-store-types.js';
+import { BATCH_ROW_STARTED } from './batch-store-types.js';
 import { TERMINAL_STATUSES } from './task-summary.js';
 
 export interface OpenThread {
@@ -71,7 +71,7 @@ export async function syncClosed(at: Tx, task: { key: string; execution: string 
 export async function openBatches(sql: Sql, orgId: string): Promise<{ id: string }[]> {
     return sql<{ id: string }[]>`
         select b.id from batch b
-        where b.org_id = ${orgId} and b.status = ${BATCH_STARTED} and b.threads_closed_at is null
+        where b.org_id = ${orgId} and b.status = ${BATCH_ROW_STARTED} and b.threads_closed_at is null
         order by b.started_at, b.id
     `;
 }

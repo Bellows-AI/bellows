@@ -7,8 +7,11 @@ import { CONTENT_TYPE_HEADER, IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAYED_HEADE
  * draft and every task's target reference survive inspect → update untouched.
  */
 
+/** The board's `status`: `draft`, `running`, or an end state, named as the report's `state` names it. */
 export const BATCH_DRAFT = 'draft';
-export const BATCH_STARTED = 'started';
+export const BATCH_COMPLETED = 'completed';
+export const BATCH_CANCELLED = 'cancelled';
+export const BATCH_EXPIRED = 'expired';
 /** The board's code for a plan or operation start cannot run yet (`ERROR_CODES.BATCH_UNSUPPORTED`). */
 export const BATCH_UNSUPPORTED_CODE = 'BATCH_UNSUPPORTED';
 
@@ -142,9 +145,6 @@ export interface BatchReport {
     unavailable: string[];
 }
 
-export const REPORT_EXPIRED = 'expired';
-export const REPORT_CANCELLED = 'cancelled';
-
 export interface BatchSummary {
     id: string;
     title: string;
@@ -192,7 +192,7 @@ export function batchVerdict(batch: BatchRecord): BatchVerdict {
     if (!batch.tasks.every((task) => TASK_TERMINAL.includes(task.execution))) return 'running';
     if (batch.tasks.some((task) => task.execution === TASK_FAILED)) return 'failed';
     // A task a person force-closed in a batch that still completed was settled by that person.
-    const settledByPerson = (task: BatchTaskState) => task.closedAt != null && batch.completedAt != null;
+    const settledByPerson = (task: BatchTaskState) => task.closedAt != null && batch.status === BATCH_COMPLETED;
     if (batch.tasks.some((task) => task.execution === TASK_CANCELLED && !settledByPerson(task))) return 'cancelled';
     // The last automerge stage's tasks are all done while its verification is still being read.
     if (batch.verification.some((stage) => stage.state !== VERIFY_PASSED)) return 'running';

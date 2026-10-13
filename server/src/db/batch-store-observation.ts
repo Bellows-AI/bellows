@@ -19,7 +19,7 @@ import {
     type ReadErrorKind,
 } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
-import { BATCH_STARTED } from './batch-store-types.js';
+import { BATCH_ROW_STARTED } from './batch-store-types.js';
 
 /**
  * The durable PR observations (063; docs/batches.md). A reader claims a due row under a short
@@ -101,7 +101,7 @@ export const FENCED_OBSERVATION_MS = HOUR * 24;
 const eligible = (tx: TransactionSql, orgId: string, now: Date) => {
     const fenceCutoff = new Date(now.getTime() - FENCED_OBSERVATION_MS);
     return tx`
-    t.org_id = ${orgId} and b.status = ${BATCH_STARTED} and t.root_job_id is not null
+    t.org_id = ${orgId} and b.status = ${BATCH_ROW_STARTED} and t.root_job_id is not null
     and not exists (
         select 1 from pr_merge m
         where m.org_id = p.org_id and m.repo = p.repo and m.pr_number = p.pr_number

@@ -11,7 +11,7 @@ recorded acceptance.
 | Plan contract v1: types, bounds, `validateBatchPlan`, `resolveBatchPlan`, `batchExecutionCapability` | `core/src/batch-plan.ts` | `core/test/batch-plan.test.ts` |
 | Error codes (`BAD_BATCH`, `BATCH_STALE`, `BATCH_STARTED`, `BATCH_UNSUPPORTED`, `BATCH_TASK_NOT_ACCEPTABLE`, `BATCH_NO_DEFAULT_BRANCH`, `BATCHES_UNAVAILABLE`) | `core/src/error-codes.ts` | `core/test/error-codes.test.ts` |
 | Schema: `batch`, `batch_target`, `batch_stage`, `batch_task`, `batch_idempotency`, the immutability triggers, `executor_scope` | `server/migrations/059_batches.sql`, `066_batch_executor_scope.sql` | `server/test-db/batch-store.test.ts` |
-| Store bound to `orgId`: create, get, list, replace, start | `server/src/db/batch-store.ts`, `batch-store-rows.ts`, `batch-store-types.ts` | `server/test-db/batch-store.test.ts` |
+| Store bound to `orgId`: create, get, list, replace, start; the read `status` (`lifecycleOf`: the stored `draft`/`started` flag and the stamps, cancelled over expired over completed) | `server/src/db/batch-store.ts`, `batch-store-rows.ts`, `batch-store-types.ts` | `server/test-db/batch-store.test.ts`, `server/test-db/batch-dispatch.test.ts` |
 | Idempotency records for create and start | `server/src/db/batch-store-idempotency.ts` | `server/test-db/batch-store.test.ts` |
 | Runtime tables: `batch_attempt`, `batch_decision`, `cancelled_at`, `completed_at` | `server/migrations/060_batch_runtime.sql` | `server/test-db/batch-dispatch.test.ts` |
 | Pure readiness, capacity, advancement and wait decisions | `core/src/batch-schedule.ts` | `core/test/batch-schedule.test.ts` |
@@ -34,7 +34,7 @@ recorded acceptance.
 | Auth wall: human credentials only | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts` |
 | CLI client: `factory batch …`, draft round-trip, `report`, wait exit codes (expired ends as cancelled, a failed stage verification needs attention, a pending one keeps waiting) | `cli/src/batch.ts`, `batch-commands.ts`, `batch-render.ts` | `cli/test/batch.test.ts` |
 | Local-session skill: plan authoring, launch, watch, act on `next`; its example plan | `.claude/skills/batch-control/` | `core/test/skills.batch-control.test.ts` |
-| Web: list, draft composer, monitor, human-gate and task backlink | `web/src/pages/Batch*Page.tsx`, `web/src/panels/Batch*.tsx`, `web/src/api/useBatches.ts`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts` (stage verification: failed needs a person, pending and passed do not), `web/test/batch-detail.dom.test.tsx`, `e2e/batches.spec.ts` ([design-system/batches.md](design-system/batches.md)) |
+| Web: list, draft composer, monitor, human-gate and task backlink | `web/src/pages/Batch*Page.tsx`, `web/src/panels/Batch*.tsx`, `web/src/api/useBatches.ts`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts` (stage verification: failed needs a person, pending and passed do not; the verdict reads `status`, `expired` included), `web/test/batch-detail.dom.test.tsx`, `e2e/batches.spec.ts` ([design-system/batches.md](design-system/batches.md)) |
 | In-memory store double for the offline route tests | `server/test/helpers-batch-store.ts` | `server/test/routes.batches.test.ts` |
 
 ## Invariants

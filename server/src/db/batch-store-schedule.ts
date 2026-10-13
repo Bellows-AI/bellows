@@ -42,7 +42,7 @@ import {
 } from './batch-store-threads.js';
 import {
     ACCEPTANCE_ACCEPTED,
-    BATCH_STARTED,
+    BATCH_DRAFT,
     DECISION_ADVANCE,
     DECISION_CANCEL,
     DECISION_COMPLETE,
@@ -456,7 +456,7 @@ async function pass(deps: ScheduleDeps, id: string, revisions: Map<string, strin
     const { sql, orgId } = deps;
     return sql.begin(async (tx) => {
         const batch = await lockBatch(tx, orgId, id);
-        if (!batch || batch.status !== BATCH_STARTED) return null;
+        if (!batch || batch.status === BATCH_DRAFT) return null;
         const at = { tx, orgId, id };
         const now = nowOf(deps);
         // The time limit is a fence like cancel: it commits first, so nothing recovers, launches or
@@ -610,7 +610,7 @@ export async function cancelBatch(
     const fenced = await sql.begin(async (tx) => {
         const batch = await lockBatch(tx, orgId, id);
         if (!batch) return { result: 'missing' as const };
-        if (batch.status !== BATCH_STARTED) return { result: 'not_started' as const };
+        if (batch.status === BATCH_DRAFT) return { result: 'not_started' as const };
         if (batch.cancelled_at !== null) return { result: 'ok' as const, replayed: true };
         if (batch.completed_at !== null) return { result: 'finished' as const };
         await tx`
@@ -639,7 +639,7 @@ export async function retryBatchTask(
     const queued = await sql.begin(async (tx): Promise<{ result: 'ok' } | BatchRetryRefusal> => {
         const batch = await lockBatch(tx, orgId, id);
         if (!batch) return { result: 'missing' };
-        if (batch.status !== BATCH_STARTED) return { result: 'not_started' };
+        if (batch.status === BATCH_DRAFT) return { result: 'not_started' };
         if (batch.cancelled_at !== null) return { result: 'cancelled' };
         if (batch.expired_at !== null) return { result: 'expired' };
         const [task] = await tx<{ stage_key: string; root_job_id: string | null; execution: string; gate: string }[]>`
@@ -720,7 +720,7 @@ export async function acceptBatchTask(
     const recorded = await sql.begin(async (tx): Promise<{ result: 'ok' } | BatchAcceptRefusal> => {
         const batch = await lockBatch(tx, orgId, id);
         if (!batch) return { result: 'missing' };
-        if (batch.status !== BATCH_STARTED) return { result: 'not_started' };
+        if (batch.status === BATCH_DRAFT) return { result: 'not_started' };
         if (batch.cancelled_at !== null) return { result: 'cancelled' };
         // The accepted result must be the current one: fold the thread's head in first, so a run
         // that just finished is seen as finished.

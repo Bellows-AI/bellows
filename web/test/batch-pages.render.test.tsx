@@ -25,7 +25,7 @@ const plan = (): BatchPlan =>
 
 const started = (over: Partial<BatchRecord> = {}): BatchRecord => ({
     id: 'b1',
-    status: 'started',
+    status: 'running',
     version: 2,
     createdBy: null,
     startedBy: null,
@@ -34,6 +34,7 @@ const started = (over: Partial<BatchRecord> = {}): BatchRecord => ({
     startedAt: '2026-09-01T00:00:00.000Z',
     cancelledAt: null,
     completedAt: null,
+    expiredAt: null,
     activeStage: 'stage-1',
     plan: plan(),
     verification: [],
