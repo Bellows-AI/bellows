@@ -232,9 +232,11 @@ export function memoryBatchStore(): MemoryBatchStore {
             for (const [id, batch] of batches) {
                 const task = batch.tasks.find((candidate) => candidate.rootJobId === jobId);
                 if (!task) continue;
-                if (!(task.execution === TASK_SUCCEEDED && task.gate === GATE_PASSED)) task.execution = TASK_CANCELLED;
+                const kept = task.execution === TASK_SUCCEEDED && task.gate === GATE_PASSED;
+                if (!kept) task.execution = TASK_CANCELLED;
                 writes.push(`close:${task.key}:${closedBy}`);
-                return { batchId: id, task: task.key, pr: null, doneAt: new Date().toISOString() };
+                const outcome = kept ? ('kept' as const) : ('cancelled' as const);
+                return { batchId: id, task: task.key, outcome, pr: null, doneAt: new Date().toISOString() };
             }
             return null;
         },
