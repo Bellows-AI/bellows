@@ -101,8 +101,9 @@ function arithmeticEnd(command, j) {
 // At i: a `${…}` parameter expansion, where `<<` and `#` are text, never a heredoc or a comment.
 // Returns { text, subs, end } — text the span with each substitution as `""`, subs their bodies,
 // end one past the first unquoted `}` (bash counts no bare braces, only a nested `${`) — -1 when
-// this is no expansion, or null when it never closes.
-function parameterEnd(command, i) {
+// this is no expansion, or null when it never closes. Entered inside double quotes (quoted), a `'`
+// is literal text: it hides no substitution, so `"${x:-'$(cmd)'}"` still runs cmd.
+function parameterEnd(command, i, quoted) {
     if (!command.startsWith('${', i)) return -1;
     let text = '${';
     const subs = [];
@@ -115,7 +116,7 @@ function parameterEnd(command, i) {
             j += 2;
             continue;
         }
-        if (d === "'" && !inDouble) {
+        if (d === "'" && !inDouble && !quoted) {
             const close = command.indexOf("'", j + 1);
             if (close === -1) return null;
             text += command.slice(j, close + 1);
@@ -123,7 +124,7 @@ function parameterEnd(command, i) {
             continue;
         }
         if (d === '"') inDouble = !inDouble;
-        const param = parameterEnd(command, j);
+        const param = parameterEnd(command, j, quoted || inDouble);
         if (param === null) return null;
         if (param !== -1) {
             text += param.text;
@@ -232,7 +233,7 @@ function matchSubstitution(command, i) {
                 j += 1;
                 continue;
             }
-            const param = parameterEnd(command, j);
+            const param = parameterEnd(command, j, inDouble);
             if (param === null) return null;
             if (param !== -1) {
                 j = param.end;
@@ -360,7 +361,7 @@ function segmentsOf(command, depth) {
             i = end + 1;
             continue;
         }
-        const param = parameterEnd(command, i);
+        const param = parameterEnd(command, i, inDouble);
         if (param === null) return { ok: false };
         if (param !== -1) {
             subs.push(...param.subs);
@@ -812,6 +813,11 @@ const CASES = [
     ['deny', 'echo ${x:-$(git switch main)}'],
     ['deny', 'echo ${x:-<<EOF'],
     ['allow', "echo ${x:-default} <<'EOF'\nit's\nEOF"],
+    // Inside a double-quoted `${…}` a `'` is literal: it hides no substitution and no operator.
+    ['deny', 'git commit -m "${x:-\'$(git switch main)\'}"'],
+    ['deny', 'echo "${x:-\'`git checkout main`\'}"'],
+    ['deny', 'echo "${x:-\'}" ; git switch main'],
+    ['allow', 'git commit -m "${x:-\'it is\'}"'],
     // An unquoted body joins a backslash-newline before the terminator check; a quoted one does not.
     ['deny', 'git commit -F - <<EOF\nE\\\nOF\ngit switch main\nEOF'],
     ['allow', "git commit -F - <<'EOF'\nE\\\nOF\ngit switch main\nEOF"],
