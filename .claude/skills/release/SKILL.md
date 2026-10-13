@@ -41,6 +41,9 @@ its own worktree. Group issues that touch the same files into one agent, or they
 every agent: do not merge, write its report to a file and return a short summary, and **never run
 induced CPU-load tests (CPU burners, parallel full-suite loops) while a live batch runs on this
 machine** — load fails the batch's gates, and a vitest worker timeout reads as a real failure.
+Two worktree traps to pass on: `docker compose` names its project after the directory, so a
+harness that execs into the stack's postgres runs with `COMPOSE_PROJECT_NAME=factory-ai`; and two
+`verify:ui` runs at once each take their own `E2E_PORT_BASE` and `E2E_DB_PREFIX`.
 
 A defect found later in this skill (phases 3–4) gets the same treatment: `gh issue create` with
 the evidence (job ids, batch id, the failing output), then a `fix` agent. Small and obvious ones
@@ -51,7 +54,11 @@ you may fix directly in a worktree — test first, then the fix, then the owning
 Run on `main` once the in-scope PRs are merged (phase 4), and again after any late fix. Keep each
 log on disk; read the summary, then the failures.
 
-**Suites** — on an idle machine; a red under load is re-run before it is trusted:
+**Suites** — on an idle machine; a red under load is re-run before it is trusted. Run every one,
+not only what CI runs: read `.github/workflows/ci.yml` for which suites gate a PR — a suite CI
+never runs is one that has rotted since the last release, and its failures predate this branch.
+`npm test` exiting 1 with every test passed is vitest's own worker timing out
+(`Timeout calling "onTaskUpdate"`); count the errors' messages before calling it red.
 
 ```bash
 npm run typecheck
@@ -103,7 +110,11 @@ Merge the green PRs one at a time with `gh pr merge <n> --squash`, re-reading `m
 each — `UNKNOWN` settles in seconds, `CONFLICTING` goes back to its agent: merge `origin/main`
 into the branch (never rebase or force-push), keep both sides' behavior, re-run its tests, push,
 wait for `validate`. Every review comment is answered on its thread with what changed, before the
-merge. Then run phase 3 on the merged `main`.
+merge. **Merge only a PR whose agent has reported done** — green checks while the agent is still
+answering review leave its fixes for a second PR. Count the top-level review comments just before
+merging: one that arrived after the agent stopped goes back to it. A check that fails on
+`Docker pull failed` or a registry 429 is re-run (`gh run rerun <run> --failed`) before anyone
+reads it as the PR's. Then run phase 3 on the merged `main`.
 
 ## 5. Release
 
