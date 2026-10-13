@@ -33,7 +33,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | Concern | Code | Test |
 | --- | --- | --- |
 | Claim loop, verdicts, reclaim | `driver/src/loop*.ts`, `board.ts`, `claim.ts`, `board-retry.ts` | `driver/test/loop.test.ts`, `board.test.ts` |
-| Stand-down fence (`SetupHalt`, one release/settle/park/`AbortSignal`) | `driver/src/loop-fence.ts` | `driver/test/loop-fence.test.ts` |
+| Stand-down fence (`SetupHalt`, one release/settle/park/`AbortSignal`); a runner that never started or could not run is left to the lease with its reason logged, and the last attempt (`maxAttempts` on the claim) reports it as the failed verdict (`leaveToLease`) | `driver/src/loop-fence.ts`, `loop-run.ts` | `driver/test/loop-fence.test.ts`, `loop.test.ts` |
 | Master prompt delivered; turn-context hook | `driver/src/master-prompt.ts`, `runner-plan.ts`, `docker/claude-executor/turn-context-hook.cjs` | `driver/test/master-prompt.test.ts`, `turn-context-hook.test.ts` |
 | Docker runner | `driver/src/docker-runner.ts`, `docker.ts`, `runner.ts`, `config.ts` | `driver/test/docker.test.ts`, `config.test.ts` |
 | Kubernetes runner | `driver/src/k8s-*.ts` | `driver/test/k8s.test.ts`, `k8s-admission.test.ts`, `k8s-transport.test.ts` |

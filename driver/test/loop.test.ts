@@ -42,6 +42,7 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
     id: `0000000${n}-1111-4111-8111-111111111111`,
     command: `job ${n}`,
     attempts: 1,
+    maxAttempts: 3,
     claimSeq: 1,
     leaseToken: `0000000${n}-2222-4222-8222-222222222222`,
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
@@ -1972,6 +1973,7 @@ describe('the poll loop', () => {
                 id: root,
                 command: '',
                 attempts: 1,
+                maxAttempts: 1,
                 claimSeq: 1,
                 leaseToken: rowId,
                 leaseExpiresAt: '2026-08-21T12:05:00.000Z',
@@ -2569,9 +2571,41 @@ describe('the poll loop', () => {
             })
         );
 
-        await drive({ ...board, runner });
+        const logs: string[] = [];
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
 
         expect(board.board.completed).toEqual([]);
+        expect(logs.some((m) => m.includes('never started: docker: Error response from daemon: Conflict'))).toBe(true);
+    });
+
+    // The board retires a job whose attempts ran out with no output, so the attempt that burns the
+    // last one reports the daemon's reason as the verdict (issue #664).
+    it('reports the reason a runner never started on the last attempt', async () => {
+        const board = stubBoard([{ ...job(1), attempts: 3 }]);
+        const reason =
+            'docker: conflicting options: cannot attach both user-defined and non-user-defined network-modes';
+        const runner = stubRunner(async () => ok({ exitCode: 125, output: reason, started: false }));
+        const logs: string[] = [];
+
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+        expect(board.board.completed[0]?.output).toContain(reason);
+        expect(logs.some((m) => m.includes(reason))).toBe(true);
+    });
+
+    // The kubernetes twin: the runner throws when the apiserver refuses the Job, so the reason
+    // rides the rejection instead of the outcome.
+    it('reports the reason a run could not start on the last attempt', async () => {
+        const board = stubBoard([{ ...job(1), attempts: 3 }]);
+        const runner = stubRunner(async () => {
+            throw new Error('creating the runner job answered 403: pods "x" is forbidden: exceeded quota');
+        });
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+        expect(board.board.completed[0]?.output).toContain('exceeded quota');
     });
 
     // A runner the platform took away — its pod deleted, evicted or its node removed — never gave
