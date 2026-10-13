@@ -110,8 +110,9 @@ pass and advances on its own once it passes — never retry a task for it.
 Each report task carries `waitReason`, `attention` and `next` — the one supported next step. Do
 what `next.action` says and nothing else:
 
-- `merge` — a `human` stage PR at `next.url` needs review and merge **by a person**. List the URLs
-  for the user. The board verifies the merge itself and continues; never merge for them. Passing
+- `merge` — a `human` stage PR at `next.url`, or an `automerge` one the board can no longer merge
+  or repair (`waitReason` says why), needs review and merge **by a person**. List the URLs for the
+  user. The board verifies the merge itself and continues; never merge for them. Passing
   checks are not the task's `acceptance`: compare each PR's changed files with it
   (`gh pr view <url> --json files`) and name any file outside it — a repair that fixed its
   failing gate may have reached past the task.
@@ -128,7 +129,8 @@ what `next.action` says and nothing else:
   fixed, not a retry.
 - `cancel` — a person force-closed this required task (it reads `cancelled by a person`), so its
   stage cannot advance: tell the user, and cancel the batch (section 6) on their word.
-- `wait` — the board is still on it, recovery included; go back to section 4.
+- `wait` — the board is still on it, recovery and an `automerge` stage's merge included; go back to
+  section 4.
 - `new_batch` — the batch is fenced; the remaining work needs a new plan.
 
 Sibling tasks keep running while one waits on a person.

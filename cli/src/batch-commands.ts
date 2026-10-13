@@ -169,14 +169,15 @@ async function runInspect(args: readonly string[], _io: BatchIo, boardFor: Board
     const client = boardFor();
     const batch = await client.getBatch(positionals[0]!);
     const draft = batch.status === BATCH_DRAFT;
+    // A draft has no report: the board refuses one until the batch starts.
+    const report = draft ? null : await client.getBatchReport(batch.id);
     const data = {
         batch,
-        verdict: draft ? null : batchVerdict(batch),
-        needsAction: actionOf(batch),
-        // A draft has no report: the board refuses one until the batch starts.
-        report: draft ? null : await client.getBatchReport(batch.id),
+        verdict: draft ? null : batchVerdict(batch, report),
+        needsAction: needsAction(batch, report),
+        report,
     };
-    return ok(data, renderBatch(batch));
+    return ok(data, renderBatch(batch, report));
 }
 
 async function runReport(args: readonly string[], io: BatchIo, boardFor: BoardFor): Promise<CommandResult> {
@@ -184,8 +185,6 @@ async function runReport(args: readonly string[], io: BatchIo, boardFor: BoardFo
     const report = await boardFor().getBatchReport(positionals[0]!);
     return ok(report, renderReport(report, (io.now ?? Date.now)()));
 }
-
-const actionOf = (batch: BatchRecord) => batch.tasks.filter(needsAction);
 
 async function runList(args: readonly string[], _io: BatchIo, boardFor: BoardFor): Promise<CommandResult> {
     positionalsOf(args, 'list', '', {});
@@ -241,16 +240,18 @@ async function waitEnd(
     run: { batch: BatchRecord; total: number; timedOut: boolean }
 ): Promise<CommandResult | null> {
     const { batch, total, timedOut } = run;
-    const verdict = batchVerdict(batch);
-    const settled = SETTLED[verdict];
     const fenced = FENCED.includes(batch.status);
-    if (!fenced && !settled && !timedOut) return null;
+    if (!fenced && !SETTLED[batchVerdict(batch)] && !timedOut) return null;
+    // The record alone reads an automerge PR's wait reason as a person's; the report's `next` says whose it is.
     const report = await client.getBatchReport(batch.id);
-    const data = { verdict, budgetSeconds: total, batch, needsAction: actionOf(batch), report };
+    const verdict = batchVerdict(batch, report);
+    const settled = SETTLED[verdict];
+    if (!fenced && !settled && !timedOut) return null;
+    const data = { verdict, budgetSeconds: total, batch, needsAction: needsAction(batch, report), report };
     if (FENCED.includes(report.state)) {
-        return { outcome: OUTCOME.cancelled, data, stdout: `${renderWaitEnd(batch, report.state)}\n` };
+        return { outcome: OUTCOME.cancelled, data, stdout: `${renderWaitEnd(batch, report, report.state)}\n` };
     }
-    if (settled) return { outcome: settled, data, stdout: `${renderWaitEnd(batch)}\n` };
+    if (settled) return { outcome: settled, data, stdout: `${renderWaitEnd(batch, report)}\n` };
     return { outcome: OUTCOME.timeout, data, stderr: `still running after ${total}s: ${batch.id}\n` };
 }
 

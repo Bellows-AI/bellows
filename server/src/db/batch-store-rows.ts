@@ -1,5 +1,11 @@
 import type { BatchPlan, ResolvedBatchPlan } from '@factory-ai/core';
-import { BATCH_COMPLETION_ACCEPTED, BATCH_COMPLETION_PR, type ExecutorScope } from '@factory-ai/core';
+import {
+    awaitsBoardMerge,
+    BATCH_COMPLETION_ACCEPTED,
+    BATCH_COMPLETION_PR,
+    type ExecutorScope,
+    TASK_NO_PR,
+} from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
 import {
     BATCH_LIST_LIMIT,
@@ -14,6 +20,43 @@ import {
 } from './batch-store-types.js';
 
 /** The SQL behind `batch-store.ts`: row shapes, the plan's rows in and out, and the freeze writes. */
+
+/** The `batch_task` columns, its stage's policy and its PR's observed outcome that say whether the board is still merging it. */
+export interface BoardMergeRow {
+    policy: string;
+    completion_kind: string;
+    execution: string;
+    gate: string;
+    attention: string | null;
+    pr: string;
+    outcome: string | null;
+    read_error: string | null;
+    stage_advanced: boolean;
+}
+
+/** The `outcome`, `read_error` and `stage_advanced` columns of `BoardMergeRow`, for a query over `batch_task t`. */
+export const boardMergeColumns = (sql: Sql | TransactionSql) => sql`
+    (select o.outcome from batch_pr_observation o
+     where o.org_id = t.org_id and o.batch_id = t.batch_id and o.task_key = t.key) as outcome,
+    (select o.error_code from batch_pr_observation o
+     where o.org_id = t.org_id and o.batch_id = t.batch_id and o.task_key = t.key) as read_error,
+    exists (select 1 from batch_decision d
+            where d.org_id = t.org_id and d.batch_id = t.batch_id and d.kind = ${DECISION_ADVANCE}
+              and d.subject = t.stage_key) as stage_advanced`;
+
+/** A task whose open PR the board is still merging or repairing (`awaitsBoardMerge`): moving, not parked. */
+export const boardMerging = (task: BoardMergeRow): boolean =>
+    awaitsBoardMerge({
+        policy: task.policy,
+        completionKind: task.completion_kind,
+        execution: task.execution,
+        gate: task.gate,
+        attention: task.attention,
+        prUrl: task.pr === TASK_NO_PR ? null : task.pr,
+        outcome: task.outcome,
+        readError: task.read_error,
+        stageAdvanced: task.stage_advanced,
+    });
 
 interface BatchRow {
     id: string;

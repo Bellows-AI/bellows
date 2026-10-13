@@ -4,7 +4,8 @@
  * read the state, ask here, and write the answer under the batch's row lock. Stage order is the
  * only dependency model, so the active stage is the first one without an advance decision.
  */
-import { BATCH_COMPLETION_ACCEPTED } from './batch-plan.js';
+import type { ObservationOutcome, ReadErrorKind } from './batch-observation.js';
+import { AUTOMERGE, BATCH_COMPLETION_ACCEPTED, BATCH_COMPLETION_PR } from './batch-plan.js';
 
 /** A task's execution state: the thread head's status folded to what the scheduler branches on. */
 export const TASK_PENDING = 'pending';
@@ -91,6 +92,51 @@ export const isRetryable = (task: Pick<ScheduleTask, 'execution' | 'gate'>): boo
     task.execution === TASK_FAILED ||
     task.execution === TASK_STOPPED ||
     (task.execution === TASK_SUCCEEDED && task.gate !== GATE_PASSED);
+
+/**
+ * What the board does by itself with an open PR: merge it once `ready`, wait out pending checks,
+ * re-read an `unknown`, repair a failing check or a conflict (or set `attention` when it cannot).
+ * `review_required` and `checks_missing` wait on a person.
+ */
+const BOARD_OUTCOMES: readonly ObservationOutcome[] = [
+    'ready',
+    'checks_pending',
+    'unknown',
+    'checks_failing',
+    'conflicting',
+];
+
+/** Read errors the observer retries by itself; any other (`not_found`, `forbidden`, `binding`) is a person's. */
+const BOARD_READ_ERRORS: readonly ReadErrorKind[] = ['rate_limited', 'transport'];
+
+/**
+ * A succeeded task of an `automerge` stage whose PR the board is still merging or repairing: moving,
+ * not a person's. Not yet observed counts — the observer reads it next. Once the board cannot act
+ * any more (a refusal, a spent budget, a closed PR) it sets `attention`, and the PR is a person's
+ * again; so is one in a stage that already advanced, which the board neither merges nor repairs.
+ */
+export const awaitsBoardMerge = (task: {
+    policy: string;
+    completionKind: string;
+    execution: string;
+    gate: string;
+    attention: string | null;
+    prUrl: string | null;
+    /** The current attempt's observed outcome, or null before the first read or after a read error. */
+    outcome: string | null;
+    /** The last read's error code (`READ_*`), or null. */
+    readError: string | null;
+    stageAdvanced: boolean;
+}): boolean =>
+    task.policy === AUTOMERGE &&
+    task.completionKind === BATCH_COMPLETION_PR &&
+    task.execution === TASK_SUCCEEDED &&
+    task.gate === GATE_OPEN &&
+    task.attention === null &&
+    task.prUrl !== null &&
+    !task.stageAdvanced &&
+    (task.readError === null || (BOARD_READ_ERRORS as readonly string[]).includes(task.readError)) &&
+    (task.outcome === null || (BOARD_OUTCOMES as readonly string[]).includes(task.outcome));
 
 /** What `batch_task.pr` holds for a task with no recorded PR. */
 export const TASK_NO_PR = 'none';
@@ -187,7 +233,8 @@ export function batchTaskCommand(task: { objective: string; acceptance: string; 
  * The long-poll's verdict on a started batch: `terminal` once finished or cancelled with nothing
  * moving, `parked` when nothing moves and nothing will without an operator (a failed task, a gate
  * not yet passed), otherwise null — still moving. A retry waiting out its backoff is moving: the
- * board will launch it by itself. An expired batch is terminal like a cancelled one.
+ * board will launch it by itself, and so is an automerge task's open PR the board can still merge
+ * (`awaitsBoardMerge`). An expired batch is terminal like a cancelled one.
  */
 export type BatchWaitResult = 'terminal' | 'parked';
 
@@ -196,7 +243,7 @@ export function batchWaitResult(state: {
     cancelled: boolean;
     expired: boolean;
     active: number;
-    /** Retries and repairs queued but not yet launched. */
+    /** Retries and repairs queued but not yet launched, and open PRs the board is still merging. */
     waiting: number;
 }): BatchWaitResult | null {
     if (state.active > 0) return null;

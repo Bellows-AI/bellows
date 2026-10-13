@@ -119,7 +119,7 @@ export interface BatchProgress {
     expired: boolean;
     /** Tasks holding a concurrency slot. */
     active: number;
-    /** Retries and repairs queued, not yet launched. */
+    /** Retries and repairs queued, not yet launched, and open PRs the board is still merging. */
     waiting: number;
 }
 
