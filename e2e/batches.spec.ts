@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import type { BatchRecord } from '../web/src/batch-model.js';
+import { blankPlan, updateTask, type BatchRecord } from '../web/src/batch-model.js';
 import { BatchBoard } from './fixtures/batch-board.js';
 import { seededTaskId } from './routes.js';
 import { type Theme, VIEWPORTS } from './screenshot-matrix.js';
@@ -140,6 +140,69 @@ test.describe('batch pages', () => {
         expect(problems.join('\n')).toBe('');
     });
 });
+
+for (const theme of ['light', 'dark'] as const) {
+    test(`a failed stage verification reads as needing a person (${theme})`, async ({ page }) => {
+        const problems = watchConsole(page);
+        await atTheme(page, theme);
+        const board = new BatchBoard(page);
+        await board.install();
+        const id = '0f53d75f-0000-4000-8000-000000000654';
+        const plan = updateTask({ ...blankPlan('acme/widgets'), title: `Held stage (${theme})` }, 'task-1', (task) => ({
+            ...task,
+            objective: 'Bump it',
+            acceptance: 'Builds',
+            verification: 'npm test',
+        }));
+        const now = new Date().toISOString();
+        board.adopt({
+            id,
+            status: 'started',
+            version: 3,
+            createdBy: null,
+            startedBy: null,
+            createdAt: now,
+            updatedAt: now,
+            startedAt: now,
+            cancelledAt: null,
+            completedAt: null,
+            activeStage: 'stage-1',
+            plan,
+            tasks: [
+                {
+                    key: 'task-1',
+                    stage: 'stage-1',
+                    execution: 'succeeded',
+                    pr: 'https://github.com/acme/widgets/pull/9',
+                    gate: 'passed',
+                    waitReason: null,
+                    rootJobId: null,
+                    attempt: 1,
+                },
+            ],
+            verification: [
+                {
+                    stage: 'stage-1',
+                    state: 'failed',
+                    detail: 'checks on main at cd89f3d2 fail: e2e failing',
+                    headSha: 'cd89f3d2aabbccdd',
+                    checkedAt: now,
+                },
+            ],
+        });
+        await page.goto(`/batches/${id}`);
+        await expect(page.locator('.page-header-meta .pill')).toHaveText('Needs attention');
+        const notice = page.locator('[data-verification="failed"]');
+        await expect(notice).toContainText('verification of stage-1 failed');
+        await expect(notice).toContainText('e2e failing');
+        await expect(notice).toContainText('cd89f3d2');
+        await expect(page.getByRole('region', { name: 'Stage 1' }).getByRole('button', { name: /Retry/ })).toHaveCount(
+            0
+        );
+        await shoot(page, 'verification-failed', theme);
+        expect(problems.join('\n')).toBe('');
+    });
+}
 
 test('a refused plan shows each problem at its field and writes nothing', async ({ page }) => {
     await page.goto('/batches/new');

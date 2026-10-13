@@ -19,6 +19,8 @@ import {
     TASK_RUNNING,
     TASK_STOPPED,
     TASK_SUCCEEDED,
+    VERIFY_FAILED,
+    VERIFY_PENDING,
     type BatchPlan,
     type BatchPolicy,
     type BatchStage,
@@ -62,11 +64,21 @@ export interface BatchSummary {
     completedAt: string | null;
 }
 
+/** An automerge stage's combined verification, as the record carries it (server `BatchStageVerification`). */
+export interface StageVerificationState {
+    stage: string;
+    state: string;
+    detail: string | null;
+    headSha: string | null;
+    checkedAt: string;
+}
+
 export interface BatchRecord extends Omit<BatchSummary, 'title' | 'taskCount'> {
     startedBy: string | null;
     activeStage: string | null;
     plan: BatchPlan;
     tasks: BatchTaskState[];
+    verification: StageVerificationState[];
 }
 
 export type BatchVerdict = 'draft' | 'running' | 'needs_attention' | 'completed' | 'cancelled';
@@ -94,19 +106,25 @@ const PARKED_EXECUTIONS: readonly string[] = [TASK_FAILED, TASK_STOPPED];
 export const needsPerson = (task: BatchTaskState): boolean =>
     task.waitReason !== null || PARKED_EXECUTIONS.includes(task.execution);
 
+/** A merged stage whose target failed its checks: the board holds the next stage until a person fixes it on GitHub. */
+export const verificationFailed = (row: StageVerificationState): boolean => row.state === VERIFY_FAILED;
+
+/** A verification the board is still judging; it needs no one. */
+export const verificationPending = (row: StageVerificationState): boolean => row.state === VERIFY_PENDING;
+
 /** Where a batch stands: cancelled and completed are the board's own stamps; the rest is read off the tasks. */
 export function batchVerdict(
-    batch: Pick<BatchRecord, 'status' | 'cancelledAt' | 'completedAt' | 'tasks'>
+    batch: Pick<BatchRecord, 'status' | 'cancelledAt' | 'completedAt' | 'tasks' | 'verification'>
 ): BatchVerdict {
     if (batch.status === BATCH_DRAFT) return 'draft';
     if (batch.cancelledAt !== null) return 'cancelled';
     if (batch.completedAt !== null) return 'completed';
-    return batch.tasks.some(needsPerson) ? 'needs_attention' : 'running';
+    return batch.tasks.some(needsPerson) || batch.verification.some(verificationFailed) ? 'needs_attention' : 'running';
 }
 
 /** A list row's verdict: the summary carries no tasks, so a started batch not yet finished reads as running. */
 export function summaryVerdict(batch: Pick<BatchSummary, 'status' | 'cancelledAt' | 'completedAt'>): BatchVerdict {
-    return batchVerdict({ ...batch, tasks: [] });
+    return batchVerdict({ ...batch, tasks: [], verification: [] });
 }
 
 /** Whether polling can stop: a cancelled batch settles and a completed one is history. */
@@ -224,10 +242,12 @@ export interface MorningReport {
 }
 
 /** The batch at a glance: what landed, what waits on a person, what has not begun. Counts only. */
-export function morningReport(batch: Pick<BatchRecord, 'tasks'>): MorningReport {
+export function morningReport(batch: Pick<BatchRecord, 'tasks' | 'verification'>): MorningReport {
     return {
         accepted: batch.tasks.filter(isAccepted).length,
-        needsYou: batch.tasks.filter((task) => !isAccepted(task) && needsPerson(task)).length,
+        needsYou:
+            batch.tasks.filter((task) => !isAccepted(task) && needsPerson(task)).length +
+            batch.verification.filter(verificationFailed).length,
         notStarted: batch.tasks.filter((task) => task.execution === TASK_PENDING).length,
         total: batch.tasks.length,
     };

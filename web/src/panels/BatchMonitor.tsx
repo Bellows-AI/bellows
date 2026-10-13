@@ -17,6 +17,8 @@ import {
     type BatchRecord,
     type BatchTaskState,
     type StageView,
+    verificationFailed,
+    verificationPending,
 } from '../batch-model.js';
 import { Origin } from './BatchPlanReview.js';
 
@@ -31,6 +33,7 @@ import { Origin } from './BatchPlanReview.js';
 export type TaskAction = (taskKey: string) => Promise<string | null>;
 
 const PR_URL = /^https?:\/\//;
+const SHA_LENGTH = 8;
 
 function TaskCard({
     batch,
@@ -118,6 +121,7 @@ function StageRow({
     const active = batch.activeStage === stage.key && batch.cancelledAt === null;
     const humanGate = effectivePolicy(batch.plan, stage) === 'human';
     const waiting = tasks.some(({ state }) => state?.waitReason != null);
+    const verification = batch.verification.find((row) => row.stage === stage.key);
     return (
         <section
             className={`panel batch-stage${active ? ' is-active' : ''}`}
@@ -141,6 +145,21 @@ function StageRow({
                     Human review gate. {GATE_RESUMES_AUTOMATICALLY}
                 </p>
             ) : null}
+            {verification && verificationFailed(verification) ? (
+                <p className="batch-gate" role="note" data-verification="failed">
+                    Needs you: verification of {stage.key} failed on the target after its merges, so the next stage is
+                    held. Fix or re-run them on GitHub; nothing to retry here.{' '}
+                    <span className="muted">
+                        {verification.detail ?? 'No detail recorded.'}
+                        {verification.headSha ? ` Checked at ${verification.headSha.slice(0, SHA_LENGTH)}.` : ''}
+                    </span>
+                </p>
+            ) : null}
+            {verification && verificationPending(verification) ? (
+                <p className="batch-wait" data-verification="pending">
+                    The board is still checking the target after this stage merged.
+                </p>
+            ) : null}
             <ul className="batch-tasks">
                 {tasks.map((view) => (
                     <TaskCard key={view.task.key} batch={batch} view={view} {...actions} />
@@ -157,6 +176,7 @@ export function BatchReport({ batch }: { batch: BatchRecord }) {
         (task): task is BatchTaskState => isAccepted(task) && task.pr !== TASK_NO_PR && PR_URL.test(task.pr)
     );
     const waiting = batch.tasks.filter((task) => !isAccepted(task) && needsPerson(task));
+    const failedStages = batch.verification.filter(verificationFailed);
     return (
         <section className="panel" aria-labelledby="batch-report-title">
             <h2 id="batch-report-title">Report</h2>
@@ -164,10 +184,15 @@ export function BatchReport({ batch }: { batch: BatchRecord }) {
                 {report.accepted} of {report.total} tasks accepted · {report.needsYou} need you · {report.notStarted}{' '}
                 not started
             </p>
-            {waiting.length > 0 ? (
+            {waiting.length > 0 || failedStages.length > 0 ? (
                 <>
                     <h3>Needs you</h3>
                     <ul>
+                        {failedStages.map((row) => (
+                            <li key={row.stage}>
+                                {row.stage}: verification failed. {row.detail ?? ''}
+                            </li>
+                        ))}
                         {waiting.map((task) => (
                             <li key={task.key}>
                                 {task.key}: {task.waitReason ?? taskStateLabel(task).label}
