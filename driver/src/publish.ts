@@ -145,10 +145,20 @@ export const prNumberFromUrl = (url: string): number | null => {
     return Number.isSafeInteger(number) && number > 0 ? number : null;
 };
 
+/**
+ * The failure kinds the sync script (scripts/git-worktree.cjs) names for a refusal no retry can
+ * fix; the loop reports each as `config` (loop-run.ts, `syncCheckoutStep`). The literals live in
+ * the script too, which docker.test.ts pins.
+ */
+export const SYNC_FAILURE_KINDS = ['missing_workspace', 'missing_clone', 'branch_unrestorable'] as const;
+export type SyncFailureKind = (typeof SYNC_FAILURE_KINDS)[number];
+
 /** What the startup sync answers: ok, or the reason the run should not start from a stale tree. */
 export interface SyncResult {
     ok: boolean;
     reason: string | null;
+    /** Set by the script on a deterministic refusal; absent for anything unrecognised. */
+    kind?: SyncFailureKind;
     /**
      * The task tree's fingerprint after the sync (scripts/git-worktree.cjs), compared with the
      * post-gate probe's to tell a round that changed nothing. Absent or null is unknown.

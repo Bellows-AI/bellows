@@ -4294,6 +4294,20 @@ describe('publishing the produced work', () => {
         expect(runs.flat().some((arg) => arg.startsWith('SYNC_LOCK_WAIT_MS'))).toBe(false);
     });
 
+    it('carries the script’s failure kind through the sync container’s stdout (issue #666)', async () => {
+        const verdict = { ok: false, reason: 'the repository clone /w/r does not exist', kind: 'missing_clone' };
+        const exec = vitest.fn(async (args: string[]) => ({
+            stdout: args[0] === 'run' && args.includes('--entrypoint') ? `${JSON.stringify(verdict)}\n` : '',
+        })) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec
+        );
+
+        expect(await runner.syncCheckout(repoJob)).toMatchObject(verdict);
+    });
+
     it('says the sync container printed nothing when its stdout is empty', async () => {
         const exec = vitest.fn(async (args: string[]) => {
             if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: '' };

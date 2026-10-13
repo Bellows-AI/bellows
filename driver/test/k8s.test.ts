@@ -1875,6 +1875,13 @@ describe('the worktree sync', () => {
         expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(false);
     });
 
+    it('carries the script’s failure kind through the sync Job’s log (issue #666)', async () => {
+        const verdict = { ok: false, reason: 'the repository clone /w/r does not exist', kind: 'missing_clone' };
+        const { request } = fakeRequest({ log: { status: 200, body: `${JSON.stringify(verdict)}\n` } });
+
+        expect(await runner(request).syncCheckout(repoJob)).toMatchObject(verdict);
+    });
+
     it('answers checkout contention with the transient reason, its claim already given back', async () => {
         const reason =
             'transient worktree sync: the checkout lock /w/.git/factory-sync.lock is still held after 20000ms';

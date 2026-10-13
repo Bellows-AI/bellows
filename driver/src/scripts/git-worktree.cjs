@@ -172,13 +172,18 @@ const fingerprintOf = (cwd) => {
     }
 };
 const synced = () => console.log(JSON.stringify({ ok: true, reason: null, fingerprint: fingerprintOf(wt) }));
-const fail = (r) => {
+// The kinds a deterministic refusal names (driver/src/publish.ts, SYNC_FAILURE_KINDS — a .cjs cannot
+// import it, so the literals are pinned by docker.test.ts): no retry fixes any of them.
+const KIND_MISSING_WORKSPACE = 'missing_workspace';
+const KIND_MISSING_CLONE = 'missing_clone';
+const KIND_BRANCH_UNRESTORABLE = 'branch_unrestorable';
+const fail = (r, kind) => {
     if (!restore) {
         try {
             inw('rebase', '--abort');
         } catch {}
     }
-    console.log(JSON.stringify({ ok: false, reason: r }));
+    console.log(JSON.stringify(kind ? { ok: false, reason: r, kind } : { ok: false, reason: r }));
 };
 
 /**
@@ -353,6 +358,27 @@ const addUnbornWorktree = () => {
 };
 
 try {
+    const workspace = path.dirname(repo);
+    if (!fs.existsSync(workspace)) {
+        fail(
+            'the member workspace ' +
+                workspace +
+                ' does not exist — the board creates it when the member selects a repository ' +
+                '(server/src/workspace, docs/workspace.md); create the workspace or re-select the repository, then retry',
+            KIND_MISSING_WORKSPACE
+        );
+        process.exit(0);
+    }
+    if (!fs.existsSync(repo + '/.git')) {
+        fail(
+            'the repository clone ' +
+                repo +
+                ' does not exist — the board clones it into the member workspace when the member selects ' +
+                'the repository (server/src/workspace, docs/workspace.md); wait for the clone to be ready or re-select the repository, then retry',
+            KIND_MISSING_CLONE
+        );
+        process.exit(0);
+    }
     acquireSyncLock();
     excludeFactoryState();
     if (restore) {
@@ -434,7 +460,8 @@ try {
                     ' could not be restored — if it is gone from the clone there is ' +
                     'nothing to continue, and a follow-up is never restarted fresh off the remote default ' +
                     '(re-queue the task to start it over): ' +
-                    String((e && e.stderr) || (e && e.message) || e).slice(0, GIT_ERROR_MAX_LENGTH)
+                    String((e && e.stderr) || (e && e.message) || e).slice(0, GIT_ERROR_MAX_LENGTH),
+                KIND_BRANCH_UNRESTORABLE
             );
             process.exit(0);
         }
