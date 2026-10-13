@@ -34,6 +34,8 @@ export type AttentionReason = (typeof ATTENTION_REASONS)[number];
 
 /** Bounds on the evidence a repair prompt and a person read; batch-observation.ts re-exports it. */
 export const MAX_EVIDENCE_ITEMS = 20;
+/** The most of one gate's output a repair prompt carries: its tail, where a failure is reported. */
+export const MAX_EVIDENCE_OUTPUT_CHARS = 2_000;
 
 /** Backoff before an automatic infrastructure retry: doubles from the base, capped. */
 export const BATCH_RETRY_BACKOFF_BASE_MS = 60_000;
@@ -109,12 +111,20 @@ export function planRecovery(input: {
     return { action: RECOVERY_REPAIR };
 }
 
+/** One gate the repaired run failed, as `job.gates` recorded it (the output is the driver's tail). */
+export interface FailedGate {
+    name: string;
+    exitCode: number | null;
+    output: string | null;
+}
+
 /**
- * What a repair answers: a run's own failure (`failure_cause`), or a PR observed failing its checks
- * or conflicting after a successful run, with the contexts that are not passing.
+ * What a repair answers: a run's own failure (`failure_cause`) with the gates it failed, or a PR
+ * observed failing its checks or conflicting after a successful run, with the contexts that are not
+ * passing.
  */
 export type RepairEvidence =
-    | { source: 'run'; cause: string | null }
+    | { source: 'run'; cause: string | null; gates: readonly FailedGate[] }
     | { source: 'observed'; outcome: ObservationOutcome; evidence: readonly CheckEvidence[] };
 
 const STALE_BRANCH_PROBLEM =
@@ -125,8 +135,20 @@ const FAILED_CHECKS_PROBLEM = 'Your last attempt failed its checks. Find out why
 const checkLine = (check: CheckEvidence): string =>
     `- ${check.name}: ${check.state}${check.url ? ` (${check.url})` : ''}${check.detail ? ` — ${check.detail}` : ''}`;
 
+/** One failed gate as the repair prompt lists it: name, exit code, then its output tail indented. */
+function gateLine(gate: FailedGate): string {
+    const head = `- ${gate.name}: exit ${gate.exitCode ?? 'unknown'}`;
+    const tail = gate.output?.slice(-MAX_EVIDENCE_OUTPUT_CHARS).trimEnd();
+    return tail ? `${head}\n${tail.replace(/^/gm, '    ')}` : head;
+}
+
 function repairProblem(evidence: RepairEvidence): string {
-    if (evidence.source === 'run') return evidence.cause === 'conflict' ? STALE_BRANCH_PROBLEM : FAILED_CHECKS_PROBLEM;
+    if (evidence.source === 'run') {
+        if (evidence.cause === 'conflict') return STALE_BRANCH_PROBLEM;
+        const gates = evidence.gates.slice(0, MAX_EVIDENCE_ITEMS).map(gateLine);
+        if (!gates.length) return FAILED_CHECKS_PROBLEM;
+        return `${FAILED_CHECKS_PROBLEM}\n\nGates that failed:\n${gates.join('\n')}`;
+    }
     if (evidence.outcome === 'conflicting') {
         return 'Your pull request conflicts with its target branch. Update the branch to its target, resolve the conflicts and publish again.';
     }

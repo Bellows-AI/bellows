@@ -6,6 +6,7 @@ import {
     attentionWaitReason,
     batchRepairCommand,
     type CheckEvidence,
+    type FailedGate,
     type ObservationOutcome,
     RECOVERY_INFRA,
     RECOVERY_REPAIR,
@@ -13,6 +14,7 @@ import {
 } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
 import { followUpInTx } from './job-store-actions.js';
+import type { GateReport } from './job-store-types.js';
 
 /** The scheduler's transaction, bound to one locked batch. */
 export type Tx = { tx: TransactionSql; orgId: string; id: string };
@@ -75,6 +77,12 @@ async function observedEvidence(
     return row ? { source: 'observed', outcome: row.outcome, evidence: row.evidence } : null;
 }
 
+/** The gates a failed run recorded as failed, in the shape a repair prompt lists (bounded in core). */
+const failedGates = (gates: GateReport[] | null): FailedGate[] =>
+    (gates ?? [])
+        .filter((g) => g.status === 'failed')
+        .map(({ name, exitCode, output }) => ({ name, exitCode, output }));
+
 /**
  * An agent repair (docs/batches.md): an ordinary follow-up of the thread head, so the task keeps
  * its thread, its session and the PR it already published. The command restates the verification
@@ -93,8 +101,8 @@ export async function repairInTx(
     }
 ) {
     const { orgId, task, startedBy } = run;
-    const [head] = await tx<{ id: string; status: string; failure_cause: string | null }[]>`
-        select id, status, failure_cause from job
+    const [head] = await tx<{ id: string; status: string; failure_cause: string | null; gates: GateReport[] | null }[]>`
+        select id, status, failure_cause, gates from job
         where org_id = ${orgId} and root_job_id = ${task.root_job_id} and review_of is null
         order by created_at desc, id desc limit 1
     `;
@@ -102,7 +110,7 @@ export async function repairInTx(
     const evidence: RepairEvidence | null =
         head.status === 'succeeded'
             ? await observedEvidence(tx, { orgId, batchId: run.batchId, taskKey: task.key })
-            : { source: 'run', cause: head.failure_cause };
+            : { source: 'run', cause: head.failure_cause, gates: failedGates(head.gates) };
     if (evidence === null) return 'superseded' as const;
     return followUpInTx(tx, {
         orgId,
