@@ -1,5 +1,5 @@
 import type { BoardJob } from './board.js';
-import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
+import { GATE_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import { networkName } from './services.js';
 import { alreadyGone, linesOf, type ExecDocker } from './docker-runner-support.js';
 import type { OrphanGroup, OrphanObject, ReaperArm } from './reaper.js';
@@ -8,8 +8,9 @@ import type { OrphanGroup, OrphanObject, ReaperArm } from './reaper.js';
  * The docker half of the orphan reaper (issue #301): label-filtered `docker ps`, container
  * removal, and the per-attempt services network's teardown — the twin of `dockerServiceTeardown`
  * and the docker fence acting on fleets whose attempt can never tear itself down. Scope is the
- * SERVICE label only: the runner container is `--rm`ed by its own verdict path and swept by the
- * fence at the next claim; the service fleet is the part observed rotting.
+ * SERVICE and GATE labels (issue #667): the runner container is `--rm`ed by its own verdict path
+ * and swept by the fence at the next claim; the service fleet and a dead driver's gate
+ * environment are the parts observed rotting.
  */
 
 /**
@@ -31,6 +32,7 @@ export function parseDockerCreatedAt(raw: string): number {
 /** One `docker ps --format '{{json .}}'` row the reaper can use, or null for junk. */
 interface PsRow {
     id: string;
+    name: string;
     jobId: string;
     leaseToken: string;
     createdAtMs: number;
@@ -43,8 +45,8 @@ const labelOf = (labels: string, name: string): string | undefined => {
     return pair?.slice(prefix.length);
 };
 
-const parsePsRow = (line: string): PsRow | null => {
-    let fields: { ID?: unknown; Labels?: unknown; CreatedAt?: unknown };
+const parsePsRow = (line: string, scopeLabel: string): PsRow | null => {
+    let fields: { ID?: unknown; Names?: unknown; Labels?: unknown; CreatedAt?: unknown };
     try {
         fields = JSON.parse(line) as typeof fields;
     } catch {
@@ -57,25 +59,36 @@ const parsePsRow = (line: string): PsRow | null => {
     // The service label is the arm's scope: a runner container carries only the pair above, and
     // the fence — not the reaper — is what owns it. Checked here as well as in the argv filter,
     // because the argv is the daemon's instruction and this is the row's proof.
-    const service = labelOf(labels, SERVICE_LABEL);
-    if (!jobId || !leaseToken || !service) return null;
+    const scoped = labelOf(labels, scopeLabel);
+    if (!jobId || !leaseToken || !scoped) return null;
     const createdAtMs = typeof fields.CreatedAt === 'string' ? parseDockerCreatedAt(fields.CreatedAt) : 0;
-    return { id: fields.ID, jobId, leaseToken, createdAtMs };
+    const name = typeof fields.Names === 'string' ? fields.Names : '';
+    return { id: fields.ID, name, jobId, leaseToken, createdAtMs };
 };
 
-const scan = async (execDocker: ExecDocker): Promise<OrphanGroup[]> => {
+type Groups = Map<string, { ids: string[]; group: OrphanGroup }>;
+
+/**
+ * One scope's rows, grouped by (job, lease). `keep` spares a row the reaper must not touch — a
+ * gate environment this very driver still holds, whose creation-time labels name an attempt the
+ * environment has since passed from.
+ */
+const scanScope = async (
+    execDocker: ExecDocker,
+    scopeLabel: string,
+    keep: (row: PsRow) => boolean,
+    groups: Groups
+): Promise<void> => {
     let stdout: string;
     try {
-        stdout = (await execDocker(['ps', '-a', '--filter', `label=${SERVICE_LABEL}`, '--format', '{{json .}}']))
-            .stdout;
+        stdout = (await execDocker(['ps', '-a', '--filter', `label=${scopeLabel}`, '--format', '{{json .}}'])).stdout;
     } catch {
         // The daemon answering nothing is not the daemon answering "nothing is orphaned".
-        return [];
+        return;
     }
-    const groups = new Map<string, { ids: string[]; group: OrphanGroup }>();
     for (const line of stdout.split('\n')) {
-        const row = parsePsRow(line.trim());
-        if (!row) continue;
+        const row = parsePsRow(line.trim(), scopeLabel);
+        if (!row || keep(row)) continue;
         const existing = groups.get(`${row.jobId}|${row.leaseToken}`);
         if (existing) {
             existing.ids.push(row.id);
@@ -92,6 +105,12 @@ const scan = async (execDocker: ExecDocker): Promise<OrphanGroup[]> => {
             });
         }
     }
+};
+
+const scan = async (execDocker: ExecDocker, holdsGate: (containerName: string) => boolean): Promise<OrphanGroup[]> => {
+    const groups: Groups = new Map();
+    await scanScope(execDocker, SERVICE_LABEL, () => false, groups);
+    await scanScope(execDocker, GATE_LABEL, (row) => holdsGate(row.name), groups);
     // The objects are named by ID, not by container name: the id is what the removal argv
     // uses, and a name could address whatever owns it at removal time.
     return [...groups.values()].map(({ ids, group }) => ({
@@ -151,9 +170,17 @@ const reap = async (execDocker: ExecDocker, group: OrphanGroup): Promise<readonl
     return removed;
 };
 
-export function createDockerReaper(execDocker: ExecDocker): ReaperArm {
+/**
+ * `holdsGate` is the live gate manager's answer for a container name: an environment this
+ * process still holds is never an orphan, whatever its creation-time labels say. A dead
+ * driver's environment is held by nobody, so it is reaped on the same lease lookup as a fleet.
+ */
+export function createDockerReaper(
+    execDocker: ExecDocker,
+    holdsGate: (containerName: string) => boolean = () => false
+): ReaperArm {
     return {
-        scan: () => scan(execDocker),
+        scan: () => scan(execDocker, holdsGate),
         reap: (group) => reap(execDocker, group),
     };
 }

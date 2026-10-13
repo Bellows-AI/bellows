@@ -1543,7 +1543,7 @@ describe('the gate environment container', () => {
         expect(gateEnvArgs(loadDriverConfig({ RUNNER_NETWORK: 'factory-ai_default' }), KEY, 'node:24')).toEqual(
             expect.arrayContaining(['--network', 'factory-ai_default'])
         );
-        expect(gateEnvArgs(config, KEY, 'node:24', '/tmp/gate.env')).toEqual(
+        expect(gateEnvArgs(config, KEY, 'node:24', { envFile: '/tmp/gate.env' })).toEqual(
             expect.arrayContaining(['--env-file', '/tmp/gate.env'])
         );
     });
@@ -1558,7 +1558,7 @@ describe('the gate environment container', () => {
     });
 
     it('never puts a member value on the command line — the env file is the only carrier', () => {
-        const line = gateEnvArgs(config, KEY, 'node:24', '/tmp/gate.env');
+        const line = gateEnvArgs(config, KEY, 'node:24', { envFile: '/tmp/gate.env' });
         // The one -e is the driver's own HOME literal for the non-root uid (above); every claim
         // value travels the env file.
         expect(line.filter((arg) => arg === '-e')).toHaveLength(1);

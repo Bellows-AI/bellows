@@ -287,7 +287,7 @@ export function createGateManager({
     /** The wall-clock cap on ONE gate. A hung gate must fail the gate, not stall the verdict forever. */
     gateTimeoutMs?: number;
     execDocker?: ExecDocker;
-}): GateManager {
+}): GateManager & { holds(containerName: string): boolean } {
     const entries = new Map<string, Entry>();
     const envFileFor = (key: string): string => join(tmpdir(), `factory-gateenv-${gateEnvContainerName(key)}.env`);
 
@@ -355,6 +355,8 @@ export function createGateManager({
     };
 
     return {
+        // For the orphan reaper (issue #667): a container this process still holds is no orphan.
+        holds: (containerName) => [...entries.values()].some((entry) => entry.name === containerName),
         async acquire(key, image, envBody = '', attempt?: GateAttempt) {
             const job = attempt?.job;
             const existing = entries.get(key);
@@ -381,7 +383,7 @@ export function createGateManager({
                 await execDocker(['rm', '-f', gateEnvContainerName(key)]).catch(() => undefined);
                 const name = gateEnvContainerName(key);
                 if (envBody) await writeFile(envFileFor(key), envBody, { mode: 0o600 });
-                const args = gateEnvArgs(config, key, image, envBody ? envFileFor(key) : undefined);
+                const args = gateEnvArgs(config, key, image, { envFile: envBody ? envFileFor(key) : undefined, job });
                 await startEnvContainer(execDocker, name, args, attempt?.signal);
                 entries.set(key, newEntry(name, image, envBody, job ?? null));
             });
