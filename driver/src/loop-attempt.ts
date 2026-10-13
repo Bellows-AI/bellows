@@ -4,8 +4,16 @@ import { currentActivity, DEAD_SERVICE_STATES, serviceHint } from './runner.js';
 import type { DeadService } from './runner.js';
 import type { RuntimeSample } from './runner.js';
 import type { LoopRuntime } from './loop-types.js';
-import type { PublishResult } from './publish.js';
+import { withConflictContext, type PublishResult, type SyncResult } from './publish.js';
 import type { TimeoutActivity } from './timeout-note.js';
+
+/**
+ * A conflict the sync left in the tree reaches the agent through this attempt's turn context, which
+ * the runner reads from the job at launch (master-prompt.ts); a sync with none changes nothing.
+ */
+export function handOverConflict(job: BoardJob, synced: SyncResult): void {
+    if (synced.conflicts?.length) job.turnContext = withConflictContext(job.turnContext, synced.conflicts);
+}
 
 /** How often freshly arrived output is flushed to the board — the pace the dashboard polls at. */
 const PROGRESS_MS = 2_000;

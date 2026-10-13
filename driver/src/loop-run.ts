@@ -13,16 +13,9 @@ import {
     releaseGateSession,
     runDeclaredGates,
 } from './loop-gates.js';
-import { heartbeat, newJobState, raceStep, stopIfDraining, watchOutput } from './loop-attempt.js';
+import { handOverConflict, heartbeat, newJobState, raceStep, stopIfDraining, watchOutput } from './loop-attempt.js';
 import type { GateRunNote } from './timeout-note.js';
-import {
-    concludeSetup,
-    handBackFence,
-    handOverConflict,
-    leaveToLease,
-    releaseAbandonedSync,
-    standDown,
-} from './loop-fence.js';
+import { concludeSetup, handBackFence, leaveToLease, releaseAbandonedSync, standDown } from './loop-fence.js';
 import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import type { HelperFailureReport } from './helpers.js';
