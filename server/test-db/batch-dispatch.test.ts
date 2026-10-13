@@ -148,6 +148,25 @@ describe.skipIf(!enabled)('batch dispatch', () => {
         });
     });
 
+    it('launches each task in its frozen executor scope, and a retry keeps it', async () => {
+        const id = await frozen(plan([{ key: 'build', tasks: [task('a', { executorScope: 'org' }), task('b')] }]));
+        await store.reconcile(id);
+        const scopeOf = async (jobId: string) =>
+            (await sql<{ executor_scope: string }[]>`select executor_scope from job where id = ${jobId}`)[0]!
+                .executor_scope;
+        const { a, b } = await stateOf(id);
+        expect(await scopeOf(a!.rootJobId!)).toBe('org');
+        expect(await scopeOf(b!.rootJobId!)).toBe('user');
+
+        await setStatus(a!.rootJobId!, 'failed');
+        await store.reconcile(id);
+        expect(await store.retry(id, 'a')).toEqual({ result: 'ok' });
+        await store.reconcile(id);
+        const retried = await headOf(a!.rootJobId!);
+        expect(retried.id).not.toBe(a!.rootJobId);
+        expect(await scopeOf(retried.id)).toBe('org');
+    });
+
     it('holds the concurrency limit, counting a moving task', async () => {
         const id = await frozen(parallelThenJoin(1));
         await store.reconcile(id);
@@ -682,6 +701,34 @@ describe.skipIf(!enabled)('bounded recovery', () => {
         await timed.reconcile(id);
         expect((await stateOf(id)).b).toMatchObject({ execution: 'queued' });
         expect((await decisions(id)).filter((key) => key === 'advance:one')).toHaveLength(1);
+    });
+
+    it('keeps an org task’s executor scope on its infra retry and its repair', async () => {
+        const scopeOfHead = async (root: string) =>
+            (
+                await sql<{ executor_scope: string }[]>`
+                    select executor_scope from job where root_job_id = ${root} order by created_at desc, id desc limit 1
+                `
+            )[0]!.executor_scope;
+        const { clock, store: timed } = clockedStore();
+        const id = await frozen(
+            planWith([{ key: 'one', tasks: [task('a', { completion: { kind: 'pr' }, executorScope: 'org' })] }]),
+            timed
+        );
+        await timed.reconcile(id);
+        const root = (await stateOf(id)).a!.rootJobId!;
+
+        await failWith(root, 'timeout');
+        await timed.reconcile(id);
+        clock.ms += 61_000;
+        await timed.reconcile(id);
+        expect(await kindsOf('a', id)).toEqual(['launch', 'infra_retry']);
+        expect(await scopeOfHead(root)).toBe('org');
+
+        await failWith(root, 'gate', 'failed', 'verification');
+        await timed.reconcile(id);
+        expect(await kindsOf('a', id)).toEqual(['launch', 'infra_retry', 'repair']);
+        expect(await scopeOfHead(root)).toBe('org');
     });
 
     it('repairs a failed check with a follow-up in the same thread, then judges the repaired run afresh', async () => {

@@ -23,6 +23,7 @@ import {
     TASK_STOPPED,
     TASK_SUCCEEDED,
     VERIFY_PASSED,
+    type ExecutorScope,
     type ScheduleDecision,
 } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
@@ -87,6 +88,8 @@ interface StateTask {
     stage_key: string;
     target_key: string;
     executor: string | null;
+    /** Null beside a null executor: the claim's default needs no scope. */
+    executor_scope: ExecutorScope | null;
     objective: string;
     acceptance: string;
     verification: string;
@@ -97,6 +100,13 @@ interface StateTask {
     recovery: string | null;
     not_before: Date | null;
 }
+
+/** Where a task's root launches: its target's repo, and its frozen executor in that executor's scope. */
+const rootTargetOf = (task: StateTask, repo: string) => ({
+    repo,
+    executor: task.executor,
+    ...(task.executor_scope === null ? {} : { executorScope: task.executor_scope }),
+});
 
 /** The batch row, locked. Everything the scheduler writes happens after this. */
 async function lockBatch(tx: TransactionSql, orgId: string, id: string): Promise<LockedBatch | null> {
@@ -292,8 +302,8 @@ async function loadSnapshot({ tx, orgId, id }: Tx): Promise<Snapshot> {
               )
         `,
         tx<StateTask[]>`
-            select t.key, t.stage_key, t.target_key, t.executor, t.objective, t.acceptance, t.verification,
-                   t.required, t.root_job_id, t.execution, t.gate, t.recovery, t.not_before
+            select t.key, t.stage_key, t.target_key, t.executor, t.executor_scope, t.objective, t.acceptance,
+                   t.verification, t.required, t.root_job_id, t.execution, t.gate, t.recovery, t.not_before
             from batch_task t
             join batch_stage s on s.org_id = t.org_id and s.batch_id = t.batch_id and s.key = t.stage_key
             where t.org_id = ${orgId} and t.batch_id = ${id}
@@ -361,7 +371,7 @@ async function launch(
               : await insertJobInTx(tx, deps, {
                     command: batchTaskCommand(task),
                     createdBy: startedBy,
-                    target: { repo: target.repo, executor: task.executor },
+                    target: rootTargetOf(task, target.repo),
                 });
     if (typeof created === 'string') {
         // Nothing was created, so the decision must not stand. A checkout being purged is

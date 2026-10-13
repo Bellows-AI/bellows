@@ -1,11 +1,12 @@
 import {
     batchExecutionCapability,
     ERROR_CODES,
+    executorMissingMessage,
     executorSuspendedMessage,
     resolveBatchPlan,
-    USER_SCOPE,
     type BatchPlan,
     type DefaultBranches,
+    type ExecutorScope,
     type ResolvedBatchPlan,
 } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
@@ -14,7 +15,7 @@ import type { BatchRecord } from '../db/batch-store.js';
 import { type Context, planOf } from './batch-http.js';
 import { bad, checkReposVisible, guard } from './helpers.js';
 import { validateExecutorField } from './job-field-validation.js';
-import { HTTP_CONFLICT } from './job-limits.js';
+import { HTTP_CONFLICT, HTTP_NOT_FOUND } from './job-limits.js';
 
 /**
  * The launch checks, in the order the issue fixes, shared by validate and start: structural
@@ -70,12 +71,22 @@ async function defaultBranchesOf(
     return null;
 }
 
-/** An executor the caller has suspended launches nothing, whichever route names it. */
+/** Each (executor, scope) the plan names, once; a task left to the claim's default names none. */
+const selectionsOf = (plan: ResolvedBatchPlan): { name: string; scope: ExecutorScope }[] => {
+    const seen = new Map<string, { name: string; scope: ExecutorScope }>();
+    for (const { executor, executorScope } of plan.stages.flatMap((stage) => stage.tasks)) {
+        if (executor !== null) seen.set(`${executorScope}:${executor}`, { name: executor, scope: executorScope });
+    }
+    return [...seen.values()];
+};
+
+/**
+ * Every executor the plan names must exist in its scope and not be suspended, whichever route
+ * asks: a name the scope does not hold would otherwise fail each task at claim, minutes later.
+ */
 async function executorsUsable(ctx: Context, request: FastifyRequest, reply: FastifyReply, plan: ResolvedBatchPlan) {
     const executors = ctx.runtime.userExecutors;
-    const names = new Set(plan.stages.flatMap((stage) => stage.tasks.map((task) => task.executor)));
-    for (const name of names) {
-        if (name === null) continue;
+    for (const { name, scope } of selectionsOf(plan)) {
         const shape = validateExecutorField(name);
         if (!shape.ok) {
             bad(reply, ERROR_CODES.BAD_EXECUTOR, shape.message);
@@ -85,11 +96,15 @@ async function executorsUsable(ctx: Context, request: FastifyRequest, reply: Fas
         const row = await guard(
             reply,
             (e) => request.log.error({ err: e }, 'executor row read failed'),
-            () => executors.configFor(ctx.createdBy!, name, USER_SCOPE)
+            () => executors.configFor(ctx.createdBy!, name, scope)
         );
         if (!row.ok) return false;
-        if (row.value?.suspended) {
-            bad(reply, ERROR_CODES.EXECUTOR_SUSPENDED, executorSuspendedMessage(USER_SCOPE, name), HTTP_CONFLICT);
+        if (row.value === null) {
+            bad(reply, ERROR_CODES.UNKNOWN_EXECUTOR, executorMissingMessage(scope, name), HTTP_NOT_FOUND);
+            return false;
+        }
+        if (row.value.suspended) {
+            bad(reply, ERROR_CODES.EXECUTOR_SUSPENDED, executorSuspendedMessage(scope, name), HTTP_CONFLICT);
             return false;
         }
     }

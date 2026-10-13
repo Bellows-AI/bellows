@@ -420,6 +420,55 @@ describe('launch checks: validate and start', () => {
         expect(response.json().code).toBe('EXECUTOR_SUSPENDED');
     });
 
+    it('looks each executor up in the scope the plan names, and names a suspended org one', async () => {
+        const asked: [string, string][] = [];
+        const userExecutors = {
+            async configFor(_user: string, name: string, scope: string) {
+                asked.push([name, scope]);
+                return { type: 'claude-code', config: {}, gateFixRounds: 2, suspended: scope === 'org' };
+            },
+        } as unknown as UserExecutorStore;
+        const { call, create } = await setup({ userExecutors });
+        const { id } = await create(plan({ executor: 'Main ORG', executorScope: 'org' }));
+        const response = await call('POST', `/api/batches/${id}/validate`, {});
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json()).toMatchObject({ code: 'EXECUTOR_SUSPENDED' });
+        expect(response.json().error).toContain('organization executor "Main ORG"');
+        expect(asked).toEqual([['Main ORG', 'org']]);
+    });
+
+    it('asks nothing of a plan that names no executor: the claim’s default needs no profile', async () => {
+        let asked = 0;
+        const userExecutors = {
+            async configFor() {
+                asked += 1;
+                return null;
+            },
+        } as unknown as UserExecutorStore;
+        const { call, create } = await setup({ userExecutors });
+        const { id } = await create(plan());
+        expect((await call('POST', `/api/batches/${id}/validate`, {})).statusCode).toBe(HTTP_OK);
+        expect((await call('POST', `/api/batches/${id}/start`, { version: 1 })).statusCode).toBe(HTTP_OK);
+        expect(asked).toBe(0);
+    });
+
+    it('refuses an executor the named scope does not hold, on validate and on start, before anything dispatches', async () => {
+        const userExecutors = {
+            async configFor() {
+                return null;
+            },
+        } as unknown as UserExecutorStore;
+        const { call, create, batches } = await setup({ userExecutors });
+        const { id } = await create(plan({ executor: 'Main ORG' }));
+        for (const route of ['validate', 'start']) {
+            const response = await call('POST', `/api/batches/${id}/${route}`, route === 'start' ? { version: 1 } : {});
+            expect(response.statusCode, route).toBe(HTTP_NOT_FOUND);
+            expect(response.json(), route).toMatchObject({ code: 'UNKNOWN_EXECUTOR' });
+            expect(response.json().error, route).toContain('personal executor "Main ORG"');
+        }
+        expect(batches.writes).toEqual(['create']);
+    });
+
     it('refuses an unknown or non-string version', async () => {
         const { call, create } = await setup();
         const { id } = await create();

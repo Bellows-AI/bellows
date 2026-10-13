@@ -1,5 +1,5 @@
 import type { BatchPlan, ResolvedBatchPlan } from '@factory-ai/core';
-import { BATCH_COMPLETION_ACCEPTED, BATCH_COMPLETION_PR } from '@factory-ai/core';
+import { BATCH_COMPLETION_ACCEPTED, BATCH_COMPLETION_PR, type ExecutorScope } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
 import {
     BATCH_LIST_LIMIT,
@@ -22,6 +22,7 @@ interface BatchRow {
     title: string;
     default_target: string | null;
     executor: string | null;
+    executor_scope: ExecutorScope | null;
     policy: BatchPlan['policy'];
     concurrency: number;
     infra_retries: number;
@@ -54,6 +55,7 @@ interface TaskRow {
     stage_key: string;
     target_key: string | null;
     executor: string | null;
+    executor_scope: ExecutorScope | null;
     objective: string;
     acceptance: string;
     verification: string;
@@ -84,6 +86,7 @@ function planOf(batch: BatchRow, targets: TargetRow[], stages: StageRow[], tasks
         targets: targets.map((t) => ({ key: t.key, repo: t.repo, ...(t.branch === null ? {} : { branch: t.branch }) })),
         ...(batch.default_target === null ? {} : { defaultTarget: batch.default_target }),
         ...(batch.executor === null ? {} : { executor: batch.executor }),
+        ...(batch.executor_scope === null ? {} : { executorScope: batch.executor_scope }),
         policy: batch.policy,
         concurrency: batch.concurrency,
         infraRetries: batch.infra_retries,
@@ -98,6 +101,7 @@ function planOf(batch: BatchRow, targets: TargetRow[], stages: StageRow[], tasks
                     key: task.key,
                     ...(task.target_key === null ? {} : { target: task.target_key }),
                     ...(task.executor === null ? {} : { executor: task.executor }),
+                    ...(task.executor_scope === null ? {} : { executorScope: task.executor_scope }),
                     objective: task.objective,
                     acceptance: task.acceptance,
                     verification: task.verification,
@@ -134,7 +138,7 @@ export async function readVerification(sql: Sql, { orgId, id }: BatchAddress): P
 /** The batch with its plan and per-task state, or null when this org has no such batch. */
 export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise<BatchRecord | null> {
     const [batch] = await sql<BatchRow[]>`
-        select id, status, version, plan_version, title, default_target, executor, policy, concurrency,
+        select id, status, version, plan_version, title, default_target, executor, executor_scope, policy, concurrency,
                infra_retries, repairs, time_limit_minutes, created_by, started_by, created_at, updated_at,
                started_at, cancelled_at, completed_at, deadline_at, expired_at
         from batch where org_id = ${orgId} and id = ${id}
@@ -150,7 +154,8 @@ export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise
             where org_id = ${orgId} and batch_id = ${id} order by position
         `,
         sql<TaskRow[]>`
-            select t.key, t.stage_key, t.target_key, t.executor, t.objective, t.acceptance, t.verification,
+            select t.key, t.stage_key, t.target_key, t.executor, t.executor_scope, t.objective, t.acceptance,
+                   t.verification,
                    t.required, t.completion_kind, t.completion_condition, t.root_job_id, t.execution,
                    t.pr, t.gate, t.wait_reason, t.attention,
                    (select coalesce(max(a.attempt), 0)::int from batch_attempt a
@@ -255,6 +260,7 @@ export async function insertChildren(tx: TransactionSql, { orgId, id }: BatchAdd
             position,
             target_key: task.target ?? null,
             executor: task.executor ?? null,
+            executor_scope: task.executorScope ?? null,
             objective: task.objective,
             acceptance: task.acceptance,
             verification: task.verification,
@@ -273,6 +279,7 @@ export async function insertChildren(tx: TransactionSql, { orgId, id }: BatchAdd
             'position',
             'target_key',
             'executor',
+            'executor_scope',
             'objective',
             'acceptance',
             'verification',
@@ -289,7 +296,7 @@ export async function deleteChildren(tx: TransactionSql, { orgId, id }: BatchAdd
     await tx`delete from batch_target where org_id = ${orgId} and batch_id = ${id}`;
 }
 
-/** Writes the resolved plan into the draft's own rows: branches, task targets and executors, stage policies. */
+/** Writes the resolved plan into the draft's own rows: branches, task targets, executors and scopes, stage policies. */
 export async function writeResolved(
     tx: TransactionSql,
     { orgId, id }: BatchAddress,
@@ -308,7 +315,9 @@ export async function writeResolved(
         `;
         for (const task of stage.tasks) {
             await tx`
-                update batch_task set target_key = ${task.target}, executor = ${task.executor}
+                update batch_task
+                set target_key = ${task.target}, executor = ${task.executor},
+                    executor_scope = ${task.executor === null ? null : task.executorScope}
                 where org_id = ${orgId} and batch_id = ${id} and key = ${task.key}
             `;
         }

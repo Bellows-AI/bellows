@@ -61,6 +61,13 @@ describe('the batch-control skill', () => {
         }
     });
 
+    it('names an executor with its scope, and where each scope lists its profiles', () => {
+        // A plan naming an organization profile without `org` failed every task at claim.
+        expect(skill).toContain('`executorScope` beside it is `user`');
+        expect(skill).toContain('`GET /api/org/executors`');
+        expect(skill).toContain('`404 UNKNOWN_EXECUTOR`');
+    });
+
     it('sizes the time limit from the stages, since nothing launches past it', () => {
         // The live automerge batch finished two minutes inside a limit sized for its tasks alone.
         expect(skill).toContain('Size `timeLimitMinutes` from the stages, not the task.');

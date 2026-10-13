@@ -49,10 +49,17 @@ const twoRepoPlan = (title = 'Two repos') =>
         ],
         defaultTarget: 'web',
         executor: 'claude',
+        executorScope: 'org',
         policy: 'automerge',
         concurrency: 3,
         stages: [
-            { key: 'one', tasks: [task('a'), task('b', { target: 'api', required: false })] },
+            {
+                key: 'one',
+                tasks: [
+                    task('a'),
+                    task('b', { target: 'api', required: false, executor: 'mine', executorScope: 'user' }),
+                ],
+            },
             {
                 key: 'two',
                 policy: 'human',
@@ -183,10 +190,14 @@ describe.skipIf(!enabled)('the batch store', () => {
             { key: 'api', repo: 'acme/api', branch: 'release' },
         ]);
         expect(record.plan.stages.map((stage) => stage.policy)).toEqual(['automerge', 'human']);
-        expect(record.plan.stages.flatMap((stage) => stage.tasks.map((t) => [t.key, t.target, t.executor]))).toEqual([
-            ['a', 'web', 'claude'],
-            ['b', 'api', 'claude'],
-            ['c', 'web', 'claude'],
+        expect(
+            record.plan.stages.flatMap((stage) =>
+                stage.tasks.map((t) => [t.key, t.target, t.executor, t.executorScope])
+            )
+        ).toEqual([
+            ['a', 'web', 'claude', 'org'],
+            ['b', 'api', 'mine', 'user'],
+            ['c', 'web', 'claude', 'org'],
         ]);
         const jobs = await sql`select 1 from job where org_id = ${ORG}`;
         expect(jobs).toHaveLength(0);
@@ -220,12 +231,35 @@ describe.skipIf(!enabled)('the batch store', () => {
         await expect(sql`update batch set title = 'x' where org_id = ${ORG} and id = ${id}`).rejects.toThrow(
             /immutable/
         );
+        await expect(sql`update batch_task set executor_scope = 'org' where ${where} and key = 'a'`).rejects.toThrow(
+            /immutable/
+        );
+        await expect(sql`update batch set executor_scope = 'org' where org_id = ${ORG} and id = ${id}`).rejects.toThrow(
+            /immutable/
+        );
 
         await sql`update batch_task set execution = 'running', gate = 'passed' where ${where} and key = 'a'`;
         const [row] = await sql<{ execution: string; gate: string }[]>`
             select execution, gate from batch_task where ${where} and key = 'a'
         `;
         expect(row).toEqual({ execution: 'running', gate: 'passed' });
+    });
+
+    it('freezes no scope beside no executor: a task left to the claim default has none', async () => {
+        const { id } = await store.create(singlePlan(), ALICE);
+        await freeze(id, singlePlan());
+        const [row] = await sql<{ executor: string | null; executor_scope: string }[]>`
+            select executor, executor_scope from batch_task where org_id = ${ORG} and batch_id = ${id} and key = 'a'
+        `;
+        expect(row).toEqual({ executor: null, executor_scope: null });
+        expect((await store.get(id))!.plan.stages[0]!.tasks[0]).not.toHaveProperty('executorScope');
+    });
+
+    it('refuses an executor scope outside the pair at the column', async () => {
+        const { id } = await store.create(singlePlan(), ALICE);
+        await expect(
+            sql`update batch_task set executor_scope = 'team' where org_id = ${ORG} and batch_id = ${id} and key = 'a'`
+        ).rejects.toThrow(/batch_task_executor_scope_ck/);
     });
 
     it('refuses to reach started with an unresolved plan', async () => {

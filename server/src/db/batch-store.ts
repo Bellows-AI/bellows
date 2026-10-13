@@ -65,11 +65,12 @@ export function createBatchStore({
                     return { id: replayed, version: row!.version, replayed: true };
                 }
                 const [batch] = await tx<{ id: string; version: number }[]>`
-                    insert into batch (org_id, plan_version, title, default_target, executor, policy, concurrency,
-                                       infra_retries, repairs, time_limit_minutes, created_by)
+                    insert into batch (org_id, plan_version, title, default_target, executor, executor_scope, policy,
+                                       concurrency, infra_retries, repairs, time_limit_minutes, created_by)
                     values (${orgId}, ${plan.planVersion}, ${plan.title}, ${plan.defaultTarget ?? null},
-                            ${plan.executor ?? null}, ${plan.policy}, ${plan.concurrency}, ${plan.infraRetries},
-                            ${plan.repairs}, ${plan.timeLimitMinutes}, ${createdBy})
+                            ${plan.executor ?? null}, ${plan.executorScope ?? null}, ${plan.policy},
+                            ${plan.concurrency}, ${plan.infraRetries}, ${plan.repairs}, ${plan.timeLimitMinutes},
+                            ${createdBy})
                     returning id, version
                 `;
                 await insertChildren(tx, { orgId, id: batch!.id }, plan);
@@ -95,7 +96,7 @@ export function createBatchStore({
                     update batch
                     set plan_version = ${plan.planVersion}, title = ${plan.title},
                         default_target = ${plan.defaultTarget ?? null}, executor = ${plan.executor ?? null},
-                        policy = ${plan.policy}, concurrency = ${plan.concurrency},
+                        executor_scope = ${plan.executorScope ?? null}, policy = ${plan.policy}, concurrency = ${plan.concurrency},
                         infra_retries = ${plan.infraRetries}, repairs = ${plan.repairs},
                         time_limit_minutes = ${plan.timeLimitMinutes},
                         version = version + 1, updated_at = now()

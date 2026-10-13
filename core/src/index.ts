@@ -211,6 +211,7 @@ export {
     DEFAULT_GATE_FIX_ROUNDS,
     EXECUTOR_SCOPES,
     EXECUTOR_TYPES,
+    executorMissingMessage,
     executorSuspendedMessage,
     MAX_GATE_FIX_ROUNDS,
     OPENCODE,

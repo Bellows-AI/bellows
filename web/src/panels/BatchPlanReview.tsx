@@ -1,6 +1,13 @@
 import type { BatchPlan } from '@factory-ai/core';
 import { KeyValues } from '../components/KeyValues.js';
-import { stagePolicyOf, taskExecutorOf, taskTargetOf, targetLabel, type Inherited } from '../batch-model.js';
+import {
+    executorLabel,
+    stagePolicyOf,
+    taskExecutorOf,
+    taskTargetOf,
+    targetLabel,
+    type Inherited,
+} from '../batch-model.js';
 
 /** One effective value with where it came from: the board's default for the batch, or the author's override. */
 export function Origin({ of }: { of: Inherited }) {
@@ -24,7 +31,7 @@ export function BatchPlanReview({ plan }: { plan: BatchPlan }) {
                 pairs={[
                     ['Concurrency', `${plan.concurrency} at a time`],
                     ['Policy', `${plan.policy} (a stage may override it)`],
-                    ['Executor', plan.executor ?? 'each task’s default'],
+                    ['Executor', executorLabel(plan.executor, plan.executorScope, 'each task’s default')],
                     ...plan.targets.map((target): [string, string] => [
                         `Target ${target.key}`,
                         targetLabel(plan, target.key),

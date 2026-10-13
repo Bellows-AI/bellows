@@ -255,6 +255,35 @@ describe('validateBatchPlan', () => {
     });
 });
 
+describe('executorScope', () => {
+    it('accepts user and org beside an executor, at the plan and the task', () => {
+        expect(issuesOf(plan({ executor: 'Main ORG', executorScope: 'org' }))).toEqual([]);
+        expect(
+            issuesOf(
+                plan({ stages: [{ key: 'one', tasks: [task('a', { executor: 'mine', executorScope: 'user' })] }] })
+            )
+        ).toEqual([]);
+    });
+
+    it('refuses a value outside the pair, at either level', () => {
+        expect(paths(plan({ executor: 'x', executorScope: 'team' }))).toEqual(['executorScope']);
+        expect(
+            paths(plan({ stages: [{ key: 'one', tasks: [task('a', { executor: 'x', executorScope: 'ORG' })] }] }))
+        ).toEqual(['stages[0].tasks[0].executorScope']);
+    });
+
+    it('refuses a scope with no executor anywhere to apply to', () => {
+        expect(paths(plan({ executorScope: 'org' }))).toEqual(['executorScope']);
+        expect(paths(plan({ stages: [{ key: 'one', tasks: [task('a', { executorScope: 'org' })] }] }))).toEqual([
+            'stages[0].tasks[0].executorScope',
+        ]);
+        // A plan scope with no plan executor still applies to a task that names one.
+        expect(
+            issuesOf(plan({ executorScope: 'org', stages: [{ key: 'one', tasks: [task('a', { executor: 'x' })] }] }))
+        ).toEqual([]);
+    });
+});
+
 const parsed = (raw: unknown) => {
     const result = validateBatchPlan(raw);
     if (!result.ok) throw new Error(JSON.stringify(result.issues));
@@ -273,6 +302,33 @@ describe('resolveBatchPlan and batchExecutionCapability', () => {
         expect(resolved.targets).toEqual([{ key: 'web', repo: 'acme/web', branch: 'main' }]);
         expect(resolved.stages[0]!.policy).toBe('automerge');
         expect(resolved.stages[0]!.tasks[0]).toMatchObject({ target: 'web', executor: 'claude' });
+    });
+
+    it('resolves each task’s executor scope: its own, else the plan’s, else user', () => {
+        const resolved = resolveBatchPlan(
+            parsed(
+                plan({
+                    executor: 'Main ORG',
+                    executorScope: 'org',
+                    stages: [
+                        {
+                            key: 'one',
+                            tasks: [task('a'), task('b', { executor: 'mine', executorScope: 'user' }), task('c')],
+                        },
+                    ],
+                })
+            ),
+            defaults
+        );
+        expect(resolved.stages[0]!.tasks.map((t) => [t.executor, t.executorScope])).toEqual([
+            ['Main ORG', 'org'],
+            ['mine', 'user'],
+            ['Main ORG', 'org'],
+        ]);
+        expect(resolveBatchPlan(parsed(plan()), defaults).stages[0]!.tasks[0]).toMatchObject({
+            executor: null,
+            executorScope: 'user',
+        });
     });
 
     it('passes a single-target plan on the default branch', () => {
