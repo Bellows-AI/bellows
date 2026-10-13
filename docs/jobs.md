@@ -46,7 +46,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | Agent-opened PR, git guard | `docker/claude-executor/git-guard.cjs`, `docker/opencode-executor/opencode-home/opencode.json`, `driver/src/publish.ts` | `driver/test/executor-images.test.ts` |
 | Evidence policy, driver side | `driver/src/evidence-policy.ts` | `driver/test/evidence-policy.test.ts` |
 | Reviewer invocation (`POST /review`, snapshot ref) | `driver/src/review-control.ts`, `loop-review.ts`, `review-snapshot.ts`, `driver/src/scripts/git-review-snapshot.cjs` | `driver/test/review-control.test.ts`, `loop-review.test.ts`, `review-snapshot.test.ts`, `review-executors.test.ts` |
-| Question routes and relay; deadline extension | `driver/src/question-control.ts`, `question-validation.ts`, `loop-questions.ts`, `run-deadline.ts` | `driver/test/gates.test.ts`, `run-deadline.test.ts`, `loop.test.ts` |
+| Question routes and relay; runtime budget paused until all answers arrive | `driver/src/question-control.ts`, `question-validation.ts`, `loop-questions.ts`, `run-deadline.ts` | `driver/test/gates.test.ts`, `run-deadline.test.ts`, `loop.test.ts` |
 | `AskUserQuestion` bridge; prose-question `Stop` hook | `docker/claude-executor/claude-bridge.cjs`, `docker/claude-executor/claude-home/settings.json`, `web/src/task-outcome.ts` | `driver/test/claude-bridge.test.ts`, `web/test/task-derivations.test.ts` |
 | Block-helper steps | `driver/src/helpers.ts`, `loop-helpers.ts`, `k8s-helper-runner.ts` | `driver/test/helpers.test.ts` |
 | GitHub review collect and reply | `driver/src/review.ts`, `review-helpers.ts`, `driver/src/scripts/review-*.cjs` | `driver/test/review.test.ts`, `review-collect-script.test.ts`, `review-reply-script.test.ts` |

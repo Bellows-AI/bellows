@@ -27,11 +27,10 @@ const HTTP_TOO_MANY_REQUESTS = 429;
 export type QuestionState =
     | { state: 'pending' }
     | { state: 'answered'; answers: Record<string, string> }
-    | { state: 'expired' }
     | { state: 'cancelled' };
 
-/** How a pending question is settled from outside: an answer, or the wait running out. */
-export type QuestionResolution = Extract<QuestionState, { state: 'answered' | 'expired' }>;
+/** A pending question settles when its answer arrives. */
+export type QuestionResolution = Extract<QuestionState, { state: 'answered' }>;
 
 /**
  * What the loop does with a newly recorded question: `accepted` (the board has it), `refused` (the

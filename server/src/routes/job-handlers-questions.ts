@@ -53,39 +53,6 @@ export async function handleQuestion(orgs: OrgRegistry, request: FastifyRequest,
     return reply.code(outcome.result === 'created' ? HTTP_CREATED : HTTP_OK).send(outcome.question);
 }
 
-// The driver gives up waiting on a question. The board decides the race with an answer: an
-// answered question comes back answered, and the driver delivers the answer instead of expiring.
-export async function handleQuestionExpire(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
-    if (!route) return reply;
-    const { store, id } = route;
-
-    const { leaseToken, questionId } = body(request.body);
-    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
-    }
-    if (typeof questionId !== 'string' || !QUESTION_ID.test(questionId)) {
-        return bad(
-            reply,
-            ERROR_CODES.INVALID_QUESTION,
-            'questionId must be 1..128 characters of letters, digits, _ and -'
-        );
-    }
-
-    const result = await guard(
-        reply,
-        (e) => request.log.error({ err: e }, 'job question expiry failed'),
-        () => store.expireQuestion(id, leaseToken, questionId)
-    );
-    if (!result.ok) return reply;
-    if (result.value.result === 'missing' || result.value.result === 'unknown') return notFoundJob(reply);
-    if (result.value.result === 'lost') return leaseLost(reply);
-    if (result.value.result === 'answered') {
-        return reply.code(HTTP_OK).send({ state: 'answered', answers: result.value.answers });
-    }
-    return reply.code(HTTP_OK).send({ state: 'expired' });
-}
-
 // A member's answer. Any authenticated member of the task's org may answer — the same rule as
 // Stop, the actor off the session, never the body. The store's one conditional update is what
 // makes a retried or concurrent answer land once; the loser is told what the winner left.

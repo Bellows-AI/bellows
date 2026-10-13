@@ -520,8 +520,8 @@ export interface GateServer {
      */
     openControl(token: string, relay?: QuestionRelay, publisher?: PublishRelay, reviewer?: ReviewRelay): void;
     /**
-     * Settles a pending question on an open control token: an answer the board recorded, or the
-     * wait expiring. False — and nothing changes — for an unknown token or id and a question
+     * Settles a pending question on an open control token: an answer the board recorded, or an
+     * answer arriving. False — and nothing changes — for an unknown token or id and a question
      * already settled, so a heartbeat repeating an answer is a no-op.
      */
     resolveQuestion(token: string, questionId: string, resolution: QuestionResolution): boolean;

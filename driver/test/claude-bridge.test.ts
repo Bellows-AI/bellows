@@ -373,11 +373,6 @@ describe('claude-bridge can_use_tool', () => {
     });
 
     it.each([
-        [
-            'expired',
-            { status: 200, body: { state: 'expired' } },
-            'The question expired after 1 hour without an answer. Stop now.',
-        ],
         ['cancelled', { status: 200, body: { state: 'cancelled' } }, 'The task was stopped.'],
         ['a 401', { status: 401 }, 'The task was stopped.'],
     ])('turns %s into deny and interrupt', async (_name, reply, message) => {

@@ -23,7 +23,6 @@ import type {
     ArtifactKind,
     AskedQuestion,
     AskQuestionResult,
-    ExpireQuestionResult,
     JobQuestion,
     CancelWaitResult,
     EditCommandResult,
@@ -133,9 +132,8 @@ interface StoreStub extends JobStore {
     leased: { ids: string[] }[];
     /** The long-poll holds the route requested, with the timeout it was given (issue #323). */
     waits: { id: string; timeoutMs: number }[];
-    /** The question reports, expiries and answers the routes handed the store (050). */
+    /** The question reports and answers the routes handed the store (050). */
     asked: { id: string; questionId: string; questions: AskedQuestion[] }[];
-    expired: { id: string; questionId: string }[];
     answered: { id: string; questionId: string; answers: Record<string, string>; answeredBy: string | null }[];
     /** The named-reviewer requests and reads the routes handed the store (056, issue #549). */
     reviewRequests: { id: string; request: ReviewRequest }[];
@@ -207,9 +205,8 @@ function stubStore(
         ackReclaim?: 'ok' | 'lost' | 'missing';
         heartbeatCancelRequested?: boolean;
         answeredQuestions?: { questionId: string; answers: Record<string, string> }[];
-        /** What the question store answers a report, an expiry and an answer with (050). */
+        /** What the question store answers a report and an answer with (050). */
         ask?: AskQuestionResult;
-        expire?: ExpireQuestionResult;
         answer?: AnswerQuestionResult;
         reviewRequest?: RequestReviewResult;
         reviewRead?: ReadReviewResult;
@@ -259,7 +256,6 @@ function stubStore(
         leased: [],
         waits: [],
         asked: [],
-        expired: [],
         answered: [],
         reviewRequests: [],
         reviewReads: [],
@@ -333,11 +329,6 @@ function stubStore(
             boom();
             stub.asked.push({ id, ...ask });
             return options.ask ?? { result: 'created', question: QUESTION };
-        },
-        async expireQuestion(id, _token, questionId) {
-            boom();
-            stub.expired.push({ id, questionId });
-            return options.expire ?? { result: 'expired' };
         },
         async requestReview(id, _token, request) {
             boom();
@@ -3653,7 +3644,6 @@ const ASK = {
     ],
 };
 const QUESTION_URL = `/api/jobs/${ID}/question`;
-const EXPIRE_URL = `/api/jobs/${ID}/question-expire`;
 const ANSWER_URL = `/api/jobs/${ID}/questions/${ASK.questionId}/answer`;
 
 describe('heartbeat answeredQuestions (050)', () => {
@@ -3756,45 +3746,6 @@ describe('POST /api/jobs/:id/question', () => {
         const response = await post(instance, QUESTION_URL, ASK);
         expect(response.statusCode).toBe(status);
         expect(response.json().code).toBe(code);
-    });
-});
-
-describe('POST /api/jobs/:id/question-expire', () => {
-    const body = { leaseToken: TOKEN, questionId: ASK.questionId };
-
-    it('answers expired', async () => {
-        const store = stubStore();
-        const instance = await harnessWith(store);
-        const response = await post(instance, EXPIRE_URL, body);
-        expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ state: 'expired' });
-        expect(store.expired).toEqual([{ id: ID, questionId: ASK.questionId }]);
-    });
-
-    it('answers the stored answers when the question was answered first', async () => {
-        const answers = { 'Which database?': 'Postgres' };
-        const instance = await harnessWith(stubStore({ expire: { result: 'answered', answers } }));
-        const response = await post(instance, EXPIRE_URL, body);
-        expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ state: 'answered', answers });
-    });
-
-    it.each([
-        ['lost', 409, 'LEASE_LOST'],
-        ['missing', 404, 'NOT_FOUND'],
-        ['unknown', 404, 'NOT_FOUND'],
-    ] as const)('maps the store verdict %s to %i', async (result, status, code) => {
-        const instance = await harnessWith(stubStore({ expire: { result } }));
-        const response = await post(instance, EXPIRE_URL, body);
-        expect(response.statusCode).toBe(status);
-        expect(response.json().code).toBe(code);
-    });
-
-    it('refuses a bad lease token and a bad questionId', async () => {
-        const instance = await harnessWith(stubStore());
-        expect((await post(instance, EXPIRE_URL, { ...body, leaseToken: 'nope' })).json().code).toBe('BAD_TOKEN');
-        const response = await post(instance, EXPIRE_URL, { ...body, questionId: 'a b' });
-        expect(response.json().code).toBe('INVALID_QUESTION');
     });
 });
 

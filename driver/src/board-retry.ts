@@ -1,4 +1,4 @@
-/** How many times a board call that must land is tried: the verdict, a question report, an expiry. */
+/** How many times a board call that must land is tried: the verdict and a question report. */
 export const BOARD_CALL_ATTEMPTS = 5;
 const BOARD_CALL_BACKOFF_MS = 1_000;
 

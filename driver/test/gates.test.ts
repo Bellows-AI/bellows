@@ -870,23 +870,22 @@ describe('the gate server: questions (issue #226)', () => {
         await server.close();
     });
 
-    it('reads each state: pending, answered, expired, cancelled — and 404 for an unknown id', async () => {
+    it('reads each state: pending, answered, cancelled — and 404 for an unknown id', async () => {
         const { server, port } = await opened();
         for (const id of ['toolu_1', 'toolu_2', 'toolu_3']) await post(port, 'tok-q', report(id, `Q ${id}?`));
         server.resolveQuestion('tok-q', 'toolu_1', { state: 'answered', answers: { 'Q toolu_1?': 'Blue' } });
-        server.resolveQuestion('tok-q', 'toolu_2', { state: 'expired' });
 
         await expect((await get(port, 'tok-q', 'toolu_1')).json()).resolves.toEqual({
             state: 'answered',
             answers: { 'Q toolu_1?': 'Blue' },
         });
-        await expect((await get(port, 'tok-q', 'toolu_2')).json()).resolves.toEqual({ state: 'expired' });
+        await expect((await get(port, 'tok-q', 'toolu_2')).json()).resolves.toEqual({ state: 'pending' });
         await expect((await get(port, 'tok-q', 'toolu_3')).json()).resolves.toEqual({ state: 'pending' });
         server.cancelQuestions('tok-q');
         await expect((await get(port, 'tok-q', 'toolu_3')).json()).resolves.toEqual({ state: 'cancelled' });
         // A settled question is not reopened by a later answer or cancel.
         expect(server.resolveQuestion('tok-q', 'toolu_2', { state: 'answered', answers: {} })).toBe(false);
-        await expect((await get(port, 'tok-q', 'toolu_2')).json()).resolves.toEqual({ state: 'expired' });
+        await expect((await get(port, 'tok-q', 'toolu_2')).json()).resolves.toEqual({ state: 'cancelled' });
         expect((await get(port, 'tok-q', 'toolu_9')).status).toBe(NOT_FOUND_STATUS);
         await server.close();
     });

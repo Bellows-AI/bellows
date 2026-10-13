@@ -383,12 +383,6 @@ export type RequestReviewResult =
 
 export type ReadReviewResult = { result: 'ok'; review: ReviewView } | { result: 'lost' | 'missing' | 'unknown' };
 
-/** What a worker's expiry did; `answered` means the board decided the race for the answer. */
-export type ExpireQuestionResult =
-    | { result: 'expired' }
-    | { result: 'answered'; answers: Record<string, string> }
-    | { result: 'lost' | 'missing' | 'unknown' };
-
 /**
  * What a member's answer did. `invalid` is a key set that does not match the stored question
  * texts; `refused` carries the stored question for `answered` (its answer and answerer ride the
@@ -1091,11 +1085,6 @@ export interface JobStore {
         leaseToken: string,
         ask: { questionId: string; questions: AskedQuestion[] }
     ): Promise<AskQuestionResult>;
-    /**
-     * Moves a pending question to `expired` under the lease. An already-answered one answers with
-     * its answers instead — the board decides the race, and the driver delivers the answer.
-     */
-    expireQuestion(id: string, leaseToken: string, questionId: string): Promise<ExpireQuestionResult>;
     /**
      * Starts a named reviewer's separate run over the revision the caller names (issue #549),
      * under the caller's live lease. Idempotent on `(caller, key)`: a retried or reclaimed caller
