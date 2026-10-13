@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { GIT_ADD_ARGS, gitProbeScript } from '../src/publish.js';
+import { GIT_STAGE_STEPS, gitProbeScript } from '../src/publish.js';
 import {
     GIT_FIXTURE_CONFIG,
     OTHER_ROOT,
@@ -272,7 +272,20 @@ describe.skipIf(!hasGit())('the publish probe script', () => {
 
         writeFileSync(join(repo, 'WORK.md'), 'real work\n');
         expect(probe().dirty).toBe(true);
-        git(repo, ...GIT_ADD_ARGS);
+        for (const args of GIT_STAGE_STEPS) git(repo, ...args);
+        expect(git(repo, 'diff', '--cached', '--name-only')).toBe('WORK.md');
+    });
+
+    // The sync git-ignores `.factory/` (git-worktree.cjs excludeFactoryState). A pathspec naming an
+    // ignored path makes `git add` exit 1 even though it staged the rest — observed live: a run
+    // whose worktree held `.factory/` lost its finished work at publish.
+    it('stages the work and exits cleanly when .factory/ is present and git-ignored', () => {
+        writeFileSync(join(repo, '.git', 'info', 'exclude'), '/.factory/\n');
+        mkdirSync(join(repo, '.factory'), { recursive: true });
+        writeFileSync(join(repo, '.factory', 'digest.json'), '{}\n');
+        writeFileSync(join(repo, 'WORK.md'), 'real work\n');
+
+        for (const args of GIT_STAGE_STEPS) git(repo, ...args);
         expect(git(repo, 'diff', '--cached', '--name-only')).toBe('WORK.md');
     });
 });

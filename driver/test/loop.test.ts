@@ -1186,7 +1186,7 @@ describe('the poll loop', () => {
         expect(runner.synced).toHaveLength(0);
         expect(board.board.completed[0]).toMatchObject({
             status: 'failed',
-            failureKind: 'runner_error',
+            failureKind: 'config',
             output: reason,
         });
     });
@@ -4424,10 +4424,9 @@ describe('the verdict failure kind (issue #339)', () => {
         expect(board.board.completed[0]).not.toHaveProperty('failureKind');
     });
 
-    it('names every pre-run refusal runner_error', async () => {
+    it('names every pre-run refusal runner_error, or config when only a person can fix it', async () => {
         // The claim refusals and setup refusals are the driver's own environment failing, never
-        // the agent's work — all of them are runner errors, and none is a gate (that name is
-        // reserved for a gate RUN that failed).
+        // the agent's work — none is a gate (that name is reserved for a gate RUN that failed).
         const refusalCases: {
             job: BoardJob;
             fragment: string;
@@ -4464,9 +4463,11 @@ describe('the verdict failure kind (issue #339)', () => {
 
             expect(board.board.completed[0]?.status, refusal.fragment).toBe('failed');
             expect(board.board.completed[0]?.output, refusal.fragment).toContain(refusal.fragment);
-            // A refused .bellows.yaml is deterministic: its own kind, so the board rests the thread
-            // rather than retrying the same file as a transient runner error.
-            const kind = refusal.fragment.includes('gate declaration') ? 'config' : 'runner_error';
+            // A refused .bellows.yaml or executor selection is deterministic: its own kind, so the
+            // board rests the thread — and a batch asks a person — rather than retrying the same
+            // configuration as a transient runner error.
+            const deterministic = ['gate declaration', 'selected executor'].some((f) => refusal.fragment.includes(f));
+            const kind = deterministic ? 'config' : 'runner_error';
             expect(board.board.completed[0]?.failureKind, refusal.fragment).toBe(kind);
         }
     });
