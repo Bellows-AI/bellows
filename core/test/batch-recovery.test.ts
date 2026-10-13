@@ -36,6 +36,7 @@ describe('classifyTaskFailure', () => {
             ['conflict', { kind: 'repairable' }],
             ['verification', { kind: 'repairable' }],
             ['transport', { kind: 'infra' }],
+            ['environment', { kind: 'infra' }],
             ['denied', { kind: 'attention', reason: 'configuration' }],
             ['config', { kind: 'attention', reason: 'configuration' }],
             ['unknown', { kind: 'attention', reason: 'unclassified' }],

@@ -48,13 +48,15 @@ const CAUSED_KINDS: readonly string[] = ['gate', 'publish', 'helper'];
 const CONFIGURATION_KINDS: readonly string[] = ['config', 'policy'];
 /** Causes an agent can fix in its own checkout: a failed check, a stale or conflicting branch. */
 const REPAIRABLE_CAUSES: readonly string[] = ['verification', 'conflict'];
+/** Causes a fresh run can clear: a lost transport, an environment fault that failed a gate (issue #653). */
+const INFRA_CAUSES: readonly string[] = ['transport', 'environment'];
 /** Causes no retry or repair can fix: a refused credential, a bad configuration. */
 const CONFIGURATION_CAUSES: readonly string[] = ['denied', 'config'];
 
 /** A gate, publish or helper failure by its cause; an unknown or missing cause is never guessed. */
 function classifyCause(cause: string | null): FailureClass {
     if (cause !== null && REPAIRABLE_CAUSES.includes(cause)) return { kind: 'repairable' };
-    if (cause === 'transport') return { kind: 'infra' };
+    if (cause !== null && INFRA_CAUSES.includes(cause)) return { kind: 'infra' };
     if (cause !== null && CONFIGURATION_CAUSES.includes(cause)) {
         return { kind: 'attention', reason: ATTENTION_CONFIGURATION };
     }
