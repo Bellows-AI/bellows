@@ -65,6 +65,16 @@ describe('the driver config: executor and endpoints', () => {
         expect(loadDriverConfig({ EXECUTOR: 'kubernetes' }).executor).toBe('kubernetes');
     });
 
+    it('refuses a docker default RUNNER_NETWORK while services are on, naming both variables', () => {
+        for (const network of ['bridge', 'host', 'none']) {
+            const env = { RUNNER_NETWORK: network };
+            expect(() => loadDriverConfig(env), network).toThrow(/RUNNER_NETWORK=.*RUNNER_SERVICES/);
+            expect(() => loadDriverConfig({ ...env, RUNNER_SERVICES: '1' }), network).toThrow(/RUNNER_SERVICES=0/);
+            expect(loadDriverConfig({ ...env, RUNNER_SERVICES: '0' }).network, network).toBe(network);
+        }
+        expect(loadDriverConfig({ RUNNER_NETWORK: 'factory_default' }).network).toBe('factory_default');
+    });
+
     it('refuses an unknown EXECUTOR rather than falling back to docker', () => {
         for (const executor of ['k8s', 'KUBERNETES', 'kube']) {
             expect(() => loadDriverConfig({ EXECUTOR: executor }), `"${executor}"`).toThrow(/EXECUTOR/);
