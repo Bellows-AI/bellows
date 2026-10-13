@@ -612,14 +612,15 @@ function gateHistory(rt: LoopRuntime, gateSession: GateSession | null): readonly
 }
 
 /**
- * A launch the board refused in the claim itself: the executor selection (`runner_error`), then
- * the selected skills (issue #545: `config`, since the member fixes the settings or the selection
- * and retries). True when the task was failed here and nothing may launch.
+ * A launch the board refused in the claim itself: the executor selection, then the selected
+ * skills (issue #545). Both `config`: the member fixes the settings or the selection and retries,
+ * and a batch asks a person instead of retrying it as infrastructure. True when the task was
+ * failed here and nothing may launch.
  */
 async function failOnClaimRefusal(rt: LoopRuntime, job: BoardJob): Promise<boolean> {
     const executorRefusal = executorRefusalReason(rt, job);
     const [reason, failureKind, what] = executorRefusal
-        ? ([executorRefusal, 'runner_error', 'executor selection'] as const)
+        ? ([executorRefusal, 'config', 'executor selection'] as const)
         : ([job.skillRefusal, 'config', 'selected skills'] as const);
     if (!reason) return false;
     rt.log(`job ${job.id}: ${what} is not runnable, failing`);

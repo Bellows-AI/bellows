@@ -2536,6 +2536,7 @@ describe('publishing the produced work', () => {
             { exit: 1, log: '' }, // switch — no such branch
             { exit: 0, log: '' }, // switch -c
             { exit: 0, log: '' }, // add
+            { exit: 0, log: '' }, // reset .factory
             { exit: 0, log: '' }, // commit
             { exit: 0, log: '' }, // push
             { exit: 1, log: '' }, // pr view — none yet
@@ -2557,7 +2558,7 @@ describe('publishing the produced work', () => {
         });
         const posted = calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace));
         expect(posted.map((call) => (call.body as { metadata?: { name?: string } }).metadata?.name)).toEqual(
-            [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => publishStepJobName(ISSUE_JOB, n))
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => publishStepJobName(ISSUE_JOB, n))
         );
         // Every step Job is inside the fence sweep — a dead driver's publish cannot outlive the
         // next claimant.
@@ -2649,6 +2650,7 @@ describe('publishing the produced work', () => {
             { exit: 1, log: '' }, // switch — no such branch
             { exit: 0, log: '' }, // switch -c
             { exit: 0, log: '' }, // add
+            { exit: 0, log: '' }, // reset .factory
             { exit: 0, log: '' }, // commit
             { exit: 0, log: '' }, // push
             { exit: 1, log: '' }, // pr view — none yet
@@ -2910,6 +2912,7 @@ describe('publishing the produced work', () => {
             { exit: 1, log: '' }, // switch
             { exit: 0, log: '' }, // switch -c
             { exit: 0, log: '' }, // add
+            { exit: 0, log: '' }, // reset .factory
             { exit: 0, log: '' }, // commit
             {
                 exit: 128,
@@ -2932,6 +2935,7 @@ describe('publishing the produced work', () => {
             { exit: 1, log: '' }, // switch
             { exit: 0, log: '' }, // switch -c
             { exit: 0, log: '' }, // add
+            { exit: 0, log: '' }, // reset .factory
             { exit: 0, log: '' }, // commit
             {
                 exit: 1,

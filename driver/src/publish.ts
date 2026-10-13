@@ -484,11 +484,16 @@ const STEP_ERROR_MAX_CHARS = 300;
 /** The final failure reason's cap — reported to the board, not a log; kept to one glance. */
 const PUBLISH_FAILURE_MAX_CHARS = 400;
 /**
- * Stages the whole tree except the `.factory/` state namespace. The sync's `info/exclude` keeps it
- * untracked; this pathspec also keeps a copy an older commit already tracks from being re-staged.
+ * Stages the whole tree except the `.factory/` state namespace, in two steps. The sync's
+ * `info/exclude` keeps it untracked, so the add never picks up a new state file; the reset then
+ * unstages a copy an older commit already tracks. Not one `add` with an exclude pathspec: a
+ * pathspec naming an ignored path makes `git add` exit 1 even after it staged the rest.
  * git-probe.cjs spells the same exclusion, so a tree dirty only there reads clean.
  */
-export const GIT_ADD_ARGS = ['add', '-A', '--', ':/', ':(top,exclude).factory'];
+export const GIT_STAGE_STEPS: readonly (readonly string[])[] = [
+    ['add', '-A', '--', ':/'],
+    ['reset', '-q', '--', '.factory'],
+];
 
 /** The read-only probe step over one checkout — the publish's first step, and the post-gate tree read. */
 const probeStep = (repo: string): PublishStep => ({
@@ -570,7 +575,9 @@ async function ensureTaskBranch(
  * so a member-configured identity is never overridden.
  */
 async function commitDirtyTree(step: RunPublishStep, state: GitState, title: string): Promise<void> {
-    await step({ label: 'git add', entrypoint: 'git', args: GIT_ADD_ARGS, env: false, inRepo: true });
+    for (const args of GIT_STAGE_STEPS) {
+        await step({ label: `git ${args[0]}`, entrypoint: 'git', args: [...args], env: false, inRepo: true });
+    }
     const identity = state.hasIdentity
         ? []
         : ['-c', 'user.name=factory-ai', '-c', 'user.email=factory-ai@users.noreply.github.com'];

@@ -4740,6 +4740,7 @@ describe('publishing the produced work', () => {
             }
             if (a.includes('switch')) return 'switch';
             if (a.includes('add')) return 'add';
+            if (a.includes('reset')) return 'reset';
             if (a.includes('commit')) return 'commit';
             if (a.includes('push')) return 'push';
             if (a.includes('view')) return 'pr-view';
@@ -4826,6 +4827,7 @@ describe('publishing the produced work', () => {
             'switch',
             'switch',
             'add',
+            'reset',
             'commit',
             'push',
             'pr-view',
