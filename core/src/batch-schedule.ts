@@ -4,7 +4,7 @@
  * read the state, ask here, and write the answer under the batch's row lock. Stage order is the
  * only dependency model, so the active stage is the first one without an advance decision.
  */
-import type { ObservationOutcome } from './batch-observation.js';
+import type { ObservationOutcome, ReadErrorKind } from './batch-observation.js';
 import { AUTOMERGE, BATCH_COMPLETION_ACCEPTED, BATCH_COMPLETION_PR } from './batch-plan.js';
 
 /** A task's execution state: the thread head's status folded to what the scheduler branches on. */
@@ -106,6 +106,9 @@ const BOARD_OUTCOMES: readonly ObservationOutcome[] = [
     'conflicting',
 ];
 
+/** Read errors the observer retries by itself; any other (`not_found`, `forbidden`, `binding`) is a person's. */
+const BOARD_READ_ERRORS: readonly ReadErrorKind[] = ['rate_limited', 'transport'];
+
 /**
  * A succeeded task of an `automerge` stage whose PR the board is still merging or repairing: moving,
  * not a person's. Not yet observed counts — the observer reads it next. Once the board cannot act
@@ -119,8 +122,10 @@ export const awaitsBoardMerge = (task: {
     gate: string;
     attention: string | null;
     prUrl: string | null;
-    /** The current attempt's observed outcome, or null before the first read. */
+    /** The current attempt's observed outcome, or null before the first read or after a read error. */
     outcome: string | null;
+    /** The last read's error code (`READ_*`), or null. */
+    readError: string | null;
     stageAdvanced: boolean;
 }): boolean =>
     task.policy === AUTOMERGE &&
@@ -130,6 +135,7 @@ export const awaitsBoardMerge = (task: {
     task.attention === null &&
     task.prUrl !== null &&
     !task.stageAdvanced &&
+    (task.readError === null || (BOARD_READ_ERRORS as readonly string[]).includes(task.readError)) &&
     (task.outcome === null || (BOARD_OUTCOMES as readonly string[]).includes(task.outcome));
 
 /** What `batch_task.pr` holds for a task with no recorded PR. */

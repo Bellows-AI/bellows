@@ -285,6 +285,7 @@ describe('batchNextAction', () => {
         prUrl: null as string | null,
         policy: 'human',
         outcome: null as string | null,
+        readError: null as string | null,
         stageAdvanced: false,
     };
     const next = (batchState: 'running' | 'parked' | 'completed' | 'cancelled' | 'expired', over = {}) =>

@@ -10,6 +10,9 @@ import {
     MERGE_UNCERTAIN,
     OUTCOME_CHECKS_MISSING,
     OUTCOME_REVIEW_REQUIRED,
+    READ_BINDING,
+    READ_FORBIDDEN,
+    READ_NOT_FOUND,
     TASK_NO_PR,
     TASK_SUCCEEDED,
 } from '@factory-ai/core';
@@ -43,6 +46,7 @@ interface GateRow {
     merge_state: string | null;
     merge_detail: string | null;
     outcome: string | null;
+    error_code: string | null;
 }
 
 /** The board's own word on its merge request, as the task's wait reason carries it; null once it says nothing. */
@@ -64,7 +68,10 @@ function mergeNoteOf(state: string | null, detail: string | null): string | null
 }
 
 /** Why the board cannot merge an observed PR by itself (`awaitsBoardMerge`), as the task's wait reason carries it. */
-function observedNoteOf(outcome: string | null): string | null {
+function observedNoteOf(outcome: string | null, error: string | null): string | null {
+    if (error === READ_NOT_FOUND || error === READ_FORBIDDEN || error === READ_BINDING) {
+        return `the PR cannot be read (${error}); the board cannot merge it`;
+    }
     switch (outcome) {
         case OUTCOME_REVIEW_REQUIRED:
             return 'the PR needs an approving review from a person before the board can merge it';
@@ -81,7 +88,7 @@ export async function judgeGates(tx: TransactionSql, orgId: string, id: string):
         select t.key, t.completion_kind, t.completion_condition, tg.branch as target_branch, t.pr, t.wait_reason, t.attention,
                p.repo, p.pr_number, p.pr_url, p.base_branch, m.merged_at,
                a.attempt, a.created_at as attempt_started_at, s.policy, mg.state as merge_state,
-               mg.detail as merge_detail, o.outcome
+               mg.detail as merge_detail, o.outcome, o.error_code
         from batch_task t
         join batch_stage s on s.org_id = t.org_id and s.batch_id = t.batch_id and s.key = t.stage_key
         join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id and tg.key = t.target_key
@@ -117,7 +124,7 @@ export async function judgeGates(tx: TransactionSql, orgId: string, id: string):
             attempt: row.attempt,
             attemptStartedAt: row.attempt_started_at.getTime(),
             automerge: row.policy === AUTOMERGE,
-            mergeNote: mergeNoteOf(row.merge_state, row.merge_detail) ?? observedNoteOf(row.outcome),
+            mergeNote: mergeNoteOf(row.merge_state, row.merge_detail) ?? observedNoteOf(row.outcome, row.error_code),
         });
         if (judgement.pass) {
             await tx`

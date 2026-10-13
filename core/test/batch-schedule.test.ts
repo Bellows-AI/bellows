@@ -179,6 +179,7 @@ describe('task predicates', () => {
             attention: null,
             prUrl: 'https://x/pull/1',
             outcome: null as string | null,
+            readError: null as string | null,
             stageAdvanced: false,
         };
         expect(awaitsBoardMerge(open)).toBe(true);
@@ -188,6 +189,12 @@ describe('task predicates', () => {
         // GitHub waits on a person's review, or on checks nobody reports; the board does not act on either.
         expect(awaitsBoardMerge({ ...open, outcome: 'review_required' })).toBe(false);
         expect(awaitsBoardMerge({ ...open, outcome: 'checks_missing' })).toBe(false);
+        // The observer retries a transient read error; a definitive one is a person's.
+        expect(awaitsBoardMerge({ ...open, readError: 'transport' })).toBe(true);
+        expect(awaitsBoardMerge({ ...open, readError: 'rate_limited' })).toBe(true);
+        for (const readError of ['not_found', 'forbidden', 'binding']) {
+            expect(awaitsBoardMerge({ ...open, readError })).toBe(false);
+        }
         // An optional task left behind by an advanced stage is neither merged nor repaired.
         expect(awaitsBoardMerge({ ...open, stageAdvanced: true })).toBe(false);
         expect(awaitsBoardMerge({ ...open, policy: 'human' })).toBe(false);

@@ -230,8 +230,9 @@ export function batchNextAction(input: {
         prUrl: string | null;
         /** The stage's effective policy: an `automerge` stage's open PR is the board's to merge (`awaitsBoardMerge`). */
         policy: string;
-        /** The current attempt's observed PR outcome, or null before the first read. */
+        /** The current attempt's observed PR outcome and read error, null before the first read. */
         outcome: string | null;
+        readError: string | null;
         stageAdvanced: boolean;
     };
 }): BatchNextAction {

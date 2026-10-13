@@ -335,6 +335,22 @@ describe('batch validate / start / inspect / list', () => {
         expect(result.out).toContain('  verification failed: checks on main fail: e2e failing (at cd89f3d2)');
     });
 
+    it("reads an open PR the report's next leaves to the board as running on inspect, naming no action (#688)", async () => {
+        const pr = 'https://github.com/o/api/pull/9';
+        const merging = record('running', [
+            task('a', 'succeeded', { pr, waitReason: `waiting for the board to merge ${pr}` }),
+        ]);
+        const report = REPORT();
+        const boardNext = { ...report, tasks: [{ ...report.tasks[0]!, next: { action: 'wait' } }] };
+        const result = await cli(['batch', 'inspect', ID], (sent) => json(isReport(sent) ? boardNext : merging));
+        expect(result.out).toContain('verdict running');
+        expect(result.out).not.toContain('needs action');
+
+        const person = await cli(['batch', 'inspect', ID], (sent) => json(isReport(sent) ? report : merging));
+        expect(person.out).toContain('verdict needs_attention');
+        expect(person.out).toContain(`needs action: waiting for the board to merge ${pr}`);
+    });
+
     it('carries the report of a started batch on inspect, and reads none for a draft', async () => {
         const started = await cli(['batch', 'inspect', ID, '--json'], (sent) =>
             json(isReport(sent) ? REPORT() : record('running', [task('a', 'running')]))

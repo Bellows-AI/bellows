@@ -183,6 +183,7 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
                     prUrl,
                     policy: task.policy,
                     outcome: task.outcome,
+                    readError: task.read_error,
                     stageAdvanced: task.stage_advanced,
                 },
             }),

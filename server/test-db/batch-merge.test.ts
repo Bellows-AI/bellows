@@ -353,6 +353,25 @@ describe.skipIf(!enabled)('automerge', () => {
         expect(report.tasks[0]!.waitReason).toContain('approving review');
     });
 
+    it('hands an automerge PR the board can no longer read to a person, but waits out a transient read error (#688)', async () => {
+        const { id, number } = await readyBatch(plan([policyStage('automerge', ['a'])]));
+        github.replies.set(number, new GitHubReadError('timed out', 'transport'));
+        clock.offset += 61_000;
+        await observer.observeDue();
+        expect(await store.reconcile(id)).toMatchObject({ waiting: 1 });
+        expect((await store.report(id))!.tasks[0]).toMatchObject({ next: { action: 'wait' } });
+
+        github.replies.set(number, new GitHubReadError('no access', 'forbidden'));
+        clock.offset += 16 * 60_000;
+        await observer.observeDue();
+
+        expect(await store.reconcile(id)).toMatchObject({ active: 0, waiting: 0 });
+        const report = (await store.report(id))!;
+        expect(report.state).toBe('parked');
+        expect(report.tasks[0]).toMatchObject({ next: { action: 'merge' } });
+        expect(report.tasks[0]!.waitReason).toContain('cannot be read (forbidden)');
+    });
+
     it("hands an optional task's open PR to a person once its stage advanced without it (#688)", async () => {
         const optional = { ...prTask('b'), required: false };
         const source = plan([{ key: 'one', policy: 'automerge', tasks: [prTask('a'), optional] }]);
