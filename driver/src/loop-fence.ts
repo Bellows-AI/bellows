@@ -8,9 +8,21 @@
 import { down } from './loop-attempt.js';
 import { withBoardRetry } from './board-retry.js';
 import type { BoardJob } from './board.js';
-import type { SyncResult } from './publish.js';
+import type { RunOutcome } from './runner.js';
+import { withConflictContext, type SyncResult } from './publish.js';
 import type { AttemptCtx, LoopRuntime, SetupHalt } from './loop-types.js';
 import { report } from './loop-verdict.js';
+
+/**
+ * Why the loop reports no verdict for this outcome and leaves the job to the lease, or null when it
+ * reports: a container that never started, or a runner the platform took away (issue #560).
+ */
+export function leaseLeftWhy(outcome: RunOutcome): string | null {
+    if (outcome.infraLoss) return `infrastructure loss: ${outcome.infraLoss}`;
+    if (outcome.started) return null;
+    const said = outcome.output.trim();
+    return `the runner reports the container never started${said ? `: ${said}` : ''}`;
+}
 
 /**
  * Hands the kubernetes checkout claim back — the ONE release in the loop. Only a successful sync
@@ -22,6 +34,14 @@ export async function handBackFence(ctx: AttemptCtx): Promise<void> {
     if (!ctx.fenced) return;
     ctx.fenced = false;
     await ctx.rt.runner.releaseFence?.(ctx.job);
+}
+
+/**
+ * A conflict the sync left in the tree reaches the agent through this attempt's turn context, which
+ * the runner reads from the job at launch (master-prompt.ts); a sync with none changes nothing.
+ */
+export function handOverConflict(job: BoardJob, synced: SyncResult): void {
+    if (synced.conflicts?.length) job.turnContext = withConflictContext(job.turnContext, synced.conflicts);
 }
 
 /**

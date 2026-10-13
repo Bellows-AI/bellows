@@ -46,9 +46,12 @@
 // --autostash, so a follow-up — which lands in this same tree by design — works whether or
 // not the previous run left uncommitted edits; the edits are stashed for the rebase and
 // reapplied on the new base. Git exits 0 even when the reapplied STASH conflicts (the rebase
-// itself succeeded), so the script re-checks for unmerged entries and refuses — a tree with
-// conflict markers is not one to run on, and the stash is retained for recovery. A
-// conflicting rebase likewise aborts itself and names the failure.
+// itself succeeded), so the script re-checks for unmerged entries. A conflict is HANDED OVER,
+// never refused (issue #661): the conflicted rebase (or the markers, the stash retained for
+// recovery) is left in the tree and the verdict is `{ok:true, conflicts:[paths]}`, so the driver
+// starts the run with the conflicting paths in its turn context and the agent resolves them. A
+// tree a previous attempt left conflicted — a rebase in progress, or unmerged entries — is handed
+// over as it is, without a second rebase; a RESTORE claim reports the same.
 //
 // STARTING claims, WORKTREE absent: fetched, pruned, and `git worktree add` — from the
 // existing branch when the thread already has one (a lost directory must not cost its
@@ -171,7 +174,54 @@ const fingerprintOf = (cwd) => {
         return null;
     }
 };
-const synced = () => console.log(JSON.stringify({ ok: true, reason: null, fingerprint: fingerprintOf(wt) }));
+const CONFLICTING_PATHS_MAX = 50;
+/** The tree's unmerged paths, capped; empty when it has none. */
+const unmergedPaths = () =>
+    inw('diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean).slice(0, CONFLICTING_PATHS_MAX);
+const REBASE_DIRS = ['rebase-merge', 'rebase-apply'];
+const rebaseDir = (name) => {
+    const resolved = inw('rev-parse', '--git-path', name);
+    return path.isAbsolute(resolved) ? resolved : path.resolve(wt, resolved);
+};
+/** Whether a rebase is stopped in the tree — conflicted, or resolved but not yet continued. */
+const rebaseInProgress = () => REBASE_DIRS.some((name) => fs.existsSync(rebaseDir(name)));
+/** The branch a stopped rebase is rebasing, or '' when its state names none. */
+const rebasedBranch = () => {
+    for (const name of REBASE_DIRS) {
+        try {
+            return fs
+                .readFileSync(path.join(rebaseDir(name), 'head-name'), 'utf8')
+                .trim()
+                .replace('refs/heads/', '');
+        } catch {}
+    }
+    return '';
+};
+// A conflicted rebase is finished by the agent's bare `git rebase --continue`, which commits and so
+// needs a committer identity the runner image does not carry: the publisher's fallback, written
+// into the tree's own config only when git can form none.
+const ensureIdentity = () => {
+    try {
+        execFileSync('git', ['var', 'GIT_COMMITTER_IDENT'], { cwd: wt, stdio: 'ignore' });
+        return;
+    } catch {}
+    inw('config', '--local', 'user.name', 'factory-ai');
+    inw('config', '--local', 'user.email', 'factory-ai@users.noreply.github.com');
+};
+const synced = (conflicts) =>
+    console.log(
+        JSON.stringify({
+            ok: true,
+            reason: null,
+            fingerprint: fingerprintOf(wt),
+            ...(conflicts && conflicts.length ? { conflicts } : {}),
+        })
+    );
+/** Answers ok with the conflict left in the tree for the agent. */
+const handOver = () => {
+    ensureIdentity();
+    synced(unmergedPaths());
+};
 // The kinds a deterministic refusal names (driver/src/publish.ts, SYNC_FAILURE_KINDS — a .cjs cannot
 // import it, so the literals are pinned by docker.test.ts): no retry fixes any of them.
 const KIND_MISSING_WORKSPACE = 'missing_workspace';
@@ -409,7 +459,8 @@ try {
                 );
                 process.exit(0);
             }
-            const on = inw('branch', '--show-current');
+            // A stopped rebase detaches HEAD; the branch it is rebasing is the task's own.
+            const on = rebaseInProgress() ? rebasedBranch() : inw('branch', '--show-current');
             if (on !== branch) {
                 fail(
                     'the task worktree stands on ' +
@@ -420,7 +471,8 @@ try {
                 );
                 process.exit(0);
             }
-            synced();
+            if (rebaseInProgress() || unmergedPaths().length) handOver();
+            else synced();
             process.exit(0);
         }
         if (fs.existsSync(wt + '/.git')) {
@@ -504,9 +556,20 @@ try {
     } catch {}
     // An existing tree over an empty remote has no new base to rebase onto: it is left as it is.
     if (existing && hasBase) {
+        // A tree a previous attempt left conflicted is handed over as it is: a second rebase
+        // would refuse to start over its markers.
+        if (rebaseInProgress() || unmergedPaths().length) {
+            handOver();
+            process.exit(0);
+        }
         try {
             inw('rebase', '--autostash', 'origin/' + def);
         } catch (e) {
+            // A conflicted rebase stays in place for the agent; any other failure is a refusal.
+            if (unmergedPaths().length) {
+                handOver();
+                process.exit(0);
+            }
             fail(
                 'the task worktree could not be rebased onto origin/' +
                     def +
@@ -515,14 +578,9 @@ try {
             );
             process.exit(0);
         }
-        if (inw('diff', '--name-only', '--diff-filter=U').length) {
-            fail(
-                'the task worktree was rebased onto origin/' +
-                    def +
-                    ', but its uncommitted edits conflict ' +
-                    'with the new base and are left as conflict markers in the tree (the autostash is kept ' +
-                    'for recovery); resolve them before re-running'
-            );
+        if (unmergedPaths().length) {
+            // The rebase succeeded; the reapplied autostash left markers (and is kept for recovery).
+            handOver();
             process.exit(0);
         }
     } else if (!existing) {

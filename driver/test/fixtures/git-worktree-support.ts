@@ -66,7 +66,15 @@ export function importEmptyCommits(cwd: string, branch: string, count: number): 
     execFileSync('git', ['fast-import', '--quiet'], { cwd, input: `${stream}done\n` });
 }
 
-export const runScript = (env: Record<string, string>): { ok: boolean; reason: string | null } => {
+/** The script's verdict: `conflicts` rides an ok sync that left a conflict for the agent (issue #661). */
+export interface SyncVerdict {
+    ok: boolean;
+    reason: string | null;
+    kind?: string;
+    conflicts?: string[];
+}
+
+export const runScript = (env: Record<string, string>): SyncVerdict => {
     // The script FILE itself, not a -e wrap: the artifact the sync container runs is what is
     // under test.
     const out = execFileSync('node', [join(import.meta.dirname, '..', '..', 'src', 'scripts', 'git-worktree.cjs')], {
@@ -89,9 +97,9 @@ export interface WorktreeFixture {
     bare: () => string;
     /** The env a sync of `root` runs under — the base suites overlay (PATH shims, knobs) on it. */
     syncEnv: (root?: string) => Record<string, string>;
-    sync: (root?: string) => { ok: boolean; reason: string | null };
+    sync: (root?: string) => SyncVerdict;
     /** The restore mode a continuation claim gets (RESTORE=1): no fetch, no rebase. */
-    restore: (root?: string) => { ok: boolean; reason: string | null };
+    restore: (root?: string) => SyncVerdict;
     /** A commit on the remote default branch, pushed from the fixture's work copy. */
     pushToOrigin: (file: string, content: string, message: string) => void;
     commitIn: (cwd: string, file: string, content: string, message: string) => void;
@@ -116,10 +124,9 @@ export function setupWorktreeFixture(): WorktreeFixture {
         BRANCH: `factory/${root}`,
     });
 
-    const sync = (root = ROOT): { ok: boolean; reason: string | null } => runScript(syncEnv(root));
+    const sync = (root = ROOT): SyncVerdict => runScript(syncEnv(root));
 
-    const restore = (root = ROOT): { ok: boolean; reason: string | null } =>
-        runScript({ ...syncEnv(root), RESTORE: '1' });
+    const restore = (root = ROOT): SyncVerdict => runScript({ ...syncEnv(root), RESTORE: '1' });
 
     const pushToOrigin = (file: string, content: string, message: string): void => {
         writeFileSync(join(work, file), content);

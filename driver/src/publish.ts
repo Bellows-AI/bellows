@@ -94,7 +94,18 @@ export interface GitState {
     hasIdentity: boolean;
     /** The tree fingerprint (`HEAD:hash` of the uncommitted state); null when the probe measured none. */
     fingerprint: string | null;
+    /** Unmerged paths the tree still holds (issue #661); empty when none. */
+    conflicts: string[];
+    /** A rebase is stopped in the tree, conflicted or resolved but not continued. */
+    rebasing: boolean;
 }
+
+/** Why a publish refused a tree that still holds a conflict; the cause is `conflict`, so a batch repairs it. */
+export const unresolvedConflictReason = (state: Pick<GitState, 'conflicts' | 'rebasing'>): string =>
+    'the checkout still has an unresolved merge conflict' +
+    (state.conflicts.length ? ` in ${state.conflicts.join(', ')}` : '') +
+    (state.rebasing ? ' and a stopped rebase (run `git rebase --continue`)' : '') +
+    ' — nothing was pushed; resolve it and publish again';
 
 /** What the publish attempt answers to the loop. */
 export interface PublishResult {
@@ -153,10 +164,27 @@ export const prNumberFromUrl = (url: string): number | null => {
 export const SYNC_FAILURE_KINDS = ['missing_workspace', 'missing_clone', 'branch_unrestorable'] as const;
 export type SyncFailureKind = (typeof SYNC_FAILURE_KINDS)[number];
 
+/**
+ * The turn context a conflict handed over by the sync adds (issue #661): the paths, and what the
+ * agent does about them. Appended to the board's own context, which it never replaces.
+ */
+export const withConflictContext = (turnContext: string | undefined, paths: readonly string[]): string =>
+    [
+        ...(turnContext ? [turnContext] : []),
+        'Merge conflict left in the worktree',
+        'The startup sync rebased this task branch onto the moved target and it conflicts, or an earlier attempt left the tree conflicted. ' +
+            'Resolve it before anything else: edit the conflict markers out of these paths, `git add` them, ' +
+            'and run `git rebase --continue` if a rebase is stopped (never `git rebase --abort`). ' +
+            'The publish refuses a tree that still has unresolved conflicts or a stopped rebase.',
+        `Conflicting paths:\n${paths.map((p) => `- ${p}`).join('\n')}`,
+    ].join('\n\n');
+
 /** What the startup sync answers: ok, or the reason the run should not start from a stale tree. */
 export interface SyncResult {
     ok: boolean;
     reason: string | null;
+    /** Set on an ok sync that left a conflict in the tree for the agent: the unmerged paths. */
+    conflicts?: string[];
     /** Set by the script on a deterministic refusal; absent for anything unrecognised. */
     kind?: SyncFailureKind;
     /**
@@ -386,6 +414,8 @@ export function parseGitState(stdout: string): GitState {
             unpushed: typeof p.unpushed === 'number' && Number.isFinite(p.unpushed) && p.unpushed >= 0 ? p.unpushed : 0,
             hasIdentity: p.hasIdentity === true,
             fingerprint: typeof p.fingerprint === 'string' && p.fingerprint ? p.fingerprint : null,
+            conflicts: Array.isArray(p.conflicts) ? p.conflicts.filter((c) => typeof c === 'string') : [],
+            rebasing: p.rebasing === true,
         };
     } catch {
         return {
@@ -396,6 +426,8 @@ export function parseGitState(stdout: string): GitState {
             unpushed: 0,
             hasIdentity: false,
             fingerprint: null,
+            conflicts: [],
+            rebasing: false,
         };
     }
 }
@@ -735,6 +767,9 @@ export async function publishCheckout(
         // tree are the two ordinary no-ops; everything else flows.
         const state = await probeCheckout(runStep, repo);
         if (!state.cloned) return publishNothing('the checkout has not been cloned yet');
+        if (state.conflicts.length > 0 || state.rebasing) {
+            return publishFailed(unresolvedConflictReason(state), 'conflict');
+        }
         if (options?.revision !== undefined && state.fingerprint !== options.revision) {
             return { ...publishFailed(STALE_REVISION_REASON, null), stale: true };
         }

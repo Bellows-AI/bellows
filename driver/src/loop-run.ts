@@ -15,7 +15,15 @@ import {
 } from './loop-gates.js';
 import { heartbeat, newJobState, raceStep, stopIfDraining, watchOutput } from './loop-attempt.js';
 import type { GateRunNote } from './timeout-note.js';
-import { concludeSetup, handBackFence, leaveToLease, releaseAbandonedSync, standDown } from './loop-fence.js';
+import {
+    concludeSetup,
+    handBackFence,
+    handOverConflict,
+    leaseLeftWhy,
+    leaveToLease,
+    releaseAbandonedSync,
+    standDown,
+} from './loop-fence.js';
 import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import type { HelperFailureReport } from './helpers.js';
@@ -126,6 +134,7 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     if (synced.ok) {
         ctx.fenced = true;
         ctx.treeBefore = synced.fingerprint ?? null;
+        handOverConflict(job, synced);
         return null;
     }
     if (synced.reason !== null && TRANSIENT_SYNC_REASON.test(synced.reason)) {
@@ -445,17 +454,6 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
         ? { treeBefore: ctx.treeBefore, treeAfter, gates: gatesOutcomeOf(gating !== null, gated) }
         : null;
     return { done: false, outcome, ...gated, endedAt, treeChanged, evidence };
-}
-
-/**
- * Why the loop reports no verdict for this outcome and leaves the job to the lease, or null when it
- * reports: a container that never started, or a runner the platform took away (issue #560).
- */
-function leaseLeftWhy(outcome: RunOutcome): string | null {
-    if (outcome.infraLoss) return `infrastructure loss: ${outcome.infraLoss}`;
-    if (outcome.started) return null;
-    const said = outcome.output.trim();
-    return `the runner reports the container never started${said ? `: ${said}` : ''}`;
 }
 
 /** How the declared gates ended for the evidence record: `none` when none were declared to run. */
