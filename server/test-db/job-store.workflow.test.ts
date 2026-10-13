@@ -119,6 +119,10 @@ describe.skipIf(!enabled)('workflow execution', () => {
         const root = await queueWorkflowJob(walk);
         const claim = (await store.claim(WORKER, 60))!;
         await store.complete(claim.id, claim.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        // The review carries no marker, so the walk halts there — and a follow-up needs a thread
+        // with no unfinished member (#698).
+        const review = (await store.claim(WORKER, 60))!;
+        await store.complete(review.id, review.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
         const followUp = await store.createFollowUp(root, 'one more thing', null);
         if (typeof followUp === 'string') throw new Error(`follow-up refused: ${followUp}`);
 

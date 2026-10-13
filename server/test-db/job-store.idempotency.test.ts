@@ -222,22 +222,20 @@ describe.runIf(enabled)('mutation idempotency (#589)', () => {
     });
 
     describe('follow-up', () => {
-        it('replays instead of queueing a second follow-up on the same parent', async () => {
+        it('replays instead of refusing the busy thread as still unfinished', async () => {
             const user = await account();
             const parent = await createdOk(store, 'first', user);
             await finish(parent.id);
             const input = idem('follow-up', freshKey());
 
             const first = await store.createFollowUp(parent.id, 'again', user, input);
-            // Eligibility is the PARENT's (createFollowUp in job-store-types.ts), and the parent is
-            // still finished, so a keyless repeat queues a second, distinct follow-up...
-            const keyless = await store.createFollowUp(parent.id, 'again', user);
-            // ...while the keyed repeat finds the row it already made.
+            // Eligibility is the THREAD's (#698), and the follow-up is now queued in it, so a
+            // keyless repeat is refused...
+            expect(await store.createFollowUp(parent.id, 'again', user)).toBe('not_finished');
+            // ...but the keyed repeat finds the row it already made.
             const repeat = await store.createFollowUp(parent.id, 'again', user, input);
 
             expect(first).toMatchObject({ id: expect.any(String) });
-            expect(keyless).toEqual({ id: expect.any(String) });
-            expect((keyless as { id: string }).id).not.toBe((first as { id: string }).id);
             expect(repeat).toEqual({ id: (first as { id: string }).id, replayed: true });
         });
 

@@ -1053,6 +1053,28 @@ describe.skipIf(!enabled)('bounded recovery', () => {
         expect((await stateOf(id)).a).toMatchObject({ gate: 'passed' });
     });
 
+    // A repair is a follow-up, and a follow-up refuses a thread with unfinished work in it (#698):
+    // the repair is never queued behind it, and the task goes to a person instead.
+    it('never dispatches a repair onto a busy thread', async () => {
+        const id = await frozen(planWith([{ key: 'one', tasks: [prTask('a')] }]));
+        await store.reconcile(id);
+        const root = (await stateOf(id)).a!.rootJobId!;
+        await failWith(root, 'gate', 'failed', 'verification');
+        // An older member still queued under the failed head — no write path reaches it today.
+        await sql`
+            insert into job (org_id, command, created_by, repo, root_job_id, created_at)
+            select org_id, 'busy', created_by, repo, root_job_id, created_at - interval '1 minute'
+            from job where id = ${root}
+        `;
+        const before = await jobCount();
+
+        await store.reconcile(id);
+
+        expect(await jobCount()).toBe(before);
+        expect(await kindsOf('a', id)).toEqual(['launch']);
+        expect((await stateOf(id)).a).toMatchObject({ execution: 'failed', attention: 'refused' });
+    });
+
     it('repairs a failed gate with its name, exit code and output tail in the follow-up (#687)', async () => {
         const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }]));
         await store.reconcile(id);

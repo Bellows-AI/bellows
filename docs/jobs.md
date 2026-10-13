@@ -95,6 +95,8 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
   `server/test-db/job-store.attribution.test.ts`.
 - **The executor label resolves at claim in the task's stamped scope**; a missing profile fails the
   task rather than defaulting — `server/test-db/job-store.executor-scope.test.ts`.
+- **A follow-up refuses `409 NOT_FINISHED` while any thread member is unfinished, as a retry does**; a
+  keyed replay answers first — `server/src/db/job-store-actions.ts`, `server/test-db/job-store.follow-ups.test.ts`.
 - **Lease rules are tested only against a real database**, expiry by ageing `lease_expires_at`.
 
 ## Operational facts

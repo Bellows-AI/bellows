@@ -217,6 +217,47 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         expect(await store.createFollowUp(parent, 'again', null)).toBe('task_done');
     });
 
+    // Eligibility is the THREAD's, as a retry's is (#698): a finished parent whose thread still
+    // holds unfinished work refuses, so a keyless repeat never queues a second follow-up.
+    describe('refuses not_finished while the thread is busy (#698)', () => {
+        const threadSize = async (root: string) => {
+            const [row] = await sql<{ n: number }[]>`
+                select count(*)::int as n from job where org_id = ${ORG} and root_job_id = ${root}
+            `;
+            return row!.n;
+        };
+
+        it('refuses a follow-up on a finished member while a newer one is still queued', async () => {
+            const root = await finishWithSession('drive me');
+            await mustFollowUp(root, 'first adjustment', null);
+
+            expect(await store.createFollowUp(root, 'first adjustment', null)).toBe('not_finished');
+            expect(await threadSize(root)).toBe(2);
+        });
+
+        it('refuses a follow-up on a finished head while an older member is unfinished', async () => {
+            const root = await finishWithSession('drive me');
+            const head = await mustFollowUp(root, 'adjust', null);
+            const claim = await store.claim('w1', LEASE_SECONDS);
+            expect(claim?.id).toBe(head.id);
+            await store.complete(head.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
+            // A state no write path reaches today; crafted so the rule is "any member", not "the head".
+            await sql`update job set status = 'running' where id = ${root}`;
+
+            expect(await store.createFollowUp(head.id, 'again', null)).toBe('not_finished');
+            expect(await threadSize(root)).toBe(2);
+        });
+
+        // Retry's priority: a thread that is still moving answers not_finished before task_done.
+        it('answers not_finished before task_done for a done thread that is still moving', async () => {
+            const root = await finishWithSession('drive me');
+            await mustFollowUp(root, 'adjust', null);
+            await store.markDone(root, null);
+
+            expect(await store.createFollowUp(root, 'again', null)).toBe('not_finished');
+        });
+    });
+
     // The done button and a follow-up can overlap on the same finished task, and both statements
     // touch the parent row. Unless the follow-up's insert takes that row's lock, both succeed —
     // a done parent left with queued follow-up work instead of a `task_done` answer. Holding the
@@ -671,7 +712,10 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
             expect(await store.reopen(root)).toEqual({ result: 'ok' });
 
-            // The TASK_DONE refusal is gone: the conversation can be followed up again.
+            // The TASK_DONE refusal is gone: once the moving member settles, the conversation can
+            // be followed up again.
+            const moving = await store.claim('w1', LEASE_SECONDS);
+            await store.complete(moving!.id, moving!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
             await mustFollowUp(root, 'second adjustment', null);
         });
 
@@ -818,10 +862,14 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         it('answers false while a follow-up is still queued, even with no done', async () => {
             const root = await finishWithSession('drive me');
             // Two adjustments on one parent: the shape the thread walk already contemplates.
-            // A linear chain cannot hold a queued member at a verdict moment — the follow-up
-            // only exists once the parent is finished.
+            // No write path queues it — a follow-up refuses a busy thread (#698) — so the second
+            // is crafted.
             const first = await mustFollowUp(root, 'first adjustment', null);
-            const second = await mustFollowUp(root, 'second adjustment', null);
+            const [second] = await sql<{ id: string }[]>`
+                insert into job (org_id, command, parent_job_id, root_job_id)
+                values (${ORG}, 'second adjustment', ${root}, ${root})
+                returning id
+            `;
 
             const firstClaim = await store.claim('w1', LEASE_SECONDS);
             expect(firstClaim?.id).toBe(first.id);
@@ -833,8 +881,8 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             expect(whileQueued).toEqual({ result: 'ok', threadDone: false });
 
             const secondClaim = await store.claim('w2', LEASE_SECONDS);
-            expect(secondClaim?.id).toBe(second.id);
-            const afterBoth = await store.complete(second.id, secondClaim!.leaseToken, {
+            expect(secondClaim?.id).toBe(second!.id);
+            const afterBoth = await store.complete(second!.id, secondClaim!.leaseToken, {
                 status: 'succeeded',
                 exitCode: 0,
                 output: null,

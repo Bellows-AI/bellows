@@ -628,7 +628,8 @@ export type SuspendResult = { result: 'ok'; status: JobStatus } | { result: 'los
  * Why a follow-up was refused.
  *
  * - `missing`      no such job in this organization.
- * - `not_finished` the parent is still queued or running — its run is not over.
+ * - `not_finished` the parent, or any other member of its thread, is still queued or running —
+ *                  the thread's turn is not over, as a retry's refusal says (#698).
  * - `task_done`    the user has declared the task done; the conversation is closed.
  * - `forbidden`    the parent was queued by a different account. The child would inherit the
  *                  parent's session, and a session resumes only in the checkout tree it ran in —
@@ -839,10 +840,10 @@ export interface JobStore {
     /**
      * Queues a follow-up on a finished task: a new job that inherits the parent's repo, executor
      * and — the thread's PRIMARY — session ids, linked through `followUpTo`. Atomic and
-     * conditional — the insert only lands when the parent is finished, not done, carries a
-     * session, and is the caller's own task — so the refusals above are decided in the same
-     * statement that would have created the row, never by a read that could race a claim or a
-     * completion in between.
+     * conditional — the insert only lands when the parent is finished, no member of its thread is
+     * unfinished, the parent is not done, and it is the caller's own task — so the refusals above
+     * are decided in the same statement that would have created the row, never by a read that
+     * could race a claim or a completion in between.
      *
      * The thread's labels, session and workflow name are ALL the parent's, taken from the row and
      * never from a body: an adjustment continues the run it adjusts, on the executor that ran it —

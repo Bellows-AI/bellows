@@ -218,6 +218,13 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
                    coalesce(primary_session.session_id, parent.session_id),
                    parent.root_job_id, parent.workflow_name, parent.mode
             from parent, root, primary_session
+            -- Eligibility is the THREAD's, as a retry's is (#698): a finished parent whose thread
+            -- still holds unfinished work refuses, so a repeat never queues a second follow-up.
+            where not exists (
+                select 1 from job m
+                where m.org_id = ${orgId} and m.root_job_id = parent.root_job_id
+                  and m.status not in ('succeeded','failed','dead','stopped')
+            )
             returning id
         `;
     if (rows[0]) {
@@ -249,28 +256,29 @@ async function replayedFor(
 }
 
 /**
- * Names the precondition the conditional insert failed on, for the row AS IT IS NOW — a parent
- * that moved on between the CTE and this read can make the refusal name the newer state, and the
- * retry then succeeds (the same honesty the original inline shape had, extracted so the function
- * above stays readable).
+ * Names the precondition the conditional insert failed on, for the parent and its thread AS THEY
+ * ARE NOW — a thread that moved on between the CTE and this read can make the refusal name the
+ * newer state, and the retry then succeeds (the same honesty the original inline shape had,
+ * extracted so the function above stays readable).
  */
 async function followUpRefusalOf(
     tx: TransactionSql,
     orgId: string,
     parentId: string
 ): Promise<'task_done' | 'not_finished' | 'forbidden'> {
-    const [parent] = await tx<{ status: JobStatus; done_at: Date | null; created_by: string | null }[]>`
-        select status, done_at, created_by from job where org_id = ${orgId} and id = ${parentId}
+    // Retry's priority (retryRefusalOf): a thread that is still moving answers not_finished
+    // before task_done, and the author is decided last.
+    const [parent] = await tx<{ busy: boolean; done_at: Date | null }[]>`
+        select exists (
+            select 1 from job m
+            where m.org_id = ${orgId} and m.root_job_id = p.root_job_id
+              and m.status not in ('succeeded','failed','dead','stopped')
+        ) as busy,
+        p.done_at
+        from job p where p.org_id = ${orgId} and p.id = ${parentId}
     `;
+    if (parent!.busy) return 'not_finished';
     if (parent!.done_at !== null) return 'task_done';
-    if (
-        parent!.status !== 'succeeded' &&
-        parent!.status !== 'failed' &&
-        parent!.status !== 'dead' &&
-        parent!.status !== 'stopped'
-    ) {
-        return 'not_finished';
-    }
     return 'forbidden';
 }
 
