@@ -8,9 +8,21 @@
 import { down } from './loop-attempt.js';
 import { withBoardRetry } from './board-retry.js';
 import type { BoardJob } from './board.js';
+import type { RunOutcome } from './runner.js';
 import { withConflictContext, type SyncResult } from './publish.js';
 import type { AttemptCtx, LoopRuntime, SetupHalt } from './loop-types.js';
 import { report } from './loop-verdict.js';
+
+/**
+ * Why the loop reports no verdict for this outcome and leaves the job to the lease, or null when it
+ * reports: a container that never started, or a runner the platform took away (issue #560).
+ */
+export function leaseLeftWhy(outcome: RunOutcome): string | null {
+    if (outcome.infraLoss) return `infrastructure loss: ${outcome.infraLoss}`;
+    if (outcome.started) return null;
+    const said = outcome.output.trim();
+    return `the runner reports the container never started${said ? `: ${said}` : ''}`;
+}
 
 /**
  * Hands the kubernetes checkout claim back — the ONE release in the loop. Only a successful sync
@@ -100,4 +112,30 @@ export async function concludeSetup(ctx: AttemptCtx, halt: SetupHalt): Promise<v
     await report(rt, job, halt.verdict).catch((e: Error) =>
         rt.log(`job ${job.id}: could not report the ${what}: ${e.message}`)
     );
+}
+
+/**
+ * Leaves an attempt that ended without a verdict to the lease, saying why in the log. The board
+ * retires a job whose attempts ran out with no output at all, so the LAST attempt reports a failed
+ * verdict carrying `reason` instead: the reason is what `job investigate`, the web and a batch
+ * report show for the dead job.
+ */
+export async function leaveToLease(
+    ctx: AttemptCtx,
+    reason: string,
+    leaveLog: string,
+    exitCode: number | null
+): Promise<void> {
+    const { job } = ctx;
+    if (job.attempts < job.maxAttempts) return concludeSetup(ctx, { halt: 'leave', log: leaveLog });
+    await concludeSetup(ctx, {
+        halt: 'fault',
+        log: `${reason}, and no attempts are left: reporting it`,
+        verdict: {
+            status: 'failed',
+            exitCode,
+            output: `[driver] ${reason} (attempt ${job.attempts} of ${job.maxAttempts})`,
+            failureKind: 'runner_error',
+        },
+    });
 }

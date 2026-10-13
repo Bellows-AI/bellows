@@ -39,6 +39,8 @@ export interface BoardJob {
     id: string;
     command: string;
     attempts: number;
+    /** The attempts the board allows; the attempt that burns the last one reports what ends the job. */
+    maxAttempts: number;
     /**
      * The board's claim sequence for this row: bumped by every claim and never refunded, unlike
      * `attempts` (issue #559). What the kubernetes checkout claim orders contenders by.
