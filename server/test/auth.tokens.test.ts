@@ -18,6 +18,7 @@ const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
+const HTTP_UNAVAILABLE = 503;
 
 // The prefixes are the wire contract — greppable when leaked — so they are asserted as literals
 // here rather than re-imported from the implementation.
@@ -477,6 +478,27 @@ describe('organization access tokens: lifecycle and validation', () => {
             headers: { cookie, ...bearer('fwt_something-else') },
         });
         expect(workerPrefix.statusCode).toBe(HTTP_UNAUTHORIZED);
+    });
+
+    // A database that cannot be reached is the board being unavailable, not a server bug: the CLI
+    // retries a 503 and refuses a 500, so a DNS blip mid-`batch wait` must not end the wait.
+    it('answers 503 UNAVAILABLE when the credential lookup cannot reach the database', async () => {
+        const store = memoryAuthStore();
+        const caller = store.seedMember(ORG, 'octocat');
+        const personal = store.seedAccessToken(ORG, 'personal', { userId: caller.user.id });
+        const org = store.seedAccessToken(ORG, 'org');
+        const outage = async (): Promise<never> => {
+            throw new Error('getaddrinfo EAI_AGAIN factory-state-postgres');
+        };
+        store.findPersonalToken = outage;
+        store.findOrgToken = outage;
+        const server = await build(githubAuth(), store);
+
+        for (const token of [personal, org]) {
+            const response = await server.inject({ method: 'GET', url: '/api/jobs', headers: bearer(token) });
+            expect(response.statusCode).toBe(HTTP_UNAVAILABLE);
+            expect(response.json().code).toBe('UNAVAILABLE');
+        }
     });
 });
 
