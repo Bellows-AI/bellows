@@ -398,6 +398,20 @@ describe('the runner job spec', () => {
         }
     });
 
+    // A default only: the claim's own value rides the Secret by reference, and the pod spec never
+    // states the name a second time beside it.
+    it('leaves the npm notice to a claim that names it', () => {
+        const envJob: BoardJob = { ...job, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } };
+        const env = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), envJob, { id: SESSION, resume: false })
+            .spec.template.spec.containers[0].env;
+        expect(env.filter((entry) => entry.name === 'NPM_CONFIG_UPDATE_NOTIFIER')).toEqual([
+            {
+                name: 'NPM_CONFIG_UPDATE_NOTIFIER',
+                valueFrom: { secretKeyRef: { name: secretName(envJob), key: 'NPM_CONFIG_UPDATE_NOTIFIER' } },
+            },
+        ]);
+    });
+
     // Where a runner's telemetry goes. A literal value like WORKDIR — an OTLP endpoint is a path,
     // not a credential — but unlike the compose world there is no network for a pod to join that
     // would make the image's baked `collector:4318` resolve, so this process has to name the
@@ -6349,6 +6363,21 @@ describe('the gate job spec', () => {
             name: 'NPM_CONFIG_UPDATE_NOTIFIER',
             value: 'false',
         });
+    });
+
+    // The claim's value arrives by envFrom, which an explicit `env` entry would beat.
+    it('leaves the npm notice to a claim that names it, in the gate env Secret', () => {
+        const envJob: BoardJob = { ...job, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } };
+        const s = gateJobSpec(gatedConfig, envJob, {
+            key: `bellows/${USER}/.worktrees/${ROOT_KEY}`,
+            image: 'node:24',
+            gateName: 'test',
+            command: 'npm test',
+            run: 1,
+            envSecretName: 'the-secret',
+            gateTimeoutMs: 30_000,
+        });
+        expect(s.spec.template.spec.containers[0].env).toEqual([{ name: 'HOME', value: '/tmp' }]);
     });
 
     it('sanitizes a hostile gate name into a legal k8s name without carrying it raw', () => {

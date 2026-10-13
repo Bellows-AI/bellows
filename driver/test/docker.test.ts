@@ -350,6 +350,15 @@ describe('the docker run arguments', () => {
         }
     });
 
+    // A default only: a member who wants the notice back names it in claim env, and the driver's
+    // `-e` — which would beat the env file — is not there to override it.
+    it('leaves the npm notice to a claim that names it', () => {
+        const envJob: BoardJob = { ...job, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } };
+        const line = dockerArgs(loadDriverConfig({}), envJob, { id: SESSION, resume: false }, { envFile: '/tmp/e' });
+        expect(line.some((arg) => arg.startsWith('NPM_CONFIG_UPDATE_NOTIFIER'))).toBe(false);
+        expect(envFileBody(envJob, loadDriverConfig({}))).toContain('NPM_CONFIG_UPDATE_NOTIFIER=true\n');
+    });
+
     // The claude runner is told the session id before the container starts (the driver mints it),
     // so the reporter never has to scrape a transcript. A resumed session keeps its id — the
     // follow-up's spans must join to the same conversation.
@@ -1578,6 +1587,12 @@ describe('the gate environment container', () => {
         const at = line.indexOf('NPM_CONFIG_UPDATE_NOTIFIER=false');
         expect(line[at - 1]).toBe('-e');
         expect(at).toBeLessThan(line.indexOf('node:24'));
+    });
+
+    it('leaves the npm notice to a claim that names it, in the gate env file', () => {
+        const envJob = { id: 'j', leaseToken: 'l', env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } };
+        const line = gateEnvArgs(config, KEY, 'node:24', { envFile: '/tmp/gate.env', job: envJob });
+        expect(line.filter((_, i) => line[i - 1] === '-e')).toEqual(['HOME=/tmp']);
     });
 
     it('never puts a member value on the command line — the env file is the only carrier', () => {
