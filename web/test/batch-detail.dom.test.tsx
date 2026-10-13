@@ -74,8 +74,10 @@ function started(plan: BatchPlan, tasks: BatchTaskState[], activeStage: string |
 }
 
 /** The board's batch routes over one held record and its report; writes mutate the record the way the store does. */
-function board(initial: BatchRecord, report: BatchReportView = { state: 'running', tasks: [] }) {
+function board(initial: BatchRecord, initialReport: BatchReportView | null = { state: 'running', tasks: [] }) {
     let record = initial;
+    /** Null answers the report read with a 404, the way a failed read lands. */
+    let report = initialReport;
     const patchTask = (key: string, change: (task: BatchTaskState) => BatchTaskState) => {
         record = { ...record, tasks: record.tasks.map((task) => (task.key === key ? change(task) : task)) };
         return record;
@@ -84,7 +86,7 @@ function board(initial: BatchRecord, report: BatchReportView = { state: 'running
         const prefix = `/api/batches/${ID}`;
         if (!url.startsWith(prefix)) return;
         const [action, key, taskAction] = url.slice(prefix.length).split('/').filter(Boolean);
-        if (method === 'GET') return action === 'report' ? report : record;
+        if (method === 'GET') return action === 'report' ? (report ?? undefined) : record;
         if (action === 'cancel') {
             record = {
                 ...record,
@@ -117,6 +119,10 @@ function board(initial: BatchRecord, report: BatchReportView = { state: 'running
         /** What the scheduler would write between two polls. */
         set: (next: BatchRecord) => {
             record = next;
+        },
+        /** The next report the board assembles; null fails the read. */
+        setReport: (next: BatchReportView | null) => {
+            report = next;
         },
     };
 }
@@ -202,33 +208,66 @@ describe('a started batch', () => {
 
     it('reads an automerge PR the board is still merging as the board’s, from the report’s next step (#693)', async () => {
         const plan = twoStagePlan();
-        board(
-            started(plan, [
-                state('task-1', 'stage-1', {
-                    execution: 'succeeded',
-                    pr: PR,
-                    waitReason: `waiting for the board to merge ${PR}`,
-                }),
-                state('task-2', 'stage-1', { execution: 'running' }),
-                state('task-3', 'stage-2'),
-            ]),
-            {
-                state: 'running',
-                tasks: [
-                    { key: 'task-1', next: { action: 'wait' } },
-                    { key: 'task-2', next: { action: 'wait' } },
-                    { key: 'task-3', next: { action: 'wait' } },
-                ],
-            }
-        );
+        const merging = state('task-1', 'stage-1', {
+            execution: 'succeeded',
+            pr: PR,
+            waitReason: `waiting for the board to merge ${PR}`,
+        });
+        const rest = [state('task-2', 'stage-1', { execution: 'running' }), state('task-3', 'stage-2')];
+        const entry = (task: BatchTaskState) => ({ key: task.key, execution: task.execution, attempts: task.attempt });
+        const reportOf = (reportState: string, first: BatchReportView['tasks'][number]['next']): BatchReportView => ({
+            state: reportState,
+            tasks: [
+                { ...entry(merging), next: first },
+                ...rest.map((task) => ({ ...entry(task), next: { action: 'wait' as const } })),
+            ],
+        });
+        const boardOn = reportOf('running', { action: 'wait' });
+        const fake = board(started(plan, [merging, ...rest]), boardOn);
+        const label = (text: string) =>
+            waitFor(() => expect(within(card('task-1')).getByText(text)).toBeTruthy(), { timeout: 8000 });
         renderApp(`/batches/${ID}`);
-        await waitFor(() => expect(within(card('task-1')).getByText('Board merging')).toBeTruthy());
+        await label('Board merging');
         await headerPill('Running');
         expect(within(card('task-1')).queryByText('Waiting for you')).toBeNull();
         expect(screen.queryByText('Review and merge the pull request.')).toBeNull();
         expect(screen.getByText(/0 need you/)).toBeTruthy();
         expect(screen.queryByRole('heading', { name: 'Needs you' })).toBeNull();
-    });
+
+        // A failed report read drops the last report: the record's own rule speaks until one lands again.
+        fake.setReport(null);
+        await label('Waiting for you');
+        await headerPill('Needs attention');
+        fake.setReport(boardOn);
+        await label('Board merging');
+        await headerPill('Running');
+
+        // The board hands the PR to a person and the batch parks: the card and the count follow `next`.
+        fake.setReport(reportOf('parked', { action: 'merge', url: PR }));
+        await label('Waiting for you');
+        await headerPill('Needs attention');
+        expect(within(card('task-1')).getByText('Review and merge the pull request.')).toBeTruthy();
+        expect(screen.getByText(/1 need you/)).toBeTruthy();
+
+        // A parked batch still moves: the next report is read, here a repair that failed.
+        const failed = { ...merging, execution: 'failed', waitReason: null, attempt: 2 };
+        fake.set(started(plan, [failed, ...rest]));
+        const retry = {
+            action: 'retry' as const,
+            method: 'POST' as const,
+            path: `/api/batches/${ID}/tasks/task-1/retry`,
+        };
+        fake.setReport({
+            state: 'parked',
+            tasks: [
+                { ...entry(failed), next: retry },
+                ...rest.map((task) => ({ ...entry(task), next: { action: 'wait' as const } })),
+            ],
+        });
+        await label('Failed');
+        await headerPill('Needs attention');
+        expect(screen.getByRole('button', { name: 'Retry task-1' })).toBeTruthy();
+    }, 40_000);
 
     it('retries a failed task through the board, and the retry reads as a new attempt', async () => {
         const plan = twoStagePlan();

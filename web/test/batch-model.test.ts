@@ -223,9 +223,15 @@ describe('a started batch', () => {
     it('reads an automerge PR the board is still merging as the board’s, not a person’s (#693)', () => {
         const task = filled().stages[0]!.tasks[0]!;
         const pr = 'https://github.com/acme/widgets/pull/9';
-        const merging = state({ execution: 'succeeded', pr, waitReason: `waiting for the board to merge ${pr}` });
+        const merging = state({
+            execution: 'succeeded',
+            pr,
+            attempt: 1,
+            waitReason: `waiting for the board to merge ${pr}`,
+        });
         const batch = record({ tasks: [merging] });
-        const boardOn = { tasks: [{ key: 'task-1', next: { action: 'wait' as const } }] };
+        const entry = { key: 'task-1', execution: 'succeeded', attempts: 1 };
+        const boardOn = { tasks: [{ ...entry, next: { action: 'wait' as const } }] };
         expect(needsPerson(merging, boardOn)).toBe(false);
         expect(batchVerdict(batch, boardOn)).toBe('running');
         expect(morningReport(batch, boardOn).needsYou).toBe(0);
@@ -233,7 +239,7 @@ describe('a started batch', () => {
         expect(gateInstruction(task, merging, boardOn)).toBeNull();
 
         // The board cannot merge it by itself: `next` hands it to a person, and the monitor says so.
-        const personOn = { tasks: [{ key: 'task-1', next: { action: 'merge' as const, url: pr } }] };
+        const personOn = { tasks: [{ ...entry, next: { action: 'merge' as const, url: pr } }] };
         expect(needsPerson(merging, personOn)).toBe(true);
         expect(batchVerdict(batch, personOn)).toBe('needs_attention');
         expect(morningReport(batch, personOn).needsYou).toBe(1);
@@ -242,6 +248,21 @@ describe('a started batch', () => {
 
         // No report yet: the record's own rule, as before the first report lands.
         expect(needsPerson(merging, null)).toBe(true);
+    });
+
+    it('never lets an older report entry speak for a newer run of the task', () => {
+        const boardOn = {
+            tasks: [{ key: 'task-1', execution: 'succeeded', attempts: 1, next: { action: 'wait' as const } }],
+        };
+        // The board's repair ran and failed after the report said `wait`: the record is newer, so a person retries.
+        const failedRepair = state({ execution: 'failed', attempt: 2 });
+        expect(needsPerson(failedRepair, boardOn)).toBe(true);
+        expect(batchVerdict(record({ tasks: [failedRepair] }), boardOn)).toBe('needs_attention');
+        // Same attempt, but the record has moved on from the run the report read.
+        const failedSame = state({ execution: 'failed', attempt: 1 });
+        expect(needsPerson(failedSame, boardOn)).toBe(true);
+        const merging = state({ execution: 'succeeded', attempt: 2, waitReason: 'waiting for the board to merge x' });
+        expect(taskStateLabel(merging, boardOn).label).toBe('Waiting for you');
     });
 
     it('counts the morning report from the same predicates the rows use', () => {
