@@ -1,6 +1,6 @@
 /**
  * The batch plan contract (v1): ordered stages of parallel tasks across one or more repository
- * targets, and the pure validation, resolution and capability checks the board and its clients
+ * targets, and the pure, side-effect-free validation, resolution and capability checks the board and its clients
  * share. Structural validity is independent of what the executors can run today — a plan with
  * tasks in two repositories is valid, persists and round-trips; `batchExecutionCapability` is the
  * separate, narrower question of what start accepts. Stage order is the only dependency model, so
