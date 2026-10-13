@@ -269,16 +269,6 @@ export interface AnsweredQuestion {
  */
 export type QuestionVerdict = 'held' | 'refused' | 'lost' | 'removed';
 
-/**
- * How the board settled an expiry: the question `expired`, or an answer won the race and comes back
- * `answered` — the board decides. `lost` and `removed` are the lease verdicts, as for a heartbeat.
- */
-export type QuestionExpiry =
-    | { state: 'expired' }
-    | { state: 'answered'; answers: Record<string, string> }
-    | 'lost'
-    | 'removed';
-
 /** What the caller asks of the board for one review: the driver measured `revision` and froze it under `ref`. */
 export interface ReviewRequest {
     key: string;
@@ -394,8 +384,6 @@ export interface Board {
     heartbeat(job: BoardJob): Promise<HeartbeatVerdict>;
     /** Reports one question the agent asked (`POST /api/jobs/:id/question`); a repeat of a stored id is `held`. */
     question(job: BoardJob, questionId: string, questions: AskedQuestion[]): Promise<QuestionVerdict>;
-    /** Gives up waiting on a question (`POST /api/jobs/:id/question-expire`); the board decides the race with an answer. */
-    expireQuestion(job: BoardJob, questionId: string): Promise<QuestionExpiry>;
     /** Starts a named reviewer's separate run (`POST /api/jobs/:id/review`); a repeated key answers the stored review. */
     requestReview(job: BoardJob, request: ReviewRequest): Promise<ReviewAnswer>;
     /** Reads the review asked for under `key` and the thread's review evidence (`POST /api/jobs/:id/review-read`). */
@@ -660,16 +648,6 @@ function questionVerdictOf(response: Response): QuestionVerdict {
     return response.status === HTTP_NOT_FOUND ? 'removed' : 'held';
 }
 
-/** The board's answer to an expiry: the lease verdicts, an answer that won the race, or `expired`. */
-async function questionExpiryOf(response: Response): Promise<QuestionExpiry> {
-    if (response.status === HTTP_CONFLICT) return 'lost';
-    if (response.status === HTTP_NOT_FOUND) return 'removed';
-    const body = (await response.json()) as { state?: string; answers?: Record<string, string> };
-    return body.state === 'answered' && body.answers
-        ? { state: 'answered', answers: body.answers }
-        : { state: 'expired' };
-}
-
 const HTTP_BAD_REQUEST = 400;
 const HTTP_CREATED = 201;
 
@@ -823,11 +801,6 @@ export function createBoard({
             const body = { leaseToken: job.leaseToken, questionId, questions };
             const allow = [HTTP_TOO_MANY_REQUESTS];
             return questionVerdictOf(await post(`/api/jobs/${job.id}/question`, body, true, { allow }));
-        },
-
-        async expireQuestion(job, questionId) {
-            const body = { leaseToken: job.leaseToken, questionId };
-            return questionExpiryOf(await post(`/api/jobs/${job.id}/question-expire`, body, true));
         },
 
         ...reviewCalls(post),

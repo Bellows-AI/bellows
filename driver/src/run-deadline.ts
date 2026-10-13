@@ -1,34 +1,37 @@
-/**
- * The docker runner's wall-clock kill timer for one run, extendable while it runs: a question the
- * agent asked pushes the deadline out by the wait's cap (issue #226). The kubernetes executor's
- * counterpart is the kubelet's `activeDeadlineSeconds`, patched by `k8s-runner.ts`.
- */
+/** Runtime budgets stop while an agent waits for a member's answer. */
 export interface RunDeadline {
-    /** Re-arms the timer to its remaining time plus `ms`. A deadline that already fired or was cleared stays so. */
-    extend(ms: number): void;
+    pause(paused: boolean): void;
     clear(): void;
 }
 
+/** Start a kill timer whose remaining budget is preserved across pauses. */
 export function startDeadline(ms: number, onFire: () => void): RunDeadline {
-    let dueAt = Date.now() + ms;
+    let remaining = ms;
+    let started = Date.now();
     let live = true;
+    let paused = false;
     let timer: ReturnType<typeof setTimeout>;
     const arm = (): void => {
+        started = Date.now();
         timer = setTimeout(
             () => {
                 live = false;
                 onFire();
             },
-            Math.max(0, dueAt - Date.now())
+            Math.max(0, remaining)
         );
     };
     arm();
     return {
-        extend(extra) {
-            if (!live) return;
-            clearTimeout(timer);
-            dueAt += extra;
-            arm();
+        pause(waiting) {
+            if (!live || paused === waiting) return;
+            paused = waiting;
+            if (waiting) {
+                remaining -= Date.now() - started;
+                clearTimeout(timer);
+            } else {
+                arm();
+            }
         },
         clear() {
             live = false;
@@ -37,10 +40,10 @@ export function startDeadline(ms: number, onFire: () => void): RunDeadline {
     };
 }
 
-/** The deadlines of the runs in flight, by lease token — the per-attempt identity. Clearing one also forgets it. */
+/** The deadlines of runs in flight, keyed by lease token. */
 export interface DeadlineRegistry {
     start(token: string, ms: number, onFire: () => void): RunDeadline;
-    extend(token: string, ms: number): void;
+    pause(token: string, paused: boolean): void;
 }
 
 export function createDeadlineRegistry(): DeadlineRegistry {
@@ -50,13 +53,13 @@ export function createDeadlineRegistry(): DeadlineRegistry {
             const deadline = startDeadline(ms, onFire);
             live.set(token, deadline);
             return {
-                extend: (extra) => deadline.extend(extra),
+                pause: (paused) => deadline.pause(paused),
                 clear() {
                     deadline.clear();
                     if (live.get(token) === deadline) live.delete(token);
                 },
             };
         },
-        extend: (token, ms) => live.get(token)?.extend(ms),
+        pause: (token, paused) => live.get(token)?.pause(paused),
     };
 }

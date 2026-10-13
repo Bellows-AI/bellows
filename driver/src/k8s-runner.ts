@@ -272,19 +272,16 @@ async function killRunner(deps: K8sDeps, job: BoardJob): Promise<void> {
     await teardownServices(deps, job);
 }
 
-/**
- * Pushes the runner Job's deadline out (issue #226): a merge patch of `spec.activeDeadlineSeconds`
- * to its CURRENT value plus `ms`, read back first so two questions add up. The kubelet's
- * `DeadlineExceeded` condition is what the poll reads for a timeout, so a patched Job reports the
- * extended deadline with no change to the poll. A Job already gone (the run ended) is a no-op.
- */
-function extendRunnerDeadline(deps: K8sDeps, job: BoardJob, ms: number): Promise<void> {
-    // Serialized per Job: two questions asked in one turn would otherwise both read the same
-    // deadline and both write it plus one wait, losing an hour.
+/** Persist the paused budget on the Job so waiting has no kubelet deadline. */
+const PAUSED_DEADLINE = 'bellows.ai/paused-deadline';
+const deadlineChains = new Map<string, Promise<void>>();
+
+/** Serialize deadline patches so overlapping question and Stop updates cannot lose a budget. */
+function pauseRunnerDeadline(deps: K8sDeps, job: BoardJob, paused: boolean): Promise<void> {
     const name = runnerName(job);
     const next = (deadlineChains.get(name) ?? Promise.resolve())
         .catch(() => undefined)
-        .then(() => patchRunnerDeadline(deps, job, ms));
+        .then(() => patchRunnerDeadline(deps, job, paused));
     deadlineChains.set(name, next);
     void next
         .catch(() => undefined)
@@ -294,20 +291,33 @@ function extendRunnerDeadline(deps: K8sDeps, job: BoardJob, ms: number): Promise
     return next;
 }
 
-/** The tail of each runner Job's deadline extensions, by Job name. */
-const deadlineChains = new Map<string, Promise<void>>();
-
-async function patchRunnerDeadline(deps: K8sDeps, job: BoardJob, ms: number): Promise<void> {
+/** Save and remove a paused deadline, or restore its budget including the elapsed wait. */
+async function patchRunnerDeadline(deps: K8sDeps, job: BoardJob, paused: boolean): Promise<void> {
     const path = jobPath(deps.config.k8sNamespace, runnerName(job));
     const read = await deps.request('GET', path);
     if (read.status === HTTP_NOT_FOUND) return;
     expectOk(read, 'reading the runner job for its deadline');
-    const current = parse<{ spec?: { activeDeadlineSeconds?: number } }>(read.body).spec?.activeDeadlineSeconds;
-    if (typeof current !== 'number') return;
+    const current = parse<{
+        spec?: { activeDeadlineSeconds?: number };
+        metadata?: { annotations?: Record<string, string> };
+    }>(read.body);
+    const saved = current.metadata?.annotations?.[PAUSED_DEADLINE];
+    if (paused && saved) return;
+    if (!paused && !saved) return;
+    const deadline = current.spec?.activeDeadlineSeconds;
+    if (paused && typeof deadline !== 'number') return;
+    const prior = saved ? parse<{ deadline: number; at: number }>(saved) : null;
     const patched = await deps.request('PATCH', path, {
-        spec: { activeDeadlineSeconds: current + Math.round(ms / MS_PER_SECOND) },
+        metadata: {
+            annotations: {
+                [PAUSED_DEADLINE]: paused ? JSON.stringify({ deadline, at: Date.now() }) : null,
+            },
+        },
+        spec: {
+            activeDeadlineSeconds: prior ? prior.deadline + Math.ceil((Date.now() - prior.at) / MS_PER_SECOND) : null,
+        },
     });
-    expectOk(patched, 'extending the runner job deadline');
+    expectOk(patched, 'pausing or resuming the runner job deadline');
 }
 
 /** The per-run inputs `run0` needs beyond the job itself — bundled to stay under the 4-param cap. */
@@ -611,7 +621,7 @@ export function createKubernetesRunner(
     return {
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
         kill: (job: BoardJob) => killRunner(deps, job),
-        extendDeadline: (job: BoardJob, ms: number) => extendRunnerDeadline(deps, job, ms),
+        pauseDeadline: (job: BoardJob, paused: boolean) => pauseRunnerDeadline(deps, job, paused),
         releaseServices: (job: BoardJob) => teardownServices(deps, job),
         deadServices: (job: BoardJob) => deadServices(deps, job),
         restartServices: (job: BoardJob, signal: AbortSignal) => restartServiceFleet(deps, job, signal),

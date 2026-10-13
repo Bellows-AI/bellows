@@ -5,7 +5,6 @@ import type {
     BoardLease,
     HeartbeatVerdict,
     LeaseState,
-    QuestionExpiry,
     QuestionVerdict,
     Reclaim,
     RuntimeReport,
@@ -30,7 +29,7 @@ import { createLoop, type Loop } from '../src/loop.js';
 import type { SyncQueue, SyncTurn } from '../src/sync-queue.js';
 import { processReclaim, type ReclaimContext } from '../src/loop-reclaim.js';
 import type { GateStack, LoopRuntime } from '../src/loop-types.js';
-import { newJobState, QUESTION_TIMEOUT_MS, RUN_CONTROL_POLL_MS, watchOutput } from '../src/loop-attempt.js';
+import { newJobState, RUN_CONTROL_POLL_MS, watchOutput } from '../src/loop-attempt.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -85,9 +84,8 @@ interface BoardStub extends Board {
     leaseLookups: string[][];
     /** The artifact uploads the loop made (issue #325), in the order it made them. */
     artifacts: { id: string; kind: string; attempt: number; content: string; truncated: boolean }[];
-    /** Every question report and expiry the loop sent (issue #226) — ids only, never text. */
+    /** Every question report the loop sent (issue #226) — ids only, never text. */
     questionsReported: string[];
-    expiriesReported: string[];
 }
 
 /**
@@ -120,8 +118,6 @@ function stubBoard(
         leaseRows?: BoardLease[] | null;
         /** The board's answer to a question report (issue #226); held when absent. */
         questionVerdict?: QuestionVerdict;
-        /** The board's answer to a question expiry; expired when absent. */
-        expiryVerdict?: QuestionExpiry;
     } = {}
 ): { board: BoardStub; attach: (loop: Loop) => void } {
     let loop: Loop | null = null;
@@ -145,14 +141,9 @@ function stubBoard(
         leaseLookups: [],
         artifacts: [],
         questionsReported: [],
-        expiriesReported: [],
         async question(_claimed, questionId) {
             board.questionsReported.push(questionId);
             return options.questionVerdict ?? 'held';
-        },
-        async expireQuestion(_claimed, questionId) {
-            board.expiriesReported.push(questionId);
-            return options.expiryVerdict ?? { state: 'expired' };
         },
         async leases(ids) {
             board.leaseLookups.push([...ids]);
@@ -416,8 +407,8 @@ function stubRunner(
     probed: BoardJob[];
     deadServiceProbes: number;
     startedServices: string[];
-    /** The deadline extensions the loop asked for (issue #226), by job id and milliseconds. */
-    extended: { id: string; ms: number }[];
+    /** The runtime budget pause/resume requests, by job id and paused state. */
+    paused: { id: string; paused: boolean }[];
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
@@ -439,9 +430,9 @@ function stubRunner(
             await options.restartServices?.(signal);
         },
         killed: [] as string[],
-        extended: [] as { id: string; ms: number }[],
-        async extendDeadline(extendedJob: BoardJob, ms: number) {
-            runner.extended.push({ id: extendedJob.id, ms });
+        paused: [] as { id: string; paused: boolean }[],
+        async pauseDeadline(pausedJob: BoardJob, paused: boolean) {
+            runner.paused.push({ id: pausedJob.id, paused });
         },
         samples: 0,
         published: [] as BoardJob[],
@@ -5402,7 +5393,6 @@ describe('questions (issue #226)', () => {
         options: {
             polled?: boolean;
             board?: Parameters<typeof stubBoard>[1];
-            questionTimeoutMs?: number;
         } = {}
     ) {
         const board = stubBoard([job(1)], options.board);
@@ -5423,7 +5413,6 @@ describe('questions (issue #226)', () => {
             config: config(),
             gates,
             sleep,
-            ...(options.questionTimeoutMs === undefined ? {} : { questionTimeoutMs: options.questionTimeoutMs }),
         });
         board.attach(loop);
         await loop.start();
@@ -5478,54 +5467,49 @@ describe('questions (issue #226)', () => {
         expect(seen).toEqual({ known: { state: 'answered', answers: ANSWERS }, unknown: false });
     });
 
-    it('posts question-expire when the wait runs out and settles the question expired', async () => {
-        let seen: unknown;
-        const { board } = await driveAsking(
-            async ({ control }) => {
-                await recordQuestion(control, asked('toolu_1'));
-                await until(() => control.questions.get('toolu_1')?.state === 'expired');
-                seen = readQuestion(control, 'toolu_1').body;
-                return ok();
-            },
-            { questionTimeoutMs: 20 }
-        );
-
-        expect(board.expiriesReported).toEqual(['toolu_1']);
-        expect(seen).toEqual({ state: 'expired' });
+    it('resumes the runtime budget when reporting a question fails', async () => {
+        await driveAsking(async ({ control, board, runner }) => {
+            board.question = async () => {
+                await until(() => runner.paused.some((entry) => entry.paused));
+                throw new Error('board unavailable');
+            };
+            await expect(recordQuestion(control, asked('toolu_1'))).rejects.toThrow('board unavailable');
+            expect(control.questions.size).toBe(0);
+            expect(runner.paused).toEqual([
+                { id: job(1).id, paused: true },
+                { id: job(1).id, paused: false },
+            ]);
+            return ok();
+        });
     });
 
-    it('delivers the answer when the board says it won the race with the expiry', async () => {
-        let seen: unknown;
-        await driveAsking(
-            async ({ control }) => {
-                await recordQuestion(control, asked('toolu_1'));
-                await until(() => control.questions.get('toolu_1')?.state === 'answered');
-                seen = readQuestion(control, 'toolu_1').body;
-                return ok();
-            },
-            { questionTimeoutMs: 20, board: { expiryVerdict: { state: 'answered', answers: ANSWERS } } }
-        );
-
-        expect(seen).toEqual({ state: 'answered', answers: ANSWERS });
-    });
-
-    it('does not expire a question that was answered first', async () => {
-        const { board } = await driveAsking(
-            async ({ control, beat }) => {
-                await recordQuestion(control, asked('toolu_1'));
-                beat.verdict = {
-                    result: 'held',
-                    cancelRequested: false,
-                    answeredQuestions: [{ questionId: 'toolu_1', answers: ANSWERS }],
-                };
-                await until(() => control.questions.get('toolu_1')?.state === 'answered');
-                await new Promise((resolve) => setTimeout(resolve, 60));
-                return ok();
-            },
-            { questionTimeoutMs: 30 }
-        );
-
-        expect(board.expiriesReported).toEqual([]);
+    it('keeps unanswered questions pending without completing the task', async () => {
+        const { runner } = await driveAsking(async ({ control, board, beat, runner }) => {
+            await recordQuestion(control, asked('toolu_1'));
+            await recordQuestion(control, asked('toolu_2'));
+            const target = board.beats + 3;
+            await until(() => board.beats >= target);
+            expect(readQuestion(control, 'toolu_1').body).toEqual({ state: 'pending' });
+            expect(board.completed).toEqual([]);
+            beat.verdict = {
+                result: 'held',
+                cancelRequested: false,
+                answeredQuestions: [{ questionId: 'toolu_1', answers: ANSWERS }],
+            };
+            await until(() => control.questions.get('toolu_1')?.state === 'answered');
+            expect(runner.paused).toEqual([{ id: job(1).id, paused: true }]);
+            beat.verdict = {
+                result: 'held',
+                cancelRequested: false,
+                answeredQuestions: [{ questionId: 'toolu_2', answers: ANSWERS }],
+            };
+            await until(() => control.questions.get('toolu_2')?.state === 'answered');
+            return ok();
+        });
+        expect(runner.paused).toEqual([
+            { id: job(1).id, paused: true },
+            { id: job(1).id, paused: false },
+        ]);
     });
 
     it('cancels a pending question on a Stop and drains rather than kills, though no poll ever came', async () => {
@@ -5540,27 +5524,46 @@ describe('questions (issue #226)', () => {
         );
 
         expect(runner.killed).toEqual([]);
+        expect(runner.paused).toEqual([
+            { id: job(1).id, paused: true },
+            { id: job(1).id, paused: false },
+        ]);
         expect(stack.stopsRaised).toHaveLength(1);
         expect(board.suspended).toEqual([job(1).id]);
         expect(board.completed).toEqual([]);
     });
 
-    it('drops the question entry and its timer when the lease is lost while pending', async () => {
-        const { board, stack } = await driveAsking(
-            async ({ control, beat, runner }) => {
-                await recordQuestion(control, asked('toolu_1'));
-                beat.verdict = 'lost';
-                await until(() => runner.killed.length > 0);
-                return ok();
-            },
-            { questionTimeoutMs: 40 }
-        );
+    it('retries a failed budget restoration while draining a stopped question', async () => {
+        let resumes = 0;
+        const { board, runner } = await driveAsking(async ({ control, beat, runner: active }) => {
+            const pause = active.pauseDeadline;
+            active.pauseDeadline = async (claimed, paused) => {
+                if (!paused && ++resumes === 1) throw new Error('temporary runner API failure');
+                await pause(claimed, paused);
+            };
+            await recordQuestion(control, asked('toolu_1'));
+            beat.verdict = { result: 'held', cancelRequested: true };
+            await until(() => active.paused.some((entry) => !entry.paused));
+            expect(control.questions.get('toolu_1')?.state).toBe('cancelled');
+            return ok();
+        });
+        expect(resumes).toBe(2);
+        expect(runner.killed).toEqual([]);
+        expect(board.suspended).toEqual([job(1).id]);
+        expect(board.completed).toEqual([]);
+    });
+
+    it('drops the question entry when the lease is lost while pending', async () => {
+        const { stack } = await driveAsking(async ({ control, beat, runner }) => {
+            await recordQuestion(control, asked('toolu_1'));
+            beat.verdict = 'lost';
+            await until(() => runner.killed.length > 0);
+            return ok();
+        });
         await new Promise((resolve) => setTimeout(resolve, 80));
 
         expect(stack.controls.size).toBe(0);
         expect(stack.controlClosed).toEqual(stack.controlOpened);
-        // The timer died with the attempt: nothing came back to the board after it ended.
-        expect(board.expiriesReported).toEqual([]);
     });
 
     it('treats a lost lease on the question report as a lease loss', async () => {
@@ -5575,10 +5578,10 @@ describe('questions (issue #226)', () => {
         );
 
         expect(status).toBe(401);
-        expect(runner.extended).toEqual([]);
+        expect(runner.paused).toEqual([]);
     });
 
-    it('extends the run deadline once per question, never for a repeat or a refused one', async () => {
+    it('pauses once across questions, never for a repeat or a refused one', async () => {
         const { runner } = await driveAsking(async ({ control }) => {
             await recordQuestion(control, asked('toolu_1'));
             await recordQuestion(control, asked('toolu_1'));
@@ -5586,11 +5589,7 @@ describe('questions (issue #226)', () => {
             return ok();
         });
 
-        expect(runner.extended).toEqual([
-            { id: job(1).id, ms: QUESTION_TIMEOUT_MS },
-            { id: job(1).id, ms: QUESTION_TIMEOUT_MS },
-        ]);
-        expect(QUESTION_TIMEOUT_MS).toBe(3_600_000);
+        expect(runner.paused).toEqual([{ id: job(1).id, paused: true }]);
 
         const refused = await driveAsking(
             async ({ control }) => {
@@ -5600,19 +5599,7 @@ describe('questions (issue #226)', () => {
             },
             { board: { questionVerdict: 'refused' } }
         );
-        expect(refused.runner.extended).toEqual([]);
-    });
-
-    it('reports the extended deadline in the timeout note', async () => {
-        const { board } = await driveAsking(async ({ control }) => {
-            await recordQuestion(control, asked('toolu_1'));
-            await recordQuestion(control, asked('toolu_2'));
-            return ok({ exitCode: 137, timedOut: true });
-        });
-
-        expect(board.completed[0]?.output).toContain(
-            `killed after ${config().jobTimeoutMs + 2 * QUESTION_TIMEOUT_MS}ms`
-        );
+        expect(refused.runner.paused).toEqual([]);
     });
 });
 

@@ -3,7 +3,7 @@ import { LEASE_BATCH_MAX, type Board, type BoardLease, UUID_SHAPE } from './boar
 /**
  * The orphan reaper (issue #301): the periodic watcher that reaps service objects whose owning
  * job can no longer use them. This file is the executor-neutral core — the decision table and
- * the sweep timer. The platform arms it drives are `k8s-reaper.ts` (pods, Services, the
+ * the sweep timer. The platform arms it drives are `k8s-reaper.ts` (Jobs, pods, Services, the
  * attempt-scoped env Secrets, the checkout claim) and `docker-reaper.ts` (service containers
  * and their per-attempt network); the driver entrypoint picks one and starts the timer.
  *
@@ -14,7 +14,7 @@ import { LEASE_BATCH_MAX, type Board, type BoardLease, UUID_SHAPE } from './boar
 
 /** One reappable object, named the way its platform's delete call names it. */
 export interface OrphanObject {
-    kind: 'pod' | 'service' | 'container' | 'network';
+    kind: 'job' | 'pod' | 'service' | 'container' | 'network';
     name: string;
 }
 

@@ -645,24 +645,6 @@ describe('the question calls', () => {
     it('throws on a 5xx so the caller retries', async () => {
         await expect(board(503).board.question(job, 'toolu_1', questions)).rejects.toThrow(/503/);
     });
-
-    it('expires a question and reads the board deciding the race', async () => {
-        const expired = board(200, { state: 'expired' });
-        expect(await expired.board.expireQuestion(job, 'toolu_1')).toEqual({ state: 'expired' });
-        expect(expired.calls[0]!.url).toBe('http://board/api/jobs/job-1/question-expire');
-        expect(expired.calls[0]!.body).toEqual({ leaseToken: 'token-1', questionId: 'toolu_1' });
-
-        const answers = { 'Which colour?': 'Blue' };
-        expect(await board(200, { state: 'answered', answers }).board.expireQuestion(job, 'toolu_1')).toEqual({
-            state: 'answered',
-            answers,
-        });
-    });
-
-    it('reads a 409 on expiry as lost and a 404 as removed', async () => {
-        expect(await board(409).board.expireQuestion(job, 'toolu_1')).toBe('lost');
-        expect(await board(404).board.expireQuestion(job, 'toolu_1')).toBe('removed');
-    });
 });
 
 describe('the removed-thread reclaim queue', () => {

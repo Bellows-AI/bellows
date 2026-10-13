@@ -32,7 +32,7 @@ import {
     pokeThreadWait,
 } from './job-store-actions.js';
 import { closeMergedPr } from './job-store-merge.js';
-import { answerQuestionBy, askQuestionReport, expireQuestionReport } from './job-store-questions.js';
+import { answerQuestionBy, askQuestionReport } from './job-store-questions.js';
 import { readReviewFor, requestReviewFor } from './job-store-reviews.js';
 import { claimJob, claimReclaimRow, ackReclaimRow } from './job-store-claim.js';
 import {
@@ -85,7 +85,6 @@ function workerMethods(
     | 'artifact'
     | 'readArtifact'
     | 'askQuestion'
-    | 'expireQuestion'
     | 'requestReview'
     | 'readReview'
     | 'publishToken'
@@ -136,11 +135,6 @@ function workerMethods(
         async askQuestion(id, leaseToken, ask) {
             await gate();
             return askQuestionReport(ctx, id, leaseToken, ask);
-        },
-
-        async expireQuestion(id, leaseToken, questionId) {
-            await gate();
-            return expireQuestionReport(ctx, id, leaseToken, questionId);
         },
 
         async requestReview(id, leaseToken, request) {

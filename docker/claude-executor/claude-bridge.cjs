@@ -33,7 +33,6 @@ const MSG_BASH_DENIED =
     `${MSG_TOOL_DENIED} A compound command (a \`( … )\` subshell, a heredoc, a \`;\` or \`&&\` chain) is approved ` +
     'only when every part matches the allowlist: run each part once on its own, unwrapped, before treating it as refused.';
 const MSG_NOBODY = 'Nobody can answer questions in this run. Continue with your best judgment and state the assumption you made.';
-const MSG_EXPIRED = 'The question expired after 1 hour without an answer. Stop now.';
 const MSG_STOPPED = 'The task was stopped.';
 const MSG_NO_MORE = 'This run cannot ask more questions. Continue with your best judgment and state the assumption you made.';
 
@@ -94,7 +93,6 @@ async function ask(request) {
                 if (state === 'answered') {
                     return { behavior: 'allow', updatedInput: { ...input, answers: polled.json.answers } };
                 }
-                if (state === 'expired') return deny(MSG_EXPIRED, true);
                 if (state === 'cancelled') return deny(MSG_STOPPED, true);
             }
         }

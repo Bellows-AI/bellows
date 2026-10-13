@@ -1,5 +1,5 @@
 /**
- * The agent's questions (050, issue #531): the worker's report and expiry, the member's answer, the
+ * The agent's questions (050, issue #531): the worker's report, the member's answer, the
  * heartbeat's delivery list and the thread reads' shape. Question text and answers are member
  * content: nothing here logs them.
  */
@@ -11,7 +11,6 @@ import type {
     AnswerQuestionResult,
     AskedQuestion,
     AskQuestionResult,
-    ExpireQuestionResult,
     JobQuestion,
     JobStoreContext,
 } from './job-store-types.js';
@@ -151,39 +150,6 @@ export async function askQuestionReport(
         const question = await readQuestion(tx, orgId, id, ask.questionId);
         return { result: 'created', question: question! };
     });
-}
-
-export async function expireQuestionReport(
-    ctx: JobStoreContext,
-    id: string,
-    leaseToken: string,
-    questionId: string
-): Promise<ExpireQuestionResult> {
-    const { sql, orgId } = ctx;
-    // Pending → expired under the live lease, one statement: the row lock decides the race with a
-    // concurrent answer, and whichever commits first wins.
-    const moved = await sql<{ question_id: string }[]>`
-        update job_question q set state = 'expired'
-        from job j
-        where q.org_id = ${orgId} and q.job_id = ${id} and q.question_id = ${questionId}
-          and q.lease_token = ${leaseToken} and q.state = 'pending'
-          and j.org_id = q.org_id and j.id = q.job_id
-          and j.status = 'running' and j.lease_token = ${leaseToken}
-        returning q.question_id
-    `;
-    if (moved[0]) return { result: 'expired' };
-    const live = await sql<{ id: string }[]>`
-        select id from job
-        where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
-    `;
-    if (!live[0]) return { result: (await exists(sql, orgId, id)) ? 'lost' : 'missing' };
-    const [row] = await sql<{ state: string; answers: Answers | null }[]>`
-        select state, answers from job_question
-        where org_id = ${orgId} and job_id = ${id} and question_id = ${questionId} and lease_token = ${leaseToken}
-    `;
-    if (row?.state === 'answered' && row.answers) return { result: 'answered', answers: row.answers };
-    // An already-expired question answers as the retried expiry it is.
-    return row ? { result: 'expired' } : { result: 'unknown' };
 }
 
 /** The answer's key set must be the stored question texts, exactly. */

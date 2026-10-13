@@ -48,9 +48,6 @@ const jobStub = (overrides: Partial<JobStore> = {}): JobStore =>
         async askQuestion() {
             return { result: 'lost' };
         },
-        async expireQuestion() {
-            return { result: 'expired' };
-        },
         async answerQuestion() {
             return { result: 'refused', reason: 'closed' };
         },
@@ -237,7 +234,6 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // its lease; the member's answer is a person's act, so it falls through to `user` — and is
     // outside the org-token allowlist.
     [`/api/jobs/${JOB_ID}/question`, 'worker'],
-    [`/api/jobs/${JOB_ID}/question-expire`, 'worker'],
     [`/api/jobs/${JOB_ID}/questions/${JOB_ID}/answer`, 'user'],
     // A named reviewer's separate run (056, issue #549): the driver's request and its read of the
     // verdict, both under the caller's lease — worker routes, never a person's or an org token's.
@@ -460,9 +456,9 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
         ],
     };
 
-    // The worker token reaches exactly the two question routes the driver owns; the answer is a
+    // The worker token reaches the question report route the driver owns; the answer is a
     // person's, so the same credential is refused on it.
-    it('accepts the shared board secret on the question report and expiry only', async () => {
+    it('accepts the shared board secret on the question report only', async () => {
         const server = await build(githubAuth(), memoryAuthStore());
         const worker = { authorization: `Bearer ${WORKER_TOKEN}` };
 
@@ -470,12 +466,6 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
             method: 'POST',
             url: `/api/jobs/${JOB_ID}/question`,
             payload: ASK,
-            headers: worker,
-        });
-        const expire = await server.inject({
-            method: 'POST',
-            url: `/api/jobs/${JOB_ID}/question-expire`,
-            payload: { leaseToken: LEASE, questionId: 'toolu_01' },
             headers: worker,
         });
         const answer = await server.inject({
@@ -487,7 +477,6 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
 
         // The stub's lease verdicts are irrelevant: what matters is the credential got through.
         expect(ask.statusCode).not.toBe(HTTP_UNAUTHORIZED);
-        expect(expire.statusCode).toBe(HTTP_OK);
         expect(answer.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 

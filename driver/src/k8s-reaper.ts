@@ -19,17 +19,17 @@ import {
     servicesPath,
     syncEnvSecretName,
 } from './k8s-auxspec.js';
-import { gateEnvSecretName, secretName } from './k8s-podspec.js';
+import { gateEnvSecretName, jobsPath, secretName } from './k8s-podspec.js';
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict } from './reaper.js';
 
 /**
- * The kubernetes half of the orphan reaper (issue #301): enumerate the service fleet the driver's
+ * The kubernetes half of the orphan reaper (issue #301): enumerate the Jobs and service fleet the driver's
  * crashed attempts left behind, and delete it when the board condemns the owning job. The
  * counterpart of the re-claim fence — the fence acts on the job label at CLAIM time, under the
  * checkout claim; this arm acts on it when the BOARD says no claim can ever be taken again.
  *
- * RBAC needs nothing new: `list` on pods and services is the fence's grant, `delete` on all four
+ * RBAC needs nothing new: `list` on jobs, pods and services is the fence's grant, `delete` on all resource
  * kinds is already the chart's Role. `list secrets` stays deliberately ungranted — which is why
  * the attempt-scoped env Secrets are reaped by DERIVED NAME, never enumerated. The runner, sync,
  * gate and publish env Secrets' names all hash the same (job id, lease token) pair the labels
@@ -43,6 +43,7 @@ const GONE_STATUSES: readonly number[] = [HTTP_NOT_FOUND, HTTP_CONFLICT];
 
 /** Every kind the arm deletes, with its collection path — one table, not a branch per kind. */
 const basePathOf = (config: DriverConfig): Record<OrphanObject['kind'], string> => ({
+    job: jobsPath(config.k8sNamespace),
     pod: podsPath(config.k8sNamespace),
     service: servicesPath(config.k8sNamespace),
     // The docker-only kinds never reach this arm's table; the record must still be total.
@@ -77,11 +78,9 @@ const listBySelector = async (request: K8sRequest, path: string): Promise<Listed
     return parse<{ items?: ListedItem[] }>(response.body).items ?? [];
 };
 
-/** The selector: objects carrying BOTH labels (so runner/gate/sync pods never answer), scoped to
- * this chart release when one is configured — two releases sharing a namespace must never reap
- * each other's fleets as "unknown jobs". */
-const selectorFor = (config: DriverConfig): string => {
-    const terms = [JOB_LABEL, SERVICE_LABEL];
+/** Select attempt Jobs or service resources within this release; never sweep another release. */
+const selectorFor = (config: DriverConfig, jobs = false): string => {
+    const terms = jobs ? [JOB_LABEL, LEASE_LABEL] : [JOB_LABEL, SERVICE_LABEL];
     if (config.k8sRelease) terms.push(`app.kubernetes.io/instance=${config.k8sRelease}`);
     return terms.join(',');
 };
@@ -135,8 +134,15 @@ const scan = async (config: DriverConfig, request: K8sRequest): Promise<OrphanGr
     const services = await listBySelector(request, `${servicesPath(namespace)}?labelSelector=${selector}`);
     if (services === null) return [];
 
+    const jobs = await listBySelector(
+        request,
+        `${jobsPath(namespace)}?labelSelector=${encodeURIComponent(selectorFor(config, true))}`
+    );
+    if (jobs === null) return [];
+
     const groups = new Map<string, OrphanGroup>();
     for (const { kind, items } of [
+        { kind: 'job' as const, items: jobs },
         { kind: 'pod' as const, items: pods },
         { kind: 'service' as const, items: services },
     ]) {
@@ -245,7 +251,7 @@ const reap = async (
 };
 
 /**
- * The arm. See the file header for the posture; `scan` is two collection GETs, `reap` is the
+ * The arm. See the file header for the posture; `scan` is three collection GETs, `reap` is the
  * derived-name Secret deletes FIRST — one failure stops the round, since nothing rediscoverable
  * would survive it — then one Foreground delete per named object and — only on a provably dead
  * job — the checkout claim.

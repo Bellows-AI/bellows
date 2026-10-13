@@ -225,13 +225,8 @@ export interface Runner {
     restartServices(job: BoardJob, signal: AbortSignal): Promise<void>;
     /** Stops a container mid-run. Used when the lease is lost, and on shutdown. */
     kill(job: BoardJob): Promise<void>;
-    /**
-     * Pushes the running attempt's deadline out by `ms` — the wait for an agent's question is not
-     * the agent's time (issue #226). Docker re-arms its kill timer to the remaining time plus `ms`;
-     * kubernetes patches the runner Job's `activeDeadlineSeconds`. No run in flight: nothing happens.
-     * Optional like `publishGit`: a runner without it simply keeps its original deadline.
-     */
-    extendDeadline?(job: BoardJob, ms: number): Promise<void>;
+    /** Stops/resumes the runtime budget while questions are pending. */
+    pauseDeadline?(job: BoardJob, paused: boolean): Promise<void>;
     /**
      * Tears down the attempt's `.bellows.yaml` services. run() starts the fleet and deliberately
      * leaves it up: the declared gates run after it and are what test against those services, so

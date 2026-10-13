@@ -30,12 +30,6 @@ export const RUN_CONTROL_POLL_MS = 5_000;
  * current model step) gets before the hard kill lands. Not configurable (issue #442).
  */
 export const STOP_GRACE_MS = 300_000;
-/**
- * How long one agent question waits for an answer before the driver expires it, and how far each
- * question pushes the attempt's run deadline out (never refunded when the answer comes early).
- * With the board's five questions per attempt that bounds a run at `jobTimeoutMs` + 5 hours.
- */
-export const QUESTION_TIMEOUT_MS = 3_600_000;
 const MIN_HEARTBEAT_PERIOD_MS = 1_000;
 const HEARTBEAT_PERIOD_DIVISOR = 3;
 const MS_PER_SECOND = 1_000;
@@ -83,8 +77,10 @@ export interface JobState {
     draining: boolean;
     /** The grace deadline's timer while draining; cleared when the attempt settles. */
     graceTimer: ReturnType<typeof setTimeout> | null;
-    /** The expiry timer of each pending question, by question id; cleared as it is answered and when the attempt ends. */
-    questionTimers: Map<string, ReturnType<typeof setTimeout>>;
+    /** Questions whose answers have not been delivered yet. */
+    pendingQuestions: Set<string>;
+    questionPausedAt: number | null;
+    deadlineUpdate: Promise<void>;
     /** How far the run deadline has been pushed out by questions — what the timeout note adds to `jobTimeoutMs`. */
     deadlineExtensionMs: number;
     /** The last draft publication the agent made mid-run (`loop-publish.ts`); null when it made none. */
@@ -121,7 +117,9 @@ export function newJobState(): JobState {
         running: false,
         draining: false,
         graceTimer: null,
-        questionTimers: new Map(),
+        pendingQuestions: new Set(),
+        questionPausedAt: null,
+        deadlineUpdate: Promise.resolve(),
         deadlineExtensionMs: 0,
         draftPublication: null,
         woken,
@@ -134,24 +132,43 @@ export function newJobState(): JobState {
 /** The verdicts that end an attempt where it stands: a stop, a lost lease, a removed thread. */
 export const down = (state: JobState): boolean => state.stopped || state.lost || state.removed;
 
-/** Stops every pending question's expiry timer — the attempt ended, or a Stop cancelled the questions. */
-export function clearQuestionTimers(state: JobState): void {
-    for (const timer of state.questionTimers.values()) clearTimeout(timer);
-    state.questionTimers.clear();
+/** Forget pending questions when the attempt ends or Stop cancels them. */
+export function clearPendingQuestions(state: JobState): void {
+    state.pendingQuestions.clear();
 }
 
-/**
- * Applies the board's answers (a heartbeat carries every answered question of the lease, every
- * beat): a pending question becomes answered and its timer stops; a repeat, an id the driver never
- * recorded and a question already settled change nothing.
- */
-function deliverAnswers(rt: LoopRuntime, state: JobState, answered: AnsweredQuestion[]): void {
+/** Serialize pause/resume with concurrent asks and heartbeat answers. */
+export function updateQuestionDeadline(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<void> {
+    state.deadlineUpdate = state.deadlineUpdate
+        .catch(() => {})
+        .then(async () => {
+            const paused = state.pendingQuestions.size > 0;
+            if (state.finished || down(state) || (state.draining && paused)) return;
+            if (paused === (state.questionPausedAt !== null)) return;
+            await rt.runner.pauseDeadline?.(job, paused);
+            if (paused) {
+                state.questionPausedAt = Date.now();
+            } else if (state.questionPausedAt !== null) {
+                state.deadlineExtensionMs += Date.now() - state.questionPausedAt;
+                state.questionPausedAt = null;
+            }
+        });
+    return state.deadlineUpdate;
+}
+
+/** Deliver each answer once; resume the runtime budget only after the last answer. */
+async function deliverAnswers(
+    rt: LoopRuntime,
+    job: BoardJob,
+    state: JobState,
+    answered: AnsweredQuestion[]
+): Promise<void> {
     if (state.control === null) return;
     for (const { questionId, answers } of answered) {
         if (!rt.gates?.server.resolveQuestion(state.control, questionId, { state: 'answered', answers })) continue;
-        clearTimeout(state.questionTimers.get(questionId));
-        state.questionTimers.delete(questionId);
+        state.pendingQuestions.delete(questionId);
     }
+    await updateQuestionDeadline(rt, job, state);
 }
 
 /** A draining attempt whose run threw was being stopped all along: it stands down as stopped. */
@@ -199,27 +216,32 @@ export async function raceStep<T>(signal: AbortSignal, step: Promise<T>): Promis
 /**
  * A Stop on a launched attempt: raised once on the control endpoint, with the grace deadline
  * armed. No kill — the agent finishes its current model step and exits, and the run's end settles
- * the attempt as stopped. Later stop beats find `draining` set and do nothing. The deadline is the
+ * the attempt as stopped. Later stop beats retry a failed budget restoration. The grace deadline is the
  * hard kill for an agent that never gets to a boundary.
  */
-function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, control: string): void {
-    if (state.draining) return;
-    state.draining = true;
-    rt.gates?.server.raiseStop(control);
-    // A pending question is cancelled with the stop, so the bridge interrupts the CLI even if it
-    // never polled `/control`; its expiry timer has nothing left to expire.
-    rt.gates?.server.cancelQuestions(control);
-    clearQuestionTimers(state);
-    const graceMs = rt.stopGraceMs ?? STOP_GRACE_MS;
-    rt.log(`job ${job.id}: stop requested, letting the agent finish its current step (${graceMs}ms grace)`);
-    state.graceTimer = setTimeout(() => {
-        if (state.finished || down(state)) return;
-        state.stopped = true;
-        rt.log(`job ${job.id}: the agent did not stop within ${graceMs}ms, killing the runner`);
-        state.abortNow();
-        void rt.runner.kill(job).catch(() => {});
-    }, graceMs);
-    state.graceTimer.unref?.();
+async function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, control: string): Promise<void> {
+    if (!state.draining) {
+        state.draining = true;
+        rt.gates?.server.raiseStop(control);
+        // A pending question is cancelled with the stop, so the bridge interrupts the CLI even if it
+        // never polled `/control`.
+        rt.gates?.server.cancelQuestions(control);
+        clearPendingQuestions(state);
+        const graceMs = rt.stopGraceMs ?? STOP_GRACE_MS;
+        rt.log(`job ${job.id}: stop requested, letting the agent finish its current step (${graceMs}ms grace)`);
+        state.graceTimer = setTimeout(() => {
+            if (state.finished || down(state)) return;
+            state.stopped = true;
+            rt.log(`job ${job.id}: the agent did not stop within ${graceMs}ms, killing the runner`);
+            state.abortNow();
+            void rt.runner.kill(job).catch(() => {});
+        }, graceMs);
+        state.graceTimer.unref?.();
+    }
+    // Retry a failed restoration on the next stop heartbeat; the grace timer remains armed.
+    await updateQuestionDeadline(rt, job, state).catch((error: Error) => {
+        rt.log(`job ${job.id}: could not resume the draining runtime budget: ${error.message}`);
+    });
 }
 
 /** Folds one heartbeat verdict into the attempt's state, and kills the runner when it stands down. */
@@ -230,7 +252,16 @@ export async function applyHeartbeatVerdict(
     verdict: HeartbeatVerdict
 ) {
     const { runner, log } = rt;
-    if (typeof verdict === 'object') deliverAnswers(rt, state, verdict.answeredQuestions ?? []);
+    if (
+        typeof verdict === 'object' &&
+        !verdict.cancelRequested &&
+        !state.draining &&
+        (state.pendingQuestions.size > 0 || state.questionPausedAt !== null || verdict.answeredQuestions?.length)
+    ) {
+        await deliverAnswers(rt, job, state, verdict.answeredQuestions ?? []).catch((error: Error) => {
+            log(`job ${job.id}: could not update the question runtime budget: ${error.message}`);
+        });
+    }
     if (verdict === 'lost') {
         state.lost = true;
         log(`job ${job.id}: lease lost, killing the runner`);

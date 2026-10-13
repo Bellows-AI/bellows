@@ -216,63 +216,6 @@ describe.skipIf(!enabled)('job questions — database', () => {
         expect(await stateOf(id, 'toolu_1')).toBe('pending');
     });
 
-    it('expires a pending question, and answers expired afterwards', async () => {
-        const { id, claim } = await running();
-        await ask(id, claim.leaseToken, 'toolu_1');
-
-        expect(await store.expireQuestion(id, claim.leaseToken, 'toolu_1')).toEqual({ result: 'expired' });
-        expect(await store.expireQuestion(id, claim.leaseToken, 'toolu_1')).toEqual({ result: 'expired' });
-        expect(await store.answerQuestion(id, 'toolu_1', ANSWERS, null)).toEqual({
-            result: 'refused',
-            reason: 'expired',
-        });
-        expect((await store.get(id))!.questions[0]).toMatchObject({ status: 'expired', answerable: false });
-    });
-
-    it('answers an expiry with the answer when the answer committed first', async () => {
-        const { id, claim } = await running();
-        await ask(id, claim.leaseToken, 'toolu_1');
-        await store.answerQuestion(id, 'toolu_1', ANSWERS, ANSWERER.id);
-
-        expect(await store.expireQuestion(id, claim.leaseToken, 'toolu_1')).toEqual({
-            result: 'answered',
-            answers: ANSWERS,
-        });
-        expect(await stateOf(id, 'toolu_1')).toBe('answered');
-    });
-
-    it('resolves a racing expire and answer to whichever committed, consistently', async () => {
-        const { id, claim } = await running();
-        await ask(id, claim.leaseToken, 'toolu_1');
-
-        const [expired, answered] = await Promise.all([
-            store.expireQuestion(id, claim.leaseToken, 'toolu_1'),
-            store.answerQuestion(id, 'toolu_1', ANSWERS, null),
-        ]);
-
-        const final = await stateOf(id, 'toolu_1');
-        if (final === 'answered') {
-            expect(answered.result).toBe('ok');
-            expect(expired).toEqual({ result: 'answered', answers: ANSWERS });
-        } else {
-            expect(final).toBe('expired');
-            expect(expired).toEqual({ result: 'expired' });
-            expect(answered).toEqual({ result: 'refused', reason: 'expired' });
-        }
-    });
-
-    it('fences the expiry: lost under a stale lease, unknown for a question that was never asked', async () => {
-        const { id, claim } = await running();
-
-        expect(await store.expireQuestion(id, claim.leaseToken, 'toolu_nope')).toEqual({ result: 'unknown' });
-        expect(await store.expireQuestion(id, '33333333-3333-4333-8333-333333333333', 'toolu_nope')).toEqual({
-            result: 'lost',
-        });
-        expect(
-            await store.expireQuestion('00000000-0000-4000-8000-000000000000', claim.leaseToken, 'toolu_nope')
-        ).toEqual({ result: 'missing' });
-    });
-
     it('hands the heartbeat only the answered questions of its own lease', async () => {
         const { id, claim } = await running();
         await ask(id, claim.leaseToken, 'toolu_old');

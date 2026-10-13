@@ -7,8 +7,7 @@ import { createDockerRunner } from '../src/docker-runner.js';
 import { startDeadline } from '../src/run-deadline.js';
 
 /**
- * The extendable run deadline (issue #226): the docker runner's wall-clock kill timer, pushed out
- * by the wait for an agent's question. The kubernetes counterpart is pinned in `k8s.test.ts`.
+ * The paused runtime budget while an agent waits for an answer. The kubernetes counterpart is pinned in `k8s.test.ts`.
  */
 
 const SECOND = 1_000;
@@ -32,30 +31,34 @@ describe('startDeadline', () => {
         expect(fired).toHaveBeenCalledTimes(1);
     });
 
-    it('re-arms to the remaining time plus the extension, and every extension adds up', () => {
+    it('waits indefinitely and resumes only the unused runtime budget', () => {
         const fired = vi.fn();
         const deadline = startDeadline(10 * SECOND, fired);
         vi.advanceTimersByTime(4 * SECOND);
-        deadline.extend(HOUR);
-        deadline.extend(HOUR);
-        vi.advanceTimersByTime(10 * SECOND + 2 * HOUR - 4 * SECOND - 1);
+        deadline.pause(true);
+        vi.advanceTimersByTime(48 * HOUR);
+        deadline.pause(true);
+        expect(fired).not.toHaveBeenCalled();
+        deadline.pause(false);
+        deadline.pause(false);
+        vi.advanceTimersByTime(6 * SECOND - 1);
         expect(fired).not.toHaveBeenCalled();
         vi.advanceTimersByTime(1);
         expect(fired).toHaveBeenCalledTimes(1);
     });
 
-    it('stays cleared, and stays fired, whatever is extended afterwards', () => {
-        const cleared = vi.fn();
-        const clearedDeadline = startDeadline(SECOND, cleared);
-        clearedDeadline.clear();
-        clearedDeadline.extend(SECOND);
-        vi.advanceTimersByTime(HOUR);
-        expect(cleared).not.toHaveBeenCalled();
-
+    it('cannot revive a cleared or fired deadline', () => {
         const fired = vi.fn();
-        const firedDeadline = startDeadline(SECOND, fired);
+        const deadline = startDeadline(SECOND, fired);
+        deadline.pause(true);
+        deadline.clear();
+        deadline.pause(false);
+        vi.advanceTimersByTime(HOUR);
+        expect(fired).not.toHaveBeenCalled();
+        const expired = startDeadline(SECOND, fired);
         vi.advanceTimersByTime(SECOND);
-        firedDeadline.extend(SECOND);
+        expired.pause(true);
+        expired.pause(false);
         vi.advanceTimersByTime(HOUR);
         expect(fired).toHaveBeenCalledTimes(1);
     });
@@ -79,7 +82,7 @@ describe('the docker runner kill timer', () => {
     };
     const SESSION = '33333333-3333-4333-8333-333333333333';
 
-    it('is re-armed to its remaining time plus the extension', async () => {
+    it('pauses until the answer and resumes its remaining budget', async () => {
         const calls: string[][] = [];
         const exec = vi.fn(async (args: string[]) => {
             calls.push(args);
@@ -107,20 +110,21 @@ describe('the docker runner kill timer', () => {
         expect(spawned).toHaveBeenCalledTimes(1);
 
         await vi.advanceTimersByTimeAsync(4 * SECOND);
-        await runner.extendDeadline?.(job, HOUR);
-        // The original ten seconds pass without a kill: the deadline moved.
-        await vi.advanceTimersByTimeAsync(7 * SECOND);
+        await runner.pauseDeadline?.(job, true);
+        // Even a two-day wait consumes no runtime budget.
+        await vi.advanceTimersByTimeAsync(48 * HOUR);
         expect(killed()).toBe(false);
 
-        // Due at 10s + the hour, 11s in: the kill lands there and reads as a timeout.
-        await vi.advanceTimersByTimeAsync(HOUR - SECOND);
+        // Only six seconds of active runtime remain.
+        await runner.pauseDeadline?.(job, false);
+        await vi.advanceTimersByTimeAsync(6 * SECOND);
         expect(killed()).toBe(true);
         child.emit('close', 137);
         await expect(pending).resolves.toMatchObject({ timedOut: true, exitCode: 137 });
     });
 
-    it('extending a run that is not in flight does nothing', async () => {
+    it('pausing a run that is not in flight does nothing', async () => {
         const runner = createDockerRunner(loadDriverConfig({}), vi.fn() as unknown as typeof spawn, vi.fn());
-        await expect(runner.extendDeadline?.(job, HOUR)).resolves.toBeUndefined();
+        await expect(runner.pauseDeadline?.(job, true)).resolves.toBeUndefined();
     });
 });

@@ -784,7 +784,7 @@ export function createDockerRunner(
     const deps: RunnerDeps = { config, execDocker, files, spawnFn, killed: new Set(), deadlines };
     return {
         kill: (job) => dockerKill(deps, job),
-        extendDeadline: async (job, ms) => deadlines.extend(job.leaseToken, ms),
+        pauseDeadline: async (job, paused) => deadlines.pause(job.leaseToken, paused),
         releaseServices: (job) => dockerServiceTeardown(deps, job),
         syncCheckout: (job, signal) => dockerSyncCheckout(deps, job, signal),
         reclaimWorktree: (job) => dockerReclaimWorktree(deps, job),
