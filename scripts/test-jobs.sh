@@ -17,6 +17,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
 PORT="${PORT:-8129}"
+BASE="http://127.0.0.1:$PORT"
 DB="${JOBS_TEST_DB:-factory_jobs_test}"
 DATABASE_URL="postgres://factory:factory@127.0.0.1:5432/$DB"
 IMAGE_BASE="factory-jobs-smoke-base"
@@ -175,20 +176,6 @@ command -v docker >/dev/null || {
     exit 1
 }
 
-# Where the open board and the driver's control server listen. Docker Desktop forwards
-# host.docker.internal to the host's loopback; a Linux daemon maps it (host-gateway) to the bridge
-# gateway, which a loopback listener never answers. There both bind that address instead: the host
-# and its containers reach it, nothing off the machine does.
-BIND_HOST=127.0.0.1
-if [ "$(uname -s)" = Linux ]; then
-    BIND_HOST="$(docker network inspect bridge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null)"
-    [ -n "$BIND_HOST" ] || {
-        echo 'test-jobs: could not read the docker bridge gateway'
-        exit 1
-    }
-fi
-BASE="http://$BIND_HOST:$PORT"
-
 echo 'starting postgres'
 compose up -d postgres >/dev/null 2>&1
 for _ in $(seq 1 30); do
@@ -248,7 +235,7 @@ docker build -q -t "$IMAGE_BASE" -f "$work/Dockerfile.base" "$work" >/dev/null &
 # disposable database name. It drives the whole lease protocol with no credential anywhere.
 
 start_open_board() { # boots the AUTH_MODE=none board on $BASE and waits until it is migrated
-    env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST="$BIND_HOST" \
+    env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1 \
         ORG_WORKSPACE_ROOT="$work/workspaces" \
         node server/dist/offline.js >>"$work/server.log" 2>&1 &
     server_pid=$!
@@ -498,7 +485,7 @@ start_driver() { # start_driver <image> [RUNNER_SERVICES]
     # RUNNER_SERVICES defaults to on now; every phase but the services one passes 0 explicitly, so
     # what each phase asserts stays independent of the default.
     env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$1" OPENCODE_EXECUTOR_IMAGE="$1" \
-        RUNNER_SERVICES="${2:-0}" GATE_LISTEN_HOST="$BIND_HOST" \
+        RUNNER_SERVICES="${2:-0}" \
         WORKSPACE_VOLUME="$VOLUME" \
         DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=60 \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &
