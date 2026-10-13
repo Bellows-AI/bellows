@@ -142,8 +142,8 @@ export function updateQuestionDeadline(rt: LoopRuntime, job: BoardJob, state: Jo
     state.deadlineUpdate = state.deadlineUpdate
         .catch(() => {})
         .then(async () => {
-            if (state.finished || state.draining || down(state)) return;
             const paused = state.pendingQuestions.size > 0;
+            if (state.finished || down(state) || (state.draining && paused)) return;
             if (paused === (state.questionPausedAt !== null)) return;
             await rt.runner.pauseDeadline?.(job, paused);
             if (paused) {
@@ -216,27 +216,32 @@ export async function raceStep<T>(signal: AbortSignal, step: Promise<T>): Promis
 /**
  * A Stop on a launched attempt: raised once on the control endpoint, with the grace deadline
  * armed. No kill — the agent finishes its current model step and exits, and the run's end settles
- * the attempt as stopped. Later stop beats find `draining` set and do nothing. The deadline is the
+ * the attempt as stopped. Later stop beats retry a failed budget restoration. The grace deadline is the
  * hard kill for an agent that never gets to a boundary.
  */
-function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, control: string): void {
-    if (state.draining) return;
-    state.draining = true;
-    rt.gates?.server.raiseStop(control);
-    // A pending question is cancelled with the stop, so the bridge interrupts the CLI even if it
-    // never polled `/control`.
-    rt.gates?.server.cancelQuestions(control);
-    clearPendingQuestions(state);
-    const graceMs = rt.stopGraceMs ?? STOP_GRACE_MS;
-    rt.log(`job ${job.id}: stop requested, letting the agent finish its current step (${graceMs}ms grace)`);
-    state.graceTimer = setTimeout(() => {
-        if (state.finished || down(state)) return;
-        state.stopped = true;
-        rt.log(`job ${job.id}: the agent did not stop within ${graceMs}ms, killing the runner`);
-        state.abortNow();
-        void rt.runner.kill(job).catch(() => {});
-    }, graceMs);
-    state.graceTimer.unref?.();
+async function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, control: string): Promise<void> {
+    if (!state.draining) {
+        state.draining = true;
+        rt.gates?.server.raiseStop(control);
+        // A pending question is cancelled with the stop, so the bridge interrupts the CLI even if it
+        // never polled `/control`.
+        rt.gates?.server.cancelQuestions(control);
+        clearPendingQuestions(state);
+        const graceMs = rt.stopGraceMs ?? STOP_GRACE_MS;
+        rt.log(`job ${job.id}: stop requested, letting the agent finish its current step (${graceMs}ms grace)`);
+        state.graceTimer = setTimeout(() => {
+            if (state.finished || down(state)) return;
+            state.stopped = true;
+            rt.log(`job ${job.id}: the agent did not stop within ${graceMs}ms, killing the runner`);
+            state.abortNow();
+            void rt.runner.kill(job).catch(() => {});
+        }, graceMs);
+        state.graceTimer.unref?.();
+    }
+    // Retry a failed restoration on the next stop heartbeat; the grace timer remains armed.
+    await updateQuestionDeadline(rt, job, state).catch((error: Error) => {
+        rt.log(`job ${job.id}: could not resume the draining runtime budget: ${error.message}`);
+    });
 }
 
 /** Folds one heartbeat verdict into the attempt's state, and kills the runner when it stands down. */

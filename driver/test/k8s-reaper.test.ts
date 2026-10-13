@@ -10,10 +10,10 @@ import {
     servicesPath,
     syncEnvSecretName,
 } from '../src/k8s-auxspec.js';
-import { gateEnvSecretName, secretName } from '../src/k8s-podspec.js';
+import { gateEnvSecretName, jobsPath, secretName } from '../src/k8s-podspec.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
-import type { OrphanGroup } from '../src/reaper.js';
+import { createReaper, type OrphanGroup } from '../src/reaper.js';
 
 /**
  * The kubernetes reaper arm, offline: the request function is injected (the way every k8s suite
@@ -43,7 +43,11 @@ const router = (
         request: async (method, path, body) => {
             calls.push({ method, path, body });
             const hit = answers.find(([m, p]) => m === method && p === path);
-            return hit ? hit[2] : { status: fallbackStatus, body: '' };
+            if (hit) return hit[2];
+            if (method === 'GET' && path.startsWith(`${jobsPath(NAMESPACE)}?`)) {
+                return { status: 200, body: JSON.stringify({ items: [] }) };
+            }
+            return { status: fallbackStatus, body: '' };
         },
     };
 };
@@ -58,6 +62,7 @@ const pod = (name: string, jobId: string, lease: string, created: string) => ({
 
 const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: NAMESPACE });
 
+const LIST_JOBS = `${jobsPath(NAMESPACE)}?labelSelector=${encodeURIComponent('factory.job,factory.lease')}`;
 const LIST_PODS = `${podsPath(NAMESPACE)}?labelSelector=${encodeURIComponent('factory.job,factory.service')}`;
 const LIST_SERVICES = `${servicesPath(NAMESPACE)}?labelSelector=${encodeURIComponent('factory.job,factory.service')}`;
 
@@ -76,7 +81,7 @@ const group = (overrides: Partial<OrphanGroup> = {}): OrphanGroup => ({
 });
 
 describe('the kubernetes reaper arm: scan', () => {
-    it('lists pods and services by the factory.job + factory.service pair', async () => {
+    it('lists service resources and attempt Jobs', async () => {
         const body = JSON.stringify({ items: [] });
         const { request, calls } = router([
             ['GET', LIST_PODS, { status: 200, body }],
@@ -89,6 +94,7 @@ describe('the kubernetes reaper arm: scan', () => {
         expect(calls).toEqual([
             { method: 'GET', path: LIST_PODS },
             { method: 'GET', path: LIST_SERVICES },
+            { method: 'GET', path: LIST_JOBS },
         ]);
     });
 
@@ -115,6 +121,11 @@ describe('the kubernetes reaper arm: scan', () => {
         // The release term is load-bearing: two releases sharing a namespace against different
         // boards must never reap each other's fleets as "unknown jobs".
         expect(calls[0]?.path).toBe(expected);
+        expect(calls[2]?.path).toBe(
+            `${jobsPath(NAMESPACE)}?labelSelector=${encodeURIComponent(
+                'factory.job,factory.lease,app.kubernetes.io/instance=factory'
+            )}`
+        );
     });
 
     it('groups by job and lease, keeping the oldest creationTimestamp of the group', async () => {
@@ -177,6 +188,16 @@ describe('the kubernetes reaper arm: scan', () => {
                 objects: [{ kind: 'pod', name: 'good' }],
             },
         ]);
+    });
+
+    it('defers the entire scan when Jobs cannot be listed', async () => {
+        const empty = { status: 200, body: JSON.stringify({ items: [] }) };
+        const { request } = router([
+            ['GET', LIST_PODS, empty],
+            ['GET', LIST_SERVICES, empty],
+            ['GET', LIST_JOBS, { status: 403, body: '{}' }],
+        ]);
+        await expect(createKubernetesReaper({ config, request }).scan()).resolves.toEqual([]);
     });
 
     it('answers nothing when either list cannot be read — inconclusive reaps nothing', async () => {
@@ -365,5 +386,80 @@ describe('the kubernetes reaper arm: reap', () => {
         const arm = createKubernetesReaper({ config, request: failing });
 
         expect(await arm.reap(group(), 'gone')).toEqual([]);
+    });
+});
+
+describe('paused runner recovery after a driver restart', () => {
+    const name = 'factory-runner-orphan';
+    const jobPath = `${jobsPath(NAMESPACE)}/${name}?propagationPolicy=Foreground`;
+    const pausedJob = {
+        metadata: {
+            name,
+            labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE },
+            creationTimestamp: '2026-09-01T00:00:00Z',
+            annotations: { 'bellows.ai/paused-deadline': JSON.stringify({ deadline: 60, at: 1 }) },
+        },
+        spec: { activeDeadlineSeconds: null },
+    };
+    const lists: readonly (readonly [K8sMethod, string, K8sResponse])[] = [
+        ['GET', LIST_PODS, { status: 200, body: JSON.stringify({ items: [] }) }],
+        ['GET', LIST_SERVICES, { status: 200, body: JSON.stringify({ items: [] }) }],
+        ['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: [pausedJob] }) }],
+    ];
+
+    it.each(['gone', 'superseded', 'unclaimed', 'live', 'unreachable'] as const)(
+        'reaps a service-free paused Job only when the board condemns its lease: %s',
+        async (state) => {
+            const { request, calls } = router([...lists, ['DELETE', jobPath, { status: 200, body: '' }]]);
+            const reaper = createReaper({
+                arm: createKubernetesReaper({ config, request }),
+                board: {
+                    leases: async () =>
+                        state === 'unreachable'
+                            ? null
+                            : state === 'gone'
+                              ? []
+                              : [
+                                    {
+                                        id: JOB,
+                                        status: 'running',
+                                        leaseToken: state === 'live' ? LEASE : state === 'unclaimed' ? null : JOB,
+                                    },
+                                ],
+                },
+                intervalMs: 1000,
+                graceMs: 0,
+                log: () => {},
+            });
+            await reaper.sweep();
+            if (state === 'live' || state === 'unreachable') {
+                expect(deleteCalls(calls)).toEqual([]);
+            } else {
+                expect(deleteCalls(calls)).toContain(jobPath);
+                expect(deleteCalls(calls).filter((path) => path.startsWith(jobsPath(NAMESPACE)))).toEqual([jobPath]);
+            }
+        }
+    );
+
+    it('rediscovers a paused Job when deletion fails and retries next sweep', async () => {
+        const base = router(lists);
+        let attempts = 0;
+        const request: K8sRequest = async (method, path, body) => {
+            if (method === 'DELETE' && path === jobPath) {
+                attempts += 1;
+                return { status: attempts === 1 ? 500 : 200, body: '' };
+            }
+            return base.request(method, path, body);
+        };
+        const reaper = createReaper({
+            arm: createKubernetesReaper({ config, request }),
+            board: { leases: async () => [] },
+            intervalMs: 1000,
+            graceMs: 0,
+            log: () => {},
+        });
+        await reaper.sweep();
+        await reaper.sweep();
+        expect(attempts).toBe(2);
     });
 });

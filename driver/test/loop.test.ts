@@ -407,7 +407,7 @@ function stubRunner(
     probed: BoardJob[];
     deadServiceProbes: number;
     startedServices: string[];
-    /** The deadline extensions the loop asked for (issue #226), by job id and milliseconds. */
+    /** The runtime budget pause/resume requests, by job id and paused state. */
     paused: { id: string; paused: boolean }[];
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
@@ -5507,7 +5507,31 @@ describe('questions (issue #226)', () => {
         );
 
         expect(runner.killed).toEqual([]);
+        expect(runner.paused).toEqual([
+            { id: job(1).id, paused: true },
+            { id: job(1).id, paused: false },
+        ]);
         expect(stack.stopsRaised).toHaveLength(1);
+        expect(board.suspended).toEqual([job(1).id]);
+        expect(board.completed).toEqual([]);
+    });
+
+    it('retries a failed budget restoration while draining a stopped question', async () => {
+        let resumes = 0;
+        const { board, runner } = await driveAsking(async ({ control, beat, runner: active }) => {
+            const pause = active.pauseDeadline;
+            active.pauseDeadline = async (claimed, paused) => {
+                if (!paused && ++resumes === 1) throw new Error('temporary runner API failure');
+                await pause(claimed, paused);
+            };
+            await recordQuestion(control, asked('toolu_1'));
+            beat.verdict = { result: 'held', cancelRequested: true };
+            await until(() => active.paused.some((entry) => !entry.paused));
+            expect(control.questions.get('toolu_1')?.state).toBe('cancelled');
+            return ok();
+        });
+        expect(resumes).toBe(2);
+        expect(runner.killed).toEqual([]);
         expect(board.suspended).toEqual([job(1).id]);
         expect(board.completed).toEqual([]);
     });

@@ -4,6 +4,7 @@ export interface RunDeadline {
     clear(): void;
 }
 
+/** Start a kill timer whose remaining budget is preserved across pauses. */
 export function startDeadline(ms: number, onFire: () => void): RunDeadline {
     let remaining = ms;
     let started = Date.now();

@@ -276,6 +276,7 @@ async function killRunner(deps: K8sDeps, job: BoardJob): Promise<void> {
 const PAUSED_DEADLINE = 'bellows.ai/paused-deadline';
 const deadlineChains = new Map<string, Promise<void>>();
 
+/** Serialize deadline patches so overlapping question and Stop updates cannot lose a budget. */
 function pauseRunnerDeadline(deps: K8sDeps, job: BoardJob, paused: boolean): Promise<void> {
     const name = runnerName(job);
     const next = (deadlineChains.get(name) ?? Promise.resolve())
@@ -290,6 +291,7 @@ function pauseRunnerDeadline(deps: K8sDeps, job: BoardJob, paused: boolean): Pro
     return next;
 }
 
+/** Save and remove a paused deadline, or restore its budget including the elapsed wait. */
 async function patchRunnerDeadline(deps: K8sDeps, job: BoardJob, paused: boolean): Promise<void> {
     const path = jobPath(deps.config.k8sNamespace, runnerName(job));
     const read = await deps.request('GET', path);

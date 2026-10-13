@@ -20,7 +20,7 @@ Helm chart that deploys the whole factory.
 | A named reviewer: snapshot aux Job, a `RESTORE=1` sync Job, `activeDeadlineSeconds` capped by `DRIVER_JOB_TIMEOUT_MS` | `driver/src/k8s-steps.ts`, `review-snapshot.ts`, `k8s-auxspec.ts` | `driver/test/review-executors.test.ts`, `driver/test/review-snapshot.test.ts` |
 | Same image, same argv: the Jira connector's `JIRA_API`, the AskUserQuestion bridge, selected skills | `docker/claude-executor/entrypoint.sh`, `claude-bridge.cjs`, `driver/src/loop-run.ts` | `driver/test/executor-images.test.ts`, `driver/test/claude-bridge.test.ts` |
 | Question wait pauses: remove the runner Job's `activeDeadlineSeconds`, restore it after answers (`patch` on `jobs`) | `driver/src/k8s-runner.ts`, `k8s-transport.ts`, `charts/factory/templates/driver-rbac.yaml` | `driver/test/k8s.test.ts`, `scripts/test-k8s.sh` |
-| The orphan reaper | `driver/src/reaper.ts`, `driver/src/k8s-reaper.ts` | `driver/test/k8s-reaper.test.ts` |
+| Orphan Jobs (including paused runners), service resources and attempt Secrets | `driver/src/reaper.ts`, `driver/src/k8s-reaper.ts` | `driver/test/k8s-reaper.test.ts` |
 | Every `EXECUTOR`, `K8S_*` and `RUNNER_*` variable, with its boot-time validation | `driver/src/config.ts` | `driver/test/config.test.ts` |
 | The app chart: dashboard, driver, collector, RBAC, PDBs, Ingress, `LimitRange` | `charts/factory/` ([README](../charts/factory/README.md)) | `scripts/test-k8s.sh` |
 | The admission policies that fence the driver | `charts/factory/templates/driver-admission.yaml` | `driver/test/k8s-admission.test.ts` |
