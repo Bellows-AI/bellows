@@ -35,6 +35,12 @@ import {
     readsAgentTurns,
 } from '../src/close-read.js';
 import { ARTIFACT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
+import {
+    claudeTranscriptScript,
+    claudeTurnsScript,
+    opencodeReadoutScript,
+    opencodeTranscriptScript,
+} from '../src/container-scripts.js';
 import { createDockerRunner } from '../src/docker-runner.js';
 import { lookupHelper, type HelperPlan } from '../src/helpers.js';
 import {
@@ -107,12 +113,19 @@ const args = (
     servicesNetwork: string | null = null
 ) => dockerArgs(loadDriverConfig(env), job, session, { servicesNetwork: servicesNetwork, envFile: '/tmp/env-file' });
 
-const resumed = (env: NodeJS.ProcessEnv = {}) =>
-    dockerArgs(loadDriverConfig(env), job, { id: SESSION, resume: true }, { envFile: '/tmp/env-file' });
-
 describe('the docker run arguments', () => {
-    it('runs the command as a prompt, after the image', () => {
-        expect(args().slice(-9)).toEqual([
+    // The plan itself is pinned in runner-plan.test.ts; this is docker's rendering of it: every
+    // env pair as `-e NAME=value` BEFORE the image — docker stops option parsing there, and an
+    // `-e` past it would be the CLI's argv — and the CLI args verbatim after it.
+    it('renders the runner plan: env pairs as -e before the image, the CLI args after it', () => {
+        const envBeforeImage = (line: string[], image: string, pairs: string[]) => {
+            for (const pair of pairs) {
+                expect(line[line.indexOf(pair) - 1]).toBe('-e');
+                expect(line.indexOf(pair)).toBeLessThan(line.indexOf(image));
+            }
+        };
+        const claude = args();
+        expect(claude.slice(-9)).toEqual([
             'claude-executor',
             '--session-id',
             SESSION,
@@ -123,67 +136,31 @@ describe('the docker run arguments', () => {
             '-p',
             'fix the failing build',
         ]);
-    });
-
-    // Issue #545, the docker half of the pair: a selection rides the master prompt, so it reaches
-    // the claude argv and the OpenCode `factory` agent with no executor-specific code. The pod-spec
-    // twin is in k8s.test.ts.
-    it('delivers a prompt naming the selected skills verbatim, to both CLIs', () => {
-        const masterPrompt = `${MASTER_PROMPT}\n- Selected skills: github, jira`;
-        const claudeArgv = dockerArgs(
+        envBeforeImage(claude, 'claude-executor', [
+            `FACTORY_TRANSCRIPT_DIR=/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
+            `BELLOWS_SESSION_ID=${SESSION}`,
+            'NPM_CONFIG_UPDATE_NOTIFIER=false',
+        ]);
+        const opencode = dockerArgs(
             loadDriverConfig({}),
-            { ...job, masterPrompt },
-            { id: SESSION, resume: false },
-            {
-                envFile: '/tmp/e',
-            }
+            { ...opencodeJob, followUp: true },
+            { id: 'ses_f86188c3dffeZGYO4yZq4atba9', resume: true },
+            { envFile: '/tmp/env-file' }
         );
-        expect(claudeArgv).toContain(masterPrompt);
-        expect(envFileBody({ ...opencodeJob, masterPrompt }, loadDriverConfig({}))).toContain(
-            JSON.stringify(masterPrompt)
-        );
-    });
-
-    // Parity pin, the docker half of the pair: the prompt is delivered on EVERY run, resume
-    // included. The kubernetes runner used to suppress it on a resume that was not a follow-up;
-    // both platforms now render the one plan (runner-plan.ts), and the k8s twin of this case is
-    // pinned in k8s.test.ts ('delivers the command into a resumed session').
-    it('delivers the prompt on a resume too, never only on a fresh run', () => {
-        expect(resumed().slice(-9)).toEqual([
-            'claude-executor',
-            '--resume',
-            SESSION,
-            '--append-system-prompt',
-            MASTER_PROMPT,
-            '--system-prompt-snapshot',
-            'off',
-            '-p',
+        expect(opencode.slice(-7)).toEqual([
+            'opencode-executor',
+            'run',
+            '--agent',
+            'factory',
+            '--session',
+            'ses_f86188c3dffeZGYO4yZq4atba9',
             'fix the failing build',
         ]);
-    });
-
-    // Issue #509, the docker half of the pair: the per-node turn context never rides the system
-    // prompt. Claude gets it as env for the baked UserPromptSubmit hook, so `-p` stays the command
-    // and a `/skill` command still expands; opencode's positional message is plain text, so it is
-    // prefixed. The k8s twin is pinned in k8s.test.ts ('delivers the turn context').
-    it('delivers the turn context as hook env to claude and as a prompt prefix to opencode', () => {
-        const turnContext = 'Factory turn context\n- Current node: gate-fix';
-        const config = loadDriverConfig({});
-        const session = { id: SESSION, resume: true };
-        const claude = dockerArgs(config, { ...job, command: '/fix 209', turnContext }, session, {
-            envFile: '/tmp/env-file',
-        });
-        expect(claude.slice(-2)).toEqual(['-p', '/fix 209']);
-        expect(claude).toEqual(expect.arrayContaining(['-e', `FACTORY_TURN_CONTEXT=${turnContext}`]));
-        expect(dockerArgs(config, { ...opencodeJob, turnContext }, null, { envFile: '/tmp/env-file' }).at(-1)).toBe(
-            `${turnContext}\n\nfix the failing build`
-        );
-    });
-
-    // The link the UI shows is built from this, so it has to be the id the runner actually uses —
-    // which is why it is given to the CLI rather than read back out of it.
-    it('tells the runner which session id to use', () => {
-        expect(args()).toEqual(expect.arrayContaining(['--session-id', SESSION]));
+        envBeforeImage(opencode, 'opencode-executor', [
+            `XDG_DATA_HOME=/workspaces/bellows/${USER}/.opencode`,
+            'NPM_CONFIG_UPDATE_NOTIFIER=false',
+            'BELLOWS_SESSION_ID=ses_f86188c3dffeZGYO4yZq4atba9',
+        ]);
     });
 
     it("mounts the checkouts volume and starts at the AUTHOR's workspace root", () => {
@@ -223,20 +200,6 @@ describe('the docker run arguments', () => {
                 String(path)
             ).toThrow(/no usable workspace path/);
         }
-    });
-
-    // Issue #360, the docker half: a runner with no flags is unbounded on the daemon too. The
-    // kubernetes quantities translate once, in config.ts — the same values the pod spec renders
-    // verbatim (the parity pin in config.test.ts).
-    it('translates the configured limits and memory request into docker resource flags before the image', () => {
-        const resourceful = args({
-            RUNNER_CPU_LIMIT: '2',
-            RUNNER_MEMORY_LIMIT: '4Gi',
-            RUNNER_MEMORY_REQUEST: '1Gi',
-        });
-        expect(resourceful.slice(0, resourceful.indexOf('claude-executor'))).toEqual(
-            expect.arrayContaining(['--cpus', '2', '--memory', '4294967296', '--memory-reservation', '1073741824'])
-        );
     });
 
     it('adds no resource flags when none are configured — the dev daemon stays unthrottled', () => {
@@ -322,11 +285,6 @@ describe('the docker run arguments', () => {
         );
     });
 
-    it('skips permissions only when told to', () => {
-        expect(args()).not.toContain('--dangerously-skip-permissions');
-        expect(args({ RUNNER_SKIP_PERMISSIONS: '1' })).toContain('--dangerously-skip-permissions');
-    });
-
     // The branch reporter posts to the board's API, and the endpoint rides beside the OTEL one:
     // a URL, not a credential, defaulted from JOB_BOARD_URL.
     it('points the runner at the board so it can report its branch', () => {
@@ -336,20 +294,6 @@ describe('the docker run arguments', () => {
         );
     });
 
-    // npm's update notice is the last thing every npm call prints, burying the summary the
-    // output tail exists to show (#511). Both executors, before the image — so it is runner env.
-    it('silences npm update notices in the claude and opencode runner', () => {
-        const runners: [string[], string][] = [
-            [args(), 'claude-executor'],
-            [dockerArgs(loadDriverConfig({}), opencodeJob, null, { envFile: '/tmp/env-file' }), 'opencode-executor'],
-        ];
-        for (const [line, image] of runners) {
-            const at = line.indexOf('NPM_CONFIG_UPDATE_NOTIFIER=false');
-            expect(line[at - 1]).toBe('-e');
-            expect(at).toBeLessThan(line.indexOf(image));
-        }
-    });
-
     // A default only: a member who wants the notice back names it in claim env, and the driver's
     // `-e` — which would beat the env file — is not there to override it.
     it('leaves the npm notice to a claim that names it', () => {
@@ -357,52 +301,6 @@ describe('the docker run arguments', () => {
         const line = dockerArgs(loadDriverConfig({}), envJob, { id: SESSION, resume: false }, { envFile: '/tmp/e' });
         expect(line.some((arg) => arg.startsWith('NPM_CONFIG_UPDATE_NOTIFIER'))).toBe(false);
         expect(envFileBody(envJob, loadDriverConfig({}))).toContain('NPM_CONFIG_UPDATE_NOTIFIER=true\n');
-    });
-
-    // The claude runner is told the session id before the container starts (the driver mints it),
-    // so the reporter never has to scrape a transcript. A resumed session keeps its id — the
-    // follow-up's spans must join to the same conversation.
-    it('tells the claude runner which session to report', () => {
-        expect(args()).toEqual(expect.arrayContaining(['-e', `BELLOWS_SESSION_ID=${SESSION}`]));
-        expect(resumed()).toEqual(expect.arrayContaining(['-e', `BELLOWS_SESSION_ID=${SESSION}`]));
-    });
-
-    it('gives the opencode runner a session id only when one exists', () => {
-        const open = (env: NodeJS.ProcessEnv = {}, session: RunSession | null = null) =>
-            dockerArgs(loadDriverConfig(env), opencodeJob, session, { envFile: '/tmp/env-file' });
-        // A fresh opencode run has no id yet — the reporter discovers it from the session
-        // database. An unvalidated id must never be interpolated.
-        expect(open().some((arg) => arg.includes('BELLOWS_SESSION_ID'))).toBe(false);
-        const followUp = dockerArgs(
-            loadDriverConfig({}),
-            { ...opencodeJob, followUp: true },
-            { id: SESSION, resume: true },
-            { envFile: '/tmp/env-file' }
-        );
-        expect(followUp).toEqual(expect.arrayContaining(['-e', `BELLOWS_SESSION_ID=${SESSION}`]));
-        // BEFORE the image name: docker stops option parsing there, and an `-e` past it is the
-        // CLI's argv — `opencode run` has no `-e` flag, and the reporter would never see the id.
-        expect(followUp.indexOf(`BELLOWS_SESSION_ID=${SESSION}`)).toBeLessThan(followUp.indexOf('opencode-executor'));
-    });
-
-    // The transcript store rides headless claude-code only — fresh runs AND resumes, because the
-    // resume is the run that needs the thread's earlier transcripts sitting in its config dir.
-    // The path is the same composition transcriptDir pins below, keyed by the thread root.
-    it('hands a headless claude-code run its per-thread transcript store, fresh and resumed alike', () => {
-        const dir = `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`;
-        expect(args()).toEqual(expect.arrayContaining(['-e', `FACTORY_TRANSCRIPT_DIR=${dir}`]));
-        expect(resumed()).toEqual(expect.arrayContaining(['-e', `FACTORY_TRANSCRIPT_DIR=${dir}`]));
-        // Never on the CLI's argv past the image, and never a credential-shaped value: a path
-        // literal like WORKDIR.
-        expect(args().indexOf(`FACTORY_TRANSCRIPT_DIR=${dir}`)).toBeLessThan(args().indexOf('claude-executor'));
-    });
-
-    it('never hands the transcript store to opencode', () => {
-        // opencode persists through its own per-member session database; a second store buys
-        // nothing.
-        expect(dockerArgs(loadDriverConfig({}), opencodeJob, null, { envFile: '/tmp/env-file' })).not.toContain(
-            expect.stringContaining('FACTORY_TRANSCRIPT_DIR')
-        );
     });
 
     // --rm is gone deliberately: cleanup is explicit (a `docker rm` after close), so the runner
@@ -660,36 +558,6 @@ describe("the board's environment", () => {
     });
 });
 
-describe('a follow-up run', () => {
-    const followUp = { ...job, followUp: true };
-
-    /**
-     * The one new thing a follow-up asks of the runner: restore the parent conversation AND
-     * deliver the new command into it — without the `-p` the adjustment would never reach the
-     * agent.
-     */
-    it('delivers the command into the restored session', () => {
-        const line = dockerArgs(
-            loadDriverConfig({}),
-            followUp,
-            { id: SESSION, resume: true },
-            { envFile: '/tmp/env-file' }
-        );
-        expect(line.slice(-9)).toEqual([
-            'claude-executor',
-            '--resume',
-            SESSION,
-            '--append-system-prompt',
-            MASTER_PROMPT,
-            '--system-prompt-snapshot',
-            'off',
-            '-p',
-            'fix the failing build',
-        ]);
-        expect(line).not.toContain('--session-id');
-    });
-});
-
 const START = '2026-08-20T06:00:00.000Z';
 
 describe('the close-time claude-code turn count', () => {
@@ -721,17 +589,8 @@ describe('the close-time claude-code turn count', () => {
             '--entrypoint',
             'node',
         ]);
-        expect(line.slice(16, 18)).toEqual(['claude-executor', '-e']);
-        const script = line[18] as string;
-        // The script is the static file: the paths and the session id arrive by env, so no
-        // board-derived value is ever part of its text.
-        expect(script).not.toContain(`/workspaces/bellows/${USER}`);
-        expect(script).not.toContain(SESSION);
-        expect(script).toContain('process.env.CLAUDE_TRANSCRIPT_DIR');
-        expect(script).toContain('process.env.CLAUDE_SESSION_ID');
-        expect(script).toContain('process.env.RUN_STARTED_AT');
-        expect(script).toContain("entry.type !== 'assistant'");
-        expect(script).toContain('isSidechain');
+        // The static script by content (what it reads: scripts-claude-turns.test.ts).
+        expect(line.slice(16)).toEqual(['claude-executor', '-e', claudeTurnsScript]);
     });
 
     it('refuses a session id that is not a uuid — it names a file the script would read', () => {
@@ -814,11 +673,7 @@ describe('the transcript export reads (issue #325)', () => {
             '--entrypoint',
             'node',
         ]);
-        expect(line.slice(18, 20)).toEqual(['claude-executor', '-e']);
-        const script = line[20] as string;
-        expect(script).not.toContain(`/workspaces/bellows/${USER}`);
-        expect(script).not.toContain(SESSION);
-        expect(script).toContain('process.env.TRANSCRIPT_LIMIT_BYTES');
+        expect(line.slice(18)).toEqual(['claude-executor', '-e', claudeTranscriptScript]);
     });
 
     it('claude: refuses a session id that is not a uuid', () => {
@@ -848,8 +703,7 @@ describe('the transcript export reads (issue #325)', () => {
             '--entrypoint',
             'node',
         ]);
-        const script = line[20] as string;
-        expect(script).not.toContain(`/workspaces/bellows/${USER}`);
+        expect(line.slice(18)).toEqual(['opencode-executor', '-e', opencodeTranscriptScript]);
     });
 
     /**
@@ -895,33 +749,6 @@ describe('an opencode runner', () => {
     const oc = (env: NodeJS.ProcessEnv = {}) =>
         dockerArgs(loadDriverConfig(env), opencodeJob, null, { envFile: '/tmp/env-file' });
 
-    // opencode's asymmetry, per the repo's own executor spec: `run --session <id>` CONTINUES an
-    // existing session, it cannot adopt one minted in advance. So a fresh run is just
-    // `run <command>` — the id it uses is scraped after the run and reported then.
-    it('runs the command headless, with no session id at all', () => {
-        const line = oc();
-        expect(line.slice(-5)).toEqual(['opencode-executor', 'run', '--agent', 'factory', 'fix the failing build']);
-        expect(line).not.toContain('--session-id');
-        expect(line).not.toContain('--resume');
-        expect(line).not.toContain(SESSION);
-    });
-
-    // The refusal that enforces it, and the docker half of the parity pair: a session with
-    // `resume: false` is an id this driver minted, and opencode cannot adopt one. The k8s twin is
-    // pinned in k8s.test.ts ('refuses to adopt a minted session'); both read the one predicate.
-    it('refuses to adopt a minted session', () => {
-        expect(() =>
-            dockerArgs(loadDriverConfig({}), opencodeJob, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })
-        ).toThrow(/cannot adopt a minted session/);
-    });
-
-    // The session database has to outlive the container or there is nothing to resume into: a
-    // fresh container starts with an empty one. It lives per member, next to their checkouts, on
-    // the workspaces volume.
-    it('persists the session database under the member’s own workspace tree', () => {
-        expect(oc()).toEqual(expect.arrayContaining(['-e', `XDG_DATA_HOME=/workspaces/bellows/${USER}/.opencode`]));
-    });
-
     // Issue #244: the real runner's env file carries the reserved `factory` agent merged into
     // OPENCODE_CONFIG_CONTENT — the one place this happens, so a swap back to `claimEnv` here
     // would silently drop the master prompt from every OpenCode run.
@@ -954,35 +781,6 @@ describe('an opencode runner', () => {
     });
 
     /**
-     * The follow-up: the claim carries the session opencode ITSELF created (scraped and reported
-     * when the parent ran), and `run --session <id> <command>` continues that conversation with
-     * the new adjustment. This is what makes an opencode task follow-up-able.
-     */
-    it('continues its own session with the new command on a follow-up', () => {
-        const line = dockerArgs(
-            loadDriverConfig({}),
-            { ...opencodeJob, followUp: true },
-            {
-                id: 'ses_f86188c3dffeZGYO4yZq4atba9',
-                resume: true,
-            },
-            { envFile: '/tmp/env-file' }
-        );
-        // The BELLOWS_SESSION_ID env rides before the image (it is a container env, not a CLI
-        // flag), naming the SAME conversation the `--session` below restores.
-        expect(line.slice(-7)).toEqual([
-            'opencode-executor',
-            'run',
-            '--agent',
-            'factory',
-            '--session',
-            'ses_f86188c3dffeZGYO4yZq4atba9',
-            'fix the failing build',
-        ]);
-        expect(line).toEqual(expect.arrayContaining(['-e', 'BELLOWS_SESSION_ID=ses_f86188c3dffeZGYO4yZq4atba9']));
-    });
-
-    /**
      * The close path reads what the run left behind — the session id AND how the run's last
      * message ended. A zero exit code with finish `length` is the model's context limit cutting
      * the task short, and the outcome must carry that; only a reason the daemon's read actually
@@ -1004,72 +802,10 @@ describe('an opencode runner', () => {
         });
     });
 
-    /**
-     * The session line may also carry the last provider error the run recorded — the premature
-     * stop's cause, which only the session database knows. With a session scraped it is NOT a
-     * readout failure: it rides the outcome as its own field, so the verdict can name the 429
-     * instead of leaving the author a finish reason to decode.
-     */
-    it('carries the session’s last provider error on the outcome beside the session', async () => {
-        const { exec } = entrypointAnswers(
-            '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"tool-calls","tokens":100016,"cost":0,"error":"Error from provider (Console): Rate limit exceeded. Please try again later."}\n'
-        );
-        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
-
-        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
-        expect(outcome.sessionId).toBe('ses_f86188c3dffeZGYO4yZq4atba9');
-        expect(outcome.finishReason).toBe('tool-calls');
-        expect(outcome.providerError).toBe(
-            'Error from provider (Console): Rate limit exceeded. Please try again later.'
-        );
-        // A scraped session means the readout itself worked — the error is the run's, not the read's.
-        expect(outcome.readoutError).toBeUndefined();
-        // The readout line carried no turn count: unmeasured, never zero.
-        expect(outcome.agentTurns).toBeUndefined();
-    });
-
-    /**
-     * The readout answers one of three ways — a session line, an error line, or nothing — and the
-     * retries must fire on ALL but the first: the WAL-mid-checkpoint read that fails outright and
-     * succeeds milliseconds later presents as an error or as silence, never as a session. A run
-     * whose scrape never lands carries WHY on the outcome, because a lost session presents later
-     * as "this task cannot take a follow-up" and the reason is the only way to tell a broken
-     * query from an empty database.
-     *
-     * RUNNER_SERVICES=0 throughout: the stub routes every `--entrypoint` run to one branch, and
-     * these tests are about the SESSION readout, not the bellows one.
-     */
+    // The retry and merge are pinned in close-read.test.ts; this is docker's transport failure —
+    // a readout container the daemon refused rides the outcome. RUNNER_SERVICES=0: the stub
+    // routes every `--entrypoint` run to one branch, and this is the SESSION readout.
     const ocServicesOff = { RUNNER_SERVICES: '0' } as const;
-
-    it('retries a readout that answers nothing, and takes the session when a later try answers', async () => {
-        let calls = 0;
-        const { exec } = entrypointAnswers(() => {
-            calls += 1;
-            return calls === 1 ? '' : '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"stop"}\n';
-        });
-        const runner = dockerRunner(exec, { env: ocServicesOff, spawn: spawnChild('done\n', '', 0) });
-
-        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
-        // Two readout tries, plus the transcript export's own container (issue #325).
-        expect(calls).toBe(3);
-        expect(outcome.sessionId).toBe('ses_f86188c3dffeZGYO4yZq4atba9');
-        expect(outcome.readoutError).toBeUndefined();
-    });
-
-    it('carries the readout’s error on the outcome when every try fails', async () => {
-        let calls = 0;
-        const { exec } = entrypointAnswers(() => {
-            calls += 1;
-            return '{"error":"no such column: role"}\n';
-        });
-        const runner = dockerRunner(exec, { env: ocServicesOff, spawn: spawnChild('done\n', '', 0) });
-
-        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
-        // Three readout tries, plus the transcript export's own container (issue #325).
-        expect(calls).toBe(4);
-        expect(outcome.sessionId ?? null).toBeNull();
-        expect(outcome.readoutError).toBe('no such column: role');
-    });
 
     it('carries a refused readout container on the outcome too', async () => {
         const { exec } = entrypointAnswers(() => {
@@ -1155,24 +891,8 @@ describe('scraping the session opencode used', () => {
             // turn count is bounded to the messages written at or after this run began.
             `RUN_STARTED_MS=${Date.parse(START)}`,
         ]);
-        expect(line.slice(14, 18)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e']);
-        const script = line[18] as string;
-        // The script is the static file: the database path arrives by env, so no board-derived
-        // value is ever part of its text.
-        expect(script).not.toContain(`/workspaces/bellows/${USER}`);
-        expect(script).toContain('process.env.OPENCODE_DB');
-        expect(script).toContain('process.env.OPENCODE_DIR');
-        expect(script).toContain('parent_id is null');
-        expect(script).toContain('directory = ?');
-        // The role is a field INSIDE the message's data JSON, not a column — a SQL role filter
-        // throws "no such column: role" on every read and the scrape answers nothing. Filtered in
-        // JS instead, where the parsed role actually is.
-        expect(script).not.toContain("role='assistant'");
-        expect(script).toContain("d.role !== 'assistant'");
-        expect(script).toContain('readOnly');
-        // A failure prints one parseable error line — the empty output of a broken query is
-        // otherwise indistinguishable from an empty database.
-        expect(script).toContain('{ error:');
+        // The static script by content (what it answers: scripts-opencode-readout.test.ts).
+        expect(line.slice(14)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e', opencodeReadoutScript]);
     });
 
     it('scopes the readout to the task worktree when the job names a repo', () => {
@@ -3847,31 +3567,15 @@ describe('publishing the produced work', () => {
         ).toThrow(/worktree/);
     });
 
-    it('creates the worktree off the remote default, rebasing an existing one', () => {
-        // Every git call in the script is execFileSync — no value can become a command.
+    // What the sync does is executed for real in worktree*.test.ts and scripts-worktree-lock.test.ts;
+    // these pins have no behavioural twin.
+    it('runs every git call of the sync without a shell, and anchors the transient marker', () => {
         expect(gitWorktreeScript).toContain('execFileSync');
         expect(gitWorktreeScript).not.toContain('execSync(');
-        // The remote is fetched with the env file's credential; nothing on a command line.
-        expect(gitWorktreeScript).toContain("git('fetch', 'origin', '--prune')");
-        // Stale worktree admin entries are pruned before an add, so a directory that was
-        // removed underneath git can be recreated instead of failing forever.
-        expect(gitWorktreeScript).toContain("git('worktree', 'prune')");
-        expect(gitWorktreeScript).toContain("git('worktree', 'add', wt, branch)");
-        // An existing worktree keeps its commits by rebasing onto the new default — with
-        // --autostash, so a follow-up in the same tree works even when the previous run left
-        // uncommitted edits: the edits are stashed for the rebase and reapplied after it.
-        expect(gitWorktreeScript).toContain("inw('rebase', '--autostash', 'origin/' + def)");
-        // A conflicted rebase aborts itself — the worktree must never sit mid-rebase — and the
-        // failure names what happened.
+        // A rebase that fails without a conflict aborts itself — the worktree never sits
+        // mid-rebase — and the refusal names what happened.
         expect(gitWorktreeScript).toContain("inw('rebase', '--abort')");
         expect(gitWorktreeScript).toContain('rebased onto');
-        // A path that holds a git tree this sync did not create is refused, never deleted.
-        expect(gitWorktreeScript).toContain("fs.existsSync(wt + '/.git')");
-        // The startup sync serializes on a per-checkout lockfile (issue #307): concurrent claims
-        // of one repo fetch the same refs, and the loser used to die on git's ref transaction —
-        // lock contention answers with the transient marker the loop reads as infrastructure.
-        expect(gitWorktreeScript).toContain("'factory-sync.lock'");
-        expect(gitWorktreeScript).toContain('transient worktree sync');
         expect(TRANSIENT_SYNC_REASON.test('transient worktree sync: still held')).toBe(true);
         // Anchored at the head: ordinary refusal reasons splice member-controlled git stderr,
         // and a conflicted file named after the marker must never read as transient.
@@ -4558,26 +4262,6 @@ describe('publishing the produced work', () => {
         expect(await runner.probeTree?.(ISSUE_JOB)).toBeNull();
     });
 
-    // Revision-bound evidence (issue #548): a publish bound to a revision pushes only that tree.
-    it('refuses a publish bound to a revision the checkout no longer holds, and runs no git step', async () => {
-        const { calls, runner } = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:2' });
-
-        const result = await runner.publishGit?.(ISSUE_JOB, undefined, { revision: 'h:1' });
-
-        expect(result).toMatchObject({ ok: false, published: false, stale: true });
-        expect(shapesOf(calls)).toEqual(['probe']);
-    });
-
-    it('publishes a bound revision the checkout still holds, and an unbound publish ignores the fingerprint', async () => {
-        const bound = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:1' });
-        expect(await bound.runner.publishGit?.(ISSUE_JOB, undefined, { revision: 'h:1' })).toMatchObject({
-            ok: true,
-            published: true,
-        });
-        const unbound = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:2' });
-        expect(await unbound.runner.publishGit?.(ISSUE_JOB)).toMatchObject({ ok: true, published: true });
-    });
-
     it('branches, commits, pushes and opens the PR — in that order', async () => {
         // The checkout sits on main with no fix branch yet: the plain switch refuses (no such
         // branch), and `-c` creates it — both calls are part of the expected shape.
@@ -4609,26 +4293,13 @@ describe('publishing the produced work', () => {
             'summary',
             'pr-create',
         ]);
-        // The first switch finds no branch; the second creates it. Commits carry the plan title,
-        // and the fallback identity rides only the commit.
-        const switchCreate = calls.find((a) => a.includes('switch') && a.includes('-c'));
-        expect(switchCreate).toContain('fix/10');
-        const commit = calls.find((a) => a.includes('commit'));
-        expect(commit).toContain('-m');
-        expect(commit).toContain('/fix https://github.com/Bellows-AI/factory/issues/10 (#10)');
-        expect(commit).toContain('user.name=factory-ai');
-        // Push and PR steps carry the env file; the credential helper reads the token from it.
-        // The push is force-with-lease: the startup sync may have rewritten the task branch's
-        // base, and the lease refuses to clobber a remote that moved under us.
+        // The decisions are publishCheckout's (publish-checkout.test.ts); this is their docker
+        // rendering. A step that needs the claim env gets the env file, never the token on argv.
         const push = calls.find((a) => a.includes('push'));
         expect(push).toContain('--env-file');
         expect(push).toContain('--force-with-lease');
-        expect(push.join(' ')).toContain('credential.helper=');
         expect(push.join(' ')).not.toContain('t0k-3n');
-        // The PR speaks for the work, not for the command (issue #82): the summarizer reads the
-        // branch with literal envs — the BASE and the backstop commit's own subject (issue
-        // #389: the prompt must never win the title) — and no credential, and its answer —
-        // issue ref appended — is the title, over the summary body plus the driver's closing lines.
+        // A step's literal envs ride as `-e`, with no env file for a step that needs no credential.
         const summary = calls.find((a) => a.some((x) => typeof x === 'string' && x.includes('shortstat')));
         expect(summary).toEqual(
             expect.arrayContaining([
@@ -4639,113 +4310,9 @@ describe('publishing the produced work', () => {
             ])
         );
         expect(summary).not.toContain('--env-file');
+        // The summarizer's stdout reaches the PR through this transport.
         const create = calls.find((a) => a.includes('pr') && a.includes('create'));
-        expect(create).toContain('--head');
-        expect(create).toContain('fix/10');
         expect(create?.[create.indexOf('--title') + 1]).toBe('Fix the sync re-claim fence (#10)');
-        expect(create?.[create.indexOf('--body') + 1]).toBe(
-            '## Commits\n\n- Fix the sync re-claim fence\n\nCloses #10.\n\nPublished by the factory board after the declared gates passed.'
-        );
-    });
-
-    it('reuses an existing task branch and an existing PR', async () => {
-        const { calls, runner } = publishRunner(
-            { ...DIRTY_ON_MAIN, branch: 'fix/10', hasIdentity: true, unpushed: 1, dirty: false },
-            { prExists: true }
-        );
-        const result = await runner.publishGit(ISSUE_JOB);
-
-        expect(result).toEqual({
-            ok: true,
-            published: true,
-            branch: 'fix/10',
-            prUrl: PR_URL,
-            reason: null,
-            repository: 'Bellows-AI/factory',
-            baseBranch: 'main',
-            prNumber: 42,
-            cause: null,
-        });
-        // On a task branch already: no switch, no commit (clean tree), push of the unpushed
-        // commit, PR found and reused — and no summarizer step, which only a NEW PR gets.
-        expect(shapesOf(calls)).toEqual(['probe', 'push', 'pr-view']);
-    });
-
-    it('opens a draft PR for the agent, and reuses a PR that exists without a second create', async () => {
-        const fresh = publishRunner(DIRTY_ON_MAIN, { fail: (a) => a.includes('switch') && !a.includes('-c') });
-        await fresh.runner.publishGit(ISSUE_JOB, undefined, { draft: true });
-        const create = fresh.calls.find((a) => a.includes('pr') && a.includes('create'));
-        expect(create).toContain('--draft');
-        expect(create?.[create.indexOf('--body') + 1]).toContain('Draft published by the agent');
-        expect(create?.[create.indexOf('--body') + 1]).not.toContain('declared gates passed');
-
-        const again = publishRunner(
-            { ...DIRTY_ON_MAIN, branch: 'fix/10', hasIdentity: true, unpushed: 1, dirty: false },
-            { prExists: true }
-        );
-        const result = await again.runner.publishGit(ISSUE_JOB, undefined, { draft: true });
-        expect(result).toMatchObject({ ok: true, published: true, prUrl: PR_URL, prNumber: 42 });
-        expect(shapesOf(again.calls)).toEqual(['probe', 'push', 'pr-view']);
-    });
-
-    // Issue #573: the agent opened the PR itself with `gh pr create` and pushed everything, so the
-    // checkout is clean — the publish still names that PR, so the board records the one link.
-    it('reconciles a pull request the agent opened itself on a clean, pushed task branch', async () => {
-        const reconciled = publishRunner(
-            { ...DIRTY_ON_MAIN, branch: 'fix/10', hasIdentity: true, dirty: false, unpushed: 0 },
-            { prExists: true }
-        );
-        expect(await reconciled.runner.publishGit(ISSUE_JOB)).toEqual({
-            ok: true,
-            published: true,
-            branch: 'fix/10',
-            prUrl: PR_URL,
-            reason: null,
-            repository: 'Bellows-AI/factory',
-            baseBranch: 'main',
-            prNumber: 42,
-            cause: null,
-        });
-        expect(shapesOf(reconciled.calls)).toEqual(['probe', 'pr-view']);
-
-        const none = publishRunner({
-            ...DIRTY_ON_MAIN,
-            branch: 'fix/10',
-            hasIdentity: true,
-            dirty: false,
-            unpushed: 0,
-        });
-        expect(await none.runner.publishGit(ISSUE_JOB)).toMatchObject({ ok: true, published: false });
-    });
-
-    it('answers the ordinary no-ops without touching the daemon further', async () => {
-        const clean = publishRunner({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 });
-        expect(await clean.runner.publishGit(ISSUE_JOB)).toEqual({
-            ok: true,
-            published: false,
-            branch: null,
-            prUrl: null,
-            reason: 'no uncommitted changes and nothing unpushed',
-            repository: null,
-            baseBranch: null,
-            prNumber: null,
-            cause: null,
-        });
-        expect(clean.calls).toHaveLength(1);
-
-        const uncloned = publishRunner({ cloned: false });
-        expect(await uncloned.runner.publishGit(ISSUE_JOB)).toEqual({
-            ok: true,
-            published: false,
-            branch: null,
-            prUrl: null,
-            reason: 'the checkout has not been cloned yet',
-            repository: null,
-            baseBranch: null,
-            prNumber: null,
-            cause: null,
-        });
-        expect(uncloned.calls).toHaveLength(1);
     });
 
     // EVERY container this feature starts is a full `docker run` — the sync and the publisher
@@ -4774,14 +4341,6 @@ describe('publishing the produced work', () => {
         expect(syncContainers[0]).toContain('--rm');
     });
 
-    it('fails with the step’s reason when a git step refuses', async () => {
-        const { runner } = publishRunner(DIRTY_ON_MAIN, { fail: (a) => a.includes('push') });
-        const result = await runner.publishGit(ISSUE_JOB);
-
-        expect(result.ok).toBe(false);
-        expect(result.reason).toContain('step refused');
-    });
-
     // Issue #581: the board recovers a failed publish by its cause, read from the step's own words.
     it('names a rejected non-fast-forward push a conflict', async () => {
         const { runner } = publishRunner(DIRTY_ON_MAIN, {
@@ -4804,65 +4363,6 @@ describe('publishing the produced work', () => {
 
         expect(result).toMatchObject({ ok: false, published: false, cause: 'transport' });
         expect(result.reason).toContain('could not write the publish env file');
-    });
-
-    // The summary is decoration, never worth the publish (issue #82): a script that cannot read
-    // the branch must not fail a run that already pushed — the command-derived title and the
-    // plain body are the fallback the old PRs carried.
-    it('falls back to the command-derived title and body when the summarizer fails', async () => {
-        const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
-            fail: (a) => a.some((x) => typeof x === 'string' && x.includes('shortstat')),
-        });
-        const result = await runner.publishGit(ISSUE_JOB);
-
-        expect(result).toEqual({
-            ok: true,
-            published: true,
-            branch: 'fix/10',
-            prUrl: PR_URL,
-            reason: null,
-            repository: 'Bellows-AI/factory',
-            baseBranch: 'main',
-            prNumber: 42,
-            cause: null,
-        });
-        const create = calls.find((a) => a.includes('pr') && a.includes('create'));
-        expect(create?.[create.indexOf('--title') + 1]).toBe(
-            '/fix https://github.com/Bellows-AI/factory/issues/10 (#10)'
-        );
-        expect(create?.[create.indexOf('--body') + 1]).toBe(
-            'Closes #10.\n\nPublished by the factory board after the declared gates passed.'
-        );
-    });
-
-    // The repo's commit convention closes a task with `(#N)`, and the driver's own backstop
-    // commit title carries it too — a summary title that already ENDS with the ref must not
-    // grow a second one.
-    it('does not append the issue ref to a title that already ends with it', async () => {
-        const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
-            summary: { title: 'Fix the sync re-claim fence (#10)', body: '## Commits' },
-        });
-        await runner.publishGit(ISSUE_JOB);
-
-        const create = calls.find((a) => a.includes('pr') && a.includes('create'));
-        expect(create?.[create.indexOf('--title') + 1]).toBe('Fix the sync re-claim fence (#10)');
-    });
-
-    // A half-read summary — a body but no title — degrades per half: the title from the plan,
-    // the body from the branch.
-    it('falls back per half when the summary answers nulls on one side', async () => {
-        const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
-            summary: { title: null, body: '## Commits\n\n- Fix the sync re-claim fence' },
-        });
-        await runner.publishGit(ISSUE_JOB);
-
-        const create = calls.find((a) => a.includes('pr') && a.includes('create'));
-        expect(create?.[create.indexOf('--title') + 1]).toBe(
-            '/fix https://github.com/Bellows-AI/factory/issues/10 (#10)'
-        );
-        expect(create?.[create.indexOf('--body') + 1]).toBe(
-            '## Commits\n\n- Fix the sync re-claim fence\n\nCloses #10.\n\nPublished by the factory board after the declared gates passed.'
-        );
     });
 });
 
@@ -5005,13 +4505,6 @@ describe('the block-helper transport (issue #207)', () => {
         const runner = dockerRunner(exec);
         await runner.runHelper!(repoJob, plan({ githubWriting: true }), 'super-secret-token');
         expect(calls[0]!.some((a) => a.includes('super-secret-token'))).toBe(false);
-    });
-
-    it('maps a malformed helper answer to a named failure, never a thrown context leak', async () => {
-        const exec = vitest.fn(async () => ({ stdout: 'not json at all' }));
-        const runner = dockerRunner(exec);
-        const result = await runner.runHelper!(job, plan());
-        expect(result).toEqual({ ok: false, reason: 'malformed_output', message: expect.any(String) });
     });
 
     it('maps an execDocker timeout to a named timeout failure', async () => {
