@@ -60,7 +60,7 @@ never runs may have rotted unnoticed. Call a failure pre-existing only after it 
 known-good commit (the last tag, or the commit before the suspected change); otherwise it is this
 release's. `npm test` exiting 1 with every test passed is load only when **every** reported error
 is vitest's own worker timeout (`Timeout calling "onTaskUpdate"`); any other error — an unhandled
-rejection the code throws — is red, the rule `driver/src/gate-cause.ts` applies to gates.
+rejection the code throws — is red.
 
 ```bash
 npm run typecheck
@@ -69,7 +69,7 @@ npm test
 DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_release_test npm run test:db   # create it first
 npm run test:k8s
 npm run test:jobs                 # needs a docker daemon
-npm run verify:ui                 # when anything under web/src changed since $LAST
+npm run verify:ui                 # every release: a payload change breaks panels from outside web/src
 ```
 
 **Migration upgrade path** — every new migration has to run against data the last release wrote,
