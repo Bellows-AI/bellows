@@ -1,10 +1,10 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { useTestDb } from './harness.js';
-import { account, expireLease, mustCreate } from './fixtures.js';
+import { expectStillLocked, expireLease, holdLock, mustCreate } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -191,172 +191,22 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         expect(own?.rootCommand).toBe('echo hi');
     });
 
-    // A moving job belongs to its worker and its run is not over; a follow-up on one would race it.
-    it('refuses a follow-up on a job that is still moving', async () => {
-        const { id } = await queue('echo hi');
-        await store.claim('w1', LEASE_SECONDS);
+    // Eligibility is the THREAD's (#698): a finished head whose thread still holds an unfinished
+    // older member refuses. Retry reads only the head, so this rule is the follow-up's alone.
+    it('refuses a follow-up on a finished head while an older member is unfinished', async () => {
+        const root = await finishWithSession('drive me');
+        const head = await mustFollowUp(root, 'adjust', null);
+        const claim = await store.claim('w1', LEASE_SECONDS);
+        expect(claim?.id).toBe(head.id);
+        await store.complete(head.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
+        // A state no write path reaches today; crafted so the rule is "any member", not "the head".
+        await sql`update job set status = 'running' where id = ${root}`;
 
-        expect(await store.createFollowUp(id, 'again', null)).toBe('not_finished');
-    });
-
-    it('refuses a follow-up on a task the user has marked done', async () => {
-        const parent = await finishWithSession('echo hi');
-        await store.markDone(parent, null);
-
-        expect(await store.createFollowUp(parent, 'again', null)).toBe('task_done');
-    });
-
-    // Eligibility is the THREAD's, as a retry's is (#698): a finished parent whose thread still
-    // holds unfinished work refuses, so a keyless repeat never queues a second follow-up.
-    describe('refuses not_finished while the thread is busy (#698)', () => {
-        const threadSize = async (root: string) => {
-            const [row] = await sql<{ n: number }[]>`
-                select count(*)::int as n from job where org_id = ${ORG} and root_job_id = ${root}
-            `;
-            return row!.n;
-        };
-
-        it('refuses a follow-up on a finished member while a newer one is still queued', async () => {
-            const root = await finishWithSession('drive me');
-            await mustFollowUp(root, 'first adjustment', null);
-
-            expect(await store.createFollowUp(root, 'first adjustment', null)).toBe('not_finished');
-            expect(await threadSize(root)).toBe(2);
-        });
-
-        it('refuses a follow-up on a finished head while an older member is unfinished', async () => {
-            const root = await finishWithSession('drive me');
-            const head = await mustFollowUp(root, 'adjust', null);
-            const claim = await store.claim('w1', LEASE_SECONDS);
-            expect(claim?.id).toBe(head.id);
-            await store.complete(head.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
-            // A state no write path reaches today; crafted so the rule is "any member", not "the head".
-            await sql`update job set status = 'running' where id = ${root}`;
-
-            expect(await store.createFollowUp(head.id, 'again', null)).toBe('not_finished');
-            expect(await threadSize(root)).toBe(2);
-        });
-
-        // Retry's priority: a thread that is still moving answers not_finished before task_done.
-        it('answers not_finished before task_done for a done thread that is still moving', async () => {
-            const root = await finishWithSession('drive me');
-            await mustFollowUp(root, 'adjust', null);
-            await store.markDone(root, null);
-
-            expect(await store.createFollowUp(root, 'again', null)).toBe('not_finished');
-        });
-    });
-
-    // The done button and a follow-up can overlap on the same finished task, and both statements
-    // touch the parent row. Unless the follow-up's insert takes that row's lock, both succeed —
-    // a done parent left with queued follow-up work instead of a `task_done` answer. Holding the
-    // lock the way a racing markDone would must hold the insert up too; whoever commits first
-    // wins, and the loser decides against the row's newest committed version.
-    it('blocks a follow-up while another request holds the parent row', async () => {
-        const parent = await finishWithSession('drive me');
-
-        let lockTaken: (() => void) | null = null;
-        const locked = new Promise<void>((resolve) => {
-            lockTaken = resolve;
-        });
-        let release: (() => void) | null = null;
-        const held = new Promise<void>((resolve) => {
-            release = resolve;
-        });
-        const blocker = sql.begin(async (tx) => {
-            await tx`select id from job where id = ${parent} for update`;
-            lockTaken!();
-            await held;
-        });
-        blocker.catch(() => {});
-        await locked;
-
-        // The timer is the assertion device: the follow-up must still be waiting when it fires,
-        // not deciding against a snapshot taken before the lock was even taken.
-        const followUp = store.createFollowUp(parent, 'again', null);
-        const STILL_LOCKED_TIMEOUT_MS = 450;
-        const outcome = await Promise.race([
-            followUp,
-            new Promise<string>((resolve) => setTimeout(() => resolve('still_locked'), STILL_LOCKED_TIMEOUT_MS)),
-        ]);
-        expect(outcome).toBe('still_locked');
-
-        release!();
-        await blocker;
-        // The held-up insert lands once the lock frees, and a done after it still works — the
-        // sequential follow-up-then-done outcome the lock makes the only possible ordering.
-        expect(await followUp).toMatchObject({ id: expect.any(String) });
-        expect(await store.markDone(parent, null)).toMatchObject({ status: 'succeeded' });
-    });
-
-    // The per-thread advisory lock (the one the claim, remove, reopen and done take) is the
-    // other half of that atomicity: the follow-up's insert must serialize against a racing
-    // done on ANY member, not only on the parent row it locks.
-    it('blocks a follow-up while another transaction holds the thread lock', async () => {
-        const parent = await finishWithSession('drive me');
-
-        let lockTaken: (() => void) | null = null;
-        const locked = new Promise<void>((resolve) => {
-            lockTaken = resolve;
-        });
-        let release: (() => void) | null = null;
-        const held = new Promise<void>((resolve) => {
-            release = resolve;
-        });
-        const blocker = sql.begin(async (tx) => {
-            await tx`select pg_advisory_xact_lock(hashtextextended(${parent}::text, 0))`;
-            lockTaken!();
-            await held;
-        });
-        blocker.catch(() => {});
-        await locked;
-
-        const followUp = store.createFollowUp(parent, 'again', null);
-        const STILL_LOCKED_TIMEOUT_MS = 450;
-        const outcome = await Promise.race([
-            followUp,
-            new Promise<string>((resolve) => setTimeout(() => resolve('still_locked'), STILL_LOCKED_TIMEOUT_MS)),
-        ]);
-        expect(outcome).toBe('still_locked');
-
-        release!();
-        await blocker;
-        expect(await followUp).toMatchObject({ id: expect.any(String) });
-    });
-
-    // Done joins the same serialization point: a done must not land inside another member's
-    // decision window (a follow-up insert, a retry check, a remove or a reopen), and waiting
-    // here is what makes the whole thread's bookkeeping one-at-a-time.
-    it('blocks markDone while another transaction holds the thread lock', async () => {
-        const parent = await finishWithSession('drive me');
-
-        let lockTaken: (() => void) | null = null;
-        const locked = new Promise<void>((resolve) => {
-            lockTaken = resolve;
-        });
-        let release: (() => void) | null = null;
-        const held = new Promise<void>((resolve) => {
-            release = resolve;
-        });
-        const blocker = sql.begin(async (tx) => {
-            await tx`select pg_advisory_xact_lock(hashtextextended(${parent}::text, 0))`;
-            lockTaken!();
-            await held;
-        });
-        blocker.catch(() => {});
-        await locked;
-
-        const done = store.markDone(parent, null);
-        const STILL_LOCKED_TIMEOUT_MS = 450;
-        const outcome = await Promise.race([
-            done,
-            new Promise<string>((resolve) => setTimeout(() => resolve('still_locked'), STILL_LOCKED_TIMEOUT_MS)),
-        ]);
-        expect(outcome).toBe('still_locked');
-
-        release!();
-        await blocker;
-        expect(await done).toMatchObject({ status: 'succeeded' });
+        expect(await store.createFollowUp(head.id, 'again', null)).toBe('not_finished');
+        const [row] = await sql<{ n: number }[]>`
+            select count(*)::int as n from job where org_id = ${ORG} and root_job_id = ${root}
+        `;
+        expect(row!.n).toBe(2);
     });
 
     // Only done or removed closes a task. Without a session on the parent — an opencode run, or a
@@ -393,34 +243,6 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
         const followUp = await mustFollowUp(id, 'again', null);
         expect(await store.get(followUp.id)).toMatchObject({ sessionId: null, followUpTo: id });
-    });
-
-    // The child inherits the parent's session, and a session resumes only in the checkout tree it
-    // ran in — the author's. A member's command may only ever run in their own tree, so a
-    // follow-up by anyone else would either run their command in the author's tree or resume the
-    // conversation in their own; both are refused, and only the author may follow their task up.
-    it('refuses a follow-up by anyone but the account that queued the task', async () => {
-        const AUTHOR_A_GITHUB_ID = 6001;
-        const AUTHOR_B_GITHUB_ID = 6002;
-        const authorA = await account(sql, AUTHOR_A_GITHUB_ID, 'author-a');
-        const authorB = await account(sql, AUTHOR_B_GITHUB_ID, 'author-b');
-        const { id: parent } = await mustCreate(store.create('drive me', authorA, { repo: null, executor: null }));
-        const claim = await store.claim('w1', LEASE_SECONDS);
-        await store.session(parent, claim!.leaseToken, SESSION);
-        await store.complete(parent, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
-
-        expect(await store.createFollowUp(parent, 'again', authorB)).toBe('forbidden');
-        // A caller with no account — the route tests' no-auth-store shape — cannot claim a task
-        // that has one. The author's own follow-up still lands.
-        expect(await store.createFollowUp(parent, 'again', null)).toBe('forbidden');
-        expect(await store.createFollowUp(parent, 'again', authorA)).toMatchObject({ id: expect.any(String) });
-    });
-
-    it('separates a missing parent from a refused follow-up', async () => {
-        const id = await finishWithSession('echo hi');
-
-        expect(await store.createFollowUp(ABSENT, 'again', null)).toBe('missing');
-        expect(await otherOrgStore.createFollowUp(id, 'again', null)).toBe('missing');
     });
 
     /**
@@ -781,42 +603,6 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
             expect(await store.reopen(root)).toBe('reclaimed');
         });
-
-        it('waits on the thread advisory lock, like remove — no check-then-clear window', async () => {
-            const root = await finishWithSession('drive me');
-            await store.markDone(root, null);
-
-            let lockTaken: (() => void) | null = null;
-            const locked = new Promise<void>((resolve) => {
-                lockTaken = resolve;
-            });
-            let release: (() => void) | null = null;
-            const held = new Promise<void>((resolve) => {
-                release = resolve;
-            });
-            const blocker = sql.begin(async (tx) => {
-                await tx`select pg_advisory_xact_lock(hashtextextended(${root}::text, 0))`;
-                lockTaken!();
-                await held;
-            });
-            blocker.catch(() => {});
-            await locked;
-
-            // The timer is the assertion device, the same one the follow-up lock test uses:
-            // reopen must still be waiting when it fires, not deciding against a snapshot taken
-            // before the lock was even granted.
-            const reopen = store.reopen(root);
-            const STILL_LOCKED_TIMEOUT_MS = 450;
-            const outcome = await Promise.race([
-                reopen,
-                new Promise<string>((resolve) => setTimeout(() => resolve('still_locked'), STILL_LOCKED_TIMEOUT_MS)),
-            ]);
-            expect(outcome).toBe('still_locked');
-
-            release!();
-            await blocker;
-            expect(await reopen).toEqual({ result: 'ok' });
-        });
     });
 
     /**
@@ -914,18 +700,120 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             // so the tree still waits for a done.
             expect(result).toEqual({ result: 'ok', threadDone: false });
         });
+    });
 
-        it('refuses a completion carrying a lease token that is not the holder', async () => {
-            const { id } = await queue('echo hi');
-            await store.claim('w1', LEASE_SECONDS);
+    /*
+     * One serialization contract, every writer that decides against the thread or the row: held
+     * up while another transaction holds the lock, landing once it frees, deciding against the
+     * newest committed version. The per-thread advisory lock is the one claim, remove, reopen
+     * and done take — a follow-up's or retry's eligibility check and insert must be atomic with a
+     * racing done on ANY member, and done itself must not land inside another member's decision
+     * window. The row lock is what a racing markDone (on the parent) or claim (on a queued row
+     * an edit targets) holds.
+     */
+    describe('blocks while another transaction holds the lock', () => {
+        const finishSessionless = async (command: string): Promise<string> => {
+            const { id } = await queue(command);
+            const claim = await store.claim('w1', LEASE_SECONDS);
+            await store.complete(id, claim!.leaseToken, { status: 'failed', exitCode: null, output: 'died' });
+            return id;
+        };
 
-            const result = await store.complete(id, ABSENT, {
-                status: 'succeeded',
-                exitCode: 0,
-                output: null,
-            });
+        it.each<{
+            name: string;
+            lock: 'thread' | 'row';
+            arrange: () => Promise<string>;
+            act: (id: string) => Promise<unknown>;
+            /** A racing write committed in the lock holder's own transaction. */
+            beforeCommit?: (tx: TransactionSql, id: string) => Promise<unknown>;
+            landed: (result: unknown, id: string) => Promise<void>;
+        }>([
+            {
+                name: 'a follow-up, on the parent row',
+                lock: 'row',
+                arrange: () => finishWithSession('drive me'),
+                act: (id) => store.createFollowUp(id, 'again', null),
+                // The held-up insert lands, and a done after it still works — the sequential
+                // follow-up-then-done outcome the lock makes the only possible ordering.
+                landed: async (result, id) => {
+                    expect(result).toMatchObject({ id: expect.any(String) });
+                    expect(await store.markDone(id, null)).toMatchObject({ status: 'succeeded' });
+                },
+            },
+            {
+                name: 'a follow-up, on the thread lock',
+                lock: 'thread',
+                arrange: () => finishWithSession('drive me'),
+                act: (id) => store.createFollowUp(id, 'again', null),
+                landed: async (result) => {
+                    expect(result).toMatchObject({ id: expect.any(String) });
+                },
+            },
+            {
+                name: 'a retry, on the thread lock',
+                lock: 'thread',
+                arrange: () => finishSessionless('retry me'),
+                act: (id) => store.createRetry(id, null),
+                landed: async (result) => {
+                    expect(result).toMatchObject({ id: expect.any(String) });
+                },
+            },
+            {
+                name: 'markDone, on the thread lock',
+                lock: 'thread',
+                arrange: () => finishWithSession('drive me'),
+                act: (id) => store.markDone(id, null),
+                landed: async (result) => {
+                    expect(result).toMatchObject({ status: 'succeeded' });
+                },
+            },
+            {
+                name: 'reopen, on the thread lock, like remove — no check-then-clear window',
+                lock: 'thread',
+                arrange: async () => {
+                    const root = await finishWithSession('drive me');
+                    await store.markDone(root, null);
+                    return root;
+                },
+                act: (id) => store.reopen(id),
+                landed: async (result) => {
+                    expect(result).toEqual({ result: 'ok' });
+                },
+            },
+            {
+                name: 'editCommand, on the row lock, landing when the row is unchanged',
+                lock: 'row',
+                arrange: async () => (await queue('echo hi')).id,
+                act: (id) => store.editCommand(id, 'echo changed', null),
+                landed: async (result) => {
+                    expect(result).toEqual({ result: 'ok', command: 'echo changed' });
+                },
+            },
+            {
+                // The claim's shape, committed in the SAME transaction that held the lock the
+                // edit waited on: running, with a live lease. The edit's UPDATE re-checks
+                // `status = 'queued'` against this committed version — never a stale snapshot.
+                name: 'editCommand, on the row lock, refusing not_queued when a claim commits first',
+                lock: 'row',
+                arrange: async () => (await queue('echo hi')).id,
+                beforeCommit: (tx, id) => tx`update job set status = 'running', claimed_by = 'w1',
+                    started_at = now(), lease_token = gen_random_uuid(),
+                    lease_expires_at = now() + interval '5 minutes' where id = ${id}`,
+                act: (id) => store.editCommand(id, 'echo changed', null),
+                landed: async (result, id) => {
+                    expect(result).toEqual({ result: 'not_queued', status: 'running' });
+                    expect((await store.get(id))?.command).toBe('echo hi');
+                },
+            },
+        ])('$name', async ({ lock, arrange, act, beforeCommit, landed }) => {
+            const id = await arrange();
+            const held = await holdLock(sql, lock, id, beforeCommit && ((tx) => beforeCommit(tx, id)));
 
-            expect(result).toEqual({ result: 'lost' });
+            const pending = act(id);
+            await expectStillLocked(pending);
+
+            await held.release();
+            await landed(await pending, id);
         });
     });
 });

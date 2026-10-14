@@ -227,76 +227,85 @@ describe.skipIf(!enabled)('the manual purge', () => {
         expect(row!.purgeStartedAt).not.toBeNull();
     });
 
-    it('refuses a selected row regardless of its clone status', async () => {
-        await store.select(ALICE, [web]);
-        await store.claimPending(1);
-        await store.markReady(ALICE, web);
+    it.each<{ name: string; arrange: () => Promise<unknown>; expected: unknown }>([
+        {
+            name: 'refuses a selected row regardless of its clone status',
+            arrange: async () => {
+                await store.select(ALICE, [web]);
+                await store.claimPending(1);
+                await store.markReady(ALICE, web);
+            },
+            expected: { refused: 'selected' },
+        },
+        {
+            name: 'answers a duplicate request with purging',
+            arrange: async () => {
+                await store.select(ALICE, [web]);
+                await store.select(ALICE, []);
+                await store.stampPurge(ALICE, web);
+            },
+            expected: { refused: 'purging' },
+        },
+        {
+            name: 'refuses a row still owned by a clone',
+            arrange: async () => {
+                await store.select(ALICE, [web]);
+                await store.claimPending(1);
+                await store.select(ALICE, []);
+            },
+            expected: { refused: 'cloning' },
+        },
+    ])('$name', async ({ arrange, expected }) => {
+        await arrange();
 
-        expect(await store.stampPurge(ALICE, web)).toEqual({ refused: 'selected' });
+        expect(await store.stampPurge(ALICE, web)).toEqual(expected);
     });
 
-    it('answers a duplicate request with purging', async () => {
+    /** Each row deselects `web` first, then plants the tasks the blocking count does or does not see. */
+    it.each<{ name: string; seed: () => Promise<unknown>; expected: unknown }>([
+        {
+            // The directory is keyed by repo NAME, so an old task queued against `other/web` writes in
+            // the member's `web` checkout exactly as one queued against `acme/web` would. The tasks
+            // counted are the member's own; only the repo label's owner part is free to differ.
+            name: 'counts a same-name task whose repo label names another owner as blocking',
+            seed: () => insertJob(ALICE, 'other/web'),
+            expected: { refused: 'tasks', count: 1 },
+        },
+        {
+            // Another member's tasks run in that member's workspace, never in this checkout.
+            name: 'does not count another member\u2019s tasks, whatever their name',
+            seed: async () => {
+                await insertJob(BOB, 'other/web');
+                await insertJob(BOB, 'acme/web');
+            },
+            expected: { stamped: true },
+        },
+        {
+            name: 'does not count a thread that is terminal and marked done',
+            seed: async () => {
+                const root = await insertJob(ALICE, 'acme/web', 'succeeded', true);
+                await insertJob(ALICE, 'acme/web', 'failed', true).then(
+                    () => sql`update job set root_job_id = ${root} where command = 'do it' and status = 'failed'`
+                );
+            },
+            expected: { stamped: true },
+        },
+        {
+            name: 'counts a thread that is terminal but never marked done',
+            seed: () => insertJob(ALICE, 'acme/web', 'succeeded'),
+            expected: { refused: 'tasks', count: 1 },
+        },
+        {
+            name: 'does not count command-only tasks',
+            seed: () => insertJob(ALICE, null),
+            expected: { stamped: true },
+        },
+    ])('$name', async ({ seed, expected }) => {
         await store.select(ALICE, [web]);
         await store.select(ALICE, []);
-        await store.stampPurge(ALICE, web);
+        await seed();
 
-        expect(await store.stampPurge(ALICE, web)).toEqual({ refused: 'purging' });
-    });
-
-    it('refuses a row still owned by a clone', async () => {
-        await store.select(ALICE, [web]);
-        await store.claimPending(1);
-        await store.select(ALICE, []);
-
-        expect(await store.stampPurge(ALICE, web)).toEqual({ refused: 'cloning' });
-    });
-
-    it('counts a same-name task whose repo label names another owner as blocking', async () => {
-        // The directory is keyed by repo NAME, so an old task queued against `other/web` writes in
-        // the member's `web` checkout exactly as one queued against `acme/web` would. The tasks
-        // counted are the member's own; only the repo label's owner part is free to differ.
-        await store.select(ALICE, [web]);
-        await store.select(ALICE, []);
-        await insertJob(ALICE, 'other/web');
-
-        expect(await store.stampPurge(ALICE, web)).toEqual({ refused: 'tasks', count: 1 });
-    });
-
-    it('does not count another member\u2019s tasks, whatever their name', async () => {
-        // Another member's tasks run in that member's workspace, never in this checkout.
-        await store.select(ALICE, [web]);
-        await store.select(ALICE, []);
-        await insertJob(BOB, 'other/web');
-        await insertJob(BOB, 'acme/web');
-
-        expect(await store.stampPurge(ALICE, web)).toEqual({ stamped: true });
-    });
-
-    it('does not count a thread that is terminal and marked done', async () => {
-        await store.select(ALICE, [web]);
-        await store.select(ALICE, []);
-        const root = await insertJob(ALICE, 'acme/web', 'succeeded', true);
-        await insertJob(ALICE, 'acme/web', 'failed', true).then(
-            () => sql`update job set root_job_id = ${root} where command = 'do it' and status = 'failed'`
-        );
-
-        expect(await store.stampPurge(ALICE, web)).toEqual({ stamped: true });
-    });
-
-    it('counts a thread that is terminal but never marked done', async () => {
-        await store.select(ALICE, [web]);
-        await store.select(ALICE, []);
-        await insertJob(ALICE, 'acme/web', 'succeeded');
-
-        expect(await store.stampPurge(ALICE, web)).toEqual({ refused: 'tasks', count: 1 });
-    });
-
-    it('does not count command-only tasks', async () => {
-        await store.select(ALICE, [web]);
-        await store.select(ALICE, []);
-        await insertJob(ALICE, null);
-
-        expect(await store.stampPurge(ALICE, web)).toEqual({ stamped: true });
+        expect(await store.stampPurge(ALICE, web)).toEqual(expected);
     });
 
     it('answers missing for a row that is not there', async () => {

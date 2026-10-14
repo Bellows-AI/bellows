@@ -3,7 +3,7 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { craftJob, type CraftShape, expireLease, testUser } from './fixtures.js';
+import { craftJob, type CraftShape, expectMinutes, expireLease, testUser } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -57,19 +57,71 @@ const claimBackdated = async (minutes: number): Promise<{ id: string; token: str
 };
 
 describe.skipIf(!enabled)('the task wall clock', () => {
-    it('complete records the attempt it settles', async () => {
-        const { id, token } = await claimBackdated(10);
+    /*
+     * Every way a single backdated attempt settles banks the segment it actually ran. The stop
+     * nobody delivered is the claim settling the stamped run stopped (issue #152); the stop that
+     * lands without a worker banks the same way, whichever side of the lease expiry it takes —
+     * the row was running for real up to the settle, as the suspend park's segment was.
+     */
+    it.each<{
+        name: string;
+        minutes: number;
+        settle: (id: string, token: string) => Promise<void>;
+        status: string;
+    }>([
+        {
+            name: 'complete records the attempt it settles',
+            minutes: 10,
+            settle: async (id, token) => {
+                expect(
+                    await store.complete(id, token, { status: 'succeeded', exitCode: 0, output: null })
+                ).toMatchObject({ result: 'ok' });
+            },
+            status: 'succeeded',
+        },
+        {
+            name: 'stopping a run records its time when the worker parks it stopped',
+            minutes: STOPPED_RUN_MINUTES_AGO,
+            settle: async (id, token) => {
+                expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
+                expect(await store.suspend(id, token)).toEqual({ result: 'ok', status: 'stopped' });
+            },
+            status: 'stopped',
+        },
+        {
+            name: 'the claim settles a stamped expired run stopped, banking its last segment',
+            minutes: STOPPED_RUN_MINUTES_AGO,
+            settle: async (id) => {
+                expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
+                await expireLease(sql, id);
+                expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
+            },
+            status: 'stopped',
+        },
+        {
+            name: 'stopping in place after the lease died banks the run too',
+            minutes: STOPPED_RUN_MINUTES_AGO,
+            settle: async (id) => {
+                await expireLease(sql, id);
+                expect(await store.stop(id, null)).toEqual({ result: 'stopped' });
+            },
+            status: 'stopped',
+        },
+        {
+            name: 'the park records the run time too — the segment it ends was real',
+            minutes: 2,
+            settle: async (id, token) => {
+                expect(await store.suspend(id, token)).toEqual({ result: 'ok', status: 'stopped' });
+            },
+            status: 'stopped',
+        },
+    ])('$name', async ({ minutes, settle, status }) => {
+        const { id, token } = await claimBackdated(minutes);
 
-        expect(await store.complete(id, token, { status: 'succeeded', exitCode: 0, output: null })).toMatchObject({
-            result: 'ok',
-        });
+        await settle(id, token);
 
-        expect((await store.get(id))?.status).toBe('succeeded');
-        const wall = await wallOf(id);
-        const TEN_MINUTES_LOWER_BOUND_MS = 599_000;
-        const TEN_MINUTES_UPPER_BOUND_MS = 660_000;
-        expect(wall).toBeGreaterThanOrEqual(TEN_MINUTES_LOWER_BOUND_MS);
-        expect(wall).toBeLessThan(TEN_MINUTES_UPPER_BOUND_MS);
+        expect((await store.get(id))?.status).toBe(status);
+        expectMinutes(await wallOf(id), minutes);
         // The single read does not serve the total — the thread read is the task view's source.
         expect((await store.get(id))?.taskWallClockMs).toBeNull();
     });
@@ -89,11 +141,7 @@ describe.skipIf(!enabled)('the task wall clock', () => {
             await store.complete(id, second[0]!.lease_token, { status: 'succeeded', exitCode: 0, output: null })
         ).toMatchObject({ result: 'ok' });
 
-        const wall = await wallOf(id);
-        const EIGHT_MINUTES_LOWER_BOUND_MS = 479_000;
-        const EIGHT_MINUTES_UPPER_BOUND_MS = 540_000;
-        expect(wall).toBeGreaterThanOrEqual(EIGHT_MINUTES_LOWER_BOUND_MS);
-        expect(wall).toBeLessThan(EIGHT_MINUTES_UPPER_BOUND_MS);
+        expectMinutes(await wallOf(id), 8);
     });
 
     it('a row retired dead keeps its last segment', async () => {
@@ -107,70 +155,7 @@ describe.skipIf(!enabled)('the task wall clock', () => {
         expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
         expect((await store.get(id))?.status).toBe('dead');
 
-        const wall = await wallOf(id);
-        const SIX_MINUTES_LOWER_BOUND_MS = 359_000;
-        const SIX_MINUTES_UPPER_BOUND_MS = 420_000;
-        expect(wall).toBeGreaterThanOrEqual(SIX_MINUTES_LOWER_BOUND_MS);
-        expect(wall).toBeLessThan(SIX_MINUTES_UPPER_BOUND_MS);
-    });
-
-    it('stopping a run records its time when the worker parks it stopped', async () => {
-        const { id, token } = await claimBackdated(STOPPED_RUN_MINUTES_AGO);
-        expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
-
-        expect(await store.suspend(id, token)).toEqual({ result: 'ok', status: 'stopped' });
-
-        const wall = await wallOf(id);
-        const FOUR_MINUTES_LOWER_BOUND_MS = 239_000;
-        const FOUR_MINUTES_UPPER_BOUND_MS = 300_000;
-        expect(wall).toBeGreaterThanOrEqual(FOUR_MINUTES_LOWER_BOUND_MS);
-        expect(wall).toBeLessThan(FOUR_MINUTES_UPPER_BOUND_MS);
-    });
-
-    // The stop nobody delivered: the claim settles the stamped run stopped (issue #152), and the
-    // settle banks the segment the attempt actually ran — the same banking the suspend park
-    // makes on the delivered path.
-    it('the claim settles a stamped expired run stopped, banking its last segment', async () => {
-        const { id } = await claimBackdated(STOPPED_RUN_MINUTES_AGO);
-        expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
-        await expireLease(sql, id);
-
-        expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
-
-        expect((await store.get(id))?.status).toBe('stopped');
-        const wall = await wallOf(id);
-        const FOUR_MINUTES_LOWER_BOUND_MS = 239_000;
-        const FOUR_MINUTES_UPPER_BOUND_MS = 300_000;
-        expect(wall).toBeGreaterThanOrEqual(FOUR_MINUTES_LOWER_BOUND_MS);
-        expect(wall).toBeLessThan(FOUR_MINUTES_UPPER_BOUND_MS);
-    });
-
-    // The stop that lands without a worker banks the same way: the row was running for real up
-    // to the settle, whichever side of the lease expiry the landing takes.
-    it('stopping in place after the lease died banks the run too', async () => {
-        const { id } = await claimBackdated(STOPPED_RUN_MINUTES_AGO);
-        await expireLease(sql, id);
-
-        expect(await store.stop(id, null)).toEqual({ result: 'stopped' });
-
-        expect((await store.get(id))?.status).toBe('stopped');
-        const wall = await wallOf(id);
-        const FOUR_MINUTES_LOWER_BOUND_MS = 239_000;
-        const FOUR_MINUTES_UPPER_BOUND_MS = 300_000;
-        expect(wall).toBeGreaterThanOrEqual(FOUR_MINUTES_LOWER_BOUND_MS);
-        expect(wall).toBeLessThan(FOUR_MINUTES_UPPER_BOUND_MS);
-    });
-
-    it('the park records the run time too — the segment it ends was real', async () => {
-        const { id, token } = await claimBackdated(2);
-
-        expect(await store.suspend(id, token)).toEqual({ result: 'ok', status: 'stopped' });
-
-        const wall = await wallOf(id);
-        const TWO_MINUTES_LOWER_BOUND_MS = 119_000;
-        const TWO_MINUTES_UPPER_BOUND_MS = 180_000;
-        expect(wall).toBeGreaterThanOrEqual(TWO_MINUTES_LOWER_BOUND_MS);
-        expect(wall).toBeLessThan(TWO_MINUTES_UPPER_BOUND_MS);
+        expectMinutes(await wallOf(id), 6);
     });
 
     it('stopping a task that never ran records nothing', async () => {

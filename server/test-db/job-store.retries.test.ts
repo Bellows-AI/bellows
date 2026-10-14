@@ -3,7 +3,7 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { account, mustCreate } from './fixtures.js';
+import { account, mustCreate, randomGithubId } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -62,9 +62,10 @@ const finishSessionless = async (
  */
 const finishWithSession = async (
     command: string,
-    target: { repo: string | null; executor: string | null } = { repo: null, executor: null }
+    target: { repo: string | null; executor: string | null } = { repo: null, executor: null },
+    createdBy: string | null = null
 ): Promise<string> => {
-    const { id } = await mustCreate(store.create(command, null, target));
+    const { id } = await mustCreate(store.create(command, createdBy, target));
     const claim = await store.claim('w1', LEASE_SECONDS);
     await store.session(id, claim!.leaseToken, SESSION);
     await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
@@ -159,38 +160,9 @@ describe.skipIf(!enabled)('retries', () => {
         expect(claim).toMatchObject({ id: retry.id, resumeSessionId: null, followUp: false });
     });
 
-    // A moving run is not over: its own attempt still owns the turn. Two rows, one claim: the
-    // FIFO claim takes the OLDER row, so after the claim `first` is running and `second` is
-    // still queued — both refusal shapes in one test.
-    it('refuses a retry on a task that is still moving', async () => {
-        const { id: first } = await queue('echo hi');
-        const { id: second } = await queue('echo hi too');
-        await store.claim('w1', LEASE_SECONDS);
-
-        expect(await store.createRetry(first, null)).toBe('not_finished');
-        expect(await store.createRetry(second, null)).toBe('not_finished');
-    });
-
-    // Eligibility is the THREAD HEAD's, not the named row's: the retry re-runs the head's
-    // command, so a head that is still queued or running owns the turn whoever was asked.
-    it('refuses a retry while the thread head is still queued', async () => {
-        const root = await finishWithSession('drive me');
-        await mustFollowUp(root, 'queued adjustment', null);
-
-        expect(await store.createRetry(root, null)).toBe('not_finished');
-    });
-
-    it('refuses a retry while the thread head is still running', async () => {
-        const root = await finishWithSession('drive me');
-        const followUp = await mustFollowUp(root, 'running adjustment', null);
-        const claim = await store.claim('w1', LEASE_SECONDS);
-        expect(claim?.id).toBe(followUp.id);
-
-        expect(await store.createRetry(root, null)).toBe('not_finished');
-    });
-
     // The done is the THREAD's: one member carrying done_at closes the whole conversation to
-    // retries, even when the asked member itself was never marked.
+    // retries, even when the asked member itself was never marked. (A follow-up on that member
+    // is accepted today — only retry reads the done thread-wide.)
     it('refuses a retry on a thread whose done landed on another member', async () => {
         const root = await finishWithSession('drive me');
         const followUp = await mustFollowUp(root, 'again', null);
@@ -205,45 +177,6 @@ describe.skipIf(!enabled)('retries', () => {
         expect(await store.createRetry(followUp.id, null)).toBe('task_done');
     });
 
-    // A moving head means the thread is not over: not_finished (retry later) outranks the
-    // older member's task_done, which a reopen can still clear.
-    it('prefers not_finished over task_done when the head is moving', async () => {
-        const root = await finishWithSession('drive me');
-        await mustFollowUp(root, 'still queued', null);
-        await store.markDone(root, null);
-
-        expect(await store.createRetry(root, null)).toBe('not_finished');
-    });
-
-    it('refuses a retry on a task the user has marked done', async () => {
-        const id = await finishSessionless('echo hi');
-        await store.markDone(id, null);
-
-        expect(await store.createRetry(id, null)).toBe('task_done');
-    });
-
-    // Author-scoped like follow-up: a retry runs in the author's checkout tree (the thread's
-    // worktree lives there), so a member's command may only ever retry their own task.
-    it('refuses a retry by anyone but the account that queued the task', async () => {
-        const AUTHOR_A_GITHUB_ID = 6101;
-        const AUTHOR_B_GITHUB_ID = 6102;
-        const authorA = await account(sql, AUTHOR_A_GITHUB_ID, 'retry-author-a');
-        const authorB = await account(sql, AUTHOR_B_GITHUB_ID, 'retry-author-b');
-        const id = await finishSessionless('drive me', authorA);
-
-        expect(await store.createRetry(id, authorB)).toBe('forbidden');
-        // A caller with no account cannot claim a task that has one.
-        expect(await store.createRetry(id, null)).toBe('forbidden');
-        expect(await store.createRetry(id, authorA)).toMatchObject({ id: expect.any(String) });
-    });
-
-    it('separates a missing task from a refused retry', async () => {
-        const id = await finishSessionless('echo hi');
-
-        expect(await store.createRetry(ABSENT, null)).toBe('missing');
-        expect(await otherOrgStore.createRetry(id, null)).toBe('missing');
-    });
-
     // The head's frozen workflow_name (033) is one of the copied labels: a retried workflow
     // thread's turn carries the name the member chose at create. Stamped straight onto the row
     // here — the copy is the behavior under test, not the workflow machinery that normally
@@ -256,42 +189,103 @@ describe.skipIf(!enabled)('retries', () => {
 
         expect(await store.get(retry.id)).toMatchObject({ workflowName: 'my-flow' });
     });
+});
 
-    // The per-thread advisory lock is the codebase's one serialization point (claim, remove,
-    // reopen, done all take it): the retry's eligibility check and its insert must be atomic
-    // with a racing done on any member, or a done could commit between the check and the
-    // insert and leave a fresh attempt queued into a closed thread.
-    it('blocks a retry while another transaction holds the thread lock', async () => {
-        const root = await finishSessionless('retry me');
+/*
+ * Follow-up and retry answer one thread-eligibility contract (#698), so each rule runs for both.
+ * Every op finishes its task its own way — follow-up from a run that reported a session, retry from
+ * one that never did (its own acceptance shape) — except where a rule needs a thread of two.
+ * The per-thread advisory lock both take is pinned with the other lock waits, in
+ * job-store.follow-ups.test.ts. Two rules are one op's alone and stay beside it: a done on another
+ * member refuses only a retry (above), an unfinished older member only a follow-up.
+ */
+describe.skipIf(!enabled).each([
+    {
+        op: 'follow-up',
+        call: (target: JobStore, id: string, by: string | null, command = 'again') =>
+            target.createFollowUp(id, command, by),
+        finish: (command: string, createdBy: string | null = null) => finishWithSession(command, undefined, createdBy),
+    },
+    {
+        op: 'retry',
+        call: (target: JobStore, id: string, by: string | null) => target.createRetry(id, by),
+        finish: (command: string, createdBy: string | null = null) => finishSessionless(command, createdBy),
+    },
+])('a $op refuses the thread alike', ({ call, finish }) => {
+    const run = (id: string, by: string | null, command?: string) => call(store, id, by, command);
+    const threadSize = async (root: string) => {
+        const [row] = await sql<{ n: number }[]>`
+            select count(*)::int as n from job where org_id = ${ORG} and root_job_id = ${root}
+        `;
+        return row!.n;
+    };
 
-        let lockTaken: (() => void) | null = null;
-        const locked = new Promise<void>((resolve) => {
-            lockTaken = resolve;
-        });
-        let release: (() => void) | null = null;
-        const held = new Promise<void>((resolve) => {
-            release = resolve;
-        });
-        const blocker = sql.begin(async (tx) => {
-            await tx`select pg_advisory_xact_lock(hashtextextended(${root}::text, 0))`;
-            lockTaken!();
-            await held;
-        });
-        blocker.catch(() => {});
-        await locked;
+    // A moving run is not over: its own attempt still owns the turn. Two rows, one claim: the
+    // FIFO claim takes the OLDER row, so after the claim `first` is running and `second` is
+    // still queued — both refusal shapes in one test.
+    it('refuses a task that is still moving', async () => {
+        const { id: first } = await queue('echo hi');
+        const { id: second } = await queue('echo hi too');
+        await store.claim('w1', LEASE_SECONDS);
 
-        // The timer is the assertion device, the same one the follow-ups lock tests use:
-        // the retry must still be waiting when it fires.
-        const retry = store.createRetry(root, null);
-        const STILL_LOCKED_TIMEOUT_MS = 450;
-        const outcome = await Promise.race([
-            retry,
-            new Promise<string>((resolve) => setTimeout(() => resolve('still_locked'), STILL_LOCKED_TIMEOUT_MS)),
-        ]);
-        expect(outcome).toBe('still_locked');
+        expect(await run(first, null)).toBe('not_finished');
+        expect(await run(second, null)).toBe('not_finished');
+    });
 
-        release!();
-        await blocker;
-        expect(await retry).toMatchObject({ id: expect.any(String) });
+    // Eligibility is the THREAD's, not the named row's: a finished member whose thread still
+    // holds a queued or running member refuses, so a keyless repeat never queues a second turn.
+    it('refuses a finished member while a newer one is still queued', async () => {
+        const root = await finishWithSession('drive me');
+        await mustFollowUp(root, 'first adjustment', null);
+
+        expect(await run(root, null, 'first adjustment')).toBe('not_finished');
+        expect(await threadSize(root)).toBe(2);
+    });
+
+    it('refuses a finished member while the thread head is still running', async () => {
+        const root = await finishWithSession('drive me');
+        const followUp = await mustFollowUp(root, 'running adjustment', null);
+        const claim = await store.claim('w1', LEASE_SECONDS);
+        expect(claim?.id).toBe(followUp.id);
+
+        expect(await run(root, null)).toBe('not_finished');
+    });
+
+    // A moving thread means it is not over: not_finished (try later) outranks the older
+    // member's task_done, which a reopen can still clear.
+    it('answers not_finished before task_done for a done thread that is still moving', async () => {
+        const root = await finishWithSession('drive me');
+        await mustFollowUp(root, 'still queued', null);
+        await store.markDone(root, null);
+
+        expect(await run(root, null)).toBe('not_finished');
+    });
+
+    it('refuses a task the user has marked done', async () => {
+        const id = await finish('echo hi');
+        await store.markDone(id, null);
+
+        expect(await run(id, null)).toBe('task_done');
+    });
+
+    // Author-scoped: the thread's worktree and session live in the author's checkout tree, so a
+    // member's command may only ever continue or re-run their own task.
+    it('refuses anyone but the account that queued the task', async () => {
+        const authorA = await account(sql, randomGithubId(), 'author-a');
+        const authorB = await account(sql, randomGithubId(), 'author-b');
+        const id = await finish('drive me', authorA);
+
+        expect(await run(id, authorB)).toBe('forbidden');
+        // A caller with no account — the route tests' no-auth-store shape — cannot claim a task
+        // that has one. The author's own still lands.
+        expect(await run(id, null)).toBe('forbidden');
+        expect(await run(id, authorA)).toMatchObject({ id: expect.any(String) });
+    });
+
+    it('separates a missing task from a refusal', async () => {
+        const id = await finish('echo hi');
+
+        expect(await run(ABSENT, null)).toBe('missing');
+        expect(await call(otherOrgStore, id, null)).toBe('missing');
     });
 });

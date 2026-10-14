@@ -212,29 +212,37 @@ describe.skipIf(!enabled)('sessions', () => {
         expect(resolved?.org).toEqual({ id: ORG, name: ORG });
     });
 
-    it('refuses an expired session', async () => {
+    /** Each row seeds one session shape and answers the token it was issued under. */
+    it.each<{ name: string; seed: (userId: string) => Promise<Buffer> }>([
+        {
+            name: 'refuses an expired session',
+            seed: async (userId) => {
+                const hash = hashToken('token-b');
+                await store.createSession(hash, userId, new Date(Date.now() - EXPIRED_OFFSET_MS), ORG);
+                return hash;
+            },
+        },
+        {
+            name: 'refuses an unknown token',
+            seed: async () => hashToken('never-issued'),
+        },
+        {
+            // The fail-closed upgrade path: a null org joins no membership, so the upgrade signs
+            // everybody out instead of mis-scoping anybody.
+            name: 'refuses a session with no org — every row predating 028 — rather than guessing one',
+            seed: async (userId) => {
+                await sql`
+                    insert into session (token_hash, user_id, expires_at, org_id)
+                    values (${hashToken('token-pre028')}, ${userId}, ${live()}, null)
+                `;
+                return hashToken('token-pre028');
+            },
+        },
+    ])('$name', async ({ seed }) => {
         const caller = await member();
-        const hash = hashToken('token-b');
-        await store.createSession(hash, caller.user.id, new Date(Date.now() - EXPIRED_OFFSET_MS), ORG);
+        const hash = await seed(caller.user.id);
 
         expect(await store.findSession(hash)).toBeNull();
-    });
-
-    it('refuses an unknown token', async () => {
-        await member();
-        expect(await store.findSession(hashToken('never-issued'))).toBeNull();
-    });
-
-    it('refuses a session with no org — every row predating 028 — rather than guessing one', async () => {
-        // The fail-closed upgrade path: a null org joins no membership, so the upgrade signs
-        // everybody out instead of mis-scoping anybody.
-        const caller = await member();
-        await sql`
-            insert into session (token_hash, user_id, expires_at, org_id)
-            values (${hashToken('token-pre028')}, ${caller.user.id}, ${live()}, null)
-        `;
-
-        expect(await store.findSession(hashToken('token-pre028'))).toBeNull();
     });
 
     it('stops resolving the moment the membership is gone', async () => {

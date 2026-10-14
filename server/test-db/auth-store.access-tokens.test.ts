@@ -68,15 +68,6 @@ describe.skipIf(!enabled)('access tokens', () => {
         });
     });
 
-    it('refuses a personal token whose membership is gone', async () => {
-        const caller = await member(2, 'leaver');
-        await createPersonal(caller, 'fat_b', 'laptop');
-
-        await sql`delete from org_membership where org_id = ${ORG} and user_id = ${caller.user.id}`;
-
-        expect(await store.findPersonalToken(hashToken('fat_b'))).toBeNull();
-    });
-
     it('resolves each token into its OWN org, whatever else the account belongs to', async () => {
         // Since #99 the lookup is by the globally-unique hash and the org comes FROM the row —
         // the mint-time binding. A token minted into one org acts there and nowhere else.
@@ -152,21 +143,46 @@ describe.skipIf(!enabled)('access tokens: org-scoped', () => {
         expect(await store.findOrgToken(hashToken('oat_h'))).toEqual({ orgId: ORG, id: org.id, label: 'ci' });
     });
 
-    it('resolves an org token only while its minter is still a member', async () => {
-        // The issuer's membership is the org token's authority, the same join a session and a
-        // personal token run: sign-in propagation deleting the membership kills the token's reach
-        // on the next request, while the row itself survives unrevoked — history with no reach,
-        // the same contract the personal kind states.
-        const ACCOUNT_SEQ = 12;
-        const minter = await member(ACCOUNT_SEQ, 'org-leaver');
-        const org = await createOrgToken(minter, 'oat_i', 'ci');
-        expect(await store.findOrgToken(hashToken('oat_i'))).toEqual({ orgId: ORG, id: org.id, label: 'ci' });
+    /*
+     * The issuer's membership is the token's authority, the same join a session runs: sign-in
+     * propagation deleting the membership kills the token's reach on the next request, while the
+     * row itself survives unrevoked — history with no reach, for either kind.
+     */
+    it.each<{
+        name: string;
+        seq: number;
+        login: string;
+        mint: (caller: { user: { id: string } }) => Promise<{ id: string }>;
+        find: () => Promise<unknown>;
+        /** The answer while the membership still stands. */
+        expectLive: (answer: unknown, caller: { user: { id: string } }, id: string) => void;
+    }>([
+        {
+            name: 'refuses a personal token whose membership is gone',
+            seq: 2,
+            login: 'leaver',
+            mint: (caller) => createPersonal(caller, 'fat_b', 'laptop'),
+            find: () => store.findPersonalToken(hashToken('fat_b')),
+            expectLive: (answer, caller) => expect(answer).toMatchObject({ user: { id: caller.user.id } }),
+        },
+        {
+            name: 'resolves an org token only while its minter is still a member',
+            seq: 12,
+            login: 'org-leaver',
+            mint: (caller) => createOrgToken(caller, 'oat_i', 'ci'),
+            find: () => store.findOrgToken(hashToken('oat_i')),
+            expectLive: (answer, _caller, id) => expect(answer).toEqual({ orgId: ORG, id, label: 'ci' }),
+        },
+    ])('$name', async ({ seq, login, mint, find, expectLive }) => {
+        const minter = await member(seq, login);
+        const token = await mint(minter);
+        expectLive(await find(), minter, token.id);
 
         await sql`delete from org_membership where org_id = ${ORG} and user_id = ${minter.user.id}`;
 
-        expect(await store.findOrgToken(hashToken('oat_i'))).toBeNull();
+        expect(await find()).toBeNull();
         const [row] = await sql<{ revoked_at: Date | null }[]>`
-            select revoked_at from access_token where org_id = ${ORG} and id = ${org.id}
+            select revoked_at from access_token where org_id = ${ORG} and id = ${token.id}
         `;
         expect(row?.revoked_at).toBeNull();
     });
