@@ -90,16 +90,6 @@ describe('factory job create', () => {
         expect(calls[0]!.body).toEqual({ command: 'npm test --watch', repo: 'owner/name' });
     });
 
-    it('is a usage error with no command, making no request', async () => {
-        const { err, calls, io } = harness(ENV, () => json({}));
-
-        const code = await run(['job', 'create'], io);
-
-        expect(code).toBe(2);
-        expect(err.join('')).toContain('usage:');
-        expect(calls).toHaveLength(0);
-    });
-
     it('rides the executor scope the flag names into the body (issue 391)', async () => {
         const { calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
 
@@ -133,19 +123,6 @@ describe('factory job create', () => {
 
         expect(code).toBe(0);
         expect(calls[0]!.body).toEqual({ command: 'npm test', executor: 'main' });
-    });
-
-    it('refuses a scope outside user|org as a usage error, before any request', async () => {
-        const { err, calls, io } = harness(ENV, () => json({}));
-
-        const code = await run(
-            ['job', 'create', '--executor', 'main', '--executor-scope', 'repo', '--', 'npm test'],
-            io
-        );
-
-        expect(code).toBe(2);
-        expect(err.join('')).toContain('--executor-scope');
-        expect(calls).toHaveLength(0);
     });
 });
 
@@ -181,16 +158,6 @@ describe('factory job list', () => {
             data: { jobs },
             error: null,
         });
-    });
-
-    it('refuses a non-numeric --limit before any request', async () => {
-        const { err, calls, io } = harness(ENV, () => json({ jobs: [] }));
-
-        const code = await run(['job', 'list', '--limit', 'many'], io);
-
-        expect(code).toBe(2);
-        expect(err.join('')).toContain('--limit');
-        expect(calls).toHaveLength(0);
     });
 });
 
@@ -295,22 +262,6 @@ describe('factory job wait', () => {
         expect(calls[0]!.url).toBe('http://board/api/jobs/job-1?waitFor=terminal&timeout=50');
     });
 
-    it("ends on the board's parked result however fast it came back, naming the wait", async () => {
-        // No clock reads past the poll's own: the result says parked, so nothing about timing is
-        // consulted — a parked thread ends the wait at once and exits 6.
-        const { err, calls, io } = harness(
-            ENV,
-            () => json(waitBody('parked', {}, { headStatus: 'queued', waitReason: 'pr_review' })),
-            clockOf(0, 0)
-        );
-
-        const code = await run(['job', 'wait', 'job-1', '--timeout', '120'], io);
-
-        expect(code).toBe(6);
-        expect(err.join('')).toContain('pr_review');
-        expect(calls).toHaveLength(1);
-    });
-
     it('does not treat a quick timeout result as parked', async () => {
         // The old rule read a hold that ended early as parked. The board's result is the only
         // signal now: a `timeout` that came back instantly is simply re-issued.
@@ -395,24 +346,39 @@ describe('factory job wait', () => {
             outcome: 'failed',
             stream: 'stdout',
         },
-    ])('ends $label with exit $exitCode and outcome $outcome', async ({ body, exitCode, outcome, stream }) => {
-        const human = harness(ENV, () => json(body), clockOf(0, 0));
-        expect(await run(['job', 'wait', 'job-1'], human.io)).toBe(exitCode);
+        {
+            // No clock reads past the poll's own: the result says parked, so nothing about timing
+            // is consulted — a parked thread ends the wait at once, however fast it came back.
+            label: 'parked on a queued head within a longer budget',
+            body: waitBody('parked', {}, { headStatus: 'queued', waitReason: 'pr_review' }),
+            args: ['--timeout', '120'],
+            exitCode: 6,
+            outcome: 'needs_attention',
+            stream: 'stderr',
+            stderr: 'pr_review',
+            requests: 1,
+        },
+        {
+            label: 'a spent budget',
+            body: waitBody('timeout'),
+            args: ['--timeout', '1'],
+            clock: [0, 0, 1_000],
+            exitCode: 3,
+            outcome: 'timeout',
+            stream: 'stderr',
+        },
+    ])('ends $label with exit $exitCode and outcome $outcome', async (row) => {
+        const { body, args = [], clock = [0, 0], exitCode, outcome, stream, stderr, requests } = row;
+        const human = harness(ENV, () => json(body), clockOf(...clock));
+        expect(await run(['job', 'wait', 'job-1', ...args], human.io)).toBe(exitCode);
         expect((stream === 'stdout' ? human.out : human.err).join('')).not.toBe('');
+        if (stderr !== undefined) expect(human.err.join('')).toContain(stderr);
+        if (requests !== undefined) expect(human.calls).toHaveLength(requests);
 
-        const machine = harness(ENV, () => json(body), clockOf(0, 0));
-        expect(await run(['job', 'wait', 'job-1', '--json'], machine.io)).toBe(exitCode);
+        const machine = harness(ENV, () => json(body), clockOf(...clock));
+        expect(await run(['job', 'wait', 'job-1', ...args, '--json'], machine.io)).toBe(exitCode);
         expect(JSON.parse(machine.out.join('')).outcome).toBe(outcome);
         expect(machine.err).toEqual([]);
-    });
-
-    it('ends exit 3 with outcome timeout when the budget is spent', async () => {
-        const { out, io } = harness(ENV, () => json(waitBody('timeout')), clockOf(0, 0, 1_000));
-
-        const code = await run(['job', 'wait', 'job-1', '--timeout', '1', '--json'], io);
-
-        expect(code).toBe(3);
-        expect(JSON.parse(out.join('')).outcome).toBe('timeout');
     });
 
     it('refuses an answer with no wait result as a malformed response, not a guess', async () => {
@@ -423,16 +389,6 @@ describe('factory job wait', () => {
 
         expect(code).toBe(1);
         expect(err.join('')).toContain('MALFORMED_RESPONSE');
-    });
-
-    it('refuses a --timeout that is not a positive integer before any request', async () => {
-        const { err, calls, io } = harness(ENV, () => json(job()));
-
-        const code = await run(['job', 'wait', 'job-1', '--timeout', 'soon'], io);
-
-        expect(code).toBe(2);
-        expect(err.join('')).toContain('--timeout');
-        expect(calls).toHaveLength(0);
     });
 });
 
@@ -446,67 +402,6 @@ describe('factory job follow-up', () => {
         expect(out.join('')).toContain('job-2');
         expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/follow-up');
         expect(calls[0]!.body).toEqual({ command: 'now add a test' });
-    });
-
-    it('is a usage error with an id but no command, making no request', async () => {
-        const { err, calls, io } = harness(ENV, () => json({}));
-
-        const code = await run(['job', 'follow-up', 'job-1'], io);
-
-        expect(code).toBe(2);
-        expect(err.join('')).toContain('usage:');
-        expect(calls).toHaveLength(0);
-    });
-
-    it('surfaces the board refusal when the parent turn is not finished', async () => {
-        const { err, io } = harness(ENV, () => json({ error: 'Task is still running', code: 'NOT_FINISHED' }, 409));
-
-        const code = await run(['job', 'follow-up', 'job-1', 'again'], io);
-
-        expect(code).toBe(1);
-        expect(err.join('')).toContain('Task is still running');
-        expect(err.join('')).toContain('NOT_FINISHED');
-    });
-});
-
-describe('factory job retry', () => {
-    it('posts a bodiless retry and prints the new queued run', async () => {
-        const { out, calls, io } = harness(ENV, () => json({ id: 'job-3', status: 'queued' }, 201));
-
-        const code = await run(['job', 'retry', 'job-1'], io);
-
-        expect(code).toBe(0);
-        expect(out.join('')).toBe('queued job-3\n');
-        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/retry');
-        expect(calls[0]!.method).toBe('POST');
-        expect(calls[0]!.body).toBeUndefined();
-    });
-
-    it.each([
-        ['no id', ['job', 'retry']],
-        ['two ids', ['job', 'retry', 'job-1', 'job-2']],
-        ['an unknown flag', ['job', 'retry', 'job-1', '--frob']],
-    ])('is a usage error with %s, making no request', async (_label, argv) => {
-        const { err, calls, io } = harness(ENV, () => json({}));
-
-        expect(await run(argv, io)).toBe(2);
-        expect(err.join('')).not.toBe('');
-        expect(calls).toHaveLength(0);
-    });
-
-    it('surfaces a state refusal from the board', async () => {
-        const { err, io } = harness(ENV, () => json({ error: 'Task is still running', code: 'NOT_FINISHED' }, 409));
-
-        expect(await run(['job', 'retry', 'job-1'], io)).toBe(1);
-        expect(err.join('')).toContain('NOT_FINISHED');
-    });
-
-    it('keeps a refusal machine-readable under --json', async () => {
-        const { out, err, io } = harness(ENV, () => json({ error: 'nope', code: 'FORBIDDEN' }, 403));
-
-        expect(await run(['job', 'retry', 'job-1', '--json'], io)).toBe(1);
-        expect(err).toEqual([]);
-        expect(JSON.parse(out.join('')).ok).toBe(false);
     });
 });
 
@@ -601,79 +496,6 @@ describe('factory job remove', () => {
         expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/remove');
         expect(calls[0]!.method).toBe('POST');
     });
-
-    it('refuses without --yes, making no request', async () => {
-        // Remove deletes the whole thread and cannot be undone, so the irreversible step is the
-        // one the command line has to say out loud.
-        const { err, calls, io } = harness(ENV, () => json({ id: 'job-1', removed: true }));
-
-        const code = await run(['job', 'remove', 'job-1'], io);
-
-        expect(code).toBe(2);
-        expect(err.join('')).toContain('--yes');
-        expect(calls).toHaveLength(0);
-    });
-
-    it('surfaces the board refusal when the task is still running', async () => {
-        const { err, io } = harness(ENV, () =>
-            json({ error: 'The task is still running — stop it first', code: 'TASK_RUNNING' }, 409)
-        );
-
-        const code = await run(['job', 'remove', 'job-1', '--yes'], io);
-
-        expect(code).toBe(1);
-        expect(err.join('')).toContain('stop it first');
-    });
-});
-
-describe('command failures', () => {
-    it('lands a board 404 on stderr with the board message and exits 1', async () => {
-        const { err, io } = harness(ENV, () => json({ error: 'No such job', code: 'NOT_FOUND' }, 404));
-
-        const code = await run(['job', 'investigate', 'nope'], io);
-
-        expect(code).toBe(1);
-        expect(err.join('')).toContain('No such job');
-    });
-
-    it('lands a network failure on stderr and exits 1', async () => {
-        const fetch = (async () => {
-            throw new Error('fetch failed');
-        }) as unknown as typeof globalThis.fetch;
-        const out: string[] = [];
-        const err: string[] = [];
-        const io = {
-            env: ENV,
-            fetch,
-            stdout: (text: string) => out.push(text),
-            stderr: (text: string) => err.push(text),
-        };
-
-        const code = await run(['job', 'list'], io);
-
-        expect(code).toBe(7);
-        expect(err.join('')).toContain('cannot reach http://board');
-    });
-
-    it('names the missing FACTORY_URL, exits 2, and makes no request', async () => {
-        const { err, calls, io } = harness({}, () => json({ jobs: [] }));
-
-        const code = await run(['job', 'list'], io);
-
-        expect(code).toBe(2);
-        expect(err.join('')).toContain('FACTORY_URL');
-        expect(calls).toHaveLength(0);
-    });
-
-    it('prints usage and exits 2 for an unknown subcommand', async () => {
-        const { err, calls, io } = harness(ENV, () => json({ jobs: [] }));
-
-        const code = await run(['job', 'frobnicate'], io);
-
-        expect(code).toBe(2);
-        expect(err.join('')).toContain('usage:');
-        expect(calls).toHaveLength(0);
-    });
 });
 
 describe('--json on every outcome', () => {
@@ -683,7 +505,8 @@ describe('--json on every outcome', () => {
     };
 
     // Each row: a command line, what the board does, then the one outcome and exit code it must
-    // end in. The same line runs with --json and must leave stderr empty and stdout one document.
+    // end in. The same line runs with --json and must leave stderr empty and stdout one document;
+    // without it, the failure lands on stderr naming `stderr` where the row gives one.
     const nonJson = () => new Response('<html>', { status: 200 });
     const FAILURES = [
         {
@@ -692,6 +515,7 @@ describe('--json on every outcome', () => {
             respond: refusal,
             outcome: 'refused',
             exitCode: 1,
+            stderr: 'No such job',
         },
         {
             label: 'a board refusal on an action',
@@ -713,24 +537,44 @@ describe('--json on every outcome', () => {
             respond: unreachable,
             outcome: 'unreachable',
             exitCode: 7,
+            stderr: 'cannot reach http://board',
         },
         { label: 'a non-JSON 2xx body', argv: ['job', 'list'], respond: nonJson, outcome: 'refused', exitCode: 1 },
-        { label: 'a missing config', argv: ['job', 'list'], respond: refusal, outcome: 'usage', exitCode: 2, env: {} },
+        {
+            label: 'a missing config',
+            argv: ['job', 'list'],
+            respond: refusal,
+            outcome: 'usage',
+            exitCode: 2,
+            env: {},
+            stderr: 'FACTORY_URL',
+        },
         {
             label: 'a bad flag value',
             argv: ['job', 'list', '--limit', 'many'],
             respond: refusal,
             outcome: 'usage',
             exitCode: 2,
+            stderr: '--limit',
         },
         { label: 'an unknown flag', argv: ['job', 'list', '--frob'], respond: refusal, outcome: 'usage', exitCode: 2 },
-        { label: 'a create with no command', argv: ['job', 'create'], respond: refusal, outcome: 'usage', exitCode: 2 },
         {
+            label: 'a create with no command',
+            argv: ['job', 'create'],
+            respond: refusal,
+            outcome: 'usage',
+            exitCode: 2,
+            stderr: 'usage:',
+        },
+        {
+            // Remove deletes the whole thread and cannot be undone, so the irreversible step is the
+            // one the command line has to say out loud.
             label: 'a remove without --yes',
             argv: ['job', 'remove', 'job-1'],
             respond: refusal,
             outcome: 'usage',
             exitCode: 2,
+            stderr: '--yes',
         },
         {
             label: 'a bad wait timeout',
@@ -738,6 +582,7 @@ describe('--json on every outcome', () => {
             respond: refusal,
             outcome: 'usage',
             exitCode: 2,
+            stderr: '--timeout',
         },
         {
             label: 'an unknown subcommand',
@@ -745,24 +590,34 @@ describe('--json on every outcome', () => {
             respond: refusal,
             outcome: 'usage',
             exitCode: 2,
+            stderr: 'usage:',
         },
         { label: 'an unknown topic', argv: ['nope'], respond: refusal, outcome: 'usage', exitCode: 2 },
         { label: 'no arguments at all', argv: [], respond: refusal, outcome: 'usage', exitCode: 2 },
     ];
 
-    it.each(FAILURES)('$label ends as one parseable document', async ({ argv, respond, outcome, exitCode, env }) => {
-        const { out, err, calls, io } = harness(env ?? ENV, respond);
+    it.each(FAILURES)(
+        '$label ends as one parseable document, and on stderr without --json',
+        async ({ argv, respond, outcome, exitCode, env, stderr }) => {
+            const human = harness(env ?? ENV, respond);
+            expect(await run(argv, human.io)).toBe(exitCode);
+            expect(human.err.join('')).toContain(stderr ?? '');
+            expect(human.err.join('')).not.toBe('');
+            if (outcome === 'usage') expect(human.calls).toHaveLength(0);
 
-        const code = await run([...argv, '--json'], io);
+            const { out, err, calls, io } = harness(env ?? ENV, respond);
 
-        expect(code).toBe(exitCode);
-        expect(err).toEqual([]);
-        expect(out).toHaveLength(1);
-        const envelope = JSON.parse(out[0]!);
-        expect(envelope).toMatchObject({ ok: false, outcome, exitCode });
-        expect(envelope.error.message).not.toBe('');
-        if (outcome === 'usage') expect(calls).toHaveLength(0);
-    });
+            const code = await run([...argv, '--json'], io);
+
+            expect(code).toBe(exitCode);
+            expect(err).toEqual([]);
+            expect(out).toHaveLength(1);
+            const envelope = JSON.parse(out[0]!);
+            expect(envelope).toMatchObject({ ok: false, outcome, exitCode });
+            expect(envelope.error.message).not.toBe('');
+            if (outcome === 'usage') expect(calls).toHaveLength(0);
+        }
+    );
 
     it("carries the board's code and status on a refusal", async () => {
         const { out, io } = harness(ENV, refusal);

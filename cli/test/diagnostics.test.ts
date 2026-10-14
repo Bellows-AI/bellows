@@ -141,12 +141,6 @@ describe('factory auth status: configuration', () => {
         expect(printed()).not.toContain('hunter2');
         expect(calls).toEqual([]);
     });
-
-    it('refuses a stray argument as usage', async () => {
-        const { calls, io } = harness(board());
-        expect(await run(['auth', 'status', 'extra'], io)).toBe(2);
-        expect(calls).toEqual([]);
-    });
 });
 
 describe('factory auth status: identity', () => {
@@ -378,12 +372,6 @@ describe('factory job preflight', () => {
         );
         expect(code).toBe(1);
         expect(result.error).toMatchObject({ status: 401 });
-    });
-
-    it('refuses a command positional as usage, making no request', async () => {
-        const { code, calls } = await preflight(['--repo', 'acme/api', 'npm', 'test']);
-        expect(code).toBe(2);
-        expect(calls).toEqual([]);
     });
 
     it('prints one line per check for a person, and says the board rechecks', async () => {

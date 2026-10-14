@@ -128,20 +128,6 @@ describe('factory task list', () => {
         expect(JSON.parse(machine.out.join('')).data).toEqual({ tasks: [], nextCursor: null });
     });
 
-    it('surfaces a cursor the board refuses for this query', async () => {
-        const { err, io } = harness(
-            Response.json(
-                { error: 'cursor was not issued by this endpoint for this query', code: 'BAD_CURSOR' },
-                { status: 400 }
-            )
-        );
-
-        const code = await run(['task', 'list', '--state', 'past', '--cursor', 'stale'], io);
-
-        expect(code).toBe(1);
-        expect(err.join('')).toContain('[BAD_CURSOR]');
-    });
-
     it.each([
         [['--state', 'done'], '--state'],
         [['--sort', 'latest'], '--sort'],

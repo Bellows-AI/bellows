@@ -141,8 +141,4 @@ describe('loadConfig', () => {
         const DEFAULT_TTL_MS = 30_000;
         expect(config.telemetryTtlMs).toBe(DEFAULT_TTL_MS);
     });
-
-    it("configures no organization, which is the sign-in flow's business now (#99)", () => {
-        expect('orgId' in loadConfig(env())).toBe(false);
-    });
 });

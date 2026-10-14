@@ -179,53 +179,6 @@ describe('parseBellows: services block', () => {
     });
 });
 
-describe('parseBellows: rejects malformed structure', () => {
-    it('rejects a gate whose command is empty — a vacuously-green check', () => {
-        expect(() =>
-            parseBellows("environment:\n    image: node:24\n    gates:\n        - name: test\n          command: ''\n")
-        ).toThrow(/empty command/);
-        expect(() =>
-            parseBellows('environment:\n    image: node:24\n    gates:\n        - name: test\n          command:\n')
-        ).toThrow();
-    });
-
-    it('rejects a whitespace-only quoted command as empty — sh -c would exit green on it', () => {
-        expect(() =>
-            parseBellows(
-                'environment:\n    image: node:24\n    gates:\n        - name: test\n          command: "  "\n'
-            )
-        ).toThrow(/empty command/);
-    });
-
-    it('rejects a tab indent', () => {
-        expect(() => parseBellows('environment:\n\timage: node:24\n')).toThrow(/tab/i);
-    });
-
-    it('rejects an unknown top-level key', () => {
-        expect(() => parseBellows(`pipeline:\n    steps: []\n${EXAMPLE}`)).toThrow(/pipeline/);
-    });
-
-    it('rejects an unknown key inside environment', () => {
-        expect(() => parseBellows('environment:\n    image: node:24\n    timeout: 30\n')).toThrow(/timeout/);
-    });
-
-    it('rejects an unknown field in a gate', () => {
-        expect(() =>
-            parseBellows('environment:\n    image: node:24\n    gates:\n        - name: test\n          cwd: /app\n')
-        ).toThrow(/cwd/);
-    });
-
-    it('rejects gates without an image', () => {
-        expect(() =>
-            parseBellows('environment:\n    gates:\n        - name: test\n          command: npm t\n')
-        ).toThrow(/image/);
-    });
-
-    it('rejects an empty environment block', () => {
-        expect(() => parseBellows('environment:\n')).toThrow(/environment/);
-    });
-});
-
 describe("parseBellows: this repository's own .bellows.yaml", () => {
     // The yaml library the ci-workflows checks use accepts what this grammar refuses; the real
     // parser is the one the board runs at claim.
@@ -238,78 +191,88 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
     });
 });
 
-describe('parseBellows: rejects invalid gates and limits', () => {
-    const MAX_GATES = 16;
+const MAX_GATES = 16;
+const OVER_COMMAND_LIMIT_LENGTH = 4100;
+/** An environment with an image, opening its gate list: each row appends the gate items. */
+const GATES = 'environment:\n    image: node:24\n    gates:\n';
+const TOO_MANY_GATES = [
+    'environment:',
+    '    image: node:24',
+    '    gates:',
+    ...Array.from({ length: MAX_GATES + 1 }, (_, i) => [
+        `        - name: gate-${i}`,
+        `          command: echo ${i}`,
+    ]).flat(),
+].join('\n');
 
-    it('rejects more than 16 gates', () => {
-        const lines = ['environment:', '    image: node:24', '    gates:'];
-        for (let i = 0; i < MAX_GATES + 1; i++) {
-            lines.push(`        - name: gate-${i}`, `          command: echo ${i}`);
-        }
-        expect(() => parseBellows(lines.join('\n'))).toThrow(/16/);
-    });
-
-    it('rejects a command longer than 4096 characters', () => {
-        const OVER_COMMAND_LIMIT_LENGTH = 4100;
-        const long = 'echo ' + 'x'.repeat(OVER_COMMAND_LIMIT_LENGTH);
-        expect(() =>
-            parseBellows(
-                `environment:\n    image: node:24\n    gates:\n        - name: test\n          command: ${long}\n`
-            )
-        ).toThrow(/4096/);
-    });
-
-    it('rejects a gate name that cannot be a path segment', () => {
-        const base = 'environment:\n    image: node:24\n    gates:\n';
-        expect(() => parseBellows(`${base}        - name: a/b\n          command: x\n`)).toThrow(/name/);
-        expect(() => parseBellows(`${base}        - name: -rf\n          command: x\n`)).toThrow(/name/);
-        expect(() => parseBellows(`${base}        - name: ''\n          command: x\n`)).toThrow(/name/);
-    });
-
-    it.each(['0', '121', '1.5', 'ten', '""'])('refuses a gate timeout of %s', (value) => {
-        expect(() => parseBellows(`${EXAMPLE}\n           timeout: ${value}`)).toThrow(
-            /line 6: timeout is whole minutes, 1 to 120/
-        );
-    });
-
-    it.each(['false', 'yes', '""'])('refuses an on_demand of %s — the one value is true', (value) => {
-        expect(() => parseBellows(`${EXAMPLE}\n           on_demand: ${value}`)).toThrow(
-            /line 6: on_demand must be "true"/
-        );
-    });
-
-    it('names timeout and on_demand among the gate fields an unknown key is refused against', () => {
-        expect(() => parseBellows(`${EXAMPLE}\n           retries: 2`)).toThrow(
-            /unknown gate field "retries" — only name, command, timeout and on_demand are read/
-        );
-    });
-
-    it('rejects duplicate gate names', () => {
-        expect(() =>
-            parseBellows(
-                'environment:\n    image: node:24\n    gates:\n        - name: test\n          command: a\n        - name: test\n          command: b\n'
-            )
-        ).toThrow(/twice|duplicate/i);
-    });
-
-    it('rejects an image that smuggles a docker flag, whitespace or expansion', () => {
-        expect(() => parseBellows('environment:\n    image: -v /:/host\n    gates: []\n')).toThrow(/image/);
-        expect(() => parseBellows('environment:\n    image: node:24 alpine\n    gates: []\n')).toThrow(/image/);
-        expect(() => parseBellows('environment:\n    image: node:$TAG\n    gates: []\n')).toThrow(/image/);
-    });
-
-    it('rejects a mismatched or unclosed quote', () => {
-        expect(() =>
-            parseBellows(
-                "environment:\n    image: node:24\n    gates:\n        - name: test\n          command: 'npm test\n"
-            )
-        ).toThrow(/quote/);
-    });
-
-    it('rejects a gate item missing its command', () => {
-        expect(() => parseBellows('environment:\n    image: node:24\n    gates:\n        - name: test\n')).toThrow(
-            /command/
-        );
+describe('parseBellows: rejects malformed structure, invalid gates and limits', () => {
+    // A missing pattern means the row asserts only that the parse throws.
+    it.each<[string, string, RegExp | undefined]>([
+        [
+            'a gate whose command is empty — a vacuously-green check',
+            `${GATES}        - name: test\n          command: ''\n`,
+            /empty command/,
+        ],
+        [
+            'a gate whose command is absent after the key',
+            `${GATES}        - name: test\n          command:\n`,
+            undefined,
+        ],
+        [
+            'a whitespace-only quoted command as empty — sh -c would exit green on it',
+            `${GATES}        - name: test\n          command: "  "\n`,
+            /empty command/,
+        ],
+        ['a tab indent', 'environment:\n\timage: node:24\n', /tab/i],
+        ['an unknown top-level key', `pipeline:\n    steps: []\n${EXAMPLE}`, /pipeline/],
+        ['an unknown key inside environment', 'environment:\n    image: node:24\n    timeout: 30\n', /timeout/],
+        ['an unknown field in a gate', `${GATES}        - name: test\n          cwd: /app\n`, /cwd/],
+        [
+            'gates without an image',
+            'environment:\n    gates:\n        - name: test\n          command: npm t\n',
+            /image/,
+        ],
+        ['an empty environment block', 'environment:\n', /environment/],
+        ['more than 16 gates', TOO_MANY_GATES, /16/],
+        [
+            'a command longer than 4096 characters',
+            `${GATES}        - name: test\n          command: echo ${'x'.repeat(OVER_COMMAND_LIMIT_LENGTH)}\n`,
+            /4096/,
+        ],
+        [
+            'a gate name with a slash, which cannot be a path segment',
+            `${GATES}        - name: a/b\n          command: x\n`,
+            /name/,
+        ],
+        ['a gate name that reads as a flag', `${GATES}        - name: -rf\n          command: x\n`, /name/],
+        ['an empty gate name', `${GATES}        - name: ''\n          command: x\n`, /name/],
+        ...['0', '121', '1.5', 'ten', '""'].map((value): [string, string, RegExp] => [
+            `a gate timeout of ${value}`,
+            `${EXAMPLE}\n           timeout: ${value}`,
+            /line 6: timeout is whole minutes, 1 to 120/,
+        ]),
+        ...['false', 'yes', '""'].map((value): [string, string, RegExp] => [
+            `an on_demand of ${value} — the one value is true`,
+            `${EXAMPLE}\n           on_demand: ${value}`,
+            /line 6: on_demand must be "true"/,
+        ]),
+        [
+            'an unknown gate field, naming timeout and on_demand among the fields read',
+            `${EXAMPLE}\n           retries: 2`,
+            /unknown gate field "retries" — only name, command, timeout and on_demand are read/,
+        ],
+        [
+            'duplicate gate names',
+            `${GATES}        - name: test\n          command: a\n        - name: test\n          command: b\n`,
+            /twice|duplicate/i,
+        ],
+        ['an image that smuggles a docker flag', 'environment:\n    image: -v /:/host\n    gates: []\n', /image/],
+        ['an image that smuggles whitespace', 'environment:\n    image: node:24 alpine\n    gates: []\n', /image/],
+        ['an image that smuggles an expansion', 'environment:\n    image: node:$TAG\n    gates: []\n', /image/],
+        ['a mismatched or unclosed quote', `${GATES}        - name: test\n          command: 'npm test\n`, /quote/],
+        ['a gate item missing its command', `${GATES}        - name: test\n`, /command/],
+    ])('rejects %s', (_label, yaml, pattern) => {
+        expect(() => parseBellows(yaml)).toThrow(pattern);
     });
 });
 

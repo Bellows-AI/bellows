@@ -15,6 +15,8 @@ describe('the organization', () => {
         const config = loadConfig(env());
         expect('orgId' in config).toBe(false);
         expect('orgName' in config).toBe(false);
+        // The repo list is gone rather than empty. A configured list beside an installation would
+        // be a second roster to keep in step, and the installation is also the credential.
         expect('repos' in config).toBe(false);
     });
 
@@ -23,48 +25,57 @@ describe('the organization', () => {
         // installation, so the offline tooling shares one literal partition.
         expect(LOCAL_ORG_ID).toBe('default');
     });
+});
 
-    it('refuses ORG_ID: the orgs are the installations now', () => {
-        // A variable that worked yesterday must not silently no-op — the ORG_REPOS precedent.
-        expect(() => loadConfig(env({ ORG_ID: 'acme' }))).toThrow(/ORG_ID is no longer supported/);
-        // An empty value is not an override, here as everywhere: compose passes these empty.
-        expect(() => loadConfig(env({ ORG_ID: '' }))).not.toThrow();
-        expect(() => loadConfig(env({ ORG_ID: '  ' }))).not.toThrow();
+/** The three ways the original cases booted: App credentials, the bare database, and offline. */
+const BOOTS = {
+    app: (extra: NodeJS.ProcessEnv) => loadConfig(env(extra)),
+    bare: (extra: NodeJS.ProcessEnv) => loadConfig({ DATABASE_URL: DB, ...extra }),
+    offline: (extra: NodeJS.ProcessEnv) => loadConfig({ DATABASE_URL: DB, ...extra }, { mode: 'none' }),
+};
+
+describe('retired variables are fatal, not ignored', () => {
+    /*
+     * The deliberate exception to "an unknown environment variable is ignored". Each one used to
+     * decide what the page was made of — the org, its repos, the PAT, the data source, the
+     * pull-request pipeline — so a quietly dropped one boots a dashboard whose operator believes
+     * it is reading something else. A variable that worked yesterday must not silently no-op.
+     * The App credentials and AUTH_* retirements are pinned beside their own config.
+     */
+    it.each<[string, string, keyof typeof BOOTS, RegExp[]]>([
+        ['ORG_ID', 'acme', 'app', []],
+        ['ORG_NAME', 'Bellows AI', 'app', []],
+        ['GITHUB_APP_INSTALLATION_ID', '4242', 'app', []],
+        ['GITHUB_APP_INSTALLATION_ID', '42', 'app', []],
+        ['ORG_REPOS', 'a,b', 'app', []],
+        ['GITHUB_REPOS', 'a,b', 'app', []],
+        ['GITHUB_OWNER', 'acme', 'app', []],
+        ['GITHUB_TOKEN', 'ghp_x', 'bare', []],
+        ['DATA_SOURCE', 'fixture', 'offline', []],
+        ['DATA_SOURCE', 'github', 'offline', []],
+        // A deployment that had raised it to protect its quota would otherwise silently drop to
+        // the 60s-per-repo sync floor; it is re-pointed at the telemetry slot.
+        ['CACHE_TTL_SECONDS', '1800', 'offline', []],
+        ['CACHE_TTL_SECONDS', '300', 'offline', [/TELEMETRY_TTL_SECONDS/]],
+        ['SYNC_TTL_SECONDS', '900', 'offline', [/TELEMETRY_TTL_SECONDS/]],
+        ['BASE_BRANCH', 'main', 'offline', []],
+        ['BOTS', 'claude', 'offline', []],
+    ])('refuses %s=%s (%s boot)', (name, value, boot, hints) => {
+        const load = () => BOOTS[boot]({ [name]: value });
+        expect(load).toThrow(new RegExp(`${name} is no longer supported`));
+        for (const hint of hints) expect(load).toThrow(hint);
     });
 
-    it('refuses ORG_NAME: the name is the installation account login, reported at sign-in', () => {
-        expect(() => loadConfig(env({ ORG_NAME: 'Bellows AI' }))).toThrow(/ORG_NAME is no longer supported/);
-        expect(() => loadConfig(env({ ORG_NAME: '' }))).not.toThrow();
-    });
-
-    it('refuses GITHUB_APP_INSTALLATION_ID: tokens mint per org from organization.installation_id', () => {
-        expect(() => loadConfig(env({ GITHUB_APP_INSTALLATION_ID: '4242' }))).toThrow(
-            /GITHUB_APP_INSTALLATION_ID is no longer supported/
-        );
-        expect(() => loadConfig(env({ GITHUB_APP_INSTALLATION_ID: '' }))).not.toThrow();
-    });
-
-    it('carries no repo list at all: the App installation reports it', () => {
-        // The property is gone rather than empty. A configured list beside an installation would be
-        // a second roster to keep in step, and the installation is also the credential.
-        expect('repos' in loadConfig(env())).toBe(false);
-    });
-
-    it('refuses ORG_REPOS and GITHUB_REPOS, naming what replaced them', () => {
-        // The deliberate exception to "an unknown environment variable is ignored". A variable that
-        // WAS meaningful and is now dropped reverts a two-repo dashboard to a different set and
-        // still renders, indistinguishable from a repo genuinely removed.
-        expect(() => loadConfig(env({ ORG_REPOS: 'a,b' }))).toThrow(/ORG_REPOS is no longer supported/);
-        expect(() => loadConfig(env({ GITHUB_REPOS: 'a,b' }))).toThrow(/GITHUB_REPOS is no longer supported/);
-    });
-
-    it('refuses GITHUB_OWNER, because a bare repo name no longer exists', () => {
-        expect(() => loadConfig(env({ GITHUB_OWNER: 'acme' }))).toThrow(/GITHUB_OWNER is no longer supported/);
-    });
-
-    it('treats an empty retired variable as unset, so a stale .env line still boots', () => {
-        // docker-compose passes several of these empty whenever the host has not set them, so an
-        // empty value must not be an override here any more than anywhere else.
-        expect(() => loadConfig(env({ GITHUB_REPOS: '', ORG_REPOS: '', GITHUB_OWNER: '' }))).not.toThrow();
+    // docker-compose passes several of these empty whenever the host has not set them, so a stale
+    // .env line still boots: an empty value is not an override here any more than anywhere else.
+    it.each<NodeJS.ProcessEnv>([
+        { ORG_ID: '' },
+        { ORG_ID: '  ' },
+        { ORG_NAME: '' },
+        { GITHUB_APP_INSTALLATION_ID: '' },
+        { GITHUB_REPOS: '', ORG_REPOS: '', GITHUB_OWNER: '' },
+        { GITHUB_TOKEN: '', ORG_REPOS: '', GITHUB_OWNER: '' },
+    ])('treats an empty retired variable as unset: %j', (extra) => {
+        expect(() => BOOTS.app(extra)).not.toThrow();
     });
 });

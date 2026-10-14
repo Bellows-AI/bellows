@@ -690,13 +690,6 @@ describe('POST /api/jobs', () => {
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_EXECUTOR');
     });
-
-    it('answers 503 when the store is down, so the caller retries', async () => {
-        const instance = await harnessWith(stubStore({ fail: true }));
-        const response = await post(instance, '/api/jobs', { command: 'echo hi' });
-        expect(response.statusCode).toBe(503);
-        expect(response.json().code).toBe('UNAVAILABLE');
-    });
 });
 
 /**
@@ -1126,37 +1119,6 @@ describe('POST /api/jobs/:id/heartbeat', () => {
         expect(response.statusCode).toBe(200);
         expect(response.json().cancelRequested).toBe(true);
     });
-
-    // The only signal a superseded worker gets. The driver kills the container on this.
-    it('answers 409 once the lease has moved on', async () => {
-        const instance = await harnessWith(stubStore({ verdict: 'lost' }));
-        const response = await post(instance, `/api/jobs/${ID}/heartbeat`, { leaseToken: TOKEN });
-        expect(response.statusCode).toBe(409);
-        expect(response.json().code).toBe('LEASE_LOST');
-    });
-
-    it('answers 404 for a job that does not exist', async () => {
-        const instance = await harnessWith(stubStore({ verdict: 'missing' }));
-        const response = await post(instance, `/api/jobs/${ID}/heartbeat`, { leaseToken: TOKEN });
-        expect(response.statusCode).toBe(404);
-    });
-
-    // Reaches the store as a uuid or not at all: postgres rejects a malformed one with a 500-shaped
-    // error, and a bad path is a 400.
-    it('refuses a malformed id before touching the store', async () => {
-        const store = stubStore();
-        const instance = await harnessWith(store);
-        const response = await post(instance, '/api/jobs/not-a-uuid/heartbeat', { leaseToken: TOKEN });
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_ID');
-    });
-
-    it('refuses a malformed lease token', async () => {
-        const instance = await harnessWith(stubStore());
-        const response = await post(instance, `/api/jobs/${ID}/heartbeat`, { leaseToken: 'nope' });
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_TOKEN');
-    });
 });
 
 describe('POST /api/jobs/leases — the orphan reaper’s batched lookup (issue #301)', () => {
@@ -1381,17 +1343,6 @@ describe('POST /api/jobs/:id/session', () => {
         expect(store.sessions).toEqual([{ id: ID, sessionId: null }]);
     });
 
-    // Same rule as every other worker write: a superseded worker must not relabel the run that
-    // replaced it.
-    it('rejects a report from a worker whose lease was reclaimed', async () => {
-        const instance = await harnessWith(stubStore({ verdict: 'lost' }));
-        const response = await post(instance, `/api/jobs/${ID}/session`, {
-            leaseToken: TOKEN,
-            sessionId: SESSION,
-        });
-        expect(response.statusCode).toBe(409);
-    });
-
     it.each([
         ['a missing session id', { leaseToken: TOKEN }, 'BAD_SESSION_ID'],
         ['a non-string session id', { leaseToken: TOKEN, sessionId: 42 }, 'BAD_SESSION_ID'],
@@ -1424,21 +1375,6 @@ describe('POST /api/jobs/:id/output', () => {
 
         expect(response.statusCode).toBe(200);
         expect(store.progressed).toEqual([{ id: ID, output: 'step 1\n', runtime: null }]);
-    });
-
-    // Same rule as every other worker write: a superseded worker must not relabel the run that
-    // replaced it. Refused, never merged.
-    it('rejects a tail from a worker whose lease was reclaimed', async () => {
-        const instance = await harnessWith(stubStore({ verdict: 'lost' }));
-        const response = await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'late' });
-        expect(response.statusCode).toBe(409);
-        expect(response.json().code).toBe('LEASE_LOST');
-    });
-
-    it('answers 404 for a job that does not exist', async () => {
-        const instance = await harnessWith(stubStore({ verdict: 'missing' }));
-        const response = await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'late' });
-        expect(response.statusCode).toBe(404);
     });
 
     it.each([
@@ -1669,29 +1605,6 @@ describe('POST /api/jobs/:id/artifact', () => {
         expect(store.artifacts[0]?.truncated).toBe(true);
     });
 
-    it('rejects an upload from a worker whose lease was reclaimed', async () => {
-        const instance = await harnessWith(stubStore({ verdict: 'lost' }));
-        const response = await post(instance, `/api/jobs/${ID}/artifact`, {
-            leaseToken: TOKEN,
-            kind: 'log',
-            attempt: 1,
-            content: 'late',
-        });
-        expect(response.statusCode).toBe(409);
-        expect(response.json().code).toBe('LEASE_LOST');
-    });
-
-    it('answers 404 for a job that does not exist', async () => {
-        const instance = await harnessWith(stubStore({ verdict: 'missing' }));
-        const response = await post(instance, `/api/jobs/${ID}/artifact`, {
-            leaseToken: TOKEN,
-            kind: 'log',
-            attempt: 1,
-            content: 'x',
-        });
-        expect(response.statusCode).toBe(404);
-    });
-
     it.each([
         ['a malformed lease token', { leaseToken: 'nope', kind: 'log', attempt: 1, content: 'x' }, 'BAD_TOKEN'],
         ['an unknown kind', { leaseToken: TOKEN, kind: 'core', attempt: 1, content: 'x' }, 'BAD_ARTIFACT'],
@@ -1786,19 +1699,6 @@ describe('GET /api/jobs/:id/log and /transcript', () => {
         expect(pastEnd.json()).toMatchObject({ content: '', totalCharacters: 3 });
     });
 
-    it('answers 404 when nothing was uploaded for the kind', async () => {
-        const instance = await harnessWith(stubStore({ storedArtifact: null }));
-        const response = await instance.inject(`/api/jobs/${ID}/log`);
-        expect(response.statusCode).toBe(404);
-        expect(response.json().code).toBe('NOT_FOUND');
-    });
-
-    it('answers 404 for a job that does not exist', async () => {
-        const instance = await harnessWith(stubStore({ storedArtifact: null }));
-        const response = await instance.inject(`/api/jobs/${ID}/log`);
-        expect(response.statusCode).toBe(404);
-    });
-
     it.each([
         ['a zero attempt', '?attempt=0', 'BAD_ATTEMPT'],
         ['a negative attempt', '?attempt=-1', 'BAD_ATTEMPT'],
@@ -1815,11 +1715,13 @@ describe('GET /api/jobs/:id/log and /transcript', () => {
     });
 });
 
+const GATE_RESULTS: GateReport[] = [
+    { name: 'test', status: 'passed', exitCode: 0, output: 'all green' },
+    { name: 'lint', status: 'failed', exitCode: 1, output: '2 problems' },
+];
+
 describe('POST /api/jobs/:id/gates', () => {
-    const results: GateReport[] = [
-        { name: 'test', status: 'passed', exitCode: 0, output: 'all green' },
-        { name: 'lint', status: 'failed', exitCode: 1, output: '2 problems' },
-    ];
+    const results = GATE_RESULTS;
 
     // REPLACE, not append — the progress precedent. "Current/last ran only" is the whole UI
     // contract, and the driver re-reports a gate's state as it moves.
@@ -1876,21 +1778,6 @@ describe('POST /api/jobs/:id/gates', () => {
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe(code);
     });
-
-    // Same rule as every other worker write, same codes as /output: a superseded worker's
-    // telemetry is refused, and the driver stops talking rather than acting on it.
-    it('rejects a report from a worker whose lease was reclaimed', async () => {
-        const instance = await harnessWith(stubStore({ verdict: 'lost' }));
-        const response = await post(instance, `/api/jobs/${ID}/gates`, { leaseToken: TOKEN, gates: results });
-        expect(response.statusCode).toBe(409);
-        expect(response.json().code).toBe('LEASE_LOST');
-    });
-
-    it('answers 404 for a job that does not exist', async () => {
-        const instance = await harnessWith(stubStore({ verdict: 'missing' }));
-        const response = await post(instance, `/api/jobs/${ID}/gates`, { leaseToken: TOKEN, gates: results });
-        expect(response.statusCode).toBe(404);
-    });
 });
 
 describe('POST /api/jobs/:id/suspend', () => {
@@ -1903,17 +1790,6 @@ describe('POST /api/jobs/:id/suspend', () => {
         expect(response.statusCode).toBe(200);
         expect(response.json()).toEqual({ id: ID, status: 'stopped' });
         expect(store.suspended).toEqual([ID]);
-    });
-
-    it('refuses a park from a worker whose lease was reclaimed', async () => {
-        const instance = await harnessWith(stubStore({ verdict: 'lost' }));
-        const response = await post(instance, `/api/jobs/${ID}/suspend`, { leaseToken: TOKEN });
-        expect(response.statusCode).toBe(409);
-    });
-
-    it('refuses a malformed id', async () => {
-        const instance = await harnessWith(stubStore());
-        expect((await post(instance, '/api/jobs/nope/suspend', { leaseToken: TOKEN })).statusCode).toBe(400);
     });
 });
 
@@ -1932,21 +1808,6 @@ describe('POST /api/jobs/:id/requeue', () => {
             expect(store.requeued).toEqual([ID]);
         }
     );
-
-    it.each([
-        ['lost', 409],
-        ['missing', 404],
-    ] as const)('answers a %s lease with %i', async (verdict, code) => {
-        const instance = await harnessWith(stubStore({ verdict }));
-        expect((await post(instance, `/api/jobs/${ID}/requeue`, { leaseToken: TOKEN })).statusCode).toBe(code);
-    });
-
-    it('refuses a lease token that is not a uuid without touching the store', async () => {
-        const store = stubStore();
-        const instance = await harnessWith(store);
-        expect((await post(instance, `/api/jobs/${ID}/requeue`, { leaseToken: 'nope' })).statusCode).toBe(400);
-        expect(store.requeued).toEqual([]);
-    });
 });
 
 describe('POST /api/jobs/:id/stop', () => {
@@ -1985,23 +1846,6 @@ describe('POST /api/jobs/:id/stop', () => {
         expect(response.json().code).toBe('NOT_STOPPABLE');
         expect(response.json().status).toBe('succeeded');
     });
-
-    it('answers 404 for a task that does not exist', async () => {
-        const instance = await harnessWith(stubStore({ stop: 'missing' }));
-        expect((await post(instance, `/api/jobs/${ID}/stop`, {})).statusCode).toBe(404);
-    });
-
-    it('answers 503 when the store is down, so the caller retries', async () => {
-        const instance = await harnessWith(stubStore({ fail: true }));
-        const response = await post(instance, `/api/jobs/${ID}/stop`, {});
-        expect(response.statusCode).toBe(503);
-        expect(response.json().code).toBe('UNAVAILABLE');
-    });
-
-    it('refuses a malformed id', async () => {
-        const instance = await harnessWith(stubStore());
-        expect((await post(instance, '/api/jobs/nope/stop', {})).statusCode).toBe(400);
-    });
 });
 
 describe('POST /api/jobs/:id/remove', () => {
@@ -2025,23 +1869,6 @@ describe('POST /api/jobs/:id/remove', () => {
         const response = await post(instance, `/api/jobs/${ID}/remove`, {});
         expect(response.statusCode).toBe(409);
         expect(response.json().code).toBe('TASK_RUNNING');
-    });
-
-    it('answers 404 for a task that does not exist', async () => {
-        const instance = await harnessWith(stubStore({ remove: 'missing' }));
-        expect((await post(instance, `/api/jobs/${ID}/remove`, {})).statusCode).toBe(404);
-    });
-
-    it('answers 503 when the store is down, so the caller retries', async () => {
-        const instance = await harnessWith(stubStore({ fail: true }));
-        const response = await post(instance, `/api/jobs/${ID}/remove`, {});
-        expect(response.statusCode).toBe(503);
-        expect(response.json().code).toBe('UNAVAILABLE');
-    });
-
-    it('refuses a malformed id', async () => {
-        const instance = await harnessWith(stubStore());
-        expect((await post(instance, '/api/jobs/nope/remove', {})).statusCode).toBe(400);
     });
 
     describe('POST /api/jobs/:id/reopen', () => {
@@ -2081,23 +1908,6 @@ describe('POST /api/jobs/:id/remove', () => {
             expect(response.statusCode).toBe(409);
             expect(response.json().code).toBe('RECLAIM_IN_PROGRESS');
         });
-
-        it('answers 404 for a task that does not exist', async () => {
-            const instance = await harnessWith(stubStore({ reopen: 'missing' }));
-            expect((await post(instance, `/api/jobs/${ID}/reopen`, {})).statusCode).toBe(404);
-        });
-
-        it('answers 503 when the store is down, so the caller retries', async () => {
-            const instance = await harnessWith(stubStore({ fail: true }));
-            const response = await post(instance, `/api/jobs/${ID}/reopen`, {});
-            expect(response.statusCode).toBe(503);
-            expect(response.json().code).toBe('UNAVAILABLE');
-        });
-
-        it('refuses a malformed id', async () => {
-            const instance = await harnessWith(stubStore());
-            expect((await post(instance, '/api/jobs/nope/reopen', {})).statusCode).toBe(400);
-        });
     });
 });
 
@@ -2118,30 +1928,6 @@ describe('POST /api/jobs/:id/wait/cancel', () => {
         const response = await post(instance, `/api/jobs/${ID}/wait/cancel`, {});
         expect(response.statusCode).toBe(409);
         expect(response.json().code).toBe('NO_OPEN_WAIT');
-    });
-
-    it('answers 403 for a caller that is not the thread\u2019s author', async () => {
-        const instance = await harnessWith(stubStore({ cancelWait: 'forbidden' }));
-        const response = await post(instance, `/api/jobs/${ID}/wait/cancel`, {});
-        expect(response.statusCode).toBe(403);
-        expect(response.json().code).toBe('FORBIDDEN');
-    });
-
-    it('answers 404 for a task that does not exist', async () => {
-        const instance = await harnessWith(stubStore({ cancelWait: 'missing' }));
-        expect((await post(instance, `/api/jobs/${ID}/wait/cancel`, {})).statusCode).toBe(404);
-    });
-
-    it('answers 503 when the store is down, so the caller retries', async () => {
-        const instance = await harnessWith(stubStore({ fail: true }));
-        const response = await post(instance, `/api/jobs/${ID}/wait/cancel`, {});
-        expect(response.statusCode).toBe(503);
-        expect(response.json().code).toBe('UNAVAILABLE');
-    });
-
-    it('refuses a malformed id', async () => {
-        const instance = await harnessWith(stubStore());
-        expect((await post(instance, '/api/jobs/nope/wait/cancel', {})).statusCode).toBe(400);
     });
 });
 
@@ -2169,30 +1955,6 @@ describe('POST /api/jobs/:id/wait/poke', () => {
         const response = await post(instance, `/api/jobs/${ID}/wait/poke`, {});
         expect(response.statusCode).toBe(409);
         expect(response.json().code).toBe('NO_OPEN_WAIT');
-    });
-
-    it('answers 403 for a caller that is not the thread\u2019s author', async () => {
-        const instance = await harnessWith(stubStore({ pokeWait: 'forbidden' }));
-        const response = await post(instance, `/api/jobs/${ID}/wait/poke`, {});
-        expect(response.statusCode).toBe(403);
-        expect(response.json().code).toBe('FORBIDDEN');
-    });
-
-    it('answers 404 for a task that does not exist', async () => {
-        const instance = await harnessWith(stubStore({ pokeWait: 'missing' }));
-        expect((await post(instance, `/api/jobs/${ID}/wait/poke`, {})).statusCode).toBe(404);
-    });
-
-    it('answers 503 when the store is down, so the caller retries', async () => {
-        const instance = await harnessWith(stubStore({ fail: true }));
-        const response = await post(instance, `/api/jobs/${ID}/wait/poke`, {});
-        expect(response.statusCode).toBe(503);
-        expect(response.json().code).toBe('UNAVAILABLE');
-    });
-
-    it('refuses a malformed id', async () => {
-        const instance = await harnessWith(stubStore());
-        expect((await post(instance, '/api/jobs/nope/wait/poke', {})).statusCode).toBe(400);
     });
 });
 
@@ -2342,12 +2104,6 @@ describe('POST /api/reclaims/claim', () => {
         expect((await post(instance, '/api/reclaims/claim', { worker: 'w1', leaseSeconds: 0 })).statusCode).toBe(400);
     });
 
-    it('answers 503 when the store is down', async () => {
-        const instance = await harnessWith(stubStore({ fail: true }));
-        const response = await post(instance, '/api/reclaims/claim', { worker: 'w1' });
-        expect(response.statusCode).toBe(503);
-    });
-
     // The same scan the job claim walks (the registry's order is stable, so the pattern is shared):
     // one board's failure must not block the others, and the starting board must rotate.
     it('keeps polling later boards when one board fails', async () => {
@@ -2393,30 +2149,9 @@ describe('POST /api/reclaims/:id/ack', () => {
         expect(store.reclaimAcks).toEqual([{ id: RECLAIM_ID, worker: 'w1' }]);
     });
 
-    // The lease guard: only the worker holding the claim may ack it. A foreign ack is refused, so
-    // a slow worker's row survives and finishes on its next try.
-    it('refuses a foreign worker', async () => {
-        const instance = await harnessWith(stubStore({ ackReclaim: 'lost' }));
-        const response = await post(instance, `/api/reclaims/${RECLAIM_ID}/ack`, { worker: 'w2' });
-        expect(response.statusCode).toBe(409);
-        expect(response.json().code).toBe('LEASE_LOST');
-    });
-
-    it('answers 404 for a reclaim that never existed', async () => {
-        const instance = await harnessWith(stubStore({ ackReclaim: 'missing' }));
-        expect((await post(instance, `/api/reclaims/${RECLAIM_ID}/ack`, { worker: 'w1' })).statusCode).toBe(404);
-    });
-
-    it('refuses a malformed id or a missing worker', async () => {
+    it('refuses a missing worker', async () => {
         const instance = await harnessWith(stubStore());
-        expect((await post(instance, '/api/reclaims/nope/ack', { worker: 'w1' })).statusCode).toBe(400);
         expect((await post(instance, `/api/reclaims/${RECLAIM_ID}/ack`, {})).statusCode).toBe(400);
-    });
-
-    it('answers 503 when the store is down', async () => {
-        const instance = await harnessWith(stubStore({ fail: true }));
-        const response = await post(instance, `/api/reclaims/${RECLAIM_ID}/ack`, { worker: 'w1' });
-        expect(response.statusCode).toBe(503);
     });
 });
 
@@ -2463,29 +2198,6 @@ describe('POST /api/jobs/:id/follow-up', () => {
         expect(store.followUps).toEqual([{ parentId: ID, command: 'again', createdBy: null }]);
     });
 
-    // A follow-up is a person's action on a finished run: there is no lease token to present and
-    // none would mean anything.
-    it('takes no lease token', async () => {
-        const instance = await harnessWith(stubStore());
-        const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again' });
-        expect(response.statusCode).toBe(201);
-    });
-
-    it('answers 404 for a parent that does not exist', async () => {
-        const instance = await harnessWith(stubStore({ followUp: 'missing' }));
-        const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again' });
-        expect(response.statusCode).toBe(404);
-    });
-
-    // Author-scoped, because the follow-up would resume the parent's session — and a session only
-    // resumes coherently in the checkout tree it ran in.
-    it('answers 403 for a task queued by another account', async () => {
-        const instance = await harnessWith(stubStore({ followUp: 'forbidden' }));
-        const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again' });
-        expect(response.statusCode).toBe(403);
-        expect(response.json().code).toBe('FORBIDDEN');
-    });
-
     it.each([
         ['a parent that is still moving', 'not_finished', 'NOT_FINISHED'],
         ['a task the user has marked done', 'task_done', 'TASK_DONE'],
@@ -2495,20 +2207,6 @@ describe('POST /api/jobs/:id/follow-up', () => {
         const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again' });
         expect(response.statusCode).toBe(409);
         expect(response.json().code).toBe(code);
-    });
-
-    it('answers 503 when the store is down, so the caller retries', async () => {
-        const instance = await harnessWith(stubStore({ fail: true }));
-        const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again' });
-        expect(response.statusCode).toBe(503);
-        expect(response.json().code).toBe('UNAVAILABLE');
-    });
-
-    it('refuses a malformed id before touching the store', async () => {
-        const instance = await harnessWith(stubStore());
-        const response = await post(instance, '/api/jobs/nope/follow-up', { command: 'again' });
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_ID');
     });
 });
 
@@ -2526,28 +2224,6 @@ describe('POST /api/jobs/:id/retry', () => {
         expect(store.retries).toEqual([{ id: ID, createdBy: null }]);
     });
 
-    // A retry is a person's action on a finished run: there is no lease token to present and
-    // none would mean anything.
-    it('takes no lease token', async () => {
-        const instance = await harnessWith(stubStore());
-        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
-        expect(response.statusCode).toBe(201);
-    });
-
-    it('answers 404 for a task that does not exist', async () => {
-        const instance = await harnessWith(stubStore({ retry: 'missing' }));
-        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
-        expect(response.statusCode).toBe(404);
-    });
-
-    // Author-scoped like follow-up: the retry runs in the author's checkout tree.
-    it('answers 403 for a task queued by another account', async () => {
-        const instance = await harnessWith(stubStore({ retry: 'forbidden' }));
-        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
-        expect(response.statusCode).toBe(403);
-        expect(response.json().code).toBe('FORBIDDEN');
-    });
-
     it.each([
         ['a task that is still moving', 'not_finished', 'NOT_FINISHED'],
         ['a task the user has marked done', 'task_done', 'TASK_DONE'],
@@ -2557,20 +2233,6 @@ describe('POST /api/jobs/:id/retry', () => {
         const response = await post(instance, `/api/jobs/${ID}/retry`, {});
         expect(response.statusCode).toBe(409);
         expect(response.json().code).toBe(code);
-    });
-
-    it('answers 503 when the store is down, so the caller retries', async () => {
-        const instance = await harnessWith(stubStore({ fail: true }));
-        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
-        expect(response.statusCode).toBe(503);
-        expect(response.json().code).toBe('UNAVAILABLE');
-    });
-
-    it('refuses a malformed id before touching the store', async () => {
-        const instance = await harnessWith(stubStore());
-        const response = await post(instance, '/api/jobs/nope/retry', {});
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_ID');
     });
 });
 
@@ -2601,11 +2263,6 @@ describe('PATCH /api/jobs/:id', () => {
         expect(response.json().code).toBe('BAD_COMMAND');
     });
 
-    it('answers 404 for a task that does not exist', async () => {
-        const instance = await harnessWith(stubStore({ edit: 'missing' }));
-        expect((await patch(instance, `/api/jobs/${ID}`, { command: 'again' })).statusCode).toBe(404);
-    });
-
     // Once claimed the command is the run's input — a moving task is not editable, and the
     // refusal names the status the store answered with.
     it('answers 409 NOT_QUEUED once claimed, naming its status', async () => {
@@ -2616,14 +2273,6 @@ describe('PATCH /api/jobs/:id', () => {
         expect(response.json().status).toBe('running');
     });
 
-    // Author-scoped like the follow-up: the command would run in the author's checkout tree.
-    it('answers 403 for a task queued by another account', async () => {
-        const instance = await harnessWith(stubStore({ edit: 'forbidden' }));
-        const response = await patch(instance, `/api/jobs/${ID}`, { command: 'again' });
-        expect(response.statusCode).toBe(403);
-        expect(response.json().code).toBe('FORBIDDEN');
-    });
-
     // A workflow row's command is the interpolated entry prompt — the raw chat line was never
     // stored, so there is nothing to edit from. Refused, not re-interpolated.
     it('answers 409 for a workflow row whose command a prompt built', async () => {
@@ -2631,22 +2280,6 @@ describe('PATCH /api/jobs/:id', () => {
         const response = await patch(instance, `/api/jobs/${ID}`, { command: 'again' });
         expect(response.statusCode).toBe(409);
         expect(response.json().code).toBe('WORKFLOW_COMMAND_FROZEN');
-    });
-
-    it('answers 503 when the store is down, so the caller retries', async () => {
-        const instance = await harnessWith(stubStore({ fail: true }));
-        const response = await patch(instance, `/api/jobs/${ID}`, { command: 'again' });
-        expect(response.statusCode).toBe(503);
-        expect(response.json().code).toBe('UNAVAILABLE');
-    });
-
-    it('refuses a malformed id before touching the store', async () => {
-        const store = stubStore();
-        const instance = await harnessWith(store);
-        const response = await patch(instance, '/api/jobs/nope', { command: 'again' });
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_ID');
-        expect(store.edited).toEqual([]);
     });
 });
 
@@ -2672,26 +2305,6 @@ describe('POST /api/jobs/:id/done', () => {
         const response = await post(instance, `/api/jobs/${ID}/done`, {});
         expect(response.statusCode).toBe(409);
         expect(response.json().code).toBe('NOT_FINISHED');
-    });
-
-    it('answers 404 for a task that does not exist', async () => {
-        const instance = await harnessWith(stubStore({ done: 'missing' }));
-        const response = await post(instance, `/api/jobs/${ID}/done`, {});
-        expect(response.statusCode).toBe(404);
-    });
-
-    it('answers 503 when the store is down, so the caller retries', async () => {
-        const instance = await harnessWith(stubStore({ fail: true }));
-        const response = await post(instance, `/api/jobs/${ID}/done`, {});
-        expect(response.statusCode).toBe(503);
-        expect(response.json().code).toBe('UNAVAILABLE');
-    });
-
-    it('refuses a malformed id before touching the store', async () => {
-        const instance = await harnessWith(stubStore());
-        const response = await post(instance, '/api/jobs/nope/done', {});
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_ID');
     });
 
     /** A harness whose org has a batch store answering the force-close with `closed`, recording each call. */
@@ -2797,34 +2410,6 @@ describe('POST /api/jobs/:id/complete', () => {
         ]);
     });
 
-    // The close-time summary: what the run did, in the agent's own words — rides the verdict,
-    // truncated at the route, and a non-string is refused before the store can be told.
-    it('records the run summary beside the verdict, bounded', async () => {
-        const store = stubStore({ verdict: 'ok' });
-        const instance = await harnessWith(store);
-        const response = await post(instance, `/api/jobs/${ID}/complete`, {
-            ...done,
-            summary: 'x'.repeat(600),
-        });
-        expect(response.statusCode).toBe(200);
-        expect(store.completed[0]?.summary).toBe('x'.repeat(512));
-    });
-
-    it('refuses a non-string summary with BAD_SUMMARY', async () => {
-        const instance = await harnessWith(stubStore());
-        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, summary: 42 });
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_SUMMARY');
-    });
-
-    it('stores null for an empty summary — null is unmeasured, never an empty string', async () => {
-        const store = stubStore({ verdict: 'ok' });
-        const instance = await harnessWith(store);
-        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, summary: '   ' });
-        expect(response.statusCode).toBe(200);
-        expect(store.completed[0]?.summary).toBeNull();
-    });
-
     // The verdict-moment done-ness of the job's whole thread — every member terminal AND the
     // user's done — computed in the store's complete transaction and relayed verbatim: the
     // driver's worktree reclaim (issue #47) decides on this instead of reading the thread back.
@@ -2840,136 +2425,35 @@ describe('POST /api/jobs/:id/complete', () => {
         expect(no.json()).toEqual({ id: ID, status: 'succeeded', threadDone: false });
     });
 
-    // The context the run reached, scraped from the session database — rides the verdict and is
-    // stored beside the attempt's vitals.
-    it('records the context stats beside the verdict', async () => {
+    // What rides the verdict into the store: the close-time summary (truncated, blank → null), the
+    // context the run reached, the agent-turn count, the structured failure kind (issue #339; a dead
+    // `.bellows.yaml` service is its own kind, issue #423) and the driver's post-gate tree read.
+    // Absent stores null — unmeasured, never zero or an empty string.
+    it.each<[string, Record<string, unknown>, Record<string, unknown>]>([
+        ['the run summary, bounded', { summary: 'x'.repeat(600) }, { summary: 'x'.repeat(512) }],
+        ['null for an empty summary', { summary: '   ' }, { summary: null }],
+        [
+            'the context stats',
+            { contextTokens: 90433, contextCostUsd: 0.31 },
+            { contextTokens: 90433, contextCostUsd: 0.31 },
+        ],
+        ['the agent-turn count when the driver measured one', { agentTurns: 11 }, { agentTurns: 11 }],
+        ['null when the report carries no agent-turn count', {}, { agentTurns: null }],
+        ['the timeout failure kind', { status: 'failed', failureKind: 'timeout' }, { failureKind: 'timeout' }],
+        ['the services failure kind', { status: 'failed', failureKind: 'services' }, { failureKind: 'services' }],
+        ['the blocked failure kind', { status: 'failed', failureKind: 'blocked' }, { failureKind: 'blocked' }],
+        ['the policy failure kind', { status: 'failed', failureKind: 'policy' }, { failureKind: 'policy' }],
+        ['null when the report carries no failure kind', {}, { failureKind: null }],
+        ['treeChanged true as true', { treeChanged: true }, { treeChanged: true }],
+        ['treeChanged false as false', { treeChanged: false }, { treeChanged: false }],
+        ['treeChanged null as null', { treeChanged: null }, { treeChanged: null }],
+        ['treeChanged undefined as null', { treeChanged: undefined }, { treeChanged: null }],
+    ])('hands the store %s', async (_label, fields, stored) => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);
-        const response = await post(instance, `/api/jobs/${ID}/complete`, {
-            ...done,
-            contextTokens: 90433,
-            contextCostUsd: 0.31,
-        });
+        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, ...fields });
         expect(response.statusCode).toBe(200);
-        expect(store.completed[0]).toMatchObject({ contextTokens: 90433, contextCostUsd: 0.31 });
-    });
-
-    // The close-time agent-turn count: a number lands, an absent one stores null — unmeasured,
-    // never zero — and a malformed one is refused before the store can be told anything.
-    it('records the agent-turn count when the driver measured one', async () => {
-        const store = stubStore({ verdict: 'ok' });
-        const instance = await harnessWith(store);
-        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, agentTurns: 11 });
-        expect(response.statusCode).toBe(200);
-        expect(store.completed[0]).toMatchObject({ agentTurns: 11 });
-    });
-
-    it('stores null when the report carries no agent-turn count', async () => {
-        const store = stubStore({ verdict: 'ok' });
-        const instance = await harnessWith(store);
-        const response = await post(instance, `/api/jobs/${ID}/complete`, done);
-        expect(response.statusCode).toBe(200);
-        expect(store.completed[0]).toMatchObject({ agentTurns: null });
-    });
-
-    it.each([
-        ['a negative count', { ...done, agentTurns: -1 }],
-        ['a fractional count', { ...done, agentTurns: 2.5 }],
-        ['a string count', { ...done, agentTurns: 'eleven' }],
-        // int4 is the column's type: an over-range value would fail the verdict's transaction
-        // and leave a finished run unsettled, so the route is the boundary.
-        ['a count above the int4 maximum', { ...done, agentTurns: 2_147_483_648 }],
-    ])('refuses %s with BAD_AGENT_TURNS', async (_label, payload) => {
-        const instance = await harnessWith(stubStore());
-        const response = await post(instance, `/api/jobs/${ID}/complete`, payload);
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_AGENT_TURNS');
-    });
-
-    it.each([
-        ['a negative token count', { ...done, contextTokens: -1 }],
-        ['an absurd token count', { ...done, contextTokens: 100_000_001 }],
-        ['a string cost', { ...done, contextCostUsd: 'free' }],
-        ['a negative cost', { ...done, contextCostUsd: -0.01 }],
-    ])('refuses %s with BAD_CONTEXT', async (_label, payload) => {
-        const instance = await harnessWith(stubStore());
-        const response = await post(instance, `/api/jobs/${ID}/complete`, payload);
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_CONTEXT');
-    });
-
-    // The structured failure kind (issue #339): a known kind lands beside the verdict, an unknown
-    // one is refused before the store can be told, and absent stores null.
-    it('records the failure kind beside the verdict', async () => {
-        const store = stubStore({ verdict: 'ok' });
-        const instance = await harnessWith(store);
-        const response = await post(instance, `/api/jobs/${ID}/complete`, {
-            ...done,
-            status: 'failed',
-            failureKind: 'timeout',
-        });
-        expect(response.statusCode).toBe(200);
-        expect(store.completed[0]).toMatchObject({ failureKind: 'timeout' });
-    });
-
-    // A dead `.bellows.yaml` service (issue #423): its own kind, so the workflow's gate-failed
-    // edge never reads it as a gate the agent could fix.
-    it('records the services failure kind', async () => {
-        const store = stubStore({ verdict: 'ok' });
-        const instance = await harnessWith(store);
-        const response = await post(instance, `/api/jobs/${ID}/complete`, {
-            ...done,
-            status: 'failed',
-            failureKind: 'services',
-        });
-        expect(response.statusCode).toBe(200);
-        expect(store.completed[0]).toMatchObject({ failureKind: 'services' });
-    });
-
-    it('stores null when the report carries no failure kind', async () => {
-        const store = stubStore({ verdict: 'ok' });
-        const instance = await harnessWith(store);
-        const response = await post(instance, `/api/jobs/${ID}/complete`, done);
-        expect(response.statusCode).toBe(200);
-        expect(store.completed[0]).toMatchObject({ failureKind: null });
-    });
-
-    it('records a blocked failure kind beside the verdict', async () => {
-        const store = stubStore({ verdict: 'ok' });
-        const instance = await harnessWith(store);
-        const response = await post(instance, `/api/jobs/${ID}/complete`, {
-            ...done,
-            status: 'failed',
-            failureKind: 'blocked',
-        });
-        expect(response.statusCode).toBe(200);
-        expect(store.completed[0]).toMatchObject({ failureKind: 'blocked' });
-    });
-
-    // The driver's post-gate tree read: handed to the store's transition, null when absent.
-    it.each([
-        [true, true],
-        [false, false],
-        [null, null],
-        [undefined, null],
-    ])('hands the store treeChanged %s as %s', async (treeChanged, stored) => {
-        const store = stubStore({ verdict: 'ok' });
-        const instance = await harnessWith(store);
-        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, treeChanged });
-        expect(response.statusCode).toBe(200);
-        expect(store.completed[0]).toMatchObject({ treeChanged: stored });
-    });
-
-    it.each([
-        ['a string', 'yes'],
-        ['a number', 0],
-    ])('refuses treeChanged as %s with BAD_TREE_CHANGED', async (_label, treeChanged) => {
-        const store = stubStore();
-        const instance = await harnessWith(store);
-        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, treeChanged });
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_TREE_CHANGED');
-        expect(store.completed).toEqual([]);
+        expect(store.completed[0]).toMatchObject(stored);
     });
 
     it('hands the store the verdict’s evidence record, rebuilt field by field', async () => {
@@ -2985,41 +2469,6 @@ describe('POST /api/jobs/:id/complete', () => {
         expect(store.completed[0]?.evidence).not.toHaveProperty('extra');
     });
 
-    it.each([
-        ['a string', 'h:1'],
-        ['an unknown gate outcome', { treeBefore: null, treeAfter: null, gates: 'maybe' }],
-        ['an empty fingerprint', { treeBefore: '', treeAfter: null, gates: 'none' }],
-        ['an oversized fingerprint', { treeBefore: 'x'.repeat(257), treeAfter: null, gates: 'none' }],
-        ['a missing fingerprint', { treeAfter: null, gates: 'none' }],
-    ])('refuses evidence as %s with BAD_EVIDENCE', async (_label, evidence) => {
-        const store = stubStore();
-        const instance = await harnessWith(store);
-        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, evidence });
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_EVIDENCE');
-        expect(store.completed).toEqual([]);
-    });
-
-    it('accepts the policy failure kind on a failed verdict', async () => {
-        const instance = await harnessWith(stubStore({ verdict: 'ok' }));
-        const response = await post(instance, `/api/jobs/${ID}/complete`, {
-            ...done,
-            status: 'failed',
-            failureKind: 'policy',
-        });
-        expect(response.statusCode).toBe(200);
-    });
-
-    it.each([
-        ['an unknown failure kind', 'nope'],
-        ['a non-string failure kind', 3],
-    ])('refuses %s with BAD_FAILURE_KIND', async (_label, failureKind) => {
-        const instance = await harnessWith(stubStore());
-        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, failureKind });
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_FAILURE_KIND');
-    });
-
     // Issue #581: the cause under a gate, publish or helper failure lands beside the kind; the
     // board recovers by it, so a cause that cannot be one of those kinds' is refused, never stored.
     it('records the failure cause beside a publish kind, and null when absent', async () => {
@@ -3032,52 +2481,70 @@ describe('POST /api/jobs/:id/complete', () => {
         expect(store.completed.map((row) => row.failureCause)).toEqual(['conflict', null]);
     });
 
-    it.each([
-        ['an unknown cause', { status: 'failed', failureKind: 'gate', failureCause: 'nope' }],
-        ['a non-string cause', { status: 'failed', failureKind: 'gate', failureCause: 3 }],
-        ['a cause with no kind', { status: 'failed', failureCause: 'conflict' }],
+    // Every malformed field is refused before the store can be told anything.
+    it.each<[string, string, Record<string, unknown>]>([
+        ['a non-string summary', 'BAD_SUMMARY', { summary: 42 }],
+        ['a negative count', 'BAD_AGENT_TURNS', { agentTurns: -1 }],
+        ['a fractional count', 'BAD_AGENT_TURNS', { agentTurns: 2.5 }],
+        ['a string count', 'BAD_AGENT_TURNS', { agentTurns: 'eleven' }],
+        // int4 is the column's type: an over-range value would fail the verdict's transaction
+        // and leave a finished run unsettled, so the route is the boundary.
+        ['a count above the int4 maximum', 'BAD_AGENT_TURNS', { agentTurns: 2_147_483_648 }],
+        ['a negative token count', 'BAD_CONTEXT', { contextTokens: -1 }],
+        ['an absurd token count', 'BAD_CONTEXT', { contextTokens: 100_000_001 }],
+        ['a string cost', 'BAD_CONTEXT', { contextCostUsd: 'free' }],
+        ['a negative cost', 'BAD_CONTEXT', { contextCostUsd: -0.01 }],
+        ['treeChanged as a string', 'BAD_TREE_CHANGED', { treeChanged: 'yes' }],
+        ['treeChanged as a number', 'BAD_TREE_CHANGED', { treeChanged: 0 }],
+        ['evidence as a string', 'BAD_EVIDENCE', { evidence: 'h:1' }],
+        [
+            'evidence as an unknown gate outcome',
+            'BAD_EVIDENCE',
+            { evidence: { treeBefore: null, treeAfter: null, gates: 'maybe' } },
+        ],
+        [
+            'evidence as an empty fingerprint',
+            'BAD_EVIDENCE',
+            { evidence: { treeBefore: '', treeAfter: null, gates: 'none' } },
+        ],
+        [
+            'evidence as an oversized fingerprint',
+            'BAD_EVIDENCE',
+            { evidence: { treeBefore: 'x'.repeat(257), treeAfter: null, gates: 'none' } },
+        ],
+        ['evidence as a missing fingerprint', 'BAD_EVIDENCE', { evidence: { treeAfter: null, gates: 'none' } }],
+        ['an unknown failure kind', 'BAD_FAILURE_KIND', { failureKind: 'nope' }],
+        ['a non-string failure kind', 'BAD_FAILURE_KIND', { failureKind: 3 }],
+        ['an unknown cause', 'BAD_FAILURE_KIND', { status: 'failed', failureKind: 'gate', failureCause: 'nope' }],
+        ['a non-string cause', 'BAD_FAILURE_KIND', { status: 'failed', failureKind: 'gate', failureCause: 3 }],
+        ['a cause with no kind', 'BAD_FAILURE_KIND', { status: 'failed', failureCause: 'conflict' }],
         [
             'a cause under a kind that carries none',
+            'BAD_FAILURE_KIND',
             { status: 'failed', failureKind: 'timeout', failureCause: 'transport' },
         ],
-        ['a cause on a succeeded run', { status: 'succeeded', failureCause: 'verification' }],
-    ])('refuses %s with BAD_FAILURE_KIND', async (_label, fields) => {
+        ['a cause on a succeeded run', 'BAD_FAILURE_KIND', { status: 'succeeded', failureCause: 'verification' }],
+        [
+            'status succeeded with failureKind blocked',
+            'BAD_FAILURE_KIND',
+            { status: 'succeeded', failureKind: 'blocked' },
+        ],
+        ['status succeeded with failureKind gate', 'BAD_FAILURE_KIND', { status: 'succeeded', failureKind: 'gate' }],
+        [
+            'status succeeded with failureKind services',
+            'BAD_FAILURE_KIND',
+            { status: 'succeeded', failureKind: 'services' },
+        ],
+        ['an unknown status', 'BAD_STATUS', { status: 'dead' }],
+        ['a fractional exit code', 'BAD_EXIT_CODE', { exitCode: 1.5 }],
+        ['a non-string output', 'BAD_OUTPUT', { output: { tail: 'x' } }],
+    ])('refuses %s with %s', async (_label, code, fields) => {
         const store = stubStore();
         const instance = await harnessWith(store);
         const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, ...fields });
         expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_FAILURE_KIND');
-        expect(store.completed).toEqual([]);
-    });
-
-    it.each(['blocked', 'gate', 'services'])('refuses status succeeded with failureKind %s', async (failureKind) => {
-        const store = stubStore();
-        const instance = await harnessWith(store);
-        const response = await post(instance, `/api/jobs/${ID}/complete`, {
-            ...done,
-            status: 'succeeded',
-            failureKind,
-        });
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_FAILURE_KIND');
-        expect(store.completed).toEqual([]);
-    });
-
-    it('rejects a report from a worker whose lease was reclaimed', async () => {
-        const instance = await harnessWith(stubStore({ verdict: 'lost' }));
-        const response = await post(instance, `/api/jobs/${ID}/complete`, done);
-        expect(response.statusCode).toBe(409);
-    });
-
-    it.each([
-        ['an unknown status', { ...done, status: 'dead' }, 'BAD_STATUS'],
-        ['a fractional exit code', { ...done, exitCode: 1.5 }, 'BAD_EXIT_CODE'],
-        ['a non-string output', { ...done, output: { tail: 'x' } }, 'BAD_OUTPUT'],
-    ])('refuses %s', async (_label, payload, code) => {
-        const instance = await harnessWith(stubStore());
-        const response = await post(instance, `/api/jobs/${ID}/complete`, payload);
-        expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe(code);
+        expect(store.completed).toEqual([]);
     });
 
     // A body limit is not a length check: 128 KiB of output gets through it and would be stored.
@@ -3193,12 +2660,6 @@ describe('GET /api/jobs', () => {
         expect((await plain.inject({ method: 'GET', url: `/api/jobs/${ID}` })).json().workflowName).toBeNull();
     });
 
-    it('answers 404 for an unknown job', async () => {
-        const instance = await harnessWith(stubStore({ job: null }));
-        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}` });
-        expect(response.statusCode).toBe(404);
-    });
-
     // The whole follow-up chain, and ANY member's id resolves to it — the UI keeps one task per
     // conversation, so the URL may name the root or any adjustment.
     it('reads the whole thread from any member of it', async () => {
@@ -3210,19 +2671,6 @@ describe('GET /api/jobs', () => {
             expect(response.statusCode).toBe(200);
             expect(response.json().jobs).toHaveLength(2);
         }
-    });
-
-    it('answers 404 for a thread whose job does not exist', async () => {
-        const instance = await harnessWith(stubStore({ thread: null }));
-        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}/thread` });
-        expect(response.statusCode).toBe(404);
-    });
-
-    it('refuses a malformed id on the thread', async () => {
-        const instance = await harnessWith(stubStore());
-        const response = await instance.inject({ method: 'GET', url: '/api/jobs/nope/thread' });
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_ID');
     });
 
     it('lists jobs', async () => {
@@ -3592,16 +3040,6 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         ).then((app) => app.inject({ method: 'GET', url: `/api/jobs/${ID}/activity` }));
         expect(neverStarted.json().buckets).toEqual([]);
     });
-
-    it('answers 404 for an unknown job and BAD_ID for a malformed one', async () => {
-        const missing = await harnessWith(stubStore({ job: null }));
-        expect((await missing.inject({ method: 'GET', url: `/api/jobs/${ID}/activity` })).statusCode).toBe(404);
-
-        const instance = await harnessWith(stubStore());
-        const response = await instance.inject({ method: 'GET', url: '/api/jobs/nope/activity' });
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_ID');
-    });
 });
 
 // The board is registered for every caller; without a job store BEHIND the registry, the route
@@ -3650,16 +3088,6 @@ describe('POST /api/jobs/:id/gates-reread', () => {
         expect(response.statusCode).toBe(status);
         expect(response.json().code).toBe(code);
     });
-
-    it('refuses a bad lease token', async () => {
-        const store = stubStore();
-        const instance = await harnessWith(store);
-
-        const response = await post(instance, `/api/jobs/${ID}/gates-reread`, { leaseToken: 'not-a-uuid' });
-
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_TOKEN');
-    });
 });
 
 describe('POST /api/jobs/:id/publish-token', () => {
@@ -3695,16 +3123,6 @@ describe('POST /api/jobs/:id/publish-token', () => {
 
         expect(response.statusCode).toBe(status);
         expect(response.json().code).toBe(code);
-    });
-
-    it('refuses a bad lease token', async () => {
-        const store = stubStore();
-        const instance = await harnessWith(store);
-
-        const response = await post(instance, `/api/jobs/${ID}/publish-token`, { leaseToken: 'not-a-uuid' });
-
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_TOKEN');
     });
 });
 
@@ -3807,13 +3225,6 @@ describe('POST /api/jobs/:id/question', () => {
         expect(response.statusCode).toBe(413);
     });
 
-    it('refuses a bad lease token', async () => {
-        const instance = await harnessWith(stubStore());
-        const response = await post(instance, QUESTION_URL, { ...ASK, leaseToken: 'nope' });
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_TOKEN');
-    });
-
     it.each([
         ['lost', 409, 'LEASE_LOST'],
         ['missing', 404, 'NOT_FOUND'],
@@ -3865,14 +3276,6 @@ describe('POST /api/jobs/:id/review (issue #549)', () => {
         const response = await post(instance, REVIEW_URL, { ...REVIEW_REQUEST, ...patch });
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('INVALID_REVIEW');
-        expect(store.reviewRequests).toEqual([]);
-    });
-
-    it('refuses a bad lease token before the store is asked', async () => {
-        const store = stubStore();
-        const instance = await harnessWith(store);
-        const response = await post(instance, REVIEW_URL, { ...REVIEW_REQUEST, leaseToken: 'nope' });
-        expect(response.statusCode).toBe(400);
         expect(store.reviewRequests).toEqual([]);
     });
 
@@ -4078,5 +3481,224 @@ describe('Idempotency-Key on create, follow-up and retry (#589)', () => {
         await keyed(instance, `/api/jobs/${other}/retry`, {});
         const [a, b] = store.idempotencies.map((idem) => idem?.fingerprint);
         expect(a).not.toBe(b);
+    });
+});
+
+/**
+ * The error-path mapping the routes share: a store verdict, a down store or a malformed path or
+ * token maps to one status and code. The route-specific refusals (NOT_STOPPABLE, TASK_RUNNING,
+ * NO_OPEN_WAIT, …) stay with their routes above. A null code is a row whose status alone is pinned.
+ */
+describe('error-path mapping', () => {
+    type Method = 'GET' | 'POST' | 'PATCH';
+    type StoreOptions = Parameters<typeof stubStore>[0];
+    const JOB = `/api/jobs/${ID}`;
+    const ACK = '/api/reclaims/55555555-5555-4555-8555-555555555555/ack';
+    const SESSION = '33333333-3333-4333-8333-333333333333';
+    const ARTIFACT = { leaseToken: TOKEN, kind: 'log', attempt: 1 };
+    const COMPLETE = { leaseToken: TOKEN, status: 'succeeded', exitCode: 0, output: 'hello' };
+    const POST = (url: string, payload: unknown) => ({ method: 'POST' as Method, url, payload });
+    const PATCH = (url: string, payload: unknown) => ({ method: 'PATCH' as Method, url, payload });
+    const GET = (url: string) => ({ method: 'GET' as Method, url, payload: undefined as unknown });
+    type Request = ReturnType<typeof GET>;
+    const send = (instance: FastifyInstance, { method, url, payload }: Request) =>
+        instance.inject({ method, url, payload: payload as object });
+
+    // Superseded workers (`lost`) get 409 — the only signal one gets; the driver kills the
+    // container on it and never relabels the run that replaced it. Only the claim's holder may
+    // ack a reclaim, so a slow worker's row survives and finishes on its next try. Follow-up,
+    // retry, edit and the wait controls are author-scoped: they resume in the author's checkout.
+    it.each<[string, Request, StoreOptions, [number, string | null]]>([
+        [
+            'a heartbeat on a lost lease',
+            POST(`${JOB}/heartbeat`, { leaseToken: TOKEN }),
+            { verdict: 'lost' },
+            [409, 'LEASE_LOST'],
+        ],
+        [
+            'a heartbeat for a missing job',
+            POST(`${JOB}/heartbeat`, { leaseToken: TOKEN }),
+            { verdict: 'missing' },
+            [404, null],
+        ],
+        [
+            'a session report on a lost lease',
+            POST(`${JOB}/session`, { leaseToken: TOKEN, sessionId: SESSION }),
+            { verdict: 'lost' },
+            [409, null],
+        ],
+        [
+            'an output tail on a lost lease',
+            POST(`${JOB}/output`, { leaseToken: TOKEN, output: 'late' }),
+            { verdict: 'lost' },
+            [409, 'LEASE_LOST'],
+        ],
+        [
+            'an output tail for a missing job',
+            POST(`${JOB}/output`, { leaseToken: TOKEN, output: 'late' }),
+            { verdict: 'missing' },
+            [404, null],
+        ],
+        [
+            'an artifact on a lost lease',
+            POST(`${JOB}/artifact`, { ...ARTIFACT, content: 'late' }),
+            { verdict: 'lost' },
+            [409, 'LEASE_LOST'],
+        ],
+        [
+            'an artifact for a missing job',
+            POST(`${JOB}/artifact`, { ...ARTIFACT, content: 'x' }),
+            { verdict: 'missing' },
+            [404, null],
+        ],
+        [
+            'a log read with nothing uploaded, or no such job',
+            GET(`${JOB}/log`),
+            { storedArtifact: null },
+            [404, 'NOT_FOUND'],
+        ],
+        [
+            'a gate report on a lost lease',
+            POST(`${JOB}/gates`, { leaseToken: TOKEN, gates: GATE_RESULTS }),
+            { verdict: 'lost' },
+            [409, 'LEASE_LOST'],
+        ],
+        [
+            'a gate report for a missing job',
+            POST(`${JOB}/gates`, { leaseToken: TOKEN, gates: GATE_RESULTS }),
+            { verdict: 'missing' },
+            [404, null],
+        ],
+        ['a park on a lost lease', POST(`${JOB}/suspend`, { leaseToken: TOKEN }), { verdict: 'lost' }, [409, null]],
+        ['a requeue on a lost lease', POST(`${JOB}/requeue`, { leaseToken: TOKEN }), { verdict: 'lost' }, [409, null]],
+        [
+            'a requeue for a missing job',
+            POST(`${JOB}/requeue`, { leaseToken: TOKEN }),
+            { verdict: 'missing' },
+            [404, null],
+        ],
+        ['a completion on a lost lease', POST(`${JOB}/complete`, COMPLETE), { verdict: 'lost' }, [409, null]],
+        [
+            'a reclaim ack from a foreign worker',
+            POST(ACK, { worker: 'w2' }),
+            { ackReclaim: 'lost' },
+            [409, 'LEASE_LOST'],
+        ],
+        [
+            'a reclaim ack for a reclaim that never existed',
+            POST(ACK, { worker: 'w1' }),
+            { ackReclaim: 'missing' },
+            [404, null],
+        ],
+        ['a stop of a missing task', POST(`${JOB}/stop`, {}), { stop: 'missing' }, [404, null]],
+        ['a removal of a missing task', POST(`${JOB}/remove`, {}), { remove: 'missing' }, [404, null]],
+        ['a reopen of a missing task', POST(`${JOB}/reopen`, {}), { reopen: 'missing' }, [404, null]],
+        ['a wait cancel on a missing task', POST(`${JOB}/wait/cancel`, {}), { cancelWait: 'missing' }, [404, null]],
+        [
+            'a wait cancel by a non-author',
+            POST(`${JOB}/wait/cancel`, {}),
+            { cancelWait: 'forbidden' },
+            [403, 'FORBIDDEN'],
+        ],
+        ['a wait poke on a missing task', POST(`${JOB}/wait/poke`, {}), { pokeWait: 'missing' }, [404, null]],
+        ['a wait poke by a non-author', POST(`${JOB}/wait/poke`, {}), { pokeWait: 'forbidden' }, [403, 'FORBIDDEN']],
+        [
+            'a follow-up on a missing parent',
+            POST(`${JOB}/follow-up`, { command: 'again' }),
+            { followUp: 'missing' },
+            [404, null],
+        ],
+        [
+            'a follow-up on another account’s task',
+            POST(`${JOB}/follow-up`, { command: 'again' }),
+            { followUp: 'forbidden' },
+            [403, 'FORBIDDEN'],
+        ],
+        ['a retry of a missing task', POST(`${JOB}/retry`, {}), { retry: 'missing' }, [404, null]],
+        ['a retry of another account’s task', POST(`${JOB}/retry`, {}), { retry: 'forbidden' }, [403, 'FORBIDDEN']],
+        ['an edit of a missing task', PATCH(JOB, { command: 'again' }), { edit: 'missing' }, [404, null]],
+        [
+            'an edit of another account’s task',
+            PATCH(JOB, { command: 'again' }),
+            { edit: 'forbidden' },
+            [403, 'FORBIDDEN'],
+        ],
+        ['a done mark on a missing task', POST(`${JOB}/done`, {}), { done: 'missing' }, [404, null]],
+        ['a read of an unknown job', GET(JOB), { job: null }, [404, null]],
+        ['a thread read of a missing job', GET(`${JOB}/thread`), { thread: null }, [404, null]],
+        ['an activity read of an unknown job', GET(`${JOB}/activity`), { job: null }, [404, null]],
+    ])('maps %s', async (_label, request, options, [status, code]) => {
+        const instance = await harnessWith(stubStore(options));
+        const response = await send(instance, request);
+        expect(response.statusCode).toBe(status);
+        if (code !== null) expect(response.json().code).toBe(code);
+    });
+
+    // A down store answers 503, so the caller retries.
+    it.each<[string, Request, string | null]>([
+        ['a create', POST('/api/jobs', { command: 'echo hi' }), 'UNAVAILABLE'],
+        ['a stop', POST(`${JOB}/stop`, {}), 'UNAVAILABLE'],
+        ['a removal', POST(`${JOB}/remove`, {}), 'UNAVAILABLE'],
+        ['a reopen', POST(`${JOB}/reopen`, {}), 'UNAVAILABLE'],
+        ['a wait cancel', POST(`${JOB}/wait/cancel`, {}), 'UNAVAILABLE'],
+        ['a wait poke', POST(`${JOB}/wait/poke`, {}), 'UNAVAILABLE'],
+        ['a reclaim claim', POST('/api/reclaims/claim', { worker: 'w1' }), null],
+        ['a reclaim ack', POST(ACK, { worker: 'w1' }), null],
+        ['a follow-up', POST(`${JOB}/follow-up`, { command: 'again' }), 'UNAVAILABLE'],
+        ['a retry', POST(`${JOB}/retry`, {}), 'UNAVAILABLE'],
+        ['an edit', PATCH(JOB, { command: 'again' }), 'UNAVAILABLE'],
+        ['a done mark', POST(`${JOB}/done`, {}), 'UNAVAILABLE'],
+    ])('answers 503 to %s when the store is down', async (_label, request, code) => {
+        const instance = await harnessWith(stubStore({ fail: true }));
+        const response = await send(instance, request);
+        expect(response.statusCode).toBe(503);
+        if (code !== null) expect(response.json().code).toBe(code);
+    });
+
+    // An id reaches the store as a uuid or not at all: postgres rejects a malformed one with a
+    // 500-shaped error, and a bad path is a 400. The lease token is checked the same way.
+    it.each<[string, Request, string | null, keyof StoreStub | null]>([
+        ['id on heartbeat', POST('/api/jobs/not-a-uuid/heartbeat', { leaseToken: TOKEN }), 'BAD_ID', null],
+        ['id on suspend', POST('/api/jobs/nope/suspend', { leaseToken: TOKEN }), null, null],
+        ['id on stop', POST('/api/jobs/nope/stop', {}), null, null],
+        ['id on remove', POST('/api/jobs/nope/remove', {}), null, null],
+        ['id on reopen', POST('/api/jobs/nope/reopen', {}), null, null],
+        ['id on wait cancel', POST('/api/jobs/nope/wait/cancel', {}), null, null],
+        ['id on wait poke', POST('/api/jobs/nope/wait/poke', {}), null, null],
+        ['id on reclaim ack', POST('/api/reclaims/nope/ack', { worker: 'w1' }), null, null],
+        ['id on follow-up', POST('/api/jobs/nope/follow-up', { command: 'again' }), 'BAD_ID', null],
+        ['id on retry', POST('/api/jobs/nope/retry', {}), 'BAD_ID', null],
+        ['id on edit', PATCH('/api/jobs/nope', { command: 'again' }), 'BAD_ID', 'edited'],
+        ['id on done', POST('/api/jobs/nope/done', {}), 'BAD_ID', null],
+        ['id on thread', GET('/api/jobs/nope/thread'), 'BAD_ID', null],
+        ['id on activity', GET('/api/jobs/nope/activity'), 'BAD_ID', null],
+        ['lease token on heartbeat', POST(`${JOB}/heartbeat`, { leaseToken: 'nope' }), 'BAD_TOKEN', null],
+        ['lease token on requeue', POST(`${JOB}/requeue`, { leaseToken: 'nope' }), null, 'requeued'],
+        ['lease token on gates-reread', POST(`${JOB}/gates-reread`, { leaseToken: 'not-a-uuid' }), 'BAD_TOKEN', null],
+        ['lease token on publish-token', POST(`${JOB}/publish-token`, { leaseToken: 'not-a-uuid' }), 'BAD_TOKEN', null],
+        ['lease token on question', POST(`${JOB}/question`, { ...ASK, leaseToken: 'nope' }), 'BAD_TOKEN', null],
+        [
+            'lease token on review',
+            POST(`${JOB}/review`, { ...REVIEW_REQUEST, leaseToken: 'nope' }),
+            null,
+            'reviewRequests',
+        ],
+    ])('refuses a malformed %s before touching the store', async (_label, request, code, untouched) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await send(instance, request);
+        expect(response.statusCode).toBe(400);
+        if (code !== null) expect(response.json().code).toBe(code);
+        if (untouched !== null) expect(store[untouched]).toEqual([]);
+    });
+
+    // Follow-up and retry are a person's action on a finished run: there is no lease token to
+    // present and none would mean anything.
+    it.each([
+        ['follow-up', `${JOB}/follow-up`, { command: 'again' }],
+        ['retry', `${JOB}/retry`, {}],
+    ])('takes no lease token on %s', async (_label, url, payload) => {
+        const instance = await harnessWith(stubStore());
+        expect((await post(instance, url, payload)).statusCode).toBe(201);
     });
 });
