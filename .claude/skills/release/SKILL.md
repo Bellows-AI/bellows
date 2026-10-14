@@ -142,8 +142,10 @@ npm view @bellows-ai/bellows-cli version                      # the tag minus it
 gh release create "$TAG" --verify-tag --title "$TAG" --notes-file <notes.md>
 ```
 
-A failed workflow leaves the tag without published images: read the failing job
-(`gh run view <run-id> --log-failed`), fix forward in a PR, and cut the next patch — never move or
+A failed workflow can leave the tag half published — the `npm` job needs only `validate`, so the
+images and chart can ship while the package fails, or the reverse. Read the failing job
+(`gh run view <run-id> --log-failed`), check which artifacts the run did publish, then fix forward
+in a PR and cut the next patch — never move or
 delete a pushed tag. Create the GitHub release only after the workflow succeeds.
 
 ## Reporting back
