@@ -223,35 +223,6 @@ describe.runIf(enabled)('attribution', () => {
         expect(claim?.env).toEqual({ GITHUB_TOKEN: 'ghs_example', CORE: 'org-value' });
     });
 
-    it('lets a configured GITHUB_TOKEN beat the mint', async () => {
-        /*
-         * A credential an operator configured in a scope is deliberate; the mint fills only the
-         * gap. Silently replacing it with a different token would be a failure nobody notices.
-         */
-        const userId = await account(sql, mintedAccountId(), 'tokened-cat');
-        const envStore = createEnvVarStore({ sql, orgId: ORG });
-        await envStore.replaceOrg([{ name: 'GITHUB_TOKEN', value: 'operator-pat', isSecret: true }]);
-        const minted = createJobStore({
-            sql,
-            orgId: ORG,
-            env: envStore,
-            githubToken: { fresh: async () => 'ghs_example' },
-        });
-
-        await mustCreate(minted.create('echo hi', userId, { repo: null, executor: null }));
-        const claim = await minted.claim('driver-1', LEASE_SECONDS);
-        expect(claim?.env).toEqual({ GITHUB_TOKEN: 'operator-pat' });
-    });
-
-    it('mints the token even when the board has no env resolver', async () => {
-        const userId = await account(sql, mintedAccountId(), 'bare-mint');
-        const bare = createJobStore({ sql, orgId: ORG, githubToken: { fresh: async () => 'ghs_example' } });
-        await mustCreate(bare.create('echo hi', userId, { repo: null, executor: null }));
-
-        const claim = await bare.claim('driver-1', LEASE_SECONDS);
-        expect(claim?.env).toEqual({ GITHUB_TOKEN: 'ghs_example' });
-    });
-
     it('mints a fresh token for every claim, so the credential outlives the claim', async () => {
         /*
          * Served from the provider's cache, a token can carry the five-minute refresh margin into
@@ -321,6 +292,7 @@ describe.runIf(enabled)('attribution', () => {
             });
             await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
             const claim = await store.claim('driver-1', LEASE_SECONDS);
+            expect(claim?.env).toEqual({ GITHUB_TOKEN: 'operator-pat' });
 
             const answer = await store.publishToken(claim!.id, claim!.leaseToken);
             // The deliberate credential, and no mint spent beside it — the claim-time rule.

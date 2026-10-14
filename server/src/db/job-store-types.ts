@@ -1272,9 +1272,6 @@ export interface JobStore {
 /** The page states the task list serves. `attention` is the inbox view: running and review. */
 export type TaskState = 'attention' | 'running' | 'review' | 'past';
 
-/** Which section of the task tree a task is in right now — the sidenav's three buckets. */
-export type TaskBucket = 'running' | 'review' | 'past';
-
 /**
  * One task: a thread root with the conversation's present tense. Every field is bounded — the
  * command, one activity line, one close-time summary — and nothing here is a run detail: no
