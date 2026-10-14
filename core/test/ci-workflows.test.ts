@@ -402,6 +402,9 @@ describe('ci workflows', () => {
         expect(stamp, 'the published package.json is never stamped').toBeGreaterThan(-1);
         expect(stamp).toBeLessThan(publish);
         expect(commands[stamp]).toContain('test "v$VERSION" = "$TAG"');
+        const license = commands.indexOf('cp LICENSE cli/LICENSE');
+        expect(license, 'the package ships without the license it declares').toBeGreaterThan(-1);
+        expect(license).toBeLessThan(publish);
     });
 
     // What `npm publish -w cli` ships: the name and command the release promises, only the build,
@@ -412,7 +415,9 @@ describe('ci workflows', () => {
             name: 'bellows-cli',
             version: '0.0.0',
             bin: { bellows: 'dist/index.js' },
-            files: ['dist'],
+            // The compiled JS only: no declarations (nothing imports a CLI) and no source maps
+            // (they point at src/, which does not ship).
+            files: ['dist/**/*.js'],
             repository: { url: 'git+https://github.com/Bellows-AI/factory.git', directory: 'cli' },
         });
         expect(pkg.private).toBeUndefined();

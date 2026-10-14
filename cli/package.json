@@ -16,7 +16,7 @@
         "bellows": "dist/index.js"
     },
     "files": [
-        "dist"
+        "dist/**/*.js"
     ],
     "scripts": {
         "build": "tsc -b",
