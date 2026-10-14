@@ -415,7 +415,7 @@ async function runAnswer(args: readonly string[], io: RunIo): Promise<CommandRes
     } catch (error) {
         if (error instanceof BoardError && error.code === QUESTION_ANSWERED_CODE) {
             throw new BoardError(
-                `${error.message} — run \`factory job questions ${id}\` to see the recorded answer`,
+                `${error.message} — run \`bellows job questions ${id}\` to see the recorded answer`,
                 error.status,
                 error.code
             );
@@ -513,7 +513,7 @@ const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<C
     help: async () => ok({ usage: USAGE }, USAGE),
     version: async () => {
         const version = readCliVersion();
-        return ok({ version }, `factory ${version}`);
+        return ok({ version }, `bellows ${version}`);
     },
 };
 

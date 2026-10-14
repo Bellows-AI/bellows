@@ -19,7 +19,7 @@ import { BoardError, NO_RESPONSE_STATUS, MALFORMED_RESPONSE_CODE } from './trans
 import { USAGE } from './usage.js';
 
 /**
- * `factory batch …`: an HTTP client of the board's batch routes (docs/batches.md). The board owns
+ * `bellows batch …`: an HTTP client of the board's batch routes (docs/batches.md). The board owns
  * orchestration — nothing here, a wait that ends or a process that dies included, cancels a batch.
  * Every command returns a `CommandResult` for `run` to print, exactly like the job commands.
  */
@@ -67,7 +67,7 @@ function positionalsOf(
 function versionOf(raw: string | boolean | undefined): number {
     const value = Number(raw);
     if (typeof raw !== 'string' || !Number.isInteger(value) || value < 1) {
-        throw new UsageError('--version must be the draft version as last read (see `factory batch inspect`)');
+        throw new UsageError('--version must be the draft version as last read (see `bellows batch inspect`)');
     }
     return value;
 }
@@ -97,7 +97,7 @@ function uncertainWrite(error: unknown, key: string | undefined): unknown {
     if (!uncertain) return error;
     const hint =
         key === undefined
-            ? 'the write may have been applied — check `factory batch list` before repeating it; pass --idempotency-key so a repeat cannot make a second batch'
+            ? 'the write may have been applied — check `bellows batch list` before repeating it; pass --idempotency-key so a repeat cannot make a second batch'
             : `the write may have been applied — repeat the same command with --idempotency-key ${key} to recover its result`;
     return new BoardError(`${error.message} (${hint})`, error.status, error.code);
 }
@@ -219,7 +219,7 @@ async function runWait(args: readonly string[], io: BatchIo, boardFor: BoardFor)
         const batch = await client.getBatch(id);
         if (batch.status === BATCH_DRAFT) {
             throw new Error(
-                `batch ${id} is a draft; start it first (factory batch start ${id} --version ${batch.version})`
+                `batch ${id} is a draft; start it first (bellows batch start ${id} --version ${batch.version})`
             );
         }
         const remaining = deadline - now();

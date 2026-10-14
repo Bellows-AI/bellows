@@ -41,7 +41,7 @@ const refusal = (status: number, code: string, error: string) => Response.json({
 /** A board that accepts a retry as the new run `run-2`. */
 const retryBoard = () => () => Response.json({ id: 'run-2', status: 'queued' }, { status: 201 });
 
-describe('factory job retry', () => {
+describe('bellows job retry', () => {
     it('posts a bodiless retry and names the new run, not the one retried', async () => {
         const result = await cli(['job', 'retry', 'run-1', '--json'], retryBoard());
 
@@ -96,7 +96,7 @@ describe('factory job retry', () => {
     });
 });
 
-describe('factory job edit', () => {
+describe('bellows job edit', () => {
     it('patches the joined command onto the run and prints its id, still queued', async () => {
         const result = await cli(['job', 'edit', 'run-1', '--', 'npm', 'test'], () =>
             Response.json({ id: 'run-1', status: 'queued', command: 'npm test' })
@@ -143,7 +143,7 @@ describe('factory job edit', () => {
     });
 });
 
-describe('factory job reopen', () => {
+describe('bellows job reopen', () => {
     it('posts the reopen and says so', async () => {
         const result = await cli(['job', 'reopen', 'task-1'], () => Response.json({ id: 'task-1', reopened: true }));
 
