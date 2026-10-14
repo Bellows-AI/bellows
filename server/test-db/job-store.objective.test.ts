@@ -4,6 +4,7 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { Claim, GateReport, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
+import { expireLease } from './fixtures.js';
 
 /**
  * Issue 543: a task created without a workflow is OBJECTIVE mode — an ordinary claimable job with
@@ -119,7 +120,7 @@ describe.skipIf(!enabled)('objective mode — database', () => {
     it('issue 550: survives a dead worker and a red gate on one row, then settles succeeded under the final evidence', async () => {
         const root = await queueObjective();
         const first = await claim();
-        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${first.id}`;
+        await expireLease(sql, first.id);
 
         // The dead worker's lease is reclaimed in place: same row, fresh token, bumped attempt.
         const second = await claim();

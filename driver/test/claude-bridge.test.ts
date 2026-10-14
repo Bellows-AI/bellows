@@ -4,8 +4,8 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /*
  * The runner end of AskUserQuestion (issue #226): docker/claude-executor/claude-bridge.cjs run
@@ -15,7 +15,6 @@ import { afterEach, describe, expect, it } from 'vitest';
  * scripts one more turn the CLI starts on its own after that `result` — the one a background
  * subagent's completion queues — which only runs while stdin is still open.
  */
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const BRIDGE = join(ROOT, 'docker/claude-executor/claude-bridge.cjs');
 const EXECUTABLE_MODE = 0o755;
 const POLL_MS = '20';

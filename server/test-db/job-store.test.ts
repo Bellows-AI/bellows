@@ -4,16 +4,7 @@ import { createJobStore } from '../src/db/job-store.js';
 import { createOrgOfLease } from '../src/db/job-store-org-resolvers.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-
-/**
- * A create whose refusal would be a broken setup, never a case under test: narrows the store's
- * honest union (`{ id } | 'purging'`, issue #92) so the call sites read as they did before.
- */
-const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
-    p.then((ref) => {
-        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
-        return ref;
-    });
+import { expireLease, mustCreate } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -73,8 +64,6 @@ const mustFollowUp = (root: string, command: string, userId: string | null): Pro
     });
 
 /** Ages a lease into the past. Deterministic where sleeping for a one-second lease is not. */
-const expireLease = (id: string) => sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
-
 const row = (id: string) =>
     sql<{ status: string; attempts: number; claimed_by: string | null; started_at: Date | null }[]>`
         select status, attempts, claimed_by, started_at from job where id = ${id}
@@ -110,7 +99,7 @@ describe.skipIf(!enabled)('job store', () => {
         const { id } = await queue('echo hi');
         const first = await store.claim('w1', LEASE_SECONDS);
         const firstStart = (await row(id))[0]?.started_at as Date;
-        await expireLease(id);
+        await expireLease(sql, id);
 
         const second = await store.claim('w2', LEASE_SECONDS);
 
@@ -128,7 +117,7 @@ describe.skipIf(!enabled)('job store', () => {
         const { id } = await queue('kill -9 $$');
         await sql`update job set max_attempts = 1 where id = ${id}`;
         await store.claim('w1', LEASE_SECONDS);
-        await expireLease(id);
+        await expireLease(sql, id);
 
         expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
         expect((await row(id))[0]?.status).toBe('dead');
@@ -148,7 +137,7 @@ describe.skipIf(!enabled)('job store', () => {
     it('separates an unknown job from a lost lease', async () => {
         const { id } = await queue('echo hi');
         const stale = await store.claim('w1', LEASE_SECONDS);
-        await expireLease(id);
+        await expireLease(sql, id);
         await store.claim('w2', LEASE_SECONDS);
 
         expect((await store.heartbeat(id, stale!.leaseToken, LEASE_SECONDS)).result).toBe('lost');
@@ -160,7 +149,7 @@ describe.skipIf(!enabled)('job store', () => {
     it('refuses a completion from a worker whose lease was reclaimed', async () => {
         const { id } = await queue('echo hi');
         const stale = await store.claim('w1', LEASE_SECONDS);
-        await expireLease(id);
+        await expireLease(sql, id);
         const winner = await store.claim('w2', LEASE_SECONDS);
 
         const refused = await store.complete(id, stale!.leaseToken, {
@@ -219,7 +208,7 @@ describe.skipIf(!enabled)('job store', () => {
             // the lease is gone, and the pair must not outlive it.
             const { id } = await queue('echo hi');
             const claim = await store.claim('w1', LEASE_SECONDS);
-            await expireLease(id);
+            await expireLease(sql, id);
 
             expect((await row(id))[0]?.status).toBe('running');
             expect(await orgOfLease(id, claim!.leaseToken)).toBeNull();
@@ -257,7 +246,7 @@ describe.skipIf(!enabled)('job store', () => {
         it('stops resolving the OLD lease once a reclaim rotated the token', async () => {
             const { id } = await queue('echo hi');
             const stale = await store.claim('w1', LEASE_SECONDS);
-            await expireLease(id);
+            await expireLease(sql, id);
             const winner = await store.claim('w2', LEASE_SECONDS);
             expect(winner!.leaseToken).not.toBe(stale!.leaseToken);
 
@@ -277,7 +266,7 @@ describe.skipIf(!enabled)('job store', () => {
             const { id } = await queue('kill -9 $$');
             await sql`update job set max_attempts = 1 where id = ${id}`;
             const claim = await store.claim('w1', LEASE_SECONDS);
-            await expireLease(id);
+            await expireLease(sql, id);
             await store.claim('w2', LEASE_SECONDS);
             expect((await row(id))[0]?.status).toBe('dead');
 
@@ -500,7 +489,7 @@ describe.skipIf(!enabled)('job store', () => {
             content: 'first attempt',
             truncated: false,
         });
-        await expireLease(id);
+        await expireLease(sql, id);
         const second = await store.claim('w2', LEASE_SECONDS);
         await store.artifact(id, second!.leaseToken, {
             kind: 'log',
@@ -516,7 +505,7 @@ describe.skipIf(!enabled)('job store', () => {
     it('refuses an artifact from a worker whose lease was reclaimed, or a job that does not exist', async () => {
         const { id } = await queue('echo hi');
         const stale = await store.claim('w1', LEASE_SECONDS);
-        await expireLease(id);
+        await expireLease(sql, id);
         const winner = await store.claim('w2', LEASE_SECONDS);
 
         expect(
@@ -588,7 +577,7 @@ describe.skipIf(!enabled)('job store', () => {
 
         // The claim clears the column: the sample describes the attempt that took it, and a new
         // attempt starts with a new, unsampled container.
-        await expireLease(id);
+        await expireLease(sql, id);
         const second = await store.claim('w2', LEASE_SECONDS);
         expect(await store.get(id)).toMatchObject({ runtime: null });
 
@@ -655,7 +644,7 @@ describe.skipIf(!enabled)('job store', () => {
 
         // The next attempt's claim clears the whole column, fleet included — and the fresh
         // attempt's sample is exactly what it reports, nothing of the previous fleet left.
-        await expireLease(id);
+        await expireLease(sql, id);
         const second = await store.claim('w2', LEASE_SECONDS);
         expect(await store.get(id)).toMatchObject({ runtime: null });
         await store.progress(id, second!.leaseToken, 'again', vitals);
@@ -704,7 +693,7 @@ describe.skipIf(!enabled)('job store', () => {
     it('refuses an output tail from a worker whose lease was reclaimed', async () => {
         const { id } = await queue('echo hi');
         const stale = await store.claim('w1', LEASE_SECONDS);
-        await expireLease(id);
+        await expireLease(sql, id);
         await store.claim('w2', LEASE_SECONDS);
 
         expect(await store.progress(id, stale!.leaseToken, 'from the zombie')).toBe('lost');
@@ -743,7 +732,7 @@ describe.skipIf(!enabled)('job store', () => {
     it('refuses a session report from a worker whose lease was reclaimed', async () => {
         const { id } = await queue('echo hi');
         const stale = await store.claim('w1', LEASE_SECONDS);
-        await expireLease(id);
+        await expireLease(sql, id);
         await store.claim('w2', LEASE_SECONDS);
 
         expect(await store.session(id, stale!.leaseToken, SESSION)).toBe('lost');
@@ -756,7 +745,7 @@ describe.skipIf(!enabled)('job store', () => {
         const { id } = await queue('echo hi');
         const first = await store.claim('w1', LEASE_SECONDS);
         await store.session(id, first!.leaseToken, SESSION);
-        await expireLease(id);
+        await expireLease(sql, id);
 
         await store.claim('w2', LEASE_SECONDS);
 
@@ -799,7 +788,7 @@ describe.skipIf(!enabled)('job store', () => {
         const { id } = await queue('echo hi');
         const first = await store.claim('w1', LEASE_SECONDS);
         await store.session(id, first!.leaseToken, SESSION);
-        await expireLease(id);
+        await expireLease(sql, id);
 
         const second = await store.claim('w2', LEASE_SECONDS);
 
@@ -809,7 +798,7 @@ describe.skipIf(!enabled)('job store', () => {
     it('refuses to park a job on a lease that has moved on', async () => {
         const { id } = await queue('echo hi');
         const stale = await store.claim('w1', LEASE_SECONDS);
-        await expireLease(id);
+        await expireLease(sql, id);
         await store.claim('w2', LEASE_SECONDS);
 
         expect(await store.suspend(id, stale!.leaseToken)).toEqual({ result: 'lost' });

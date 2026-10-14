@@ -857,16 +857,7 @@ describe('the poll loop', () => {
         const board = stubBoard([{ ...job(1), executorType: 'opencode' }]);
         const runner = stubRunner(async () => ok({ finishReason: 'stop', contextTokens: 1200, costUsd: 0 }));
         const logs: string[] = [];
-        const loop = createLoop({
-            board: board.board,
-            runner,
-            config: config(),
-            sleep,
-            log: (m) => logs.push(m),
-        });
-        board.attach(loop);
-
-        await loop.start();
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
 
         expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
         expect(logs.some((m) => m.includes('the session readout came up empty'))).toBe(true);
@@ -1412,15 +1403,7 @@ describe('the poll loop', () => {
                 reason: 'refusing to remove /workspaces/bellows/44444444-4444-4444-8444-444444444444/.worktrees/0000000',
             },
         });
-        const loop = createLoop({
-            board: board.board,
-            runner,
-            config: config(),
-            sleep,
-            log: (m) => logs.push(m),
-        });
-        board.attach(loop);
-        await loop.start();
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
 
         expect(board.board.completed[0]?.status).toBe('succeeded');
         expect(logs.some((m) => m.includes('task worktree could not be reclaimed'))).toBe(true);
@@ -1433,15 +1416,7 @@ describe('the poll loop', () => {
         runner.reclaimWorktree = async () => {
             throw new Error('daemon refused');
         };
-        const loop = createLoop({
-            board: board.board,
-            runner,
-            config: config(),
-            sleep,
-            log: (m) => logs.push(m),
-        });
-        board.attach(loop);
-        await loop.start();
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
 
         expect(board.board.completed[0]?.status).toBe('succeeded');
         expect(logs.some((m) => m.includes('daemon refused'))).toBe(true);
@@ -2059,16 +2034,7 @@ describe('the poll loop', () => {
         });
         const runner = stubRunner(async () => ok());
         runner.reclaimWorktree = async () => ({ ok: false, removed: false, reason: 'the checkout is held' });
-        const loop = createLoop({
-            board: board.board,
-            runner,
-            config: config(),
-            sleep,
-            log: (m) => logs.push(m),
-        });
-        board.attach(loop);
-
-        await loop.start();
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
 
         // No ack: the row survives its lease and is offered again (and to other workers), while
         // the refusal is said out loud exactly as a refused terminal reclaim is.
@@ -2097,16 +2063,7 @@ describe('the poll loop', () => {
             failAckReclaim: true,
         });
         const runner = stubRunner(async () => ok());
-        const loop = createLoop({
-            board: board.board,
-            runner,
-            config: config(),
-            sleep,
-            log: (m) => logs.push(m),
-        });
-        board.attach(loop);
-
-        await loop.start();
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
 
         // The ack never landed, so the row survives for its lease to expire and hand it back —
         // and start() resolved, where before the fix the rejection ended the driver.
@@ -2150,16 +2107,7 @@ describe('the poll loop', () => {
                 reclaimSequence: [heldRefusal(), { ok: true, removed: true, reason: null }],
                 reapOrphanedClaim: async () => true,
             });
-            const loop = createLoop({
-                board: board.board,
-                runner,
-                config: config(),
-                sleep,
-                log: (m) => logs.push(m),
-            });
-            board.attach(loop);
-
-            await loop.start();
+            await drive({ ...board, runner, log: (m) => logs.push(m) });
 
             // Proven against the board, then reaped, then the removal retried once — and the
             // row acked, so the offer stops.
@@ -2183,10 +2131,7 @@ describe('the poll loop', () => {
                 reclaimSequence: [heldRefusal(), { ok: true, removed: true, reason: null }],
                 reapOrphanedClaim: async () => true,
             });
-            const loop = createLoop({ board: board.board, runner, config: config(), sleep, log: () => {} });
-            board.attach(loop);
-
-            await loop.start();
+            await drive({ ...board, runner });
 
             expect(runner.reapAttempts.map((j) => j.id)).toEqual([root]);
             expect(board.board.reclaimAcks).toEqual([rowId]);
@@ -2203,16 +2148,7 @@ describe('the poll loop', () => {
                 reclaimSequence: [heldRefusal()],
                 reapOrphanedClaim: async () => true,
             });
-            const loop = createLoop({
-                board: board.board,
-                runner,
-                config: config(),
-                sleep,
-                log: (m) => logs.push(m),
-            });
-            board.attach(loop);
-
-            await loop.start();
+            await drive({ ...board, runner, log: (m) => logs.push(m) });
 
             expect(runner.reapAttempts).toEqual([]);
             expect(board.board.reclaimAcks).toEqual([]);
@@ -2225,10 +2161,7 @@ describe('the poll loop', () => {
                 reclaimSequence: [heldRefusal()],
                 reapOrphanedClaim: async () => true,
             });
-            const loop = createLoop({ board: board.board, runner, config: config(), sleep, log: () => {} });
-            board.attach(loop);
-
-            await loop.start();
+            await drive({ ...board, runner });
 
             expect(runner.reapAttempts).toEqual([]);
             expect(board.board.reclaimAcks).toEqual([]);
@@ -2241,16 +2174,7 @@ describe('the poll loop', () => {
                 reclaimSequence: [heldRefusal()],
                 reapOrphanedClaim: async () => false,
             });
-            const loop = createLoop({
-                board: board.board,
-                runner,
-                config: config(),
-                sleep,
-                log: (m) => logs.push(m),
-            });
-            board.attach(loop);
-
-            await loop.start();
+            await drive({ ...board, runner, log: (m) => logs.push(m) });
 
             // The proof passed and the delete was attempted, but the claim did not go: no
             // orphan line, no retry, no ack — the throttled refusal line is all this offer says.
@@ -2270,16 +2194,7 @@ describe('the poll loop', () => {
                 ],
                 reapOrphanedClaim: async () => true,
             });
-            const loop = createLoop({
-                board: board.board,
-                runner,
-                config: config(),
-                sleep,
-                log: (m) => logs.push(m),
-            });
-            board.attach(loop);
-
-            await loop.start();
+            await drive({ ...board, runner, log: (m) => logs.push(m) });
 
             const orphan = logs.find((m) => m.includes('orphaned'));
             expect(orphan).toContain('age unknown');
@@ -2324,16 +2239,7 @@ describe('the poll loop', () => {
             const runner = stubRunner(async () => ok(), {
                 reclaimSequence: [refusal, { ok: true, removed: true, reason: null }, refusal],
             });
-            const loop = createLoop({
-                board: board.board,
-                runner,
-                config: config(),
-                sleep,
-                log: (m) => logs.push(m),
-            });
-            board.attach(loop);
-
-            await loop.start();
+            await drive({ ...board, runner, log: (m) => logs.push(m) });
 
             // refusal (logged) → settled, entry cleared → the SAME refusal logs again.
             expect(logs.filter((m) => m.includes('could not be reclaimed'))).toHaveLength(2);
@@ -2359,16 +2265,7 @@ describe('the poll loop', () => {
             const runner = stubRunner(async () => ok(), {
                 reclaimSequence: [same, same, same, changed],
             });
-            const loop = createLoop({
-                board: board.board,
-                runner,
-                config: config(),
-                sleep,
-                log: (m) => logs.push(m),
-            });
-            board.attach(loop);
-
-            await loop.start();
+            await drive({ ...board, runner, log: (m) => logs.push(m) });
 
             const failures = logs.filter((m) => m.includes('could not be reclaimed'));
             expect(failures).toHaveLength(2);
@@ -2941,16 +2838,7 @@ describe('the poll loop', () => {
             await new Promise((resolve) => setTimeout(resolve, 5));
             return ok();
         });
-        const loop = createLoop({
-            board: board.board,
-            runner,
-            config: config(),
-            sleep,
-            log: (m) => logs.push(m),
-        });
-        board.attach(loop);
-
-        await loop.start();
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
 
         expect(logs.filter((m) => m.includes('could not stream output'))).toHaveLength(1);
     });
@@ -3017,15 +2905,7 @@ describe('the poll loop', () => {
         const messages: string[] = [];
         const envJob: BoardJob = { ...job(1), env: { SECRET_TOKEN: 'board-secret-value' } };
         const board = stubBoard([envJob], { idleBeforeStop: 1 });
-        const loop = createLoop({
-            board: board.board,
-            runner: stubRunner(async () => ok()),
-            config: config(),
-            log: (m) => messages.push(m),
-            sleep,
-        });
-        board.attach(loop);
-        await loop.start();
+        await drive({ ...board, runner: stubRunner(async () => ok()), log: (m) => messages.push(m) });
 
         expect(messages.length).toBeGreaterThan(0);
         expect(messages.join('\n')).not.toContain('board-secret-value');

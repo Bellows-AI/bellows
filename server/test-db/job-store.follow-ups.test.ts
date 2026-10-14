@@ -4,16 +4,7 @@ import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { useTestDb } from './harness.js';
-
-/**
- * A create whose refusal would be a broken setup, never a case under test: narrows the store's
- * honest union (`{ id } | 'purging'`, issue #92) so the call sites read as they did before.
- */
-const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
-    p.then((ref) => {
-        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
-        return ref;
-    });
+import { account, expireLease, mustCreate } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -78,8 +69,6 @@ const doneAt = (result: Awaited<ReturnType<JobStore['markDone']>>): string => {
 };
 
 /** Ages a lease into the past. Deterministic where sleeping for a one-second lease is not. */
-const expireLease = (id: string) => sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
-
 const row = (id: string) =>
     sql<{ status: string; attempts: number; claimed_by: string | null; started_at: Date | null }[]>`
         select status, attempts, claimed_by, started_at from job where id = ${id}
@@ -411,18 +400,10 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     // follow-up by anyone else would either run their command in the author's tree or resume the
     // conversation in their own; both are refused, and only the author may follow their task up.
     it('refuses a follow-up by anyone but the account that queued the task', async () => {
-        const account = async (githubUserId: number, login: string): Promise<string> => {
-            const [row] = await sql<{ id: string }[]>`
-                insert into app_user (github_user_id, github_login) values (${githubUserId}, ${login})
-                on conflict (github_user_id) do update set github_login = excluded.github_login
-                returning id
-            `;
-            return row!.id;
-        };
         const AUTHOR_A_GITHUB_ID = 6001;
         const AUTHOR_B_GITHUB_ID = 6002;
-        const authorA = await account(AUTHOR_A_GITHUB_ID, 'author-a');
-        const authorB = await account(AUTHOR_B_GITHUB_ID, 'author-b');
+        const authorA = await account(sql, AUTHOR_A_GITHUB_ID, 'author-a');
+        const authorB = await account(sql, AUTHOR_B_GITHUB_ID, 'author-b');
         const { id: parent } = await mustCreate(store.create('drive me', authorA, { repo: null, executor: null }));
         const claim = await store.claim('w1', LEASE_SECONDS);
         await store.session(parent, claim!.leaseToken, SESSION);
@@ -537,7 +518,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         const parent = await finishWithSession('drive me');
         const { id } = await mustFollowUp(parent, 'again', null);
         await store.claim('w1', LEASE_SECONDS);
-        await expireLease(id);
+        await expireLease(sql, id);
 
         const second = await store.claim('w2', LEASE_SECONDS);
 
@@ -916,7 +897,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             const claim = await store.claim('w1', LEASE_SECONDS);
             // Reported before the job dies, or the follow-up would have nothing to continue.
             await store.session(id, claim!.leaseToken, SESSION);
-            await expireLease(id);
+            await expireLease(sql, id);
             expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
             expect((await row(id))[0]?.status).toBe('dead');
 

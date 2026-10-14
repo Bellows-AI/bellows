@@ -1,7 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { readRepoFile as read } from './fixtures/repo-files.js';
 
 /*
  * What pins the compose driver to the working tree (issue #174). The compose `driver` service
@@ -13,8 +11,6 @@ import { describe, expect, it } from 'vitest';
  * chart and scripts/test-k8s.sh build it with no --target, so a new stage inserted after it
  * would silently become what kubernetes ships.
  */
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 
 const compose = read('docker-compose.yml');
 const driverDockerfile = read('docker/driver.Dockerfile');

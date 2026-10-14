@@ -3,16 +3,7 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-
-/**
- * A create whose refusal would be a broken setup, never a case under test: narrows the store's
- * honest union (`{ id } | 'purging'`, issue #92) so the call sites read as they did before.
- */
-const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
-    p.then((ref) => {
-        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
-        return ref;
-    });
+import { account, mustCreate } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -234,18 +225,10 @@ describe.skipIf(!enabled)('retries', () => {
     // Author-scoped like follow-up: a retry runs in the author's checkout tree (the thread's
     // worktree lives there), so a member's command may only ever retry their own task.
     it('refuses a retry by anyone but the account that queued the task', async () => {
-        const account = async (githubUserId: number, login: string): Promise<string> => {
-            const [row] = await sql<{ id: string }[]>`
-                insert into app_user (github_user_id, github_login) values (${githubUserId}, ${login})
-                on conflict (github_user_id) do update set github_login = excluded.github_login
-                returning id
-            `;
-            return row!.id;
-        };
         const AUTHOR_A_GITHUB_ID = 6101;
         const AUTHOR_B_GITHUB_ID = 6102;
-        const authorA = await account(AUTHOR_A_GITHUB_ID, 'retry-author-a');
-        const authorB = await account(AUTHOR_B_GITHUB_ID, 'retry-author-b');
+        const authorA = await account(sql, AUTHOR_A_GITHUB_ID, 'retry-author-a');
+        const authorB = await account(sql, AUTHOR_B_GITHUB_ID, 'retry-author-b');
         const id = await finishSessionless('drive me', authorA);
 
         expect(await store.createRetry(id, authorB)).toBe('forbidden');

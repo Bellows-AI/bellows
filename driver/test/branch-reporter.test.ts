@@ -5,9 +5,9 @@ import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
-import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
+import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /*
  * The branch reporter's behavior, against a stub board and real git fixtures. The reporter's
@@ -15,7 +15,6 @@ import { DatabaseSync } from 'node:sqlite';
  * whatever wire shape it pins, because one stderr line from the reporter would corrupt the
  * run output the driver tails.
  */
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const CLAUDE_REPORTER = join(ROOT, 'docker/claude-executor/branch-reporter.cjs');
 const OPENCODE_REPORTER = join(ROOT, 'docker/opencode-executor/branch-reporter.cjs');
 

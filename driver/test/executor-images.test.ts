@@ -13,8 +13,8 @@ import {
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.js';
 
 /*
  * The executor images carry the branch reporter — the in-container twin of
@@ -23,8 +23,6 @@ import { afterEach, describe, expect, it } from 'vitest';
  * are the image directories, so a file that goes missing fails here instead of silently
  * un-attributing every executor run.
  */
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 
 const CLAUDE_REPORTER = 'docker/claude-executor/branch-reporter.cjs';
 const OPENCODE_REPORTER = 'docker/opencode-executor/branch-reporter.cjs';

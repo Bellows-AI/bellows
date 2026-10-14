@@ -9,6 +9,7 @@ import {
 import { createJobStore } from '../src/db/job-store.js';
 import type { Claim, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
+import { expireLease } from './fixtures.js';
 
 /** The managed connections (051, issue #546): scoping and the proxy's per-call check, on a real database. */
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -169,7 +170,7 @@ describe.skipIf(!enabled)('connection of lease — the proxy check', () => {
     it('refuses the superseded attempt once a reclaim rotates the lease token', async () => {
         const connection = await newConnection(null);
         const first = await running(connection.id);
-        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${first.id}`;
+        await expireLease(sql, first.id);
         expect(await check(first.id, first.claim.leaseToken)).toEqual({ ok: false, reason: 'lease' });
 
         const second = (await jobs.claim('w2', LEASE_SECONDS)) as Claim;

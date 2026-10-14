@@ -5,16 +5,7 @@ import type { JobStore } from '../src/db/job-store-types.js';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
-
-/**
- * A create whose refusal would be a broken setup, never a case under test: narrows the store's
- * honest union (`{ id } | 'purging'`, issue #92) so the call sites read as they did before.
- */
-const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
-    p.then((ref) => {
-        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
-        return ref;
-    });
+import { account, mustCreate } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -119,16 +110,8 @@ describe.skipIf(!enabled)('editCommand — a queued task\u2019s command (issue #
     // authorless row (the state every pre-accounts task is in), and an authored row refuses a
     // caller with no account.
     it('scopes the edit to the author, null-safe in both directions', async () => {
-        const account = async (githubUserId: number, login: string): Promise<string> => {
-            const [row] = await sql<{ id: string }[]>`
-                insert into app_user (github_user_id, github_login) values (${githubUserId}, ${login})
-                on conflict (github_user_id) do update set github_login = excluded.github_login
-                returning id
-            `;
-            return row!.id;
-        };
-        const author = await account(6201, 'command-author');
-        const other = await account(6202, 'command-other');
+        const author = await account(sql, 6201, 'command-author');
+        const other = await account(sql, 6202, 'command-other');
 
         const authored = await queue('echo hi', author);
         expect(await store.editCommand(authored, 'echo mine', other)).toBe('forbidden');
