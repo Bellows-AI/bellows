@@ -3,8 +3,7 @@ import { createGitHubIdentityClient } from '../src/auth/github.js';
 import { OAUTH_COOKIE, PENDING_COOKIE } from '../src/auth/session.js';
 import { githubAuth, harness, memoryAuthStore, oneInstallation, stubIdentityClient } from './helpers.js';
 import { ORG, begin, callback, errorOf, pendingRoute, setup, signIn } from './auth.oauth-fixtures.js';
-
-const HTTP_FOUND = 302;
+import { HTTP_FOUND } from './helpers-http.js';
 
 describe('github sign-in', () => {
     it('sends the browser to GitHub with the state it just set as a cookie', async () => {

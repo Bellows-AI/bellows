@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { run } from '../src/run.js';
-
-interface Call {
-    url: string;
-    method: string;
-    body: unknown;
-}
+import { recordingBoard, ENV, json } from './harness.js';
 
 const job = (overrides: Record<string, unknown> = {}) => ({
     id: 'job-1',
@@ -48,27 +43,7 @@ const job = (overrides: Record<string, unknown> = {}) => ({
 });
 
 function harness(env: NodeJS.ProcessEnv, respond: (index: number) => Response, now?: () => number) {
-    const out: string[] = [];
-    const err: string[] = [];
-    const calls: Call[] = [];
-    const fetch = (async (url: string | URL | globalThis.Request, init?: RequestInit) => {
-        const index = calls.length;
-        calls.push({
-            url: String(url),
-            method: init?.method ?? 'GET',
-            body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
-        });
-        return respond(index);
-    }) as unknown as typeof globalThis.fetch;
-    const io = {
-        env,
-        fetch,
-        // Read retries back off without spending real time.
-        sleep: async () => {},
-        ...(now ? { now } : {}),
-        stdout: (text: string) => out.push(text),
-        stderr: (text: string) => err.push(text),
-    };
+    const { out, err, sent: calls, io } = recordingBoard((_, index) => respond(index), { env, now });
     return { out, err, calls, io };
 }
 
@@ -87,9 +62,6 @@ function clockOf(...stamps: readonly number[]): () => number {
     };
 }
 
-const json = (payload: unknown, status = 200) =>
-    new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
-
 /** The board's answer to a settle long-poll: the explicit result, the thread identity, the run row. */
 const waitBody = (
     result: 'terminal' | 'parked' | 'timeout',
@@ -104,8 +76,6 @@ const waitBody = (
     job: job({ status: result === 'terminal' ? 'succeeded' : 'running', ...jobOverrides }),
     ...overrides,
 });
-
-const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
 
 describe('factory job create', () => {
     it('posts the joined command, prints the queued id, and exits 0', async () => {

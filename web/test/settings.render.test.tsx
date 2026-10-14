@@ -6,29 +6,19 @@ import { AccessTokensPanel } from '../src/panels/AccessTokensPanel.js';
 import { IdentityPanel } from '../src/panels/IdentityPanel.js';
 import { TrackedOrgsPanel } from '../src/panels/TrackedOrgsPanel.js';
 import { AccountSections } from '../src/pages/AccountPage.js';
+import { expectNoPlaceholder, memberSession } from './fixtures.js';
 
-/** The same contract panels.render.test.tsx pins: a null metric never leaks as a value. */
-const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
-
-const session: Session = {
-    user: {
-        id: '00000000-0000-4000-8000-000000000001',
-        login: 'octocat',
-        name: 'The Octocat',
-        githubUserId: 4242,
-        avatarUrl: 'https://avatars.githubusercontent.com/u/4242.png',
-    },
+const session = memberSession({
+    user: { avatarUrl: 'https://avatars.githubusercontent.com/u/4242.png' },
     role: 'admin',
     membership: { invitedAt: '2026-01-15T09:30:00.000Z', claimedAt: '2026-01-16T10:00:00.000Z' },
     account: { createdAt: '2026-01-15T09:30:00.000Z', lastLoginAt: '2026-08-21T12:00:00.000Z' },
-    organization: { id: 'bellows', name: 'Bellows AI' },
     organizations: [
         { id: 'bellows', name: 'Bellows AI' },
         { id: '888888', name: 'other-org' },
     ],
     workspacePath: '/workspaces/bellows/00000000-0000-4000-8000-000000000001',
-    mode: 'github',
-};
+});
 
 /** The stand-in account AUTH_MODE=none attributes everything to. */
 const local: Session = {
@@ -60,7 +50,7 @@ describe('IdentityPanel', () => {
 
     it('never emits a placeholder value for an absent field', () => {
         const html = renderToStaticMarkup(<IdentityPanel session={local} />);
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
         expect(html).toContain('—');
     });
 
@@ -113,7 +103,7 @@ describe('AccessTokensPanel', () => {
         expect(html).not.toContain('fat_');
         expect(html).not.toContain('oat_');
         expect(html).not.toContain('tokenHash');
-        for (const forbidden of FORBIDDEN) expect(html, forbidden).not.toContain(forbidden);
+        expectNoPlaceholder(html);
     });
 
     it('renders a dash for a token never used, and revoked instead of a revoke button', () => {
@@ -168,7 +158,7 @@ describe('TrackedOrgsPanel', () => {
     it('renders the empty roster without a placeholder', () => {
         const html = renderToStaticMarkup(<TrackedOrgsPanel session={{ ...session, organizations: [] }} />);
         expect(html).toContain('No organizations are tracked yet.');
-        for (const forbidden of FORBIDDEN) expect(html, forbidden).not.toContain(forbidden);
+        expectNoPlaceholder(html);
     });
 });
 
@@ -181,7 +171,7 @@ describe('AccountSections (issue 284)', () => {
         expect(html).toContain('Access tokens and tracked organizations need GitHub sign-in');
         expect(html).not.toContain('Create token');
         expect(html).not.toContain('Tracked organizations</h2>');
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 
     it('github mode renders identity, tracked organizations and both token sections for an admin', () => {

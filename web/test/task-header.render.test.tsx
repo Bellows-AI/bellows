@@ -3,7 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { removeDialogBody, removeDialogTitle, TaskRemoveDialog } from '../src/components/TaskRemoveDialog.js';
-import { FORBIDDEN, job, question, renderHeader } from './tasks-fixtures.js';
+import { job, question, renderHeader } from './tasks-fixtures.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 describe('the task page header', () => {
     /**
@@ -315,7 +316,7 @@ describe('the task page header — Mark done, overflow and meta', () => {
         const html = renderHeader({
             jobs: [job({ taskWallClockMs: null, output: null, exitCode: null, finishedAt: null, startedAt: null })],
         });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 

@@ -2,12 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { SESSION_COOKIE } from '../src/auth/session.js';
 import { ORG, beginOnboarding, finishOnboarding, setup, signIn } from './auth.oauth-fixtures.js';
-
-const HTTP_OK = 200;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_FORBIDDEN = 403;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_UNAVAILABLE = 503;
+import { HTTP_BAD_REQUEST, HTTP_FORBIDDEN, HTTP_OK, HTTP_UNAUTHORIZED, HTTP_UNAVAILABLE } from './helpers-http.js';
 
 describe('/api/auth/me', () => {
     it('answers 200 {authenticated: false} for an anonymous caller, which is how the SPA learns to show the gate', async () => {

@@ -11,8 +11,8 @@ import {
     runningThread,
     type ThreadJob,
 } from '../../e2e/fixtures/threads.js';
-import { FORBIDDEN } from './tasks-fixtures.js';
 import { type FetchCall, OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 /** The board as the page reads it: the session, and every thread and activity read answered by `jobs`. */
 function board(jobs: readonly ThreadJob[], extra: (call: FetchCall) => unknown = () => undefined) {
@@ -74,7 +74,7 @@ describe('the task detail page', () => {
         const published = container.querySelector<HTMLElement>('.task-published')!;
         expect(published.textContent).toContain('Pull request #9');
         expect(published.textContent).toContain('fix/177');
-        for (const token of FORBIDDEN) expect(document.body.textContent, token).not.toContain(token);
+        expectNoPlaceholder(document.body.textContent);
 
         // The outcome's checks link lands focus on the verification panel itself.
         await user.click(screen.getByRole('link', { name: 'View checks' }));

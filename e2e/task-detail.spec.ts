@@ -12,22 +12,11 @@ import {
     runningThread,
     sessionAuthor,
 } from './fixtures/threads.js';
+import { FORBIDDEN, watchConsole } from './page-health.js';
 
 const SHOTS = 'artifacts/ui';
 
 /** A literal 'NaN' or 'undefined' is what a missing null guard looks like to a reader. */
-const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
-
-/** Console errors, page errors and failed requests are all failures — collected, asserted once. */
-function watchConsole(page: Page): string[] {
-    const problems: string[] = [];
-    page.on('console', (msg) => {
-        if (msg.type() === 'error') problems.push(`console: ${msg.text()}`);
-    });
-    page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
-    page.on('requestfailed', (r) => problems.push(`requestfailed: ${r.url()}`));
-    return problems;
-}
 
 /** Queue a task through the real composer and land on its detail page. */
 async function queueTask(page: Page, command: string): Promise<string> {

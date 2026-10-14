@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { run } from '../src/run.js';
-
-const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
-
-const json = (payload: unknown, status = 200) =>
-    new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
+import { json, runCli } from './harness.js';
 
 /** A board that serves `content` of `attempts` by the artifact route's own offset/limit/attempt query. */
 function artifactBoard(attempts: Record<number, string>, failAt?: number) {
@@ -33,19 +28,7 @@ function artifactBoard(attempts: Record<number, string>, failAt?: number) {
     return { urls, respond };
 }
 
-async function cli(argv: string[], respond: (url: string) => Response) {
-    const out: string[] = [];
-    const err: string[] = [];
-    const fetch = (async (url: string | URL | globalThis.Request) => respond(String(url))) as unknown as typeof fetch;
-    const code = await run(argv, {
-        env: ENV,
-        fetch,
-        sleep: async () => undefined,
-        stdout: (text) => out.push(text),
-        stderr: (text) => err.push(text),
-    });
-    return { code, out: out.join(''), err: err.join('') };
-}
+const cli = (argv: string[], respond: (url: string) => Response) => runCli(argv, (sent) => respond(sent.url));
 
 const LOG = Array.from({ length: 10 }, (_, i) => `line ${i}\n`).join('');
 

@@ -10,6 +10,7 @@ import {
 } from '../src/components/RepositorySetup.js';
 import { MAX_SELECTED_REPOS, NOT_AVAILABLE } from '../src/components/repository-setup.js';
 import { bytes, commitDate } from '../src/format.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 /**
  * The three repository-setup components, server-rendered (#159's contract: presentational, no
@@ -18,8 +19,6 @@ import { bytes, commitDate } from '../src/format.js';
  * MARKUP states them: the mandated sentences, the non-color status text, and no fact where no
  * measurement exists.
  */
-
-const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
 const repo = (overrides: Partial<InstallationRepo> = {}): InstallationRepo => ({
     owner: 'acme',
@@ -292,7 +291,7 @@ describe('RepositorySetupList', () => {
         expect(html.match(/Not available/g)?.length).toBeGreaterThanOrEqual(3);
         expect(html).not.toContain('—');
         expect(html).not.toContain('0 B');
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 
     it('says no repositories match only after a successful load, and names the query', () => {

@@ -1,17 +1,11 @@
-import type { FastifyInstance } from 'fastify';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { GitHubAppClient, InstallationListing } from '../src/github/app-client.js';
 import { createRepoSource } from '../src/github/repo-source.js';
 import { staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
+import { HTTP_OK, trackApps } from './helpers-http.js';
 
-const HTTP_OK = 200;
-
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 function listing(overrides: Partial<InstallationListing> = {}): InstallationListing {
     return {
@@ -32,7 +26,9 @@ function stubAppClient(behaviour: () => Promise<InstallationListing>): GitHubApp
 async function boot(client?: GitHubAppClient) {
     const config = testConfig();
     const repos = createRepoSource({ client });
-    app = await buildApp({ config, orgs: staticRegistry({ config, repos, telemetry: stubTelemetryClient() }) });
+    const app = track(
+        await buildApp({ config, orgs: staticRegistry({ config, repos, telemetry: stubTelemetryClient() }) })
+    );
     return { app, repos };
 }
 

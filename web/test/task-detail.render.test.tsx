@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Job, RuntimeVitals } from '../src/api/useJobs.js';
-import { FORBIDDEN, job, renderDetail } from './tasks-fixtures.js';
+import { job, renderDetail } from './tasks-fixtures.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 describe('TaskDetail — task activity (issues #339, #530)', () => {
     const jobId = '11111111-1111-4111-8111-111111111111';
@@ -231,7 +232,7 @@ describe('TaskDetail — the follow-up composer states', () => {
                 job({ executor: null, repo: null, output: null, exitCode: null, finishedAt: null, startedAt: null }),
             ],
         });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 
@@ -303,7 +304,7 @@ describe('TaskDetail — checks', () => {
         const html = renderDetail({
             jobs: [job({ gates: [{ name: 'test', status: 'running', exitCode: null, output: null }] })],
         });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 
@@ -356,7 +357,7 @@ describe('TaskDetail — runtime', () => {
         } as RuntimeVitals;
         const html = renderDetail({ jobs: [job({ status: 'running', runtime: servicesOnly })] });
         expect(html).not.toContain('chat-runtime');
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
 
         const nulls = {
             ...servicesOnly,
@@ -377,7 +378,7 @@ describe('TaskDetail — runtime', () => {
         const html = renderDetail({
             jobs: [job({ status: 'running', runtime: { ...runtime, activity: null, memPercent: null } })],
         });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 
@@ -488,7 +489,7 @@ describe('TaskDetail — turn stats', () => {
                 }),
             ],
         });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 

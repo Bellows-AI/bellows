@@ -4,6 +4,7 @@ import type { InstallationRepo } from '../src/github/app-client.js';
 import { OAUTH_COOKIE, PENDING_COOKIE, SESSION_COOKIE } from '../src/auth/session.js';
 import { githubAuth, harness, memoryAuthStore, oneInstallation, stubIdentityClient } from './helpers.js';
 import type { MemoryAuthStore } from './helpers.js';
+import { HTTP_FOUND } from './helpers-http.js';
 
 /**
  * Shared fixtures for the auth.oauth test suite, split across auth.oauth.sign-in.test.ts,
@@ -11,8 +12,6 @@ import type { MemoryAuthStore } from './helpers.js';
  */
 
 export const ORG = '999999';
-
-const HTTP_FOUND = 302;
 
 export interface SetupOptions {
     seed?: (store: MemoryAuthStore) => void;

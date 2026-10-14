@@ -1,11 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { githubAuth, harness, memoryAuthStore, signedIn, stubTelemetryClient } from './helpers.js';
-
-const HTTP_OK = 200;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_FORBIDDEN = 403;
-const HTTP_SERVICE_UNAVAILABLE = 503;
+import { HTTP_BAD_REQUEST, HTTP_FORBIDDEN, HTTP_OK, HTTP_SERVICE_UNAVAILABLE } from './helpers-http.js';
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
