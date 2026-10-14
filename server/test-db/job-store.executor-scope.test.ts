@@ -4,6 +4,7 @@ import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
+import { mustCreate } from './fixtures.js';
 
 /**
  * Issue 391's board half: a task selection names a scope and a profile, and the claim resolves
@@ -30,12 +31,6 @@ const db = useTestDb({
         { id: BOB, githubUserId: 90002, login: 'bob' },
     ],
 });
-
-const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
-    p.then((ref) => {
-        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
-        return ref;
-    });
 
 beforeAll(async () => {
     if (!enabled) return;

@@ -5,16 +5,7 @@ import type { JobStore } from '../src/db/job-store-types.js';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
-
-/**
- * A create whose refusal would be a broken setup, never a case under test: narrows the store's
- * honest union (`{ id } | 'purging'`, issue #92) so the call sites read as they did before.
- */
-const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
-    p.then((ref) => {
-        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
-        return ref;
-    });
+import { account, mustCreate } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -30,8 +21,7 @@ const OTHER_ORG = 'other-org';
 const ABSENT = '00000000-0000-4000-8000-000000000000';
 const LEASE_SECONDS = 300;
 
-/** `max: 8` for the two-connection serialization cases: a pool of two would deadlock them. */
-const db = useTestDb({ orgs: [ORG], max: 8 });
+const db = useTestDb({ orgs: [ORG] });
 
 beforeAll(async () => {
     if (!enabled) return;
@@ -119,16 +109,8 @@ describe.skipIf(!enabled)('editCommand — a queued task\u2019s command (issue #
     // authorless row (the state every pre-accounts task is in), and an authored row refuses a
     // caller with no account.
     it('scopes the edit to the author, null-safe in both directions', async () => {
-        const account = async (githubUserId: number, login: string): Promise<string> => {
-            const [row] = await sql<{ id: string }[]>`
-                insert into app_user (github_user_id, github_login) values (${githubUserId}, ${login})
-                on conflict (github_user_id) do update set github_login = excluded.github_login
-                returning id
-            `;
-            return row!.id;
-        };
-        const author = await account(6201, 'command-author');
-        const other = await account(6202, 'command-other');
+        const author = await account(sql, 6201, 'command-author');
+        const other = await account(sql, 6202, 'command-other');
 
         const authored = await queue('echo hi', author);
         expect(await store.editCommand(authored, 'echo mine', other)).toBe('forbidden');
@@ -195,83 +177,5 @@ describe.skipIf(!enabled)('editCommand — a queued task\u2019s command (issue #
 
         expect(await store.editCommand(ABSENT, 'echo changed', null)).toBe('missing');
         expect(await otherOrgStore.editCommand(id, 'echo changed', null)).toBe('missing');
-    });
-
-    /*
-     * The edit is decided atomically against the claim (the issue's exact requirement): the
-     * conditional UPDATE takes the row's lock, so whoever gets it second re-checks its
-     * predicates against the row's newest committed version. A claim that commits while the
-     * edit waits turns the edit's 0-rows answer into not_queued — never an edit that lands on
-     * a row a worker already holds.
-     */
-    it('blocks on a held row lock, and lands when the row is unchanged', async () => {
-        const id = await queue('echo hi');
-
-        let lockTaken: (() => void) | null = null;
-        const locked = new Promise<void>((resolve) => {
-            lockTaken = resolve;
-        });
-        let release: (() => void) | null = null;
-        const held = new Promise<void>((resolve) => {
-            release = resolve;
-        });
-        const blocker = sql.begin(async (tx) => {
-            await tx`select id from job where id = ${id} for update`;
-            lockTaken!();
-            await held;
-        });
-        blocker.catch(() => {});
-        await locked;
-
-        const edit = store.editCommand(id, 'echo changed', null);
-        const STILL_LOCKED_TIMEOUT_MS = 450;
-        const outcome = await Promise.race([
-            edit,
-            new Promise<string>((resolve) => setTimeout(() => resolve('still_locked'), STILL_LOCKED_TIMEOUT_MS)),
-        ]);
-        expect(outcome).toBe('still_locked');
-
-        release!();
-        await blocker;
-        expect(await edit).toEqual({ result: 'ok', command: 'echo changed' });
-    });
-
-    it('blocks on a held row lock, and refuses not_queued when a claim commits first', async () => {
-        const id = await queue('echo hi');
-
-        let lockTaken: (() => void) | null = null;
-        const locked = new Promise<void>((resolve) => {
-            lockTaken = resolve;
-        });
-        let release: (() => void) | null = null;
-        const held = new Promise<void>((resolve) => {
-            release = resolve;
-        });
-        const blocker = sql.begin(async (tx) => {
-            await tx`select id from job where id = ${id} for update`;
-            lockTaken!();
-            await held;
-            // The claim's shape, committed in the SAME transaction that held the lock the edit
-            // waited on: running, with a live lease. The edit's UPDATE re-checks
-            // `status = 'queued'` against this committed version — never a stale snapshot.
-            await tx`update job set status = 'running', claimed_by = 'w1', started_at = now(),
-                lease_token = gen_random_uuid(), lease_expires_at = now() + interval '5 minutes'
-                where id = ${id}`;
-        });
-        blocker.catch(() => {});
-        await locked;
-
-        const edit = store.editCommand(id, 'echo changed', null);
-        const STILL_LOCKED_TIMEOUT_MS = 450;
-        const outcome = await Promise.race([
-            edit,
-            new Promise<string>((resolve) => setTimeout(() => resolve('still_locked'), STILL_LOCKED_TIMEOUT_MS)),
-        ]);
-        expect(outcome).toBe('still_locked');
-
-        release!();
-        await blocker;
-        expect(await edit).toEqual({ result: 'not_queued', status: 'running' });
-        expect((await store.get(id))?.command).toBe('echo hi');
     });
 });

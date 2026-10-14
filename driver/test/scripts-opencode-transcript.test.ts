@@ -1,37 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { insertMessage, insertPart, MINE, seedOpencodeDb } from './fixtures/opencode-db.js';
 import { hasNodeSqlite, pathOf } from './fixtures/scripts-support.js';
 
-const MINE = '/workspaces/org/member/.worktrees/mine';
-const OTHER = '/workspaces/org/member/.worktrees/other';
 const KIB = 1024;
-
-const insertSession = (db: DatabaseSync, id: string, directory: string, created: number): void => {
-    db.prepare('insert into session (id, parent_id, directory, time_created) values (?, null, ?, ?)').run(
-        id,
-        directory,
-        created
-    );
-};
-
-const insertMessage = (db: DatabaseSync, sessionId: string, data: object): number => {
-    const result = db
-        .prepare('insert into message (session_id, data) values (?, ?)')
-        .run(sessionId, JSON.stringify(data));
-    return Number(result.lastInsertRowid);
-};
-
-const insertPart = (db: DatabaseSync, messageId: number, sessionId: string, text: string): void => {
-    db.prepare('insert into part (message_id, session_id, data) values (?, ?, ?)').run(
-        messageId,
-        sessionId,
-        JSON.stringify({ type: 'text', text })
-    );
-};
 
 const runScript = (dbPath: string, dir: string, env: Record<string, string | undefined> = {}) => {
     const stdout = execFileSync('node', [pathOf('opencode-transcript.cjs')], {
@@ -57,18 +30,7 @@ const runScript = (dbPath: string, dir: string, env: Record<string, string | und
 describe.skipIf(!hasNodeSqlite())('the opencode transcript export', () => {
     let dbPath: string;
     beforeEach(() => {
-        const dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-otrans-')));
-        dbPath = join(dir, 'opencode.db');
-        const db = new DatabaseSync(dbPath);
-        db.exec('create table session (id text primary key, parent_id text, directory text, time_created integer)');
-        db.exec('create table message (id integer primary key, session_id text, data text)');
-        db.exec('create table part (id integer primary key, message_id integer, session_id text, data text)');
-        // The other task's session, older — the contamination the directory scope excludes.
-        insertSession(db, 'ses_other', OTHER, 1000);
-        insertMessage(db, 'ses_other', { role: 'assistant', time: { created: 1000 } });
-        // This task's, newer — the one the export answers.
-        insertSession(db, 'ses_mine', MINE, 2000);
-        db.close();
+        dbPath = seedOpencodeDb('factory-otrans-', { role: 'assistant', time: { created: 1000 } }, true);
     });
 
     it('exports the root session of its directory as one JSON line per message, in order', () => {

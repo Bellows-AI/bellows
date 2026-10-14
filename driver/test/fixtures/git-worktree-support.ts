@@ -46,6 +46,23 @@ export function git(cwd: string, ...args: string[]): string {
     return execFileSync('git', [...GIT_FIXTURE_CONFIG, ...args], { cwd, encoding: 'utf8' }).trim();
 }
 
+/**
+ * A `file://` origin under `dir` and a clone of it at `clone`: an `origin-work` repo with one
+ * README commit (`# <name>`), its bare copy `<name>.git`, and the clone. Answers the work and bare paths.
+ */
+export function makeOriginClone(dir: string, clone: string, name = 'factory'): { work: string; bare: string } {
+    const work = join(dir, 'origin-work');
+    mkdirSync(work, { recursive: true });
+    git(work, 'init');
+    writeFileSync(join(work, 'README.md'), `# ${name}\n`);
+    git(work, 'add', 'README.md');
+    git(work, 'commit', '-m', 'init');
+    const bare = join(dir, `${name}.git`);
+    execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', '--bare', work, bare], { stdio: 'ignore' });
+    execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', `file://${bare}`, clone], { stdio: 'ignore' });
+    return { work, bare };
+}
+
 /** An arbitrary fixed instant the imported commits count up from; the exact value is irrelevant. */
 const FIRST_COMMIT_EPOCH_SECONDS = 1_700_000_000;
 
@@ -147,17 +164,9 @@ export function setupWorktreeFixture(): WorktreeFixture {
         clone = join(dir, 'bellows', USER, 'factory');
         worktree = join(dir, 'bellows', USER, '.worktrees', ROOT);
         branch = `factory/${ROOT}`;
-        mkdirSync(join(dir, 'origin-work'), { recursive: true });
-        work = join(dir, 'origin-work');
-        git(work, 'init');
-        writeFileSync(join(work, 'README.md'), '# factory\n');
-        git(work, 'add', 'README.md');
-        git(work, 'commit', '-m', 'init');
-        bare = join(dir, 'factory.git');
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', '--bare', work, bare], { stdio: 'ignore' });
+        ({ work, bare } = makeOriginClone(dir, clone));
         // The work copy pushes to the bare the way a real checkout pushes to its forge.
         git(work, 'remote', 'add', 'origin', bare);
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', `file://${bare}`, clone], { stdio: 'ignore' });
     });
 
     return {

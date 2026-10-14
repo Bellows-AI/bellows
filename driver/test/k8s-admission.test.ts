@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import type { HelperPlan } from '../src/helpers.js';
@@ -16,10 +15,9 @@ import { loadDriverConfig } from '../src/config.js';
 import { UNHARDENED_LABEL } from '../src/labels.js';
 import { gateEnvSecretName, runnerJobSpec, secretName } from '../src/k8s-podspec.js';
 import { WORKSPACE_PATH } from '../src/publish.js';
+import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
-
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
 /*
  * The chart's admission policy (charts/factory/templates/driver-admission.yaml) admits a pod spec

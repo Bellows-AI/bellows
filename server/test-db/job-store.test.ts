@@ -1,19 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import { createOrgOfLease } from '../src/db/job-store-org-resolvers.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import type { GateReport, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-
-/**
- * A create whose refusal would be a broken setup, never a case under test: narrows the store's
- * honest union (`{ id } | 'purging'`, issue #92) so the call sites read as they did before.
- */
-const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
-    p.then((ref) => {
-        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
-        return ref;
-    });
+import { expireLease, mustCreate } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -73,8 +65,6 @@ const mustFollowUp = (root: string, command: string, userId: string | null): Pro
     });
 
 /** Ages a lease into the past. Deterministic where sleeping for a one-second lease is not. */
-const expireLease = (id: string) => sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
-
 const row = (id: string) =>
     sql<{ status: string; attempts: number; claimed_by: string | null; started_at: Date | null }[]>`
         select status, attempts, claimed_by, started_at from job where id = ${id}
@@ -110,7 +100,7 @@ describe.skipIf(!enabled)('job store', () => {
         const { id } = await queue('echo hi');
         const first = await store.claim('w1', LEASE_SECONDS);
         const firstStart = (await row(id))[0]?.started_at as Date;
-        await expireLease(id);
+        await expireLease(sql, id);
 
         const second = await store.claim('w2', LEASE_SECONDS);
 
@@ -128,7 +118,7 @@ describe.skipIf(!enabled)('job store', () => {
         const { id } = await queue('kill -9 $$');
         await sql`update job set max_attempts = 1 where id = ${id}`;
         await store.claim('w1', LEASE_SECONDS);
-        await expireLease(id);
+        await expireLease(sql, id);
 
         expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
         expect((await row(id))[0]?.status).toBe('dead');
@@ -145,52 +135,173 @@ describe.skipIf(!enabled)('job store', () => {
         expect(Date.parse(beat.leaseExpiresAt as string)).toBeGreaterThan(Date.parse(claim!.leaseExpiresAt));
     });
 
-    it('separates an unknown job from a lost lease', async () => {
-        const { id } = await queue('echo hi');
-        const stale = await store.claim('w1', LEASE_SECONDS);
-        await expireLease(id);
-        await store.claim('w2', LEASE_SECONDS);
+    /*
+     * The fencing token guards every worker write: a token that is not the holder's — a reclaim
+     * rotated it, or it never was — answers `lost` and writes nothing, and an id that is not here
+     * answers `missing`. The two runs did different work, so the loser's report is refused rather
+     * than merged.
+     */
+    describe('the lease fences every worker write', () => {
+        const GATE_REPORT: GateReport[] = [{ name: 'test', status: 'passed', exitCode: 0, output: null }];
 
-        expect((await store.heartbeat(id, stale!.leaseToken, LEASE_SECONDS)).result).toBe('lost');
-        expect((await store.heartbeat(ABSENT, stale!.leaseToken, LEASE_SECONDS)).result).toBe('missing');
-    });
+        it.each<{
+            name: string;
+            /** `reclaimed`: a second claim rotated the token after the lease expired. `foreign`: the holder is live, the token is someone else's. */
+            stale: 'reclaimed' | 'foreign';
+            write: (id: string, token: string) => Promise<unknown>;
+            lost: unknown;
+            missing: unknown;
+            /** What the refusal left behind, and the winner's write that still lands. */
+            after?: (id: string, winner: string | null) => Promise<void>;
+        }>([
+            {
+                name: 'heartbeat',
+                stale: 'reclaimed',
+                write: async (id, token) => (await store.heartbeat(id, token, LEASE_SECONDS)).result,
+                lost: 'lost',
+                missing: 'missing',
+            },
+            {
+                name: 'complete, after a reclaim',
+                stale: 'reclaimed',
+                write: (id, token) =>
+                    store.complete(id, token, { status: 'succeeded', exitCode: 0, output: 'from the zombie' }),
+                lost: { result: 'lost' },
+                missing: { result: 'missing' },
+                after: async (id, winner) => {
+                    const accepted = await store.complete(id, winner!, {
+                        status: 'failed',
+                        exitCode: 3,
+                        output: 'from the live one',
+                    });
+                    // Terminal, but nobody closed it — the tree stays until a done says otherwise.
+                    expect(accepted).toEqual({ result: 'ok', threadDone: false });
+                    expect(await store.get(id)).toMatchObject({
+                        status: 'failed',
+                        exitCode: 3,
+                        output: 'from the live one',
+                    });
+                },
+            },
+            {
+                name: 'complete, by a token that is not the holder',
+                stale: 'foreign',
+                write: (id, token) => store.complete(id, token, { status: 'succeeded', exitCode: 0, output: null }),
+                lost: { result: 'lost' },
+                missing: { result: 'missing' },
+            },
+            {
+                name: 'artifact',
+                stale: 'reclaimed',
+                write: (id, token) =>
+                    store.artifact(id, token, {
+                        kind: 'log',
+                        attempt: 1,
+                        content: 'from the zombie',
+                        truncated: false,
+                    }),
+                lost: 'lost',
+                missing: 'missing',
+                after: async (id, winner) => {
+                    // The refusal wrote nothing — the winner's row is the only one a reader can find.
+                    expect(await store.readArtifact(id, 'log', null)).toBeNull();
+                    await store.artifact(id, winner!, {
+                        kind: 'log',
+                        attempt: 2,
+                        content: 'the live one',
+                        truncated: false,
+                    });
+                    expect(await store.readArtifact(id, 'log', null)).toMatchObject({ content: 'the live one' });
+                },
+            },
+            {
+                name: 'progress (the output tail)',
+                stale: 'reclaimed',
+                write: (id, token) => store.progress(id, token, 'from the zombie'),
+                lost: 'lost',
+                missing: 'missing',
+            },
+            {
+                name: 'session',
+                stale: 'reclaimed',
+                write: (id, token) => store.session(id, token, SESSION),
+                lost: 'lost',
+                missing: 'missing',
+            },
+            {
+                name: 'suspend (the park)',
+                stale: 'reclaimed',
+                write: (id, token) => store.suspend(id, token),
+                lost: { result: 'lost' },
+                missing: { result: 'missing' },
+            },
+            {
+                name: 'askQuestion',
+                stale: 'foreign',
+                write: (id, token) =>
+                    store.askQuestion(id, token, {
+                        questionId: 'toolu_1',
+                        questions: [
+                            {
+                                question: 'Which database?',
+                                header: 'Pick',
+                                multiSelect: false,
+                                options: [{ label: 'Postgres' }, { label: 'SQLite' }],
+                            },
+                        ],
+                    }),
+                lost: { result: 'lost' },
+                missing: { result: 'missing' },
+                after: async (id) => {
+                    expect((await store.get(id))!.questions).toEqual([]);
+                },
+            },
+            {
+                name: 'publishToken',
+                stale: 'foreign',
+                write: (id, token) =>
+                    createJobStore({ sql, orgId: ORG, githubToken: { fresh: async () => 'ghs_x' } }).publishToken(
+                        id,
+                        token
+                    ),
+                lost: { result: 'lost' },
+                missing: { result: 'missing' },
+            },
+            {
+                name: 'gates (the report)',
+                stale: 'foreign',
+                write: (id, token) => store.gates(id, token, GATE_REPORT),
+                lost: 'lost',
+                missing: 'missing',
+                after: async (id) => {
+                    expect((await store.get(id))?.gates ?? null).toBeNull();
+                },
+            },
+            {
+                name: 'rereadGates',
+                stale: 'foreign',
+                write: (id, token) => store.rereadGates(id, token),
+                lost: { result: 'lost' },
+                missing: { result: 'missing' },
+            },
+        ])(
+            '$name: lost for a $stale token, missing for an unknown job',
+            async ({ stale, write, lost, missing, after }) => {
+                const { id } = await queue('echo hi');
+                const first = await store.claim('w1', LEASE_SECONDS);
+                let token: string = randomUUID();
+                let winner: string | null = null;
+                if (stale === 'reclaimed') {
+                    token = first!.leaseToken;
+                    await expireLease(sql, id);
+                    winner = (await store.claim('w2', LEASE_SECONDS))!.leaseToken;
+                }
 
-    // The whole point of the fencing token: the two runs did different work, so the loser's report
-    // is refused rather than merged.
-    it('refuses a completion from a worker whose lease was reclaimed', async () => {
-        const { id } = await queue('echo hi');
-        const stale = await store.claim('w1', LEASE_SECONDS);
-        await expireLease(id);
-        const winner = await store.claim('w2', LEASE_SECONDS);
-
-        const refused = await store.complete(id, stale!.leaseToken, {
-            status: 'succeeded',
-            exitCode: 0,
-            output: 'from the zombie',
-        });
-        const accepted = await store.complete(id, winner!.leaseToken, {
-            status: 'failed',
-            exitCode: 3,
-            output: 'from the live one',
-        });
-
-        expect(refused).toEqual({ result: 'lost' });
-        // Terminal, but nobody closed it — the tree stays until a done says otherwise.
-        expect(accepted).toEqual({ result: 'ok', threadDone: false });
-        expect(await store.get(id)).toMatchObject({
-            status: 'failed',
-            exitCode: 3,
-            output: 'from the live one',
-        });
-    });
-
-    it('reports a completion for a job that does not exist', async () => {
-        const result = await store.complete(ABSENT, ABSENT, {
-            status: 'succeeded',
-            exitCode: 0,
-            output: null,
-        });
-        expect(result).toEqual({ result: 'missing' });
+                expect(await write(id, token)).toEqual(lost);
+                expect(await write(ABSENT, token)).toEqual(missing);
+                await after?.(id, winner);
+            }
+        );
     });
 
     // The branch-ingest credential: the runner's reporter presents the pair it runs for, and
@@ -219,7 +330,7 @@ describe.skipIf(!enabled)('job store', () => {
             // the lease is gone, and the pair must not outlive it.
             const { id } = await queue('echo hi');
             const claim = await store.claim('w1', LEASE_SECONDS);
-            await expireLease(id);
+            await expireLease(sql, id);
 
             expect((await row(id))[0]?.status).toBe('running');
             expect(await orgOfLease(id, claim!.leaseToken)).toBeNull();
@@ -257,7 +368,7 @@ describe.skipIf(!enabled)('job store', () => {
         it('stops resolving the OLD lease once a reclaim rotated the token', async () => {
             const { id } = await queue('echo hi');
             const stale = await store.claim('w1', LEASE_SECONDS);
-            await expireLease(id);
+            await expireLease(sql, id);
             const winner = await store.claim('w2', LEASE_SECONDS);
             expect(winner!.leaseToken).not.toBe(stale!.leaseToken);
 
@@ -277,7 +388,7 @@ describe.skipIf(!enabled)('job store', () => {
             const { id } = await queue('kill -9 $$');
             await sql`update job set max_attempts = 1 where id = ${id}`;
             const claim = await store.claim('w1', LEASE_SECONDS);
-            await expireLease(id);
+            await expireLease(sql, id);
             await store.claim('w2', LEASE_SECONDS);
             expect((await row(id))[0]?.status).toBe('dead');
 
@@ -500,7 +611,7 @@ describe.skipIf(!enabled)('job store', () => {
             content: 'first attempt',
             truncated: false,
         });
-        await expireLease(id);
+        await expireLease(sql, id);
         const second = await store.claim('w2', LEASE_SECONDS);
         await store.artifact(id, second!.leaseToken, {
             kind: 'log',
@@ -511,39 +622,6 @@ describe.skipIf(!enabled)('job store', () => {
 
         expect(await store.readArtifact(id, 'log', 1)).toMatchObject({ content: 'first attempt' });
         expect(await store.readArtifact(id, 'log', null)).toMatchObject({ attempt: 2, content: 'second attempt' });
-    });
-
-    it('refuses an artifact from a worker whose lease was reclaimed, or a job that does not exist', async () => {
-        const { id } = await queue('echo hi');
-        const stale = await store.claim('w1', LEASE_SECONDS);
-        await expireLease(id);
-        const winner = await store.claim('w2', LEASE_SECONDS);
-
-        expect(
-            await store.artifact(id, stale!.leaseToken, {
-                kind: 'log',
-                attempt: 1,
-                content: 'from the zombie',
-                truncated: false,
-            })
-        ).toBe('lost');
-        expect(
-            await store.artifact(ABSENT, stale!.leaseToken, {
-                kind: 'log',
-                attempt: 1,
-                content: 'nowhere',
-                truncated: false,
-            })
-        ).toBe('missing');
-        // The refusal wrote nothing — the winner's row is the only one a reader can find.
-        expect(await store.readArtifact(id, 'log', null)).toBeNull();
-        await store.artifact(id, winner!.leaseToken, {
-            kind: 'log',
-            attempt: 2,
-            content: 'the live one',
-            truncated: false,
-        });
-        expect(await store.readArtifact(id, 'log', null)).toMatchObject({ content: 'the live one' });
     });
 
     it('deletes a thread’s artifacts with the thread (remove)', async () => {
@@ -588,7 +666,7 @@ describe.skipIf(!enabled)('job store', () => {
 
         // The claim clears the column: the sample describes the attempt that took it, and a new
         // attempt starts with a new, unsampled container.
-        await expireLease(id);
+        await expireLease(sql, id);
         const second = await store.claim('w2', LEASE_SECONDS);
         expect(await store.get(id)).toMatchObject({ runtime: null });
 
@@ -655,7 +733,7 @@ describe.skipIf(!enabled)('job store', () => {
 
         // The next attempt's claim clears the whole column, fleet included — and the fresh
         // attempt's sample is exactly what it reports, nothing of the previous fleet left.
-        await expireLease(id);
+        await expireLease(sql, id);
         const second = await store.claim('w2', LEASE_SECONDS);
         expect(await store.get(id)).toMatchObject({ runtime: null });
         await store.progress(id, second!.leaseToken, 'again', vitals);
@@ -701,16 +779,6 @@ describe.skipIf(!enabled)('job store', () => {
         expect(await store.get(id)).toMatchObject({ output: 'done' });
     });
 
-    it('refuses an output tail from a worker whose lease was reclaimed', async () => {
-        const { id } = await queue('echo hi');
-        const stale = await store.claim('w1', LEASE_SECONDS);
-        await expireLease(id);
-        await store.claim('w2', LEASE_SECONDS);
-
-        expect(await store.progress(id, stale!.leaseToken, 'from the zombie')).toBe('lost');
-        expect(await store.progress(ABSENT, stale!.leaseToken, 'nowhere')).toBe('missing');
-    });
-
     it('records the session an attempt is running as', async () => {
         const { id } = await queue('echo hi');
         const claim = await store.claim('w1', LEASE_SECONDS);
@@ -740,23 +808,13 @@ describe.skipIf(!enabled)('job store', () => {
         expect(second).toMatchObject({ id: followUp.id, resumeSessionId: ses, followUp: true });
     });
 
-    it('refuses a session report from a worker whose lease was reclaimed', async () => {
-        const { id } = await queue('echo hi');
-        const stale = await store.claim('w1', LEASE_SECONDS);
-        await expireLease(id);
-        await store.claim('w2', LEASE_SECONDS);
-
-        expect(await store.session(id, stale!.leaseToken, SESSION)).toBe('lost');
-        expect(await store.session(ABSENT, stale!.leaseToken, SESSION)).toBe('missing');
-    });
-
     // The attempt that died ran a different session, and showing its link next to this attempt's
     // output would point a reader at work that was thrown away.
     it('clears the session when the job is claimed again', async () => {
         const { id } = await queue('echo hi');
         const first = await store.claim('w1', LEASE_SECONDS);
         await store.session(id, first!.leaseToken, SESSION);
-        await expireLease(id);
+        await expireLease(sql, id);
 
         await store.claim('w2', LEASE_SECONDS);
 
@@ -799,21 +857,11 @@ describe.skipIf(!enabled)('job store', () => {
         const { id } = await queue('echo hi');
         const first = await store.claim('w1', LEASE_SECONDS);
         await store.session(id, first!.leaseToken, SESSION);
-        await expireLease(id);
+        await expireLease(sql, id);
 
         const second = await store.claim('w2', LEASE_SECONDS);
 
         expect(second?.resumeSessionId).toBeNull();
-    });
-
-    it('refuses to park a job on a lease that has moved on', async () => {
-        const { id } = await queue('echo hi');
-        const stale = await store.claim('w1', LEASE_SECONDS);
-        await expireLease(id);
-        await store.claim('w2', LEASE_SECONDS);
-
-        expect(await store.suspend(id, stale!.leaseToken)).toEqual({ result: 'lost' });
-        expect(await store.suspend(ABSENT, stale!.leaseToken)).toEqual({ result: 'missing' });
     });
 
     it('leaves output out of the list projection', async () => {

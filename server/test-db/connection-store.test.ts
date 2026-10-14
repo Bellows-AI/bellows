@@ -9,6 +9,7 @@ import {
 import { createJobStore } from '../src/db/job-store.js';
 import type { Claim, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
+import { expireLease } from './fixtures.js';
 
 /** The managed connections (051, issue #546): scoping and the proxy's per-call check, on a real database. */
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -169,7 +170,7 @@ describe.skipIf(!enabled)('connection of lease — the proxy check', () => {
     it('refuses the superseded attempt once a reclaim rotates the lease token', async () => {
         const connection = await newConnection(null);
         const first = await running(connection.id);
-        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${first.id}`;
+        await expireLease(sql, first.id);
         expect(await check(first.id, first.claim.leaseToken)).toEqual({ ok: false, reason: 'lease' });
 
         const second = (await jobs.claim('w2', LEASE_SECONDS)) as Claim;
@@ -179,18 +180,20 @@ describe.skipIf(!enabled)('connection of lease — the proxy check', () => {
         expect((await check(second.id, second.leaseToken)).ok).toBe(true);
     });
 
-    it('refuses an attempt that was asked to stop', async () => {
+    it.each<{ name: string; settle: (id: string) => Promise<unknown> }>([
+        {
+            name: 'refuses an attempt that was asked to stop',
+            settle: (id) => sql`update job set cancel_requested_at = now() where id = ${id}`,
+        },
+        {
+            name: 'refuses a finished attempt at once, with no tail grace',
+            settle: (id) => sql`update job set finished_at = now() where id = ${id}`,
+        },
+    ])('$name', async ({ settle }) => {
         const connection = await newConnection(null);
-        const stopped = await running(connection.id);
-        await sql`update job set cancel_requested_at = now() where id = ${stopped.id}`;
-        expect(await check(stopped.id, stopped.claim.leaseToken)).toEqual({ ok: false, reason: 'lease' });
-    });
-
-    it('refuses a finished attempt at once, with no tail grace', async () => {
-        const connection = await newConnection(null);
-        const done = await running(connection.id);
-        await sql`update job set finished_at = now() where id = ${done.id}`;
-        expect(await check(done.id, done.claim.leaseToken)).toEqual({ ok: false, reason: 'lease' });
+        const attempt = await running(connection.id);
+        await settle(attempt.id);
+        expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual({ ok: false, reason: 'lease' });
     });
 
     it('refuses an org-owned connection too once the task author is no longer a member', async () => {

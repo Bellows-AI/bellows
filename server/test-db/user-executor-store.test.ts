@@ -40,13 +40,25 @@ describe.skipIf(!enabled)('the user executor store', () => {
         expect(await store.list(ALICE)).toEqual([expect.objectContaining({ name: 'main', type: 'opencode' })]);
     });
 
-    it('still refuses a type outside the list', async () => {
-        await expect(
-            sql`
+    it.each<{ name: string; insert: () => Promise<unknown>; check: RegExp }>([
+        {
+            name: 'still refuses a type outside the list',
+            insert: () => sql`
                 insert into executor_profile (org_id, user_id, name, type, config)
                 values (${ORG}, ${ALICE}, 'x', 'codex', '{}'::jsonb)
-            `
-        ).rejects.toThrow(/user_executor_type_ck/);
+            `,
+            check: /user_executor_type_ck/,
+        },
+        ...[-1, 11].map((rounds) => ({
+            name: `refuses a gate_fix_rounds outside 0..10 at the row (${rounds})`,
+            insert: () => sql`
+                insert into executor_profile (org_id, user_id, name, type, config, gate_fix_rounds)
+                values (${ORG}, ${ALICE}, 'main', 'claude-code', '{}'::jsonb, ${rounds})
+            `,
+            check: /user_executor_gate_fix_rounds_ck/,
+        })),
+    ])('$name', async ({ insert, check }) => {
+        await expect(insert()).rejects.toThrow(check);
     });
 
     it('answers the pasted config for a named row, and null when no row matches', async () => {
@@ -86,17 +98,6 @@ describe.skipIf(!enabled)('the user executor store', () => {
             gateFixRounds: 7,
             suspended: false,
         });
-    });
-
-    it('refuses a gate_fix_rounds outside 0..10 at the row', async () => {
-        for (const rounds of [-1, 11]) {
-            await expect(
-                sql`
-                    insert into executor_profile (org_id, user_id, name, type, config, gate_fix_rounds)
-                    values (${ORG}, ${ALICE}, 'main', 'claude-code', '{}'::jsonb, ${rounds})
-                `
-            ).rejects.toThrow(/user_executor_gate_fix_rounds_ck/);
-        }
     });
 
     /**
@@ -353,11 +354,32 @@ describe.skipIf(!enabled)('the per-user default preference (issue 391)', () => {
         expect(await store.defaultOf(ALICE)).toEqual(pref('user', 'mine'));
     });
 
-    it('refuses a preference naming no accessible profile in that scope', async () => {
+    /** Each row refuses every named preference, and neither refusal writes the preference row. */
+    it.each<{
+        name: string;
+        suspend: boolean;
+        prefs: ExecutorDefault[];
+        error?: typeof ExecutorSuspendedError;
+    }>([
+        {
+            name: 'refuses a preference naming no accessible profile in that scope',
+            suspend: false,
+            prefs: [pref('user', 'ghost'), pref('org', 'ghost')],
+        },
+        {
+            name: 'refuses a suspended profile as the preference and writes nothing (issue 440)',
+            suspend: true,
+            prefs: [pref('user', 'mine')],
+            error: ExecutorSuspendedError,
+        },
+    ])('$name', async ({ suspend, prefs, error }) => {
         await store.replace(ALICE, [{ name: 'mine', type: 'claude-code', config: {} }]);
-        await expect(store.setDefault(ALICE, pref('user', 'ghost'))).rejects.toThrow();
-        await expect(store.setDefault(ALICE, pref('org', 'ghost'))).rejects.toThrow();
-        // The preference row was not written by either refusal.
+        if (suspend) await store.setPersonalSuspended(ALICE, (await store.list(ALICE))[0]!.id, true);
+
+        for (const preference of prefs) {
+            const refused = expect(store.setDefault(ALICE, preference)).rejects;
+            await (error === undefined ? refused.toThrow() : refused.toBeInstanceOf(error));
+        }
         expect(await store.defaultOf(ALICE)).toBeNull();
     });
 
@@ -411,14 +433,6 @@ describe.skipIf(!enabled)('the per-user default preference (issue 391)', () => {
         expect(await store.defaultOf(ALICE)).toEqual(pref('user', 'second'));
         await store.setPersonalSuspended(ALICE, (await byName('second')).id, false);
         expect(await store.resolvedDefault(ALICE)).toEqual(pref('user', 'second'));
-    });
-
-    it('refuses a suspended profile as the preference and writes nothing (issue 440)', async () => {
-        await store.replace(ALICE, [{ name: 'mine', type: 'claude-code', config: {} }]);
-        await store.setPersonalSuspended(ALICE, (await store.list(ALICE))[0]!.id, true);
-
-        await expect(store.setDefault(ALICE, pref('user', 'mine'))).rejects.toBeInstanceOf(ExecutorSuspendedError);
-        expect(await store.defaultOf(ALICE)).toBeNull();
     });
 
     it('keeps the old personal default shape working: replace() no longer takes a flag', async () => {

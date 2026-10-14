@@ -1,14 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /*
  * The scripted model endpoint behind the `test:jobs` cooperative-Stop lane (issue #442). The lane
  * itself needs docker and the real CLIs; what is pinned here is the endpoint's protocol, so a lane
  * failure is never the stub's fault, and the lane's wiring.
  */
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const ENDPOINT = join(ROOT, 'scripts/fake-model-endpoint.mjs');
 
 interface Endpoint {

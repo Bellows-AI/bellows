@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { resolveBatchPlan, validateBatchPlan, type BatchPlan } from '@factory-ai/core';
+import { resolveBatchPlan, type BatchPlan } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { createBatchStore, type BatchStore } from '../src/db/batch-store.js';
 import { claimDue, commitObservation } from '../src/db/batch-store-observation.js';
@@ -10,6 +10,13 @@ import type { JobStore } from '../src/db/job-store-types.js';
 import { createOrgRegistry } from '../src/orgs.js';
 import { testConfig } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
+import {
+    batchPlan,
+    headOf as sharedHeadOf,
+    jobCount as sharedJobCount,
+    recordPr,
+    startBatch,
+} from './batch-fixtures.js';
 
 /**
  * Dispatch against a real database (docs/batches.md): the scheduler's transactions, the unique
@@ -51,19 +58,8 @@ const task = (key: string, extra: Record<string, unknown> = {}) => ({
     ...extra,
 });
 
-function plan(stages: Record<string, unknown>[], concurrency = 2): BatchPlan {
-    const result = validateBatchPlan({
-        planVersion: 1,
-        title: 'Dispatch',
-        targets: [{ key: 'web', repo: 'acme/web' }],
-        defaultTarget: 'web',
-        executor: 'claude',
-        concurrency,
-        stages,
-    });
-    if (!result.ok) throw new Error(JSON.stringify(result.issues));
-    return result.plan;
-}
+const plan = (stages: Record<string, unknown>[], concurrency = 2): BatchPlan =>
+    batchPlan('Dispatch', stages, { concurrency });
 
 const parallelThenJoin = (concurrency = 2) =>
     plan(
@@ -74,31 +70,14 @@ const parallelThenJoin = (concurrency = 2) =>
         concurrency
     );
 
-/** A frozen batch, not yet dispatched: start queues nothing, reconcile is dispatch. */
-async function frozen(source: BatchPlan, target: BatchStore = store): Promise<string> {
-    const { id } = await target.create(source, ALICE);
-    const started = await target.start({
-        id,
-        version: 1,
-        plan: resolveBatchPlan(source, { 'acme/web': 'main' }),
-        startedBy: ALICE,
-    });
-    expect(started).toMatchObject({ result: 'ok' });
-    return id;
-}
+const frozen = (source: BatchPlan, target: BatchStore = store) => startBatch(target, source, ALICE);
 
 const stateOf = async (id: string) => {
     const record = (await store.get(id))!;
     return Object.fromEntries(record.tasks.map((t) => [t.key, t]));
 };
 
-/** The thread's newest job, whatever a retry has added. */
-async function headOf(root: string) {
-    const [row] = await sql<{ id: string; status: string }[]>`
-        select id, status from job where root_job_id = ${root} order by created_at desc, id desc limit 1
-    `;
-    return row!;
-}
+const headOf = (root: string) => sharedHeadOf(sql, root);
 
 const setStatus = async (root: string, status: 'running' | 'succeeded' | 'failed') => {
     const head = await headOf(root);
@@ -109,7 +88,7 @@ const setStatus = async (root: string, status: 'running' | 'succeeded' | 'failed
     }
 };
 
-const jobCount = async () => Number((await sql`select count(*) from job`)[0]!.count);
+const jobCount = () => sharedJobCount(sql);
 const decisions = async (id: string) =>
     (await sql<{ key: string }[]>`select key from batch_decision where batch_id = ${id} order by key`).map(
         (r) => r.key
@@ -455,16 +434,35 @@ describe.skipIf(!enabled)('batch cancel', () => {
 });
 
 describe.skipIf(!enabled)('batch threads are batch history', () => {
-    it('refuses to remove or reopen a thread that backs a batch task', async () => {
+    // Live or finished, a batch thread is history: remove and reopen both refuse. Each row's own
+    // checks run between the succeeded verdict and the refusals (`before`) or after them (`after`).
+    it.each<{ name: string; before: (id: string, root: string) => Promise<void>; after?: () => Promise<void> }>([
+        {
+            name: 'refuses to remove or reopen a thread that backs a batch task',
+            before: async (_id, root) => {
+                expect(await jobs.markDone(root, ALICE)).toBe('batch');
+            },
+            after: async () => {
+                expect(await jobCount()).toBe(1);
+            },
+        },
+        {
+            name: 'still refuses to remove or reopen a finished batch’s thread',
+            before: async (id, root) => {
+                await store.accept(id, 'a', ALICE);
+                expect(await doneAtOf(root)).not.toBeNull();
+            },
+        },
+    ])('$name', async ({ before, after }) => {
         const id = await frozen(plan([{ key: 'only', tasks: [task('a')] }]));
         await store.reconcile(id);
         const { a } = await stateOf(id);
         await setStatus(a!.rootJobId!, 'succeeded');
+        await before(id, a!.rootJobId!);
 
-        expect(await jobs.markDone(a!.rootJobId!, ALICE)).toBe('batch');
         expect(await jobs.removeThread(a!.rootJobId!, ALICE)).toBe('batch');
         expect(await jobs.reopen(a!.rootJobId!)).toBe('batch');
-        expect(await jobCount()).toBe(1);
+        await after?.();
     });
 
     it('still removes an ordinary thread', async () => {
@@ -581,18 +579,6 @@ describe.skipIf(!enabled)('a finished batch closes its threads', () => {
 
         await before.accept(id, 'a', ALICE);
         expect(await jobs.markDone(a!.rootJobId!, ALICE)).toMatchObject({ status: 'succeeded' });
-    });
-
-    it('still refuses to remove or reopen a finished batch’s thread', async () => {
-        const id = await frozen(plan([{ key: 'only', tasks: [task('a')] }]));
-        await store.reconcile(id);
-        const { a } = await stateOf(id);
-        await setStatus(a!.rootJobId!, 'succeeded');
-        await store.accept(id, 'a', ALICE);
-        expect(await doneAtOf(a!.rootJobId!)).not.toBeNull();
-
-        expect(await jobs.removeThread(a!.rootJobId!, ALICE)).toBe('batch');
-        expect(await jobs.reopen(a!.rootJobId!)).toBe('batch');
     });
 });
 
@@ -769,14 +755,7 @@ const prUrlOf = (repo: string, number: number) => `https://github.com/${repo}/pu
 /** Records the PR a task's thread published, as the verdict's publication does. */
 async function publish(root: string, base = 'main', repo = REPO): Promise<number> {
     nextPr += 1;
-    await prs.recordPublication({
-        root,
-        repo,
-        prNumber: nextPr,
-        prUrl: prUrlOf(repo, nextPr),
-        headBranch: `factory/${root}`,
-        baseBranch: base,
-    });
+    await recordPr(prs, root, nextPr, { repo, base });
     return nextPr;
 }
 
@@ -797,14 +776,69 @@ async function succeededFirst() {
 }
 
 describe.skipIf(!enabled)('human PR gate', () => {
-    it('does not accept a succeeded run that opened no PR', async () => {
-        const { id } = await succeededFirst();
+    // The gate stays open: no PR, the wrong PR, the wrong branch, or a stale merge is no evidence.
+    it.each<{
+        name: string;
+        /** Publishes/merges what the case needs; answers the published PR number, if any. */
+        arrange: (root: string) => Promise<number | undefined>;
+        waitReason?: (number: number | undefined) => string;
+        noAdvance: boolean;
+        extra?: (id: string) => Promise<void>;
+    }>([
+        {
+            name: 'does not accept a succeeded run that opened no PR',
+            arrange: async () => undefined,
+            waitReason: () => 'the run succeeded without opening a PR',
+            noAdvance: true,
+            extra: async (id) => {
+                expect(await stateOf(id)).toMatchObject({
+                    a: { execution: 'succeeded' },
+                    b: { execution: 'pending' },
+                });
+            },
+        },
+        {
+            name: 'does not take another repository or another PR number as evidence',
+            arrange: async (root) => {
+                const number = await publish(root);
+                await merge('acme/other', number);
+                await merge(REPO, number + 1);
+                return number;
+            },
+            noAdvance: false,
+        },
+        {
+            name: 'refuses a merged PR that targets another branch, with a reason',
+            arrange: async (root) => {
+                const number = await publish(root, 'release');
+                await merge(REPO, number);
+                return number;
+            },
+            waitReason: (number) => `PR ${prUrlOf(REPO, number!)} targets release, not main`,
+            noAdvance: true,
+        },
+        {
+            name: 'treats a merge older than the current attempt as stale',
+            arrange: async (root) => {
+                const number = await publish(root);
+                await merge(REPO, number);
+                await sql`update pr_merge set merged_at = now() - interval '1 hour' where repo = ${REPO} and pr_number = ${number}`;
+                return number;
+            },
+            waitReason: (number) => `PR ${prUrlOf(REPO, number!)} was merged before attempt 1 started`,
+            noAdvance: false,
+        },
+    ])('$name', async ({ arrange, waitReason, noAdvance, extra }) => {
+        const { id, root } = await succeededFirst();
+        const number = await arrange(root);
         await store.reconcile(id);
-        expect(await stateOf(id)).toMatchObject({
-            a: { execution: 'succeeded', gate: 'open', waitReason: 'the run succeeded without opening a PR' },
-            b: { execution: 'pending' },
+
+        expect((await stateOf(id)).a).toMatchObject({
+            gate: 'open',
+            ...(waitReason === undefined ? {} : { waitReason: waitReason(number) }),
         });
-        expect(await decisions(id)).not.toContain('advance:one');
+        if (noAdvance) expect(await decisions(id)).not.toContain('advance:one');
+        await extra?.(id);
     });
 
     it('waits for a person to merge an open PR, and starts the next stage after the merge without a click', async () => {
@@ -843,39 +877,6 @@ describe.skipIf(!enabled)('human PR gate', () => {
         await store.reconcile(id);
         expect((await stateOf(id)).a).toMatchObject({ execution: 'succeeded', gate: 'passed' });
         expect((await store.get(id))!.completedAt).not.toBeNull();
-    });
-
-    it('does not take another repository or another PR number as evidence', async () => {
-        const { id, root } = await succeededFirst();
-        const number = await publish(root);
-        await merge('acme/other', number);
-        await merge(REPO, number + 1);
-        await store.reconcile(id);
-        expect((await stateOf(id)).a).toMatchObject({ gate: 'open' });
-    });
-
-    it('refuses a merged PR that targets another branch, with a reason', async () => {
-        const { id, root } = await succeededFirst();
-        const number = await publish(root, 'release');
-        await merge(REPO, number);
-        await store.reconcile(id);
-        expect((await stateOf(id)).a).toMatchObject({
-            gate: 'open',
-            waitReason: `PR ${prUrlOf(REPO, number)} targets release, not main`,
-        });
-        expect(await decisions(id)).not.toContain('advance:one');
-    });
-
-    it('treats a merge older than the current attempt as stale', async () => {
-        const { id, root } = await succeededFirst();
-        const number = await publish(root);
-        await merge(REPO, number);
-        await sql`update pr_merge set merged_at = now() - interval '1 hour' where repo = ${REPO} and pr_number = ${number}`;
-        await store.reconcile(id);
-        expect((await stateOf(id)).a).toMatchObject({
-            gate: 'open',
-            waitReason: `PR ${prUrlOf(REPO, number)} was merged before attempt 1 started`,
-        });
     });
 
     it('advances once under duplicate deliveries, racing schedulers and a restart', async () => {
@@ -927,20 +928,8 @@ function clockedStore() {
     };
 }
 
-function planWith(stages: Record<string, unknown>[], budgets: Record<string, number> = {}): BatchPlan {
-    const result = validateBatchPlan({
-        planVersion: 1,
-        title: 'Recovery',
-        targets: [{ key: 'web', repo: REPO }],
-        defaultTarget: 'web',
-        executor: 'claude',
-        concurrency: 2,
-        ...budgets,
-        stages,
-    });
-    if (!result.ok) throw new Error(JSON.stringify(result.issues));
-    return result.plan;
-}
+const planWith = (stages: Record<string, unknown>[], budgets: Record<string, number> = {}): BatchPlan =>
+    batchPlan('Recovery', stages, budgets);
 
 /** Ends the thread head's run as failed with a structured reason and its cause, as the verdict does. */
 async function failWith(

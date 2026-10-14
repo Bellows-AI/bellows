@@ -26,6 +26,26 @@ function writeComposedBody(id: string): string {
     return path;
 }
 
+/** A fresh working directory for one probe run. */
+const tempCwd = (): string => mkdtempSync(join(tmpdir(), 'review-cwd-'));
+
+/**
+ * Runs helper `id`'s composed body against the stub `gh` with PUBLICATION as its input, in `cwd`;
+ * answers the run and its verdict (the last stdout line).
+ */
+async function probe(
+    id: string,
+    env: Record<string, string> = {},
+    opts: { cwd?: string; token?: boolean } = {}
+): Promise<{ run: Awaited<ReturnType<typeof runSource>>; verdict: Record<string, unknown> }> {
+    const run = await runSource(
+        writeComposedBody(id),
+        { HELPER_INPUT: JSON.stringify({ publication: PUBLICATION }), ...env },
+        { ...opts, cwd: opts.cwd ?? tempCwd() }
+    );
+    return { run, verdict: JSON.parse(run.stdout.trim().split('\n').filter(Boolean).pop()!) };
+}
+
 /** An empty-but-well-shaped gh-responses.json fixture: no feedback, no requested reviewers. */
 function emptyFixture(
     over: { decision?: string | null; users?: string[]; teams?: string[]; checkStatuses?: string[] } = {}
@@ -64,15 +84,9 @@ describe('the review-collect-probe helper', () => {
     });
 
     it('concludes REVIEW-CLEAN when the PR is approved with nothing outstanding', async () => {
-        const path = writeComposedBody(REVIEW_COLLECT_PROBE_ID);
-        const gh = emptyFixture({ decision: 'APPROVED' });
-        const cwd = mkdtempSync(join(tmpdir(), 'review-cwd-'));
-        const run = await runSource(
-            path,
-            { HELPER_INPUT: JSON.stringify({ publication: PUBLICATION }), GH_FIXTURES: gh },
-            { cwd }
-        );
-        const verdict = JSON.parse(run.stdout.trim().split('\n').filter(Boolean).pop()!);
+        const { run, verdict } = await probe(REVIEW_COLLECT_PROBE_ID, {
+            GH_FIXTURES: emptyFixture({ decision: 'APPROVED' }),
+        });
         expect(verdict).toEqual({
             schema: 'review-collect-probe/v1',
             version: 1,
@@ -85,15 +99,9 @@ describe('the review-collect-probe helper', () => {
     });
 
     it('concludes REVIEW-WAIT when a reviewer is requested but nothing is actionable yet', async () => {
-        const path = writeComposedBody(REVIEW_COLLECT_PROBE_ID);
-        const gh = emptyFixture({ users: ['reviewer-a'] });
-        const cwd = mkdtempSync(join(tmpdir(), 'review-cwd-'));
-        const run = await runSource(
-            path,
-            { HELPER_INPUT: JSON.stringify({ publication: PUBLICATION }), GH_FIXTURES: gh },
-            { cwd }
-        );
-        const verdict = JSON.parse(run.stdout.trim().split('\n').filter(Boolean).pop()!);
+        const { verdict } = await probe(REVIEW_COLLECT_PROBE_ID, {
+            GH_FIXTURES: emptyFixture({ users: ['reviewer-a'] }),
+        });
         expect(verdict.output).toBe('REVIEW-WAIT');
         expect(verdict.control).toBe('conclude');
     });
@@ -104,38 +112,25 @@ describe('the review-collect-probe helper', () => {
             // Regression: collect ran 17s after the PR opened, while the CI run carrying the
             // claude[bot] review job was still in progress, concluded REVIEW-CLEAN and ended the
             // block before the review landed.
-            const path = writeComposedBody(REVIEW_COLLECT_PROBE_ID);
-            const gh = emptyFixture({ checkStatuses: ['completed', status] });
-            const cwd = mkdtempSync(join(tmpdir(), 'review-cwd-'));
-            const run = await runSource(
-                path,
-                { HELPER_INPUT: JSON.stringify({ publication: PUBLICATION }), GH_FIXTURES: gh },
-                { cwd }
-            );
-            const verdict = JSON.parse(run.stdout.trim().split('\n').filter(Boolean).pop()!);
+            const { verdict } = await probe(REVIEW_COLLECT_PROBE_ID, {
+                GH_FIXTURES: emptyFixture({ checkStatuses: ['completed', status] }),
+            });
             expect(verdict.output).toBe('REVIEW-WAIT');
             expect(verdict.control).toBe('conclude');
         }
     );
 
     it('concludes REVIEW-CLEAN once every head check run completed', async () => {
-        const path = writeComposedBody(REVIEW_COLLECT_PROBE_ID);
-        const gh = emptyFixture({ checkStatuses: ['completed', 'completed'] });
-        const cwd = mkdtempSync(join(tmpdir(), 'review-cwd-'));
-        const run = await runSource(
-            path,
-            { HELPER_INPUT: JSON.stringify({ publication: PUBLICATION }), GH_FIXTURES: gh },
-            { cwd }
-        );
-        const verdict = JSON.parse(run.stdout.trim().split('\n').filter(Boolean).pop()!);
+        const { verdict } = await probe(REVIEW_COLLECT_PROBE_ID, {
+            GH_FIXTURES: emptyFixture({ checkStatuses: ['completed', 'completed'] }),
+        });
         expect(verdict.output).toBe('REVIEW-CLEAN');
     });
 
     it("surfaces a review bot's feedback — only Factory's own marked replies are skipped", async () => {
         // Regression: every `[bot]` author was dropped, so claude[bot]'s Major inline finding
         // never reached the digest and the block concluded REVIEW-CLEAN over it.
-        const path = writeComposedBody(REVIEW_COLLECT_PROBE_ID);
-        const cwd = mkdtempSync(join(tmpdir(), 'review-cwd-'));
+        const cwd = tempCwd();
         const gh = writeFixture({
             general: [
                 {
@@ -191,12 +186,7 @@ describe('the review-collect-probe helper', () => {
                 },
             },
         });
-        const run = await runSource(
-            path,
-            { HELPER_INPUT: JSON.stringify({ publication: PUBLICATION }), GH_FIXTURES: gh },
-            { cwd }
-        );
-        const verdict = JSON.parse(run.stdout.trim().split('\n').filter(Boolean).pop()!);
+        const { verdict } = await probe(REVIEW_COLLECT_PROBE_ID, { GH_FIXTURES: gh }, { cwd });
         expect(verdict.output).toBe('REVIEW-ACTIONABLE');
         const digest = JSON.parse(readFileSync(join(cwd, '.factory', 'review-reconcile', 'digest.json'), 'utf8'));
         const keys = digest.items.map((i: { key: string }) => i.key).sort();
@@ -204,12 +194,10 @@ describe('the review-collect-probe helper', () => {
     });
 
     it('answers REVIEW-ACTIONABLE and writes a digest when unresolved feedback exists', async () => {
-        const path = writeComposedBody(REVIEW_COLLECT_PROBE_ID);
-        const cwd = mkdtempSync(join(tmpdir(), 'review-cwd-'));
+        const cwd = tempCwd();
         // The shared gh-responses.json fixture (review-collect-script.test.ts's own data): a
         // CHANGES_REQUESTED review, two general comments, an unresolved thread and a resolved one.
-        const run = await runSource(path, { HELPER_INPUT: JSON.stringify({ publication: PUBLICATION }) }, { cwd });
-        const verdict = JSON.parse(run.stdout.trim().split('\n').filter(Boolean).pop()!);
+        const { verdict } = await probe(REVIEW_COLLECT_PROBE_ID, {}, { cwd });
         expect(verdict).toEqual({
             schema: 'review-collect-probe/v1',
             version: 1,
@@ -233,8 +221,7 @@ describe('the review-collect-probe helper', () => {
         // reply lands as a brand-new, SEPARATE general comment (review-reply-probe-middle.cjs's
         // generalTarget). The digest must look for the marker across `general`, not on the
         // original comment's own body, or the item would loop as actionable forever.
-        const path = writeComposedBody(REVIEW_COLLECT_PROBE_ID);
-        const cwd = mkdtempSync(join(tmpdir(), 'review-cwd-'));
+        const cwd = tempCwd();
         const base = JSON.parse(readFileSync(fixture('gh-responses.json'), 'utf8'));
         const gh = writeFixture({
             ...base,
@@ -248,7 +235,7 @@ describe('the review-collect-probe helper', () => {
                 },
             ],
         });
-        await runSource(path, { HELPER_INPUT: JSON.stringify({ publication: PUBLICATION }), GH_FIXTURES: gh }, { cwd });
+        await probe(REVIEW_COLLECT_PROBE_ID, { GH_FIXTURES: gh }, { cwd });
         const digestPath = join(cwd, '.factory', 'review-reconcile', 'digest.json');
         const digest = JSON.parse(readFileSync(digestPath, 'utf8'));
         const keys = digest.items.map((i: { key: string }) => i.key).sort();
@@ -257,14 +244,7 @@ describe('the review-collect-probe helper', () => {
     });
 
     it('fails (never a marker) on an unreadable collection, so the retry edge can re-attempt it', async () => {
-        const path = writeComposedBody(REVIEW_COLLECT_PROBE_ID);
-        const cwd = mkdtempSync(join(tmpdir(), 'review-cwd-'));
-        const run = await runSource(
-            path,
-            { HELPER_INPUT: JSON.stringify({ publication: PUBLICATION }) },
-            { cwd, token: false }
-        );
-        const verdict = JSON.parse(run.stdout.trim().split('\n').filter(Boolean).pop()!);
+        const { run, verdict } = await probe(REVIEW_COLLECT_PROBE_ID, {}, { token: false });
         expect(verdict.ok).toBe(false);
         const result = parseHelperOutput(HELPER_REGISTRY.get(REVIEW_COLLECT_PROBE_ID)!, run.stdout);
         expect(result.ok).toBe(false);
@@ -279,8 +259,7 @@ describe('the review-reply-probe helper', () => {
     });
 
     it('replies only to digest-presented, still-live targets and concludes REVIEW-REPLIED', async () => {
-        const path = writeComposedBody(REVIEW_REPLY_PROBE_ID);
-        const cwd = mkdtempSync(join(tmpdir(), 'review-cwd-'));
+        const cwd = tempCwd();
         const stateDir = join(cwd, '.factory', 'review-reconcile');
         mkdirSync(stateDir, { recursive: true });
         writeFileSync(
@@ -306,8 +285,7 @@ describe('the review-reply-probe helper', () => {
                 ],
             })
         );
-        const run = await runSource(path, { HELPER_INPUT: JSON.stringify({ publication: PUBLICATION }) }, { cwd });
-        const verdict = JSON.parse(run.stdout.trim().split('\n').filter(Boolean).pop()!);
+        const { run, verdict } = await probe(REVIEW_REPLY_PROBE_ID, {}, { cwd });
         expect(verdict).toEqual({
             schema: 'review-reply-probe/v1',
             version: 1,
@@ -333,10 +311,7 @@ describe('the review-reply-probe helper', () => {
     });
 
     it('runs with zero targets when the digest/intents files are absent, and still concludes', async () => {
-        const path = writeComposedBody(REVIEW_REPLY_PROBE_ID);
-        const cwd = mkdtempSync(join(tmpdir(), 'review-cwd-'));
-        const run = await runSource(path, { HELPER_INPUT: JSON.stringify({ publication: PUBLICATION }) }, { cwd });
-        const verdict = JSON.parse(run.stdout.trim().split('\n').filter(Boolean).pop()!);
+        const { verdict } = await probe(REVIEW_REPLY_PROBE_ID);
         expect(verdict).toEqual({
             schema: 'review-reply-probe/v1',
             version: 1,
@@ -351,14 +326,7 @@ describe('the review-reply-probe helper', () => {
         // first — proving a reply-step failure propagates as ok:false, never a marker, so the
         // block's own reply->reply retry edge (server/src/db/workflow-blocks/
         // github-review-reconcile.ts) is what re-attempts it.
-        const path = writeComposedBody(REVIEW_REPLY_PROBE_ID);
-        const cwd = mkdtempSync(join(tmpdir(), 'review-cwd-'));
-        const run = await runSource(
-            path,
-            { HELPER_INPUT: JSON.stringify({ publication: PUBLICATION }), GH_HTTP_STATUS: '403' },
-            { cwd }
-        );
-        const verdict = JSON.parse(run.stdout.trim().split('\n').filter(Boolean).pop()!);
+        const { verdict } = await probe(REVIEW_REPLY_PROBE_ID, { GH_HTTP_STATUS: '403' });
         expect(verdict.ok).toBe(false);
     });
 });

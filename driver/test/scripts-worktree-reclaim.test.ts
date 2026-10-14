@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { git, makeOriginClone } from './fixtures/git-worktree-support.js';
 import { hasGit, pathOf } from './fixtures/scripts-support.js';
 
 /**
@@ -23,17 +24,6 @@ import { hasGit, pathOf } from './fixtures/scripts-support.js';
  * as a successful no-op.
  */
 describe.skipIf(!hasGit())('the worktree reclaim script', () => {
-    const GIT_FIXTURE_CONFIG = [
-        '-c',
-        'user.email=test@example.com',
-        '-c',
-        'user.name=Test',
-        '-c',
-        'init.defaultBranch=main',
-    ];
-    const git = (cwd: string, ...args: string[]): string =>
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, ...args], { cwd, encoding: 'utf8' }).trim();
-
     const ROOT = '55555555-5555-4555-8555-555555555555';
     const STALE = '66666666-6666-4666-8666-666666666666';
     const UNREGISTERED = '77777777-7777-4777-8777-777777777777';
@@ -62,16 +52,8 @@ describe.skipIf(!hasGit())('the worktree reclaim script', () => {
 
     beforeEach(() => {
         dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-reclaim-')));
-        const work = join(dir, 'origin-work');
-        mkdirSync(work, { recursive: true });
-        git(work, 'init');
-        writeFileSync(join(work, 'README.md'), '# factory\n');
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, '-C', work, 'add', 'README.md'], { stdio: 'ignore' });
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, '-C', work, 'commit', '-m', 'init'], { stdio: 'ignore' });
-        const bare = join(dir, 'factory.git');
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', '--bare', work, bare], { stdio: 'ignore' });
         clone = join(dir, 'clone');
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', `file://${bare}`, clone], { stdio: 'ignore' });
+        makeOriginClone(dir, clone);
     });
 
     it('removes a registered worktree whose directory is there', () => {

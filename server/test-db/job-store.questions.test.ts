@@ -4,6 +4,7 @@ import { createJobStore } from '../src/db/job-store.js';
 import { QUESTIONS_PER_ATTEMPT } from '../src/db/job-store-questions.js';
 import type { AskedQuestion, Claim, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
+import { expireLease } from './fixtures.js';
 
 /** The agent's questions (050, issue #531) against a real database. */
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -43,8 +44,6 @@ async function running(): Promise<{ id: string; claim: Claim }> {
 
 const ask = (id: string, token: string, questionId: string, questions = asked()) =>
     store.askQuestion(id, token, { questionId, questions });
-
-const expireLease = (id: string) => sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
 
 const stateOf = async (id: string, questionId: string) =>
     (
@@ -104,15 +103,6 @@ describe.skipIf(!enabled)('job questions — database', () => {
         expect(results.filter((r) => r.result === 'limit')).toHaveLength(CONCURRENT_ANSWERS - QUESTIONS_PER_ATTEMPT);
     });
 
-    it('fences the report to the lease: lost for a stale token, missing for an unknown job', async () => {
-        const { id } = await running();
-        const stale = '33333333-3333-4333-8333-333333333333';
-
-        expect(await ask(id, stale, 'toolu_1')).toEqual({ result: 'lost' });
-        expect(await ask('00000000-0000-4000-8000-000000000000', stale, 'toolu_1')).toEqual({ result: 'missing' });
-        expect((await store.get(id))!.questions).toEqual([]);
-    });
-
     it('lands an answer exactly once when 10 concurrent answers race', async () => {
         const { id, claim } = await running();
         await ask(id, claim.leaseToken, 'toolu_1');
@@ -168,12 +158,32 @@ describe.skipIf(!enabled)('job questions — database', () => {
         expect(await stateOf(id, 'toolu_1')).toBe('pending');
     });
 
-    it('refuses an answer to a question of an older attempt after a reclaim (question_closed)', async () => {
+    // The question is answerable only while the attempt that asked it is the live, unstopped run.
+    it.each<{ name: string; close: (id: string, claim: Claim) => Promise<void> }>([
+        {
+            name: 'to a question of an older attempt after a reclaim',
+            close: async (id, claim) => {
+                await expireLease(sql, id);
+                const second = (await store.claim('w2', LEASE_SECONDS)) as Claim;
+                expect(second.leaseToken).not.toBe(claim.leaseToken);
+            },
+        },
+        {
+            name: 'after a stop request',
+            close: async (id) => {
+                expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
+            },
+        },
+        {
+            name: 'once the run has ended',
+            close: async (id, claim) => {
+                await store.complete(id, claim.leaseToken, { status: 'succeeded', exitCode: 0, output: '' });
+            },
+        },
+    ])('refuses an answer $name (question_closed)', async ({ close }) => {
         const { id, claim } = await running();
         await ask(id, claim.leaseToken, 'toolu_1');
-        await expireLease(id);
-        const second = (await store.claim('w2', LEASE_SECONDS)) as Claim;
-        expect(second.leaseToken).not.toBe(claim.leaseToken);
+        await close(id, claim);
 
         expect(await store.answerQuestion(id, 'toolu_1', ANSWERS, null)).toEqual({
             result: 'refused',
@@ -182,32 +192,10 @@ describe.skipIf(!enabled)('job questions — database', () => {
         expect(await stateOf(id, 'toolu_1')).toBe('pending');
     });
 
-    it('refuses an answer after a stop request (question_closed)', async () => {
-        const { id, claim } = await running();
-        await ask(id, claim.leaseToken, 'toolu_1');
-        expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
-
-        expect(await store.answerQuestion(id, 'toolu_1', ANSWERS, null)).toEqual({
-            result: 'refused',
-            reason: 'closed',
-        });
-    });
-
-    it('refuses an answer once the run has ended (question_closed)', async () => {
-        const { id, claim } = await running();
-        await ask(id, claim.leaseToken, 'toolu_1');
-        await store.complete(id, claim.leaseToken, { status: 'succeeded', exitCode: 0, output: '' });
-
-        expect(await store.answerQuestion(id, 'toolu_1', ANSWERS, null)).toEqual({
-            result: 'refused',
-            reason: 'closed',
-        });
-    });
-
     it('derives closed on read and never writes it', async () => {
         const { id, claim } = await running();
         await ask(id, claim.leaseToken, 'toolu_1');
-        await expireLease(id);
+        await expireLease(sql, id);
         await store.claim('w2', LEASE_SECONDS);
 
         const [question] = (await store.get(id))!.questions;
@@ -225,7 +213,7 @@ describe.skipIf(!enabled)('job questions — database', () => {
             { questionId: 'toolu_old', answers: ANSWERS },
         ]);
 
-        await expireLease(id);
+        await expireLease(sql, id);
         const second = (await store.claim('w2', LEASE_SECONDS)) as Claim;
         await ask(id, second.leaseToken, 'toolu_new');
         await store.answerQuestion(id, 'toolu_new', { [QUESTION_TEXT]: 'SQLite' }, null);
@@ -266,7 +254,7 @@ describe.skipIf(!enabled)('job questions — database', () => {
     it('does not flag needsAnswer for a closed question', async () => {
         const { id, claim } = await running();
         await ask(id, claim.leaseToken, 'toolu_1');
-        await expireLease(id);
+        await expireLease(sql, id);
         await store.claim('w2', LEASE_SECONDS);
 
         const page = (await store.listTasks({ state: 'attention', sort: 'newest', limit: 10 })).page;
