@@ -160,8 +160,24 @@ describe('ci workflows', () => {
             /^public\.ecr\.aws\/docker\/library\//
         );
         // The docker-container builder runs buildkit as an image of its own, Docker Hub's by default.
-        const create = runs(workflow(RELEASE).jobs.build!).find((run) => run.startsWith('docker buildx create'));
-        expect(create).toContain('--driver-opt image=public.ecr.aws/vend/moby/buildkit:');
+        expect(workflow(RELEASE).jobs.buildkit!.env!.BUILDKIT).toMatch(/^public\.ecr\.aws\/vend\/moby\/buildkit:/);
+    });
+
+    // Eight build cells pulling buildkit anonymously from ECR Public at once trip its per-IP rate
+    // and data limits, and a retry on the same runner reuses the same IP. One job pulls it once
+    // into the release registry; every cell boots its builder from there.
+    it('pulls buildkit from ECR Public once per release, retrying only on toomanyrequests', () => {
+        const jobs = workflow(RELEASE).jobs;
+        const mirror = runs(jobs.buildkit!).join('\n');
+        expect(mirror).toContain('docker buildx imagetools create -t "$REGISTRY/buildkit:');
+        expect(mirror).toContain('"$BUILDKIT"');
+        expect(mirror).toContain('grep -q toomanyrequests');
+        expect(mirror).toContain('sleep');
+        expect(needs(jobs.build!)).toContain('buildkit');
+        const create = runs(jobs.build!).find((run) => run.startsWith('docker buildx create'));
+        expect(create).toContain('--bootstrap');
+        expect(create).toContain('--driver-opt "image=$REGISTRY/buildkit:');
+        for (const run of runs(jobs.build!)) expect(run).not.toContain('public.ecr.aws');
     });
 
     // The db suite is the only coverage the SQL and the migrations have; it gates every pull
@@ -430,11 +446,17 @@ describe('ci workflows', () => {
         const build = workflow(RELEASE).jobs.build!;
         const names = (build.steps ?? []).map((step) => step.name ?? step.uses ?? '');
         const gate = names.findIndex((name) => name.includes('--exit-code 1'));
-        const login = names.findIndex((name) => name.includes('docker login'));
         const push = names.findIndex((name) => name.includes('--push'));
         expect(gate, 'nothing in the build job fails on a finding').toBeGreaterThan(-1);
-        expect(gate).toBeLessThan(login);
         expect(gate).toBeLessThan(push);
+        // The builder boots from the private buildkit mirror, so a login may precede the gate —
+        // but only one that is logged out again before the scanner runs.
+        const logins = names.flatMap((name, index) => (name.includes('docker login') ? [index] : []));
+        const logouts = names.flatMap((name, index) => (name.includes('docker logout') ? [index] : []));
+        expect(logins.some((login) => login > gate && login < push)).toBe(true);
+        for (const login of logins.filter((index) => index < gate)) {
+            expect(logouts.some((logout) => logout > login && logout < gate)).toBe(true);
+        }
         // Scanned from a tarball, so the bytes the gate reads are the bytes the push sends and
         // nothing has left the runner before the verdict.
         const commands = runs(build).join('\n');
