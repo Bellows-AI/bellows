@@ -1,37 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { run } from '../src/run.js';
-
-interface Call {
-    url: string;
-    method: string;
-    body: unknown;
-}
-
-const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
-
-const json = (payload: unknown, status = 200) =>
-    new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
+import { recordingBoard, json } from './harness.js';
 
 function harness(respond: (index: number) => Response) {
-    const out: string[] = [];
-    const err: string[] = [];
-    const calls: Call[] = [];
-    const fetch = (async (url: string | URL | globalThis.Request, init?: RequestInit) => {
-        const index = calls.length;
-        calls.push({
-            url: String(url),
-            method: init?.method ?? 'GET',
-            body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
-        });
-        return respond(index);
-    }) as unknown as typeof globalThis.fetch;
-    const io = {
-        env: ENV,
-        fetch,
-        sleep: async () => {},
-        stdout: (text: string) => out.push(text),
-        stderr: (text: string) => err.push(text),
-    };
+    const { out, err, sent: calls, io } = recordingBoard((_, index) => respond(index));
     return { out, err, calls, io };
 }
 

@@ -1,5 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import type { FastifyInstance } from 'fastify';
+import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { JobStore, TaskListFilters, TaskListResponse, TaskSummary } from '../src/db/job-store-types.js';
 import { encodeCursor } from '../src/db/task-summary.js';
@@ -12,18 +11,11 @@ import {
     stubTelemetryClient,
     testConfig,
 } from './helpers.js';
+import { HTTP_BAD_REQUEST, HTTP_OK, HTTP_SERVICE_UNAVAILABLE, HTTP_UNAUTHORIZED, trackApps } from './helpers-http.js';
 
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 const ORG = 'test-org';
-const HTTP_OK = 200;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_SERVICE_UNAVAILABLE = 503;
 
 const UUID_SEGMENT_WIDTH = 12;
 
@@ -93,7 +85,7 @@ async function openHarness(jobs?: TaskStub) {
         config,
         orgs: staticRegistry({ config, jobs, telemetry: stubTelemetryClient() }),
     });
-    app = instance;
+    track(instance);
     return instance;
 }
 
@@ -105,7 +97,7 @@ async function githubHarness(jobs?: TaskStub, orgsFor?: readonly string[]) {
         orgs: staticRegistry({ config, jobs, telemetry: stubTelemetryClient(), ...(orgsFor ? { orgsFor } : {}) }),
         auth: store,
     });
-    app = instance;
+    track(instance);
     return { instance, store };
 }
 

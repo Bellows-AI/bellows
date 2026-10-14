@@ -1,7 +1,7 @@
-import { buildApp } from '../src/app.js';
+import { type AppDeps, buildApp } from '../src/app.js';
 import type { GitHubIdentityClient } from '../src/auth/github.js';
 import type { AuthStore } from '../src/auth/store.js';
-import { LOCAL_ORG_ID, type AppConfig } from '../src/config.js';
+import { LOCAL_ORG_ID, type AppConfig, type AuthConfig } from '../src/config.js';
 import type { EnvVarStore } from '../src/db/env-var-store.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
 import type { WorkflowStore } from '../src/db/workflow-store.js';
@@ -12,6 +12,7 @@ import type { Purger } from '../src/workspace/purge.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { InstallationRepo } from '../src/github/app-client.js';
+import type { TelemetryStore } from '../src/telemetry/store.js';
 import { testConfig } from './helpers-config.js';
 import { memoryUserExecutorStore } from './helpers-user-executor-store.js';
 import { stubTelemetryClient, type TelemetryStub } from './helpers-telemetry.js';
@@ -190,4 +191,32 @@ export async function harness({
             for (let i = 0; i < SETTLE_TICKS; i += 1) await new Promise((r) => setImmediate(r));
         },
     };
+}
+
+/** A telemetry store that accepts every write and keeps none — for tests that never read it back. */
+export const telemetryStoreStub = (): TelemetryStore => ({
+    async insertMetrics() {
+        return 0;
+    },
+    async recordBranch() {},
+});
+
+/**
+ * The app under `auth`, signed in through `store`, over a static registry built from `parts` with
+ * the stub telemetry client; `deps` adds or overrides any buildApp dependency.
+ */
+export function buildWithAuth(
+    auth: AuthConfig,
+    store: AuthStore,
+    parts: Omit<NonNullable<Parameters<typeof staticRegistry>[0]>, 'config' | 'telemetry'>,
+    deps: Partial<AppDeps> = {}
+) {
+    const config = testConfig({ auth });
+    return buildApp({
+        config,
+        orgs: staticRegistry({ config, telemetry: stubTelemetryClient(), ...parts }),
+        store: telemetryStoreStub(),
+        auth: store,
+        ...deps,
+    });
 }

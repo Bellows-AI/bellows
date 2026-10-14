@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { LOCAL_ORG_ID, type AppConfig } from '../src/config.js';
 import { createOrgRegistry, type OrgRegistry } from '../src/orgs.js';
@@ -10,12 +10,6 @@ import { testConfig } from './helpers.js';
  * a static; these drive the REAL one over a scripted sql, because the subtle parts — miss
  * handling, failure retry, store wiring — are exactly what a static hides.
  */
-
-let app: { close(): Promise<void> } | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
 
 const config: AppConfig = testConfig();
 

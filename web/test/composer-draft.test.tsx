@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import type { Session } from '../src/api/useSession.js';
+import { memberSession } from './fixtures.js';
 import {
     type ComposerDraftInput,
     type ComposerDraftStore,
@@ -17,17 +17,12 @@ import {
  * behavior, and the provider is proven to publish them.
  */
 
-const sessionFor = (orgId: string, userId: string): Session => ({
-    authenticated: true,
-    user: { id: userId, login: 'octocat', name: null, githubUserId: 4242, avatarUrl: null },
-    role: 'member',
-    membership: { invitedAt: null, claimedAt: null },
-    account: { createdAt: null, lastLoginAt: null },
-    organization: { id: orgId, name: orgId },
-    organizations: [{ id: orgId, name: orgId }],
-    workspacePath: null,
-    mode: 'github',
-});
+const sessionFor = (orgId: string, userId: string) =>
+    memberSession({
+        user: { id: userId, name: null },
+        organization: { id: orgId, name: orgId },
+        organizations: [{ id: orgId, name: orgId }],
+    });
 
 const next: ComposerDraftInput = {
     draft: 'Fix the flaky test',

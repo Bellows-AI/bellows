@@ -8,7 +8,8 @@ import { WorkflowParameterFields } from '../src/components/WorkflowParameterFiel
 import { TaskComposerPage } from '../src/pages/TaskComposerPage.js';
 import { TaskDetailPage } from '../src/pages/TaskDetailPage.js';
 import { type WorkflowParamChoice, clampedWorkflow, paramsComplete, paramValueMatches } from '../src/task-composer.js';
-import { FORBIDDEN, renderComposer } from './tasks-fixtures.js';
+import { renderComposer } from './tasks-fixtures.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 describe('the tasks pages', () => {
     /**
@@ -198,7 +199,7 @@ describe('TaskComposer — the prompt and the launch', () => {
         expect(html).not.toContain('>Example: Fix issue #123');
     });
 
-    it('says nothing routine when the task is ready: the chips already show what will run (#571)', () => {
+    it('starts against a selected, ready repository, saying nothing routine: the chips show what will run (#571)', () => {
         const html = renderComposer({ restored: restoredDraft({ draft: 'fix it' }) });
         expect(html).not.toContain('Will run');
         expect(html).not.toContain('as written');
@@ -207,16 +208,6 @@ describe('TaskComposer — the prompt and the launch', () => {
         const start = html.match(/<button type="button" class="primary"[^>]*>Start task<\/button>/)?.[0] ?? '';
         expect(start).not.toContain('aria-describedby');
         expect(start).not.toContain('disabled');
-    });
-
-    it('disables Start until a command is typed, and says what is missing', () => {
-        // The composer starts empty, which is exactly the state a fresh render has — and a dark
-        // button with no reason on screen is a task that cannot start.
-        const html = renderComposer({});
-        const LOOKBEHIND_CHARS = 200;
-        const start = html.slice(html.indexOf('>Start task<') - LOOKBEHIND_CHARS, html.indexOf('>Start task<'));
-        expect(start).toContain('disabled');
-        expect(html).toContain('Describe the task to continue.');
     });
 
     it('labels the launch and its shortcut, and the in-flight state too', () => {
@@ -241,7 +232,7 @@ describe('TaskComposer — the prompt and the launch', () => {
             executors: [{ name: 'main', type: 'claude' }],
             actionError: null,
         });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 
     it('hides the workflow chip when no workflow list is given', () => {
@@ -253,39 +244,50 @@ describe('TaskComposer — the prompt and the launch', () => {
         expect(html).not.toContain('Workflow details');
     });
 
-    it('runs the raw prompt when no workflow is chosen: no params, no gate', () => {
-        // An unnamed task resolves NO workflow — the member's words are the whole command. A
-        // parametrized workflow sitting in the list must not reach into an unchosen composer.
-        const html = renderComposer({
-            repos: [],
-            workflows: [
-                {
-                    id: 'w1',
-                    name: 'fix-issue',
-                    scope: 'org',
-                    params: [{ name: 'issue', pattern: '#\\d+' }],
-                },
-            ],
-        });
-        expect(html).toContain('<textarea');
-        expect(html).not.toContain('needs:');
-        expect(html).not.toContain('composer-param');
-    });
-
-    it('offers the workflow dropdown beside repo and executor, unchosen by default', () => {
-        const html = renderComposer({
-            workflows: [
-                { id: 'w1', name: 'fix-issue', scope: 'org' },
-                { id: 'w2', name: 'mine', scope: 'user' },
-            ],
-        });
-        expect(html).toContain('Reusable workflow');
-        // The default view stays terse — no repeated-explanation sentence beside a compact
-        // control that already shows its own selected value.
-        expect(html).not.toContain('A workflow can turn this request');
-        // Unchosen means NO process: the trigger reads the empty option's label. The offered
-        // names are client-side; e2e/composer.spec.ts drives the real dropdown.
-        expect(html).toContain('>No workflow</span></button>');
+    // An unnamed task resolves NO workflow — the member's words are the whole command, so nothing
+    // param-shaped may sit in the markup before the member picks a process by name. Unchosen means
+    // NO process: the trigger reads the empty option's label. The offered names are client-side;
+    // e2e/composer.spec.ts drives the real dropdown.
+    it.each<[string, Parameters<typeof renderComposer>[0], string[], string[]]>([
+        [
+            'runs the raw prompt when no workflow is chosen: no params, no gate',
+            {
+                repos: [],
+                workflows: [
+                    { id: 'w1', name: 'fix-issue', scope: 'org', params: [{ name: 'issue', pattern: '#\\d+' }] },
+                ],
+            },
+            ['<textarea'],
+            ['needs:', 'composer-param'],
+        ],
+        [
+            // The default view stays terse — no repeated-explanation sentence beside a compact
+            // control that already shows its own selected value.
+            'offers the workflow dropdown beside repo and executor, unchosen by default',
+            {
+                workflows: [
+                    { id: 'w1', name: 'fix-issue', scope: 'org' },
+                    { id: 'w2', name: 'mine', scope: 'user' },
+                ],
+            },
+            ['Reusable workflow', '>No workflow</span></button>'],
+            ['A workflow can turn this request'],
+        ],
+        [
+            // The fixture mirrors the seeded fix-issue declaration the API now serves.
+            'renders no parameter inputs while no workflow is chosen',
+            {
+                workflows: [
+                    { id: 'wf-1', name: 'fix-issue', scope: 'org', params: [{ name: 'issue', pattern: '#\\d+' }] },
+                ],
+            },
+            ['>No workflow</span></button>'],
+            ['composer-param'],
+        ],
+    ])('%s', (_label, input, has, lacks) => {
+        const html = renderComposer(input);
+        for (const text of has) expect(html).toContain(text);
+        for (const text of lacks) expect(html).not.toContain(text);
     });
 
     it('gathers repository, executor and workflow as one row of chips, with no section around them', () => {
@@ -313,28 +315,6 @@ describe('TaskComposer — the prompt and the launch', () => {
         expect(html).not.toContain('composer-steps');
         expect(html).not.toContain('Default workflow');
         expect(html).not.toContain('Optional steps');
-    });
-});
-
-describe('composer parameters', () => {
-    /** The fixture mirrors the seeded fix-issue declaration the API now serves. */
-    const parammed = [
-        {
-            id: 'wf-1',
-            name: 'fix-issue',
-            scope: 'org' as const,
-            params: [{ name: 'issue', pattern: '#\\d+' }],
-        },
-    ];
-
-    it('renders no parameter inputs while no workflow is chosen', () => {
-        // An unchosen workflow means NO process: the member's words run verbatim, so nothing
-        // param-shaped may sit in the markup before the member picks a process by name.
-        const html = renderComposer({ workflows: parammed });
-        expect(html).not.toContain('composer-param');
-        // The dropdown renders unchosen; the offered names are client-side, and e2e covers the
-        // real dropdown.
-        expect(html).toContain('>No workflow</span></button>');
     });
 });
 
@@ -505,7 +485,7 @@ describe('the workflow parameter fields', () => {
 
     it('never emits a placeholder value', () => {
         const html = renderFields([issue], { issue: '#12' }, { issue: true });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 
@@ -559,60 +539,79 @@ describe('the redesigned composer (#280)', () => {
     describe('the repository must be selected and synced (issue 263)', () => {
         const draft = (patch: Partial<ComposerDraftInput> = {}) => restoredDraft({ draft: 'fix it', ...patch });
 
-        it('keeps Start clickable when nothing is synced, so it can open the dialog, and says why', () => {
-            for (const status of ['queued', 'cloning', 'failed', 'purging'] as const) {
-                const html = renderComposer({
-                    repos: [{ owner: 'acme', name: 'web', status }],
-                    restored: draft(),
-                });
-                expect(startButton(html), status).not.toContain('disabled=""');
-                expect(html).toContain('No repos synced');
-                expect(html).toContain(
-                    'Go to the Repositories page to select and sync a repository before running a task.'
-                );
-                expect(html).toContain('href="/settings/repos?return=/tasks/new"');
+        const NOT_SYNCED = [
+            'No repos synced',
+            'Go to the Repositories page to select and sync a repository before running a task.',
+            'href="/settings/repos?return=/tasks/new"',
+        ];
+
+        type Row = {
+            label: string;
+            input: Parameters<typeof renderComposer>[0];
+            /** Start is held (true) or clickable (false); absent = not asserted. */
+            disabled?: boolean;
+            has?: string[];
+            lacks?: string[];
+        };
+
+        const rows: Row[] = [
+            // Nothing synced keeps Start clickable, so it can open the dialog, and says why.
+            ...(['queued', 'cloning', 'failed', 'purging'] as const).map((status) => ({
+                label: `keeps Start clickable when the only repository is ${status}, and says why`,
+                input: { repos: [{ owner: 'acme', name: 'web', status }], restored: draft() },
+                disabled: false,
+                has: NOT_SYNCED,
+            })),
+            {
+                label: 'keeps Start clickable when the workspace has no repositories, and says why',
+                input: { repos: [], restored: draft() },
+                disabled: false,
+                has: ['No repos synced'],
+            },
+            {
+                label: 'does not claim "no repos synced" while the workspace is loading',
+                input: { repos: null, restored: draft() },
+                lacks: ['No repos synced', '>Start task<'],
+            },
+            {
+                label: 'does not claim "no repos synced" when the workspace failed',
+                input: { repos: null, workspaceError: 'Request failed (503)', restored: draft() },
+                lacks: ['No repos synced', '>Start task<'],
+            },
+            {
+                label: 'requires a selection when another repository is synced',
+                input: {
+                    repos: [{ owner: 'acme', name: 'web', status: 'ready' }],
+                    restored: draft({ repo: '', repoTouched: true }),
+                },
+                disabled: true,
+                has: ['No repository selected'],
+                lacks: ['No repos synced'],
+            },
+            {
+                label: 'holds a chosen repository that is not ready, even though another is ready',
+                input: {
+                    repos: [
+                        { owner: 'acme', name: 'web', status: 'ready' },
+                        { owner: 'acme', name: 'api', status: 'cloning' },
+                    ],
+                    restored: draft({ repo: 'acme/api', workflowRepo: 'acme/api' }),
+                },
+                disabled: true,
+                has: ['Repository not synced', 'acme/api is cloning'],
+            },
+        ];
+
+        it.each(rows.map((row) => [row.label, row] as const))(
+            '%s',
+            (_label, { input, disabled, has = [], lacks = [] }) => {
+                const html = renderComposer(input);
+                if (disabled === true) expect(startButton(html)).toContain('disabled=""');
+                if (disabled === false) expect(startButton(html)).not.toContain('disabled=""');
+                for (const text of has) expect(html).toContain(text);
+                for (const text of lacks) expect(html).not.toContain(text);
             }
-            const none = renderComposer({ repos: [], restored: draft() });
-            expect(startButton(none)).not.toContain('disabled=""');
-            expect(none).toContain('No repos synced');
-        });
-
-        it('does not claim "no repos synced" while the workspace is loading or failed', () => {
-            for (const html of [
-                renderComposer({ repos: null, restored: draft() }),
-                renderComposer({ repos: null, workspaceError: 'Request failed (503)', restored: draft() }),
-            ]) {
-                expect(html).not.toContain('No repos synced');
-                expect(html).not.toContain('>Start task<');
-            }
-        });
-
-        it('requires a selection when another repository is synced', () => {
-            const html = renderComposer({
-                repos: [{ owner: 'acme', name: 'web', status: 'ready' }],
-                restored: draft({ repo: '', repoTouched: true }),
-            });
-            expect(startButton(html)).toContain('disabled=""');
-            expect(html).toContain('No repository selected');
-            expect(html).not.toContain('No repos synced');
-        });
-
-        it('holds a chosen repository that is not ready, even though another is ready', () => {
-            const html = renderComposer({
-                repos: [
-                    { owner: 'acme', name: 'web', status: 'ready' },
-                    { owner: 'acme', name: 'api', status: 'cloning' },
-                ],
-                restored: draft({ repo: 'acme/api', workflowRepo: 'acme/api' }),
-            });
-            expect(startButton(html)).toContain('disabled=""');
-            expect(html).toContain('Repository not synced');
-            expect(html).toContain('acme/api is cloning');
-        });
-
-        it('starts against a selected, ready repository', () => {
-            expect(startButton(renderComposer({ restored: draft() }))).not.toContain('disabled=""');
-        });
+        );
     });
 
     it('renders neither Try an example nor Discard draft', () => {
@@ -646,8 +645,13 @@ describe('the redesigned composer (#280)', () => {
         expect(startButton(over)).toContain('disabled=""');
     });
 
-    it('opens a fresh composer with no red banner: the empty prompt is quiet status text', () => {
+    it('opens a fresh composer with Start disabled and no red banner: the empty prompt is quiet status text', () => {
+        // The composer starts empty, which is exactly the state a fresh render has — and a dark
+        // button with no reason on screen is a task that cannot start.
         const html = renderComposer({});
+        const LOOKBEHIND_CHARS = 200;
+        const start = html.slice(html.indexOf('>Start task<') - LOOKBEHIND_CHARS, html.indexOf('>Start task<'));
+        expect(start).toContain('disabled');
         expect(html).not.toContain('banner-bad');
         expect(html).not.toContain('banner-info');
         expect(html).toContain('Describe the task to continue.');

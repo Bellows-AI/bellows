@@ -65,14 +65,10 @@ describe('the App private key', () => {
         );
     });
 
-    it('refuses GITHUB_APP_INSTALLATION_ID: the orgs are the installations now (#99)', () => {
+    it('carries no installation id: the orgs are the installations now (#99)', () => {
         // Installation tokens mint per organization from organization.installation_id, so a
-        // process-wide one has nothing to point at — and a variable that worked yesterday must
-        // not silently no-op.
-        expect(() => loadConfig(app({ GITHUB_APP_INSTALLATION_ID: '42' }))).toThrow(
-            /GITHUB_APP_INSTALLATION_ID is no longer supported/
-        );
-        expect(() => loadConfig(app({ GITHUB_APP_INSTALLATION_ID: '' }))).not.toThrow();
+        // process-wide one has nothing to point at. The variable's refusal is a row in
+        // config.org.test.ts's retired-variable table.
         expect('installationId' in (loadConfig(app()).github as object)).toBe(false);
     });
 });
@@ -102,27 +98,5 @@ describe('the webhook secret', () => {
         expect(loadConfig(app({ GITHUB_WEBHOOK_SECRET: 'x'.repeat(MIN_WEBHOOK_SECRET_LENGTH) })).webhookSecret).toBe(
             'x'.repeat(MIN_WEBHOOK_SECRET_LENGTH)
         );
-    });
-});
-
-describe('what the App replaced', () => {
-    /*
-     * All three are fatal rather than ignored, which is the deliberate exception to "an unknown
-     * environment variable is ignored". Each one used to decide what the page was made of, so a
-     * quietly dropped one boots a dashboard whose operator believes it is reading something else.
-     */
-    it('refuses GITHUB_TOKEN', () => {
-        expect(() => loadConfig(env({ GITHUB_TOKEN: 'ghp_x' }))).toThrow(/GITHUB_TOKEN is no longer supported/);
-    });
-
-    it('refuses ORG_REPOS and GITHUB_OWNER', () => {
-        expect(() => loadConfig(app({ ORG_REPOS: 'a,b' }))).toThrow(/ORG_REPOS is no longer supported/);
-        expect(() => loadConfig(app({ GITHUB_OWNER: 'acme' }))).toThrow(/GITHUB_OWNER is no longer supported/);
-    });
-
-    it('treats an empty one as unset, because compose passes several empty', () => {
-        // A bare `GITHUB_TOKEN=` left in .env, or compose's `${GITHUB_TOKEN:-}`, must not refuse to
-        // boot — an empty value is not an override here any more than anywhere else.
-        expect(() => loadConfig(app({ GITHUB_TOKEN: '', ORG_REPOS: '', GITHUB_OWNER: '' }))).not.toThrow();
     });
 });

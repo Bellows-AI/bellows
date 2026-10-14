@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { MAX_REPOS_PER_USER } from '../src/routes/workspace.js';
 import {
     githubAuth,
@@ -16,24 +16,22 @@ import {
 import { MAX_EXECUTORS_PER_USER } from '../src/routes/executor-fields.js';
 import { createFactsCache } from '../src/workspace/facts.js';
 import { createPurger, type Purger } from '../src/workspace/purge.js';
+import {
+    HTTP_ACCEPTED,
+    HTTP_BAD_REQUEST,
+    HTTP_CONFLICT,
+    HTTP_NO_CONTENT,
+    HTTP_OK,
+    HTTP_UNAUTHORIZED,
+    trackApps,
+} from './helpers-http.js';
 
 /**
  * Offline: nothing here clones. `PUT` only writes rows and answers 202 — the clone happens in the
  * queue, which this app is built without, and which has its own suite.
  */
 
-const HTTP_OK = 200;
-const HTTP_ACCEPTED = 202;
-const HTTP_NO_CONTENT = 204;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_CONFLICT = 409;
-
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 let root: string;
 let store: MemoryUserRepoStore;
@@ -75,7 +73,7 @@ async function boot(
             auth: githubAuth(),
         },
     });
-    app = h.app;
+    track(h.app);
     return { app: h.app, caller, cookie: await signedIn(auth, caller), executors };
 }
 
@@ -659,7 +657,7 @@ describe('executors: listing and replacing', () => {
             repos: REPOS,
             config: { workspaceRoot: root, auth: githubAuth() },
         });
-        app = h.app;
+        track(h.app);
         const cookieA = await signedIn(auth, a);
         const cookieB = await signedIn(auth, b);
 
@@ -934,7 +932,7 @@ describe('executors: GET /api/workspace/executors', () => {
             repos: REPOS,
             config: { workspaceRoot: root, auth: githubAuth() },
         });
-        app = h.app;
+        track(h.app);
         const cookieA = await signedIn(auth, a);
         const cookieB = await signedIn(auth, b);
 

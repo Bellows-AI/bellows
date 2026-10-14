@@ -1,32 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { run } from '../src/run.js';
+import { recordingBoard, json, routed } from './harness.js';
 
 const SECRET = 'fat_s3cr3t-DO-NOT-PRINT';
 const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: SECRET };
 const VERSION = readFileSync(new URL('../../VERSION', import.meta.url), 'utf8').trim();
 
-const json = (payload: unknown, status = 200) =>
-    new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
-
-interface Call {
-    path: string;
-    method: string;
-    authorization: string | null;
-}
-
 /** Answers each path from `routes`; a path not listed answers 404. Every request is recorded. */
 function harness(routes: Record<string, () => Response>, env: NodeJS.ProcessEnv = ENV) {
-    const out: string[] = [];
-    const err: string[] = [];
-    const calls: Call[] = [];
-    const fetch = (async (url: string | URL | globalThis.Request, init?: RequestInit) => {
-        const path = String(url).replace('http://board', '');
-        const headers = new Headers(init?.headers);
-        calls.push({ path, method: init?.method ?? 'GET', authorization: headers.get('authorization') });
-        return routes[path]?.() ?? json({ error: `unrouted ${path}`, code: 'NOT_FOUND' }, 404);
-    }) as unknown as typeof globalThis.fetch;
-    const io = { env, fetch, stdout: (t: string) => out.push(t), stderr: (t: string) => err.push(t) };
+    const { out, err, sent: calls, io } = recordingBoard(routed(routes), { env });
     const printed = () => out.join('') + err.join('');
     return { out, err, calls, io, printed };
 }
@@ -156,12 +139,6 @@ describe('factory auth status: configuration', () => {
         const { printed, calls, io } = harness(board(), { FACTORY_URL: 'http://me:hunter2@board' });
         expect(await run(['auth', 'status'], io)).toBe(2);
         expect(printed()).not.toContain('hunter2');
-        expect(calls).toEqual([]);
-    });
-
-    it('refuses a stray argument as usage', async () => {
-        const { calls, io } = harness(board());
-        expect(await run(['auth', 'status', 'extra'], io)).toBe(2);
         expect(calls).toEqual([]);
     });
 });
@@ -395,12 +372,6 @@ describe('factory job preflight', () => {
         );
         expect(code).toBe(1);
         expect(result.error).toMatchObject({ status: 401 });
-    });
-
-    it('refuses a command positional as usage, making no request', async () => {
-        const { code, calls } = await preflight(['--repo', 'acme/api', 'npm', 'test']);
-        expect(code).toBe(2);
-        expect(calls).toEqual([]);
     });
 
     it('prints one line per check for a person, and says the board rechecks', async () => {

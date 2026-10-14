@@ -103,86 +103,93 @@ describe('validateBatchPlan', () => {
         expect(result.ok).toBe(true);
     });
 
-    it('refuses a bad policy at the batch and the stage, and a bad completion', () => {
-        expect(paths(plan({ policy: 'yolo' }))).toEqual(['policy']);
-        expect(paths(plan({ stages: [{ key: 'one', policy: 'x', tasks: [task('a')] }] }))).toEqual([
-            'stages[0].policy',
-        ]);
-        expect(paths(plan({ stages: [{ key: 'one', tasks: [task('a', { completion: { kind: 'auto' } })] }] }))).toEqual(
-            ['stages[0].tasks[0].completion.kind']
-        );
-        expect(
-            paths(plan({ stages: [{ key: 'one', tasks: [task('a', { completion: { kind: 'accepted' } })] }] }))
-        ).toEqual(['stages[0].tasks[0].completion.condition']);
+    const { defaultTarget: _omitted, ...noDefault } = plan();
+
+    it.each([
+        ['a bad batch policy', plan({ policy: 'yolo' }), ['policy']],
+        [
+            'a bad stage policy',
+            plan({ stages: [{ key: 'one', policy: 'x', tasks: [task('a')] }] }),
+            ['stages[0].policy'],
+        ],
+        [
+            'a bad completion kind',
+            plan({ stages: [{ key: 'one', tasks: [task('a', { completion: { kind: 'auto' } })] }] }),
+            ['stages[0].tasks[0].completion.kind'],
+        ],
+        [
+            'an accepted completion without its condition',
+            plan({ stages: [{ key: 'one', tasks: [task('a', { completion: { kind: 'accepted' } })] }] }),
+            ['stages[0].tasks[0].completion.condition'],
+        ],
+        ['an unknown top-level field', plan({ extra: 1 }), ['extra']],
+        ['an unknown target field', plan({ targets: [{ key: 'web', repo: 'acme/web', x: 1 }] }), ['targets[0].x']],
+        [
+            'a stage dependsOn',
+            plan({ stages: [{ key: 'one', dependsOn: ['x'], tasks: [task('a')] }] }),
+            ['stages[0].dependsOn'],
+        ],
+        [
+            'a task dependsOn',
+            plan({ stages: [{ key: 'one', tasks: [task('a', { dependsOn: ['b'] })] }] }),
+            ['stages[0].tasks[0].dependsOn'],
+        ],
+        [
+            'an unresolved task target',
+            plan({ stages: [{ key: 'one', tasks: [task('a', { target: 'nope' })] }] }),
+            ['stages[0].tasks[0].target'],
+        ],
+        ['a missing default target', noDefault, ['stages[0].tasks[0].target']],
+        [
+            'a duplicate target key',
+            plan({
+                targets: [
+                    { key: 'web', repo: 'acme/web' },
+                    { key: 'web', repo: 'acme/api' },
+                ],
+            }),
+            ['targets[1].key'],
+        ],
+        [
+            'a duplicate stage key',
+            plan({
+                stages: [
+                    { key: 'one', tasks: [task('a')] },
+                    { key: 'one', tasks: [task('b')] },
+                ],
+            }),
+            ['stages[1].key'],
+        ],
+        [
+            'a task key repeated across stages',
+            plan({
+                stages: [
+                    { key: 'one', tasks: [task('a')] },
+                    { key: 'two', tasks: [task('a')] },
+                ],
+            }),
+            ['stages[1].tasks[0].key'],
+        ],
+        ['empty stages', plan({ stages: [] }), ['stages']],
+        ['an empty stage', plan({ stages: [{ key: 'one', tasks: [] }] }), ['stages[0].tasks']],
+        [
+            'a blank objective',
+            plan({ stages: [{ key: 'one', tasks: [task('a', { objective: '  ' })] }] }),
+            ['stages[0].tasks[0].objective'],
+        ],
+        ['a non-object plan', 'nope', ['']],
+        ['an unknown planVersion', plan({ planVersion: 2 }), ['planVersion']],
+    ])('refuses %s at exactly its path', (_label, raw, expected) => {
+        expect(paths(raw)).toEqual(expected);
     });
 
-    it('refuses dependsOn and every other unknown field, at every level', () => {
-        expect(paths(plan({ extra: 1 }))).toEqual(['extra']);
-        expect(paths(plan({ targets: [{ key: 'web', repo: 'acme/web', x: 1 }] }))).toEqual(['targets[0].x']);
-        expect(paths(plan({ stages: [{ key: 'one', dependsOn: ['x'], tasks: [task('a')] }] }))).toEqual([
-            'stages[0].dependsOn',
-        ]);
-        expect(paths(plan({ stages: [{ key: 'one', tasks: [task('a', { dependsOn: ['b'] })] }] }))).toEqual([
-            'stages[0].tasks[0].dependsOn',
-        ]);
-    });
-
-    it('refuses an unresolved task target, an unknown default target and a missing one', () => {
-        expect(paths(plan({ stages: [{ key: 'one', tasks: [task('a', { target: 'nope' })] }] }))).toEqual([
-            'stages[0].tasks[0].target',
-        ]);
-        expect(paths(plan({ defaultTarget: 'nope' }))).toContain('defaultTarget');
-        const { defaultTarget: _omitted, ...noDefault } = plan();
-        expect(paths(noDefault)).toEqual(['stages[0].tasks[0].target']);
-    });
-
-    it('refuses duplicate keys, task keys across stages included', () => {
-        expect(
-            paths(
-                plan({
-                    targets: [
-                        { key: 'web', repo: 'acme/web' },
-                        { key: 'web', repo: 'acme/api' },
-                    ],
-                })
-            )
-        ).toEqual(['targets[1].key']);
-        expect(
-            paths(
-                plan({
-                    stages: [
-                        { key: 'one', tasks: [task('a')] },
-                        { key: 'one', tasks: [task('b')] },
-                    ],
-                })
-            )
-        ).toEqual(['stages[1].key']);
-        expect(
-            paths(
-                plan({
-                    stages: [
-                        { key: 'one', tasks: [task('a')] },
-                        { key: 'two', tasks: [task('a')] },
-                    ],
-                })
-            )
-        ).toEqual(['stages[1].tasks[0].key']);
-    });
-
-    it('refuses empty stages, tasks and targets', () => {
-        expect(paths(plan({ stages: [] }))).toEqual(['stages']);
-        expect(paths(plan({ stages: [{ key: 'one', tasks: [] }] }))).toEqual(['stages[0].tasks']);
-        expect(paths(plan({ targets: [] }))).toContain('targets');
-    });
-
-    it('refuses a malformed key, repo and objective', () => {
-        expect(paths(plan({ targets: [{ key: 'Web', repo: 'acme/web' }] }))).toContain('targets[0].key');
-        expect(paths(plan({ targets: [{ key: 'web', repo: 'acme' }] }))).toContain('targets[0].repo');
-        expect(paths(plan({ stages: [{ key: 'one', tasks: [task('a', { objective: '  ' })] }] }))).toEqual([
-            'stages[0].tasks[0].objective',
-        ]);
-        expect(paths('nope')).toEqual(['']);
-        expect(paths(plan({ planVersion: 2 }))).toEqual(['planVersion']);
+    it.each([
+        ['an unknown default target', plan({ defaultTarget: 'nope' }), 'defaultTarget'],
+        ['empty targets', plan({ targets: [] }), 'targets'],
+        ['a malformed key', plan({ targets: [{ key: 'Web', repo: 'acme/web' }] }), 'targets[0].key'],
+        ['a malformed repo', plan({ targets: [{ key: 'web', repo: 'acme' }] }), 'targets[0].repo'],
+    ])('refuses %s, among its paths', (_label, raw, expected) => {
+        expect(paths(raw)).toContain(expected);
     });
 
     describe('bounds, at the limit and one past it', () => {

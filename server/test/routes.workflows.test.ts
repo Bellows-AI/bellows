@@ -1,9 +1,19 @@
-import type { FastifyInstance } from 'fastify';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
+import {
+    HTTP_BAD_REQUEST,
+    HTTP_CONFLICT,
+    HTTP_CREATED,
+    HTTP_FORBIDDEN,
+    HTTP_NOT_FOUND,
+    HTTP_OK,
+    HTTP_SERVICE_UNAVAILABLE,
+    HTTP_UNAUTHORIZED,
+    trackApps,
+} from './helpers-http.js';
 
 /**
  * Offline: the HTTP contract of the workflow routes against an in-memory store double. The store's
@@ -11,20 +21,7 @@ import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryCli
  * server/test-db/workflow-store.test.ts, which needs a container.
  */
 
-const HTTP_OK = 200;
-const HTTP_CREATED = 201;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
-const HTTP_NOT_FOUND = 404;
-const HTTP_CONFLICT = 409;
-const HTTP_SERVICE_UNAVAILABLE = 503;
-
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 const WF_ID = '99999999-9999-4999-8999-999999999999';
 
@@ -99,7 +96,7 @@ async function boot(workflows: WorkflowStore & { created: unknown[]; removed: st
         orgs: staticRegistry({ config, workflows, telemetry: stubTelemetryClient() }),
         auth,
     });
-    app = instance;
+    track(instance);
     return {
         instance,
         admin,
@@ -418,7 +415,7 @@ describe('PUT /api/workflows/:id', () => {
         const auth = memoryAuthStore();
         const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
         const instance = await buildApp({ config, orgs: staticRegistry({ config }), auth });
-        app = instance;
+        track(instance);
         const response = await instance.inject({
             method: 'PUT',
             url: `/api/workflows/${WF_ID}`,

@@ -1,5 +1,4 @@
-import type { FastifyInstance } from 'fastify';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { RepoSource } from '../src/github/repo-source.js';
 import {
@@ -12,6 +11,7 @@ import {
     testConfig,
     type MemoryEnvVarStore,
 } from './helpers.js';
+import { HTTP_BAD_REQUEST, HTTP_OK, HTTP_SERVICE_UNAVAILABLE, HTTP_UNAUTHORIZED, trackApps } from './helpers-http.js';
 
 /**
  * Offline: the routes against the in-memory double, the way routes.workspace.test.ts runs. The SQL
@@ -24,16 +24,7 @@ const REPOS = [
     { owner: 'acme', name: 'api' },
 ];
 
-const HTTP_OK = 200;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_SERVICE_UNAVAILABLE = 503;
-
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 async function boot(options: { envVars?: MemoryEnvVarStore } = {}) {
     const auth = memoryAuthStore();
@@ -48,7 +39,7 @@ async function boot(options: { envVars?: MemoryEnvVarStore } = {}) {
         repos: REPOS,
         config: { auth: githubAuth() },
     });
-    app = h.app;
+    track(h.app);
     return {
         app: h.app,
         admin,
@@ -208,7 +199,7 @@ describe('PUT /api/env/org and /api/env/repo', () => {
             orgs: staticRegistry({ config, repos: unreachable, envVars: memoryEnvVarStore() }),
             auth,
         });
-        app = instance;
+        track(instance);
 
         const response = await instance.inject({
             method: 'PUT',

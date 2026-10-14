@@ -1,12 +1,8 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import type { FastifyInstance } from 'fastify';
+import { describe, expect, it } from 'vitest';
 import { TEST_REPO, harness, stubTelemetryClient } from './helpers.js';
+import { trackApps } from './helpers-http.js';
 
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 const taskSession = (options: {
     sessionId: string;
@@ -105,7 +101,7 @@ const taskHarness = async () => {
 describe('GET /api/stats task statistics', () => {
     it('reports the per-task distributions over the range, with their counts', async () => {
         const h = await taskHarness();
-        app = h.app;
+        const app = track(h.app);
         await app.inject({ method: 'GET', url: '/api/stats' });
         await h.settle();
 
@@ -126,7 +122,7 @@ describe('GET /api/stats task statistics', () => {
 
     it('answers null figures, not zeros, for a range with nothing in it', async () => {
         const h = await taskHarness();
-        app = h.app;
+        const app = track(h.app);
         await app.inject({ method: 'GET', url: '/api/stats' });
         await h.settle();
 

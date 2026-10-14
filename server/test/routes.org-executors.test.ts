@@ -1,8 +1,7 @@
-import type { FastifyInstance } from 'fastify';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { AppConfig } from '../src/config.js';
 import type { AuthStore } from '../src/auth/store.js';
@@ -18,6 +17,17 @@ import {
     testConfig,
 } from './helpers.js';
 import type { MemoryUserExecutorStore } from './helpers-user-executor-store.js';
+import {
+    HTTP_BAD_REQUEST,
+    HTTP_CONFLICT,
+    HTTP_CREATED,
+    HTTP_FORBIDDEN,
+    HTTP_NOT_FOUND,
+    HTTP_OK,
+    HTTP_UNAUTHORIZED,
+    HTTP_UNAVAILABLE,
+    trackApps,
+} from './helpers-http.js';
 
 /**
  * Offline: the HTTP contract of the organization-scoped executor routes (issue 391) against the
@@ -26,20 +36,7 @@ import type { MemoryUserExecutorStore } from './helpers-user-executor-store.js';
  * container.
  */
 
-const HTTP_OK = 200;
-const HTTP_CREATED = 201;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
-const HTTP_NOT_FOUND = 404;
-const HTTP_CONFLICT = 409;
-const HTTP_UNAVAILABLE = 503;
-
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 const CLAUDE_CODE = { name: 'team-runner', type: 'claude-code', config: { model: 'sonnet' } };
 
@@ -56,7 +53,7 @@ async function boot(executors: MemoryUserExecutorStore = memoryUserExecutorStore
     // refuses 409 without one — the org routes themselves touch no checkout.
     const config = testConfig({ auth: githubAuth(), workspaceRoot: root });
     const instance = await build(executors, auth, config);
-    app = instance;
+    track(instance);
     return {
         instance,
         admin,
@@ -613,7 +610,7 @@ describe('the workspace poll and the personal routes after 391', () => {
             }),
             auth,
         });
-        app = instance;
+        track(instance);
         const cookie = await signedIn(auth, member);
         const response = await instance.inject({ method: 'GET', url: '/api/org/executors', headers: { cookie } });
         expect(response.statusCode).toBe(HTTP_UNAVAILABLE);
