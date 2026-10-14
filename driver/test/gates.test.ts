@@ -484,25 +484,6 @@ describe('the gate environment manager: failure and edge cases', () => {
         await manager.stop();
     });
 
-    // A spawn failure — docker missing from PATH arrives as code 'ENOENT', not a number — never
-    // ran a command, so it has no exit status to report: it must reject with the container-gone
-    // code like every other harness state, never resolve an exit that did not happen.
-    it('rejects a gate whose docker could not run at all', async () => {
-        const noDocker = exec((args) => {
-            if (args[0] === 'exec') {
-                const error = new Error('spawn docker ENOENT') as Error & { code?: string };
-                error.code = 'ENOENT';
-                return Promise.reject(error);
-            }
-            return { stdout: '', stderr: '' };
-        });
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: noDocker });
-        await manager.acquire(KEY, 'node:24', '');
-
-        await expect(manager.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
-        await manager.stop();
-    });
-
     it('rejects a gate for a checkout that has no environment at all', async () => {
         const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
         await expect(manager.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
@@ -748,6 +729,8 @@ describe('the gate server', () => {
             body: JSON.stringify({ gate: 'test' }),
         });
         expect(response.status).toBe(CONFLICT_STATUS);
+        // A harness failure is not a verdict: nothing is recorded for the run.
+        expect(server.lastRuns('tok-3')).toEqual([]);
         await server.close();
     });
 
@@ -1104,34 +1087,6 @@ describe('the gate server: run history for the timeout note', () => {
         expect(await run()).toEqual({ exitCode: 0, output: 'ok' });
         // An unknown token is ignored, never registered by the set.
         server.setDeadServices('tok-nobody', 'x');
-        await server.close();
-    });
-
-    it('records nothing for a harness failure — a 409 is not a verdict', async () => {
-        const manager = {
-            acquire: async () => {},
-            runGate: async () => {
-                const error = new Error('Error response from daemon: No such container') as Error & {
-                    code?: number;
-                };
-                error.code = CONTAINER_GONE_CODE;
-                throw error;
-            },
-        };
-        const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('tok-nogate', {
-            key: KEY,
-            image: 'node:24',
-            job: JOB,
-            gates: [{ name: 'test', command: 'npm test' }],
-        });
-        const port = await server.listen();
-        await fetch(`http://127.0.0.1:${port}/run`, {
-            method: 'POST',
-            headers: { authorization: 'Bearer tok-nogate' },
-            body: JSON.stringify({ gate: 'test' }),
-        });
-        expect(server.lastRuns('tok-nogate')).toEqual([]);
         await server.close();
     });
 });

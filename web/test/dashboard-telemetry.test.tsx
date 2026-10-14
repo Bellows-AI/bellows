@@ -103,6 +103,8 @@ const DISABLED: StatsPayload = { telemetry: null, tasks: null, meta: META };
 const fakeTasks = { jobs: null, error: null } as unknown as UseJobs;
 
 const GITHUB_SESSION = { mode: 'github', user: { login: 'alice' } } as unknown as Session;
+/** AUTH_MODE=none still answers /api/auth/me — with the local stand-in, whose mode is the tell. */
+const LOCAL_SESSION = { mode: 'none', user: { login: '__local__' } } as unknown as Session;
 
 interface RenderOpts {
     range?: RangeSelection;
@@ -234,9 +236,13 @@ describe('analytics toolbar', () => {
     });
 
     it('renders a read-only Organization scope in open mode, never a dead Scope dropdown', () => {
-        const html = render(READY);
-        expect(html).toContain('<span class="toolbar-value">Organization</span>');
-        expect(html).not.toContain('id="scope-select"');
+        // No session (signed out) and the none-mode local stand-in both get the read-only value.
+        for (const session of [null, LOCAL_SESSION]) {
+            const html = render(READY, { session });
+            expect(html).toContain('id="range-select"');
+            expect(html).toContain('<span class="toolbar-value">Organization</span>');
+            expect(html).not.toContain('id="scope-select"');
+        }
     });
 
     it('renders the Scope dropdown when the session carries a personal scope', () => {

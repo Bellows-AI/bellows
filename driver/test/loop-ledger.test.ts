@@ -170,7 +170,17 @@ describe('the fault ledger', () => {
             'the agent reported it is blocked: no access'
         );
         expect(agentFaults(outcome({ output: 'FACTORY_BLOCKED: x', summary: 's' }))).toEqual([]);
+        // A marker the collapsed summary merely mentions is not the agent's last line.
+        expect(
+            agentFaults(outcome({ summary: 'Added FACTORY_BLOCKED: handling and verified all tests pass.' }))
+        ).toEqual([]);
         expect(agentFaults(outcome({ blockedLine: '   ' }))[0]?.note).toContain('no reason given');
+    });
+
+    it('ignores a marker line far above the final message, and one that does not start a line', () => {
+        const far = ['FACTORY_BLOCKED: early worry', ...Array.from({ length: 30 }, (_, i) => `line ${i}`)].join('\n');
+        expect(agentFaults(outcome({ output: far }))).toEqual([]);
+        expect(agentFaults(outcome({ output: 'the docs mention FACTORY_BLOCKED: as a marker' }))).toEqual([]);
     });
 
     // Seen live (opencode, 2026-10-13): a finished run ended on `FACTORY_BLOCKED: Not blocked`.

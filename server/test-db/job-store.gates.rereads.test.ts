@@ -130,9 +130,10 @@ describe.runIf(enabled)('gates on the job store: re-reads', () => {
         const GATE_HARE_GITHUB_ID = 6008;
         const userId = await account(GATE_HARE_GITHUB_ID, 'gate-hare');
         await store.create('fix the bug', userId, { repo: 'acme/web', executor: null });
-        await store.claim('driver-1', LEASE_SECONDS);
+        const claim = await store.claim('driver-1', LEASE_SECONDS);
 
         // A stale token is a lost lease, not a missing row; an absent job is missing.
+        expect(await store.rereadGates(claim!.id, TOKEN)).toEqual({ result: 'lost' });
         expect(await store.rereadGates(ABSENT, TOKEN)).toEqual({ result: 'missing' });
     });
 

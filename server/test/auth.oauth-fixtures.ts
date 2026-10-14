@@ -7,7 +7,7 @@ import type { MemoryAuthStore } from './helpers.js';
 
 /**
  * Shared fixtures for the auth.oauth test suite, split across auth.oauth.sign-in.test.ts,
- * auth.oauth.identity.test.ts, auth.oauth.me.test.ts and the auth.oauth.selection-*.test.ts files.
+ * auth.oauth.identity.test.ts, auth.oauth.me.test.ts and auth.oauth.selection.test.ts.
  */
 
 export const ORG = '999999';

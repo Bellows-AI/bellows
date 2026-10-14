@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { hasNodeSqlite, pathOf } from './fixtures/scripts-support.js';
+import { pathOf } from './fixtures/scripts-support.js';
 
 const SESSION_ID = '33333333-3333-4333-8333-333333333333';
 
@@ -42,7 +42,7 @@ function claudeTurnsFixture(): {
  * Split into two describe blocks for the line-count cap: the turn-counting rules here, the
  * summary and error-path rules below, sharing their fixture via `claudeTurnsFixture`.
  */
-describe.skipIf(!hasNodeSqlite())('the claude-code turn count', () => {
+describe('the claude-code turn count', () => {
     const fx = claudeTurnsFixture();
 
     it('counts the assistant entries of the run session transcript alone', () => {
@@ -114,7 +114,7 @@ describe.skipIf(!hasNodeSqlite())('the claude-code turn count', () => {
     });
 });
 
-describe.skipIf(!hasNodeSqlite())('the claude-code turn count: summary and error paths', () => {
+describe('the claude-code turn count: summary and error paths', () => {
     const fx = claudeTurnsFixture();
 
     it('lifts the run summary: the last assistant entry carrying text blocks', () => {
