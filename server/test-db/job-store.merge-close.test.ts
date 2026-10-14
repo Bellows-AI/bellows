@@ -7,6 +7,7 @@ import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { sweepRuntimeWakes } from '../src/db/workflow-blocks/runtime.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
+import { mustCreate } from './fixtures.js';
 
 /**
  * The merged-PR closure against a real database (issue #390): a verified merge delivery closes
@@ -15,12 +16,6 @@ import { useTestDb } from './harness.js';
  * plain close, another org/repo/PR, a redelivery and a manual Reopen all leave exactly the
  * traces the issue demands.
  */
-
-const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
-    p.then((ref) => {
-        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
-        return ref;
-    });
 
 const enabled = Boolean(process.env.DATABASE_URL);
 

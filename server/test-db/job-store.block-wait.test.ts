@@ -8,16 +8,7 @@ import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { sweepRuntimeWakes } from '../src/db/workflow-blocks/runtime.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
-
-/**
- * A create whose refusal would be a broken setup, never a case under test: narrows the store's
- * honest union (`{ id } | 'purging'`, issue #92) so the call sites read as they did before.
- */
-const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
-    p.then((ref) => {
-        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
-        return ref;
-    });
+import { expireLease, mustCreate, testUser } from './fixtures.js';
 
 /**
  * Durable block waits against a real database (issue #231): a workflow transition into a node
@@ -40,18 +31,8 @@ const ORG = 'test-org';
 const WORKER = 'worker-1';
 const REPO = 'acme/widgets';
 
-const HEX_RADIX = 16;
-const UUID_HEX_SLICE_LENGTH = 8;
-const ALICE = {
-    id: randomUUID(),
-    githubUserId: Number.parseInt(randomUUID().slice(0, UUID_HEX_SLICE_LENGTH), HEX_RADIX),
-    login: 'alice-wait',
-};
-const BOB = {
-    id: randomUUID(),
-    githubUserId: Number.parseInt(randomUUID().slice(0, UUID_HEX_SLICE_LENGTH), HEX_RADIX),
-    login: 'bob-wait',
-};
+const ALICE = testUser('alice-wait');
+const BOB = testUser('bob-wait');
 
 const db = useTestDb({ orgs: [ORG], users: [ALICE, BOB], max: 8 });
 
@@ -545,7 +526,7 @@ describe.skipIf(!enabled)('durable block waits — concurrency and cancellation'
         const claim = (await store.claim(WORKER, 60)) as Claim;
         expect(claim.attempts).toBe(1);
 
-        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${claim.id}`;
+        await expireLease(sql, claim.id);
 
         const reclaimed = (await store.claim('worker-2', 60)) as Claim;
         expect(reclaimed).not.toBeNull();
