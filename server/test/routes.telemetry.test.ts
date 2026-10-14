@@ -1,15 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import type { FastifyInstance } from 'fastify';
+import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config.js';
 import { EMPTY_TELEMETRY, harness, stubTelemetryClient } from './helpers.js';
+import { HTTP_NOT_FOUND, HTTP_OK, HTTP_SERVICE_UNAVAILABLE, trackApps } from './helpers-http.js';
 
-const HTTP_NOT_FOUND = 404;
-
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 /** Warms the cache and returns the parsed payload. */
 async function warm(h: Awaited<ReturnType<typeof harness>>) {
@@ -21,7 +15,7 @@ async function warm(h: Awaited<ReturnType<typeof harness>>) {
 describe('telemetry on /api/stats', () => {
     it('serves the telemetry totals', async () => {
         const h = await harness();
-        app = h.app;
+        track(h.app);
         const body = await warm(h);
 
         expect(body.meta.telemetry.status).toBe('ok');
@@ -34,7 +28,7 @@ describe('telemetry on /api/stats', () => {
 
     it('ages the snapshot on the request clock', async () => {
         const h = await harness();
-        app = h.app;
+        track(h.app);
         await warm(h);
 
         const ADVANCE_MS = 12_000;
@@ -49,7 +43,7 @@ describe('telemetry on /api/stats', () => {
 
     it('reports the two setup failures separately', async () => {
         const h = await harness();
-        app = h.app;
+        track(h.app);
         const body = await warm(h);
 
         expect(body.meta.telemetry.otherRepoSessions).toBe(1);
@@ -61,7 +55,7 @@ describe('degradation states', () => {
     it('reports an empty store as sessions:0 with null tokens, never zeros', async () => {
         const telemetry = stubTelemetryClient({ rollups: async () => structuredClone(EMPTY_TELEMETRY) });
         const h = await harness({ telemetry });
-        app = h.app;
+        track(h.app);
         const body = await warm(h);
 
         expect(body.meta.telemetry.status).toBe('empty');
@@ -83,10 +77,9 @@ describe('degradation states', () => {
         // refusal rather than a cold-start 202 that would never resolve.
         const telemetry = stubTelemetryClient();
         const h = await harness({ telemetry, config: { telemetrySource: 'off' } });
-        app = h.app;
+        track(h.app);
 
         const res = await h.app.inject({ method: 'GET', url: '/api/stats' });
-        const HTTP_SERVICE_UNAVAILABLE = 503;
         expect(res.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
         expect(res.json().code).toBe('TELEMETRY_DISABLED');
         expect(telemetry.rollupCalls).toBe(0);
@@ -97,10 +90,9 @@ describe('GET /api/health', () => {
     it('never touches telemetry', async () => {
         const telemetry = stubTelemetryClient();
         const h = await harness({ telemetry });
-        app = h.app;
+        const app = track(h.app);
 
         const res = await app.inject({ method: 'GET', url: '/api/health' });
-        const HTTP_OK = 200;
         expect(res.statusCode).toBe(HTTP_OK);
         expect(telemetry.rollupCalls).toBe(0);
         expect(telemetry.healthCalls).toBe(0);
@@ -111,7 +103,7 @@ describe('POST /api/refresh', () => {
     it('is gone: 404, and no read is triggered', async () => {
         const telemetry = stubTelemetryClient();
         const h = await harness({ telemetry });
-        app = h.app;
+        const app = track(h.app);
 
         const res = await app.inject({ method: 'POST', url: '/api/refresh' });
         await h.settle();

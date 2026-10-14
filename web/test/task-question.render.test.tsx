@@ -14,7 +14,8 @@ import {
     questionView,
     settle,
 } from '../src/task-question.js';
-import { FORBIDDEN, question } from './tasks-fixtures.js';
+import { FORBIDDEN } from './fixtures.js';
+import { question } from './tasks-fixtures.js';
 
 const NOW = new Date('2026-09-01T12:10:00.000Z');
 

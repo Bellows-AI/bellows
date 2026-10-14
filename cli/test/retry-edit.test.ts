@@ -1,42 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { run } from '../src/run.js';
+import { refusal, runCli, type Sent } from './harness.js';
 
-const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
 const KEY = 'attempt-0001-abcd';
-
-interface Sent {
-    url: string;
-    method: string;
-    key: string | null;
-    body: unknown;
-}
 
 /** One CLI run against a board whose answer is chosen per request, recording what was sent. */
 async function cli(argv: string[], respond: (sent: Sent) => Response) {
-    const out: string[] = [];
-    const err: string[] = [];
-    const sent: Sent[] = [];
-    const fetch = (async (url: string | URL | globalThis.Request, init?: RequestInit) => {
-        const call: Sent = {
-            url: String(url),
-            method: init?.method ?? 'GET',
-            key: new Headers(init?.headers).get('idempotency-key'),
-            body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
-        };
-        sent.push(call);
-        return respond(call);
-    }) as unknown as typeof globalThis.fetch;
-    const code = await run(argv, {
-        env: ENV,
-        fetch,
-        sleep: async () => undefined,
-        stdout: (text) => out.push(text),
-        stderr: (text) => err.push(text),
-    });
-    return { code, out: out.join(''), err: err.join(''), sent };
+    const result = await runCli(argv, respond);
+    return { ...result, sent: result.sent.map(({ url, method, key, body }) => ({ url, method, key, body })) };
 }
-
-const refusal = (status: number, code: string, error: string) => Response.json({ error, code }, { status });
 
 /** A board that accepts a retry as the new run `run-2`. */
 const retryBoard = () => () => Response.json({ id: 'run-2', status: 'queued' }, { status: 201 });

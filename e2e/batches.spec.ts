@@ -5,6 +5,7 @@ import { BatchBoard } from './fixtures/batch-board.js';
 import { seededTaskId } from './routes.js';
 import { type Theme, VIEWPORTS } from './screenshot-matrix.js';
 import { noHorizontalOverflow } from './viewport.js';
+import { useTheme, watchConsole } from './page-health.js';
 
 /**
  * The batch pages in a real browser, desktop and phone, in one theme — the theme only changes the
@@ -19,22 +20,6 @@ import { noHorizontalOverflow } from './viewport.js';
  */
 
 const SHOTS = 'artifacts/ui/batches';
-
-/** Console errors, page errors and failed requests are all failures — collected, asserted once. */
-function watchConsole(page: Page): string[] {
-    const problems: string[] = [];
-    page.on('console', (msg) => {
-        if (msg.type() === 'error') problems.push(`console: ${msg.text()}`);
-    });
-    page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
-    page.on('requestfailed', (r) => problems.push(`requestfailed: ${r.url()}`));
-    return problems;
-}
-
-async function atTheme(page: Page, theme: Theme): Promise<void> {
-    await page.emulateMedia({ colorScheme: theme });
-    await page.addInitScript((t) => localStorage.setItem('factory.theme', t), theme);
-}
 
 /** The step at desktop and at phone width, each checked for page-level overflow, then desktop again. */
 async function shoot(page: Page, step: string, theme: Theme): Promise<void> {
@@ -66,7 +51,7 @@ test.describe('batch pages', () => {
 
     test('plan a batch, start it, and find it from its task and the list', async ({ page }) => {
         const problems = watchConsole(page);
-        await atTheme(page, theme);
+        await useTheme(page, theme);
         const board = new BatchBoard(page);
         await board.install();
         const rootTask = await seededTaskId(page);
@@ -145,7 +130,7 @@ test.describe('batch pages', () => {
 for (const theme of ['light', 'dark'] as const) {
     test(`a failed stage verification reads as needing a person (${theme})`, async ({ page }) => {
         const problems = watchConsole(page);
-        await atTheme(page, theme);
+        await useTheme(page, theme);
         const board = new BatchBoard(page);
         await board.install();
         const id = '0f53d75f-0000-4000-8000-000000000654';
@@ -209,7 +194,7 @@ for (const theme of ['light', 'dark'] as const) {
 for (const theme of ['light', 'dark'] as const) {
     test(`an automerge PR the board is still merging reads as the board's, not yours (${theme})`, async ({ page }) => {
         const problems = watchConsole(page);
-        await atTheme(page, theme);
+        await useTheme(page, theme);
         const board = new BatchBoard(page);
         await board.install();
         const id = '0f53d75f-0000-4000-8000-000000000693';

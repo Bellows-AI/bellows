@@ -1,3 +1,4 @@
+import type { ComponentProps } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { BarChart, rovingIndex } from '../src/charts/BarChart.js';
@@ -16,6 +17,12 @@ const barWidths = (svg: string): number[] =>
 const WIDTH = 900;
 const innerWidth = WIDTH - PAD.left - PAD.right;
 
+type ChartProps = ComponentProps<typeof BarChart>;
+
+/** A chart's markup; the ticks double as bucket labels and no bucket is partial unless a test says so. */
+const chart = (props: Omit<ChartProps, 'bucketLabels' | 'partial'> & Partial<ChartProps>) =>
+    renderToStaticMarkup(<BarChart bucketLabels={props.labels} partial={props.labels.map(() => false)} {...props} />);
+
 const bars = (values: number[]) => [{ id: 'v', label: 'V', values, className: 'bar-primary' as const }];
 
 const BAND_FRACTION = 0.7;
@@ -31,16 +38,12 @@ describe('BarChart bar width', () => {
         const V4 = 4;
         const V5 = 5;
         const V6 = 6;
-        const svg = renderToStaticMarkup(
-            <BarChart
-                ariaLabel="bar width"
-                labels={labels}
-                bucketLabels={labels}
-                partial={labels.map(() => false)}
-                series={bars([1, 2, V3, V4, V5, V6, SHORT_RANGE_BUCKET_COUNT])}
-                width={WIDTH}
-            />
-        );
+        const svg = chart({
+            ariaLabel: 'bar width',
+            labels: labels,
+            series: bars([1, 2, V3, V4, V5, V6, SHORT_RANGE_BUCKET_COUNT]),
+            width: WIDTH,
+        });
         const widths = barWidths(svg);
         expect(widths).toHaveLength(SHORT_RANGE_BUCKET_COUNT);
         // The band is ~115px; the old fixed 56px cap left wide gaps. The bars now fill the
@@ -50,16 +53,12 @@ describe('BarChart bar width', () => {
     });
 
     it('keeps a single bar a bar, never a filled panel', () => {
-        const svg = renderToStaticMarkup(
-            <BarChart
-                ariaLabel="single bar"
-                labels={['07']}
-                bucketLabels={['07']}
-                partial={[false]}
-                series={bars([1])}
-                width={WIDTH}
-            />
-        );
+        const svg = chart({
+            ariaLabel: 'single bar',
+            labels: ['07'],
+            series: bars([1]),
+            width: WIDTH,
+        });
         const [width] = barWidths(svg);
         expect(width).toBeLessThanOrEqual(innerWidth / MAX_BAR_WIDTH_DIVISOR);
         expect(width).toBeGreaterThan(BAR_WIDTH_FLOOR_PX);
@@ -67,16 +66,12 @@ describe('BarChart bar width', () => {
 
     it('leaves dense (all-time weekly) ranges unchanged', () => {
         const labels = Array.from({ length: DENSE_BUCKET_COUNT }, (_, i) => String(i));
-        const svg = renderToStaticMarkup(
-            <BarChart
-                ariaLabel="dense"
-                labels={labels}
-                bucketLabels={labels}
-                partial={labels.map(() => false)}
-                series={bars(labels.map(() => 1))}
-                width={WIDTH}
-            />
-        );
+        const svg = chart({
+            ariaLabel: 'dense',
+            labels: labels,
+            series: bars(labels.map(() => 1)),
+            width: WIDTH,
+        });
         const widths = barWidths(svg);
         expect(widths).toHaveLength(DENSE_BUCKET_COUNT);
         expect(widths[0]).toBeCloseTo((innerWidth / DENSE_BUCKET_COUNT) * BAND_FRACTION, 1);
@@ -115,18 +110,14 @@ describe('BarChart series and bucket metadata', () => {
     it('marks bars with their stable series id, not only a CSS class', () => {
         const V3 = 3;
         const V4 = 4;
-        const svg = renderToStaticMarkup(
-            <BarChart
-                ariaLabel="ids"
-                labels={['a', 'b']}
-                bucketLabels={['a', 'b']}
-                partial={[false, false]}
-                series={[
-                    { id: 'input', label: 'Input', values: [1, 2], className: 'bar-primary' },
-                    { id: 'output', label: 'Output', values: [V3, V4], className: 'bar-ok' },
-                ]}
-            />
-        );
+        const svg = chart({
+            ariaLabel: 'ids',
+            labels: ['a', 'b'],
+            series: [
+                { id: 'input', label: 'Input', values: [1, 2], className: 'bar-primary' },
+                { id: 'output', label: 'Output', values: [V3, V4], className: 'bar-ok' },
+            ],
+        });
         expect(svg).toContain('data-series="input"');
         expect(svg).toContain('data-series="output"');
     });
@@ -138,16 +129,15 @@ describe('BarChart series and bucket metadata', () => {
             ariaLabel: 'hidden',
             labels: ['a'],
             bucketLabels: ['2026-08-01'],
-            partial: [false],
             series: [
                 { id: 'input', label: 'Input', values: [INPUT_VALUE], className: 'bar-primary' },
                 { id: 'output', label: 'Output', values: [OUTPUT_VALUE], className: 'bar-ok' },
             ],
         };
-        const both = renderToStaticMarkup(<BarChart {...props} />);
+        const both = chart(props);
         expect(both).toContain('data-series="input"');
         expect(both).toContain('>4k<');
-        const hidden = renderToStaticMarkup(<BarChart {...props} hiddenSeries={new Set(['input'])} />);
+        const hidden = chart({ ...props, hiddenSeries: new Set(['input']) });
         expect(hidden).not.toContain('data-series="input"');
         expect(hidden).toContain('data-series="output"');
         // The visible series now owns the scale: 1k, not the stacked 4k.
@@ -156,19 +146,15 @@ describe('BarChart series and bucket metadata', () => {
     });
 
     it('renders All series hidden instead of a broken chart', () => {
-        const svg = renderToStaticMarkup(
-            <BarChart
-                ariaLabel="all hidden"
-                labels={['a']}
-                bucketLabels={['a']}
-                partial={[false]}
-                series={[
-                    { id: 'input', label: 'Input', values: [1], className: 'bar-primary' },
-                    { id: 'output', label: 'Output', values: [2], className: 'bar-ok' },
-                ]}
-                hiddenSeries={new Set(['input', 'output'])}
-            />
-        );
+        const svg = chart({
+            ariaLabel: 'all hidden',
+            labels: ['a'],
+            series: [
+                { id: 'input', label: 'Input', values: [1], className: 'bar-primary' },
+                { id: 'output', label: 'Output', values: [2], className: 'bar-ok' },
+            ],
+            hiddenSeries: new Set(['input', 'output']),
+        });
         expect(svg).toContain('All series hidden');
         expect(barWidths(svg)).toHaveLength(0);
     });
@@ -177,13 +163,11 @@ describe('BarChart series and bucket metadata', () => {
         const props = {
             ariaLabel: 'line hidden',
             labels: ['a'],
-            bucketLabels: ['a'],
-            partial: [false],
             series: bars([1]),
             line: { id: 'sessions', label: 'Sessions', values: [2] },
         };
-        expect(renderToStaticMarkup(<BarChart {...props} />)).toContain('>Sessions</text>');
-        const hidden = renderToStaticMarkup(<BarChart {...props} hiddenSeries={new Set(['sessions'])} />);
+        expect(chart(props)).toContain('>Sessions</text>');
+        const hidden = chart({ ...props, hiddenSeries: new Set(['sessions']) });
         expect(hidden).not.toContain('class="line"');
         expect(hidden).not.toContain('>Sessions</text>');
     });
@@ -191,17 +175,13 @@ describe('BarChart series and bucket metadata', () => {
 
 describe('BarChart axes', () => {
     it('names both axes', () => {
-        const svg = renderToStaticMarkup(
-            <BarChart
-                ariaLabel="axes"
-                labels={['a']}
-                bucketLabels={['a']}
-                partial={[false]}
-                leftAxisLabel="Tokens"
-                series={bars([1])}
-                line={{ id: 'sessions', label: 'Sessions', values: [2] }}
-            />
-        );
+        const svg = chart({
+            ariaLabel: 'axes',
+            labels: ['a'],
+            leftAxisLabel: 'Tokens',
+            series: bars([1]),
+            line: { id: 'sessions', label: 'Sessions', values: [2] },
+        });
         expect(svg).toContain('>Tokens</text>');
         expect(svg).toContain('>Sessions</text>');
     });
@@ -212,13 +192,10 @@ describe('BarChart partial buckets', () => {
         const props = {
             ariaLabel: 'partial',
             labels: ['a', 'b'],
-            bucketLabels: ['a', 'b'],
             series: bars([1, 2]),
         };
-        expect(renderToStaticMarkup(<BarChart {...props} partial={[false, true]} />)).toContain('class="bar-partial"');
-        expect(renderToStaticMarkup(<BarChart {...props} partial={[false, false]} />)).not.toContain(
-            'class="bar-partial"'
-        );
+        expect(chart({ ...props, partial: [false, true] })).toContain('class="bar-partial"');
+        expect(chart({ ...props, partial: [false, false] })).not.toContain('class="bar-partial"');
     });
 });
 
@@ -227,20 +204,18 @@ describe('BarChart exact bucket access', () => {
         const INPUT_VALUE = 12345;
         const OUTPUT_VALUE = 6789;
         const SESSIONS_VALUE = 3;
-        const svg = renderToStaticMarkup(
-            <BarChart
-                ariaLabel="detail"
-                labels={['08-21']}
-                bucketLabels={['2026-08-21']}
-                partial={[true]}
-                series={[
-                    { id: 'input', label: 'Input', values: [INPUT_VALUE], className: 'bar-primary' },
-                    { id: 'output', label: 'Output', values: [OUTPUT_VALUE], className: 'bar-ok' },
-                ]}
-                line={{ id: 'sessions', label: 'Sessions', values: [SESSIONS_VALUE] }}
-                hiddenSeries={new Set(['output'])}
-            />
-        );
+        const svg = chart({
+            ariaLabel: 'detail',
+            labels: ['08-21'],
+            bucketLabels: ['2026-08-21'],
+            partial: [true],
+            series: [
+                { id: 'input', label: 'Input', values: [INPUT_VALUE], className: 'bar-primary' },
+                { id: 'output', label: 'Output', values: [OUTPUT_VALUE], className: 'bar-ok' },
+            ],
+            line: { id: 'sessions', label: 'Sessions', values: [SESSIONS_VALUE] },
+            hiddenSeries: new Set(['output']),
+        });
         const hit = rectTags(svg).find((t) => attr(t, 'class') === 'bucket-hit');
         expect(hit).toBeDefined();
         const label = attr(hit!, 'aria-label') ?? '';
@@ -255,15 +230,12 @@ describe('BarChart exact bucket access', () => {
     it('keeps one roving tab stop whose every target references its own tooltip', () => {
         const labels = ['a', 'b', 'c'];
         const BUCKET_COUNT = 3;
-        const svg = renderToStaticMarkup(
-            <BarChart
-                ariaLabel="roving"
-                labels={labels}
-                bucketLabels={labels}
-                partial={[false, false, false]}
-                series={bars([1, 2, BUCKET_COUNT])}
-            />
-        );
+        const svg = chart({
+            ariaLabel: 'roving',
+            labels: labels,
+            partial: [false, false, false],
+            series: bars([1, 2, BUCKET_COUNT]),
+        });
         const hits = rectTags(svg).filter((t) => attr(t, 'class') === 'bucket-hit');
         expect(hits).toHaveLength(BUCKET_COUNT);
         expect(hits.filter((t) => attr(t, 'tabindex') === '0')).toHaveLength(1);
@@ -296,32 +268,26 @@ describe('BarChart exact bucket access', () => {
     it('keeps the full raw precision in the exact readout', () => {
         const INPUT_VALUE = 1.23456;
         const SESSIONS_VALUE = 0.123456;
-        const svg = renderToStaticMarkup(
-            <BarChart
-                ariaLabel="precision"
-                labels={['a']}
-                bucketLabels={['2026-08-01']}
-                partial={[false]}
-                series={[{ id: 'input', label: 'Input', values: [INPUT_VALUE], className: 'bar-primary' }]}
-                line={{ id: 'sessions', label: 'Sessions', values: [SESSIONS_VALUE] }}
-            />
-        );
+        const svg = chart({
+            ariaLabel: 'precision',
+            labels: ['a'],
+            bucketLabels: ['2026-08-01'],
+            series: [{ id: 'input', label: 'Input', values: [INPUT_VALUE], className: 'bar-primary' }],
+            line: { id: 'sessions', label: 'Sessions', values: [SESSIONS_VALUE] },
+        });
         const hit = rectTags(svg).find((t) => attr(t, 'class') === 'bucket-hit');
         expect(attr(hit!, 'aria-label')).toContain('Input 1.23456');
         expect(attr(hit!, 'aria-label')).toContain('Sessions 0.123456');
     });
 
     it('reads an unmeasured bucket as a dash, never a fabricated zero', () => {
-        const svg = renderToStaticMarkup(
-            <BarChart
-                ariaLabel="nulls"
-                labels={['a']}
-                bucketLabels={['2026-08-01']}
-                partial={[false]}
-                series={[{ id: 'input', label: 'Input', values: [null], className: 'bar-primary' }]}
-                line={{ id: 'sessions', label: 'Sessions', values: [0] }}
-            />
-        );
+        const svg = chart({
+            ariaLabel: 'nulls',
+            labels: ['a'],
+            bucketLabels: ['2026-08-01'],
+            series: [{ id: 'input', label: 'Input', values: [null], className: 'bar-primary' }],
+            line: { id: 'sessions', label: 'Sessions', values: [0] },
+        });
         const hit = rectTags(svg).find((t) => attr(t, 'class') === 'bucket-hit');
         expect(attr(hit!, 'aria-label')).toContain('Input —');
         expect(attr(hit!, 'aria-label')).toContain('Sessions 0');

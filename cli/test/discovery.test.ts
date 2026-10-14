@@ -1,26 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { run } from '../src/run.js';
-
-const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
-
-const json = (payload: unknown, status = 200) =>
-    new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
+import { recordingBoard, json, routed } from './harness.js';
 
 /** Answers each path from `routes`; a path not listed fails the test by answering 404. */
 function harness(routes: Record<string, () => Response>) {
-    const out: string[] = [];
-    const err: string[] = [];
-    const calls: { path: string; method: string; body: unknown }[] = [];
-    const fetch = (async (url: string | URL | globalThis.Request, init?: RequestInit) => {
-        const path = String(url).replace('http://board', '');
-        calls.push({
-            path,
-            method: init?.method ?? 'GET',
-            body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
-        });
-        return routes[path]?.() ?? json({ error: `unrouted ${path}`, code: 'NOT_FOUND' }, 404);
-    }) as unknown as typeof globalThis.fetch;
-    const io = { env: ENV, fetch, stdout: (t: string) => out.push(t), stderr: (t: string) => err.push(t) };
+    const { out, err, sent: calls, io } = recordingBoard(routed(routes));
     return { out, err, calls, io };
 }
 
