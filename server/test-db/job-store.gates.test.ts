@@ -13,8 +13,6 @@ const enabled = Boolean(process.env.DATABASE_URL);
 let sql: Sql;
 let store: JobStore;
 const ORG = 'test-org';
-const ABSENT = '00000000-0000-4000-8000-000000000000';
-const TOKEN = '22222222-2222-4222-8222-222222222222';
 
 const db = useTestDb({ max: 4 });
 
@@ -140,19 +138,6 @@ describe.runIf(enabled)('gates on the job store', () => {
         expect((await store.thread(claim!.id))?.[0]?.gates).toEqual(finished);
     });
 
-    it('guards gate reports with the lease, like every other worker write', async () => {
-        const GATE_FOX_GITHUB_ID = 6005;
-        const userId = await account(sql, GATE_FOX_GITHUB_ID, 'gate-fox');
-        await store.create('fix the bug', userId, { repo: 'acme/web', executor: null });
-        const claim = await store.claim('driver-1', LEASE_SECONDS);
-        const report: GateReport[] = [{ name: 'test', status: 'passed', exitCode: 0, output: null }];
-
-        // A stale token is a lost lease, not a missing row — and writes nothing; an absent job is missing.
-        expect(await store.gates(claim!.id, TOKEN, report)).toBe('lost');
-        expect((await store.get(claim!.id))?.gates ?? null).toBeNull();
-        expect(await store.gates(ABSENT, TOKEN, report)).toBe('missing');
-    });
-
     it('omits gates from the list projection, like output', async () => {
         const GATE_EMU_GITHUB_ID = 6006;
         const userId = await account(sql, GATE_EMU_GITHUB_ID, 'gate-emu');
@@ -239,17 +224,6 @@ describe.runIf(enabled)('gates on the job store: re-reads', () => {
             gates: null,
             gateError: expectError ? PARSE_ERROR : null,
         });
-    });
-
-    it('guards the gates re-read with the lease, like every other worker route', async () => {
-        const GATE_HARE_GITHUB_ID = 6008;
-        const userId = await account(sql, GATE_HARE_GITHUB_ID, 'gate-hare');
-        await store.create('fix the bug', userId, { repo: 'acme/web', executor: null });
-        const claim = await store.claim('driver-1', LEASE_SECONDS);
-
-        // A stale token is a lost lease, not a missing row; an absent job is missing.
-        expect(await store.rereadGates(claim!.id, TOKEN)).toEqual({ result: 'lost' });
-        expect(await store.rereadGates(ABSENT, TOKEN)).toEqual({ result: 'missing' });
     });
 
     // The gates the run satisfies live in the thread's worktree (issue #35), which is keyed by

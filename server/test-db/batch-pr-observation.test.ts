@@ -648,36 +648,48 @@ describe.skipIf(!enabled)('observed recovery (#581)', () => {
         expect(await taskOf(id)).toMatchObject({ execution: 'succeeded', attention: 'budget' });
     });
 
-    it('repairs nothing in a cancelled batch', async () => {
-        const { id, number } = await succeededWithPr();
-        await store.cancel(id, ALICE);
-        github.replies.set(number, facts(number, { checks: checks('failing') }));
-        await observer.observeDue();
-        const jobsBefore = await jobCount();
+    // A fenced batch repairs nothing: each row observes a failing PR, fences the batch, reconciles,
+    // and answers the batch id after its own checks; the shared tail is no repair and no decision.
+    it.each<{ name: string; fencedReconcile: () => Promise<string> }>([
+        {
+            name: 'repairs nothing in a cancelled batch',
+            fencedReconcile: async () => {
+                const { id, number } = await succeededWithPr();
+                await store.cancel(id, ALICE);
+                github.replies.set(number, facts(number, { checks: checks('failing') }));
+                await observer.observeDue();
+                const jobsBefore = await jobCount();
 
-        await store.reconcile(id);
+                await store.reconcile(id);
 
-        expect(await repairsOf(id)).toEqual([]);
-        expect(await repairDecisions(id)).toBe(0);
-        expect(await jobCount()).toBe(jobsBefore);
-    });
+                expect(await jobCount()).toBe(jobsBefore);
+                return id;
+            },
+        },
+        {
+            name: 'repairs nothing once the time limit expired',
+            fencedReconcile: async () => {
+                const timed = createBatchStore({ sql, orgId: ORG, stop: (id, by) => jobs.stop(id, by), now });
+                const timedObserver = observerFor(ORG, jobs, timed);
+                const id = await frozen(plan([{ key: 'one', tasks: [prTask('a')] }], { timeLimitMinutes: 1 }), timed);
+                await timed.reconcile(id);
+                const root = await rootOf(id, 'a', timed);
+                const number = await publish(root);
+                await setSucceeded(sql, root);
+                await timed.reconcile(id);
+                github.replies.set(number, facts(number, { checks: checks('failing') }));
+                await timedObserver.observeDue();
 
-    it('repairs nothing once the time limit expired', async () => {
-        const timed = createBatchStore({ sql, orgId: ORG, stop: (id, by) => jobs.stop(id, by), now });
-        const timedObserver = observerFor(ORG, jobs, timed);
-        const id = await frozen(plan([{ key: 'one', tasks: [prTask('a')] }], { timeLimitMinutes: 1 }), timed);
-        await timed.reconcile(id);
-        const root = await rootOf(id, 'a', timed);
-        const number = await publish(root);
-        await setSucceeded(sql, root);
-        await timed.reconcile(id);
-        github.replies.set(number, facts(number, { checks: checks('failing') }));
-        await timedObserver.observeDue();
+                clock.ms += 120_000;
+                await timed.reconcile(id);
 
-        clock.ms += 120_000;
-        await timed.reconcile(id);
+                expect((await timed.get(id))!.expiredAt).not.toBeNull();
+                return id;
+            },
+        },
+    ])('$name', async ({ fencedReconcile }) => {
+        const id = await fencedReconcile();
 
-        expect((await timed.get(id))!.expiredAt).not.toBeNull();
         expect(await repairsOf(id)).toEqual([]);
         expect(await repairDecisions(id)).toBe(0);
     });

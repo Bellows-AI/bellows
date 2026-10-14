@@ -209,34 +209,51 @@ describe.skipIf(!enabled)('automerge', () => {
         expect((await store.report(id))!.verification).toMatchObject([{ stage: 'one', state: 'passed' }]);
     });
 
-    it('turns a failing combined verification into an attention signal, never a completed stage', async () => {
-        github.branch.checks = checks('failing');
-        const { id } = await readyBatch(plan([policyStage('automerge', ['a'])]));
+    it.each<{
+        name: string;
+        /** Breaks the verification: before the batch is ready (no number yet), or after with its PR number. */
+        breakBefore?: () => void;
+        breakAfter?: (number: number) => void;
+        verify: (id: string) => Promise<void>;
+    }>([
+        {
+            name: 'turns a failing combined verification into an attention signal, never a completed stage',
+            breakBefore: () => {
+                github.branch.checks = checks('failing');
+            },
+            verify: async (id) => {
+                const report = (await store.report(id))!;
+                expect(report.verification).toMatchObject([{ stage: 'one', state: 'failed' }]);
+                expect(report.verification[0]!.detail).toContain('build');
+                expect(report.totals.needsAttention).toBe(1);
+                expect(report.state).not.toBe('completed');
+                // The record a waiting client polls carries the same row, so a wait can stop on it.
+                expect((await store.get(id))!.verification).toEqual(report.verification);
 
-        await merger.mergeDue();
-
-        const report = (await store.report(id))!;
-        expect(report.verification).toMatchObject([{ stage: 'one', state: 'failed' }]);
-        expect(report.verification[0]!.detail).toContain('build');
-        expect(report.totals.needsAttention).toBe(1);
-        expect(report.state).not.toBe('completed');
-        // The record a waiting client polls carries the same row, so a wait can stop on it.
-        expect((await store.get(id))!.verification).toEqual(report.verification);
-
-        github.branch.checks = checks('passing');
-        clock.offset += 2 * 60_000;
-        await merger.mergeDue();
-        expect((await store.get(id))!.completedAt).not.toBeNull();
-    });
-
-    it('fails verification when a merged change is not on the target tip', async () => {
+                github.branch.checks = checks('passing');
+                clock.offset += 2 * 60_000;
+                await merger.mergeDue();
+                expect((await store.get(id))!.completedAt).not.toBeNull();
+            },
+        },
+        {
+            name: 'fails verification when a merged change is not on the target tip',
+            breakAfter: (number) => {
+                github.notOnTarget.add(`m${number}`);
+            },
+            verify: async (id) => {
+                expect((await store.get(id))!.completedAt).toBeNull();
+            },
+        },
+    ])('$name', async ({ breakBefore, breakAfter, verify }) => {
+        breakBefore?.();
         const { id, number } = await readyBatch(plan([policyStage('automerge', ['a'])]));
-        github.notOnTarget.add(`m${number}`);
+        breakAfter?.(number);
 
         await merger.mergeDue();
 
         expect((await store.report(id))!.verification).toMatchObject([{ state: 'failed' }]);
-        expect((await store.get(id))!.completedAt).toBeNull();
+        await verify(id);
     });
 
     it('issues zero merge requests under the human policy', async () => {
@@ -391,15 +408,26 @@ describe.skipIf(!enabled)('automerge', () => {
         expect(await intents(failing.id)).toEqual([]);
     });
 
-    it('stops without a request when the head moved after it was observed', async () => {
+    it.each<{ name: string; moved: Partial<PrFacts>; gateStaysOpen: boolean }>([
+        {
+            name: 'stops without a request when the head moved after it was observed',
+            moved: { headSha: 'h-new' },
+            gateStaysOpen: true,
+        },
+        {
+            name: 'stops without a request when the PR was retargeted or a requirement stopped being met',
+            moved: { baseBranch: 'release' },
+            gateStaysOpen: false,
+        },
+    ])('$name', async ({ moved, gateStaysOpen }) => {
         const { id, number } = await readyBatch(plan([policyStage('automerge', ['a'])]));
-        github.replies.set(number, facts(number, { headSha: 'h-new' }));
+        github.replies.set(number, facts(number, moved));
 
         await merger.mergeDue();
 
         expect(github.merges).toEqual([]);
         expect(await intents(id)).toMatchObject([{ state: 'changed' }]);
-        expect(await task(id, 'a')).toMatchObject({ gate: 'open' });
+        if (gateStaysOpen) expect(await task(id, 'a')).toMatchObject({ gate: 'open' });
     });
 
     it('asks again after a backoff when the recheck changed but the observation did not, and parks after the tries are spent', async () => {
@@ -415,14 +443,6 @@ describe.skipIf(!enabled)('automerge', () => {
         await merger.mergeDue();
         expect(github.merges).toEqual([{ number, sha: 'h1' }]);
         expect(await task(id, 'a')).toMatchObject({ gate: 'passed' });
-    });
-
-    it('stops without a request when the PR was retargeted or a requirement stopped being met', async () => {
-        const { id, number } = await readyBatch(plan([policyStage('automerge', ['a'])]));
-        github.replies.set(number, facts(number, { baseBranch: 'release' }));
-        await merger.mergeDue();
-        expect(github.merges).toEqual([]);
-        expect(await intents(id)).toMatchObject([{ state: 'changed' }]);
     });
 
     it('reconciles a PR a person merged first instead of requesting again', async () => {
@@ -531,56 +551,61 @@ describe.skipIf(!enabled)('automerge', () => {
         expect(await intents(id)).toMatchObject([{ state: 'lapsed' }]);
     });
 
-    it('issues no request after a cancel committed', async () => {
+    // Fenced before the claim: the pass finds nothing to claim, so no request and no intent row.
+    it.each<{ name: string; fence: (id: string) => Promise<void>; after?: (id: string) => Promise<void> }>([
+        {
+            name: 'issues no request after a cancel committed',
+            fence: async (id) => {
+                await store.cancel(id, ALICE);
+            },
+        },
+        {
+            name: 'issues no request once the time limit expired, and the expired batch is not reactivated by a delayed observation',
+            fence: async (id) => {
+                clock.offset += 13 * HOURS;
+                await store.reconcile(id);
+                expect((await store.get(id))!.expiredAt).not.toBeNull();
+            },
+            after: async (id) => {
+                expect((await store.get(id))!.completedAt).toBeNull();
+            },
+        },
+        {
+            name: 'issues no request once the deadline passed, before any pass stamped the expiry',
+            fence: async () => {
+                clock.offset += 13 * HOURS;
+            },
+            after: async (id) => {
+                const [batch] = await sql<{ expired_at: Date | null }[]>`select expired_at from batch where id = ${id}`;
+                expect(batch!.expired_at).toBeNull();
+            },
+        },
+    ])('$name', async ({ fence, after }) => {
         const { id } = await readyBatch(plan([policyStage('automerge', ['a'])]));
-        await store.cancel(id, ALICE);
+        await fence(id);
 
         await merger.mergeDue();
 
         expect(github.merges).toEqual([]);
         expect(await intents(id)).toEqual([]);
+        await after?.(id);
     });
 
-    it('stops a claimed request when a cancel commits between the claim and the send', async () => {
+    // Fenced between the claim and the send: the claimed intent settles fenced, never sent.
+    it.each<{ name: string; fence: (id: string) => () => Promise<unknown> }>([
+        {
+            name: 'stops a claimed request when a cancel commits between the claim and the send',
+            fence: (id) => () => store.cancel(id, ALICE),
+        },
+        {
+            name: 'stops a claimed request whose deadline passes between the claim and the send',
+            fence: () => async () => {
+                clock.offset += 13 * HOURS;
+            },
+        },
+    ])('$name', async ({ fence }) => {
         const { id } = await readyBatch(plan([policyStage('automerge', ['a'])]));
-        github.beforeRead = () => store.cancel(id, ALICE);
-
-        await merger.mergeDue();
-
-        expect(github.merges).toEqual([]);
-        expect(await intents(id)).toMatchObject([{ state: 'fenced' }]);
-    });
-
-    it('issues no request once the time limit expired, and the expired batch is not reactivated by a delayed observation', async () => {
-        const { id } = await readyBatch(plan([policyStage('automerge', ['a'])]));
-        clock.offset += 13 * HOURS;
-        await store.reconcile(id);
-        expect((await store.get(id))!.expiredAt).not.toBeNull();
-
-        await merger.mergeDue();
-
-        expect(github.merges).toEqual([]);
-        expect(await intents(id)).toEqual([]);
-        expect((await store.get(id))!.completedAt).toBeNull();
-    });
-
-    it('issues no request once the deadline passed, before any pass stamped the expiry', async () => {
-        const { id } = await readyBatch(plan([policyStage('automerge', ['a'])]));
-        clock.offset += 13 * HOURS;
-
-        await merger.mergeDue();
-
-        expect(github.merges).toEqual([]);
-        expect(await intents(id)).toEqual([]);
-        const [batch] = await sql<{ expired_at: Date | null }[]>`select expired_at from batch where id = ${id}`;
-        expect(batch!.expired_at).toBeNull();
-    });
-
-    it('stops a claimed request whose deadline passes between the claim and the send', async () => {
-        const { id } = await readyBatch(plan([policyStage('automerge', ['a'])]));
-        github.beforeRead = async () => {
-            clock.offset += 13 * HOURS;
-        };
+        github.beforeRead = fence(id);
 
         await merger.mergeDue();
 

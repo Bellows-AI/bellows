@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
+import { expect } from 'vitest';
 import type { TestUser } from './harness.js';
 
 /**
@@ -39,6 +40,63 @@ export const account = async (sql: Sql, githubUserId: number, login: string): Pr
 /** Lets the job's lease lapse, so the next claim may take it over. */
 export const expireLease = (sql: Sql, id: string) =>
     sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
+
+/**
+ * Holds a lock on `id` in another transaction until `release()` — the per-thread advisory lock
+ * (claim, remove, reopen, done all take it) or the job row's own lock. `beforeCommit` runs inside
+ * that transaction after the release, for a racing write that commits with the lock.
+ */
+export const holdLock = async (
+    sql: Sql,
+    lock: 'thread' | 'row',
+    id: string,
+    beforeCommit?: (tx: TransactionSql) => Promise<unknown>
+): Promise<{ release: () => Promise<void> }> => {
+    let lockTaken: (() => void) | null = null;
+    const locked = new Promise<void>((resolve) => {
+        lockTaken = resolve;
+    });
+    let release: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    const blocker = sql.begin(async (tx) => {
+        if (lock === 'thread') await tx`select pg_advisory_xact_lock(hashtextextended(${id}::text, 0))`;
+        else await tx`select id from job where id = ${id} for update`;
+        lockTaken!();
+        await held;
+        await beforeCommit?.(tx);
+    });
+    blocker.catch(() => {});
+    await locked;
+    return {
+        release: async () => {
+            release!();
+            await blocker;
+        },
+    };
+};
+
+/**
+ * The timer is the assertion device: the write must still be waiting when it fires, not deciding
+ * against a snapshot taken before the lock was even taken.
+ */
+export const expectStillLocked = async (pending: Promise<unknown>): Promise<void> => {
+    const STILL_LOCKED_TIMEOUT_MS = 450;
+    const outcome = await Promise.race([
+        pending,
+        new Promise<string>((resolve) => setTimeout(() => resolve('still_locked'), STILL_LOCKED_TIMEOUT_MS)),
+    ]);
+    expect(outcome).toBe('still_locked');
+};
+
+/** Asserts a banked wall clock of `minutes` whole minutes, with a second's slack below and a minute above. */
+export const expectMinutes = (wall: number | null, minutes: number): void => {
+    const MS_PER_MINUTE = 60_000;
+    const SLACK_MS = 1000;
+    expect(wall).toBeGreaterThanOrEqual(minutes * MS_PER_MINUTE - SLACK_MS);
+    expect(wall).toBeLessThan((minutes + 1) * MS_PER_MINUTE);
+};
 
 /** An ISO stamp verbatim, or `minutes` before now, or null when neither is given. */
 export const stampOrMinutesAgo = (sql: Sql, iso: string | undefined, minutes: number | undefined) =>

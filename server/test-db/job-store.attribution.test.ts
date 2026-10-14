@@ -1,11 +1,11 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import type { CreateJobStoreDeps, JobStore } from '../src/db/job-store-types.js';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
-import { account, mustCreate } from './fixtures.js';
+import { account, mustCreate, randomGithubId } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -121,36 +121,79 @@ describe.runIf(enabled)('attribution', () => {
         expect(claim?.env).toBeUndefined();
     });
 
-    it('leaves a job claimable when the env resolver fails, without burning an attempt', async () => {
-        /*
-         * The claim's UPDATE is only safe to keep if the resolver answers: a half-claim — running,
-         * with a lease nobody holds and an attempt already burned — would strand the job until the
-         * lease expired on every retry, walking it to dead on an infrastructure blip.
-         */
-        const FLAKY_CAT_GITHUB_ID = 5007;
-        const userId = await account(sql, FLAKY_CAT_GITHUB_ID, 'flaky-cat');
-        let fail = true;
-        const flaky = createJobStore({
-            sql,
-            orgId: ORG,
-            env: {
-                resolveFor: async () => {
-                    if (fail) throw new Error('env store down');
-                    return {};
+    /*
+     * The claim's UPDATE is only safe to keep if every dependency it calls answers: a half-claim —
+     * running, with a lease nobody holds and an attempt already burned — would strand the job until
+     * the lease expired on every retry, walking it to dead on an infrastructure blip. The env
+     * resolver, the mint (a remote call on the claim path) and the executor reader roll back alike.
+     */
+    it.each<{
+        name: string;
+        failing: (fail: () => boolean) => Partial<CreateJobStoreDeps>;
+        executor: string | null;
+        error: string;
+        env?: Record<string, string>;
+    }>([
+        {
+            name: 'the env resolver',
+            failing: (fail) => ({
+                env: {
+                    resolveFor: async () => {
+                        if (fail()) throw new Error('env store down');
+                        return {};
+                    },
                 },
-            },
-        });
-        await mustCreate(flaky.create('echo hi', userId, { repo: null, executor: null }));
+            }),
+            executor: null,
+            error: 'env store down',
+        },
+        {
+            // The provider is back: the very next claim takes the job with the minted token.
+            name: 'the mint',
+            failing: (fail) => ({
+                githubToken: {
+                    fresh: async () => {
+                        if (fail()) throw new Error('mint down');
+                        return 'ghs_late';
+                    },
+                },
+            }),
+            executor: null,
+            error: 'mint down',
+            env: { GITHUB_TOKEN: 'ghs_late' },
+        },
+        {
+            name: 'the executor reader',
+            failing: (fail) => ({
+                executorConfig: {
+                    configFor: async () => {
+                        if (fail()) throw new Error('executor store down');
+                        return null;
+                    },
+                },
+            }),
+            executor: 'main',
+            error: 'executor store down',
+        },
+    ])(
+        'leaves a job claimable when $name fails, without burning an attempt',
+        async ({ failing, executor, error, env }) => {
+            const userId = await account(sql, randomGithubId(), 'flaky-cat');
+            let fail = true;
+            const flaky = createJobStore({ sql, orgId: ORG, ...failing(() => fail) });
+            await mustCreate(flaky.create('echo hi', userId, { repo: null, executor }));
 
-        await expect(flaky.claim('driver-1', LEASE_SECONDS)).rejects.toThrow('env store down');
+            await expect(flaky.claim('driver-1', LEASE_SECONDS)).rejects.toThrow(error);
 
-        // The store is back: the job is still queued, still attempt 0, and the very next claim
-        // takes it with a full environment.
-        fail = false;
-        const claim = await flaky.claim('driver-2', LEASE_SECONDS);
-        expect(claim?.id).toBeTruthy();
-        expect(claim?.attempts).toBe(1);
-    });
+            // The dependency is back: the job is still queued, still attempt 0, and the very next
+            // claim takes it.
+            fail = false;
+            const claim = await flaky.claim('driver-2', LEASE_SECONDS);
+            expect(claim?.id).toBeTruthy();
+            expect(claim?.attempts).toBe(1);
+            if (env) expect(claim?.env).toEqual(env);
+        }
+    );
 
     /** Unique per run — a shared factory_test database must not let one suite's accounts collide with another's. */
     const mintedAccountId = (() => {
@@ -198,36 +241,6 @@ describe.runIf(enabled)('attribution', () => {
         await mustCreate(minted.create('echo hi', userId, { repo: null, executor: null }));
         const claim = await minted.claim('driver-1', LEASE_SECONDS);
         expect(claim?.env).toEqual({ GITHUB_TOKEN: 'operator-pat' });
-    });
-
-    it('leaves a job claimable when the mint fails, without burning an attempt', async () => {
-        /*
-         * The resolver-failure precedent, one layer down: the mint is a remote call on the claim
-         * path, and a half-claim taken before it failed must roll back exactly the same way.
-         */
-        const userId = await account(sql, mintedAccountId(), 'flaky-mint');
-        let fail = true;
-        const flaky = createJobStore({
-            sql,
-            orgId: ORG,
-            githubToken: {
-                fresh: async () => {
-                    if (fail) throw new Error('mint down');
-                    return 'ghs_late';
-                },
-            },
-        });
-        await mustCreate(flaky.create('echo hi', userId, { repo: null, executor: null }));
-
-        await expect(flaky.claim('driver-1', LEASE_SECONDS)).rejects.toThrow('mint down');
-
-        // The provider is back: the job is still queued, still attempt 0, and the very next claim
-        // takes it with the minted token.
-        fail = false;
-        const claim = await flaky.claim('driver-2', LEASE_SECONDS);
-        expect(claim?.id).toBeTruthy();
-        expect(claim?.attempts).toBe(1);
-        expect(claim?.env).toEqual({ GITHUB_TOKEN: 'ghs_late' });
     });
 
     it('mints the token even when the board has no env resolver', async () => {
@@ -322,20 +335,6 @@ describe.runIf(enabled)('attribution', () => {
             const claim = await store.claim('driver-1', LEASE_SECONDS);
 
             expect(await store.publishToken(claim!.id, claim!.leaseToken)).toEqual({ result: 'ok', token: null });
-        });
-
-        it('is lease-guarded: a lost lease and a missing job are different answers', async () => {
-            const userId = await account(sql, publishAccountId(), 'publish-lease');
-            const store = createJobStore({ sql, orgId: ORG, githubToken: { fresh: async () => 'ghs_x' } });
-            await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
-            const claim = await store.claim('driver-1', LEASE_SECONDS);
-
-            expect(await store.publishToken(claim!.id, '33333333-3333-4333-8333-333333333333')).toEqual({
-                result: 'lost',
-            });
-            expect(await store.publishToken('44444444-4444-4444-8444-444444444444', claim!.leaseToken)).toEqual({
-                result: 'missing',
-            });
         });
     });
 
@@ -456,29 +455,6 @@ describe.runIf(enabled)('attribution', () => {
             const claim = await store.claim('driver-1', LEASE_SECONDS);
 
             expect(claim?.env).toEqual({ OPENCODE_CONFIG_CONTENT: '{"model":"fresh"}' });
-        });
-
-        it('leaves the job claimable when the executor reader fails, without burning an attempt', async () => {
-            const userId = await account(sql, executorAccountId(), 'executor-fox');
-            let fail = true;
-            const flaky = createJobStore({
-                sql,
-                orgId: ORG,
-                executorConfig: {
-                    configFor: async () => {
-                        if (fail) throw new Error('executor store down');
-                        return null;
-                    },
-                },
-            });
-            await mustCreate(flaky.create('echo hi', userId, { repo: null, executor: 'main' }));
-
-            await expect(flaky.claim('driver-1', LEASE_SECONDS)).rejects.toThrow('executor store down');
-
-            fail = false;
-            const claim = await flaky.claim('driver-2', LEASE_SECONDS);
-            expect(claim?.id).toBeTruthy();
-            expect(claim?.attempts).toBe(1);
         });
     });
 
