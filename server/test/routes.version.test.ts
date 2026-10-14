@@ -6,8 +6,8 @@ import Fastify from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { versionRoutes } from '../src/routes/version.js';
 import { readVersion, VERSION_PATTERN } from '../src/version.js';
+import { HTTP_OK } from './helpers-http.js';
 
-const HTTP_OK = 200;
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const INVALID = ['v1.2.3', '1.2', '1.2.3-rc.1', '01.2.3', '', '1.2.3\n1.2.4\n'];
 

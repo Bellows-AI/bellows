@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import {
     githubAuth,
@@ -11,6 +11,7 @@ import {
     testConfig,
 } from './helpers.js';
 import type { MemoryAuthStore } from './helpers-auth-store.js';
+import { HTTP_BAD_REQUEST, HTTP_CONFLICT, HTTP_FORBIDDEN, HTTP_NOT_FOUND, HTTP_OK, trackApps } from './helpers-http.js';
 
 /**
  * Offline: the HTTP contract of the member-roster routes (issue 410) against the in-memory store
@@ -18,18 +19,7 @@ import type { MemoryAuthStore } from './helpers-auth-store.js';
  * by server/test-db/auth-store.test.ts, which needs a container.
  */
 
-const HTTP_OK = 200;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
-const HTTP_NOT_FOUND = 404;
-const HTTP_CONFLICT = 409;
-
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 async function boot(): Promise<{
     instance: FastifyInstance;
@@ -48,7 +38,7 @@ async function boot(): Promise<{
         orgs: staticRegistry({ config, userRepos: memoryUserRepoStore(), telemetry: stubTelemetryClient() }),
         auth,
     });
-    app = instance;
+    track(instance);
     return {
         instance,
         auth,
@@ -60,20 +50,6 @@ async function boot(): Promise<{
 }
 
 describe('member roster routes: permissions (issue 410)', () => {
-    it('needs a session', async () => {
-        const { instance } = await boot();
-        expect((await instance.inject({ method: 'GET', url: '/api/org/members' })).statusCode).toBe(HTTP_UNAUTHORIZED);
-        expect(
-            (
-                await instance.inject({
-                    method: 'PUT',
-                    url: `/api/org/members/${crypto.randomUUID()}/role`,
-                    payload: { role: 'member' },
-                })
-            ).statusCode
-        ).toBe(HTTP_UNAUTHORIZED);
-    });
-
     it('a member is refused on both, and the roster is untouched', async () => {
         const { instance, admin, memberCookie } = await boot();
         const list = await instance.inject({

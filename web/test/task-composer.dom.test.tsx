@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import type { WorkspacePayload, WorkspaceRepo } from '../src/api/useWorkspace.js';
-import { OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
+import { type FetchReply, OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
 
 /**
  * The composer's launch triggers over a stubbed board: Start and Ctrl/Cmd+Enter share one gate, and
@@ -13,9 +13,9 @@ import { OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
 const CREATED = '2026-01-01T00:00:00.000Z';
 const LAUNCHED_ID = '11111111-1111-4111-8111-111111111111';
 
-const repo = (status: WorkspaceRepo['status']): WorkspaceRepo => ({
+const repo = (status: WorkspaceRepo['status'], name = 'web'): WorkspaceRepo => ({
     owner: 'acme',
-    name: 'web',
+    name,
     status,
     error: null,
     selectedAt: CREATED,
@@ -44,13 +44,15 @@ const workspace = (repos: WorkspaceRepo[]): WorkspacePayload => ({
     defaultExecutor: { scope: 'user', name: 'e2e-executor' },
 });
 
-function openComposer(repos: WorkspaceRepo[]) {
+function openComposer(
+    repos: WorkspaceRepo[],
+    launchReply: FetchReply = { status: 201, body: { id: LAUNCHED_ID, status: 'queued' } }
+) {
     const calls = stubFetch(({ method, url }) => {
         if (url === '/api/workspace') return workspace(repos);
         // The held draft belongs to a session, so /api/auth/me must answer.
         if (url === '/api/auth/me') return OPEN_BOARD_SESSION;
-        if (method === 'POST' && url === '/api/jobs')
-            return { status: 201, body: { id: LAUNCHED_ID, status: 'queued' } };
+        if (method === 'POST' && url === '/api/jobs') return launchReply;
     });
     const view = renderApp('/tasks/new');
     const launches = () => calls.filter((c) => c.method === 'POST' && c.url === '/api/jobs');
@@ -126,5 +128,41 @@ describe('the composer launch triggers', () => {
         await user.click(await screen.findByRole('link', { name: 'Back to new task' }));
         const back = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
         expect(back.value).toBe('fix the login crash');
+    });
+
+    it('a chosen repository that is not ready blocks launch even though another is ready', async () => {
+        const user = userEvent.setup();
+        const { launches } = openComposer([repo('ready'), repo('cloning', 'api')]);
+        const prompt = await screen.findByLabelText('What should the agent do?');
+        await user.type(prompt, 'fix the login crash');
+        await user.click(await screen.findByRole('button', { name: /^Repository: / }));
+        await user.click(await screen.findByRole('option', { name: 'acme/api' }));
+        await waitFor(() =>
+            expect(document.querySelector('.composer .banner-bad')?.textContent).toContain('Repository not synced')
+        );
+        expect((screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement).disabled).toBe(true);
+
+        await user.click(prompt);
+        await user.keyboard(KEYBOARD_LAUNCH);
+        expect(launches()).toHaveLength(0);
+    });
+
+    it("the board's refusal shows in the composer as an alert and keeps the draft", async () => {
+        const user = userEvent.setup();
+        const { router, launches } = openComposer([repo('ready')], {
+            status: 503,
+            body: { error: 'The board is unavailable' },
+        });
+        const prompt = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
+        await user.type(prompt, 'fix the login crash');
+        const start = screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement;
+        await waitFor(() => expect(start.disabled).toBe(false));
+        await user.click(start);
+
+        const composer = document.querySelector<HTMLElement>('.composer')!;
+        await waitFor(() => expect(within(composer).getByRole('alert').textContent).toContain('unavailable'));
+        expect(launches()).toHaveLength(1);
+        expect(prompt.value).toBe('fix the login crash');
+        expect(router.state.location.pathname).toBe('/tasks/new');
     });
 });

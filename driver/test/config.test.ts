@@ -42,13 +42,19 @@ describe('the driver config: basics', () => {
         expect(() => loadDriverConfig(env)).toThrow(label);
     });
 
-    // The switch that decides whether an agent may edit and run things unsupervised. A typo in it
-    // must not read as "on".
-    it('treats only an explicit value as permission to skip permissions', () => {
-        expect(loadDriverConfig({ RUNNER_SKIP_PERMISSIONS: '1' }).skipPermissions).toBe(true);
-        expect(loadDriverConfig({ RUNNER_SKIP_PERMISSIONS: '0' }).skipPermissions).toBe(false);
-        expect(loadDriverConfig({ RUNNER_SKIP_PERMISSIONS: 'false' }).skipPermissions).toBe(false);
-        expect(loadDriverConfig({ RUNNER_SKIP_PERMISSIONS: '' }).skipPermissions).toBe(false);
+    // RUNNER_SKIP_PERMISSIONS decides whether an agent may edit and run things unsupervised. A
+    // typo in it must not read as "on". RUNNER_DO_NOT_DISRUPT: node churn must not redo a
+    // two-hour run (issue #362), so it opts every pod the driver specs out of voluntary
+    // disruption. Off by default — an undisruptable pod pins its node for as long as the run
+    // lasts, and an operator on on-demand nodes may not want that.
+    it.each([
+        ['RUNNER_SKIP_PERMISSIONS', 'skipPermissions'],
+        ['RUNNER_DO_NOT_DISRUPT', 'runnerDoNotDisrupt'],
+    ] as const)('treats only an explicit value as turning %s on', (name, field) => {
+        expect(loadDriverConfig({ [name]: '1' })[field]).toBe(true);
+        expect(loadDriverConfig({ [name]: '0' })[field]).toBe(false);
+        expect(loadDriverConfig({ [name]: 'false' })[field]).toBe(false);
+        expect(loadDriverConfig({ [name]: '' })[field]).toBe(false);
     });
 
     it('reads RUNNER_ENV as a list of names', () => {
@@ -138,16 +144,6 @@ describe('the driver config: executor and endpoints', () => {
             'regcred',
             'mirror',
         ]);
-    });
-
-    // Node churn must not redo a two-hour run (issue #362): this switch opts every pod the
-    // driver specs out of voluntary disruption. Off by default — an undisruptable pod pins its
-    // node for as long as the run lasts, and an operator on on-demand nodes may not want that.
-    it('treats only an explicit value as a request to opt out of disruption', () => {
-        expect(loadDriverConfig({ RUNNER_DO_NOT_DISRUPT: '1' }).runnerDoNotDisrupt).toBe(true);
-        expect(loadDriverConfig({ RUNNER_DO_NOT_DISRUPT: '0' }).runnerDoNotDisrupt).toBe(false);
-        expect(loadDriverConfig({ RUNNER_DO_NOT_DISRUPT: 'false' }).runnerDoNotDisrupt).toBe(false);
-        expect(loadDriverConfig({ RUNNER_DO_NOT_DISRUPT: '' }).runnerDoNotDisrupt).toBe(false);
     });
 
     it('leaves DRIVER_HEARTBEAT_FILE off unless set', () => {
@@ -415,7 +411,9 @@ describe('the driver config: runner resources', () => {
             requests: { memory: '1Gi' },
             limits: { cpu: '2', memory: '4Gi' },
         });
-        expect(dockerArgs(config, job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })).toEqual(
+        // Docker flags, so before the image: past it they would be the CLI's argv.
+        const argv = dockerArgs(config, job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' });
+        expect(argv.slice(0, argv.indexOf('claude-executor'))).toEqual(
             expect.arrayContaining(['--cpus', '2', '--memory', '4294967296', '--memory-reservation', '1073741824'])
         );
     });

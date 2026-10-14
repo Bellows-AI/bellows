@@ -6,6 +6,7 @@ import {
     confirmTitle,
     confirmedWrite,
 } from '../src/panels/org-executor-confirm.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 /**
  * The org row's two ownership-changing actions (issue 411) are irreversible for everyone else in
@@ -13,9 +14,6 @@ import {
  * decidable surface — the copy that must name the row, and the single dispatch that is the only
  * call site of the two writes — with no DOM, the way `env-draft.test.ts` holds its draft rules.
  */
-
-/** The same contract the panel render suite pins. */
-const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
 describe('the org executor confirmation copy', () => {
     it('names the profile in the delete title and states that it is removed for every member and cannot be undone', () => {
@@ -66,7 +64,7 @@ describe('the org executor confirmation copy', () => {
                 confirmLabel(confirm),
                 confirmBusyLabel(confirm),
             ]) {
-                for (const token of FORBIDDEN) expect(copy, token).not.toContain(token);
+                expectNoPlaceholder(copy);
             }
         }
     });

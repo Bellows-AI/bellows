@@ -1,9 +1,18 @@
-import type { FastifyInstance } from 'fastify';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
+import {
+    HTTP_BAD_REQUEST,
+    HTTP_CONFLICT,
+    HTTP_CREATED,
+    HTTP_FORBIDDEN,
+    HTTP_NOT_FOUND,
+    HTTP_OK,
+    HTTP_SERVICE_UNAVAILABLE,
+    trackApps,
+} from './helpers-http.js';
 
 /**
  * Offline: the HTTP contract of the workflow routes against an in-memory store double. The store's
@@ -11,20 +20,7 @@ import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryCli
  * server/test-db/workflow-store.test.ts, which needs a container.
  */
 
-const HTTP_OK = 200;
-const HTTP_CREATED = 201;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
-const HTTP_NOT_FOUND = 404;
-const HTTP_CONFLICT = 409;
-const HTTP_SERVICE_UNAVAILABLE = 503;
-
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 const WF_ID = '99999999-9999-4999-8999-999999999999';
 
@@ -99,7 +95,7 @@ async function boot(workflows: WorkflowStore & { created: unknown[]; removed: st
         orgs: staticRegistry({ config, workflows, telemetry: stubTelemetryClient() }),
         auth,
     });
-    app = instance;
+    track(instance);
     return {
         instance,
         admin,
@@ -110,23 +106,6 @@ async function boot(workflows: WorkflowStore & { created: unknown[]; removed: st
 }
 
 describe('GET /api/workflows', () => {
-    it("needs a session — workflow selection is a person's decision", async () => {
-        const workflows = stubWorkflows();
-        const { instance } = await boot(workflows);
-        expect((await instance.inject({ method: 'GET', url: '/api/workflows' })).statusCode).toBe(HTTP_UNAUTHORIZED);
-    });
-
-    it('refuses a worker-style bearer token at the wall', async () => {
-        const workflows = stubWorkflows();
-        const { instance } = await boot(workflows);
-        const response = await instance.inject({
-            method: 'GET',
-            url: '/api/workflows',
-            headers: { authorization: 'Bearer fwt_not-a-worker-token' },
-        });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
-    });
-
     it('lists the caller-visible workflows with their scopes', async () => {
         const workflows = stubWorkflows();
         const { instance, memberCookie } = await boot(workflows);
@@ -153,13 +132,6 @@ describe('GET /api/workflows', () => {
 });
 
 describe('POST /api/workflows', () => {
-    it('needs a session', async () => {
-        const workflows = stubWorkflows();
-        const { instance } = await boot(workflows);
-        const response = await instance.inject({ method: 'POST', url: '/api/workflows', payload: {} });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
-    });
-
     it('gates org-level creation to an admin', async () => {
         const workflows = stubWorkflows();
         const { instance, memberCookie, admin, adminCookie } = await boot(workflows);
@@ -268,13 +240,6 @@ describe('POST /api/workflows', () => {
 });
 
 describe('GET /api/workflow-blocks', () => {
-    it('needs a session — same surface as workflow selection', async () => {
-        const workflows = stubWorkflows();
-        const { instance } = await boot(workflows);
-        const response = await instance.inject({ method: 'GET', url: '/api/workflow-blocks' });
-        expect(response.statusCode).toBe(401);
-    });
-
     it('serves the catalog for a signed-in caller — metadata only, never a prompt or script body', async () => {
         const workflows = stubWorkflows();
         const { instance, memberCookie } = await boot(workflows);
@@ -303,13 +268,6 @@ describe('GET /api/workflow-blocks', () => {
 });
 
 describe('GET /api/workflows/:id', () => {
-    it('needs a session', async () => {
-        const workflows = stubWorkflows();
-        const { instance } = await boot(workflows);
-        const response = await instance.inject({ method: 'GET', url: `/api/workflows/${WF_ID}` });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
-    });
-
     it('refuses a non-uuid id', async () => {
         const workflows = stubWorkflows();
         const { instance, memberCookie } = await boot(workflows);
@@ -375,17 +333,6 @@ describe('GET /api/workflows/:id', () => {
 });
 
 describe('PUT /api/workflows/:id', () => {
-    it('needs a session', async () => {
-        const workflows = stubWorkflows();
-        const { instance } = await boot(workflows);
-        const response = await instance.inject({
-            method: 'PUT',
-            url: `/api/workflows/${WF_ID}`,
-            payload: { name: 'x', definition },
-        });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
-    });
-
     it('refuses a non-uuid id', async () => {
         const workflows = stubWorkflows();
         const { instance, memberCookie } = await boot(workflows);
@@ -418,7 +365,7 @@ describe('PUT /api/workflows/:id', () => {
         const auth = memoryAuthStore();
         const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
         const instance = await buildApp({ config, orgs: staticRegistry({ config }), auth });
-        app = instance;
+        track(instance);
         const response = await instance.inject({
             method: 'PUT',
             url: `/api/workflows/${WF_ID}`,

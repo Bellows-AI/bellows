@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createBoard } from '../src/board.js';
+import { boardJob } from './fixtures/board-job.js';
 
 interface Call {
     url: string;
@@ -20,6 +21,10 @@ function recorder(respond: () => Response) {
     return { calls, fetch };
 }
 
+/** The board client under test, on the shared URL and lease; `token` only where the test needs one. */
+const boardOn = (fetch: typeof globalThis.fetch, token?: string) =>
+    createBoard({ url: 'http://board', leaseSeconds: 300, token, fetch });
+
 const claimed = (extra: Record<string, unknown> = {}) =>
     new Response(
         JSON.stringify({
@@ -37,7 +42,7 @@ const claimed = (extra: Record<string, unknown> = {}) =>
 describe('the worker token', () => {
     it('is sent as a bearer header when the board requires one', async () => {
         const { calls, fetch } = recorder(() => claimed());
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, token: 'fwt_abc', fetch });
+        const board = boardOn(fetch, 'fwt_abc');
 
         await board.claim('driver-1');
 
@@ -48,7 +53,7 @@ describe('the worker token', () => {
         // An empty Bearer header is a credential that failed; no header at all is one that was
         // never offered. Only the second keeps AUTH_MODE=none working unchanged.
         const { calls, fetch } = recorder(() => claimed());
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const board = boardOn(fetch);
 
         await board.claim('driver-1');
 
@@ -57,17 +62,8 @@ describe('the worker token', () => {
 
     it('travels on every write, not only the claim', async () => {
         const { calls, fetch } = recorder(() => new Response('{}', { status: 200 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, token: 'fwt_abc', fetch });
-        const job = {
-            id: 'job-1',
-            command: 'echo hi',
-            attempts: 1,
-            claimSeq: 1,
-            leaseToken: 'token-1',
-            leaseExpiresAt: '2026-08-21T12:05:00.000Z',
-            resumeSessionId: null,
-            userId: null,
-        };
+        const board = boardOn(fetch, 'fwt_abc');
+        const job = boardJob();
 
         await board.heartbeat(job);
         await board.session(job, 'session-1', null);
@@ -84,17 +80,8 @@ describe('the worker token', () => {
     // can watch the work while it happens.
     it('streams the output tail to the job it belongs to', async () => {
         const { calls, fetch } = recorder(() => new Response('{}', { status: 200 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        const job = {
-            id: 'job-1',
-            command: 'echo hi',
-            attempts: 1,
-            claimSeq: 1,
-            leaseToken: 'token-1',
-            leaseExpiresAt: '2026-08-21T12:05:00.000Z',
-            resumeSessionId: null,
-            userId: null,
-        };
+        const board = boardOn(fetch);
+        const job = boardJob();
 
         await board.progress(job, 'partial output');
 
@@ -106,17 +93,8 @@ describe('the worker token', () => {
     // one kind per POST, lease token beside the payload like every worker write.
     it('uploads a run artifact to its route with kind, attempt and the truncation flag', async () => {
         const { calls, fetch } = recorder(() => new Response('{}', { status: 200 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        const job = {
-            id: 'job-1',
-            command: 'echo hi',
-            attempts: 2,
-            claimSeq: 2,
-            leaseToken: 'token-1',
-            leaseExpiresAt: '2026-08-21T12:05:00.000Z',
-            resumeSessionId: null,
-            userId: null,
-        };
+        const board = boardOn(fetch);
+        const job = boardJob({ attempts: 2, claimSeq: 2 });
 
         const state = await board.artifact(job, {
             kind: 'log',
@@ -138,17 +116,8 @@ describe('the worker token', () => {
 
     it('reads a 409 from the artifact upload as lost, not a kill order', async () => {
         const { fetch } = recorder(() => new Response('{}', { status: 409 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        const job = {
-            id: 'job-1',
-            command: 'echo hi',
-            attempts: 1,
-            claimSeq: 1,
-            leaseToken: 'token-1',
-            leaseExpiresAt: '2026-08-21T12:05:00.000Z',
-            resumeSessionId: null,
-            userId: null,
-        };
+        const board = boardOn(fetch);
+        const job = boardJob();
 
         expect(await board.artifact(job, { kind: 'transcript', attempt: 1, content: '[]', truncated: false })).toBe(
             'lost'
@@ -162,17 +131,8 @@ describe('the worker token', () => {
      */
     it('carries the runtime sample verbatim, with services only when there are any', async () => {
         const { calls, fetch } = recorder(() => new Response('{}', { status: 200 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        const job = {
-            id: 'job-1',
-            command: 'echo hi',
-            attempts: 1,
-            claimSeq: 1,
-            leaseToken: 'token-1',
-            leaseExpiresAt: '2026-08-21T12:05:00.000Z',
-            resumeSessionId: null,
-            userId: null,
-        };
+        const board = boardOn(fetch);
+        const job = boardJob();
 
         await board.progress(job, 'partial output', {
             cpuPercent: 93,
@@ -209,177 +169,107 @@ describe('the worker token', () => {
     });
 });
 
+/** A claim field the client must leave off the job entirely, not set to `undefined`. */
+const ABSENT = Symbol('absent');
+const PLANS = [{ helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false }];
+
 describe('the claimed job', () => {
-    it('carries a known executor type and refuses to invent one for a missing or unknown value', async () => {
-        const { fetch } = recorder(() => claimed({ executorType: 'opencode' }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        expect((await board.claim('driver-1'))?.executorType).toBe('opencode');
-
-        const { fetch: unknown } = recorder(() => claimed({ executorType: 'other' }));
-        const unknownBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: unknown });
-        expect((await unknownBoard.claim('driver-1'))?.executorType).toBeNull();
-
-        const { fetch: missing } = recorder(() => claimed());
-        const missingBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: missing });
-        expect((await missingBoard.claim('driver-1'))?.executorType).toBeNull();
-    });
-
-    it('carries the board’s executor refusal, and null when it sends none (issue 440)', async () => {
-        const { fetch } = recorder(() => claimed({ executorRefusal: 'The executor "main" is suspended.' }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        expect((await board.claim('driver-1'))?.executorRefusal).toBe('The executor "main" is suspended.');
-
-        const { fetch: missing } = recorder(() => claimed());
-        const missingBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: missing });
-        expect((await missingBoard.claim('driver-1'))?.executorRefusal).toBeNull();
-    });
-
-    it('carries the board’s skill refusal, and null when it sends none (issue 545)', async () => {
-        const { fetch } = recorder(() =>
-            claimed({ skillRefusal: '[skills unavailable] skill "jira" needs a connection' })
-        );
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        expect((await board.claim('driver-1'))?.skillRefusal).toBe(
-            '[skills unavailable] skill "jira" needs a connection'
-        );
-
-        const { fetch: missing } = recorder(() => claimed());
-        const missingBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: missing });
-        expect((await missingBoard.claim('driver-1'))?.skillRefusal).toBeNull();
-    });
-
-    it('carries the account that queued it', async () => {
-        const { fetch } = recorder(() => claimed({ userId: 'user-7' }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-
-        expect((await board.claim('driver-1'))?.userId).toBe('user-7');
-    });
-
-    it('reads a missing userId as null rather than undefined', async () => {
+    it.each<[string, Record<string, unknown>, string, unknown]>([
+        ['carries a known executor type', { executorType: 'opencode' }, 'executorType', 'opencode'],
+        ['refuses to invent an executor type for an unknown value', { executorType: 'other' }, 'executorType', null],
+        ['refuses to invent an executor type for a missing value', {}, 'executorType', null],
+        // Issue 440.
+        [
+            'carries the board’s executor refusal',
+            { executorRefusal: 'The executor "main" is suspended.' },
+            'executorRefusal',
+            'The executor "main" is suspended.',
+        ],
+        ['reads a missing executor refusal as null', {}, 'executorRefusal', null],
+        // Issue 545.
+        [
+            'carries the board’s skill refusal',
+            { skillRefusal: '[skills unavailable] skill "jira" needs a connection' },
+            'skillRefusal',
+            '[skills unavailable] skill "jira" needs a connection',
+        ],
+        ['reads a missing skill refusal as null', {}, 'skillRefusal', null],
+        ['carries the account that queued it', { userId: 'user-7' }, 'userId', 'user-7'],
         // Defensive for the same reason resumeSessionId is: a board that predates the field simply
         // omits it, and `undefined` would flow into a docker argument as the string "undefined".
-        const { fetch } = recorder(() => claimed());
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-
-        expect((await board.claim('driver-1'))?.userId).toBeNull();
-    });
-
-    it('reads a missing followUp flag as false rather than undefined', async () => {
-        const { fetch } = recorder(() => claimed());
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-
-        expect((await board.claim('driver-1'))?.followUp).toBe(false);
-    });
-
-    it('carries the follow-up flag when the board sets it', async () => {
-        const { fetch } = recorder(() => claimed({ followUp: true, resumeSessionId: 'session-1' }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-
-        const job = await board.claim('driver-1');
-        expect(job?.followUp).toBe(true);
-        expect(job?.resumeSessionId).toBe('session-1');
-    });
-
-    it("passes the thread root's command through as the board sent it, with no fallback", async () => {
-        const { fetch } = recorder(() => claimed({ rootCommand: '/fix 122' }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        expect((await board.claim('driver-1'))?.rootCommand).toBe('/fix 122');
-
+        ['reads a missing userId as null rather than undefined', {}, 'userId', null],
+        ['reads a missing followUp flag as false rather than undefined', {}, 'followUp', false],
+        [
+            'carries the follow-up flag when the board sets it',
+            { followUp: true, resumeSessionId: 'session-1' },
+            'followUp',
+            true,
+        ],
+        [
+            'carries the resumed session beside the follow-up flag',
+            { followUp: true, resumeSessionId: 'session-1' },
+            'resumeSessionId',
+            'session-1',
+        ],
+        [
+            "passes the thread root's command through as the board sent it",
+            { rootCommand: '/fix 122' },
+            'rootCommand',
+            '/fix 122',
+        ],
         // The board always sends it; nothing papers over a payload that lacks it.
-        const { fetch: bare } = recorder(() => claimed());
-        const bareBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: bare });
-        expect((await bareBoard.claim('driver-1'))?.rootCommand).toBeUndefined();
-    });
-
-    it('carries the environment the board resolved, reading a missing one as empty', async () => {
-        const { fetch } = recorder(() => claimed({ env: { CORE: 'value' } }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        expect((await board.claim('driver-1'))?.env).toEqual({ CORE: 'value' });
-
+        ["reads a missing thread root's command with no fallback", {}, 'rootCommand', undefined],
+        ['carries the environment the board resolved', { env: { CORE: 'value' } }, 'env', { CORE: 'value' }],
         // A board that predates the field omits it; `{}` keeps the runner spawn honest.
-        const { fetch: bare } = recorder(() => claimed());
-        const oldBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: bare });
-        expect((await oldBoard.claim('driver-1'))?.env).toEqual({});
-    });
-
-    // Issue #207: declared block-helper plans, read the same way every field added after launch
-    // is — a board that predates the field, or a job with none, simply omits it.
-    it('carries the declared block-helper plans, reading a missing field as absent', async () => {
-        const plans = [{ helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false }];
-        const { fetch } = recorder(() => claimed({ helperPlans: plans }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        expect((await board.claim('driver-1'))?.helperPlans).toEqual(plans);
-
-        const { fetch: bare } = recorder(() => claimed());
-        const oldBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: bare });
-        expect((await oldBoard.claim('driver-1'))?.helperPlans).toBeUndefined();
-    });
-
-    // Issue #444: which tree the claim's gates were read from. Only the two known values pass;
-    // anything else reads as absent, which the loop treats as "no stale-source refusal".
-    it('carries the gates source, dropping an unknown value', async () => {
-        for (const gatesSource of ['worktree', 'clone'] as const) {
-            const { fetch } = recorder(() => claimed({ gatesSource }));
-            const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-            expect((await board.claim('driver-1'))?.gatesSource).toBe(gatesSource);
-        }
-        const { fetch } = recorder(() => claimed({ gatesSource: 'elsewhere' }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        expect((await board.claim('driver-1'))?.gatesSource).toBeUndefined();
-    });
-
-    it('drops a malformed (non-array) helperPlans value rather than passing it through', async () => {
-        const { fetch } = recorder(() => claimed({ helperPlans: 'not-an-array' }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        expect((await board.claim('driver-1'))?.helperPlans).toBeUndefined();
-    });
-
-    // Issue #244: the board-owned Factory execution context. Read defensively like every other
-    // field added after launch — a board that predates it, or a malformed value, both read as
-    // null, which the loop refuses the launch for explicitly (loop-run.test.ts) rather than
-    // running the agent with no contract.
-    it('carries the master prompt the board rendered', async () => {
-        const { fetch } = recorder(() => claimed({ masterPrompt: 'Factory execution contract (v1)' }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        expect((await board.claim('driver-1'))?.masterPrompt).toBe('Factory execution contract (v1)');
-    });
-
-    it('reads a missing masterPrompt as null rather than undefined', async () => {
-        const { fetch } = recorder(() => claimed());
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        expect((await board.claim('driver-1'))?.masterPrompt).toBeNull();
-    });
-
-    it('reads a malformed (non-string) masterPrompt as null rather than passing it through', async () => {
-        const { fetch } = recorder(() => claimed({ masterPrompt: 42 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        expect((await board.claim('driver-1'))?.masterPrompt).toBeNull();
-    });
-
-    // Issue #509: the claim's per-node context, delivered per turn (master-prompt.ts).
-    it('carries the turn context, dropping a missing, empty or non-string value', async () => {
-        const { fetch } = recorder(() => claimed({ turnContext: 'Factory turn context' }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        expect((await board.claim('driver-1'))?.turnContext).toBe('Factory turn context');
-        for (const turnContext of [undefined, '', 42, null]) {
-            const { fetch } = recorder(() => claimed({ turnContext }));
-            const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-            expect(await board.claim('driver-1')).not.toHaveProperty('turnContext');
-        }
+        ['reads a missing environment as empty', {}, 'env', {}],
+        // Issue #207: declared block-helper plans, read the same way every field added after launch
+        // is — a board that predates the field, or a job with none, simply omits it.
+        ['carries the declared block-helper plans', { helperPlans: PLANS }, 'helperPlans', PLANS],
+        ['reads missing block-helper plans as absent', {}, 'helperPlans', undefined],
+        [
+            'drops a malformed (non-array) helperPlans value rather than passing it through',
+            { helperPlans: 'not-an-array' },
+            'helperPlans',
+            undefined,
+        ],
+        // Issue #444: which tree the claim's gates were read from. Only the two known values pass;
+        // anything else reads as absent, which the loop treats as "no stale-source refusal".
+        ['carries the worktree gates source', { gatesSource: 'worktree' }, 'gatesSource', 'worktree'],
+        ['carries the clone gates source', { gatesSource: 'clone' }, 'gatesSource', 'clone'],
+        ['drops an unknown gates source', { gatesSource: 'elsewhere' }, 'gatesSource', undefined],
+        // Issue #244: the board-owned Factory execution context. Read defensively like every other
+        // field added after launch — a board that predates it, or a malformed value, both read as
+        // null, which the loop refuses the launch for explicitly (loop-run.test.ts) rather than
+        // running the agent with no contract.
+        [
+            'carries the master prompt the board rendered',
+            { masterPrompt: 'Factory execution contract (v1)' },
+            'masterPrompt',
+            'Factory execution contract (v1)',
+        ],
+        ['reads a missing masterPrompt as null rather than undefined', {}, 'masterPrompt', null],
+        [
+            'reads a malformed (non-string) masterPrompt as null rather than passing it through',
+            { masterPrompt: 42 },
+            'masterPrompt',
+            null,
+        ],
+        // Issue #509: the claim's per-node context, delivered per turn (master-prompt.ts).
+        ['carries the turn context', { turnContext: 'Factory turn context' }, 'turnContext', 'Factory turn context'],
+        ['drops a missing turn context', { turnContext: undefined }, 'turnContext', ABSENT],
+        ['drops an empty turn context', { turnContext: '' }, 'turnContext', ABSENT],
+        ['drops a non-string turn context', { turnContext: 42 }, 'turnContext', ABSENT],
+        ['drops a null turn context', { turnContext: null }, 'turnContext', ABSENT],
+    ])('%s', async (_label, extra, field, expected) => {
+        const { fetch } = recorder(() => claimed(extra));
+        const job = await boardOn(fetch).claim('driver-1');
+        if (expected === ABSENT) expect(job).not.toHaveProperty(field);
+        else expect(job?.[field as keyof typeof job]).toEqual(expected);
     });
 });
 
 describe('rereading the gates after the startup sync', () => {
-    const job = {
-        id: 'job-1',
-        command: 'echo hi',
-        attempts: 1,
-        claimSeq: 1,
-        leaseToken: 'token-1',
-        leaseExpiresAt: '2026-08-21T12:05:00.000Z',
-        resumeSessionId: null,
-        userId: null,
-    };
+    const job = boardJob();
 
     it('asks the board with the lease token and carries the fresh answer', async () => {
         const { calls, fetch } = recorder(() =>
@@ -388,7 +278,7 @@ describe('rereading the gates after the startup sync', () => {
                 { status: 200 }
             )
         );
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, token: 'fwt_abc', fetch });
+        const board = boardOn(fetch, 'fwt_abc');
 
         const fresh = await board.rereadGates(job);
 
@@ -403,46 +293,29 @@ describe('rereading the gates after the startup sync', () => {
 
     it('answers null — keep the claim’s decision — when the board refuses', async () => {
         const lost = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
-        expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: lost.fetch }).rereadGates(job)
-        ).toBeNull();
+        expect(await boardOn(lost.fetch).rereadGates(job)).toBeNull();
 
         const dead = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
-        expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: dead.fetch }).rereadGates(job)
-        ).toBeNull();
+        expect(await boardOn(dead.fetch).rereadGates(job)).toBeNull();
     });
 
     it('throws when the board could not answer, so the caller can retry it', async () => {
         const broken = recorder(() => {
             throw new Error('board unreachable');
         });
-        await expect(
-            createBoard({ url: 'http://board', leaseSeconds: 300, fetch: broken.fetch }).rereadGates(job)
-        ).rejects.toThrow('board unreachable');
+        await expect(boardOn(broken.fetch).rereadGates(job)).rejects.toThrow('board unreachable');
 
         const down = recorder(() => new Response('bad gateway', { status: 502 }));
-        await expect(
-            createBoard({ url: 'http://board', leaseSeconds: 300, fetch: down.fetch }).rereadGates(job)
-        ).rejects.toThrow(/answered 502/);
+        await expect(boardOn(down.fetch).rereadGates(job)).rejects.toThrow(/answered 502/);
     });
 });
 
 describe('asking for a publish-fresh credential', () => {
-    const job = {
-        id: 'job-1',
-        command: 'echo hi',
-        attempts: 1,
-        claimSeq: 1,
-        leaseToken: 'token-1',
-        leaseExpiresAt: '2026-08-21T12:05:00.000Z',
-        resumeSessionId: null,
-        userId: null,
-    };
+    const job = boardJob();
 
     it('asks the board with the lease token and carries the credential', async () => {
         const { calls, fetch } = recorder(() => Response.json({ GITHUB_TOKEN: 'ghs_fresh' }, { status: 200 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, token: 'fwt_abc', fetch });
+        const board = boardOn(fetch, 'fwt_abc');
 
         const token = await board.publishToken(job);
 
@@ -454,26 +327,18 @@ describe('asking for a publish-fresh credential', () => {
 
     it('answers null — keep the claim env — when the board holds nothing fresher, refuses, or fails', async () => {
         const nothing = recorder(() => Response.json({ GITHUB_TOKEN: null }, { status: 200 }));
-        expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: nothing.fetch }).publishToken(job)
-        ).toBeNull();
+        expect(await boardOn(nothing.fetch).publishToken(job)).toBeNull();
 
         const lost = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
-        expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: lost.fetch }).publishToken(job)
-        ).toBeNull();
+        expect(await boardOn(lost.fetch).publishToken(job)).toBeNull();
 
         const dead = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
-        expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: dead.fetch }).publishToken(job)
-        ).toBeNull();
+        expect(await boardOn(dead.fetch).publishToken(job)).toBeNull();
 
         const broken = recorder(() => {
             throw new Error('board unreachable');
         });
-        expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: broken.fetch }).publishToken(job)
-        ).toBeNull();
+        expect(await boardOn(broken.fetch).publishToken(job)).toBeNull();
     });
 });
 
@@ -490,7 +355,7 @@ describe('asking the board for the orphan reaper lease lookups', () => {
             { id: ID_B, status: 'running', leaseToken: '22222222-2222-4222-8222-222222222222' },
         ];
         const { calls, fetch } = recorder(() => Response.json({ jobs }, { status: 200 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, token: 'fwt_abc', fetch });
+        const board = boardOn(fetch, 'fwt_abc');
 
         expect(await board.leases([ID_A, ID_B])).toEqual(jobs);
         expect(calls[0]!.url).toBe('http://board/api/jobs/leases');
@@ -500,7 +365,7 @@ describe('asking the board for the orphan reaper lease lookups', () => {
 
     it('omits the bearer header against an open board, like every other call', async () => {
         const { calls, fetch } = recorder(() => Response.json({ jobs: [] }, { status: 200 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const board = boardOn(fetch);
 
         await board.leases([ID_A]);
 
@@ -509,16 +374,12 @@ describe('asking the board for the orphan reaper lease lookups', () => {
 
     it('answers null — reap nothing — when the board refuses or fails', async () => {
         const refused = recorder(() => Response.json({ error: 'boom' }, { status: 500 }));
-        expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: refused.fetch }).leases([ID_A])
-        ).toBeNull();
+        expect(await boardOn(refused.fetch).leases([ID_A])).toBeNull();
 
         const broken = recorder(() => {
             throw new Error('board unreachable');
         });
-        expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: broken.fetch }).leases([ID_A])
-        ).toBeNull();
+        expect(await boardOn(broken.fetch).leases([ID_A])).toBeNull();
     });
 
     it('answers null when ANY row is unreadable — a partial answer is a reap verdict, never trusted', async () => {
@@ -536,7 +397,7 @@ describe('asking the board for the orphan reaper lease lookups', () => {
                 { status: 200 }
             )
         );
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const board = boardOn(fetch);
 
         // The one readable row is NOT passed through: "absent means unknown" is a reap verdict,
         // and a malformed row must not be silently converted into it.
@@ -545,20 +406,11 @@ describe('asking the board for the orphan reaper lease lookups', () => {
 });
 
 describe('the heartbeat verdict', () => {
-    const job = {
-        id: 'job-1',
-        command: 'echo hi',
-        attempts: 1,
-        claimSeq: 1,
-        leaseToken: 'token-1',
-        leaseExpiresAt: '2026-08-21T12:05:00.000Z',
-        resumeSessionId: null,
-        userId: null,
-    };
+    const job = boardJob();
 
     it('carries the stop flag when the board set it on a held lease', async () => {
         const { calls, fetch } = recorder(() => Response.json({ cancelRequested: true }, { status: 200 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const board = boardOn(fetch);
 
         expect(await board.heartbeat(job)).toEqual({
             result: 'held',
@@ -571,26 +423,26 @@ describe('the heartbeat verdict', () => {
 
     it('answers held without the stop flag when the board never set one', async () => {
         const { fetch } = recorder(() => Response.json({}, { status: 200 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const board = boardOn(fetch);
         expect(await board.heartbeat(job)).toEqual({ result: 'held', cancelRequested: false, answeredQuestions: [] });
     });
 
     it('carries the answered questions the board lists on a held lease', async () => {
         const answeredQuestions = [{ questionId: 'toolu_1', answers: { 'Which colour?': 'Blue' } }];
         const { fetch } = recorder(() => Response.json({ cancelRequested: false, answeredQuestions }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const board = boardOn(fetch);
         expect(await board.heartbeat(job)).toEqual({ result: 'held', cancelRequested: false, answeredQuestions });
     });
 
     it('reads an answeredQuestions that is not a list as none', async () => {
         const { fetch } = recorder(() => Response.json({ answeredQuestions: 'x' }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const board = boardOn(fetch);
         expect(await board.heartbeat(job)).toEqual({ result: 'held', cancelRequested: false, answeredQuestions: [] });
     });
 
     it('answers lost on a 409, which is a verdict not a failure', async () => {
         const { fetch } = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const board = boardOn(fetch);
         expect(await board.heartbeat(job)).toBe('lost');
     });
 
@@ -598,22 +450,13 @@ describe('the heartbeat verdict', () => {
         // The only 404 a heartbeat can see is a Remove; the driver kills the container and
         // reports nothing, so the status has to arrive as a verdict rather than "board broken".
         const { fetch } = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const board = boardOn(fetch);
         expect(await board.heartbeat(job)).toBe('removed');
     });
 });
 
 describe('the question calls', () => {
-    const job = {
-        id: 'job-1',
-        command: 'echo hi',
-        attempts: 1,
-        claimSeq: 1,
-        leaseToken: 'token-1',
-        leaseExpiresAt: '2026-08-21T12:05:00.000Z',
-        resumeSessionId: null,
-        userId: null,
-    };
+    const job = boardJob();
     const questions = [
         {
             question: 'Which colour?',
@@ -624,7 +467,7 @@ describe('the question calls', () => {
     ];
     const board = (status: number, body: unknown = {}) => {
         const { calls, fetch } = recorder(() => Response.json(body, { status }));
-        return { calls, board: createBoard({ url: 'http://board', leaseSeconds: 300, fetch }) };
+        return { calls, board: boardOn(fetch) };
     };
 
     it('reports a question under the lease token and answers held for 201 and 200', async () => {
@@ -657,61 +500,42 @@ describe('the removed-thread reclaim queue', () => {
             leaseExpiresAt: '2026-08-21T12:05:00.000Z',
         };
         const { calls, fetch } = recorder(() => Response.json(row, { status: 200 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const board = boardOn(fetch);
 
         expect(await board.claimReclaim('driver-1')).toEqual(row);
         expect(calls[0]!.url).toBe('http://board/api/reclaims/claim');
         expect(calls[0]!.body).toEqual({ worker: 'driver-1', leaseSeconds: 300 });
 
         const { fetch: idle } = recorder(() => new Response(null, { status: 204 }));
-        const idleBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: idle });
+        const idleBoard = boardOn(idle);
         expect(await idleBoard.claimReclaim('driver-1')).toBeNull();
     });
 
     it('acks a consumed row as ok, and reads 409 and 404 back as their own verdicts', async () => {
         const ok = recorder(() => Response.json({ id: 'row-1' }, { status: 200 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, token: 'fwt_abc', fetch: ok.fetch });
+        const board = boardOn(ok.fetch, 'fwt_abc');
         expect(await board.ackReclaim('row-1', 'driver-1')).toBe('ok');
         expect(ok.calls[0]!.url).toBe('http://board/api/reclaims/row-1/ack');
         expect(ok.calls[0]!.body).toEqual({ worker: 'driver-1' });
         expect(ok.calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
 
         const lost = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
-        expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: lost.fetch }).ackReclaim(
-                'row-1',
-                'driver-1'
-            )
-        ).toBe('lost');
+        expect(await boardOn(lost.fetch).ackReclaim('row-1', 'driver-1')).toBe('lost');
 
         const gone = recorder(() => Response.json({ error: 'No such reclaim' }, { status: 404 }));
-        expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: gone.fetch }).ackReclaim(
-                'row-1',
-                'driver-1'
-            )
-        ).toBe('missing');
+        expect(await boardOn(gone.fetch).ackReclaim('row-1', 'driver-1')).toBe('missing');
     });
 
     it('still throws on any other non-ok answer', async () => {
         const { fetch } = recorder(() => Response.json({ error: 'boom' }, { status: 500 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const board = boardOn(fetch);
 
         await expect(board.ackReclaim('row-1', 'driver-1')).rejects.toThrow(/500/);
     });
 });
 
 describe('the complete verdict', () => {
-    const job = {
-        id: 'job-1',
-        command: 'echo hi',
-        attempts: 1,
-        claimSeq: 1,
-        leaseToken: 'token-1',
-        leaseExpiresAt: '2026-08-21T12:05:00.000Z',
-        resumeSessionId: null,
-        userId: null,
-    };
+    const job = boardJob();
 
     it('carries the thread-done answer the board computed beside the lease state', async () => {
         // The board computes threadDone in the same lease-guarded transaction as the verdict,
@@ -720,7 +544,7 @@ describe('the complete verdict', () => {
         const { calls, fetch } = recorder(() =>
             Response.json({ id: 'job-1', status: 'succeeded', threadDone: true }, { status: 200 })
         );
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, token: 'fwt_abc', fetch });
+        const board = boardOn(fetch, 'fwt_abc');
 
         const verdict = await board.complete(job, { status: 'succeeded', exitCode: 0, output: '' });
 
@@ -729,40 +553,23 @@ describe('the complete verdict', () => {
         expect(verdict).toEqual({ state: 'held', threadDone: true });
     });
 
-    it('reads an absent, false or non-boolean threadDone as false — keep the tree', async () => {
-        // Defensive on purpose: a board that predates the field, a body without it, or one that
-        // lies about its type all mean "a follow-up might still come" — the conservative answer.
-        const absent = recorder(() => Response.json({ id: 'job-1', status: 'succeeded' }, { status: 200 }));
-        expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: absent.fetch }).complete(job, {
-                status: 'succeeded',
-                exitCode: 0,
-                output: '',
-            })
-        ).toEqual({ state: 'held', threadDone: false });
-
-        const falseBody = recorder(() => Response.json({ id: 'job-1', threadDone: false }, { status: 200 }));
-        expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: falseBody.fetch }).complete(job, {
-                status: 'succeeded',
-                exitCode: 0,
-                output: '',
-            })
-        ).toEqual({ state: 'held', threadDone: false });
-
-        const lying = recorder(() => Response.json({ id: 'job-1', threadDone: 'yes' }, { status: 200 }));
-        expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: lying.fetch }).complete(job, {
-                status: 'succeeded',
-                exitCode: 0,
-                output: '',
-            })
-        ).toEqual({ state: 'held', threadDone: false });
+    // Defensive on purpose: a board that predates the field, a body without it, or one that
+    // lies about its type all mean "a follow-up might still come" — the conservative answer.
+    it.each<[string, Record<string, unknown>]>([
+        ['an absent', { id: 'job-1', status: 'succeeded' }],
+        ['a false', { id: 'job-1', threadDone: false }],
+        ['a non-boolean', { id: 'job-1', threadDone: 'yes' }],
+    ])('reads %s threadDone as false — keep the tree', async (_label, body) => {
+        const { fetch } = recorder(() => Response.json(body, { status: 200 }));
+        expect(await boardOn(fetch).complete(job, { status: 'succeeded', exitCode: 0, output: '' })).toEqual({
+            state: 'held',
+            threadDone: false,
+        });
     });
 
     it('answers lost with threadDone false when the board refuses the verdict with a 409', async () => {
         const { fetch } = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const board = boardOn(fetch);
 
         expect(await board.complete(job, { status: 'failed', exitCode: 1, output: 'boom' })).toEqual({
             state: 'lost',
@@ -774,7 +581,7 @@ describe('the complete verdict', () => {
         // 409 is a verdict; everything else is the board being broken or the driver being wrong,
         // and neither is swallowed into a silent no-op.
         const { fetch } = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const board = boardOn(fetch);
 
         await expect(board.complete(job, { status: 'succeeded', exitCode: 0, output: '' })).rejects.toThrow(/404/);
     });
@@ -783,7 +590,7 @@ describe('the complete verdict', () => {
         // The structured failure kind (issue #339) rides the verdict like agentTurns does: present
         // only when there is one, so a success or a pre-column row is stored null, never zero-ish.
         const { calls, fetch } = recorder(() => Response.json({ id: 'job-1', threadDone: false }, { status: 200 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const board = boardOn(fetch);
 
         await board.complete(job, { status: 'failed', exitCode: null, output: 'killed', failureKind: 'timeout' });
         expect(calls[0]!.body).toMatchObject({ failureKind: 'timeout' });
@@ -794,7 +601,7 @@ describe('the complete verdict', () => {
 
     it('carries failureCause beside the kind when set, and no key when null or absent (#581)', async () => {
         const { calls, fetch } = recorder(() => Response.json({ id: 'job-1', threadDone: false }, { status: 200 }));
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const board = boardOn(fetch);
 
         await board.complete(job, {
             status: 'failed',
@@ -819,7 +626,7 @@ describe('the complete verdict', () => {
     });
 
     it('no longer carries a separate thread read — the answer travels on complete', () => {
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: recorder(() => claimed()).fetch });
+        const board = boardOn(recorder(() => claimed()).fetch);
         expect('threadDone' in board).toBe(false);
     });
 });

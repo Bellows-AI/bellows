@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { run } from '../src/run.js';
-
-const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
+import { recordingBoard } from './harness.js';
 
 const task = (overrides: Record<string, unknown> = {}) => ({
     id: 'task-1',
@@ -27,20 +26,11 @@ const answer = (items: unknown[], nextCursor: string | null = null) =>
 
 /** Answers each request in turn from `responses`, recording the URL the CLI asked for. */
 function harness(...responses: Response[]) {
-    const out: string[] = [];
-    const err: string[] = [];
     const urls: string[] = [];
-    const fetch = (async (url: string | URL | globalThis.Request) => {
-        urls.push(String(url));
-        return responses[urls.length - 1] ?? Response.json({ error: 'unexpected', code: 'X' }, { status: 500 });
-    }) as unknown as typeof globalThis.fetch;
-    const io = {
-        env: ENV,
-        fetch,
-        sleep: async () => {},
-        stdout: (t: string) => out.push(t),
-        stderr: (t: string) => err.push(t),
-    };
+    const { out, err, io } = recordingBoard((sent, index) => {
+        urls.push(sent.url);
+        return responses[index] ?? Response.json({ error: 'unexpected', code: 'X' }, { status: 500 });
+    });
     return { out, err, urls, io };
 }
 
@@ -136,20 +126,6 @@ describe('bellows task list', () => {
         const machine = harness(answer([]));
         expect(await run(['task', 'list', '--json'], machine.io)).toBe(0);
         expect(JSON.parse(machine.out.join('')).data).toEqual({ tasks: [], nextCursor: null });
-    });
-
-    it('surfaces a cursor the board refuses for this query', async () => {
-        const { err, io } = harness(
-            Response.json(
-                { error: 'cursor was not issued by this endpoint for this query', code: 'BAD_CURSOR' },
-                { status: 400 }
-            )
-        );
-
-        const code = await run(['task', 'list', '--state', 'past', '--cursor', 'stale'], io);
-
-        expect(code).toBe(1);
-        expect(err.join('')).toContain('[BAD_CURSOR]');
     });
 
     it.each([

@@ -20,6 +20,7 @@ import {
 } from './routes.js';
 import { MATRIX_VIEWPORTS, THEMES, type Theme } from './screenshot-matrix.js';
 import { controlsOutsideViewport, NAMED_SCROLL_REGIONS, pageOverflow } from './viewport.js';
+import { useTheme } from './page-health.js';
 
 /**
  * The responsive and accessibility matrix (issue 287, plan §8): every route family × the
@@ -103,13 +104,6 @@ const ANONYMOUS_ENTRY = ENTRY_SHOTS.filter((shot) => shot.route !== 'account');
 const SETTLED = { timeout: SLOW };
 
 const label = (shot: Shot) => `${shot.route}/${shot.state}`;
-
-/** Both theme mechanisms the bootstrap reads — the stored preference and the OS scheme — so the
- *  real before-paint path picks the theme on both origins and across every navigation. */
-async function useTheme(page: Page, theme: Theme): Promise<void> {
-    await page.emulateMedia({ colorScheme: theme });
-    await page.addInitScript((t) => localStorage.setItem('factory.theme', t), theme);
-}
 
 /** Navigate, wait for the route's data anchor and the fonts, and confirm the theme took. Every
  *  family runs in the same page, so the previous family's mocked routes are dropped first — a
@@ -294,7 +288,8 @@ test.describe('responsive and accessibility matrix (issue 287)', () => {
         });
     }
 
-    for (const width of [1440, 390] as const) {
+    // 360, not 390: the narrow phone the dialogs' containment was first pinned at (issue 190).
+    for (const width of [1440, 360] as const) {
         test(`every dialog contains focus and returns it at ${width}`, async ({ page }) => {
             describeCheck(
                 'dialog focus containment and return',
@@ -477,8 +472,9 @@ async function pillsOutsideRows(page: Page): Promise<string[]> {
     return out;
 }
 
-/** Open a dialog, prove Tab and Shift+Tab never leave it, close it with Escape, and prove focus
- *  lands back on the control that opened it. */
+/** Open a dialog, prove it fits the viewport whole without growing the page sideways, prove Tab and
+ *  Shift+Tab never leave it, close it with Escape, and prove focus lands back on the control that
+ *  opened it. */
 interface DialogCase {
     name: string;
     trigger: Locator;
@@ -489,6 +485,16 @@ interface DialogCase {
 async function containsAndReturns(page: Page, { name, trigger, panel, open }: DialogCase): Promise<void> {
     await open();
     await expect(panel).toBeVisible();
+    const box = (await panel.boundingBox())!;
+    const viewport = page.viewportSize()!;
+    expect.soft(box.x, `${name}: left edge inside the viewport`).toBeGreaterThanOrEqual(0);
+    expect.soft(box.y, `${name}: top edge inside the viewport`).toBeGreaterThanOrEqual(0);
+    expect.soft(box.x + box.width, `${name}: right edge inside the viewport`).toBeLessThanOrEqual(viewport.width + 1);
+    expect
+        .soft(box.y + box.height, `${name}: bottom edge inside the viewport`)
+        .toBeLessThanOrEqual(viewport.height + 1);
+    const overflow = await page.evaluate(() => document.body.scrollWidth - document.body.clientWidth);
+    expect.soft(overflow, `${name}: the page overflows while the dialog is open`).toBeLessThanOrEqual(0);
     const insideDialog = () => page.evaluate(() => Boolean(document.activeElement?.closest('[role="dialog"]')));
     await expect.poll(insideDialog, `${name}: focus moves into the dialog`).toBe(true);
     const stops = await panel.evaluate(

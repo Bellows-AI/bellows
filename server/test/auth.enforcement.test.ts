@@ -1,13 +1,12 @@
 import { existsSync } from 'node:fs';
-import { afterEach, describe, expect, it } from 'vitest';
-import Fastify, { type FastifyInstance } from 'fastify';
+import { describe, expect, it } from 'vitest';
+import Fastify from 'fastify';
 import { buildApp } from '../src/app.js';
 import { requirementFor } from '../src/auth/plugin.js';
 import { SESSION_COOKIE } from '../src/auth/session.js';
 import type { AuthConfig } from '../src/config.js';
 import type { Claim, Job } from '../src/db/job-store-types.js';
 import type { JobStore } from '../src/db/job-store-types.js';
-import type { TelemetryStore } from '../src/telemetry/store.js';
 import type { AppDeps } from '../src/app.js';
 import type { OrgRegistry } from '../src/orgs.js';
 import { batchRoutes } from '../src/routes/batches.js';
@@ -15,6 +14,7 @@ import { jobRoutes } from '../src/routes/jobs.js';
 import { readVersion } from '../src/version.js';
 import type { MemoryAuthStore } from './helpers.js';
 import {
+    buildWithAuth,
     githubAuth,
     memoryAuthStore,
     signedIn,
@@ -22,26 +22,26 @@ import {
     stubTelemetryClient,
     testConfig,
     TEST_JOB_BOARD_TOKEN,
+    telemetryStoreStub,
 } from './helpers.js';
+import {
+    HTTP_ACCEPTED,
+    HTTP_CONFLICT,
+    HTTP_CREATED,
+    HTTP_FORBIDDEN,
+    HTTP_NOT_FOUND,
+    HTTP_OK,
+    HTTP_SERVICE_UNAVAILABLE,
+    HTTP_UNAUTHORIZED,
+    trackApps,
+} from './helpers-http.js';
 
 const ORG = 'test-org';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
 const LEASE = '22222222-2222-4222-8222-222222222222';
 const WORKER_TOKEN = TEST_JOB_BOARD_TOKEN;
-const HTTP_OK = 200;
-const HTTP_CREATED = 201;
-const HTTP_ACCEPTED = 202;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
-const HTTP_NOT_FOUND = 404;
-const HTTP_CONFLICT = 409;
-const HTTP_SERVICE_UNAVAILABLE = 503;
 
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 const jobStub = (overrides: Partial<JobStore> = {}): JobStore =>
     ({
@@ -96,13 +96,6 @@ const jobStub = (overrides: Partial<JobStore> = {}): JobStore =>
         ...overrides,
     }) as JobStore;
 
-const telemetryStub = (): TelemetryStore => ({
-    async insertMetrics() {
-        return 0;
-    },
-    async recordBranch() {},
-});
-
 async function build(
     auth: AuthConfig,
     store: MemoryAuthStore,
@@ -111,20 +104,21 @@ async function build(
     // where an org that does not exist resolves to nothing.
     orgsFor?: readonly string[]
 ) {
-    const config = testConfig({ auth });
-    app = await buildApp({
-        config,
-        orgs: staticRegistry({ config, jobs: jobStub(), telemetry: stubTelemetryClient(), orgsFor }),
-        store: telemetryStub(),
-        auth: store,
-        // The attempt-scoped pair the runner's branch reporter presents. Default: the one live
-        // attempt the constants below describe; a test passes its own to model a lost lease.
-        orgOfLease:
-            orgOfLease ?? (async (jobId, leaseToken) => (jobId === JOB_ID && leaseToken === LEASE ? ORG : null)),
-        // The worker routes' org resolvers: the one job the constants describe, nothing else.
-        orgOfJob: async (jobId) => (jobId === JOB_ID ? ORG : null),
-        orgOfReclaim: async (reclaimId) => (reclaimId === JOB_ID ? ORG : null),
-    });
+    const app = await buildWithAuth(
+        auth,
+        store,
+        { jobs: jobStub(), orgsFor },
+        {
+            // The attempt-scoped pair the runner's branch reporter presents. Default: the one live
+            // attempt the constants below describe; a test passes its own to model a lost lease.
+            orgOfLease:
+                orgOfLease ?? (async (jobId, leaseToken) => (jobId === JOB_ID && leaseToken === LEASE ? ORG : null)),
+            // The worker routes' org resolvers: the one job the constants describe, nothing else.
+            orgOfJob: async (jobId) => (jobId === JOB_ID ? ORG : null),
+            orgOfReclaim: async (reclaimId) => (reclaimId === JOB_ID ? ORG : null),
+        }
+    );
+    track(app);
     return app;
 }
 
@@ -146,6 +140,30 @@ const BATCH_PATHS: readonly (readonly [string, string])[] = [
     ['POST', `/api/batches/${JOB_ID}/cancel`],
     ['POST', `/api/batches/${JOB_ID}/tasks/a/retry`],
     ['POST', `/api/batches/${JOB_ID}/tasks/a/accept`],
+];
+
+// The person routes outside the job board and the batches: settings, workflows and the task read
+// model. Each falls through to `user` by the safe default rather than being listed anywhere.
+const PERSON_ROUTES: readonly (readonly [string, string])[] = [
+    ['GET', '/api/env'],
+    ['PUT', '/api/env/workspace'],
+    ['GET', '/api/org/executors'],
+    ['POST', '/api/org/executors'],
+    ['GET', '/api/org/members'],
+    ['PUT', `/api/org/members/${JOB_ID}/role`],
+    ['GET', '/api/workflows'],
+    ['POST', '/api/workflows'],
+    ['GET', `/api/workflows/${JOB_ID}`],
+    ['PUT', `/api/workflows/${JOB_ID}`],
+    ['GET', '/api/workflow-blocks'],
+    // The task read model (#157): a person's inbox view over the same board. A worker token
+    // reading every task summary of the board would be the thread-read hole again, one level up.
+    ['GET', '/api/tasks'],
+    ['GET', '/api/workspace'],
+    ['PUT', '/api/workspace/repos'],
+    ['DELETE', '/api/workspace/repos/acme/web'],
+    ['GET', '/api/workspace/executors'],
+    ['PUT', '/api/workspace/executors'],
 ];
 
 const ROUTE_TABLE: readonly (readonly [string, string])[] = [
@@ -175,11 +193,6 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/settings/workspace', 'open'],
     ['/api/stats', 'user'],
     ['/api/jobs', 'user'],
-    // The task read model (#157): a person's inbox view over the same board. It falls through
-    // to `user` by the safe default rather than being listed anywhere — pinned here because a
-    // worker token reading every task summary of the board would be the thread-read hole
-    // again, one level up.
-    ['/api/tasks', 'user'],
     [`/api/jobs/${JOB_ID}`, 'user'],
     // All three are person's actions on a finished task — a follow-up asks for adjustments,
     // retry re-runs the thread head's command fresh, done declares the task finished by
@@ -264,8 +277,6 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // default is the safe one, so a new route is walled unless somebody deliberately opens it.
     ['/api/repos', 'user'],
     ['/api/skills', 'user'],
-    ['/api/workspace', 'user'],
-    ['/api/workspace/repos', 'user'],
     // Access-token management: a person's settings act, so session cookie or personal bearer —
     // never a worker token, and an org token is 403'd by the hook (not on its allowlist).
     ['/api/tokens', 'user'],
@@ -273,6 +284,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     [`/api/tokens/${JOB_ID}/revoke`, 'user'],
     // Batches are a person's: no batch path is a worker route or on the organization-token allowlist.
     ...BATCH_PATHS.map(([, path]) => [path, 'user'] as [string, string]),
+    ...[...new Set(PERSON_ROUTES.map(([, path]) => path))].map((path) => [path, 'user'] as [string, string]),
 ];
 
 describe('the route table', () => {
@@ -525,7 +537,7 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
             [ORG, board(jobStub())],
             [otherOrg, board(jobStub({ answerQuestion: async () => ({ result: 'unknown' }) }))],
         ]);
-        app = await buildApp({
+        const app = await buildApp({
             config,
             orgs: {
                 for: async (orgId) => {
@@ -535,9 +547,10 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
                 list: async () => [...boards.keys()].map((id) => ({ id, name: id, installationId: null })),
                 warmAll: async () => {},
             },
-            store: telemetryStub(),
+            store: telemetryStoreStub(),
             auth: store,
         });
+        track(app);
         const cookie = await signedIn(store, store.seedMember(otherOrg, 'mallory'));
 
         const response = await app.inject({
@@ -752,6 +765,31 @@ describe('the batch routes are a person’s', () => {
     });
 });
 
+describe('the person routes need a session', () => {
+    it.each(PERSON_ROUTES)('%s %s refuses a request with no credential', async (method, url) => {
+        const server = await build(githubAuth(), memoryAuthStore());
+        const response = await server.inject({
+            method: method as 'GET',
+            url,
+            ...(method === 'GET' || method === 'DELETE' ? {} : { payload: {} }),
+        });
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+        expect(response.json().code).toBe('UNAUTHENTICATED');
+    });
+
+    it.each(PERSON_ROUTES)('%s %s refuses the worker token', async (method, url) => {
+        const server = await build(githubAuth(), memoryAuthStore());
+        const response = await server.inject({
+            method: method as 'GET',
+            url,
+            ...(method === 'GET' || method === 'DELETE' ? {} : { payload: {} }),
+            headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+        });
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+        expect(response.json().code).toBe('UNAUTHENTICATED');
+    });
+});
+
 describe('telemetry ingest', () => {
     it('stays open when no ingest token is configured', async () => {
         // Unset must keep behaving exactly as it did before accounts existed, or every collector
@@ -955,10 +993,10 @@ describe('AUTH_MODE=none', () => {
         const server = await buildApp({
             config,
             orgs: staticRegistry({ config, jobs: jobStub(), telemetry: stubTelemetryClient() }),
-            store: telemetryStub(),
+            store: telemetryStoreStub(),
             auth: store,
         });
-        app = server;
+        track(server);
 
         const response = await server.inject({ method: 'GET', url: '/api/auth/me' });
 

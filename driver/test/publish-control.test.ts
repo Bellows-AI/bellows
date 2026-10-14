@@ -64,22 +64,38 @@ describe('the control server: POST /publish', () => {
         await server.close();
     });
 
-    it.each<[PublishVerdict, number]>([
+    // A row with a body pins the answer's JSON too: a refusal the evidence policy made and a stale
+    // checkout are 409s carrying the reason, a failed push a 502 carrying its reason.
+    it.each<[PublishVerdict, number, { error: string }?]>([
         ['forbidden', FORBIDDEN_STATUS],
         ['unsupported', NOT_IMPLEMENTED_STATUS],
         ['gone', UNAUTHORIZED_STATUS],
         [{ ...LANDED, ok: false, published: false, reason: 'git push: rejected' }, BAD_GATEWAY_STATUS],
-    ])('maps %j to %i', async (verdict, status) => {
+        [{ ...LANDED, ok: false, reason: 'git push: nope' }, BAD_GATEWAY_STATUS, { error: 'git push: nope' }],
+        [
+            { ...LANDED, ok: false, published: false, reason: 'git push: nope' },
+            BAD_GATEWAY_STATUS,
+            { error: 'git push: nope' },
+        ],
+        [
+            { refused: 'a review is required and none has run' },
+            CONFLICT_STATUS,
+            { error: 'a review is required and none has run' },
+        ],
+        [
+            { ...LANDED, ok: false, published: false, reason: 'moved on', stale: true },
+            CONFLICT_STATUS,
+            { error: 'moved on' },
+        ],
+    ])('maps %j to %i', async (verdict, status, body) => {
         const { server, port } = await opened({ publish: async () => verdict });
-        expect((await post(port, 'tok-p')).status).toBe(status);
+        const answer = await post(port, 'tok-p');
+        expect(answer.status).toBe(status);
+        if (body) await expect(answer.json()).resolves.toEqual(body);
         await server.close();
     });
 
-    it('answers a failed publish with its reason, and a nothing-to-publish as 200 unpublished', async () => {
-        const failing = await opened({ publish: async () => ({ ...LANDED, ok: false, reason: 'git push: nope' }) });
-        await expect((await post(failing.port, 'tok-p')).json()).resolves.toEqual({ error: 'git push: nope' });
-        await failing.server.close();
-
+    it('answers a nothing-to-publish as 200 unpublished', async () => {
         const nothing = await opened({
             publish: async () => ({ ...LANDED, published: false, prUrl: null, reason: 'nothing unpushed' }),
         });
@@ -266,35 +282,5 @@ describe('the publish relay: what an attempt may publish', () => {
             await relay.publish();
             expect(calls.published).toEqual([{ token: 'ghs_fresh', options: { draft: true, revision: 'r1' } }]);
         });
-    });
-});
-
-describe('the control server: a publish the evidence policy refused', () => {
-    const post = (port: number) =>
-        fetch(`http://127.0.0.1:${port}/publish`, { method: 'POST', headers: { authorization: 'Bearer tok-p' } });
-
-    it('answers 409 with the reason for a refusal and for a stale checkout, and 502 for a push failure', async () => {
-        const answers: [PublishVerdict, number, string][] = [
-            [
-                { refused: 'a review is required and none has run' },
-                CONFLICT_STATUS,
-                'a review is required and none has run',
-            ],
-            [{ ...LANDED, ok: false, published: false, reason: 'moved on', stale: true }, CONFLICT_STATUS, 'moved on'],
-            [
-                { ...LANDED, ok: false, published: false, reason: 'git push: nope' },
-                BAD_GATEWAY_STATUS,
-                'git push: nope',
-            ],
-        ];
-        for (const [verdict, status, error] of answers) {
-            const server = createGateServer({ host: '127.0.0.1', manager });
-            server.openControl('tok-p', undefined, { publish: async () => verdict });
-            const port = await server.listen();
-            const answer = await post(port);
-            expect(answer.status).toBe(status);
-            await expect(answer.json()).resolves.toEqual({ error });
-            await server.close();
-        }
     });
 });

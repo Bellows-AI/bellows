@@ -35,6 +35,12 @@ import {
     readsAgentTurns,
 } from '../src/close-read.js';
 import { ARTIFACT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
+import {
+    claudeTranscriptScript,
+    claudeTurnsScript,
+    opencodeReadoutScript,
+    opencodeTranscriptScript,
+} from '../src/container-scripts.js';
 import { createDockerRunner } from '../src/docker-runner.js';
 import { lookupHelper, type HelperPlan } from '../src/helpers.js';
 import {
@@ -107,12 +113,19 @@ const args = (
     servicesNetwork: string | null = null
 ) => dockerArgs(loadDriverConfig(env), job, session, { servicesNetwork: servicesNetwork, envFile: '/tmp/env-file' });
 
-const resumed = (env: NodeJS.ProcessEnv = {}) =>
-    dockerArgs(loadDriverConfig(env), job, { id: SESSION, resume: true }, { envFile: '/tmp/env-file' });
-
 describe('the docker run arguments', () => {
-    it('runs the command as a prompt, after the image', () => {
-        expect(args().slice(-9)).toEqual([
+    // The plan itself is pinned in runner-plan.test.ts; this is docker's rendering of it: every
+    // env pair as `-e NAME=value` BEFORE the image — docker stops option parsing there, and an
+    // `-e` past it would be the CLI's argv — and the CLI args verbatim after it.
+    it('renders the runner plan: env pairs as -e before the image, the CLI args after it', () => {
+        const envBeforeImage = (line: string[], image: string, pairs: string[]) => {
+            for (const pair of pairs) {
+                expect(line[line.indexOf(pair) - 1]).toBe('-e');
+                expect(line.indexOf(pair)).toBeLessThan(line.indexOf(image));
+            }
+        };
+        const claude = args();
+        expect(claude.slice(-9)).toEqual([
             'claude-executor',
             '--session-id',
             SESSION,
@@ -123,67 +136,31 @@ describe('the docker run arguments', () => {
             '-p',
             'fix the failing build',
         ]);
-    });
-
-    // Issue #545, the docker half of the pair: a selection rides the master prompt, so it reaches
-    // the claude argv and the OpenCode `factory` agent with no executor-specific code. The pod-spec
-    // twin is in k8s.test.ts.
-    it('delivers a prompt naming the selected skills verbatim, to both CLIs', () => {
-        const masterPrompt = `${MASTER_PROMPT}\n- Selected skills: github, jira`;
-        const claudeArgv = dockerArgs(
+        envBeforeImage(claude, 'claude-executor', [
+            `FACTORY_TRANSCRIPT_DIR=/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
+            `BELLOWS_SESSION_ID=${SESSION}`,
+            'NPM_CONFIG_UPDATE_NOTIFIER=false',
+        ]);
+        const opencode = dockerArgs(
             loadDriverConfig({}),
-            { ...job, masterPrompt },
-            { id: SESSION, resume: false },
-            {
-                envFile: '/tmp/e',
-            }
+            { ...opencodeJob, followUp: true },
+            { id: 'ses_f86188c3dffeZGYO4yZq4atba9', resume: true },
+            { envFile: '/tmp/env-file' }
         );
-        expect(claudeArgv).toContain(masterPrompt);
-        expect(envFileBody({ ...opencodeJob, masterPrompt }, loadDriverConfig({}))).toContain(
-            JSON.stringify(masterPrompt)
-        );
-    });
-
-    // Parity pin, the docker half of the pair: the prompt is delivered on EVERY run, resume
-    // included. The kubernetes runner used to suppress it on a resume that was not a follow-up;
-    // both platforms now render the one plan (runner-plan.ts), and the k8s twin of this case is
-    // pinned in k8s.test.ts ('delivers the command into a resumed session').
-    it('delivers the prompt on a resume too, never only on a fresh run', () => {
-        expect(resumed().slice(-9)).toEqual([
-            'claude-executor',
-            '--resume',
-            SESSION,
-            '--append-system-prompt',
-            MASTER_PROMPT,
-            '--system-prompt-snapshot',
-            'off',
-            '-p',
+        expect(opencode.slice(-7)).toEqual([
+            'opencode-executor',
+            'run',
+            '--agent',
+            'factory',
+            '--session',
+            'ses_f86188c3dffeZGYO4yZq4atba9',
             'fix the failing build',
         ]);
-    });
-
-    // Issue #509, the docker half of the pair: the per-node turn context never rides the system
-    // prompt. Claude gets it as env for the baked UserPromptSubmit hook, so `-p` stays the command
-    // and a `/skill` command still expands; opencode's positional message is plain text, so it is
-    // prefixed. The k8s twin is pinned in k8s.test.ts ('delivers the turn context').
-    it('delivers the turn context as hook env to claude and as a prompt prefix to opencode', () => {
-        const turnContext = 'Factory turn context\n- Current node: gate-fix';
-        const config = loadDriverConfig({});
-        const session = { id: SESSION, resume: true };
-        const claude = dockerArgs(config, { ...job, command: '/fix 209', turnContext }, session, {
-            envFile: '/tmp/env-file',
-        });
-        expect(claude.slice(-2)).toEqual(['-p', '/fix 209']);
-        expect(claude).toEqual(expect.arrayContaining(['-e', `FACTORY_TURN_CONTEXT=${turnContext}`]));
-        expect(dockerArgs(config, { ...opencodeJob, turnContext }, null, { envFile: '/tmp/env-file' }).at(-1)).toBe(
-            `${turnContext}\n\nfix the failing build`
-        );
-    });
-
-    // The link the UI shows is built from this, so it has to be the id the runner actually uses —
-    // which is why it is given to the CLI rather than read back out of it.
-    it('tells the runner which session id to use', () => {
-        expect(args()).toEqual(expect.arrayContaining(['--session-id', SESSION]));
+        envBeforeImage(opencode, 'opencode-executor', [
+            `XDG_DATA_HOME=/workspaces/bellows/${USER}/.opencode`,
+            'NPM_CONFIG_UPDATE_NOTIFIER=false',
+            'BELLOWS_SESSION_ID=ses_f86188c3dffeZGYO4yZq4atba9',
+        ]);
     });
 
     it("mounts the checkouts volume and starts at the AUTHOR's workspace root", () => {
@@ -223,20 +200,6 @@ describe('the docker run arguments', () => {
                 String(path)
             ).toThrow(/no usable workspace path/);
         }
-    });
-
-    // Issue #360, the docker half: a runner with no flags is unbounded on the daemon too. The
-    // kubernetes quantities translate once, in config.ts — the same values the pod spec renders
-    // verbatim (the parity pin in config.test.ts).
-    it('translates the configured limits and memory request into docker resource flags before the image', () => {
-        const resourceful = args({
-            RUNNER_CPU_LIMIT: '2',
-            RUNNER_MEMORY_LIMIT: '4Gi',
-            RUNNER_MEMORY_REQUEST: '1Gi',
-        });
-        expect(resourceful.slice(0, resourceful.indexOf('claude-executor'))).toEqual(
-            expect.arrayContaining(['--cpus', '2', '--memory', '4294967296', '--memory-reservation', '1073741824'])
-        );
     });
 
     it('adds no resource flags when none are configured — the dev daemon stays unthrottled', () => {
@@ -322,11 +285,6 @@ describe('the docker run arguments', () => {
         );
     });
 
-    it('skips permissions only when told to', () => {
-        expect(args()).not.toContain('--dangerously-skip-permissions');
-        expect(args({ RUNNER_SKIP_PERMISSIONS: '1' })).toContain('--dangerously-skip-permissions');
-    });
-
     // The branch reporter posts to the board's API, and the endpoint rides beside the OTEL one:
     // a URL, not a credential, defaulted from JOB_BOARD_URL.
     it('points the runner at the board so it can report its branch', () => {
@@ -336,20 +294,6 @@ describe('the docker run arguments', () => {
         );
     });
 
-    // npm's update notice is the last thing every npm call prints, burying the summary the
-    // output tail exists to show (#511). Both executors, before the image — so it is runner env.
-    it('silences npm update notices in the claude and opencode runner', () => {
-        const runners: [string[], string][] = [
-            [args(), 'claude-executor'],
-            [dockerArgs(loadDriverConfig({}), opencodeJob, null, { envFile: '/tmp/env-file' }), 'opencode-executor'],
-        ];
-        for (const [line, image] of runners) {
-            const at = line.indexOf('NPM_CONFIG_UPDATE_NOTIFIER=false');
-            expect(line[at - 1]).toBe('-e');
-            expect(at).toBeLessThan(line.indexOf(image));
-        }
-    });
-
     // A default only: a member who wants the notice back names it in claim env, and the driver's
     // `-e` — which would beat the env file — is not there to override it.
     it('leaves the npm notice to a claim that names it', () => {
@@ -357,52 +301,6 @@ describe('the docker run arguments', () => {
         const line = dockerArgs(loadDriverConfig({}), envJob, { id: SESSION, resume: false }, { envFile: '/tmp/e' });
         expect(line.some((arg) => arg.startsWith('NPM_CONFIG_UPDATE_NOTIFIER'))).toBe(false);
         expect(envFileBody(envJob, loadDriverConfig({}))).toContain('NPM_CONFIG_UPDATE_NOTIFIER=true\n');
-    });
-
-    // The claude runner is told the session id before the container starts (the driver mints it),
-    // so the reporter never has to scrape a transcript. A resumed session keeps its id — the
-    // follow-up's spans must join to the same conversation.
-    it('tells the claude runner which session to report', () => {
-        expect(args()).toEqual(expect.arrayContaining(['-e', `BELLOWS_SESSION_ID=${SESSION}`]));
-        expect(resumed()).toEqual(expect.arrayContaining(['-e', `BELLOWS_SESSION_ID=${SESSION}`]));
-    });
-
-    it('gives the opencode runner a session id only when one exists', () => {
-        const open = (env: NodeJS.ProcessEnv = {}, session: RunSession | null = null) =>
-            dockerArgs(loadDriverConfig(env), opencodeJob, session, { envFile: '/tmp/env-file' });
-        // A fresh opencode run has no id yet — the reporter discovers it from the session
-        // database. An unvalidated id must never be interpolated.
-        expect(open().some((arg) => arg.includes('BELLOWS_SESSION_ID'))).toBe(false);
-        const followUp = dockerArgs(
-            loadDriverConfig({}),
-            { ...opencodeJob, followUp: true },
-            { id: SESSION, resume: true },
-            { envFile: '/tmp/env-file' }
-        );
-        expect(followUp).toEqual(expect.arrayContaining(['-e', `BELLOWS_SESSION_ID=${SESSION}`]));
-        // BEFORE the image name: docker stops option parsing there, and an `-e` past it is the
-        // CLI's argv — `opencode run` has no `-e` flag, and the reporter would never see the id.
-        expect(followUp.indexOf(`BELLOWS_SESSION_ID=${SESSION}`)).toBeLessThan(followUp.indexOf('opencode-executor'));
-    });
-
-    // The transcript store rides headless claude-code only — fresh runs AND resumes, because the
-    // resume is the run that needs the thread's earlier transcripts sitting in its config dir.
-    // The path is the same composition transcriptDir pins below, keyed by the thread root.
-    it('hands a headless claude-code run its per-thread transcript store, fresh and resumed alike', () => {
-        const dir = `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`;
-        expect(args()).toEqual(expect.arrayContaining(['-e', `FACTORY_TRANSCRIPT_DIR=${dir}`]));
-        expect(resumed()).toEqual(expect.arrayContaining(['-e', `FACTORY_TRANSCRIPT_DIR=${dir}`]));
-        // Never on the CLI's argv past the image, and never a credential-shaped value: a path
-        // literal like WORKDIR.
-        expect(args().indexOf(`FACTORY_TRANSCRIPT_DIR=${dir}`)).toBeLessThan(args().indexOf('claude-executor'));
-    });
-
-    it('never hands the transcript store to opencode', () => {
-        // opencode persists through its own per-member session database; a second store buys
-        // nothing.
-        expect(dockerArgs(loadDriverConfig({}), opencodeJob, null, { envFile: '/tmp/env-file' })).not.toContain(
-            expect.stringContaining('FACTORY_TRANSCRIPT_DIR')
-        );
     });
 
     // --rm is gone deliberately: cleanup is explicit (a `docker rm` after close), so the runner
@@ -617,48 +515,30 @@ describe("the board's environment", () => {
         expect(line).toEqual(expect.arrayContaining([`WORKDIR=/workspaces/bellows/${USER}`]));
     });
 
-    it('drops a member CRED_HELPER from the claim env and the env file', () => {
+    it.each<[string, Record<string, string>]>([
         // CRED_HELPER is the sync fetch's credential-helper CODE, a value the driver alone
         // chooses; a member's `!` helper riding the claim env into the sync container would be
         // member-controlled code execution, run by git as helper code.
-        const hijacked = { ...job, env: { CRED_HELPER: '!evil', OTHER: 'fine' } };
-        expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
-        expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
-    });
-
-    it('drops a member RESTORE from the claim env and the env file', () => {
+        ['CRED_HELPER', { CRED_HELPER: '!evil' }],
         // RESTORE is the sync's restore-mode switch (issue #58), and the claim env rides the
         // same sync container: a member value there would flip STARTING claims into restore
         // mode — no fetch, no rebase, a first attempt dead-ending on "the branch is gone" —
         // so the driver alone chooses it.
-        const hijacked = { ...job, env: { RESTORE: '1', OTHER: 'fine' } };
-        expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
-        expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
-    });
-
-    it('drops a member SYNC_LOCK_* from the claim env and the env file', () => {
+        ['RESTORE', { RESTORE: '1' }],
         // The startup sync lock's bounds (issue #307) are the script's defaults; a member value
         // riding the claim env into the sync container could shrink the wait to nothing or make
         // every sync steal its neighbour's live lock — so the names stay driver-owned, like
         // RESTORE beside them.
-        const hijacked = { ...job, env: { SYNC_LOCK_WAIT_MS: '1', SYNC_LOCK_STALE_MS: '1', OTHER: 'fine' } };
-        expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
-        expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
-    });
-
-    it('drops a member FACTORY_TRANSCRIPT_DIR from the claim env and the env file', () => {
+        ['SYNC_LOCK_*', { SYNC_LOCK_WAIT_MS: '1', SYNC_LOCK_STALE_MS: '1' }],
         // The transcript store's location is driver-composed (transcriptDir); a member value
         // would steer where headless transcripts are written — and, through the entrypoint's
         // redirect, where the CLI's whole config dir lands.
-        const hijacked = { ...job, env: { FACTORY_TRANSCRIPT_DIR: '/somewhere', OTHER: 'fine' } };
-        expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
-        expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
-    });
-
-    it('drops a member FACTORY_TURN_CONTEXT from the claim env and the env file', () => {
+        ['FACTORY_TRANSCRIPT_DIR', { FACTORY_TRANSCRIPT_DIR: '/somewhere' }],
         // The turn context is board-rendered (runner-plan.ts); a member value would reach the
         // model through the UserPromptSubmit hook as Factory's own context.
-        const hijacked = { ...job, env: { FACTORY_TURN_CONTEXT: 'spoof', OTHER: 'fine' } };
+        ['FACTORY_TURN_CONTEXT', { FACTORY_TURN_CONTEXT: 'spoof' }],
+    ])('drops a member %s from the claim env and the env file', (_name, member) => {
+        const hijacked = { ...job, env: { ...member, OTHER: 'fine' } };
         expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
         expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
     });
@@ -675,36 +555,6 @@ describe("the board's environment", () => {
             { envFile: '/tmp/env-file' }
         );
         expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
-    });
-});
-
-describe('a follow-up run', () => {
-    const followUp = { ...job, followUp: true };
-
-    /**
-     * The one new thing a follow-up asks of the runner: restore the parent conversation AND
-     * deliver the new command into it — without the `-p` the adjustment would never reach the
-     * agent.
-     */
-    it('delivers the command into the restored session', () => {
-        const line = dockerArgs(
-            loadDriverConfig({}),
-            followUp,
-            { id: SESSION, resume: true },
-            { envFile: '/tmp/env-file' }
-        );
-        expect(line.slice(-9)).toEqual([
-            'claude-executor',
-            '--resume',
-            SESSION,
-            '--append-system-prompt',
-            MASTER_PROMPT,
-            '--system-prompt-snapshot',
-            'off',
-            '-p',
-            'fix the failing build',
-        ]);
-        expect(line).not.toContain('--session-id');
     });
 });
 
@@ -739,17 +589,8 @@ describe('the close-time claude-code turn count', () => {
             '--entrypoint',
             'node',
         ]);
-        expect(line.slice(16, 18)).toEqual(['claude-executor', '-e']);
-        const script = line[18] as string;
-        // The script is the static file: the paths and the session id arrive by env, so no
-        // board-derived value is ever part of its text.
-        expect(script).not.toContain(`/workspaces/bellows/${USER}`);
-        expect(script).not.toContain(SESSION);
-        expect(script).toContain('process.env.CLAUDE_TRANSCRIPT_DIR');
-        expect(script).toContain('process.env.CLAUDE_SESSION_ID');
-        expect(script).toContain('process.env.RUN_STARTED_AT');
-        expect(script).toContain("entry.type !== 'assistant'");
-        expect(script).toContain('isSidechain');
+        // The static script by content (what it reads: scripts-claude-turns.test.ts).
+        expect(line.slice(16)).toEqual(['claude-executor', '-e', claudeTurnsScript]);
     });
 
     it('refuses a session id that is not a uuid — it names a file the script would read', () => {
@@ -832,11 +673,7 @@ describe('the transcript export reads (issue #325)', () => {
             '--entrypoint',
             'node',
         ]);
-        expect(line.slice(18, 20)).toEqual(['claude-executor', '-e']);
-        const script = line[20] as string;
-        expect(script).not.toContain(`/workspaces/bellows/${USER}`);
-        expect(script).not.toContain(SESSION);
-        expect(script).toContain('process.env.TRANSCRIPT_LIMIT_BYTES');
+        expect(line.slice(18)).toEqual(['claude-executor', '-e', claudeTranscriptScript]);
     });
 
     it('claude: refuses a session id that is not a uuid', () => {
@@ -866,8 +703,7 @@ describe('the transcript export reads (issue #325)', () => {
             '--entrypoint',
             'node',
         ]);
-        const script = line[20] as string;
-        expect(script).not.toContain(`/workspaces/bellows/${USER}`);
+        expect(line.slice(18)).toEqual(['opencode-executor', '-e', opencodeTranscriptScript]);
     });
 
     /**
@@ -913,33 +749,6 @@ describe('an opencode runner', () => {
     const oc = (env: NodeJS.ProcessEnv = {}) =>
         dockerArgs(loadDriverConfig(env), opencodeJob, null, { envFile: '/tmp/env-file' });
 
-    // opencode's asymmetry, per the repo's own executor spec: `run --session <id>` CONTINUES an
-    // existing session, it cannot adopt one minted in advance. So a fresh run is just
-    // `run <command>` — the id it uses is scraped after the run and reported then.
-    it('runs the command headless, with no session id at all', () => {
-        const line = oc();
-        expect(line.slice(-5)).toEqual(['opencode-executor', 'run', '--agent', 'factory', 'fix the failing build']);
-        expect(line).not.toContain('--session-id');
-        expect(line).not.toContain('--resume');
-        expect(line).not.toContain(SESSION);
-    });
-
-    // The refusal that enforces it, and the docker half of the parity pair: a session with
-    // `resume: false` is an id this driver minted, and opencode cannot adopt one. The k8s twin is
-    // pinned in k8s.test.ts ('refuses to adopt a minted session'); both read the one predicate.
-    it('refuses to adopt a minted session', () => {
-        expect(() =>
-            dockerArgs(loadDriverConfig({}), opencodeJob, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })
-        ).toThrow(/cannot adopt a minted session/);
-    });
-
-    // The session database has to outlive the container or there is nothing to resume into: a
-    // fresh container starts with an empty one. It lives per member, next to their checkouts, on
-    // the workspaces volume.
-    it('persists the session database under the member’s own workspace tree', () => {
-        expect(oc()).toEqual(expect.arrayContaining(['-e', `XDG_DATA_HOME=/workspaces/bellows/${USER}/.opencode`]));
-    });
-
     // Issue #244: the real runner's env file carries the reserved `factory` agent merged into
     // OPENCODE_CONFIG_CONTENT — the one place this happens, so a swap back to `claimEnv` here
     // would silently drop the master prompt from every OpenCode run.
@@ -972,54 +781,16 @@ describe('an opencode runner', () => {
     });
 
     /**
-     * The follow-up: the claim carries the session opencode ITSELF created (scraped and reported
-     * when the parent ran), and `run --session <id> <command>` continues that conversation with
-     * the new adjustment. This is what makes an opencode task follow-up-able.
-     */
-    it('continues its own session with the new command on a follow-up', () => {
-        const line = dockerArgs(
-            loadDriverConfig({}),
-            { ...opencodeJob, followUp: true },
-            {
-                id: 'ses_f86188c3dffeZGYO4yZq4atba9',
-                resume: true,
-            },
-            { envFile: '/tmp/env-file' }
-        );
-        // The BELLOWS_SESSION_ID env rides before the image (it is a container env, not a CLI
-        // flag), naming the SAME conversation the `--session` below restores.
-        expect(line.slice(-7)).toEqual([
-            'opencode-executor',
-            'run',
-            '--agent',
-            'factory',
-            '--session',
-            'ses_f86188c3dffeZGYO4yZq4atba9',
-            'fix the failing build',
-        ]);
-        expect(line).toEqual(expect.arrayContaining(['-e', 'BELLOWS_SESSION_ID=ses_f86188c3dffeZGYO4yZq4atba9']));
-    });
-
-    /**
      * The close path reads what the run left behind — the session id AND how the run's last
      * message ended. A zero exit code with finish `length` is the model's context limit cutting
      * the task short, and the outcome must carry that; only a reason the daemon's read actually
      * produced lands, a failed readout costing neither.
      */
     it('scrapes the finish reason beside the session id when an opencode run closes', async () => {
-        const exec = vitest.fn((args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
-                return Promise.resolve({
-                    stdout: '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"length","tokens":90433,"cost":0.31}\n',
-                });
-            }
-            return Promise.resolve({ stdout: '' });
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
-            exec
+        const { exec } = entrypointAnswers(
+            '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"length","tokens":90433,"cost":0.31}\n'
         );
+        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
 
         const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(outcome).toMatchObject({
@@ -1031,115 +802,25 @@ describe('an opencode runner', () => {
         });
     });
 
-    /**
-     * The session line may also carry the last provider error the run recorded — the premature
-     * stop's cause, which only the session database knows. With a session scraped it is NOT a
-     * readout failure: it rides the outcome as its own field, so the verdict can name the 429
-     * instead of leaving the author a finish reason to decode.
-     */
-    it('carries the session’s last provider error on the outcome beside the session', async () => {
-        const exec = vitest.fn((args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
-                return Promise.resolve({
-                    stdout: '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"tool-calls","tokens":100016,"cost":0,"error":"Error from provider (Console): Rate limit exceeded. Please try again later."}\n',
-                });
-            }
-            return Promise.resolve({ stdout: '' });
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
-            exec
-        );
-
-        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
-        expect(outcome.sessionId).toBe('ses_f86188c3dffeZGYO4yZq4atba9');
-        expect(outcome.finishReason).toBe('tool-calls');
-        expect(outcome.providerError).toBe(
-            'Error from provider (Console): Rate limit exceeded. Please try again later.'
-        );
-        // A scraped session means the readout itself worked — the error is the run's, not the read's.
-        expect(outcome.readoutError).toBeUndefined();
-        // The readout line carried no turn count: unmeasured, never zero.
-        expect(outcome.agentTurns).toBeUndefined();
-    });
-
-    /**
-     * The readout answers one of three ways — a session line, an error line, or nothing — and the
-     * retries must fire on ALL but the first: the WAL-mid-checkpoint read that fails outright and
-     * succeeds milliseconds later presents as an error or as silence, never as a session. A run
-     * whose scrape never lands carries WHY on the outcome, because a lost session presents later
-     * as "this task cannot take a follow-up" and the reason is the only way to tell a broken
-     * query from an empty database.
-     *
-     * RUNNER_SERVICES=0 throughout: the stub routes every `--entrypoint` run to one branch, and
-     * these tests are about the SESSION readout, not the bellows one.
-     */
+    // The retry and merge are pinned in close-read.test.ts; this is docker's transport failure —
+    // a readout container the daemon refused rides the outcome. RUNNER_SERVICES=0: the stub
+    // routes every `--entrypoint` run to one branch, and this is the SESSION readout.
     const ocServicesOff = { RUNNER_SERVICES: '0' } as const;
 
-    it('retries a readout that answers nothing, and takes the session when a later try answers', async () => {
-        let calls = 0;
-        const exec = vitest.fn((args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
-                calls += 1;
-                return Promise.resolve({
-                    stdout: calls === 1 ? '' : '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"stop"}\n',
-                });
-            }
-            return Promise.resolve({ stdout: '' });
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig(ocServicesOff),
-            (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
-            exec
-        );
-
-        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
-        // Two readout tries, plus the transcript export's own container (issue #325).
-        expect(calls).toBe(3);
-        expect(outcome.sessionId).toBe('ses_f86188c3dffeZGYO4yZq4atba9');
-        expect(outcome.readoutError).toBeUndefined();
-    });
-
-    it('carries the readout’s error on the outcome when every try fails', async () => {
-        let calls = 0;
-        const exec = vitest.fn((args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
-                calls += 1;
-                return Promise.resolve({ stdout: '{"error":"no such column: role"}\n' });
-            }
-            return Promise.resolve({ stdout: '' });
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig(ocServicesOff),
-            (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
-            exec
-        );
-
-        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
-        // Three readout tries, plus the transcript export's own container (issue #325).
-        expect(calls).toBe(4);
-        expect(outcome.sessionId ?? null).toBeNull();
-        expect(outcome.readoutError).toBe('no such column: role');
-    });
-
     it('carries a refused readout container on the outcome too', async () => {
-        const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) throw new Error('daemon refused the readout');
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig(ocServicesOff),
-            (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec } = entrypointAnswers(() => {
+            throw new Error('daemon refused the readout');
+        });
+        const runner = dockerRunner(exec, { env: ocServicesOff, spawn: spawnChild('done\n', '', 0) });
 
         const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(outcome.readoutError).toBe('the readout container failed: daemon refused the readout');
     });
 
     it('uses the image configured for its selected executor type', () => {
-        expect(oc({ OPENCODE_EXECUTOR_IMAGE: 'registry/oc:2' }).slice(-4)).toEqual([
+        // The image is the argument before the command; the default would read `opencode-executor`.
+        expect(oc({ OPENCODE_EXECUTOR_IMAGE: 'registry/oc:2' }).slice(-5)).toEqual([
+            'registry/oc:2',
             'run',
             '--agent',
             'factory',
@@ -1210,24 +891,8 @@ describe('scraping the session opencode used', () => {
             // turn count is bounded to the messages written at or after this run began.
             `RUN_STARTED_MS=${Date.parse(START)}`,
         ]);
-        expect(line.slice(14, 18)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e']);
-        const script = line[18] as string;
-        // The script is the static file: the database path arrives by env, so no board-derived
-        // value is ever part of its text.
-        expect(script).not.toContain(`/workspaces/bellows/${USER}`);
-        expect(script).toContain('process.env.OPENCODE_DB');
-        expect(script).toContain('process.env.OPENCODE_DIR');
-        expect(script).toContain('parent_id is null');
-        expect(script).toContain('directory = ?');
-        // The role is a field INSIDE the message's data JSON, not a column — a SQL role filter
-        // throws "no such column: role" on every read and the scrape answers nothing. Filtered in
-        // JS instead, where the parsed role actually is.
-        expect(script).not.toContain("role='assistant'");
-        expect(script).toContain("d.role !== 'assistant'");
-        expect(script).toContain('readOnly');
-        // A failure prints one parseable error line — the empty output of a broken query is
-        // otherwise indistinguishable from an empty database.
-        expect(script).toContain('{ error:');
+        // The static script by content (what it answers: scripts-opencode-readout.test.ts).
+        expect(line.slice(14)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e', opencodeReadoutScript]);
     });
 
     it('scopes the readout to the task worktree when the job names a repo', () => {
@@ -1454,14 +1119,13 @@ describe('the cache watch', () => {
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const { spawn: childSpawn, close } = openChild();
-        const runner = createDockerRunner(
-            loadDriverConfig({
+        const runner = dockerRunner(exec, {
+            env: {
                 RUNNER_CACHE_WATCH: '1',
                 RUNNER_CACHE_WATCH_POLL_MS: '250',
-            }),
-            childSpawn,
-            exec
-        );
+            },
+            spawn: childSpawn,
+        });
 
         const pending = runner.run({ ...opencodeJob, followUp: false }, null);
         while (!calls.some((a) => a[0] === 'kill')) await new Promise((r) => setTimeout(r, 5));
@@ -1480,7 +1144,7 @@ describe('the cache watch', () => {
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const { spawn: childSpawn, close } = openChild();
-        const runner = createDockerRunner(loadDriverConfig({}), childSpawn, exec);
+        const runner = dockerRunner(exec, { spawn: childSpawn });
 
         const pending = runner.run({ ...opencodeJob, followUp: false }, null);
         // Two poll periods of a live run, had the watch been armed at the same 250ms the armed
@@ -1500,11 +1164,10 @@ describe('the cache watch', () => {
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const { spawn: childSpawn, close } = openChild();
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_CACHE_WATCH: '1', RUNNER_CACHE_WATCH_POLL_MS: '250' }),
-            childSpawn,
-            exec
-        );
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_CACHE_WATCH: '1', RUNNER_CACHE_WATCH_POLL_MS: '250' },
+            spawn: childSpawn,
+        });
 
         const pending = runner.run(job, { id: SESSION, resume: false });
         await new Promise((r) => setTimeout(r, 500));
@@ -1831,6 +1494,124 @@ function fakeChild(stdout: string, stderr: string, code: number | null): ChildPr
     return child;
 }
 
+/** A spawn whose every call hands back one {@link fakeChild}. */
+function spawnChild(stdout: string, stderr?: string, code?: number | null): typeof spawn {
+    return (() => fakeChild(stdout, stderr as string, code as number | null)) as unknown as typeof spawn;
+}
+
+/**
+ * A stateful daemon: containers and networks live in maps keyed by id/name with their labels,
+ * `ps` and `network ls` honor `--filter label=` pairs, and `rm -f` / `network rm` remove exactly
+ * what they are told. Service containers, networks and the runner's own `docker create` register
+ * through the exec seam, so cross-attempt "B is untouched" assertions are state, not argv. The
+ * throwaway `run … --entrypoint` container answers `readout` (default: the sync's success
+ * verdict). `fail`, when given, turns the matching call into an execFile-shaped rejection —
+ * stderr on the error, the way the promisified execFile carries a daemon refusal.
+ */
+function labelDaemon({
+    readout = '{"ok":true,"reason":null}',
+    fail,
+}: {
+    readout?: string;
+    fail?: (args: string[]) => string | null;
+} = {}) {
+    const containers = new Map<string, Record<string, string>>();
+    const networks = new Map<string, Record<string, string>>();
+    const calls: string[][] = [];
+    const labelsOf = (args: string[]): Record<string, string> => {
+        const labels: Record<string, string> = {};
+        for (let i = 0; i < args.length; i += 1) {
+            if (args[i] === '--label') {
+                const [key, value] = (args[i + 1] ?? '').split('=');
+                if (key && value !== undefined) labels[key] = value;
+            }
+        }
+        return labels;
+    };
+    const filtersOf = (args: string[]): [string, string][] => {
+        const filters: [string, string][] = [];
+        for (let i = 0; i < args.length; i += 1) {
+            if (args[i] === '--filter' && (args[i + 1] ?? '').startsWith('label=')) {
+                const [key, value] = (args[i + 1] ?? '').slice('label='.length).split('=');
+                if (key && value !== undefined) filters.push([key, value]);
+            }
+        }
+        return filters;
+    };
+    const listed = (entries: Map<string, Record<string, string>>, args: string[]) => {
+        const filters = filtersOf(args);
+        return {
+            stdout: [...entries.entries()]
+                .filter(([, labels]) => filters.every(([key, value]) => labels[key] === value))
+                .map(([name]) => name)
+                .join('\n'),
+        };
+    };
+    const exec = vitest.fn(async (args: string[]) => {
+        calls.push(args);
+        const refused = fail?.(args);
+        if (refused) {
+            throw Object.assign(new Error(`Command failed: docker ${args.join(' ')}`), { stderr: refused });
+        }
+        if (args[0] === 'ps') return listed(containers, args);
+        if (args[0] === 'rm' && args[1] === '-f') {
+            for (const id of args.slice(2)) containers.delete(id);
+            return { stdout: '' };
+        }
+        if (args[0] === 'network' && args[1] === 'ls') return listed(networks, args);
+        if (args[0] === 'network' && args[1] === 'rm') {
+            for (const name of args.slice(2)) networks.delete(name);
+            return { stdout: '' };
+        }
+        if (args[0] === 'network' && args[1] === 'create') {
+            networks.set(args[args.length - 1]!, labelsOf(args));
+            return { stdout: '' };
+        }
+        if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: readout };
+        if ((args[0] === 'run' && args.includes('--network-alias')) || args[0] === 'create') {
+            containers.set(args[args.indexOf('--name') + 1]!, labelsOf(args));
+            return { stdout: '' };
+        }
+        return { stdout: '' };
+    }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+    return { containers, networks, calls, exec };
+}
+
+/**
+ * The common daemon stub: the throwaway `run … --entrypoint` container (a readout, a sync)
+ * prints `answer` — a function sees the argv and may throw, as a refusing daemon does — and
+ * every other docker verb answers empty. Every argv is recorded in `calls`.
+ */
+function entrypointAnswers(answer: string | ((args: string[]) => string)): {
+    exec: (args: string[]) => Promise<{ stdout: string }>;
+    calls: string[][];
+} {
+    const calls: string[][] = [];
+    const exec = vitest.fn(async (args: string[]) => {
+        calls.push(args);
+        if (args[0] === 'run' && args.includes('--entrypoint')) {
+            return { stdout: typeof answer === 'string' ? answer : answer(args) };
+        }
+        return { stdout: '' };
+    });
+    return { exec, calls };
+}
+
+/**
+ * The runner under test: configured from `env`, the daemon stood in by `exec`, and a spawn whose
+ * child prints nothing and exits 0 unless the test hands its own.
+ */
+function dockerRunner(
+    exec: Parameters<typeof createDockerRunner>[2],
+    {
+        env = {},
+        spawn: spawnFn = spawnChild('', '', 0),
+        files,
+    }: { env?: Parameters<typeof loadDriverConfig>[0]; spawn?: typeof spawn; files?: RunnerFiles } = {}
+): ReturnType<typeof createDockerRunner> {
+    return createDockerRunner(loadDriverConfig(env), spawnFn, exec, files);
+}
+
 describe('the docker runner', () => {
     // The daemon is stood in by `execDocker`, so the suite never shells out: the fence and the
     // cleanup `rm` answer empty, and the `inspect` that classifies a 125 close is scripted per
@@ -1839,28 +1620,17 @@ describe('the docker runner', () => {
         if (args[0] === 'inspect') throw new Error('Error: No such object');
         return Promise.resolve({ stdout: '' });
     };
-    const child = (stdout: string, stderr: string, code: number | null) =>
-        (() => {
-            const c = new EventEmitter() as ChildProcess;
-            const stream = (text: string) => {
-                const s = new EventEmitter();
-                if (text) process.nextTick(() => s.emit('data', Buffer.from(text)));
-                return s;
-            };
-            c.stdout = stream(stdout);
-            c.stderr = stream(stderr);
-            process.nextTick(() => c.emit('close', code));
-            return c;
-        }) as unknown as typeof spawn;
 
     it('reads a daemon refusal as a container that never started', async () => {
         // The run printed the daemon's error — and so would a command that echoed it. The
         // classifier does not read this stream at all: the daemon says no container exists.
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            child('', 'docker: Error response from daemon: Conflict. The container name is already in use\n', 125),
-            noContainer
-        );
+        const runner = dockerRunner(noContainer, {
+            spawn: spawnChild(
+                '',
+                'docker: Error response from daemon: Conflict. The container name is already in use\n',
+                125
+            ),
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 125, started: false });
     });
@@ -1875,11 +1645,10 @@ describe('the docker runner', () => {
             return noContainer(args);
         };
         const spawnFn = vitest.fn(() => fakeChild('', '', 0));
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0', RUNNER_OTEL_ENDPOINT: 'http://otel.example:4318' }),
-            spawnFn as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0', RUNNER_OTEL_ENDPOINT: 'http://otel.example:4318' },
+            spawn: spawnFn as unknown as typeof spawn,
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
 
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
@@ -1901,11 +1670,9 @@ describe('the docker runner', () => {
             calls.push({ args, ...(options?.input ? { input: options.input } : {}) });
             return noContainer(args);
         };
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0', RUNNER_OTEL_ENDPOINT: 'http://otel.example:4318' }),
-            child('', '', 0),
-            exec
-        );
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0', RUNNER_OTEL_ENDPOINT: 'http://otel.example:4318' },
+        });
         await runner.run(opencodeJob, null);
         const cp = calls.find((call) => call.args[0] === 'cp');
         expect(cp?.args).toEqual(['cp', '-', `${containerName(opencodeJob)}:/etc`]);
@@ -1929,11 +1696,7 @@ describe('the docker runner', () => {
             return noContainer(args);
         };
         const spawnFn = vitest.fn(() => fakeChild('', '', 0));
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0' }),
-            spawnFn as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnFn as unknown as typeof spawn });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 125, started: false });
         expect(outcome.output).toContain('Error response from daemon: Conflict');
@@ -1949,11 +1712,10 @@ describe('the docker runner', () => {
             args[0] === 'inspect'
                 ? Promise.resolve({ stdout: '{"Status":"created","ExitCode":0}\n' })
                 : Promise.resolve({ stdout: '' });
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0' }),
-            child('', 'Error response from daemon: failed to create task for container\n', 1),
-            exec
-        );
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild('', 'Error response from daemon: failed to create task for container\n', 1),
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 1, started: false });
     });
@@ -1963,7 +1725,7 @@ describe('the docker runner', () => {
             args[0] === 'inspect'
                 ? Promise.resolve({ stdout: '{"Status":"exited","ExitCode":1}\n' })
                 : Promise.resolve({ stdout: '' });
-        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('', 'boom\n', 1), exec);
+        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('', 'boom\n', 1) });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 1, started: true });
     });
@@ -1980,7 +1742,7 @@ describe('the docker runner', () => {
                       })
                   )
                 : Promise.resolve({ stdout: '' });
-        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('', '', 137), exec);
+        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('', '', 137) });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({
             exitCode: 137,
@@ -1992,7 +1754,7 @@ describe('the docker runner', () => {
     it('reads an inspect that fails for any other reason as no loss', async () => {
         const exec = (args: string[]) =>
             args[0] === 'inspect' ? Promise.reject(new Error('daemon unreachable')) : Promise.resolve({ stdout: '' });
-        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('', '', 1), exec);
+        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('', '', 1) });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 1, started: true });
         expect(outcome).not.toHaveProperty('infraLoss');
@@ -2004,11 +1766,10 @@ describe('the docker runner', () => {
     it('carries the full log on the outcome, capped tail-true, beside the unchanged report tail', async () => {
         // Past the artifact cap (512 KiB), so the accumulator really has to cut.
         const fullOutput = `${'head\n'.repeat(20)}${'body line\n'.repeat(60_000)}`;
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0' }),
-            child(fullOutput, '', 0),
-            noContainer
-        );
+        const runner = dockerRunner(noContainer, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild(fullOutput, '', 0),
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
         // The full log is the whole stream tail-kept at the cap: its last line survives, its
@@ -2023,11 +1784,10 @@ describe('the docker runner', () => {
 
     it('keeps the full log byte-true under the cap when the run never exceeded it', async () => {
         const fullOutput = 'short run\n';
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0' }),
-            child(fullOutput, '', 0),
-            noContainer
-        );
+        const runner = dockerRunner(noContainer, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild(fullOutput, '', 0),
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome.fullLog).toBe('short run\n');
         expect(outcome.logTruncated).toBe(false);
@@ -2039,11 +1799,7 @@ describe('the docker runner', () => {
     // env file's values included) would break it.
     it('makes the full log exactly the stream — no claim env value can enter the artifact', async () => {
         const stdout = 'plain run output\nwith a second line\n';
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0' }),
-            child(stdout, '', 0),
-            noContainer
-        );
+        const runner = dockerRunner(noContainer, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild(stdout, '', 0) });
         const outcome = await runner.run(
             { ...job, env: { SENTINEL_SECRET: 'shh-do-not-store' } },
             { id: SESSION, resume: false }
@@ -2061,11 +1817,9 @@ describe('the docker runner', () => {
                 ? Promise.resolve({ stdout: '{"Status":"exited","ExitCode":125}\n' })
                 : Promise.resolve({ stdout: '' })
         );
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            child('work done\n', 'reproduced: docker: Error response from daemon: Conflict\n', 125),
-            inspect as unknown as (args: string[]) => Promise<{ stdout: string }>
-        );
+        const runner = dockerRunner(inspect as unknown as (args: string[]) => Promise<{ stdout: string }>, {
+            spawn: spawnChild('work done\n', 'reproduced: docker: Error response from daemon: Conflict\n', 125),
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 125, started: true });
         expect(inspect).toHaveBeenCalled();
@@ -2073,11 +1827,9 @@ describe('the docker runner', () => {
 
     it('never asks the daemon about a run whose exit code is unambiguous', async () => {
         const inspect = vitest.fn((_args: string[]) => Promise.resolve({ stdout: '' }));
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            child('done\n', '', 0),
-            inspect as unknown as (args: string[]) => Promise<{ stdout: string }>
-        );
+        const runner = dockerRunner(inspect as unknown as (args: string[]) => Promise<{ stdout: string }>, {
+            spawn: spawnChild('done\n', '', 0),
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
         // The fence and the cleanup `rm` go through the same seam; only the inspect is the
@@ -2095,7 +1847,7 @@ describe('the docker runner', () => {
             if (args[0] === 'create') create = args;
             return noContainer(args);
         };
-        const runner = createDockerRunner(loadDriverConfig({}), spawnFn as unknown as typeof spawn, exec);
+        const runner = dockerRunner(exec, { spawn: spawnFn as unknown as typeof spawn });
         const outcome = await runner.run({ ...job, env: { MY_TOKEN: 'board-secret' } }, { id: SESSION, resume: false });
 
         expect(outcome).toMatchObject({ exitCode: 0 });
@@ -2118,7 +1870,7 @@ describe('the docker runner', () => {
      */
     it('hands every chunk it reads to the output stream', async () => {
         const tails: string[] = [];
-        const runner = createDockerRunner(loadDriverConfig({}), child('step one\n', 'warn\n', 0), noContainer);
+        const runner = dockerRunner(noContainer, { spawn: spawnChild('step one\n', 'warn\n', 0) });
 
         const outcome = await runner.run(job, { id: SESSION, resume: false }, (tail) => tails.push(tail));
 
@@ -2145,7 +1897,7 @@ describe('the docker runner', () => {
             expect(args[0]).toBe('ps');
             return Promise.resolve({ stdout: '' });
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
 
         await expect(runner.sampleRuntime(job)).resolves.toEqual({
             cpuPercent: 93,
@@ -2177,7 +1929,7 @@ describe('the docker runner', () => {
                     psLine({ name: 'cache', image: 'redis:7', state: 'exited' }),
             });
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
 
         await expect(runner.sampleRuntime(job)).resolves.toEqual({
             cpuPercent: 93,
@@ -2195,37 +1947,41 @@ describe('the docker runner', () => {
         expect(ps).toContain('label=factory.service');
     });
 
-    /** A fleet read that fails costs the fleet, not the vitals — and never the sample. */
-    it('keeps the vitals when the service read fails', async () => {
-        const exec = vitest.fn((args: string[]) =>
-            args[0] === 'stats'
-                ? Promise.resolve({ stdout: '{"CPUPerc":"93.00%","MemUsage":"544MiB / 7.754GiB","MemPerc":"7.02%"}' })
-                : Promise.reject(new Error('daemon refused'))
-        ) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+    /**
+     * Each half of the sample stands on its own: a fleet read that fails costs the fleet, not the
+     * vitals — and never the sample; unreadable vitals must not silence the fleet (null numbers,
+     * real states); and only when both reads fail is the sample null.
+     */
+    const STATS = '{"CPUPerc":"93.00%","MemUsage":"544MiB / 7.754GiB","MemPerc":"7.02%"}';
+    const refused = new Error('daemon refused');
+    it.each<[string, string | Error, string | Error, unknown]>([
+        [
+            'keeps the vitals when the service read fails',
+            STATS,
+            refused,
+            { cpuPercent: 93, memUsedMb: 544, memPercent: 7.02 },
+        ],
+        [
+            'reports the service fleet even when the vitals read fails',
+            refused,
+            psLine({ name: 'db', image: 'postgres:16', state: 'running' }),
+            {
+                cpuPercent: null,
+                memUsedMb: null,
+                memPercent: null,
+                services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+            },
+        ],
+        ['answers null when the vitals sample cannot be taken', refused, refused, null],
+    ])('%s', async (_label, stats, ps, expected) => {
+        const answer = (value: string | Error) =>
+            value instanceof Error ? Promise.reject(value) : Promise.resolve({ stdout: value });
+        const exec = vitest.fn((args: string[]) => answer(args[0] === 'stats' ? stats : ps)) as unknown as (
+            args: string[]
+        ) => Promise<{ stdout: string }>;
+        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
 
-        await expect(runner.sampleRuntime(job)).resolves.toEqual({
-            cpuPercent: 93,
-            memUsedMb: 544,
-            memPercent: 7.02,
-        });
-    });
-
-    /** And the reverse: unreadable vitals must not silence the fleet — null numbers, real states. */
-    it('reports the service fleet even when the vitals read fails', async () => {
-        const exec = vitest.fn((args: string[]) =>
-            args[0] === 'stats'
-                ? Promise.reject(new Error('daemon refused'))
-                : Promise.resolve({ stdout: psLine({ name: 'db', image: 'postgres:16', state: 'running' }) })
-        ) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
-
-        await expect(runner.sampleRuntime(job)).resolves.toEqual({
-            cpuPercent: null,
-            memUsedMb: null,
-            memPercent: null,
-            services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
-        });
+        await expect(runner.sampleRuntime(job)).resolves.toEqual(expected);
     });
 
     /** Services off: the sample is exactly what it was before services were sampled. */
@@ -2235,7 +1991,7 @@ describe('the docker runner', () => {
             commands.push(args[0]!);
             return Promise.resolve({ stdout: '{"CPUPerc":"93.00%","MemUsage":"544MiB / 7.754GiB","MemPerc":"7.02%"}' });
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('done\n', '', 0), exec);
+        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('done\n', '', 0) });
 
         await expect(runner.sampleRuntime(job)).resolves.toEqual({
             cpuPercent: 93,
@@ -2279,7 +2035,7 @@ describe('the docker runner', () => {
                     : { stdout: '' }
             );
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
 
         await expect(runner.deadServices(job)).resolves.toEqual([
             { name: 'cache', image: 'redis:7', state: 'dead', exitCode: 137, reason: 'OOMKilled', logTail: '' },
@@ -2306,35 +2062,24 @@ describe('the docker runner', () => {
                 ? Promise.resolve({ stdout: psLine({ name: 'mongo', image: 'mongo:8', state: 'exited' }) })
                 : Promise.reject(new Error('No such container'))
         ) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        await expect(
-            createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), fleet).deadServices(job)
-        ).resolves.toEqual([
+        await expect(dockerRunner(fleet, { spawn: spawnChild('done\n', '', 0) }).deadServices(job)).resolves.toEqual([
             { name: 'mongo', image: 'mongo:8', state: 'exited', exitCode: null, reason: null, logTail: '' },
         ]);
 
         const refused = vitest.fn(() => Promise.reject(new Error('daemon refused'))) as unknown as (
             args: string[]
         ) => Promise<{ stdout: string }>;
-        await expect(
-            createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), refused).deadServices(job)
-        ).rejects.toThrow('daemon refused');
+        await expect(dockerRunner(refused, { spawn: spawnChild('done\n', '', 0) }).deadServices(job)).rejects.toThrow(
+            'daemon refused'
+        );
     });
 
     it('answers no dead services without asking the daemon when services are off', async () => {
         const exec = vitest.fn(() => Promise.resolve({ stdout: '' }));
-        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('done\n', '', 0), exec);
+        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('done\n', '', 0) });
 
         await expect(runner.deadServices(job)).resolves.toEqual([]);
         expect(exec).not.toHaveBeenCalled();
-    });
-
-    it('answers null when the vitals sample cannot be taken', async () => {
-        const exec = vitest.fn(() => Promise.reject(new Error('daemon refused'))) as unknown as (
-            args: string[]
-        ) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
-
-        await expect(runner.sampleRuntime(job)).resolves.toBeNull();
     });
 
     describe('parseDockerStats', () => {
@@ -2434,7 +2179,7 @@ describe('the docker runner', () => {
             }
             return noContainer(args);
         };
-        const runner = createDockerRunner(loadDriverConfig({}), child('', '', 0), exec);
+        const runner = dockerRunner(exec);
 
         const outcome = await runner.run(
             { ...job, gateEnv: { BELLOWS_GATE_URL: 'http://host.docker.internal:9099', BELLOWS_GATE_TOKEN: 'tok' } },
@@ -2480,12 +2225,7 @@ describe('the docker runner', () => {
         };
 
         const spawnSpy = vitest.fn(() => fakeChild('', '', 0));
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            spawnSpy as unknown as typeof spawn,
-            noContainer,
-            files
-        );
+        const runner = dockerRunner(noContainer, { spawn: spawnSpy as unknown as typeof spawn, files: files });
 
         const pending = runner.run({ ...job, env: { MY_TOKEN: 'board-secret' } }, { id: SESSION, resume: false });
         await writeUnderway; // the run is parked inside the env-file write
@@ -2516,11 +2256,7 @@ describe('the docker runner', () => {
             return noContainer(args);
         };
         const spawnSpy = vitest.fn(() => fakeChild('', '', 0));
-        runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0' }),
-            spawnSpy as unknown as typeof spawn,
-            exec
-        );
+        runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnSpy as unknown as typeof spawn });
 
         await expect(runner.run(job, { id: SESSION, resume: false })).rejects.toThrow(
             /killed while setting up services/
@@ -2583,11 +2319,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     };
 
     const servicesRunner = (exec: ReturnType<typeof daemon>, fn: typeof spawn) =>
-        createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '1' }),
-            fn,
-            exec as unknown as (args: string[]) => Promise<{ stdout: string }>
-        );
+        dockerRunner(exec as unknown as (args: string[]) => Promise<{ stdout: string }>, {
+            env: { RUNNER_SERVICES: '1' },
+            spawn: fn,
+        });
 
     // A spawn stub whose children never emit on their own: each spawn hands the test a fire
     // function, so the interleaving — one attempt's error or close landing after another
@@ -2642,83 +2377,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         return lease ? `${idFor(lease)}\n` : 'stale-leftover\n';
     };
 
-    /*
-     * A stateful daemon for the cross-attempt tests: containers and networks live in maps keyed
-     * by id/name with their labels, `ps` and `network ls` honor `--filter label=` pairs, and rm /
-     * network rm remove exactly what they are told. Service containers, networks and the
-     * runner's own `docker create` all register through the exec seam. With this daemon the "B is untouched"
-     * assertions stop being argv-shaped and become state: B's entries are still in the maps
-     * after everything A did.
-     */
-    const scriptedDaemon = (readout: string) => {
-        const containers = new Map<string, Record<string, string>>();
-        const networks = new Map<string, Record<string, string>>();
-        const calls: string[][] = [];
-        const labelsOf = (args: string[]): Record<string, string> => {
-            const labels: Record<string, string> = {};
-            for (let i = 0; i < args.length; i += 1) {
-                if (args[i] === '--label') {
-                    const [key, value] = (args[i + 1] ?? '').split('=');
-                    if (key && value !== undefined) labels[key] = value;
-                }
-            }
-            return labels;
-        };
-        const filtersOf = (args: string[]): [string, string][] => {
-            const filters: [string, string][] = [];
-            for (let i = 0; i < args.length; i += 1) {
-                if (args[i] === '--filter' && (args[i + 1] ?? '').startsWith('label=')) {
-                    const [key, value] = (args[i + 1] ?? '').slice('label='.length).split('=');
-                    if (key && value !== undefined) filters.push([key, value]);
-                }
-            }
-            return filters;
-        };
-        const matches = (filters: [string, string][], labels: Record<string, string>): boolean =>
-            filters.every(([key, value]) => labels[key] === value);
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            if (args[0] === 'ps') {
-                const filters = filtersOf(args);
-                return {
-                    stdout: [...containers.entries()]
-                        .filter(([, labels]) => matches(filters, labels))
-                        .map(([id]) => id)
-                        .join('\n'),
-                };
-            }
-            if (args[0] === 'rm' && args[1] === '-f') {
-                for (const id of args.slice(2)) containers.delete(id);
-                return { stdout: '' };
-            }
-            if (args[0] === 'kill') return { stdout: '' };
-            if (args[0] === 'network' && args[1] === 'ls') {
-                const filters = filtersOf(args);
-                return {
-                    stdout: [...networks.entries()]
-                        .filter(([, labels]) => matches(filters, labels))
-                        .map(([name]) => name)
-                        .join('\n'),
-                };
-            }
-            if (args[0] === 'network' && args[1] === 'rm') {
-                for (const name of args.slice(2)) networks.delete(name);
-                return { stdout: '' };
-            }
-            if (args[0] === 'network' && args[1] === 'create') {
-                networks.set(args[args.length - 1]!, labelsOf(args));
-                return { stdout: '' };
-            }
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: readout };
-            if ((args[0] === 'run' && args.includes('--network-alias')) || args[0] === 'create') {
-                containers.set(args[args.indexOf('--name') + 1]!, labelsOf(args));
-                return { stdout: '' };
-            }
-            return { stdout: '' };
-        });
-        return { containers, networks, calls, exec };
-    };
-
     it('reads .bellows.yaml, creates the job network, starts the service, and joins the runner to it', async () => {
         const exec = daemon(READOUT);
         const { fn, seen } = spawnRecording('ran\n', 0);
@@ -2764,11 +2422,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             });
         const run = async (tree: ReturnType<typeof bellowsTree>) => {
             const exec = treeDaemon(tree);
-            const runner = createDockerRunner(
-                loadDriverConfig({ RUNNER_SERVICES: '1', WORKSPACE_MOUNT: tree.mount }),
-                spawnRecording('ran\n', 0).fn,
-                exec as unknown as (args: string[]) => Promise<{ stdout: string }>
-            );
+            const runner = dockerRunner(exec as unknown as (args: string[]) => Promise<{ stdout: string }>, {
+                env: { RUNNER_SERVICES: '1', WORKSPACE_MOUNT: tree.mount },
+                spawn: spawnRecording('ran\n', 0).fn,
+            });
             const outcome = await runner.run(repoJob, { id: SESSION, resume: false });
             const services = exec.mock.calls
                 .map((c) => c[0])
@@ -3127,130 +2784,82 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(seen).toHaveLength(1);
     });
 
-    // A's close that lands LATE: A was killed — kill() tore A's own fleet down while it was
-    // still legitimately A's own — and the loop re-claimed the job as B before A's CLI client
-    // finally exited. The loop's release after A's verdict still runs its teardown, gate-free: the teardown is scoped to
-    // A's lease, so whatever it names is A's own, and B's live fleet is structurally
-    // unaddressable no matter how late the close lands.
-    it("scopes a killed attempt's late verdict teardown to its own lease when the replacement has stood its fleet up", async () => {
-        // Both children hold their close until released, so the interleaving — A still alive
-        // while B stands its fleet up, then A's close landing over it — is the test's to pace.
-        const closers: (() => void)[] = [];
-        const gatedSpawn = ((_command: string, _argv: string[]) => {
-            const c = new EventEmitter() as ChildProcess;
-            const stream = () => {
-                const s = new EventEmitter();
-                return s;
+    // A's close that lands LATE, over B's live fleet, two ways:
+    // - killed: A was killed — kill() tore A's own fleet down while it was still legitimately A's
+    //   own — and the loop re-claimed the job as B before A's CLI client finally exited (137).
+    // - natural close: NO kill anywhere — the lease expires server-side and the board re-claims
+    //   the job as B before any heartbeat delivers 'lost', so A's `killed` marker is never
+    //   recorded. B's fence removes A's leftovers, which closes A's CLI client (0). Not-killed is
+    //   not a free pass to skip the release — it runs unconditionally.
+    // Either way the loop's release after A's verdict still runs its teardown, gate-free: the
+    // teardown is scoped to A's lease, so whatever it names is A's own, and B's live fleet is
+    // structurally unaddressable no matter how late the close lands.
+    it.each([
+        ["a killed attempt's", true, 137],
+        ["a natural close's", false, 0],
+    ])(
+        'scopes %s late verdict teardown to its own lease when the replacement has stood its fleet up',
+        async (_label, killA, closeCode) => {
+            // Both children hold their close until released, so the interleaving — A still alive
+            // while B stands its fleet up, then A's close landing over it — is the test's to pace.
+            const closers: (() => void)[] = [];
+            const gatedSpawn = ((_command: string, _argv: string[]) => {
+                const c = new EventEmitter() as ChildProcess;
+                const stream = () => {
+                    const s = new EventEmitter();
+                    return s;
+                };
+                c.stdout = stream();
+                c.stderr = stream();
+                closers.push(() => process.nextTick(() => c.emit('close', closeCode)));
+                return c;
+            }) as unknown as typeof spawn;
+            const closeOf = async (index: number): Promise<() => void> => {
+                // Same macrotask yield as childAt above: the runner's env-file write is real fs on the
+                // way to each spawn, and a microtask-only wait would starve it.
+                while (closers.length <= index) await new Promise((r) => setImmediate(r));
+                return closers[index]!;
             };
-            c.stdout = stream();
-            c.stderr = stream();
-            closers.push(() => process.nextTick(() => c.emit('close', 137)));
-            return c;
-        }) as unknown as typeof spawn;
-        const closeOf = async (index: number): Promise<() => void> => {
-            // Same macrotask yield as childAt above: the runner's env-file write is real fs on the
-            // way to each spawn, and a microtask-only wait would starve it.
-            while (closers.length <= index) await new Promise((r) => setImmediate(r));
-            return closers[index]!;
-        };
 
-        const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
-            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
-            if (args[0] === 'ps') return { stdout: psAnswer(args) };
-            return { stdout: '' };
-        });
-        const runner = servicesRunner(exec, gatedSpawn);
+            const exec = vitest.fn(async (args: string[]) => {
+                if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
+                if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+                if (args[0] === 'ps') return { stdout: psAnswer(args) };
+                return { stdout: '' };
+            });
+            const runner = servicesRunner(exec, gatedSpawn);
 
-        const runA = runner.run(attemptA, { id: SESSION, resume: false });
-        const closeA = await closeOf(0); // A spawned; its CLI client is alive
-        // The loop loses A's lease and kills the attempt: A's own fleet torn down while it is
-        // still legitimately A's.
-        await runner.kill(attemptA);
-        // B re-claims the same job id and stands a fresh fleet up.
-        const runB = runner.run(attemptB, { id: SESSION, resume: false });
-        await closeOf(1); // B spawned; its network and service are live
-        const afterBCreation = exec.mock.calls.length;
+            const runA = runner.run(attemptA, { id: SESSION, resume: false });
+            const closeA = await closeOf(0); // A spawned; its CLI client is alive
+            // Killed: the loop loses A's lease and kills the attempt — A's own fleet torn down while
+            // it is still legitimately A's. Natural close: no kill in between; the heartbeat has not
+            // yet told the loop A's lease is gone, and B's fence removes A's leftovers by label.
+            if (killA) await runner.kill(attemptA);
+            // B re-claims the same job id and stands a fresh fleet up.
+            const runB = runner.run(attemptB, { id: SESSION, resume: false });
+            await closeOf(1); // B spawned; its network and service are live
+            const afterBCreation = exec.mock.calls.length;
 
-        // A's CLI client only now exits — daemon slowness makes the close arbitrarily late —
-        // and its verdict lands over B's live fleet; the loop releases A's services after it.
-        closeA();
-        await runA;
-        await runner.releaseServices(attemptA);
+            // A's CLI client only now exits — daemon slowness, or B's fence, makes the close
+            // arbitrarily late — and its verdict lands over B's live fleet; the loop releases A's
+            // services after it.
+            closeA();
+            await runA;
+            await runner.releaseServices(attemptA);
 
-        const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
-        // The teardown ran — and every call of it is A's: the ps filters carry A's lease, the
-        // removals carry A's id and A's network name, and nothing names B.
-        expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
-        expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
-        expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
-        expect(late.every((a) => !touchesB(a))).toBe(true);
+            const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
+            // The teardown ran — and every call of it is A's: the ps filters carry A's lease, the
+            // removals carry A's id and A's network name, and nothing names B.
+            expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
+            expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+            expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
+            expect(late.every((a) => !touchesB(a))).toBe(true);
 
-        // B is untouched and still finishes under its own verdict.
-        closers[1]!();
-        await expect(runB).resolves.toMatchObject({ exitCode: 137, started: true });
-    });
-
-    // The natural-close twin of the test above, with NO kill anywhere: the lease expires
-    // server-side and the board re-claims the job as B before any heartbeat delivers 'lost' —
-    // so the loop never kills A, and A's `killed` marker is never recorded. B's fence removes
-    // A's leftovers, which closes A's CLI client, and A's verdict then lands over B's live
-    // fleet. Not-killed is not a free pass to skip the release — it runs unconditionally —
-    // and it is safe unconditionally: scoped to A's lease, it can only ever name A's own.
-    it("scopes a natural close's late verdict teardown to its own lease when a replacement claim has stood its fleet up", async () => {
-        // Both children hold their close until released, so the interleaving — A still alive
-        // while B stands its fleet up, then A's close landing over it — is the test's to pace.
-        const closers: (() => void)[] = [];
-        const gatedSpawn = ((_command: string, _argv: string[]) => {
-            const c = new EventEmitter() as ChildProcess;
-            const stream = () => {
-                const s = new EventEmitter();
-                return s;
-            };
-            c.stdout = stream();
-            c.stderr = stream();
-            closers.push(() => process.nextTick(() => c.emit('close', 0)));
-            return c;
-        }) as unknown as typeof spawn;
-        const closeOf = async (index: number): Promise<() => void> => {
-            // Same macrotask yield as childAt above: the runner's env-file write is real fs on the
-            // way to each spawn, and a microtask-only wait would starve it.
-            while (closers.length <= index) await new Promise((r) => setImmediate(r));
-            return closers[index]!;
-        };
-
-        const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
-            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
-            if (args[0] === 'ps') return { stdout: psAnswer(args) };
-            return { stdout: '' };
-        });
-        const runner = servicesRunner(exec, gatedSpawn);
-
-        const runA = runner.run(attemptA, { id: SESSION, resume: false });
-        const closeA = await closeOf(0); // A spawned; its CLI client is alive — and never killed
-        // B re-claims the same job id with no kill in between: the heartbeat has not yet told
-        // the loop A's lease is gone. B's fence removes A's leftovers by label.
-        const runB = runner.run(attemptB, { id: SESSION, resume: false });
-        await closeOf(1); // B spawned; its network and service are live
-        const afterBCreation = exec.mock.calls.length;
-
-        // A's CLI client only now closes naturally — its container was fenced away by B — and
-        // the loop releases A's services after it.
-        closeA();
-        await runA;
-        await runner.releaseServices(attemptA);
-
-        const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
-        expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
-        expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
-        expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
-        expect(late.every((a) => !touchesB(a))).toBe(true);
-
-        // B is untouched and still finishes under its own verdict.
-        closers[1]!();
-        await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
-    });
+            // B is untouched and still finishes under its own verdict.
+            closers[1]!();
+            await expect(runB).resolves.toMatchObject({ exitCode: closeCode, started: true });
+        }
+    );
 
     // The late-kill twin of the two close tests above: the kill itself arrives AFTER the
     // replacement claimed the job and stood its fleet up — the heartbeat can be arbitrarily
@@ -3559,19 +3168,17 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // kill: fired from A's own runner after B stands its fleet up, every call it issues
     // carries A's lease, B's names appear in no argv, and B finishes its run untouched.
     it("keeps a replacement attempt unaddressable to a stale attempt's late kill across two runner instances", async () => {
-        const d = scriptedDaemon(READOUT);
+        const d = labelDaemon({ readout: READOUT });
         const spawnA = gatedSpawns();
         const spawnB = gatedSpawns();
-        const runner1 = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '1' }),
-            spawnA.fn,
-            d.exec as unknown as (args: string[]) => Promise<{ stdout: string }>
-        );
-        const runner2 = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '1' }),
-            spawnB.fn,
-            d.exec as unknown as (args: string[]) => Promise<{ stdout: string }>
-        );
+        const runner1 = dockerRunner(d.exec, {
+            env: { RUNNER_SERVICES: '1' },
+            spawn: spawnA.fn,
+        });
+        const runner2 = dockerRunner(d.exec, {
+            env: { RUNNER_SERVICES: '1' },
+            spawn: spawnB.fn,
+        });
 
         const runA = runner1.run(attemptA, { id: SESSION, resume: false });
         await spawnA.childAt(0); // A's fleet and runner stand on the daemon
@@ -3625,7 +3232,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(serviceContainerName(attemptB, 'stub')).not.toBe(serviceContainerName(attemptA, 'stub'));
 
         // A's leftovers still exist on the daemon when B's run starts.
-        const d = scriptedDaemon(READOUT);
+        const d = labelDaemon({ readout: READOUT });
         d.containers.set(containerName(attemptA), { 'factory.job': job.id, 'factory.lease': ATTEMPT_A });
         d.containers.set(serviceContainerName(attemptA, 'stub'), {
             'factory.job': job.id,
@@ -3634,11 +3241,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         });
 
         const { fn, seen } = spawnRecording('ran\n', 0);
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '1' }),
-            fn,
-            d.exec as unknown as (args: string[]) => Promise<{ stdout: string }>
-        );
+        const runner = dockerRunner(d.exec, {
+            env: { RUNNER_SERVICES: '1' },
+            spawn: fn,
+        });
         await runner.run(attemptB, { id: SESSION, resume: false });
 
         // The fence removed both of A's leftovers by label.
@@ -3657,7 +3263,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     it('fences every leftover of the job by label — containers, networks, and the legacy network — and nothing else', async () => {
         const oldA = { ...job, leaseToken: 'aaaaaaaa-1111-4111-8111-111111111111' };
         const oldB = { ...job, leaseToken: 'bbbbbbbb-2222-4222-8222-222222222222' };
-        const d = scriptedDaemon(READOUT);
+        const d = labelDaemon({ readout: READOUT });
         d.containers.set(containerName(oldA), { 'factory.job': job.id, 'factory.lease': oldA.leaseToken });
         d.containers.set(serviceContainerName(oldB, 'stub'), {
             'factory.job': job.id,
@@ -3680,11 +3286,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             return answer;
         };
         const { fn } = spawnRecording('ran\n', 0);
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '1' }),
-            fn,
-            exec as unknown as (args: string[]) => Promise<{ stdout: string }>
-        );
+        const runner = dockerRunner(exec as unknown as (args: string[]) => Promise<{ stdout: string }>, {
+            env: { RUNNER_SERVICES: '1' },
+            spawn: fn,
+        });
         await runner.run(attemptB, { id: SESSION, resume: false });
 
         // All four leftovers are gone; the other job's container is not this fence's business.
@@ -3962,31 +3567,15 @@ describe('publishing the produced work', () => {
         ).toThrow(/worktree/);
     });
 
-    it('creates the worktree off the remote default, rebasing an existing one', () => {
-        // Every git call in the script is execFileSync — no value can become a command.
+    // What the sync does is executed for real in worktree*.test.ts and scripts-worktree-lock.test.ts;
+    // these pins have no behavioural twin.
+    it('runs every git call of the sync without a shell, and anchors the transient marker', () => {
         expect(gitWorktreeScript).toContain('execFileSync');
         expect(gitWorktreeScript).not.toContain('execSync(');
-        // The remote is fetched with the env file's credential; nothing on a command line.
-        expect(gitWorktreeScript).toContain("git('fetch', 'origin', '--prune')");
-        // Stale worktree admin entries are pruned before an add, so a directory that was
-        // removed underneath git can be recreated instead of failing forever.
-        expect(gitWorktreeScript).toContain("git('worktree', 'prune')");
-        expect(gitWorktreeScript).toContain("git('worktree', 'add', wt, branch)");
-        // An existing worktree keeps its commits by rebasing onto the new default — with
-        // --autostash, so a follow-up in the same tree works even when the previous run left
-        // uncommitted edits: the edits are stashed for the rebase and reapplied after it.
-        expect(gitWorktreeScript).toContain("inw('rebase', '--autostash', 'origin/' + def)");
-        // A conflicted rebase aborts itself — the worktree must never sit mid-rebase — and the
-        // failure names what happened.
+        // A rebase that fails without a conflict aborts itself — the worktree never sits
+        // mid-rebase — and the refusal names what happened.
         expect(gitWorktreeScript).toContain("inw('rebase', '--abort')");
         expect(gitWorktreeScript).toContain('rebased onto');
-        // A path that holds a git tree this sync did not create is refused, never deleted.
-        expect(gitWorktreeScript).toContain("fs.existsSync(wt + '/.git')");
-        // The startup sync serializes on a per-checkout lockfile (issue #307): concurrent claims
-        // of one repo fetch the same refs, and the loser used to die on git's ref transaction —
-        // lock contention answers with the transient marker the loop reads as infrastructure.
-        expect(gitWorktreeScript).toContain("'factory-sync.lock'");
-        expect(gitWorktreeScript).toContain('transient worktree sync');
         expect(TRANSIENT_SYNC_REASON.test('transient worktree sync: still held')).toBe(true);
         // Anchored at the head: ordinary refusal reasons splice member-controlled git stderr,
         // and a conflicted file named after the marker must never read as transient.
@@ -3994,17 +3583,8 @@ describe('publishing the produced work', () => {
     });
 
     it('hands the sync the clone, the worktree and the branch, by env', async () => {
-        const calls: string[][] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: '{"ok":true,"reason":null}' };
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec, calls } = entrypointAnswers('{"ok":true,"reason":null}');
+        const runner = dockerRunner(exec);
         const result = await runner.syncCheckout(repoJob);
 
         expect(result).toEqual({ ok: true, reason: null });
@@ -4033,17 +3613,8 @@ describe('publishing the produced work', () => {
     // password would break it). The VALUE passed is helper CODE, never the credential — the
     // token itself travels only in the env file, where the helper reads it.
     it('hands the sync the credential-helper code only when the claim env carries GITHUB_TOKEN', async () => {
-        const calls: string[][] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: '{"ok":true,"reason":null}' };
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec, calls } = entrypointAnswers('{"ok":true,"reason":null}');
+        const runner = dockerRunner(exec);
 
         await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } });
         const run = calls.find((a) => a[0] === 'run')!;
@@ -4070,17 +3641,8 @@ describe('publishing the produced work', () => {
     // written (restore talks only to the local clone — nothing to credential), and the fetch's
     // helper code is absent even when the claim carries a token.
     it('restores a claim that continues a session instead of syncing it', async () => {
-        const calls: string[][] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: '{"ok":true,"reason":null}' };
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec, calls } = entrypointAnswers('{"ok":true,"reason":null}');
+        const runner = dockerRunner(exec);
 
         await runner.syncCheckout({ ...repoJob, followUp: true, env: { GITHUB_TOKEN: 't0k-3n' } });
         const follow = calls.filter((a) => a[0] === 'run')[0]!;
@@ -4111,11 +3673,7 @@ describe('publishing the produced work', () => {
             if (args[0] === 'run') return { stdout: '{"ok":true,"removed":true,"reason":null}' };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec);
         const result = await runner.reclaimWorktree(repoJob);
 
         expect(result).toEqual({ ok: true, removed: true, reason: null });
@@ -4147,11 +3705,7 @@ describe('publishing the produced work', () => {
             calls.push(args);
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec);
         expect(await runner.reclaimWorktree(job)).toEqual({ ok: true, removed: false, reason: null });
         expect(calls).toHaveLength(0);
     });
@@ -4163,16 +3717,8 @@ describe('publishing the produced work', () => {
      * verdict is by construction an exit-0 container.)
      */
     it('names the last stdout line when the sync container answers nothing parseable', async () => {
-        const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint'))
-                return { stdout: 'fetching origin\nfatal: could not read from remote repository\n' };
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec } = entrypointAnswers('fetching origin\nfatal: could not read from remote repository\n');
+        const runner = dockerRunner(exec);
         const result = await runner.syncCheckout(repoJob);
         expect(result).toEqual({
             ok: false,
@@ -4199,11 +3745,7 @@ describe('publishing the produced work', () => {
             if (args[0] === 'wait') return wait();
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec);
         return { calls, runner };
     };
     const killed = () => Object.assign(new Error('Command failed: docker run'), { killed: true, signal: 'SIGTERM' });
@@ -4246,11 +3788,7 @@ describe('publishing the produced work', () => {
             if (args[0] === 'ps') return { stdout: listings.shift() ?? '' };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec);
 
         const result = await runner.syncCheckout(repoJob);
         let settled = false;
@@ -4329,18 +3867,11 @@ describe('publishing the produced work', () => {
         const reason =
             'transient worktree sync: the checkout lock /w/.git/factory-sync.lock is still held after 20000ms';
         const runs: string[][] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
-                runs.push(args);
-                return { stdout: `${JSON.stringify({ ok: false, reason })}\n` };
-            }
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec } = entrypointAnswers((args) => {
+            runs.push(args);
+            return `${JSON.stringify({ ok: false, reason })}\n`;
+        });
+        const runner = dockerRunner(exec);
 
         const result = await runner.syncCheckout(repoJob);
 
@@ -4351,28 +3882,15 @@ describe('publishing the produced work', () => {
 
     it('carries the script’s failure kind through the sync container’s stdout (issue #666)', async () => {
         const verdict = { ok: false, reason: 'the repository clone /w/r does not exist', kind: 'missing_clone' };
-        const exec = vitest.fn(async (args: string[]) => ({
-            stdout: args[0] === 'run' && args.includes('--entrypoint') ? `${JSON.stringify(verdict)}\n` : '',
-        })) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec } = entrypointAnswers(`${JSON.stringify(verdict)}\n`);
+        const runner = dockerRunner(exec);
 
         expect(await runner.syncCheckout(repoJob)).toMatchObject(verdict);
     });
 
     it('says the sync container printed nothing when its stdout is empty', async () => {
-        const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: '' };
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec } = entrypointAnswers('');
+        const runner = dockerRunner(exec);
         const result = await runner.syncCheckout(repoJob);
         expect(result).toEqual({
             ok: false,
@@ -4385,11 +3903,7 @@ describe('publishing the produced work', () => {
             if (args[0] === 'run') return { stdout: 'rm: permission denied\n' };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec);
         const result = await runner.reclaimWorktree(repoJob);
         expect(result).toEqual({
             ok: false,
@@ -4406,84 +3920,18 @@ describe('publishing the produced work', () => {
                 };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec);
         const result = await runner.reclaimWorktree(repoJob);
         expect(result.ok).toBe(false);
         expect(result.reason).toContain('registered worktree');
     });
 
-    /*
-     * A minimal stateful daemon for the sync's fence: containers and networks live in maps,
-     * `ps` and `network ls` honor their `--filter label=` pairs, and rm removes what it names.
-     * The sync container itself answers the script's success verdict. `fail`, when given, turns
-     * the matching call into an execFile-shaped rejection — stderr on the error, the way the
-     * promisified execFile carries a daemon refusal — so a test can script the daemon saying no.
-     */
-    const fenceDaemon = (fail?: (args: string[]) => string | null) => {
-        const containers = new Map<string, Record<string, string>>();
-        const networks = new Map<string, Record<string, string>>();
-        const calls: string[][] = [];
-        const matches = (args: string[], labels: Record<string, string>): boolean => {
-            for (let i = 0; i < args.length; i += 1) {
-                if (args[i] === '--filter' && (args[i + 1] ?? '').startsWith('label=')) {
-                    const [key, value] = (args[i + 1] ?? '').slice('label='.length).split('=');
-                    if (labels[key] !== value) return false;
-                }
-            }
-            return true;
-        };
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            const refused = fail?.(args);
-            if (refused) {
-                throw Object.assign(new Error(`Command failed: docker ${args.join(' ')}`), { stderr: refused });
-            }
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
-                return { stdout: '{"ok":true,"reason":null}' };
-            }
-            if (args[0] === 'ps') {
-                return {
-                    stdout: [...containers.entries()]
-                        .filter(([, labels]) => matches(args, labels))
-                        .map(([id]) => id)
-                        .join('\n'),
-                };
-            }
-            if (args[0] === 'rm') {
-                for (const id of args.slice(1)) containers.delete(id);
-                return { stdout: '' };
-            }
-            if (args[0] === 'network' && args[1] === 'ls') {
-                return {
-                    stdout: [...networks.entries()]
-                        .filter(([, labels]) => matches(args, labels))
-                        .map(([name]) => name)
-                        .join('\n'),
-                };
-            }
-            if (args[0] === 'network' && args[1] === 'rm') {
-                for (const name of args.slice(2)) networks.delete(name);
-                return { stdout: '' };
-            }
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        return { containers, networks, calls, exec };
-    };
-
     // The fence before the sync (PR #46 review): the loop calls syncCheckout before the
     // runner's own fence, so the sweep has to come here — the sync is the first writer on the
     // task worktree, and starting it over a previous attempt's live runner would mix edits.
     it('sweeps the job label before the sync container is created', async () => {
-        const d = fenceDaemon();
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            d.exec
-        );
+        const d = labelDaemon();
+        const runner = dockerRunner(d.exec);
         const result = await runner.syncCheckout(repoJob);
 
         expect(result).toEqual({ ok: true, reason: null });
@@ -4498,16 +3946,12 @@ describe('publishing the produced work', () => {
     it('removes a previous attempt’s still-running runner before the sync runs', async () => {
         const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
         const NEW_TOKEN = 'bbbbbbbb-2222-4222-8222-222222222222';
-        const d = fenceDaemon();
+        const d = labelDaemon();
         d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), {
             'factory.job': job.id,
             'factory.lease': OLD_TOKEN,
         });
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            d.exec
-        );
+        const runner = dockerRunner(d.exec);
         const result = await runner.syncCheckout({ ...repoJob, leaseToken: NEW_TOKEN });
 
         expect(result).toEqual({ ok: true, reason: null });
@@ -4522,69 +3966,39 @@ describe('publishing the produced work', () => {
     // A fence that converts a failed `docker ps` into an empty answer reads "nothing left" —
     // and the sync would start while a previous attempt's runner is still writing the worktree.
     // The fence is infrastructure, not the command's verdict: it must throw, and the loop's
-    // try/catch around syncCheckout leaves the job to its lease.
-    it('fails the sync when the fence cannot list the job’s leftover containers', async () => {
-        const d = fenceDaemon((args) =>
-            args[0] === 'ps' ? 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock' : null
-        );
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            d.exec
-        );
+    // try/catch around syncCheckout leaves the job to its lease. The same holds for every verb
+    // of the fence, with the leftover the refused verb would have touched seeded.
+    it.each<[string, (args: string[]) => string | null, 'container' | 'network' | null]>([
+        [
+            'cannot list the job’s leftover containers',
+            (args) => (args[0] === 'ps' ? 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock' : null),
+            null,
+        ],
+        [
+            'cannot list the job’s stale networks',
+            (args) => (args[0] === 'network' && args[1] === 'ls' ? 'Cannot connect to the Docker daemon' : null),
+            null,
+        ],
+        [
+            'a leftover container refuses to be removed',
+            (args) => (args[0] === 'rm' ? 'Error: cannot remove container: device is busy' : null),
+            'container',
+        ],
+        [
+            'a leftover network refuses to be removed',
+            (args) => (args[0] === 'network' && args[1] === 'rm' ? 'Error: cannot remove network: in use' : null),
+            'network',
+        ],
+    ])('fails the sync when the fence %s', async (_label, fail, leftover) => {
+        const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
+        const d = labelDaemon({ fail });
+        const labels = { 'factory.job': job.id, 'factory.lease': OLD_TOKEN };
+        if (leftover === 'container') d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), labels);
+        if (leftover === 'network') d.networks.set(networkName({ ...job, leaseToken: OLD_TOKEN }), labels);
+        const runner = dockerRunner(d.exec);
 
         await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
         // No sync container over an unfenced checkout: the throw precedes the run argv entirely.
-        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
-    });
-
-    it('fails the sync when the fence cannot list the job’s stale networks', async () => {
-        const d = fenceDaemon((args) =>
-            args[0] === 'network' && args[1] === 'ls' ? 'Cannot connect to the Docker daemon' : null
-        );
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            d.exec
-        );
-
-        await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
-        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
-    });
-
-    it('fails the sync when a leftover container refuses to be removed', async () => {
-        const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
-        const d = fenceDaemon((args) => (args[0] === 'rm' ? 'Error: cannot remove container: device is busy' : null));
-        d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), {
-            'factory.job': job.id,
-            'factory.lease': OLD_TOKEN,
-        });
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            d.exec
-        );
-
-        await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
-        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
-    });
-
-    it('fails the sync when a leftover network refuses to be removed', async () => {
-        const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
-        const d = fenceDaemon((args) =>
-            args[0] === 'network' && args[1] === 'rm' ? 'Error: cannot remove network: in use' : null
-        );
-        d.networks.set(networkName({ ...job, leaseToken: OLD_TOKEN }), {
-            'factory.job': job.id,
-            'factory.lease': OLD_TOKEN,
-        });
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            d.exec
-        );
-
-        await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
         expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
     });
 
@@ -4593,20 +4007,17 @@ describe('publishing the produced work', () => {
     // attempts on the daemon confirming a removal already finished.
     it('proceeds when the fence’s rm answers that the container is already gone', async () => {
         const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
-        const d = fenceDaemon((args) =>
-            args[0] === 'rm'
-                ? `Error response from daemon: No such container: ${containerName({ ...job, leaseToken: OLD_TOKEN })}`
-                : null
-        );
+        const d = labelDaemon({
+            fail: (args) =>
+                args[0] === 'rm'
+                    ? `Error response from daemon: No such container: ${containerName({ ...job, leaseToken: OLD_TOKEN })}`
+                    : null,
+        });
         d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), {
             'factory.job': job.id,
             'factory.lease': OLD_TOKEN,
         });
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            d.exec
-        );
+        const runner = dockerRunner(d.exec);
 
         expect(await runner.syncCheckout(repoJob)).toEqual({ ok: true, reason: null });
         expect(d.calls.some((a) => a[0] === 'run')).toBe(true);
@@ -4785,12 +4196,7 @@ describe('publishing the produced work', () => {
             if (args.includes('pr') && args.includes('create')) return { stdout: `${PR_URL}\n` };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('')) as unknown as typeof spawn,
-            exec,
-            opts.files
-        );
+        const runner = dockerRunner(exec, { spawn: spawnChild(''), files: opts.files });
         return { calls, envBodies, runner };
     };
 
@@ -4841,7 +4247,7 @@ describe('publishing the produced work', () => {
             cancel.abort();
             throw new Error('The operation was aborted');
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({}), (() => fakeChild('')) as unknown as typeof spawn, exec);
+        const runner = dockerRunner(exec, { spawn: spawnChild('') });
 
         expect(await runner.probeTree?.(ISSUE_JOB, cancel.signal)).toBeNull();
 
@@ -4854,26 +4260,6 @@ describe('publishing the produced work', () => {
     ])('answers null when the probe %s', async (_label, extra, fail) => {
         const { runner } = publishRunner({ ...DIRTY_ON_MAIN, ...extra }, { fail });
         expect(await runner.probeTree?.(ISSUE_JOB)).toBeNull();
-    });
-
-    // Revision-bound evidence (issue #548): a publish bound to a revision pushes only that tree.
-    it('refuses a publish bound to a revision the checkout no longer holds, and runs no git step', async () => {
-        const { calls, runner } = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:2' });
-
-        const result = await runner.publishGit?.(ISSUE_JOB, undefined, { revision: 'h:1' });
-
-        expect(result).toMatchObject({ ok: false, published: false, stale: true });
-        expect(shapesOf(calls)).toEqual(['probe']);
-    });
-
-    it('publishes a bound revision the checkout still holds, and an unbound publish ignores the fingerprint', async () => {
-        const bound = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:1' });
-        expect(await bound.runner.publishGit?.(ISSUE_JOB, undefined, { revision: 'h:1' })).toMatchObject({
-            ok: true,
-            published: true,
-        });
-        const unbound = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:2' });
-        expect(await unbound.runner.publishGit?.(ISSUE_JOB)).toMatchObject({ ok: true, published: true });
     });
 
     it('branches, commits, pushes and opens the PR — in that order', async () => {
@@ -4907,26 +4293,13 @@ describe('publishing the produced work', () => {
             'summary',
             'pr-create',
         ]);
-        // The first switch finds no branch; the second creates it. Commits carry the plan title,
-        // and the fallback identity rides only the commit.
-        const switchCreate = calls.find((a) => a.includes('switch') && a.includes('-c'));
-        expect(switchCreate).toContain('fix/10');
-        const commit = calls.find((a) => a.includes('commit'));
-        expect(commit).toContain('-m');
-        expect(commit).toContain('/fix https://github.com/Bellows-AI/factory/issues/10 (#10)');
-        expect(commit).toContain('user.name=factory-ai');
-        // Push and PR steps carry the env file; the credential helper reads the token from it.
-        // The push is force-with-lease: the startup sync may have rewritten the task branch's
-        // base, and the lease refuses to clobber a remote that moved under us.
+        // The decisions are publishCheckout's (publish-checkout.test.ts); this is their docker
+        // rendering. A step that needs the claim env gets the env file, never the token on argv.
         const push = calls.find((a) => a.includes('push'));
         expect(push).toContain('--env-file');
         expect(push).toContain('--force-with-lease');
-        expect(push.join(' ')).toContain('credential.helper=');
         expect(push.join(' ')).not.toContain('t0k-3n');
-        // The PR speaks for the work, not for the command (issue #82): the summarizer reads the
-        // branch with literal envs — the BASE and the backstop commit's own subject (issue
-        // #389: the prompt must never win the title) — and no credential, and its answer —
-        // issue ref appended — is the title, over the summary body plus the driver's closing lines.
+        // A step's literal envs ride as `-e`, with no env file for a step that needs no credential.
         const summary = calls.find((a) => a.some((x) => typeof x === 'string' && x.includes('shortstat')));
         expect(summary).toEqual(
             expect.arrayContaining([
@@ -4937,113 +4310,9 @@ describe('publishing the produced work', () => {
             ])
         );
         expect(summary).not.toContain('--env-file');
+        // The summarizer's stdout reaches the PR through this transport.
         const create = calls.find((a) => a.includes('pr') && a.includes('create'));
-        expect(create).toContain('--head');
-        expect(create).toContain('fix/10');
         expect(create?.[create.indexOf('--title') + 1]).toBe('Fix the sync re-claim fence (#10)');
-        expect(create?.[create.indexOf('--body') + 1]).toBe(
-            '## Commits\n\n- Fix the sync re-claim fence\n\nCloses #10.\n\nPublished by the factory board after the declared gates passed.'
-        );
-    });
-
-    it('reuses an existing task branch and an existing PR', async () => {
-        const { calls, runner } = publishRunner(
-            { ...DIRTY_ON_MAIN, branch: 'fix/10', hasIdentity: true, unpushed: 1, dirty: false },
-            { prExists: true }
-        );
-        const result = await runner.publishGit(ISSUE_JOB);
-
-        expect(result).toEqual({
-            ok: true,
-            published: true,
-            branch: 'fix/10',
-            prUrl: PR_URL,
-            reason: null,
-            repository: 'Bellows-AI/factory',
-            baseBranch: 'main',
-            prNumber: 42,
-            cause: null,
-        });
-        // On a task branch already: no switch, no commit (clean tree), push of the unpushed
-        // commit, PR found and reused — and no summarizer step, which only a NEW PR gets.
-        expect(shapesOf(calls)).toEqual(['probe', 'push', 'pr-view']);
-    });
-
-    it('opens a draft PR for the agent, and reuses a PR that exists without a second create', async () => {
-        const fresh = publishRunner(DIRTY_ON_MAIN, { fail: (a) => a.includes('switch') && !a.includes('-c') });
-        await fresh.runner.publishGit(ISSUE_JOB, undefined, { draft: true });
-        const create = fresh.calls.find((a) => a.includes('pr') && a.includes('create'));
-        expect(create).toContain('--draft');
-        expect(create?.[create.indexOf('--body') + 1]).toContain('Draft published by the agent');
-        expect(create?.[create.indexOf('--body') + 1]).not.toContain('declared gates passed');
-
-        const again = publishRunner(
-            { ...DIRTY_ON_MAIN, branch: 'fix/10', hasIdentity: true, unpushed: 1, dirty: false },
-            { prExists: true }
-        );
-        const result = await again.runner.publishGit(ISSUE_JOB, undefined, { draft: true });
-        expect(result).toMatchObject({ ok: true, published: true, prUrl: PR_URL, prNumber: 42 });
-        expect(shapesOf(again.calls)).toEqual(['probe', 'push', 'pr-view']);
-    });
-
-    // Issue #573: the agent opened the PR itself with `gh pr create` and pushed everything, so the
-    // checkout is clean — the publish still names that PR, so the board records the one link.
-    it('reconciles a pull request the agent opened itself on a clean, pushed task branch', async () => {
-        const reconciled = publishRunner(
-            { ...DIRTY_ON_MAIN, branch: 'fix/10', hasIdentity: true, dirty: false, unpushed: 0 },
-            { prExists: true }
-        );
-        expect(await reconciled.runner.publishGit(ISSUE_JOB)).toEqual({
-            ok: true,
-            published: true,
-            branch: 'fix/10',
-            prUrl: PR_URL,
-            reason: null,
-            repository: 'Bellows-AI/factory',
-            baseBranch: 'main',
-            prNumber: 42,
-            cause: null,
-        });
-        expect(shapesOf(reconciled.calls)).toEqual(['probe', 'pr-view']);
-
-        const none = publishRunner({
-            ...DIRTY_ON_MAIN,
-            branch: 'fix/10',
-            hasIdentity: true,
-            dirty: false,
-            unpushed: 0,
-        });
-        expect(await none.runner.publishGit(ISSUE_JOB)).toMatchObject({ ok: true, published: false });
-    });
-
-    it('answers the ordinary no-ops without touching the daemon further', async () => {
-        const clean = publishRunner({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 });
-        expect(await clean.runner.publishGit(ISSUE_JOB)).toEqual({
-            ok: true,
-            published: false,
-            branch: null,
-            prUrl: null,
-            reason: 'no uncommitted changes and nothing unpushed',
-            repository: null,
-            baseBranch: null,
-            prNumber: null,
-            cause: null,
-        });
-        expect(clean.calls).toHaveLength(1);
-
-        const uncloned = publishRunner({ cloned: false });
-        expect(await uncloned.runner.publishGit(ISSUE_JOB)).toEqual({
-            ok: true,
-            published: false,
-            branch: null,
-            prUrl: null,
-            reason: 'the checkout has not been cloned yet',
-            repository: null,
-            baseBranch: null,
-            prNumber: null,
-            cause: null,
-        });
-        expect(uncloned.calls).toHaveLength(1);
     });
 
     // EVERY container this feature starts is a full `docker run` — the sync and the publisher
@@ -5072,14 +4341,6 @@ describe('publishing the produced work', () => {
         expect(syncContainers[0]).toContain('--rm');
     });
 
-    it('fails with the step’s reason when a git step refuses', async () => {
-        const { runner } = publishRunner(DIRTY_ON_MAIN, { fail: (a) => a.includes('push') });
-        const result = await runner.publishGit(ISSUE_JOB);
-
-        expect(result.ok).toBe(false);
-        expect(result.reason).toContain('step refused');
-    });
-
     // Issue #581: the board recovers a failed publish by its cause, read from the step's own words.
     it('names a rejected non-fast-forward push a conflict', async () => {
         const { runner } = publishRunner(DIRTY_ON_MAIN, {
@@ -5103,65 +4364,6 @@ describe('publishing the produced work', () => {
         expect(result).toMatchObject({ ok: false, published: false, cause: 'transport' });
         expect(result.reason).toContain('could not write the publish env file');
     });
-
-    // The summary is decoration, never worth the publish (issue #82): a script that cannot read
-    // the branch must not fail a run that already pushed — the command-derived title and the
-    // plain body are the fallback the old PRs carried.
-    it('falls back to the command-derived title and body when the summarizer fails', async () => {
-        const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
-            fail: (a) => a.some((x) => typeof x === 'string' && x.includes('shortstat')),
-        });
-        const result = await runner.publishGit(ISSUE_JOB);
-
-        expect(result).toEqual({
-            ok: true,
-            published: true,
-            branch: 'fix/10',
-            prUrl: PR_URL,
-            reason: null,
-            repository: 'Bellows-AI/factory',
-            baseBranch: 'main',
-            prNumber: 42,
-            cause: null,
-        });
-        const create = calls.find((a) => a.includes('pr') && a.includes('create'));
-        expect(create?.[create.indexOf('--title') + 1]).toBe(
-            '/fix https://github.com/Bellows-AI/factory/issues/10 (#10)'
-        );
-        expect(create?.[create.indexOf('--body') + 1]).toBe(
-            'Closes #10.\n\nPublished by the factory board after the declared gates passed.'
-        );
-    });
-
-    // The repo's commit convention closes a task with `(#N)`, and the driver's own backstop
-    // commit title carries it too — a summary title that already ENDS with the ref must not
-    // grow a second one.
-    it('does not append the issue ref to a title that already ends with it', async () => {
-        const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
-            summary: { title: 'Fix the sync re-claim fence (#10)', body: '## Commits' },
-        });
-        await runner.publishGit(ISSUE_JOB);
-
-        const create = calls.find((a) => a.includes('pr') && a.includes('create'));
-        expect(create?.[create.indexOf('--title') + 1]).toBe('Fix the sync re-claim fence (#10)');
-    });
-
-    // A half-read summary — a body but no title — degrades per half: the title from the plan,
-    // the body from the branch.
-    it('falls back per half when the summary answers nulls on one side', async () => {
-        const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
-            summary: { title: null, body: '## Commits\n\n- Fix the sync re-claim fence' },
-        });
-        await runner.publishGit(ISSUE_JOB);
-
-        const create = calls.find((a) => a.includes('pr') && a.includes('create'));
-        expect(create?.[create.indexOf('--title') + 1]).toBe(
-            '/fix https://github.com/Bellows-AI/factory/issues/10 (#10)'
-        );
-        expect(create?.[create.indexOf('--body') + 1]).toBe(
-            '## Commits\n\n- Fix the sync re-claim fence\n\nCloses #10.\n\nPublished by the factory board after the declared gates passed.'
-        );
-    });
 });
 
 describe('the block-helper transport (issue #207)', () => {
@@ -5176,12 +4378,9 @@ describe('the block-helper transport (issue #207)', () => {
         ...over,
     });
 
-    const runnerWith = (exec: (args: string[]) => Promise<{ stdout: string }>) =>
-        createDockerRunner(loadDriverConfig({}), (() => fakeChild('', '', 0)) as unknown as typeof spawn, exec);
-
     it('fails an unknown helper id before any container starts', async () => {
         const exec = vitest.fn(async () => ({ stdout: NOOP_VERDICT }));
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         const result = await runner.runHelper!(job, plan({ helperId: 'not-a-real-helper' }));
         expect(result).toEqual({
             ok: false,
@@ -5197,7 +4396,7 @@ describe('the block-helper transport (issue #207)', () => {
             calls.push(args);
             return { stdout: NOOP_VERDICT };
         });
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         const result = await runner.runHelper!(repoJob, plan());
 
         expect(result).toEqual({ ok: true, output: { echoed: true } });
@@ -5236,7 +4435,7 @@ describe('the block-helper transport (issue #207)', () => {
             }
             return { stdout: '' };
         });
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         const result = await runner.runHelper!(job, plan());
         expect(result).toEqual({ ok: false, reason: 'timeout', message: expect.stringContaining('ms bound') });
         const run = calls.find((a) => a[0] === 'run')!;
@@ -5260,11 +4459,7 @@ describe('the block-helper transport (issue #207)', () => {
             }
             return { stdout: '' };
         });
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec);
 
         const result = await runner.runHelper!(job, plan(), undefined, controller.signal);
 
@@ -5289,7 +4484,7 @@ describe('the block-helper transport (issue #207)', () => {
             }
             return { stdout: NOOP_VERDICT };
         });
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         const result = await runner.runHelper!(repoJob, plan({ githubWriting: true }), 'fresh-install-token');
 
         expect(result).toEqual({ ok: true, output: { echoed: true } });
@@ -5307,16 +4502,9 @@ describe('the block-helper transport (issue #207)', () => {
             calls.push(args);
             return { stdout: NOOP_VERDICT };
         });
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         await runner.runHelper!(repoJob, plan({ githubWriting: true }), 'super-secret-token');
         expect(calls[0]!.some((a) => a.includes('super-secret-token'))).toBe(false);
-    });
-
-    it('maps a malformed helper answer to a named failure, never a thrown context leak', async () => {
-        const exec = vitest.fn(async () => ({ stdout: 'not json at all' }));
-        const runner = runnerWith(exec);
-        const result = await runner.runHelper!(job, plan());
-        expect(result).toEqual({ ok: false, reason: 'malformed_output', message: expect.any(String) });
     });
 
     it('maps an execDocker timeout to a named timeout failure', async () => {
@@ -5325,7 +4513,7 @@ describe('the block-helper transport (issue #207)', () => {
             (err as unknown as { killed: boolean }).killed = true;
             throw err;
         });
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         const result = await runner.runHelper!(job, plan());
         expect(result).toEqual({ ok: false, reason: 'timeout', message: expect.stringContaining('ms bound') });
     });
@@ -5336,7 +4524,7 @@ describe('the block-helper transport (issue #207)', () => {
             err.stderr = 'permission denied while running the helper';
             throw err;
         });
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         const result = await runner.runHelper!(job, plan());
         expect(result).toEqual({
             ok: false,
@@ -5351,7 +4539,7 @@ describe('the block-helper transport (issue #207)', () => {
             calls.push(args);
             return { stdout: NOOP_VERDICT };
         });
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         await runner.runHelper!(job, plan());
         expect(calls[0]).not.toContain('-w');
     });
@@ -5456,15 +4644,11 @@ describe('every container the driver runs is hardened (#382)', () => {
             if (args[0] === 'run') return { stdout: '{"ok":true,"removed":true,"reason":null}' };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+        const runner = dockerRunner(
             exec,
             // A fake `files`: the publish path writes a real env file into os.tmpdir() under the
             // default, and an offline unit test has no business touching the filesystem.
-            { writeFile: async () => undefined, rm: async () => undefined } as unknown as Parameters<
-                typeof createDockerRunner
-            >[3]
+            { files: { writeFile: async () => undefined, rm: async () => undefined } as unknown as RunnerFiles }
         );
         await drive(runner).catch(() => undefined);
         return calls.filter((a) => a[0] === 'run');

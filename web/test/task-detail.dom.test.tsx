@@ -11,8 +11,8 @@ import {
     runningThread,
     type ThreadJob,
 } from '../../e2e/fixtures/threads.js';
-import { FORBIDDEN } from './tasks-fixtures.js';
 import { type FetchCall, OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 /** The board as the page reads it: the session, and every thread and activity read answered by `jobs`. */
 function board(jobs: readonly ThreadJob[], extra: (call: FetchCall) => unknown = () => undefined) {
@@ -74,7 +74,7 @@ describe('the task detail page', () => {
         const published = container.querySelector<HTMLElement>('.task-published')!;
         expect(published.textContent).toContain('Pull request #9');
         expect(published.textContent).toContain('fix/177');
-        for (const token of FORBIDDEN) expect(document.body.textContent, token).not.toContain(token);
+        expectNoPlaceholder(document.body.textContent);
 
         // The outcome's checks link lands focus on the verification panel itself.
         await user.click(screen.getByRole('link', { name: 'View checks' }));
@@ -192,6 +192,28 @@ describe('the task detail page', () => {
         await user.tab();
         await user.tab();
         expect(dialog()!.contains(document.activeElement)).toBe(true);
+    });
+
+    it("your own task offers the composer, and the board's 403 renders inside it and keeps the draft", async () => {
+        const jobs = authoredBy(missingSummaryThread, LOCAL_AUTHOR);
+        const refusal = 'Only the account that queued the task can follow it up';
+        const calls = board(jobs, (call) =>
+            call.method === 'POST' && /\/api\/jobs\/[^/]+\/follow-up$/.test(call.url)
+                ? { status: 403, body: { error: refusal, code: 'FORBIDDEN' } }
+                : undefined
+        );
+        const { container } = renderApp(`/tasks/${jobs[0]!.id}`);
+        const user = userEvent.setup();
+
+        const box = (await screen.findByLabelText('Ask for a follow-up')) as HTMLTextAreaElement;
+        expect(screen.queryByText(/can continue this session/)).toBeNull();
+        await user.type(box, 'one more pass');
+        await user.click(screen.getByRole('button', { name: 'Send follow-up' }));
+
+        const composer = await mounted(container, '.composer');
+        await waitFor(() => expect(composer.textContent).toContain(refusal));
+        expect(calls.filter((call) => call.method === 'POST' && call.url.endsWith('/follow-up'))).toHaveLength(1);
+        expect(box.value).toBe('one more pass');
     });
 
     it('an action that resolves after navigating to another task is ignored', async () => {

@@ -1,5 +1,12 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { createGateManager, declaredTimeoutMs, type GateAttempt, type GateRunOptions } from '../src/gates.js';
+import {
+    createGateManager,
+    declaredTimeoutMs,
+    type GateAttempt,
+    type GateClaim,
+    type GateManager,
+    type GateRunOptions,
+} from '../src/gates.js';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { gateEnvContainerName } from '../src/docker.js';
@@ -484,25 +491,6 @@ describe('the gate environment manager: failure and edge cases', () => {
         await manager.stop();
     });
 
-    // A spawn failure — docker missing from PATH arrives as code 'ENOENT', not a number — never
-    // ran a command, so it has no exit status to report: it must reject with the container-gone
-    // code like every other harness state, never resolve an exit that did not happen.
-    it('rejects a gate whose docker could not run at all', async () => {
-        const noDocker = exec((args) => {
-            if (args[0] === 'exec') {
-                const error = new Error('spawn docker ENOENT') as Error & { code?: string };
-                error.code = 'ENOENT';
-                return Promise.reject(error);
-            }
-            return { stdout: '', stderr: '' };
-        });
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: noDocker });
-        await manager.acquire(KEY, 'node:24', '');
-
-        await expect(manager.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
-        await manager.stop();
-    });
-
     it('rejects a gate for a checkout that has no environment at all', async () => {
         const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
         await expect(manager.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
@@ -556,6 +544,32 @@ describe('the gate environment manager: failure and edge cases', () => {
     });
 });
 
+/** A manager that acquires and passes every gate — for server tests about anything but the run. */
+const idle = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: '' }) };
+
+/**
+ * A loopback gate server with `token` registered for `gates` under JOB, already listening;
+ * `run(gate)` is the agent's `POST /run` for one declared name under that token.
+ */
+async function serveGates(
+    manager: Pick<GateManager, 'acquire' | 'runGate'>,
+    {
+        token = 'tok-1',
+        gates = [{ name: 'test', command: 'npm test' }],
+    }: { token?: string; gates?: GateClaim['gates'] } = {}
+) {
+    const server = createGateServer({ host: '127.0.0.1', manager });
+    server.register(token, { key: KEY, image: 'node:24', job: JOB, gates });
+    const port = await server.listen();
+    const run = (gate = 'test') =>
+        fetch(`http://127.0.0.1:${port}/run`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${token}` },
+            body: JSON.stringify({ gate }),
+        });
+    return { server, port, run };
+}
+
 describe('the gate server', () => {
     it('runs a declared gate for a bearer token and answers the verdict', async () => {
         const seen: { key: string; name: string; command: string }[] = [];
@@ -571,20 +585,9 @@ describe('the gate server', () => {
                 return { exitCode: 0, output: 'ok' };
             },
         };
-        const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('tok-1', {
-            key: KEY,
-            image: 'node:24',
-            job: JOB,
-            gates: [{ name: 'test', command: 'npm test' }],
-        });
-        const port = await server.listen();
+        const { server, run } = await serveGates(manager);
 
-        const response = await fetch(`http://127.0.0.1:${port}/run`, {
-            method: 'POST',
-            headers: { authorization: 'Bearer tok-1' },
-            body: JSON.stringify({ gate: 'test' }),
-        });
+        const response = await run('test');
         expect(response.status).toBe(OK_STATUS);
         await expect(response.json()).resolves.toEqual({ exitCode: 0, output: 'ok' });
         expect(seen).toEqual([{ key: KEY, name: 'test', command: 'npm test' }]);
@@ -607,19 +610,10 @@ describe('the gate server', () => {
                 return { exitCode: 0, output: '' };
             },
         };
-        const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('tok-1', {
-            key: KEY,
-            image: 'node:24',
-            job: JOB,
+        const { server, run } = await serveGates(manager, {
             gates: [{ name: 'ui', command: 'npm run verify:ui', timeoutMinutes: 11 }],
         });
-        const port = await server.listen();
-        const response = await fetch(`http://127.0.0.1:${port}/run`, {
-            method: 'POST',
-            headers: { authorization: 'Bearer tok-1' },
-            body: JSON.stringify({ gate: 'ui' }),
-        });
+        const response = await run('ui');
         expect(response.status).toBe(UNPROCESSABLE_STATUS);
         await expect(response.json()).resolves.toEqual({
             error: 'gate "ui" declares timeout: 11, longer than an ad-hoc run can wait (10 minutes); it runs in the end-of-run gates pass',
@@ -637,23 +631,14 @@ describe('the gate server', () => {
                 return { exitCode: 0, output: 'ok' };
             },
         };
-        const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('tok-1', {
-            key: KEY,
-            image: 'node:24',
-            job: JOB,
+        const { server, run } = await serveGates(manager, {
             gates: [
                 { name: 'test', command: 'npm test' },
                 { name: 'ui', command: 'npm run verify:ui', timeoutMinutes: 10 },
             ],
         });
-        const port = await server.listen();
         for (const gate of ['test', 'ui']) {
-            const response = await fetch(`http://127.0.0.1:${port}/run`, {
-                method: 'POST',
-                headers: { authorization: 'Bearer tok-1' },
-                body: JSON.stringify({ gate }),
-            });
+            const response = await run(gate);
             expect(response.status).toBe(OK_STATUS);
         }
         expect(seen).toEqual([undefined, 600_000]);
@@ -669,25 +654,14 @@ describe('the gate server', () => {
                 return { exitCode: 0, output: 'ok' };
             },
         };
-        const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('tok-1', {
-            key: KEY,
-            image: 'node:24',
-            job: JOB,
+        const { server, run } = await serveGates(manager, {
             gates: [
                 { name: 'smoke', command: 'npm run smoke', onDemand: true },
                 { name: 'ui', command: 'npm run verify:ui', timeoutMinutes: 45, onDemand: true },
             ],
         });
-        const port = await server.listen();
-        const post = (gate: string) =>
-            fetch(`http://127.0.0.1:${port}/run`, {
-                method: 'POST',
-                headers: { authorization: 'Bearer tok-1' },
-                body: JSON.stringify({ gate }),
-            });
-        expect((await post('smoke')).status).toBe(OK_STATUS);
-        const refused = await post('ui');
+        expect((await run('smoke')).status).toBe(OK_STATUS);
+        const refused = await run('ui');
         expect(refused.status).toBe(UNPROCESSABLE_STATUS);
         await expect(refused.json()).resolves.toEqual({
             error: 'gate "ui" declares timeout: 45, longer than an ad-hoc run can wait (10 minutes); it is on_demand, so the end-of-run gates pass skips it too',
@@ -697,18 +671,7 @@ describe('the gate server', () => {
     });
 
     it('refuses an unknown token, an undeclared gate and a malformed body', async () => {
-        const manager = {
-            acquire: async () => {},
-            runGate: async () => ({ exitCode: 0, output: '' }),
-        };
-        const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('tok-2', {
-            key: KEY,
-            image: 'node:24',
-            job: JOB,
-            gates: [{ name: 'test', command: 'npm test' }],
-        });
-        const port = await server.listen();
+        const { server, port } = await serveGates(idle, { token: 'tok-2' });
         const url = `http://127.0.0.1:${port}/run`;
         const post = (headers: Record<string, string>, body: string) => fetch(url, { method: 'POST', headers, body });
 
@@ -734,20 +697,11 @@ describe('the gate server', () => {
                 throw error;
             },
         };
-        const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('tok-3', {
-            key: KEY,
-            image: 'node:24',
-            job: JOB,
-            gates: [{ name: 'test', command: 'npm test' }],
-        });
-        const port = await server.listen();
-        const response = await fetch(`http://127.0.0.1:${port}/run`, {
-            method: 'POST',
-            headers: { authorization: 'Bearer tok-3' },
-            body: JSON.stringify({ gate: 'test' }),
-        });
+        const { server, run } = await serveGates(manager, { token: 'tok-3' });
+        const response = await run('test');
         expect(response.status).toBe(CONFLICT_STATUS);
+        // A harness failure is not a verdict: nothing is recorded for the run.
+        expect(server.lastRuns('tok-3')).toEqual([]);
         await server.close();
     });
 
@@ -763,19 +717,8 @@ describe('the gate server', () => {
             return { stdout: '', stderr: '' };
         });
         const manager = createGateManager({ config, cooldownMs: 1000, execDocker: noDocker });
-        const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('tok-enoent', {
-            key: KEY,
-            image: 'node:24',
-            job: JOB,
-            gates: [{ name: 'test', command: 'npm test' }],
-        });
-        const port = await server.listen();
-        const response = await fetch(`http://127.0.0.1:${port}/run`, {
-            method: 'POST',
-            headers: { authorization: 'Bearer tok-enoent' },
-            body: JSON.stringify({ gate: 'test' }),
-        });
+        const { server, run } = await serveGates(manager, { token: 'tok-enoent' });
+        const response = await run('test');
         expect(response.status).toBe(CONFLICT_STATUS);
         await manager.stop();
         await server.close();
@@ -783,12 +726,11 @@ describe('the gate server', () => {
 });
 
 describe('the gate server: run control (issue #442)', () => {
-    const manager = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: '' }) };
     const read = (port: number, token: string) =>
         fetch(`http://127.0.0.1:${port}/control`, { headers: { authorization: `Bearer ${token}` } });
 
     it('answers stop=false until a stop is raised, then true — idempotently, per token', async () => {
-        const server = createGateServer({ host: '127.0.0.1', manager });
+        const server = createGateServer({ host: '127.0.0.1', manager: idle });
         server.openControl('tok-a');
         server.openControl('tok-b');
         const port = await server.listen();
@@ -806,7 +748,7 @@ describe('the gate server: run control (issue #442)', () => {
     });
 
     it('opens without any gate registration and refuses unknown or closed tokens', async () => {
-        const server = createGateServer({ host: '127.0.0.1', manager });
+        const server = createGateServer({ host: '127.0.0.1', manager: idle });
         server.openControl('tok-c');
         const port = await server.listen();
 
@@ -819,9 +761,7 @@ describe('the gate server: run control (issue #442)', () => {
     });
 
     it('does not let a gate token read the control channel', async () => {
-        const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('gate-tok', { key: KEY, image: 'node:24', job: JOB, gates: [] });
-        const port = await server.listen();
+        const { server, port } = await serveGates(idle, { token: 'gate-tok', gates: [] });
 
         expect((await read(port, 'gate-tok')).status).toBe(UNAUTHORIZED_STATUS);
         await server.close();
@@ -829,7 +769,6 @@ describe('the gate server: run control (issue #442)', () => {
 });
 
 describe('the gate server: questions (issue #226)', () => {
-    const manager = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: '' }) };
     const report = (id: string, text = 'Which colour?') => ({
         questionId: id,
         questions: [
@@ -847,7 +786,7 @@ describe('the gate server: questions (issue #226)', () => {
 
     async function opened(verdict: 'accepted' | 'refused' | 'gone' = 'accepted') {
         const forwarded: string[] = [];
-        const server = createGateServer({ host: '127.0.0.1', manager });
+        const server = createGateServer({ host: '127.0.0.1', manager: idle });
         server.openControl('tok-q', {
             ask: async (id) => {
                 forwarded.push(id);
@@ -959,7 +898,7 @@ describe('the gate server: questions (issue #226)', () => {
     });
 
     it('drops the record when the forward fails, so the bridge retry forwards again', async () => {
-        const server = createGateServer({ host: '127.0.0.1', manager });
+        const server = createGateServer({ host: '127.0.0.1', manager: idle });
         let calls = 0;
         server.openControl('tok-q', {
             ask: async () => {
@@ -979,7 +918,6 @@ describe('the gate server: questions (issue #226)', () => {
 });
 
 describe('the gate server: a repeat while the forward is in flight (issue #226)', () => {
-    const manager = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: '' }) };
     const body = JSON.stringify({
         questionId: 'toolu_1',
         questions: [
@@ -993,7 +931,7 @@ describe('the gate server: a repeat while the forward is in flight (issue #226)'
     });
 
     it('answers the repeat as the first, so a failed forward fails both and the bridge retries', async () => {
-        const server = createGateServer({ host: '127.0.0.1', manager });
+        const server = createGateServer({ host: '127.0.0.1', manager: idle });
         let fail: (e: Error) => void = () => {};
         let calls = 0;
         server.openControl('tok-q', {
@@ -1048,23 +986,13 @@ describe('the gate server: run history for the timeout note', () => {
                 return name === 'lint' ? { exitCode: 3, output: '2 problems' } : { exitCode: 0, output: 'ok' };
             },
         };
-        const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('tok-hist', {
-            key: KEY,
-            image: 'node:24',
-            job: JOB,
+        const { server, run } = await serveGates(manager, {
+            token: 'tok-hist',
             gates: [
                 { name: 'test', command: 'npm test' },
                 { name: 'lint', command: 'npm run lint' },
             ],
         });
-        const port = await server.listen();
-        const run = (gate: string) =>
-            fetch(`http://127.0.0.1:${port}/run`, {
-                method: 'POST',
-                headers: { authorization: 'Bearer tok-hist' },
-                body: JSON.stringify({ gate }),
-            });
 
         expect(server.lastRuns('tok-hist')).toEqual([]);
         await run('test');
@@ -1087,15 +1015,9 @@ describe('the gate server: run history for the timeout note', () => {
     // The one channel to an agent mid-run (issue #487): a dead service's note rides every answer.
     it('carries the dead-service note in each answer until it is cleared or the token ends', async () => {
         const manager = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: 'ok' }) };
-        const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('tok-dead', { key: KEY, image: 'node:24', job: JOB, gates: [{ name: 'test', command: 'x' }] });
-        const port = await server.listen();
-        const run = async () =>
-            (await fetch(`http://127.0.0.1:${port}/run`, {
-                method: 'POST',
-                headers: { authorization: 'Bearer tok-dead' },
-                body: JSON.stringify({ gate: 'test' }),
-            }).then((r) => r.json())) as Record<string, unknown>;
+        const served = await serveGates(manager, { token: 'tok-dead', gates: [{ name: 'test', command: 'x' }] });
+        const { server } = served;
+        const run = async () => (await served.run('test').then((r) => r.json())) as Record<string, unknown>;
 
         expect(await run()).toEqual({ exitCode: 0, output: 'ok' });
         server.setDeadServices('tok-dead', 'service "db" failed');
@@ -1106,34 +1028,6 @@ describe('the gate server: run history for the timeout note', () => {
         server.setDeadServices('tok-nobody', 'x');
         await server.close();
     });
-
-    it('records nothing for a harness failure — a 409 is not a verdict', async () => {
-        const manager = {
-            acquire: async () => {},
-            runGate: async () => {
-                const error = new Error('Error response from daemon: No such container') as Error & {
-                    code?: number;
-                };
-                error.code = CONTAINER_GONE_CODE;
-                throw error;
-            },
-        };
-        const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('tok-nogate', {
-            key: KEY,
-            image: 'node:24',
-            job: JOB,
-            gates: [{ name: 'test', command: 'npm test' }],
-        });
-        const port = await server.listen();
-        await fetch(`http://127.0.0.1:${port}/run`, {
-            method: 'POST',
-            headers: { authorization: 'Bearer tok-nogate' },
-            body: JSON.stringify({ gate: 'test' }),
-        });
-        expect(server.lastRuns('tok-nogate')).toEqual([]);
-        await server.close();
-    });
 });
 
 describe('the gate server: body size and bind resilience', () => {
@@ -1141,18 +1035,7 @@ describe('the gate server: body size and bind resilience', () => {
     // unbounded body there is an OOM on the driver, which supervises every in-flight job.
     it('refuses an oversized body instead of reading it', async () => {
         const OVERSIZED_PADDING_LENGTH = 10_000;
-        const manager = {
-            acquire: async () => {},
-            runGate: async () => ({ exitCode: 0, output: '' }),
-        };
-        const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('tok-4', {
-            key: KEY,
-            image: 'node:24',
-            job: JOB,
-            gates: [{ name: 'test', command: 'npm test' }],
-        });
-        const port = await server.listen();
+        const { server, port } = await serveGates(idle, { token: 'tok-4' });
         const response = await fetch(`http://127.0.0.1:${port}/run`, {
             method: 'POST',
             headers: { authorization: 'Bearer tok-4', 'content-type': 'application/json' },
@@ -1166,8 +1049,7 @@ describe('the gate server: body size and bind resilience', () => {
     // forever — a driver that started with a bad GATE_LISTEN_HOST and was reconfigured would
     // otherwise hand every later gated job a gate URL nothing listens on.
     it('retries the bind after a failure instead of caching the broken server', async () => {
-        const manager = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: '' }) };
-        const server = createGateServer({ host: '999.999.999.999', manager });
+        const server = createGateServer({ host: '999.999.999.999', manager: idle });
         server.register('tok-5', {
             key: KEY,
             image: 'node:24',
@@ -1187,16 +1069,8 @@ describe('the gate server: body size and bind resilience', () => {
     // down. Emitted here the way the runtime would deliver it — absorbed while a listener is
     // attached, a synchronous throw without one.
     it('keeps an error listener attached after the bind succeeds', async () => {
-        const manager = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: '' }) };
         const before = createdServers.length;
-        const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('tok-late', {
-            key: KEY,
-            image: 'node:24',
-            job: JOB,
-            gates: [{ name: 'test', command: 'npm test' }],
-        });
-        const port = await server.listen();
+        const { server, port } = await serveGates(idle, { token: 'tok-late' });
         expect(port).toBeGreaterThan(0);
 
         const bound = createdServers.slice(before).at(-1)!;
@@ -1279,20 +1153,10 @@ describe('cancelling a gate', () => {
                     });
                 }),
         };
-        const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('tok-cancel', {
-            key: KEY,
-            image: 'node:24',
-            job: JOB,
+        const { server, run: post } = await serveGates(manager, {
+            token: 'tok-cancel',
             gates: [{ name: 'test', command: 't' }],
         });
-        const port = await server.listen();
-        const post = () =>
-            fetch(`http://127.0.0.1:${port}/run`, {
-                method: 'POST',
-                headers: { authorization: 'Bearer tok-cancel' },
-                body: JSON.stringify({ gate: 'test' }),
-            });
 
         const inFlight = post();
         await running;

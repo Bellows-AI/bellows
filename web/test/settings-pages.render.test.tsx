@@ -13,6 +13,8 @@ import { SettingsWorkflowsPage } from '../src/pages/SettingsWorkflowsPage.js';
 import { SettingsWorkspacePage } from '../src/pages/SettingsWorkspacePage.js';
 import { orphanDeleteDialogBody, orphanDeleteDialogTitle } from '../src/components/OrphanDeleteDialog.js';
 import { EXECUTOR_SCOPE } from '../src/workspace/executors.js';
+import { expectNoPlaceholder, memberSession } from './fixtures.js';
+import { rootlessWorkspace } from './settings-board.js';
 
 /**
  * The pages of the settings tree, rendered through a real route tree so the layout's outlet
@@ -23,30 +25,11 @@ import { EXECUTOR_SCOPE } from '../src/workspace/executors.js';
  * exactly the state where an editor mounted early would seed empty drafts over stored rows.
  */
 
-/** The same contract panels.render.test.tsx pins: a null metric never leaks as a value. */
-const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
-
 /** Source inspection, the `window.confirm` idiom: some contracts are about the file, not the render. */
 const sourceOf = (name: string): string =>
     readFileSync(fileURLToPath(new URL(`../src/pages/${name}`, import.meta.url)), 'utf8');
 
-const session: Session = {
-    authenticated: true,
-    user: {
-        id: '00000000-0000-4000-8000-000000000001',
-        login: 'octocat',
-        name: 'The Octocat',
-        githubUserId: 4242,
-        avatarUrl: null,
-    },
-    role: 'admin',
-    membership: { invitedAt: null, claimedAt: null },
-    account: { createdAt: null, lastLoginAt: null },
-    organization: { id: 'bellows', name: 'Bellows AI' },
-    organizations: [{ id: 'bellows', name: 'Bellows AI' }],
-    workspacePath: null,
-    mode: 'none',
-};
+const session = memberSession({ role: 'admin', mode: 'none' });
 
 /** The hooks' initial (still loading) shape — what SettingsLayout publishes on a cold render. */
 const idleWorkspace = {
@@ -126,7 +109,7 @@ describe('Settings organization page', () => {
         expect(html).toContain('Any member can edit.');
         expect(html).toContain('Loading environment…');
         expect(html).not.toContain('No variables configured.');
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 
     it('leaves the editor enabled for a member — the server route is the authorization', () => {
@@ -197,7 +180,7 @@ describe('Settings workspace page', () => {
     it('says it is loading until the workspace poll answers', () => {
         const html = render('/settings/workspace');
         expect(html).toContain('Loading your workspace…');
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 
     it('states the workspace scope before its editor', () => {
@@ -255,18 +238,7 @@ describe('Settings workspace page', () => {
 
     it('states the mandated root-null copy — an operator, not the member, fixes it', () => {
         const html = render('/settings/workspace', {
-            workspace: {
-                loading: false,
-                data: {
-                    root: null,
-                    repos: [],
-                    orphaned: [],
-                    checkoutTotalBytes: null,
-                    executors: [],
-                    orgExecutors: [],
-                    defaultExecutor: null,
-                },
-            },
+            workspace: rootlessWorkspace(),
         });
         expect(html).toContain('This deployment has no workspace root. Tasks cannot run until an operator sets');
         expect(html).toContain('ORG_WORKSPACE_ROOT');
@@ -322,7 +294,7 @@ describe('Settings workspace page', () => {
         // The checkout total is labelled as checkout usage.
         expect(html).toContain('Checkout usage');
         expect(html).toContain('4 KB');
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 
     it('renders the checkout total as an em dash while it is unmeasured', () => {
@@ -409,7 +381,7 @@ describe('Settings executors page', () => {
         const html = render('/settings/executors');
         expect(html).toContain('Loading your workspace…');
         expect(html).toContain(EXECUTOR_SCOPE);
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 
     it('scopes the list, carries the guidance, and marks the resolved default', () => {
@@ -448,18 +420,7 @@ describe('Settings executors page', () => {
         // The executor routes answer 409 WORKSPACE_DISABLED without a root; the page refuses
         // first — the action never renders, and the sentence points at workspace setup.
         const html = render('/settings/executors', {
-            workspace: {
-                loading: false,
-                data: {
-                    root: null,
-                    repos: [],
-                    orphaned: [],
-                    checkoutTotalBytes: null,
-                    executors: [],
-                    orgExecutors: [],
-                    defaultExecutor: null,
-                },
-            },
+            workspace: rootlessWorkspace(),
         });
         expect(html).toContain('Personal executors are unavailable because this deployment has no workspace root.');
         // The link is woven into the sentence — "…until <a>workspace setup</a> is complete." — so
@@ -508,7 +469,7 @@ describe('Settings workflows page', () => {
         expect(html).toContain('page-header-description');
         expect(html).not.toContain('Default workflow');
         expect(html).not.toContain('Iterate on PR review comments');
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 
     it('fetches nothing on mount — a static render runs no effects', () => {
@@ -531,25 +492,14 @@ describe('Settings repositories page', () => {
         expect(html).not.toMatch(/repo-card-value">0</);
         expect(html).not.toContain('0 of 0');
         expect(html).not.toContain('No variables configured.');
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 
     it('warns that the workspace root is missing, links to Workspace, and holds the save', () => {
         // `root: null` is a deliberate configuration: availability and configuration stay
         // readable, but nothing may claim checkouts or save a selection into nothing.
         const html = render('/settings/repos', {
-            workspace: {
-                loading: false,
-                data: {
-                    root: null,
-                    repos: [],
-                    orphaned: [],
-                    checkoutTotalBytes: null,
-                    executors: [],
-                    orgExecutors: [],
-                    defaultExecutor: null,
-                },
-            },
+            workspace: rootlessWorkspace(),
         });
         expect(html).toContain('class="banner-warn"');
         expect(html).toContain('Workspace root not configured');
@@ -708,18 +658,7 @@ describe('settings page headers', () => {
         // `root: null` is a deliberate configuration: there is nothing to check out into, so
         // the header keeps its sentence and drops its action.
         const html = render('/settings/workspace', {
-            workspace: {
-                loading: false,
-                data: {
-                    root: null,
-                    repos: [],
-                    orphaned: [],
-                    checkoutTotalBytes: null,
-                    executors: [],
-                    orgExecutors: [],
-                    defaultExecutor: null,
-                },
-            },
+            workspace: rootlessWorkspace(),
         });
         expect(html).toContain('no workspace root');
         expect(html).not.toContain('Manage repository checkouts');

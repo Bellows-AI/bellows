@@ -1,8 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.js';
 
 /*
  * Issue #509: the claim's per-node turn context reaches Claude Code through the baked
@@ -11,8 +10,6 @@ import { describe, expect, it } from 'vitest';
  * first to expand). The driver puts it in FACTORY_TURN_CONTEXT (runner-plan.ts); this pins the
  * file the image ships.
  */
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 const HOOK = join(ROOT, 'docker/claude-executor/turn-context-hook.cjs');
 
 const runHook = (env: Record<string, string>): string =>

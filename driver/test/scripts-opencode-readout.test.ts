@@ -1,30 +1,9 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { opencodeReadoutScript } from '../src/container-scripts.js';
+import { insertMessage, MINE, seedOpencodeDb } from './fixtures/opencode-db.js';
 import { hasNodeSqlite, pathOf } from './fixtures/scripts-support.js';
-
-const OTHER_SESSION_CREATED = 1000;
-const MINE_SESSION_CREATED = 2000;
-
-const MINE = '/workspaces/org/member/.worktrees/mine';
-const OTHER = '/workspaces/org/member/.worktrees/other';
-
-/** One root session row, with the columns the script reads. */
-const insertSession = (db: DatabaseSync, id: string, directory: string, created: number): void => {
-    db.prepare('insert into session (id, parent_id, directory, time_created) values (?, null, ?, ?)').run(
-        id,
-        directory,
-        created
-    );
-};
-
-/** One message row; `data` is the JSON blob the script reads fields out of. */
-const insertMessage = (db: DatabaseSync, sessionId: string, data: object): void => {
-    db.prepare('insert into message (session_id, data) values (?, ?)').run(sessionId, JSON.stringify(data));
-};
 
 const runReadout = (dbPath: string, dir: string, startedMs?: string): { answer: Record<string, unknown> } => {
     const stdout = execFileSync('node', [pathOf('opencode-readout.cjs')], {
@@ -41,24 +20,18 @@ const runReadout = (dbPath: string, dir: string, startedMs?: string): { answer: 
 
 /**
  * Builds a fresh session database with the two-task contamination shape every test guards
- * against — the older OTHER task's session, and MINE, the newer one the readout must answer —
- * and registers the `beforeEach` that creates it. Must be called from inside a `describe`.
+ * against (`seedOpencodeDb`) and registers the `beforeEach` that creates it. Must be called from
+ * inside a `describe`.
  */
 function opencodeReadoutFixture(): { dbPath: () => string; run: typeof runReadout } {
     let dbPath: string;
     beforeEach(() => {
-        const dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-ocread-')));
-        dbPath = join(dir, 'opencode.db');
-        const db = new DatabaseSync(dbPath);
-        db.exec('create table session (id text primary key, parent_id text, directory text, time_created integer)');
-        db.exec('create table message (id integer primary key, session_id text, data text)');
-        // The other task's session is the OLDER one; today's newest-root-session scrape answers it
-        // for both tasks, which is the contamination the directory scope exists to end.
-        insertSession(db, 'ses_other', OTHER, OTHER_SESSION_CREATED);
-        insertMessage(db, 'ses_other', { role: 'assistant', finish: 'stop', tokens: { total: 11 }, cost: 0.01 });
-        // This task's, newer — the one the readout must answer.
-        insertSession(db, 'ses_mine', MINE, MINE_SESSION_CREATED);
-        db.close();
+        dbPath = seedOpencodeDb('factory-ocread-', {
+            role: 'assistant',
+            finish: 'stop',
+            tokens: { total: 11 },
+            cost: 0.01,
+        });
     });
     return { dbPath: () => dbPath, run: runReadout };
 }
@@ -97,6 +70,11 @@ describe.skipIf(!hasNodeSqlite())('the opencode session readout', () => {
             encoding: 'utf8',
         });
         expect(JSON.parse(stdout.trim()).error).toContain('OPENCODE_DIR');
+    });
+
+    // The sqlite handle, not the mount: the kubernetes readout mounts read-write for WAL recovery.
+    it('opens the session database read-only', () => {
+        expect(opencodeReadoutScript).toContain('readOnly: true');
     });
 
     it('carries the finish reason, context and cost of the in-scope session', () => {

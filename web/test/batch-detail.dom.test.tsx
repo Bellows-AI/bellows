@@ -167,6 +167,7 @@ describe('a started batch', () => {
         renderApp(`/batches/${ID}`);
         await headerPill('Needs attention');
         const notice = stage(1).querySelector('[data-verification="failed"]')!;
+        expect(notice.textContent).toContain('verification of stage-1 failed');
         expect(notice.textContent).toContain('checks on main at cd89f3d2 fail: e2e failing');
         expect(notice.textContent).toContain('cd89f3d2');
         expect(screen.getByText(/1 need you/)).toBeTruthy();

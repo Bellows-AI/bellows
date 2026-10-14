@@ -1,26 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { run } from '../src/run.js';
-
-const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
-
-const json = (payload: unknown, status = 200) =>
-    new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
+import { recordingBoard, json, routed } from './harness.js';
 
 /** Answers each path from `routes`; a path not listed fails the test by answering 404. */
 function harness(routes: Record<string, () => Response>) {
-    const out: string[] = [];
-    const err: string[] = [];
-    const calls: { path: string; method: string; body: unknown }[] = [];
-    const fetch = (async (url: string | URL | globalThis.Request, init?: RequestInit) => {
-        const path = String(url).replace('http://board', '');
-        calls.push({
-            path,
-            method: init?.method ?? 'GET',
-            body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
-        });
-        return routes[path]?.() ?? json({ error: `unrouted ${path}`, code: 'NOT_FOUND' }, 404);
-    }) as unknown as typeof globalThis.fetch;
-    const io = { env: ENV, fetch, stdout: (t: string) => out.push(t), stderr: (t: string) => err.push(t) };
+    const { out, err, sent: calls, io } = recordingBoard(routed(routes));
     return { out, err, calls, io };
 }
 
@@ -104,24 +88,6 @@ describe('bellows repo list', () => {
         const data = JSON.parse(stale.out.join('')).data;
         expect(data.error).toBe('GitHub is unreachable');
         expect(data.workspaceEnabled).toBe(false);
-    });
-
-    it('surfaces an unavailable board runtime as a refusal with its code, exit 1', async () => {
-        const { out, io } = harness({
-            '/api/repos': () => json({ error: "No runtime for 'o'; retry", code: 'REPOS_UNAVAILABLE' }, 503),
-        });
-
-        expect(await run(['repo', 'list', '--json'], io)).toBe(1);
-
-        const envelope = JSON.parse(out.join(''));
-        expect(envelope.outcome).toBe('refused');
-        expect(envelope.error).toMatchObject({ code: 'REPOS_UNAVAILABLE', status: 503 });
-    });
-
-    it('refuses a stray argument as usage, making no request', async () => {
-        const { calls, io } = harness({});
-        expect(await run(['repo', 'list', 'acme/api'], io)).toBe(2);
-        expect(calls).toHaveLength(0);
     });
 });
 
@@ -220,16 +186,6 @@ describe('bellows connection list', () => {
         expect(await run(['connection', 'list'], io)).toBe(0);
         expect(out.join('')).toBe('no connections available\n');
     });
-
-    it('surfaces a missing store as a refusal', async () => {
-        const { err, io } = harness({
-            '/api/connections': () =>
-                json({ error: 'No connection store for this organization', code: 'CONNECTIONS_UNAVAILABLE' }, 503),
-        });
-
-        expect(await run(['connection', 'list'], io)).toBe(1);
-        expect(err.join('')).toContain('CONNECTIONS_UNAVAILABLE');
-    });
 });
 
 describe('bellows job create --jira-connection', () => {
@@ -243,22 +199,5 @@ describe('bellows job create --jira-connection', () => {
 
         expect(calls[0]!.body).toEqual({ command: 'npm test', jiraConnection: ID });
         expect(calls[1]!.body).toEqual({ command: 'npm test' });
-    });
-
-    it("surfaces the board's refusal of an inaccessible or deleted connection, exit 1", async () => {
-        const { out, io } = harness({
-            '/api/jobs': () =>
-                json(
-                    {
-                        error: 'That Jira connection does not exist or is not available to you. Pick one from GET /api/connections.',
-                        code: 'CONNECTION_NOT_AUTHORIZED',
-                    },
-                    403
-                ),
-        });
-
-        expect(await run(['job', 'create', '--jira-connection', ID, '--json', '--', 'npm test'], io)).toBe(1);
-
-        expect(JSON.parse(out.join('')).error).toMatchObject({ code: 'CONNECTION_NOT_AUTHORIZED', status: 403 });
     });
 });

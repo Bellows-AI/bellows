@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { JobActivity, ThreadActivity } from '../src/api/useJobActivity.js';
-import { FORBIDDEN, job } from './tasks-fixtures.js';
+import { job } from './tasks-fixtures.js';
 import { TaskActivity } from '../src/panels/TaskActivity.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 /**
  * The task activity summary (issues #339, #530): the latest run's pulse by token type, and the
@@ -53,7 +54,7 @@ describe('TaskActivity', () => {
         expect(html).toContain('polyline');
         expect(html).not.toContain('bar-primary');
         expect(html).not.toContain('<rect');
-        for (const forbidden of FORBIDDEN) expect(html, forbidden).not.toContain(forbidden);
+        expectNoPlaceholder(html);
     });
 
     it('is one labeled button over the whole summary, which opens a dialog', () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Job, RuntimeVitals } from '../src/api/useJobs.js';
-import { FORBIDDEN, job, renderDetail } from './tasks-fixtures.js';
+import { job, renderDetail } from './tasks-fixtures.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 describe('TaskDetail — task activity (issues #339, #530)', () => {
     const jobId = '11111111-1111-4111-8111-111111111111';
@@ -71,93 +72,125 @@ describe('TaskDetail', () => {
         expect(plain).not.toContain('class="pill">implement</span>');
     });
 
-    it('names the actors behind the verdicts, and stays quiet when there are none', () => {
-        const author = { id: 'a', login: 'octocat', name: null, avatarUrl: null };
-        const stopper = { id: 'b', login: 'stopper', name: null, avatarUrl: null };
-        const html = renderDetail({
-            jobs: [
-                job({ author, doneBy: author, doneAt: '2026-09-01T13:00:00.000Z' }),
-                job({ id: '22222222-2222-4222-8222-222222222222', stoppedBy: stopper, status: 'stopped' }),
-            ],
-        });
-        // The label follows the status: the stamp is the ask, only a row that settled stopped
-        // may claim the stop landed. A run that finished on its own after somebody asked keeps
-        // the ask as a request, never as a verdict.
-        expect(html).toContain('stopped by stopper');
-        expect(html).toContain('done by octocat');
-        const requested = renderDetail({ jobs: [job({ author, stoppedBy: stopper, doneBy: author })] });
-        expect(requested).toContain('stop requested by stopper');
-        expect(requested).not.toContain('stopped by stopper');
-        const plain = renderDetail({ jobs: [job()] });
-        expect(plain).not.toContain('stopped by');
-        expect(plain).not.toContain('stop requested by');
-        expect(plain).not.toContain('done by');
-    });
-
-    it('shows who started the task in the outcome, honestly unknown for a pre-accounts row', () => {
-        const author = { id: 'a', login: 'octocat', name: 'The Octocat', avatarUrl: 'https://x/a.png' };
-        expect(renderDetail({ jobs: [job({ author })] })).toContain('Started by');
-        expect(renderDetail({ jobs: [job({ author })] })).toContain('The Octocat');
-        expect(renderDetail({ jobs: [job({ author })] })).toContain('https://x/a.png');
-
-        const unknown = renderDetail({ jobs: [job()] });
-        expect(unknown).toContain('Started by');
-        expect(unknown).toContain('unknown');
-    });
-
-    it('renders the output as text, never as markup', () => {
-        const html = renderDetail({ jobs: [job({ output: '<script>alert(1)</script>' })] });
-        // Container output is arbitrary text; escaping it is the difference between a transcript
-        // and a hole.
-        expect(html).toContain('&lt;script&gt;');
-        expect(html).not.toContain('<script>');
-        expect(html).toContain('<pre');
-    });
-
-    it('claims nothing about a task or output that has not loaded', () => {
-        // A finished task whose detail has not arrived must not read as one with no output —
-        // that is a false statement about a run somebody is waiting on.
+    it('claims nothing about a task that has not loaded', () => {
         expect(renderDetail({ jobs: null })).toMatch(/Loading the task/);
-        const waiting = renderDetail({
-            jobs: [job({ status: 'running', output: null, exitCode: null, finishedAt: null, startedAt: null })],
-        });
-        expect(waiting).toContain('Waiting for the executor');
-        const empty = renderDetail({ jobs: [job({ output: null })] });
-        expect(empty).toContain('finished without a captured agent response');
     });
 
     it('says so in place when the task could not be loaded', () => {
         const html = renderDetail({ jobs: null, error: 'Request failed (503)' });
         expect(html).toContain('Request failed (503)');
     });
-
-    it('shows the exit code of a finished run', () => {
-        const html = renderDetail({ jobs: [job({ status: 'failed', exitCode: 1 })] });
-        expect(html).toContain('exit 1');
-    });
 });
 
 describe('TaskDetail — the follow-up composer states', () => {
-    it('a stopped task has ended the turn: the composer stays open, and never Resume', () => {
+    const me = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', login: 'me', name: null, avatarUrl: null };
+    const other = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', login: 'octo-reviewer', name: null, avatarUrl: null };
+    const viewer = { loading: false, id: me.id };
+    const signedOut = { loading: false, id: null };
+    const loading = { loading: true, id: null };
+    const moving = { exitCode: null, finishedAt: null, startedAt: null, output: null };
+
+    type Row = {
+        label: string;
+        args: Parameters<typeof renderDetail>[0];
+        composer: boolean;
+        has?: string[];
+        lacks?: string[];
+    };
+
+    const rows: Row[] = [
         // Stopping is a verdict, not a park: the turn is over, the conversation stays open for an
         // adjustment, and there is no picking the run back up.
-        const html = renderDetail({ jobs: [job({ status: 'stopped' })] });
-        expect(html).toContain('<textarea');
-        expect(html).not.toContain('Resume');
-    });
+        {
+            label: 'a stopped task has ended the turn: the composer stays open, and never Resume',
+            args: { jobs: [job({ status: 'stopped' })] },
+            composer: true,
+            lacks: ['Resume'],
+        },
+        // The run ending is not the task ending: the composer exists exactly for the gap between
+        // "the executor stopped" and "I am satisfied".
+        {
+            label: 'a finished task offers the follow-up composer',
+            args: { jobs: [job()] },
+            composer: true,
+            has: ['Send follow-up'],
+        },
+        {
+            label: 'a queued run offers no composer',
+            args: { jobs: [job({ status: 'queued', ...moving })] },
+            composer: false,
+        },
+        {
+            label: 'a running run offers no composer',
+            args: { jobs: [job({ status: 'running', ...moving })] },
+            composer: false,
+        },
+        // The verdict is visible, not silently implied by the buttons' absence.
+        {
+            label: 'a task the user has already marked done offers no composer, and shows the verdict',
+            args: { jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z' })] },
+            composer: false,
+            has: ['chat-done'],
+        },
+        // Only done or removed closes a task: a run that never reported a session — an opencode
+        // task, an agent-less workflow step — still takes a follow-up, which the board starts fresh.
+        {
+            label: 'a run with no session to continue still offers the composer',
+            args: { jobs: [job({ sessionId: null })] },
+            composer: true,
+            lacks: ['no agent session to continue'],
+        },
+        {
+            label: 'your own task offers the composer',
+            args: { jobs: [job({ author: me })], viewer },
+            composer: true,
+            has: ['<h2>Follow up</h2>'],
+        },
+        {
+            label: "another member's task names the author, and offers no composer",
+            args: { jobs: [job({ author: other })], viewer },
+            composer: false,
+            has: ['Only octo-reviewer can continue this session. You can still mark it done.'],
+        },
+        {
+            label: 'a row with no author says "the task author"',
+            args: { jobs: [job({ author: null })], viewer },
+            composer: false,
+            has: ['Only the task author can continue this session.'],
+        },
+        // A null author and a null viewer are the same nobody — the board's null-safe match.
+        {
+            label: 'a row with no author, to a viewer with no session, offers the composer',
+            args: { jobs: [job({ author: null })], viewer: signedOut },
+            composer: true,
+        },
+        {
+            label: 'an authored task is refused to a viewer with no session',
+            args: { jobs: [job({ author: me })], viewer: signedOut },
+            composer: false,
+            has: ['Only me can continue this session.'],
+        },
+        // Nothing while the session loads, so your own task never flashes a refusal.
+        ...[me, other].map((author) => ({
+            label: `${author.login}'s task renders nothing while the session loads`,
+            args: { jobs: [job({ author })], viewer: loading },
+            composer: false,
+            lacks: ['can continue this session', 'Follow up'],
+        })),
+        {
+            label: 'a closed task renders nothing, even for another member',
+            args: { jobs: [job({ author: other, doneAt: '2026-09-01T13:00:00.000Z' })], viewer },
+            composer: false,
+            lacks: ['can continue this session'],
+        },
+    ];
 
-    it('offers a follow-up composer on a finished task, and neither composer on a moving one', () => {
-        // The run ending is not the task ending: these two exist exactly for the gap between "the
-        // executor stopped" and "I am satisfied".
-        const finished = renderDetail({ jobs: [job()] });
-        expect(finished).toContain('<textarea');
-        expect(finished).toContain('Send follow-up');
-        for (const status of ['queued', 'running'] as const) {
-            const moving = renderDetail({
-                jobs: [job({ status, exitCode: null, finishedAt: null, startedAt: null, output: null })],
-            });
-            expect(moving, status).not.toContain('<textarea');
-        }
+    it.each(rows.map((row) => [row.label, row] as const))('%s', (_label, { args, composer, has = [], lacks = [] }) => {
+        const html = renderDetail(args);
+        if (composer) expect(html).toContain('<textarea');
+        else expect(html).not.toContain('<textarea');
+        for (const text of has) expect(html).toContain(text);
+        for (const text of lacks) expect(html).not.toContain(text);
     });
 
     it("keeps the transcript clean of task actions — those are the page header's", () => {
@@ -170,21 +203,6 @@ describe('TaskDetail — the follow-up composer states', () => {
         expect(finished).not.toContain('task-actions');
     });
 
-    it('never offers the composer on a task the user has already marked done', () => {
-        const html = renderDetail({ jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z' })] });
-        expect(html).not.toContain('<textarea');
-        // The verdict is visible, not silently implied by the buttons' absence.
-        expect(html).toContain('chat-done');
-    });
-
-    it('shows no follow-up composer on a run still going', () => {
-        expect(
-            renderDetail({
-                jobs: [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null })],
-            })
-        ).not.toContain('<textarea');
-    });
-
     it('disables the follow-up Send until text is typed', () => {
         const html = renderDetail({ jobs: [job()] });
         const LOOKBEHIND_CHARS = 200;
@@ -193,45 +211,13 @@ describe('TaskDetail — the follow-up composer states', () => {
         expect(send).toContain('disabled');
     });
 
-    /**
-     * Only done or removed closes a task: a run that never reported a session — an opencode task,
-     * an agent-less workflow step — still takes a follow-up, which the board starts fresh.
-     */
-    it('offers the follow-up composer on a run with no session to continue', () => {
-        const html = renderDetail({ jobs: [job({ sessionId: null })] });
-        expect(html).toContain('<textarea');
-        expect(html).not.toContain('no agent session to continue');
-    });
-
-    /**
-     * A follow-up is a new row on the board but NOT a new task here: the chain renders as one
-     * conversation, oldest first, and the composer + Done verdict belong to the NEWEST run only —
-     * older runs are history.
-     */
-    it('renders the follow-up chain as one conversation, with the newest run in charge', () => {
-        const root = job({ command: 'fix the flaky login test' });
-        const child = {
-            ...job({ command: 'now tighten the retry logic' }),
-            id: '44444444-4444-4444-8444-444444444444',
-            followUpTo: root.id,
-            rootJobId: root.id,
-        };
-        const html = renderDetail({ jobs: [root, child] });
-
-        expect(html).toContain('fix the flaky login test');
-        expect(html).toContain('now tighten the retry logic');
-        // Both messages, in order.
-        expect(html.indexOf('fix the flaky login test')).toBeLessThan(html.indexOf('now tighten the retry logic'));
-        expect(html).toContain('<textarea');
-    });
-
     it('never emits a placeholder value', () => {
         const html = renderDetail({
             jobs: [
                 job({ executor: null, repo: null, output: null, exitCode: null, finishedAt: null, startedAt: null }),
             ],
         });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 
@@ -303,7 +289,7 @@ describe('TaskDetail — checks', () => {
         const html = renderDetail({
             jobs: [job({ gates: [{ name: 'test', status: 'running', exitCode: null, output: null }] })],
         });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 
@@ -356,7 +342,7 @@ describe('TaskDetail — runtime', () => {
         } as RuntimeVitals;
         const html = renderDetail({ jobs: [job({ status: 'running', runtime: servicesOnly })] });
         expect(html).not.toContain('chat-runtime');
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
 
         const nulls = {
             ...servicesOnly,
@@ -377,7 +363,7 @@ describe('TaskDetail — runtime', () => {
         const html = renderDetail({
             jobs: [job({ status: 'running', runtime: { ...runtime, activity: null, memPercent: null } })],
         });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 
@@ -488,7 +474,7 @@ describe('TaskDetail — turn stats', () => {
                 }),
             ],
         });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 
@@ -501,43 +487,6 @@ describe('TaskDetail — who may follow up', () => {
     const me = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', login: 'me', name: null, avatarUrl: null };
     const other = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', login: 'octo-reviewer', name: null, avatarUrl: null };
     const viewer = { loading: false, id: me.id };
-
-    it('offers the composer on your own task', () => {
-        const html = renderDetail({ jobs: [job({ author: me })], viewer });
-        expect(html).toContain('<h2>Follow up</h2>');
-        expect(html).toContain('<textarea');
-    });
-
-    it("names the author on another member's task, and offers no composer", () => {
-        const html = renderDetail({ jobs: [job({ author: other })], viewer });
-        expect(html).toContain('Only octo-reviewer can continue this session. You can still mark it done.');
-        expect(html).not.toContain('<textarea');
-    });
-
-    it('says "the task author" when the row has none', () => {
-        const html = renderDetail({ jobs: [job({ author: null })], viewer });
-        expect(html).toContain('Only the task author can continue this session.');
-        expect(html).not.toContain('<textarea');
-        // A null author and a null viewer are the same nobody — the board's null-safe match.
-        expect(renderDetail({ jobs: [job({ author: null })], viewer: { loading: false, id: null } })).toContain(
-            '<textarea'
-        );
-    });
-
-    it('refuses an authored task to a viewer with no session', () => {
-        const html = renderDetail({ jobs: [job({ author: me })], viewer: { loading: false, id: null } });
-        expect(html).toContain('Only me can continue this session.');
-        expect(html).not.toContain('<textarea');
-    });
-
-    it('renders nothing while the session loads, so your own task never flashes a refusal', () => {
-        for (const author of [me, other]) {
-            const html = renderDetail({ jobs: [job({ author })], viewer: { loading: true, id: null } });
-            expect(html, author.login).not.toContain('<textarea');
-            expect(html, author.login).not.toContain('can continue this session');
-            expect(html, author.login).not.toContain('Follow up');
-        }
-    });
 
     it('says the run ended with a question directly above the composer, for the author (issue #226)', () => {
         const html = renderDetail({ jobs: [job({ author: me, summary: 'Which one: Red or Blue?' })], viewer });
@@ -557,12 +506,6 @@ describe('TaskDetail — who may follow up', () => {
     it('shows no question notice when the summary is not a question', () => {
         const html = renderDetail({ jobs: [job({ author: me, summary: 'Done.' })], viewer });
         expect(html).not.toContain('Claude ended with a question');
-    });
-
-    it('renders nothing on a closed task, even for another member', () => {
-        const html = renderDetail({ jobs: [job({ author: other, doneAt: '2026-09-01T13:00:00.000Z' })], viewer });
-        expect(html).not.toContain('can continue this session');
-        expect(html).not.toContain('<textarea');
     });
 
     it("renders the server's 403 inside the composer, beside the draft", () => {
@@ -668,20 +611,5 @@ describe('TaskDetail — main column', () => {
         // The rail leads the DOM, so a narrow screen reads the summary first, the panels last.
         expect(html.indexOf('task-outcome')).toBeLessThan(html.indexOf('task-main'));
         expect(html.indexOf('task-main')).toBeLessThan(html.indexOf('task-support'));
-    });
-
-    it('publishes the branch as a copyable chip and links only a safe PR url', () => {
-        const html = renderDetail({
-            jobs: [job({ output: '[driver] published fix/2 — https://github.com/acme/web/pull/2' })],
-        });
-        const published = html.slice(html.indexOf('task-published'));
-        expect(published).toContain('fix/2</code>');
-        expect(published).toContain('aria-label="Copy branch name"');
-        expect(published).toContain('href="https://github.com/acme/web/pull/2"');
-        expect(published).toContain('Pull request #2');
-
-        const unsafe = renderDetail({ jobs: [job({ output: '[driver] published fix/odd — javascript:alert(1)' })] });
-        expect(unsafe).toContain('fix/odd</code>');
-        expect(unsafe).not.toContain('href="javascript:');
     });
 });

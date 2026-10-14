@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { GIT_FIXTURE_CONFIG, git, hasGit, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
@@ -9,7 +9,8 @@ import { GIT_FIXTURE_CONFIG, git, hasGit, setupWorktreeFixture } from './fixture
  * where it stands — no fetch, no rebase, the tree kept byte-for-byte as the run before it left
  * it, or recreated from the surviving thread branch when the tree itself was reclaimed. Split
  * from `worktree.test.ts`'s sync-mode suite for the line-count cap; both share their fixture via
- * `./fixtures/git-worktree-support.js`.
+ * `./fixtures/git-worktree-support.js`. The garbage and foreign-tree guards run in both modes as
+ * `worktree.test.ts` tables.
  */
 describe.skipIf(!hasGit())('the worktree sync script (restore)', () => {
     const fx = setupWorktreeFixture();
@@ -63,33 +64,6 @@ describe.skipIf(!hasGit())('the worktree sync script (restore)', () => {
         expect(result.ok).toBe(false);
         expect(result.reason).toContain(fx.branch());
         expect(existsSync(fx.worktree())).toBe(false);
-    });
-
-    it('refuses a foreign git tree at the worktree path when restoring too', () => {
-        // The creation arm's one guard must hold in restore mode as well: whatever holds a .git
-        // the sync did not create may hold uncommitted work, and restore deletes nothing either.
-        mkdirSync(fx.worktree(), { recursive: true });
-        writeFileSync(join(fx.worktree(), '.git'), 'gitdir: /somewhere/else\n');
-        writeFileSync(join(fx.worktree(), 'PRECIOUS.md'), 'uncommitted work\n');
-
-        const result = fx.restore();
-        expect(result.ok).toBe(false);
-        expect(result.reason).toContain('git tree this sync did not create');
-        expect(readFileSync(join(fx.worktree(), 'PRECIOUS.md'), 'utf8')).toBe('uncommitted work\n');
-    });
-
-    it('replaces garbage at the worktree path when restoring, the same as a sync does', () => {
-        // Restore recreates a reclaimed tree from the branch, and the path it needs may hold a
-        // bare leftover — the same driver-owned namespace the sync arm clears, so the same
-        // replacement applies: never a failed-forever attempt over a directory nobody owns.
-        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
-        rmSync(fx.worktree(), { recursive: true });
-        mkdirSync(fx.worktree(), { recursive: true });
-        writeFileSync(join(fx.worktree(), 'leftover.txt'), 'not a worktree');
-
-        expect(fx.restore()).toMatchObject({ ok: true, reason: null });
-        expect(git(fx.worktree(), 'rev-parse', '--is-inside-work-tree')).toBe('true');
-        expect(existsSync(join(fx.worktree(), 'leftover.txt'))).toBe(false);
     });
 
     it('refuses a restore whose worktree belongs to another clone', () => {

@@ -34,22 +34,13 @@ const baseJob = (masterPrompt: BoardJob['masterPrompt']): BoardJob => ({
 const PROMPT = 'Factory execution contract (factory-master-prompt/v1)\n\nFactory execution context\n- Mode: standalone';
 
 describe('masterPromptRefusalReason', () => {
-    it('refuses null', () => {
-        expect(masterPromptRefusalReason(baseJob(null))).toMatch(/no Factory execution context/);
-    });
-
-    it('refuses an empty string', () => {
-        expect(masterPromptRefusalReason(baseJob(''))).toMatch(/no Factory execution context/);
-    });
-
-    it('refuses a prompt past the cap', () => {
-        expect(masterPromptRefusalReason(baseJob('x'.repeat(MASTER_PROMPT_LIMIT + 1)))).toMatch(
-            /larger than this driver/
-        );
-    });
-
-    it('refuses a prompt carrying a NUL byte', () => {
-        expect(masterPromptRefusalReason(baseJob(`${PROMPT}\u0000`))).toMatch(/will not run with/);
+    it.each<[string, string | null, RegExp]>([
+        ['null', null, /no Factory execution context/],
+        ['an empty string', '', /no Factory execution context/],
+        ['a prompt past the cap', 'x'.repeat(MASTER_PROMPT_LIMIT + 1), /larger than this driver/],
+        ['a prompt carrying a NUL byte', `${PROMPT}\u0000`, /will not run with/],
+    ])('refuses %s', (_label, prompt, reason) => {
+        expect(masterPromptRefusalReason(baseJob(prompt))).toMatch(reason);
     });
 
     it('accepts a valid bounded prompt', () => {
@@ -150,15 +141,11 @@ describe('opencodeConfigContent', () => {
         expect(merged.agent.factory).toEqual({ mode: 'primary', prompt: PROMPT, disable: false });
     });
 
-    it('throws on malformed existing JSON rather than silently dropping it', () => {
-        expect(() => opencodeConfigContent(baseJob(PROMPT), '{not json')).toThrow();
-    });
-
-    it('throws on a non-object existing value rather than silently dropping it', () => {
-        expect(() => opencodeConfigContent(baseJob(PROMPT), '"a string"')).toThrow();
-    });
-
-    it('throws rather than building a config with no prompt', () => {
-        expect(() => opencodeConfigContent(baseJob(null))).toThrow();
+    it.each<[string, string | null, string | undefined]>([
+        ['on malformed existing JSON rather than silently dropping it', PROMPT, '{not json'],
+        ['on a non-object existing value rather than silently dropping it', PROMPT, '"a string"'],
+        ['rather than building a config with no prompt', null, undefined],
+    ])('throws %s', (_label, prompt, existing) => {
+        expect(() => opencodeConfigContent(baseJob(prompt), existing)).toThrow();
     });
 });

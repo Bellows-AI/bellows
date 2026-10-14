@@ -57,24 +57,27 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
         );
     });
 
-    it('answers a conflicted rebase with its paths and leaves the rebase stopped for the agent', () => {
-        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
-        fx.commitIn(fx.worktree(), 'README.md', 'task rewrites the readme\n', 'conflicting task commit');
-        fx.pushToOrigin('README.md', 'upstream rewrites the readme\n', 'conflicting upstream commit');
-
-        expect(fx.sync()).toMatchObject({ ok: true, reason: null, conflicts: ['README.md'] });
-
-        const gitDir = git(fx.worktree(), 'rev-parse', '--absolute-git-dir');
-        expect(existsSync(join(gitDir, 'rebase-merge'))).toBe(true);
-    });
-
-    it('replaces garbage at the worktree path instead of failing forever', () => {
-        // A previous add that died midway, or anything else that is not a checkout: the path is
-        // the driver's own namespace (`.worktrees/<uuid>`), so what is there is never precious.
+    // A previous add that died midway, or anything else that is not a checkout: the path is the
+    // driver's own namespace (`.worktrees/<uuid>`), so what is there is never precious. Restore
+    // recreates a reclaimed tree from the branch, and the path it needs may hold the same bare
+    // leftover, so the same replacement applies: never a failed-forever attempt over a directory
+    // nobody owns. The restore row first syncs and reclaims the tree so its branch survives.
+    it.each<[string, () => void, () => ReturnType<typeof fx.sync>]>([
+        ['a sync', () => {}, () => fx.sync()],
+        [
+            'a restore',
+            () => {
+                expect(fx.sync()).toMatchObject({ ok: true, reason: null });
+                rmSync(fx.worktree(), { recursive: true });
+            },
+            () => fx.restore(),
+        ],
+    ])('replaces garbage at the worktree path on %s instead of failing forever', (_mode, prepare, run) => {
+        prepare();
         mkdirSync(fx.worktree(), { recursive: true });
         writeFileSync(join(fx.worktree(), 'leftover.txt'), 'not a worktree');
 
-        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
+        expect(run()).toMatchObject({ ok: true, reason: null });
         expect(git(fx.worktree(), 'rev-parse', '--is-inside-work-tree')).toBe('true');
         expect(existsSync(join(fx.worktree(), 'leftover.txt'))).toBe(false);
     });
@@ -140,15 +143,18 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
         expect(git(fx.worktree(), 'stash', 'list')).toContain('autostash');
     });
 
-    it('refuses to delete a git tree at the worktree path that this sync did not create', () => {
-        // Registration pruned by hand, or a whole clone someone put there: whatever holds a
-        // .git may hold uncommitted work, and deleting it is the one outcome worse than a
-        // burned attempt.
+    // Registration pruned by hand, or a whole clone someone put there: whatever holds a .git may
+    // hold uncommitted work, and deleting it is the one outcome worse than a burned attempt. The
+    // creation arm's one guard holds in restore mode as well — restore deletes nothing either.
+    it.each<[string, () => ReturnType<typeof fx.sync>]>([
+        ['a sync', () => fx.sync()],
+        ['a restore', () => fx.restore()],
+    ])('refuses to delete a git tree at the worktree path that %s did not create', (_mode, run) => {
         mkdirSync(fx.worktree(), { recursive: true });
         writeFileSync(join(fx.worktree(), '.git'), 'gitdir: /somewhere/else\n');
         writeFileSync(join(fx.worktree(), 'PRECIOUS.md'), 'uncommitted work\n');
 
-        const result = fx.sync();
+        const result = run();
         expect(result.ok).toBe(false);
         expect(result.reason).toContain('git tree this sync did not create');
         expect(readFileSync(join(fx.worktree(), 'PRECIOUS.md'), 'utf8')).toBe('uncommitted work\n');

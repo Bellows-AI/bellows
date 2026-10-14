@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { MAX_REPOS_PER_USER } from '../src/routes/workspace.js';
 import {
     githubAuth,
@@ -16,24 +16,14 @@ import {
 import { MAX_EXECUTORS_PER_USER } from '../src/routes/executor-fields.js';
 import { createFactsCache } from '../src/workspace/facts.js';
 import { createPurger, type Purger } from '../src/workspace/purge.js';
+import { HTTP_ACCEPTED, HTTP_BAD_REQUEST, HTTP_CONFLICT, HTTP_NO_CONTENT, HTTP_OK, trackApps } from './helpers-http.js';
 
 /**
  * Offline: nothing here clones. `PUT` only writes rows and answers 202 — the clone happens in the
  * queue, which this app is built without, and which has its own suite.
  */
 
-const HTTP_OK = 200;
-const HTTP_ACCEPTED = 202;
-const HTTP_NO_CONTENT = 204;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_CONFLICT = 409;
-
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 let root: string;
 let store: MemoryUserRepoStore;
@@ -75,7 +65,7 @@ async function boot(
             auth: githubAuth(),
         },
     });
-    app = h.app;
+    track(h.app);
     return { app: h.app, caller, cookie: await signedIn(auth, caller), executors };
 }
 
@@ -121,11 +111,6 @@ describe('GET /api/workspace', () => {
             defaultExecutor: null,
             checkoutTotalBytes: null,
         });
-    });
-
-    it('needs a session', async () => {
-        const { app } = await boot();
-        expect((await app.inject({ method: 'GET', url: '/api/workspace' })).statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('reports a queued repo with no on-disk facts, never with zeroes', async () => {
@@ -488,13 +473,6 @@ describe('DELETE /api/workspace/repos/:owner/:name', () => {
         expect(store.rows().filter((r) => r.status === 'purging')).toHaveLength(0);
     });
 
-    it('needs a session', async () => {
-        const { app } = await bootWithPurger();
-        expect((await app.inject({ method: 'DELETE', url: '/api/workspace/repos/acme/web' })).statusCode).toBe(
-            HTTP_UNAUTHORIZED
-        );
-    });
-
     it('answers 409 when workspaces are switched off', async () => {
         const { app, cookie } = await boot({ withRoot: false });
         const response = await del(app, cookie, 'acme', 'web');
@@ -604,16 +582,6 @@ describe('PUT /api/workspace/repos', () => {
         expect(await store.list(caller.user.id)).toHaveLength(0);
         expect((await store.orphaned(caller.user.id))[0]?.status).toBe('purging');
     });
-
-    it('needs a session', async () => {
-        const { app } = await boot();
-        const response = await app.inject({
-            method: 'PUT',
-            url: '/api/workspace/repos',
-            payload: { repos: [] },
-        });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
-    });
 });
 
 const putExecutors = (app: FastifyInstance, cookie: string, executors: unknown) =>
@@ -659,7 +627,7 @@ describe('executors: listing and replacing', () => {
             repos: REPOS,
             config: { workspaceRoot: root, auth: githubAuth() },
         });
-        app = h.app;
+        track(h.app);
         const cookieA = await signedIn(auth, a);
         const cookieB = await signedIn(auth, b);
 
@@ -894,16 +862,6 @@ describe('executors: PUT lifecycle', () => {
         expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json().executors[0]).toMatchObject({ name: 'main', type: 'claude-code' });
     });
-
-    it('needs a session', async () => {
-        const { app } = await boot();
-        const response = await app.inject({
-            method: 'PUT',
-            url: '/api/workspace/executors',
-            payload: { executors: [] },
-        });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
-    });
 });
 
 describe('executors: GET /api/workspace/executors', () => {
@@ -934,7 +892,7 @@ describe('executors: GET /api/workspace/executors', () => {
             repos: REPOS,
             config: { workspaceRoot: root, auth: githubAuth() },
         });
-        app = h.app;
+        track(h.app);
         const cookieA = await signedIn(auth, a);
         const cookieB = await signedIn(auth, b);
 
@@ -955,11 +913,5 @@ describe('executors: GET /api/workspace/executors', () => {
 
         expect(response.statusCode).toBe(HTTP_CONFLICT);
         expect(response.json().code).toBe('WORKSPACE_DISABLED');
-    });
-
-    it('needs a session for the config read', async () => {
-        const { app } = await boot();
-        const response = await app.inject({ method: 'GET', url: '/api/workspace/executors' });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 });

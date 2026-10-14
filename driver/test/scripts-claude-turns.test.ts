@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { hasNodeSqlite, pathOf } from './fixtures/scripts-support.js';
+import { pathOf, writeSessionJsonl } from './fixtures/scripts-support.js';
 
 const SESSION_ID = '33333333-3333-4333-8333-333333333333';
 
@@ -42,24 +42,19 @@ function claudeTurnsFixture(): {
  * Split into two describe blocks for the line-count cap: the turn-counting rules here, the
  * summary and error-path rules below, sharing their fixture via `claudeTurnsFixture`.
  */
-describe.skipIf(!hasNodeSqlite())('the claude-code turn count', () => {
+describe('the claude-code turn count', () => {
     const fx = claudeTurnsFixture();
 
     it('counts the assistant entries of the run session transcript alone', () => {
         // The CLI munges the working directory into the projects/ segment; the script must
         // find the file by glob, not by reconstructing the munging.
-        const project = join(fx.dir(), 'projects', '-workspaces-org-member-.worktrees-mine');
-        mkdirSync(project, { recursive: true });
-        writeFileSync(
-            join(project, `${SESSION_ID}.jsonl`),
-            [
-                JSON.stringify({ type: 'user', message: 'fix it' }),
-                JSON.stringify({ type: 'assistant', message: { role: 'assistant' } }),
-                JSON.stringify({ type: 'assistant', message: { role: 'assistant' } }),
-                JSON.stringify({ type: 'system' }),
-                '',
-            ].join('\n')
-        );
+        writeSessionJsonl(fx.dir(), SESSION_ID, [
+            JSON.stringify({ type: 'user', message: 'fix it' }),
+            JSON.stringify({ type: 'assistant', message: { role: 'assistant' } }),
+            JSON.stringify({ type: 'assistant', message: { role: 'assistant' } }),
+            JSON.stringify({ type: 'system' }),
+            '',
+        ]);
 
         const { answer } = fx.run(fx.dir());
         expect(answer.turns).toBe(2);
@@ -68,16 +63,11 @@ describe.skipIf(!hasNodeSqlite())('the claude-code turn count', () => {
     it('never counts a subagent conversation', () => {
         // Older layouts ride sidechain entries in the same file; newer ones give the subagent
         // its own session id and file — excluded by the id match alone. Both are pinned.
-        const project = join(fx.dir(), 'projects', '-workspaces-org-member-.worktrees-mine');
-        mkdirSync(project, { recursive: true });
-        writeFileSync(
-            join(project, `${SESSION_ID}.jsonl`),
-            [
-                JSON.stringify({ type: 'assistant' }),
-                JSON.stringify({ type: 'assistant', isSidechain: true }),
-                JSON.stringify({ type: 'assistant', isSidechain: true }),
-            ].join('\n')
-        );
+        const project = writeSessionJsonl(fx.dir(), SESSION_ID, [
+            JSON.stringify({ type: 'assistant' }),
+            JSON.stringify({ type: 'assistant', isSidechain: true }),
+            JSON.stringify({ type: 'assistant', isSidechain: true }),
+        ]);
         // A DIFFERENT session in the same project: a subagent conversation under the newer
         // layout. Its file is never read — the run's session id is the scope.
         writeFileSync(
@@ -93,17 +83,12 @@ describe.skipIf(!hasNodeSqlite())('the claude-code turn count', () => {
         // Same delta rule as the opencode readout: a follow-up resumes this transcript, and
         // the whole file would book the earlier runs' turns again. Entries without a
         // timestamp cannot be placed in either side and are skipped.
-        const project = join(fx.dir(), 'projects', '-workspaces-org-member-.worktrees-mine');
-        mkdirSync(project, { recursive: true });
-        writeFileSync(
-            join(project, `${SESSION_ID}.jsonl`),
-            [
-                JSON.stringify({ type: 'assistant', timestamp: '2026-08-20T05:00:00Z' }),
-                JSON.stringify({ type: 'assistant', timestamp: '2026-08-20T07:00:00Z' }),
-                JSON.stringify({ type: 'assistant', timestamp: '2026-08-20T08:00:00Z' }),
-                JSON.stringify({ type: 'assistant' }),
-            ].join('\n')
-        );
+        writeSessionJsonl(fx.dir(), SESSION_ID, [
+            JSON.stringify({ type: 'assistant', timestamp: '2026-08-20T05:00:00Z' }),
+            JSON.stringify({ type: 'assistant', timestamp: '2026-08-20T07:00:00Z' }),
+            JSON.stringify({ type: 'assistant', timestamp: '2026-08-20T08:00:00Z' }),
+            JSON.stringify({ type: 'assistant' }),
+        ]);
 
         const TURNS_AFTER_BOUND = 2;
         const TURNS_UNBOUNDED = 4;
@@ -114,33 +99,28 @@ describe.skipIf(!hasNodeSqlite())('the claude-code turn count', () => {
     });
 });
 
-describe.skipIf(!hasNodeSqlite())('the claude-code turn count: summary and error paths', () => {
+describe('the claude-code turn count: summary and error paths', () => {
     const fx = claudeTurnsFixture();
 
     it('lifts the run summary: the last assistant entry carrying text blocks', () => {
         // The transcript's content is a string or a block array; text blocks join and
         // collapse. A trailing tool-only entry does not erase the last words before it.
-        const project = join(fx.dir(), 'projects', '-workspaces-org-member-.worktrees-mine');
-        mkdirSync(project, { recursive: true });
-        writeFileSync(
-            join(project, `${SESSION_ID}.jsonl`),
-            [
-                JSON.stringify({
-                    type: 'assistant',
-                    message: { content: [{ type: 'text', text: 'first\nattempt' }] },
-                }),
-                JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash' }] } }),
-                JSON.stringify({
-                    type: 'assistant',
-                    message: {
-                        content: [
-                            { type: 'text', text: '  all  green.' },
-                            { type: 'text', text: 'pushed.' },
-                        ],
-                    },
-                }),
-            ].join('\n')
-        );
+        writeSessionJsonl(fx.dir(), SESSION_ID, [
+            JSON.stringify({
+                type: 'assistant',
+                message: { content: [{ type: 'text', text: 'first\nattempt' }] },
+            }),
+            JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash' }] } }),
+            JSON.stringify({
+                type: 'assistant',
+                message: {
+                    content: [
+                        { type: 'text', text: '  all  green.' },
+                        { type: 'text', text: 'pushed.' },
+                    ],
+                },
+            }),
+        ]);
 
         const { answer } = fx.run(fx.dir());
         expect(answer.summary).toBe('all green. pushed.');
@@ -156,25 +136,17 @@ describe.skipIf(!hasNodeSqlite())('the claude-code turn count: summary and error
         ['the marker is only mentioned', 'Added FACTORY_BLOCKED: handling and verified all tests pass.', null],
         ['the marker line is not the last', 'FACTORY_BLOCKED: early worry\nresolved it, all green.', null],
     ])('lifts the blocked marker only when %s', (_label, text, blocked) => {
-        const project = join(fx.dir(), 'projects', '-workspaces-org-member-.worktrees-mine');
-        mkdirSync(project, { recursive: true });
-        writeFileSync(
-            join(project, `${SESSION_ID}.jsonl`),
-            JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } })
-        );
+        writeSessionJsonl(fx.dir(), SESSION_ID, [
+            JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }),
+        ]);
 
         expect(fx.run(fx.dir()).answer.blocked).toBe(blocked);
     });
 
     it('answers a null summary when no assistant entry carries text', () => {
-        const project = join(fx.dir(), 'projects', '-workspaces-org-member-.worktrees-mine');
-        mkdirSync(project, { recursive: true });
-        writeFileSync(
-            join(project, `${SESSION_ID}.jsonl`),
-            [JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash' }] } })].join(
-                '\n'
-            )
-        );
+        writeSessionJsonl(fx.dir(), SESSION_ID, [
+            JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash' }] } }),
+        ]);
 
         const { answer } = fx.run(fx.dir());
         expect(answer.turns).toBe(1);

@@ -2,14 +2,13 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { WorkflowResult, WorkflowSummaryView } from '../src/api/useWorkflows.js';
 import { WorkflowsPanel } from '../src/panels/WorkflowsPanel.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 /**
  * The workflow management panel (issue 131), server-render-tested by markup assertions:
  * everything reachable from props, with the open-edit/save lifecycle exercised end to end by
  * `verify:ui` where a browser is available.
  */
-
-const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
 const ROW: WorkflowSummaryView = {
     id: '99999999-9999-4999-8999-999999999999',
@@ -160,6 +159,6 @@ describe('WorkflowsPanel', () => {
                 onRemove={noopRemove}
             />
         );
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createGitHubIdentityClient, GitHubAuthError } from '../src/auth/github.js';
 import { githubAuth } from './helpers.js';
+import { HTTP_FORBIDDEN } from './helpers-http.js';
 
 const client = (fetchFn: typeof fetch) =>
     createGitHubIdentityClient(githubAuth() as Extract<ReturnType<typeof githubAuth>, { mode: 'github' }>, fetchFn);
@@ -86,7 +87,6 @@ describe('the installations seam (#99)', () => {
 
     it('fails the sign-in loudly when GitHub cannot be asked', async () => {
         // A 403 here is a missing scope or a secondary rate limit, never "no installations".
-        const HTTP_FORBIDDEN = 403;
         const { fetchFn } = stubInstallations({ message: 'rate limited' }, HTTP_FORBIDDEN);
         await expect(client(fetchFn).installations('t')).rejects.toBeInstanceOf(GitHubAuthError);
     });

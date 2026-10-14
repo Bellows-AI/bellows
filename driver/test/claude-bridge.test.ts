@@ -4,8 +4,8 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /*
  * The runner end of AskUserQuestion (issue #226): docker/claude-executor/claude-bridge.cjs run
@@ -15,7 +15,6 @@ import { afterEach, describe, expect, it } from 'vitest';
  * scripts one more turn the CLI starts on its own after that `result` — the one a background
  * subagent's completion queues — which only runs while stdin is still open.
  */
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const BRIDGE = join(ROOT, 'docker/claude-executor/claude-bridge.cjs');
 const EXECUTABLE_MODE = 0o755;
 const POLL_MS = '20';
@@ -416,38 +415,28 @@ describe('claude-bridge can_use_tool', () => {
         }
     });
 
-    it('denies every other tool the way a headless run always did', async () => {
-        const control = await startControl({});
-        controls.push(control);
-
-        const result = await run({ lines: [askRequest('WebFetch')], control });
-
-        expect(result.decision).toEqual({
-            behavior: 'deny',
-            message: "Not pre-approved by the runner's allowlist, and nobody can approve it in this run.",
-            interrupt: false,
-        });
-        expect(control.posts).toEqual([]);
-    });
+    const NOT_APPROVED = "Not pre-approved by the runner's allowlist, and nobody can approve it in this run.";
 
     // A real run (`/fix 582`) read the old "denied by the permission settings" on
     // `(npm install | tail -3)` as "npm is forbidden" and gave up, though `Bash(npm *)` was allowed:
     // the subshell, not npm, kept the command from matching. The Bash denial names that way out.
-    it('tells a denied Bash command that a compound command may pass split into plain parts', async () => {
-        const control = await startControl({});
-        controls.push(control);
-
-        const result = await run({ lines: [askRequest('Bash')], control });
-
-        expect(result.decision).toEqual({
-            behavior: 'deny',
-            message:
-                "Not pre-approved by the runner's allowlist, and nobody can approve it in this run. " +
+    it.each([
+        ['denies every other tool the way a headless run always did', 'WebFetch', NOT_APPROVED],
+        [
+            'tells a denied Bash command that a compound command may pass split into plain parts',
+            'Bash',
+            `${NOT_APPROVED} ` +
                 'A compound command (a `( … )` subshell, a heredoc, a `;` or `&&` chain) is approved only when ' +
                 'every part matches the allowlist: run each part once on its own, unwrapped, before treating ' +
                 'it as refused.',
-            interrupt: false,
-        });
+        ],
+    ])('%s', async (_label, tool, message) => {
+        const control = await startControl({});
+        controls.push(control);
+
+        const result = await run({ lines: [askRequest(tool)], control });
+
+        expect(result.decision).toEqual({ behavior: 'deny', message, interrupt: false });
         expect(control.posts).toEqual([]);
     });
 

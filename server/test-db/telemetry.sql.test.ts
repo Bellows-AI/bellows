@@ -5,6 +5,7 @@ import { telemetryStats } from '@factory-ai/core';
 import { migrate } from '../src/db/migrate.js';
 import { createPostgresTelemetryClient } from '../src/telemetry/postgres-client.js';
 import { useTestDb } from './harness.js';
+import { account, randomGithubId } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -65,6 +66,26 @@ async function branch(row: {
         samples: 1,
     })}`;
 }
+
+/** An account with a generated github id, for the attribution joins to resolve. */
+const member = (login: string): Promise<string> => account(sql, randomGithubId(), login);
+
+/** A finished board job carrying a session id: the row the attribution joins resolve through. */
+const job = async (row: {
+    session?: string | null;
+    createdBy?: string | null;
+    root?: string;
+    parent?: string;
+    org?: string;
+}): Promise<string> => {
+    const id = randomUUID();
+    await sql`
+        insert into job (org_id, id, command, status, root_job_id, parent_job_id, created_by, session_id, created_at)
+        values (${row.org ?? ORG}, ${id}, 'attributed', 'succeeded', ${row.root ?? id}, ${row.parent ?? null},
+                ${row.createdBy ?? null}, ${row.session ?? null}, now())
+    `;
+    return id;
+};
 
 describe.skipIf(!enabled)('migrations', () => {
     it('range-partitions metric_point on time, with no extension behind it', async () => {
@@ -350,32 +371,8 @@ describe.skipIf(!enabled)('session attribution', () => {
     // the collector strips identity on purpose — so a session with no matching job row (a local
     // dev run, a backfilled transcript) reads user null, never a guess.
 
-    /** Unique per run — a shared factory_test database must not let accounts collide with
-     * another suite's, or with rows a failed run left behind. */
-    let userSeq = 0;
-    const TIMESTAMP_MODULUS = 1_000_000_000;
-    const TIMESTAMP_SHIFT = 1000;
-    const githubUserId = () => (Date.now() % TIMESTAMP_MODULUS) * TIMESTAMP_SHIFT + ++userSeq;
-    const account = async (login: string): Promise<string> => {
-        const [row] = await sql<{ id: string }[]>`
-            insert into app_user (github_user_id, github_login)
-            values (${githubUserId()}, ${login})
-            returning id
-        `;
-        return row!.id;
-    };
-
-    const job = async (row: { session: string; createdBy: string | null; org?: string }): Promise<string> => {
-        const id = randomUUID();
-        await sql`
-            insert into job (org_id, id, command, status, root_job_id, created_by, session_id, created_at)
-            values (${row.org ?? ORG}, ${id}, 'attributed', 'succeeded', ${id}, ${row.createdBy}, ${row.session}, now())
-        `;
-        return id;
-    };
-
     it('resolves the user of the board task a session belongs to', async () => {
-        const userId = await account('attributor');
+        const userId = await member('attributor');
         const jobId = await job({ session: 'attr-1', createdBy: userId });
         await point({ session: 'attr-1', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
         await branch({
@@ -400,7 +397,7 @@ describe.skipIf(!enabled)('session attribution', () => {
         const userId = (
             await sql<{ id: string }[]>`
                 insert into app_user (github_user_id, github_login, display_name, avatar_url)
-                values (${githubUserId()}, 'labeled', 'Ada Lovelace', 'https://example.com/ada.png')
+                values (${randomGithubId()}, 'labeled', 'Ada Lovelace', 'https://example.com/ada.png')
                 returning id
             `
         )[0]!.id;
@@ -441,7 +438,7 @@ describe.skipIf(!enabled)('session attribution', () => {
         // Every member of a thread shares the parent's session AND, by the follow-up author
         // guard, the parent's author — so the join is deterministic no matter which member's row
         // the minimum happens to pick.
-        const userId = await account('thread-author');
+        const userId = await member('thread-author');
         const rootId = await job({ session: 'attr-4', createdBy: userId });
         await sql`
             insert into job (org_id, id, command, status, root_job_id, parent_job_id, created_by, session_id, created_at)
@@ -463,7 +460,7 @@ describe.skipIf(!enabled)('session attribution', () => {
     });
 
     it("does not attribute one organization's session through another organization's job", async () => {
-        const userId = await account('other-org-author');
+        const userId = await member('other-org-author');
         const jobId = await job({ session: 'attr-5', createdBy: userId, org: OTHER_ORG });
         await branch({
             session: 'attr-5',
@@ -485,35 +482,6 @@ describe.skipIf(!enabled)('task attribution', () => {
     // member: a session id carried by any job row resolves to that row's thread root, so the
     // task travels beside the user it was landed with — never through a second lookup.
 
-    let userSeq = 0;
-    const TIMESTAMP_MODULUS = 1_000_000_000;
-    const TIMESTAMP_SHIFT = 1000;
-    const githubUserId = () => (Date.now() % TIMESTAMP_MODULUS) * TIMESTAMP_SHIFT + ++userSeq;
-    const account = async (login: string): Promise<string> => {
-        const [row] = await sql<{ id: string }[]>`
-            insert into app_user (github_user_id, github_login)
-            values (${githubUserId()}, ${login})
-            returning id
-        `;
-        return row!.id;
-    };
-
-    const job = async (row: {
-        session?: string | null;
-        createdBy?: string | null;
-        root?: string;
-        parent?: string;
-        org?: string;
-    }): Promise<string> => {
-        const id = randomUUID();
-        await sql`
-            insert into job (org_id, id, command, status, root_job_id, parent_job_id, created_by, session_id, created_at)
-            values (${row.org ?? ORG}, ${id}, 'attributed', 'succeeded', ${row.root ?? id}, ${row.parent ?? null},
-                    ${row.createdBy ?? null}, ${row.session ?? null}, now())
-        `;
-        return id;
-    };
-
     const fetchOrg = async (org = ORG) => createPostgresTelemetryClient({ sql, orgId: org }).fetchRollups();
 
     const seedSession = async (session: string) => {
@@ -527,7 +495,7 @@ describe.skipIf(!enabled)('task attribution', () => {
     };
 
     it('attributes an executor session to its task beside the member attribution', async () => {
-        const userId = await account('task-author');
+        const userId = await member('task-author');
         const rootId = await job({ session: 'task-1', createdBy: userId });
         await seedSession('task-1');
 
@@ -541,7 +509,7 @@ describe.skipIf(!enabled)('task attribution', () => {
     it('resolves a follow-up chain to the one thread root', async () => {
         // The follow-up copies the parent's session AND root_job_id, so both rows land in the
         // same group and the minimum is that root — the session is counted once under it.
-        const userId = await account('chain-author');
+        const userId = await member('chain-author');
         const rootId = await job({ session: 'task-2', createdBy: userId });
         await job({ session: 'task-2', createdBy: userId, root: rootId, parent: rootId });
         await seedSession('task-2');
@@ -576,7 +544,7 @@ describe.skipIf(!enabled)('task attribution', () => {
         // Deleting the thread's job rows removes the only bridge to both the member and the
         // task — the session falls into the unattributed figure rather than vanishing, and
         // its tokens keep counting in the organization's totals.
-        const userId = await account('doomed-author');
+        const userId = await member('doomed-author');
         const rootId = await job({ session: 'task-5', createdBy: userId });
         await seedSession('task-5');
 
@@ -607,5 +575,75 @@ describe.skipIf(!enabled)('task attribution', () => {
         // The column is new: every row so far reads unmeasured, never zero.
         expect(runs[0]?.agentTurns).toBeNull();
         await sql`delete from job`;
+    });
+});
+
+describe.skipIf(!enabled)('runActivity — the per-run telemetry read (issue #339)', () => {
+    const FROM = '2026-09-22T10:00:00.000Z';
+    const TO = '2026-09-22T10:45:00.000Z';
+    const FIFTEEN_MIN = 900_000;
+
+    it('buckets one session’s points over the run window, and nothing else’s', async () => {
+        // Minted per test: a shared factory_test database must never let one run's session id
+        // collide with another's rows.
+        const sessionId = randomUUID();
+        const otherSession = randomUUID();
+        await point({ session: sessionId, field: 'tokens_input', value: 2_000_000, time: '2026-09-22T10:05:00Z' });
+        await point({ session: sessionId, field: 'tokens_output', value: 500_000, time: '2026-09-22T10:07:00Z' });
+        await point({ session: sessionId, field: 'edits_accept', value: 3, time: '2026-09-22T10:20:00Z' });
+        // A cumulative series rides the same window and must be differenced, not summed.
+        await point({
+            session: sessionId,
+            field: 'tokens_cacheRead',
+            value: 100,
+            time: '2026-09-22T10:06:00Z',
+            temporality: 'cumulative',
+            startTime: FROM,
+        });
+        await point({
+            session: sessionId,
+            field: 'tokens_cacheRead',
+            value: 160,
+            time: '2026-09-22T10:21:00Z',
+            temporality: 'cumulative',
+            startTime: FROM,
+        });
+        // Another session's points and points outside the window both stay out.
+        await point({ session: otherSession, field: 'tokens_input', value: 9_000_000, time: '2026-09-22T10:05:00Z' });
+        await point({ session: sessionId, field: 'tokens_input', value: 7_000_000, time: '2026-09-22T09:55:00Z' });
+
+        const buckets = await createPostgresTelemetryClient({ sql, orgId: ORG }).runActivity({
+            sessionId,
+            from: FROM,
+            to: TO,
+            bucketMs: FIFTEEN_MIN,
+        });
+
+        expect(buckets).toHaveLength(3);
+        expect(buckets[0]).toEqual({
+            start: FROM,
+            tokens: { input: 2_000_000, output: 500_000, cacheRead: 100, cacheCreation: 0 },
+            edits: 0,
+        });
+        expect(buckets[1]).toEqual({
+            start: '2026-09-22T10:15:00.000Z',
+            tokens: { input: 0, output: 0, cacheRead: 60, cacheCreation: 0 },
+            edits: 3,
+        });
+        expect(buckets[2]).toEqual({
+            start: '2026-09-22T10:30:00.000Z',
+            tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+            edits: 0,
+        });
+    });
+
+    it('answers empty for a session the pipeline holds nothing about', async () => {
+        const buckets = await createPostgresTelemetryClient({ sql, orgId: ORG }).runActivity({
+            sessionId: randomUUID(),
+            from: FROM,
+            to: TO,
+            bucketMs: FIFTEEN_MIN,
+        });
+        expect(buckets).toEqual([]);
     });
 });

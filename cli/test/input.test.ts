@@ -1,36 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import { COMMAND_LIMIT } from '../src/input.js';
 import { run } from '../src/run.js';
+import { json, recordingBoard } from './harness.js';
 
-const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
 const MULTILINE = 'fix the bug\n\n  • indented — naïve café 日本語 🚀\nlast line\n';
 
 function harness(files: Record<string, string | Error> = {}, stdin: string | Error = '') {
-    const out: string[] = [];
-    const err: string[] = [];
     const bodies: unknown[] = [];
-    const fetch = (async (_url: string | URL | globalThis.Request, init?: RequestInit) => {
-        bodies.push(typeof init?.body === 'string' ? JSON.parse(init.body) : undefined);
-        return new Response(JSON.stringify({ id: 'job-2', status: 'queued' }), {
-            status: 201,
-            headers: { 'content-type': 'application/json' },
-        });
-    }) as unknown as typeof globalThis.fetch;
-    const io = {
-        env: ENV,
-        fetch,
-        readFile: async (path: string) => {
-            const file = files[path] ?? new Error(`ENOENT: no such file or directory, open '${path}'`);
-            if (file instanceof Error) throw file;
-            return file;
+    const { out, err, io } = recordingBoard(
+        (sent) => {
+            bodies.push(sent.body);
+            return json({ id: 'job-2', status: 'queued' }, 201);
         },
-        readStdin: async () => {
-            if (stdin instanceof Error) throw stdin;
-            return stdin;
-        },
-        stdout: (text: string) => out.push(text),
-        stderr: (text: string) => err.push(text),
-    };
+        {
+            readFile: async (path: string) => {
+                const file = files[path] ?? new Error(`ENOENT: no such file or directory, open '${path}'`);
+                if (file instanceof Error) throw file;
+                return file;
+            },
+            readStdin: async () => {
+                if (stdin instanceof Error) throw stdin;
+                return stdin;
+            },
+        }
+    );
     return { out, err, bodies, io };
 }
 

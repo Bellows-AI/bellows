@@ -91,9 +91,6 @@ const opencodeJob: BoardJob = { ...job, executorType: 'opencode' };
 const spec = (env: NodeJS.ProcessEnv = {}) =>
     runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', ...env }), job, { id: SESSION, resume: false });
 
-const resumedSpec = (env: NodeJS.ProcessEnv = {}) =>
-    runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', ...env }), job, { id: SESSION, resume: true });
-
 describe('the runner job spec', () => {
     it('is a batch/v1 Job named after the job id and lease token, within the label bound', () => {
         expect(spec().apiVersion).toBe('batch/v1');
@@ -106,84 +103,11 @@ describe('the runner job spec', () => {
         expect(spec().metadata.name.length).toBeLessThanOrEqual(63);
     });
 
-    // The executor image's ENTRYPOINT is the claude wrapper, so the container args are exactly what
-    // the docker runner puts after the image name — same prompt, same flags, same platform.
+    // The plan is pinned in runner-plan.test.ts; this is its kubernetes rendering: the CLI args as
+    // the container's args (its env pairs are the literal values pinned below).
     it('runs the command as a prompt, with the same argv the docker runner passes after the image', () => {
         expect(spec().spec.template.spec.containers[0].args).toEqual([
             '--session-id',
-            SESSION,
-            '--append-system-prompt',
-            MASTER_PROMPT,
-            '--system-prompt-snapshot',
-            'off',
-            '-p',
-            'fix the failing build',
-        ]);
-    });
-
-    // Issue #545, the kubernetes half of the pair: a selection rides the master prompt, so the pod's
-    // container args carry it exactly as the docker argv does — the skills are baked in the image.
-    it('delivers a prompt naming the selected skills verbatim, as the docker runner does', () => {
-        const masterPrompt = `${MASTER_PROMPT}\n- Selected skills: github, jira`;
-        const withSkills = runnerJobSpec(
-            loadDriverConfig({ EXECUTOR: 'kubernetes' }),
-            { ...job, masterPrompt },
-            {
-                id: SESSION,
-                resume: false,
-            }
-        );
-        expect(withSkills.spec.template.spec.containers[0].args).toContain(masterPrompt);
-    });
-
-    // Parity, decided in docker's favour: the prompt is delivered on EVERY run, resume included.
-    // This platform used to suppress it on a resume that was not a follow-up, and docker never
-    // did — one of the two had to be wrong, and a restored conversation that receives no prompt
-    // idles to the deadline. The Factory execution context rides every claim either way, so a
-    // resumed conversation always rebuilds it fresh (issue #244). The docker twin of this case is
-    // pinned in docker.test.ts ('delivers the prompt on a resume too').
-    it('delivers the command into a resumed session, exactly as the docker runner does', () => {
-        expect(resumedSpec().spec.template.spec.containers[0].args).toEqual([
-            '--resume',
-            SESSION,
-            '--append-system-prompt',
-            MASTER_PROMPT,
-            '--system-prompt-snapshot',
-            'off',
-            '-p',
-            'fix the failing build',
-        ]);
-    });
-
-    // Issue #509, the k8s twin of docker.test.ts ('delivers the turn context as hook env').
-    it('delivers the turn context as hook env to claude and as a prompt prefix to opencode', () => {
-        const turnContext = 'Factory turn context\n- Current node: gate-fix';
-        const config = loadDriverConfig({ EXECUTOR: 'kubernetes' });
-        const claude = runnerJobSpec(
-            config,
-            { ...job, command: '/fix 209', turnContext },
-            { id: SESSION, resume: true }
-        );
-        expect(claude.spec.template.spec.containers[0].args.slice(-2)).toEqual(['-p', '/fix 209']);
-        expect(claude.spec.template.spec.containers[0].env).toContainEqual({
-            name: 'FACTORY_TURN_CONTEXT',
-            value: turnContext,
-        });
-        const opencode = runnerJobSpec(config, { ...opencodeJob, turnContext }, null);
-        expect(opencode.spec.template.spec.containers[0].args.at(-1)).toBe(`${turnContext}\n\nfix the failing build`);
-    });
-
-    // The follow-up arm of the same rule: it restores the parent conversation AND delivers the
-    // adjustment into it. Identical to the resume case above now that the two agree — kept
-    // separate because the follow-up flag is the one a board change could move independently.
-    it('delivers the command into the restored session on a follow-up', () => {
-        const followUpSpec = runnerJobSpec(
-            loadDriverConfig({ EXECUTOR: 'kubernetes' }),
-            { ...job, followUp: true },
-            { id: SESSION, resume: true }
-        );
-        expect(followUpSpec.spec.template.spec.containers[0].args).toEqual([
-            '--resume',
             SESSION,
             '--append-system-prompt',
             MASTER_PROMPT,
@@ -279,27 +203,6 @@ describe('the runner job spec', () => {
         ).toThrow(/worktree/);
     });
 
-    // Executor parity for the transcript store (issue #55): the same name with the same
-    // driver-composed path the docker argv carries for the same claim, so persistence does not
-    // depend on which executor ran the job. Claude-code only — opencode is pinned just below.
-    it('carries the transcript store for claude-code, the same path docker composes', () => {
-        const container = spec().spec.template.spec.containers[0];
-        expect(container.env).toContainEqual({
-            name: 'FACTORY_TRANSCRIPT_DIR',
-            value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
-        });
-        // A value, not a secretKeyRef — a path like WORKDIR, never a credential.
-        const entry = container.env.find((e) => e.name === 'FACTORY_TRANSCRIPT_DIR');
-        expect(entry?.valueFrom).toBeUndefined();
-    });
-
-    it('never carries the transcript store for opencode', () => {
-        const ocSpec = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), opencodeJob, null);
-        expect(ocSpec.spec.template.spec.containers[0].env.some((e) => e.name === 'FACTORY_TRANSCRIPT_DIR')).toBe(
-            false
-        );
-    });
-
     it('refuses a thread root that is not a uuid before it becomes a path', () => {
         expect(() =>
             runnerJobSpec(
@@ -384,18 +287,6 @@ describe('the runner job spec', () => {
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
         ]);
-    });
-
-    // npm's update notice is the last thing every npm call prints, burying the summary the
-    // output tail exists to show (#511) — the docker runner's twin, for both executors.
-    it('silences npm update notices in the claude and opencode runner', () => {
-        const opencode = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), opencodeJob, null);
-        for (const s of [spec(), opencode]) {
-            expect(s.spec.template.spec.containers[0].env).toContainEqual({
-                name: 'NPM_CONFIG_UPDATE_NOTIFIER',
-                value: 'false',
-            });
-        }
     });
 
     // A default only: the claim's own value rides the Secret by reference, and the pod spec never
@@ -532,27 +423,6 @@ describe('the runner job spec', () => {
         ).toContainEqual({ name: 'FACTORY_STATS_URL', value: 'http://stats.internal:8080' });
     });
 
-    // The session the reporter names. Claude always has one (the driver mints it); opencode only
-    // on a follow-up — a fresh run discovers its id from the session database, exactly as the
-    // docker runner's env handles it.
-    it('tells the runner which session to report', () => {
-        expect(spec().spec.template.spec.containers[0].env).toContainEqual({
-            name: 'BELLOWS_SESSION_ID',
-            value: SESSION,
-        });
-        const opencode = (env: NodeJS.ProcessEnv = {}) =>
-            runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', ...env }), opencodeJob, null).spec.template.spec
-                .containers[0];
-        expect(opencode().env.some((entry) => entry.name === 'BELLOWS_SESSION_ID')).toBe(false);
-        expect(
-            runnerJobSpec(
-                loadDriverConfig({ EXECUTOR: 'kubernetes' }),
-                { ...opencodeJob, followUp: true },
-                { id: SESSION, resume: true }
-            ).spec.template.spec.containers[0].env
-        ).toContainEqual({ name: 'BELLOWS_SESSION_ID', value: SESSION });
-    });
-
     // The attempt pair is a credential — the lease token most of all — so the NAMES travel in
     // the pod spec and the VALUES ride the per-attempt Secret by reference, the same discipline
     // as every claim env entry. There is no opt-out: the pair is how the runner's branch
@@ -620,13 +490,6 @@ describe('the runner job spec', () => {
         expect(spec().spec.template.spec.automountServiceAccountToken).toBe(false);
     });
 
-    it('skips permissions only when told to', () => {
-        expect(spec().spec.template.spec.containers[0].args).not.toContain('--dangerously-skip-permissions');
-        expect(spec({ RUNNER_SKIP_PERMISSIONS: '1' }).spec.template.spec.containers[0].args).toContain(
-            '--dangerously-skip-permissions'
-        );
-    });
-
     /**
      * Kubernetes defaults to `Always` for an untagged or `:latest` image, which would reach past
      * the node's own local images to a registry that has never heard of `claude-executor` — the
@@ -672,71 +535,127 @@ describe('the runner job spec', () => {
     });
 });
 
+/*
+ * Every pod the driver specs, by name: the runner, the ten aux builders (all through
+ * `auxJobSpec`) and a declared service's bare Pod. Each entry is a thunk, built inside the it
+ * bodies — the file's `namespace` is declared below, and nothing here may build eagerly. A
+ * builder that bypassed `auxJobSpec` altogether would need its own entry here, and the
+ * admission policy is the backstop that refuses it at the apiserver either way.
+ */
+const POD_NAMES = [
+    'the runner',
+    'the gate',
+    'the bellows readout',
+    'the opencode session readout',
+    'the claude turns readout',
+    'the claude transcript export',
+    'the opencode transcript export',
+    'the sync',
+    'the reclaim',
+    'the publish step',
+    'the helper',
+    'the service pod',
+] as const;
+type PodName = (typeof POD_NAMES)[number];
+/** Every Job-backed pod — all of them but the declared service's bare Pod. */
+const JOB_POD_NAMES = POD_NAMES.filter((name) => name !== 'the service pod');
+
+type JobSpecOf = ReturnType<typeof runnerJobSpec> | ReturnType<typeof syncJobSpec>;
+type ServicePodOf = ReturnType<typeof servicePodSpec>;
+interface PodView {
+    /** The Job object — absent on the service's bare Pod. */
+    job?: JobSpecOf;
+    /** The POD's metadata: the Job's pod template, or the bare Pod's own. */
+    meta: JobSpecOf['spec']['template']['metadata'] | ServicePodOf['metadata'];
+    /** The pod spec, read only through the fields every pod shares. */
+    pod: {
+        restartPolicy: string;
+        automountServiceAccountToken: boolean;
+        securityContext?: { seccompProfile?: { type: string } };
+        imagePullSecrets?: { name: string }[];
+        nodeSelector?: unknown;
+        tolerations?: unknown;
+        affinity?: unknown;
+        containers: {
+            resources?: unknown;
+            securityContext?: {
+                capabilities?: { drop?: string[] };
+                allowPrivilegeEscalation?: boolean;
+                readOnlyRootFilesystem?: boolean;
+            };
+            volumeMounts?: { name: string; subPath?: string }[];
+        }[];
+    };
+}
+const jobView = (spec: JobSpecOf): PodView => ({
+    job: spec,
+    meta: spec.spec.template.metadata,
+    pod: spec.spec.template.spec,
+});
+
+/** The gate builder's input, the one argument object every gate spec here starts from. */
+const gateArgs = (over: Partial<Parameters<typeof gateJobSpec>[2]> = {}): Parameters<typeof gateJobSpec>[2] => ({
+    key: `bellows/${USER}/.worktrees/${job.id}`,
+    image: 'node:24',
+    gateName: 't',
+    command: 'npm test',
+    run: 1,
+    envSecretName: null,
+    gateTimeoutMs: 30_000,
+    ...over,
+});
+
+const everyPodSpec = (env: NodeJS.ProcessEnv = {}, of: BoardJob = job): Record<PodName, () => PodView> => {
+    const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, ...env });
+    const repoJob: BoardJob = { ...of, repo: 'Bellows-AI/factory' };
+    const startedAt = '2026-09-01T00:00:00Z';
+    return {
+        'the runner': () => jobView(runnerJobSpec(config, of, { id: SESSION, resume: false })),
+        'the gate': () => jobView(gateJobSpec(config, of, gateArgs())),
+        'the bellows readout': () => jobView(bellowsJobSpec(config, of)),
+        'the opencode session readout': () => jobView(opencodeReadoutJobSpec(config, of, startedAt)),
+        'the claude turns readout': () => jobView(claudeTurnsJobSpec(config, of, SESSION, startedAt)),
+        'the claude transcript export': () => jobView(claudeTranscriptJobSpec(config, of, SESSION, startedAt)),
+        'the opencode transcript export': () => jobView(opencodeTranscriptJobSpec(config, of, startedAt)),
+        'the sync': () => jobView(syncJobSpec(config, repoJob, null)),
+        'the reclaim': () => jobView(reclaimJobSpec(config, repoJob)),
+        'the publish step': () =>
+            jobView(
+                publishStepJobSpec(config, repoJob, {
+                    step: 1,
+                    publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
+                    envSecret: null,
+                    repo: '/wt',
+                })
+            ),
+        'the helper': () =>
+            jobView(
+                helperJobSpec(config, of, {
+                    plan: { helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false },
+                    descriptor: lookupHelper('noop')!,
+                    envSecret: null,
+                    nonce: '77777777-7777-4777-8777-777777777777',
+                })
+            ),
+        'the service pod': () => {
+            const pod = servicePodSpec(config, of, { name: 'cache', image: 'redis', environment: [] }, 'svc-uid');
+            return { meta: pod.metadata, pod: pod.spec };
+        },
+    };
+};
+
 describe('resources on every pod the driver specs', () => {
     // Issue #360: the autoscaler sizes the whole runner fleet, not just the runner pod — an
     // unschedulable sync or gate on a right-sized node strands the run. One config, every
-    // builder: the requests render on each container from the same four variables. Built in the
-    // it bodies, not here — the file's `namespace` is declared below, and describe bodies of
-    // this suite build nothing eagerly.
+    // builder: the requests render on each container from the same four variables. The one Pod
+    // (not Job) in the fleet, a declared service under the attempt's headless Service, is sized
+    // like everything else, or it lands wherever a pod slot is free.
     const REQUESTS = { requests: { cpu: '500m', memory: '1Gi' } };
     const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-    const specs = () => {
-        const config = loadDriverConfig({
-            EXECUTOR: 'kubernetes',
-            K8S_NAMESPACE: namespace,
-            RUNNER_CPU_REQUEST: '500m',
-            RUNNER_MEMORY_REQUEST: '1Gi',
-        });
-        return [
-            runnerJobSpec(config, job, { id: SESSION, resume: false }),
-            gateJobSpec(config, job, {
-                key: `bellows/${USER}/.worktrees/${job.id}`,
-                image: 'node:24',
-                gateName: 't',
-                command: 'npm test',
-                run: 1,
-                envSecretName: null,
-                gateTimeoutMs: 30_000,
-            }),
-            bellowsJobSpec(config, job),
-            opencodeReadoutJobSpec(config, job, '2026-09-01T00:00:00Z'),
-            claudeTurnsJobSpec(config, job, SESSION, '2026-09-01T00:00:00Z'),
-            claudeTranscriptJobSpec(config, job, SESSION, '2026-09-01T00:00:00Z'),
-            opencodeTranscriptJobSpec(config, job, '2026-09-01T00:00:00Z'),
-            syncJobSpec(config, repoJob, null),
-            reclaimJobSpec(config, repoJob),
-            publishStepJobSpec(config, repoJob, {
-                step: 1,
-                publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
-                envSecret: null,
-                repo: '/wt',
-            }),
-            helperJobSpec(config, job, {
-                plan: { helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false },
-                descriptor: lookupHelper('noop')!,
-                envSecret: null,
-                nonce: '77777777-7777-4777-8777-777777777777',
-            }),
-        ];
-    };
 
-    it('carries the same requests on every aux Job and service pod', () => {
-        for (const s of specs()) {
-            expect(s.spec.template.spec.containers[0].resources, s.metadata.name).toEqual(REQUESTS);
-        }
-        // The one Pod (not Job) in the fleet: a declared service, under the attempt's headless
-        // Service — sized like everything else, or it lands wherever a pod slot is free.
-        const pod = servicePodSpec(
-            loadDriverConfig({
-                EXECUTOR: 'kubernetes',
-                K8S_NAMESPACE: namespace,
-                RUNNER_CPU_REQUEST: '500m',
-                RUNNER_MEMORY_REQUEST: '1Gi',
-            }),
-            job,
-            { name: 'cache', image: 'redis', environment: [] }
-        );
-        expect(pod.spec.containers[0].resources).toEqual(REQUESTS);
+    it.each(POD_NAMES)('carries the same requests on %s', (name) => {
+        const { pod } = everyPodSpec({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' })[name]();
+        expect(pod.containers[0]!.resources).toEqual(REQUESTS);
     });
 
     // Issue #507: a gate runs the whole suite, so it is sized by GATE_* — every other aux Job
@@ -751,15 +670,7 @@ describe('resources on every pod the driver specs', () => {
             GATE_CPU_REQUEST: '2',
             GATE_MEMORY_REQUEST: '2Gi',
         });
-        const gate = gateJobSpec(config, job, {
-            key: `bellows/${USER}/.worktrees/${job.id}`,
-            image: 'node:24',
-            gateName: 't',
-            command: 'npm test',
-            run: 1,
-            envSecretName: null,
-            gateTimeoutMs: 30_000,
-        });
+        const gate = gateJobSpec(config, job, gateArgs());
         expect(gate.spec.template.spec.containers[0].resources).toEqual({
             requests: { cpu: '2', memory: '2Gi' },
             limits: { cpu: '4' },
@@ -770,12 +681,25 @@ describe('resources on every pod the driver specs', () => {
         });
     });
 
-    it('carries no resources on any of them when none are configured', () => {
-        const plain = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
-        expect(syncJobSpec(plain, repoJob, null).spec.template.spec.containers[0].resources).toBeUndefined();
-        expect(
-            servicePodSpec(plain, job, { name: 'cache', image: 'redis', environment: [] }).spec.containers[0].resources
-        ).toBeUndefined();
+    it.each(POD_NAMES)('carries no resources on %s when none are configured', (name) => {
+        expect(everyPodSpec()[name]().pod.containers[0]!.resources).toBeUndefined();
+    });
+});
+
+// Every pod runs once and never talks to the apiserver: no restart, no service-account token.
+// Every Job-backed pod is bounded by a deadline of its own, never retried, and reaped once done.
+describe('the lifecycle of every pod the driver specs', () => {
+    it.each(POD_NAMES)('runs %s once, without a service-account token', (name) => {
+        const { pod } = everyPodSpec()[name]();
+        expect(pod.restartPolicy).toBe('Never');
+        expect(pod.automountServiceAccountToken).toBe(false);
+    });
+
+    it.each(JOB_POD_NAMES)('bounds %s with a deadline of its own, never retries it and reaps its pod', (name) => {
+        const { job: jobObject } = everyPodSpec()[name]();
+        expect(jobObject?.spec.activeDeadlineSeconds).toBeGreaterThan(0);
+        expect(jobObject?.spec.backoffLimit).toBe(0);
+        expect(jobObject?.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
     });
 });
 
@@ -785,105 +709,49 @@ describe('resources on every pod the driver specs', () => {
  * stands between that code and the node, and it is unconditional: there is no config knob, because
  * an operator who can turn it off is an operator who will find it off after an incident.
  *
- * What actually protects a NEW aux Job is not the list below — which is hand-written and can fall
+ * What actually protects a NEW aux Job is not the list above — which is hand-written and can fall
  * behind — but the single spread inside `auxJobSpec`, which every aux builder goes through. This
- * suite pins that the spread exists and reaches all ten of today's aux builders (the eleventh
- * entry is `runnerJobSpec`, which has its own spread and never goes through it); a builder that
- * bypassed `auxJobSpec` altogether would need its own line here, and the admission policy is the
- * backstop that refuses it at the apiserver either way.
+ * suite pins that the spread exists and reaches all ten of today's aux builders (`runnerJobSpec`
+ * has its own spread and never goes through it), and the declared service pod besides.
  */
 describe('the pod hardening on every pod the driver specs (#382)', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-    const hardened = () => {
-        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
-        return [
-            runnerJobSpec(config, job, { id: SESSION, resume: false }),
-            gateJobSpec(config, job, {
-                key: `bellows/${USER}/.worktrees/${job.id}`,
-                image: 'node:24',
-                gateName: 't',
-                command: 'npm test',
-                run: 1,
-                envSecretName: null,
-                gateTimeoutMs: 30_000,
-            }),
-            bellowsJobSpec(config, job),
-            opencodeReadoutJobSpec(config, job, '2026-09-01T00:00:00Z'),
-            claudeTurnsJobSpec(config, job, SESSION, '2026-09-01T00:00:00Z'),
-            claudeTranscriptJobSpec(config, job, SESSION, '2026-09-01T00:00:00Z'),
-            opencodeTranscriptJobSpec(config, job, '2026-09-01T00:00:00Z'),
-            syncJobSpec(config, repoJob, null),
-            reclaimJobSpec(config, repoJob),
-            publishStepJobSpec(config, repoJob, {
-                step: 1,
-                publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
-                envSecret: null,
-                repo: '/wt',
-            }),
-            helperJobSpec(config, job, {
-                plan: { helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false },
-                descriptor: lookupHelper('noop')!,
-                envSecret: null,
-                nonce: '77777777-7777-4777-8777-777777777777',
-            }),
-        ];
-    };
-
     // A capability is a slice of root the kernel hands a process without asking anyone. An agent
     // run needs none of them: it reads, writes and compiles inside its own worktree. Dropping ALL
     // is what makes `CAP_NET_RAW` (ARP spoofing a neighbour pod) and `CAP_DAC_OVERRIDE` (reading
     // past the file modes on the shared claim) unavailable rather than merely unused.
-    it('drops every capability on every aux Job and the runner', () => {
-        for (const s of hardened()) {
-            const container = s.spec.template.spec.containers[0]!;
-            expect(container.securityContext?.capabilities?.drop, s.metadata.name).toEqual(['ALL']);
-        }
+    it.each(POD_NAMES)('drops every capability on %s', (name) => {
+        expect(everyPodSpec()[name]().pod.containers[0]!.securityContext?.capabilities?.drop).toEqual(['ALL']);
     });
 
     // Without this a setuid binary inside the image re-acquires what the drop above removed, and
     // the drop becomes decoration. The two are one control; they are asserted separately because
     // a regression reaches for one at a time.
-    it('refuses privilege escalation on every aux Job and the runner', () => {
-        for (const s of hardened()) {
-            const container = s.spec.template.spec.containers[0]!;
-            expect(container.securityContext?.allowPrivilegeEscalation, s.metadata.name).toBe(false);
-        }
+    it.each(POD_NAMES)('refuses privilege escalation on %s', (name) => {
+        expect(everyPodSpec()[name]().pod.containers[0]!.securityContext?.allowPrivilegeEscalation).toBe(false);
     });
 
     // Pod level, not container level: seccomp is a property of the whole pod's containers, and
     // naming it once is what keeps a future sidecar from being born unfiltered. RuntimeDefault is
     // the runtime's own profile — it blocks the syscalls a container has no business making
     // (keyctl, the kernel module calls) without the per-image tuning a Localhost profile needs.
-    it('runs every pod under the runtime default seccomp profile', () => {
-        for (const s of hardened()) {
-            expect(s.spec.template.spec.securityContext?.seccompProfile, s.metadata.name).toEqual({
-                type: 'RuntimeDefault',
-            });
-        }
+    it.each(POD_NAMES)('runs %s under the runtime default seccomp profile', (name) => {
+        expect(everyPodSpec()[name]().pod.securityContext?.seccompProfile).toEqual({ type: 'RuntimeDefault' });
     });
 
     // The deliberate absence, pinned so a future tightening reads the reason before it lands: an
     // agent run writes its caches, its HOME and its git worktree, and a read-only root filesystem
     // fails it on the first npm install. The workspace is the writable surface by design; see
     // docs/security.md, "What the hardening does not do".
-    it('sets no readOnlyRootFilesystem, which an agent run needs', () => {
-        for (const s of hardened()) {
-            const container = s.spec.template.spec.containers[0]!;
-            expect(container.securityContext?.readOnlyRootFilesystem, s.metadata.name).toBeUndefined();
-        }
+    it.each(POD_NAMES)('sets no readOnlyRootFilesystem on %s, which an agent run needs', (name) => {
+        expect(everyPodSpec()[name]().pod.containers[0]!.securityContext?.readOnlyRootFilesystem).toBeUndefined();
     });
 
     // A declared service is the one pod in the fleet whose image the driver did not build: a
     // repository author names it in `.bellows.yaml` and the cluster pulls it. It is hardened like
-    // everything else — "every execution path" is the whole point of the issue — and the escape
-    // hatch below is a declaration, not a default.
+    // everything else (the rows above) — "every execution path" is the whole point of the issue —
+    // and the escape hatch below is a declaration, not a default.
     it('hardens a declared service pod like every other pod', () => {
-        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
-        const pod = servicePodSpec(config, job, { name: 'cache', image: 'redis', environment: [] }, 'svc-uid');
-        expect(pod.spec.securityContext?.seccompProfile).toEqual({ type: 'RuntimeDefault' });
-        expect(pod.spec.containers[0]!.securityContext?.capabilities?.drop).toEqual(['ALL']);
-        expect(pod.spec.containers[0]!.securityContext?.allowPrivilegeEscalation).toBe(false);
-        expect(pod.metadata.labels['factory.unhardened']).toBeUndefined();
+        expect(everyPodSpec()['the service pod']().meta.labels['factory.unhardened']).toBeUndefined();
     });
 
     // The opt-out, and exactly how far it goes. `unhardened: true` restores THE IMAGE'S DEFAULT
@@ -941,15 +809,7 @@ describe('the pod hardening on every pod the driver specs (#382)', () => {
     // visible symptom.
     it('keeps the gate uid:gid beside the seccomp profile', () => {
         const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
-        const gate = gateJobSpec(config, job, {
-            key: `bellows/${USER}/.worktrees/${job.id}`,
-            image: 'node:24',
-            gateName: 't',
-            command: 'npm test',
-            run: 1,
-            envSecretName: null,
-            gateTimeoutMs: 30_000,
-        });
+        const gate = gateJobSpec(config, job, gateArgs());
         expect(gate.spec.template.spec.securityContext).toEqual({
             runAsUser: 1000,
             runAsGroup: 1000,
@@ -998,6 +858,20 @@ const ctransCalls = (j: BoardJob): string[] => [
     `GET /api/v1/namespaces/factory/pods`,
     `GET /api/v1/namespaces/factory/pods/${podName}/log`,
     `DELETE ${jobPath(namespace, claudeTranscriptJobName(j))}`,
+];
+
+/**
+ * The methods of a runner attempt from its Secret on: the Secret POST, the claim verify, the
+ * Job POST, the claim verify, the status poll, the pod list and the log; then the close-time
+ * claude-code turn read and the transcript read (issue #325) — one aux Job each, posted,
+ * polled, its pod listed, logged and reaped; then the claim read, its release and the Secret's
+ * reap. The fence tests spell out everything before it.
+ */
+const RUN_FROM_SECRET = [
+    ...['POST', 'GET', 'POST', 'GET', 'GET', 'GET', 'GET'],
+    ...['POST', 'GET', 'GET', 'GET', 'DELETE'],
+    ...['POST', 'GET', 'GET', 'GET', 'DELETE'],
+    ...['GET', 'DELETE', 'DELETE'],
 ];
 
 const FAKE: Record<string, unknown> = {
@@ -1113,6 +987,36 @@ const fakeRequest = (overrides: Record<string, unknown> = {}): { request: K8sReq
     return { request, calls };
 };
 
+/** A test's own routes, tried before fakeRequest's; `undefined` falls through to them. */
+type Special = (method: K8sMethod, path: string, body: unknown) => K8sResponse | Promise<K8sResponse> | undefined;
+
+/**
+ * fakeRequest with the routes a test is about in front of it: `special` answers first, and
+ * anything it leaves (`undefined`) falls through to fakeRequest — whose claim server, Job,
+ * pod, log, Secret and aux routes answer as usual, and whose unscripted paths still reject.
+ * Every call is recorded, the ones `special` answered included.
+ */
+const routed = (special: Special, overrides: Record<string, unknown> = {}): { request: K8sRequest; calls: Call[] } => {
+    const calls: Call[] = [];
+    const base = fakeRequest(overrides);
+    const request: K8sRequest = (method, path, body) => {
+        calls.push({ method, path, body });
+        const answer = special(method, path, body);
+        return answer === undefined ? base.request(method, path, body) : Promise.resolve(answer);
+    };
+    return { request, calls };
+};
+
+/** The answer a hand-written fake gave a call it did not script. */
+const noAnswer = (method: K8sMethod, path: string): Promise<K8sResponse> =>
+    Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+/** A DELETE of one Job by name — a `routed` fake whose original never scripted it rejects it. */
+const isJobDelete = (method: K8sMethod, path: string): boolean =>
+    method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`);
+/** A DELETE of the checkout claim — likewise rejected where the original never scripted it. */
+const isClaimDelete = (method: K8sMethod, path: string): boolean =>
+    method === 'DELETE' && path.startsWith(`${configmapsPath}/`);
+
 const runner = (request: K8sRequest, env: Record<string, string> = {}, leases?: Board['leases']) =>
     createKubernetesRunner(
         loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0', ...env }),
@@ -1131,7 +1035,7 @@ const boardLease =
  * Default answers for the objects the runner touches beyond the runner Job itself: the fence
  * sweeps service pods and headless Services by the job label, the lease teardown lists them,
  * and aux Jobs (gates, the .bellows.yaml readout) ride the same Job routes the tests script.
- * Every inline router falls through to this before rejecting, so a test only scripts the
+ * fakeRequest (and so every routed fake) falls through to this before rejecting, so a test only scripts the
  * objects it is about. Lists answer empty — nothing to sweep, nothing to tear down.
  */
 const AUX: Record<string, K8sResponse> = {
@@ -1294,9 +1198,6 @@ describe('the worktree sync', () => {
             name: 'workspaces',
             persistentVolumeClaim: { claimName: 'factory-ai_workspaces' },
         });
-        expect(s.spec.template.spec.automountServiceAccountToken).toBe(false);
-        expect(s.spec.backoffLimit).toBe(0);
-        expect(s.spec.template.spec.restartPolicy).toBe('Never');
     });
 
     it('carries the claim env by reference, and a literal value only for the three paths', () => {
@@ -1508,137 +1409,91 @@ describe('the worktree sync', () => {
         expect(result.reason).toContain('Job.batch is invalid');
     });
 
-    it('answers ok:false when the log answers nothing parseable', async () => {
-        const { request } = fakeRequest({ log: { status: 404, body: 'gone' } });
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: the log of ${podName} answered 404: gone`,
-        });
-    });
-
     /*
      * Issue #344: every empty-log cause used to collapse into the bare "answered nothing
      * readable", and the sync Job — reaped by ttlSecondsAfterFinished — took its pod, events and
      * logs with it before anyone looked. Each cause now names itself in the reason the job's
      * output carries.
      */
-    it('names an empty pod list when the sync log has no pod to read', async () => {
-        const { request } = fakeRequest({ pods: { status: 200, body: '{"items":[]}' } });
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: no live pod for ${syncJobName(repoJob)} (none listed)`,
-        });
-    });
-
-    it('names all-terminating pods when the sync has no live pod', async () => {
-        const { request } = fakeRequest({
-            pods: {
-                status: 200,
-                body: JSON.stringify({
-                    items: [
-                        { metadata: { name: 'sync-pod-a', deletionTimestamp: '2026-09-29T00:00:00Z' } },
-                        { metadata: { name: 'sync-pod-b', deletionTimestamp: '2026-09-29T00:00:01Z' } },
-                    ],
-                }),
-            },
-        });
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: no live pod for ${syncJobName(repoJob)} (2 listed, all terminating)`,
-        });
-    });
-
-    it('names the pod list refusal when the pod list answers an error status', async () => {
-        const { request } = fakeRequest({ pods: { status: 500, body: 'nope' } });
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: the pod list of ${syncJobName(repoJob)} answered 500: nope`,
-        });
-    });
-
-    it('names the transport failure when the sync pod list GET throws', async () => {
-        const { request: base } = fakeRequest();
-        const request: K8sRequest = (method, path, body) => {
-            if (path?.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
-                return Promise.reject(new Error('connection reset'));
-            }
-            return base(method, path, body);
+    const rejecting =
+        (when: (path: string) => boolean, message: string): (() => K8sRequest) =>
+        () => {
+            const { request: base } = fakeRequest();
+            return (method, path, body) => (when(path) ? Promise.reject(new Error(message)) : base(method, path, body));
         };
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: the pod list of ${syncJobName(repoJob)} could not be read: connection reset`,
-        });
-    });
-
-    it('names the transport failure when the sync log GET throws', async () => {
-        const { request: base } = fakeRequest();
-        const request: K8sRequest = (method, path, body) => {
-            if (path?.includes('/log')) {
-                return Promise.reject(new Error('socket hung up'));
-            }
-            return base(method, path, body);
-        };
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: the log of ${podName} could not be read: socket hung up`,
-        });
-    });
-
-    it('names the live pod when it carries no name to read a log from', async () => {
-        const { request } = fakeRequest({
-            pods: {
-                status: 200,
-                body: JSON.stringify({ items: [{ metadata: {}, status: {} }] }),
-            },
-        });
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: the live pod of ${syncJobName(repoJob)} has no name`,
-        });
-    });
-
-    it('names the last log line when the sync prints non-JSON', async () => {
-        const { request } = fakeRequest({
-            log: { status: 200, body: 'fetching origin\nfatal: could not read from remote repository\n' },
-        });
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: 'the worktree sync answered nothing readable: last log line "fatal: could not read from remote repository"',
-        });
-    });
-
-    it('names the pod and its phase when the sync container printed nothing', async () => {
-        const { request } = fakeRequest({
-            log: { status: 200, body: '' },
-            pods: {
-                status: 200,
-                body: JSON.stringify({
-                    items: [{ metadata: { name: podName }, status: { phase: 'Succeeded' } }],
-                }),
-            },
-        });
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: the container printed nothing (pod ${podName}, phase Succeeded)`,
-        });
-    });
-
-    it('names the kubelet’s reason when the sync container never started', async () => {
-        const { request } = fakeRequest(NEVER_STARTED);
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: 'the worktree sync container failed: StartError: exec: "node": executable file not found in $PATH',
-        });
+    const answering = (overrides: Record<string, unknown>) => () => fakeRequest(overrides).request;
+    const unreadable = 'the worktree sync answered nothing readable:';
+    it.each<[string, () => K8sRequest, string]>([
+        [
+            'answers ok:false when the log answers nothing parseable',
+            answering({ log: { status: 404, body: 'gone' } }),
+            `${unreadable} the log of ${podName} answered 404: gone`,
+        ],
+        [
+            'names an empty pod list when the sync log has no pod to read',
+            answering({ pods: { status: 200, body: '{"items":[]}' } }),
+            `${unreadable} no live pod for ${syncJobName(repoJob)} (none listed)`,
+        ],
+        [
+            'names all-terminating pods when the sync has no live pod',
+            answering({
+                pods: {
+                    status: 200,
+                    body: JSON.stringify({
+                        items: [
+                            { metadata: { name: 'sync-pod-a', deletionTimestamp: '2026-09-29T00:00:00Z' } },
+                            { metadata: { name: 'sync-pod-b', deletionTimestamp: '2026-09-29T00:00:01Z' } },
+                        ],
+                    }),
+                },
+            }),
+            `${unreadable} no live pod for ${syncJobName(repoJob)} (2 listed, all terminating)`,
+        ],
+        [
+            'names the pod list refusal when the pod list answers an error status',
+            answering({ pods: { status: 500, body: 'nope' } }),
+            `${unreadable} the pod list of ${syncJobName(repoJob)} answered 500: nope`,
+        ],
+        [
+            'names the transport failure when the sync pod list GET throws',
+            rejecting((path) => path.startsWith(`/api/v1/namespaces/${namespace}/pods?`), 'connection reset'),
+            `${unreadable} the pod list of ${syncJobName(repoJob)} could not be read: connection reset`,
+        ],
+        [
+            'names the transport failure when the sync log GET throws',
+            rejecting((path) => path.includes('/log'), 'socket hung up'),
+            `${unreadable} the log of ${podName} could not be read: socket hung up`,
+        ],
+        [
+            'names the live pod when it carries no name to read a log from',
+            answering({ pods: { status: 200, body: JSON.stringify({ items: [{ metadata: {}, status: {} }] }) } }),
+            `${unreadable} the live pod of ${syncJobName(repoJob)} has no name`,
+        ],
+        [
+            'names the last log line when the sync prints non-JSON',
+            answering({
+                log: { status: 200, body: 'fetching origin\nfatal: could not read from remote repository\n' },
+            }),
+            `${unreadable} last log line "fatal: could not read from remote repository"`,
+        ],
+        [
+            'names the pod and its phase when the sync container printed nothing',
+            answering({
+                log: { status: 200, body: '' },
+                pods: {
+                    status: 200,
+                    body: JSON.stringify({ items: [{ metadata: { name: podName }, status: { phase: 'Succeeded' } }] }),
+                },
+            }),
+            `${unreadable} the container printed nothing (pod ${podName}, phase Succeeded)`,
+        ],
+        [
+            'names the kubelet’s reason when the sync container never started',
+            answering(NEVER_STARTED),
+            'the worktree sync container failed: StartError: exec: "node": executable file not found in $PATH',
+        ],
+    ])('%s', async (_name, request, reason) => {
+        expect(await runner(request()).syncCheckout(repoJob)).toEqual({ ok: false, reason });
     });
 
     /*
@@ -1754,17 +1609,16 @@ describe('the worktree sync', () => {
 
     /*
      * The other side of the latch: a container that is running HAS answered the image question,
-     * so the watch stops reading the pod list instead of asking on every round.
+     * so the watch stops reading the pod list instead of asking on every round. The terminated
+     * arm settles the watch the same way a running one does.
      */
-    it('stops reading the pod list for the image question once the container is running', async () => {
+    it.each([
+        ['is running', { running: { startedAt: '2026-09-27T00:00:00Z' } }],
+        ['has terminated', { terminated: { exitCode: 0 } }],
+    ])('stops reading the pod list for the image question once the container %s', async (_state, state) => {
         const { request: base } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
-        const runningPod = JSON.stringify({
-            items: [
-                {
-                    metadata: { name: podName },
-                    status: { containerStatuses: [{ state: { running: { startedAt: '2026-09-27T00:00:00Z' } } }] },
-                },
-            ],
+        const settledPod = JSON.stringify({
+            items: [{ metadata: { name: podName }, status: { containerStatuses: [{ state }] } }],
         });
         let polls = 0;
         let podReads = 0;
@@ -1777,44 +1631,13 @@ describe('the worktree sync', () => {
             }
             if (method === 'GET' && path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
                 podReads += 1;
-                return { status: 200, body: runningPod };
+                return { status: 200, body: settledPod };
             }
             return base(method, path, body);
         };
         const result = await runner(request).syncCheckout(repoJob);
         expect(result).toEqual({ ok: true, reason: null });
         // One watch read settles it; the only later pod read is the verdict's own.
-        expect(podReads).toBe(2);
-    });
-
-    /* The terminated arm settles the watch the same way a running one does. */
-    it('stops reading the pod list for the image question once the container has terminated', async () => {
-        const { request: base } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
-        const terminatedPod = JSON.stringify({
-            items: [
-                {
-                    metadata: { name: podName },
-                    status: { containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
-                },
-            ],
-        });
-        let polls = 0;
-        let podReads = 0;
-        const request: K8sRequest = async (method, path, body) => {
-            if (method === 'GET' && path === jobPath(namespace, syncJobName(repoJob))) {
-                polls += 1;
-                return polls <= 3
-                    ? { status: 200, body: '{"status":{}}' }
-                    : { status: 200, body: JSON.stringify({ status: { succeeded: 1 } }) };
-            }
-            if (method === 'GET' && path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
-                podReads += 1;
-                return { status: 200, body: terminatedPod };
-            }
-            return base(method, path, body);
-        };
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({ ok: true, reason: null });
         expect(podReads).toBe(2);
     });
 
@@ -2148,8 +1971,6 @@ describe('the worktree reclaim', () => {
         expect(container.volumeMounts).toEqual([
             { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
-        expect(s.spec.backoffLimit).toBe(0);
-        expect(s.spec.template.spec.restartPolicy).toBe('Never');
     });
 
     it('refuses to build a reclaim for a worktree path it cannot assert', () => {
@@ -2512,10 +2333,6 @@ describe('publishing the produced work', () => {
         expect(container.volumeMounts).toEqual([
             { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
-        expect(spec.spec.template.spec.automountServiceAccountToken).toBe(false);
-        expect(spec.spec.backoffLimit).toBe(0);
-        expect(spec.spec.template.spec.restartPolicy).toBe('Never');
-        expect(spec.spec.activeDeadlineSeconds).toBeGreaterThan(0);
         // The pin that must survive: no credential VALUE anywhere in the spec — the helper is
         // CODE (the same class as the sync's CRED_HELPER literal), the token rides the Secret.
         expect(JSON.stringify(spec)).not.toContain('t0k-3n');
@@ -2635,8 +2452,8 @@ describe('publishing the produced work', () => {
                 'factory.lease': ISSUE_JOB.leaseToken,
             });
         }
-        // The decisions are the workflow's, identical to docker's: the commit carries the plan
-        // title and the fallback identity, the push is force-with-lease behind the helper.
+        // The decisions are publishCheckout's (publish-checkout.test.ts); this is their rendering
+        // as step Jobs: each step's argv is the container command, the token never in the spec.
         const containers = posted.map(
             (call) =>
                 (
@@ -2695,48 +2512,6 @@ describe('publishing the produced work', () => {
                 )
             ).toBe(true);
         }
-    });
-
-    // Revision-bound evidence (issue #548): the check lives in publishCheckout, so kubernetes
-    // refuses exactly where docker does — after the probe Job, before any git step Job.
-    it('refuses a publish bound to a revision the checkout no longer holds, after the probe alone', async () => {
-        const { request, calls } = scripted([
-            { exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, fingerprint: 'h:2' }) },
-        ]);
-
-        const result = await runner(request).publishGit(ISSUE_JOB, undefined, { revision: 'h:1' });
-
-        expect(result).toMatchObject({ ok: false, published: false, stale: true });
-        const created = calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace));
-        expect(created).toHaveLength(1);
-    });
-
-    it('opens the agent’s PR as a draft through the same step Jobs', async () => {
-        const { request, calls } = scripted([
-            { exit: 0, log: JSON.stringify(DIRTY_ON_MAIN) }, // probe
-            { exit: 1, log: '' }, // switch — no such branch
-            { exit: 0, log: '' }, // switch -c
-            { exit: 0, log: '' }, // add
-            { exit: 0, log: '' }, // reset .factory
-            { exit: 0, log: '' }, // commit
-            { exit: 0, log: '' }, // push
-            { exit: 1, log: '' }, // pr view — none yet
-            { exit: 0, log: JSON.stringify({ title: 'Fix the sync re-claim fence', body: '## Commits' }) }, // pr summary
-            { exit: 0, log: `${PR_URL}\n` }, // pr create
-        ]);
-        const result = await runner(request).publishGit(ISSUE_JOB, undefined, { draft: true });
-
-        expect(result).toMatchObject({ ok: true, published: true, prUrl: PR_URL, prNumber: 42 });
-        const commands = calls
-            .filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))
-            .map(
-                (call) =>
-                    (call.body as { spec?: { template?: { spec?: { containers?: { command?: string[] }[] } } } }).spec
-                        ?.template?.spec?.containers?.[0]?.command ?? []
-            );
-        const create = commands.find((argv) => argv.includes('pr') && argv.includes('create'));
-        expect(create).toContain('--draft');
-        expect(create?.[create.indexOf('--body') + 1]).toContain('Draft published by the agent');
     });
 
     it('creates the publish env Secret before the first step, and reaps it at the end', async () => {
@@ -2914,65 +2689,7 @@ describe('publishing the produced work', () => {
         expect(calls.some((call) => call.path === jobsPath(namespace))).toBe(true);
     });
 
-    it('answers the clean-tree no-op after the probe alone', async () => {
-        const { request, calls } = scripted([
-            { exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) },
-        ]);
-        const result = await runner(request).publishGit(ISSUE_JOB);
-
-        expect(result).toEqual({
-            ok: true,
-            published: false,
-            branch: null,
-            prUrl: null,
-            reason: 'no uncommitted changes and nothing unpushed',
-            repository: null,
-            baseBranch: null,
-            prNumber: null,
-            cause: null,
-        });
-        expect(
-            calls.filter(
-                (call) =>
-                    call.method === 'POST' &&
-                    call.path === jobsPath(namespace) &&
-                    (call.body as { metadata?: { name?: string } } | undefined)?.metadata?.name ===
-                        publishStepJobName(ISSUE_JOB, 1)
-            )
-        ).toHaveLength(1);
-    });
-
-    it('reuses an existing task branch and an existing PR', async () => {
-        const { request, calls } = scripted([
-            {
-                exit: 0,
-                log: JSON.stringify({
-                    ...DIRTY_ON_MAIN,
-                    branch: 'fix/10',
-                    hasIdentity: true,
-                    unpushed: 1,
-                    dirty: false,
-                }),
-            },
-            { exit: 0, log: '' }, // push of the unpushed commit
-            { exit: 0, log: `${PR_URL}\n` }, // pr view finds the branch's PR
-        ]);
-        const result = await runner(request).publishGit(ISSUE_JOB);
-
-        expect(result).toEqual({
-            ok: true,
-            published: true,
-            branch: 'fix/10',
-            prUrl: PR_URL,
-            reason: null,
-            repository: 'Bellows-AI/factory',
-            baseBranch: 'main',
-            prNumber: 42,
-            cause: null,
-        });
-        expect(calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toHaveLength(3);
-    });
-
+    // The aux Job's own log is what the step's failure — and so its cause (#581) — is read from.
     it('fails with the step and the tool’s own words when the push is refused', async () => {
         const { request } = scripted([
             { exit: 0, log: JSON.stringify(DIRTY_ON_MAIN) },
@@ -2993,25 +2710,6 @@ describe('publishing the produced work', () => {
         expect(result.reason).toContain('git push');
         expect(result.reason).toContain('Permission to Bellows-AI/factory');
         expect(result.cause).toBe('denied');
-    });
-
-    // Issue #581: the aux Job's own log is what the cause is read from, the same text docker reads.
-    it('names a rejected non-fast-forward push from the aux Job a conflict', async () => {
-        const { request } = scripted([
-            { exit: 0, log: JSON.stringify(DIRTY_ON_MAIN) },
-            { exit: 1, log: '' }, // switch
-            { exit: 0, log: '' }, // switch -c
-            { exit: 0, log: '' }, // add
-            { exit: 0, log: '' }, // reset .factory
-            { exit: 0, log: '' }, // commit
-            {
-                exit: 1,
-                log: ' ! [rejected]        HEAD -> fix/10 (non-fast-forward)\nerror: failed to push some refs\n',
-            }, // push
-        ]);
-        const result = await runner(request).publishGit(ISSUE_JOB);
-
-        expect(result).toMatchObject({ ok: false, published: false, cause: 'conflict' });
     });
 });
 
@@ -3561,54 +3259,17 @@ describe('the kubernetes runner', () => {
     it('streams the log tail while the pod runs, and reports the finished log at the end', async () => {
         const tails: string[] = [];
         let gets = 0;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
+        const { request } = routed((method, path) => {
             if (path === jobPath(namespace, runnerJobName(job))) {
                 gets += 1;
                 // First poll: still running, and worth a look at the log. Second: done.
-                return Promise.resolve(
-                    gets === 1 ? { status: 200, body: JSON.stringify({ status: {} }) } : (FAKE.job as K8sResponse)
-                );
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
+                return gets === 1 ? { status: 200, body: JSON.stringify({ status: {} }) } : (FAKE.job as K8sResponse);
             }
             if (path.includes('/log')) {
-                return gets === 1
-                    ? Promise.resolve({ status: 200, body: 'partial output\n' })
-                    : Promise.resolve(FAKE.log as K8sResponse);
+                return gets === 1 ? { status: 200, body: 'partial output\n' } : (FAKE.log as K8sResponse);
             }
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false }, (tail) => tails.push(tail));
 
@@ -3635,49 +3296,14 @@ describe('the kubernetes runner', () => {
     it('streams nothing, and fails nothing, when the mid-run log read answers badly', async () => {
         const tails: string[] = [];
         let gets = 0;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
+        const { request } = routed((method, path) => {
             if (path === jobPath(namespace, runnerJobName(job))) {
                 gets += 1;
-                return Promise.resolve(
-                    gets === 1 ? { status: 200, body: JSON.stringify({ status: {} }) } : (FAKE.job as K8sResponse)
-                );
+                return gets === 1 ? { status: 200, body: JSON.stringify({ status: {} }) } : (FAKE.job as K8sResponse);
             }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve({ status: 500, body: 'unavailable' });
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (path.includes('/log')) return { status: 500, body: 'unavailable' };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false }, (tail) => tails.push(tail));
 
@@ -3693,63 +3319,20 @@ describe('the kubernetes runner', () => {
      * names would make a name-targeted delete miss every previous attempt.
      */
     it('sweeps leftover jobs by label before creating, and waits for the sweep to land', async () => {
-        const calls: Call[] = [];
         const leftover = 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner';
         let lists = 0;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
+        const { request, calls } = routed((method, path) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 lists += 1;
                 // First read: the old Job is still listed. Second: gone. Everything after is
                 // the NEW Job's own status poll. The fixture carries no creationTimestamp —
                 // the fence classifies nothing, so it reads none.
-                return Promise.resolve(
-                    lists === 1
-                        ? {
-                              status: 200,
-                              body: JSON.stringify({
-                                  items: [{ metadata: { name: leftover } }],
-                              }),
-                          }
-                        : { status: 200, body: JSON.stringify({ items: [] }) }
-                );
+                return lists === 1
+                    ? { status: 200, body: JSON.stringify({ items: [{ metadata: { name: leftover } }] }) }
+                    : { status: 200, body: JSON.stringify({ items: [] }) };
             }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) return { status: 200, body: '{}' };
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
@@ -3773,28 +3356,7 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
-            'POST',
-            'GET',
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'GET',
-            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            // The transcript artifact's read (issue #325): the twin Job, same shape.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            'GET',
-            'DELETE',
-            'DELETE',
+            ...RUN_FROM_SECRET,
         ]);
         expect(calls[1].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
         expect(calls[5].path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
@@ -3809,38 +3371,16 @@ describe('the kubernetes runner', () => {
         const leftover = {
             metadata: { name: 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner' },
         };
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
+        const { request } = routed((method, path) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [leftover] }) });
+                return { status: 200, body: JSON.stringify({ items: [leftover] }) };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 // Answered, and yet the object never leaves the list — the failure mode the
                 // bound exists for.
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/never disappeared/);
     });
@@ -3856,66 +3396,37 @@ describe('the kubernetes runner', () => {
         const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
         const newerJobName = runnerJobName(newerJob);
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let replacementAlive = true;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             // The claim is held by attempt 2; this run is attempt 1.
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 409, body: '{"reason":"AlreadyExists"}' });
+                return { status: 409, body: '{"reason":"AlreadyExists"}' };
             }
             if (path === claimPath && method === 'GET') {
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({
                         metadata: { uid: 'claim-uid-2' },
                         data: { holder: NEW_TOKEN, claimSeq: '2' },
                     }),
-                });
+                };
             }
             // The replacement's runner Job is live and answers the label selector.
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({
                         items: replacementAlive ? [{ metadata: { name: newerJobName } }] : [],
                     }),
-                });
+                };
             }
             if (method === 'DELETE' && path.startsWith(`${jobPath(namespace, newerJobName)}?`)) {
                 replacementAlive = false;
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+            if (isClaimDelete(method, path)) return noAnswer(method, path);
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/stands down/);
         // The replacement's Job still exists — a superseded attempt never reaches the winner.
@@ -3989,11 +3500,9 @@ describe('the kubernetes runner', () => {
         const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
         const claimPath = claimPathFor(job.id);
         const serve = claimServer();
-        const calls: Call[] = [];
         // A leftover from the older attempt: the first claim POST stores it under claim-uid-1.
         let seeded = false;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path, body) => {
             if (!seeded) {
                 seeded = true;
                 serve('POST', configmapsPath, {
@@ -4001,41 +3510,9 @@ describe('the kubernetes runner', () => {
                     data: { holder: job.leaseToken, claimSeq: '1' },
                 });
             }
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(newerJob))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+            return serve(method, path, body);
+        });
 
         const outcome = await createKubernetesRunner(
             loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
@@ -4089,8 +3566,6 @@ describe('the kubernetes runner', () => {
         const olderJob: BoardJob = { ...job, attempts: 1, claimSeq: 1 };
         const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
         const newerJobName = runnerJobName(newerJob);
-        const serve = claimServer();
-        const calls: Call[] = [];
         const liveJobs = new Set<string>();
 
         let signalOlderClaimed!: () => void;
@@ -4102,51 +3577,23 @@ describe('the kubernetes runner', () => {
             openOlderList = resolve;
         });
 
-        const shared = (method: K8sMethod, path: string, body?: unknown): Promise<K8sResponse> => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
+        // One fake for both attempts: they share its claim server, as they share the apiserver.
+        const { request: shared, calls } = routed((method, path, body) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({ items: [...liveJobs].map((name) => ({ metadata: { name } })) }),
-                });
+                };
             }
             if (method === 'POST' && path === jobsPath(namespace)) {
                 liveJobs.add((body as { metadata?: { name?: string } })?.metadata?.name ?? '');
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 liveJobs.delete(path.slice(jobsPath(namespace).length + 1).split('?')[0] ?? '');
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (path === jobPath(namespace, runnerJobName(olderJob)) || path === jobPath(namespace, newerJobName)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
         // The older attempt's fence: its first label list is held until the test has run the
         // newer attempt to completion, so the sweep sees the replacement's live Job.
         const olderRequest: K8sRequest = (method, path, body) => {
@@ -4200,52 +3647,11 @@ describe('the kubernetes runner', () => {
     // claim env. The fence sweeps JOBS by label and nothing else — and the Secret's name carries
     // this attempt's own lease token, so there is no previous attempt's Secret at this name.
     it('keeps the freshly created Secret across the label fence', async () => {
-        const calls: Call[] = [];
         const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path.startsWith(`${secretsPath}/`)) return Promise.resolve({ status: 200, body: '{}' });
-            if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        // Every delete but the claim's answers plainly; the claim keeps its uid precondition.
+        const { request, calls } = routed((method, path) =>
+            method === 'DELETE' && !path.startsWith(configmapsPath) ? { status: 200, body: '{}' } : undefined
+        );
 
         const envJob: BoardJob = { ...job, env: { CORE_TOKEN: 'shh' } };
         const outcome = await createKubernetesRunner(
@@ -4291,17 +3697,12 @@ describe('the kubernetes runner', () => {
         const freshJob = { metadata: { name: freshName, creationTimestamp: new Date(now).toISOString() } };
         let old = true;
         let fresh = true;
-        const calls: Call[] = [];
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
+        const { request, calls } = routed((method, path) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({ items: [old ? oldJob : null, fresh ? freshJob : null].filter(Boolean) }),
-                });
+                };
             }
             // The API server evaluates a selector at processing time: a collection DELETE would
             // take EVERY Job of the id — including this attempt's own once created. The fence
@@ -4309,43 +3710,14 @@ describe('the kubernetes runner', () => {
             if (method === 'DELETE' && path.includes('labelSelector=')) {
                 old = false;
                 fresh = false;
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 if (path.startsWith(`${jobPath(namespace, oldName)}`)) old = false;
                 if (path.startsWith(`${jobPath(namespace, freshName)}`)) fresh = false;
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -4378,28 +3750,7 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
-            'POST',
-            'GET',
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'GET',
-            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            // The transcript artifact's read (issue #325): the twin Job, same shape.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            'GET',
-            'DELETE',
-            'DELETE',
+            ...RUN_FROM_SECRET,
         ]);
     });
 
@@ -4417,56 +3768,22 @@ describe('the kubernetes runner', () => {
     it('deletes a live predecessor the age filter would have called fresh, and waits for it before creating', async () => {
         const predecessor = 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner';
         let predecessorAlive = true;
-        const calls: Call[] = [];
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
+        const { request, calls } = routed((method, path) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({
                         items: predecessorAlive
                             ? [{ metadata: { name: predecessor, creationTimestamp: new Date().toISOString() } }]
                             : [],
                     }),
-                });
+                };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 if (path.startsWith(jobPath(namespace, predecessor))) predecessorAlive = false;
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
 
         // A 10s lease puts the entry-time cutoff 5s back: the predecessor — younger than that
         // at the deciding list — is a live writer on this checkout, and it must not survive.
@@ -4502,73 +3819,19 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
-            'POST',
-            'GET',
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'GET',
-            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            // The transcript artifact's read (issue #325): the twin Job, same shape.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            'GET',
-            'DELETE',
-            'DELETE',
+            ...RUN_FROM_SECRET,
         ]);
     });
 
     // A collection that answers 404 has nothing behind it to fence: straight to the create, no
     // second list, no deletes.
     it('treats a 404 from the label list as nothing left to fence', async () => {
-        const calls: Call[] = [];
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
+        const { request, calls } = routed((method, path) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 404, body: '{"kind":"Status"}' });
+                return { status: 404, body: '{"kind":"Status"}' };
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -4580,41 +3843,15 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
-            'POST',
-            'GET',
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'GET',
-            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            // The transcript artifact's read (issue #325): the twin Job, same shape.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            'GET',
-            'DELETE',
-            'DELETE',
+            ...RUN_FROM_SECRET,
         ]);
     });
 
     // A dropped connection says nothing about whether the objects are gone; the fence keeps
     // polling within the same bound instead of creating alongside what may still be there.
     it('keeps fencing through a transport failure on the list', async () => {
-        const calls: Call[] = [];
         let lists = 0;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
+        const { request, calls } = routed((method, path) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 lists += 1;
                 // First read: the connection drops. Second: the selector answers nothing.
@@ -4622,36 +3859,8 @@ describe('the kubernetes runner', () => {
                     ? Promise.reject(new Error('connection reset'))
                     : Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -4667,28 +3876,7 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
-            'POST',
-            'GET',
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'GET',
-            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            // The transcript artifact's read (issue #325): the twin Job, same shape.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            'GET',
-            'DELETE',
-            'DELETE',
+            ...RUN_FROM_SECRET,
         ]);
     });
 
@@ -4720,9 +3908,7 @@ describe('the kubernetes runner', () => {
         // (b) The claim answers gone at release time: no DELETE on the configmaps path at all.
         let reads = 0;
         const serve = claimServer();
-        const calls: Call[] = [];
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path, body) => {
             const claimAnswer = serve(method, path, body);
             if (claimAnswer) {
                 // The verify reads (our claim, still held) succeed; every later read — the
@@ -4732,42 +3918,8 @@ describe('the kubernetes runner', () => {
                 if (reads > 3) return { status: 404, body: '{"kind":"Status"}' };
                 return claimAnswer;
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
         // The acquire POST and the two verifies around the Job POST happened — reads 1 through
@@ -4782,10 +3934,8 @@ describe('the kubernetes runner', () => {
     it('takes over a claim object that carries no claim sequence once the board proves the lease', async () => {
         const claimPath = claimPathFor(job.id);
         const serve = claimServer();
-        const calls: Call[] = [];
         let seeded = false;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path, body) => {
             if (!seeded) {
                 seeded = true;
                 // A hand-made claim: a holder, but no attempt field at all.
@@ -4794,41 +3944,9 @@ describe('the kubernetes runner', () => {
                     data: { holder: 'someone-else' },
                 });
             }
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+            return serve(method, path, body);
+        });
 
         const outcome = await runner(request, {}, boardLease(job)).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -4860,16 +3978,14 @@ describe('the kubernetes runner', () => {
      */
     it('stands down and removes its own Job when the claim is taken over between the Job POST and the verify', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let jobPosted = false;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 jobPosted = true;
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath) {
                 if (method === 'GET') {
@@ -4893,38 +4009,10 @@ describe('the kubernetes runner', () => {
                               }
                     );
                 }
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
             /taken over before the runner could start/
@@ -4943,52 +4031,20 @@ describe('the kubernetes runner', () => {
     // runner refuses instead: fail loud, leave the job to its lease, delete nothing.
     it('refuses to release a claim it cannot identify, rather than deleting unconditioned', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 409, body: '{"reason":"AlreadyExists"}' });
+                return { status: 409, body: '{"reason":"AlreadyExists"}' };
             }
             if (path === claimPath && method === 'GET') {
                 // An older holder by attempt number, but a body with no uid on it.
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({ data: { holder: 'someone-else', claimSeq: '0' } }),
-                });
+                };
             }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+            if (isClaimDelete(method, path)) return noAnswer(method, path);
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
             /could not be identified/
@@ -5002,12 +4058,10 @@ describe('the kubernetes runner', () => {
     // same bounded patience the status poll has, and only a definitive answer stands the run down.
     it('keeps the run through a transient failure on the post-create claim verify', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath) {
                 if (method === 'GET') {
@@ -5025,41 +4079,10 @@ describe('the kubernetes runner', () => {
                               }
                     );
                 }
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -5083,58 +4106,25 @@ describe('the kubernetes runner', () => {
      */
     it('stands down before creating the runner job when the claim is taken over before the POST', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath && method === 'GET') {
                 // The takeover lands between the sweep and the Job POST.
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({
                         metadata: { uid: 'claim-uid-7' },
                         data: { holder: NEW_TOKEN, claimSeq: '2' },
                     }),
-                });
-            }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isClaimDelete(method, path)) return noAnswer(method, path);
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/stands down/);
         // The takeover was visible before the POST: no Job is ever created...
@@ -5150,12 +4140,10 @@ describe('the kubernetes runner', () => {
     // once, only after the claim is confirmed.
     it('waits out a blink on the pre-create claim verify, and posts the Job only after it', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath) {
                 if (method === 'GET') {
@@ -5174,41 +4162,10 @@ describe('the kubernetes runner', () => {
                               }
                     );
                 }
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -5227,388 +4184,117 @@ describe('the kubernetes runner', () => {
     });
 
     /*
-     * No runner stays on a checkout its driver cannot verify: when the post-create verify spends
-     * its whole patience without an answer, the loser best-effort deletes its OWN Job and burns
-     * the attempt — the alternative to two writers on one checkout, the fence's own rule.
+     * The post-create verify matrix. No runner stays on a checkout its driver cannot verify: when
+     * the post-create verify spends its whole patience without an answer — or answers but cannot
+     * name a holder, neither provably ours nor a definitive loss — the loser best-effort deletes
+     * its OWN Job (Foreground) and burns the attempt, the fence's own rule.
+     *
+     * The failed-delete rule: a stand-down whose own-Job DELETE answers neither 2xx nor 404 leaves
+     * the Job's fate to the kubelet's deadline — and this attempt's runner may still be on the
+     * checkout when a replacement claimant arrives. So the claim is NOT released: the next
+     * claimant's stale-holder takeover (uid-preconditioned release, then a sweep of every
+     * `factory.job=<id>` Job) is the documented route that reclaims both. A 404 is a SUCCESS (the
+     * Job is already gone) and a 2xx the ordinary success: both release the claim,
+     * uid-preconditioned as ever.
      */
-    it('removes its own Job when the post-create claim verify exhausts its patience', async () => {
+    const ours = {
+        status: 200,
+        body: JSON.stringify({ metadata: { uid: 'claim-uid-1' }, data: { holder: job.leaseToken, claimSeq: '1' } }),
+    };
+    const noHolder = { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-x' } }) };
+    // Read 1 is the pre-create verify (ours); reads 2 through POLL_MAX_CONSECUTIVE_FAILURES + 2 are
+    // the post-create verify; anything after would be the release's read.
+    const spent = (read: number): boolean => read > 2 + POLL_MAX_CONSECUTIVE_FAILURES;
+    const verifyCases: {
+        name: string;
+        claimRead: (read: number) => { status: number; body: string };
+        deleteStatus: number;
+        error: RegExp;
+        claim: 'held' | 'released';
+    }[] = [
+        {
+            name: 'removes its own Job when the post-create claim verify exhausts its patience',
+            // Every post-create read answers 503, the release's read too.
+            claimRead: (read) => (read === 1 ? ours : { status: 503, body: 'unavailable' }),
+            deleteStatus: 200,
+            error: /in a row|unavailable|checkout claim/i,
+            claim: 'held',
+        },
+        {
+            name: 'removes its own Job when the post-create claim verify cannot name a holder',
+            // Every later read answers 200 with a body that carries no holder at all.
+            claimRead: (read) => (read === 1 ? ours : noHolder),
+            deleteStatus: 200,
+            error: /could not be confirmed/,
+            claim: 'held',
+        },
+        {
+            name: 'holds the claim when the post-create verify exhausts its patience and the own-Job delete fails',
+            claimRead: (read) => (read === 1 || spent(read) ? ours : { status: 500, body: 'unavailable' }),
+            deleteStatus: 500,
+            error: /in a row/,
+            claim: 'held',
+        },
+        {
+            name: 'releases the claim when the own-Job delete answers 404 — already gone is a success',
+            claimRead: (read) => (read === 1 || spent(read) ? ours : { status: 500, body: 'unavailable' }),
+            deleteStatus: 404,
+            error: /in a row/,
+            claim: 'released',
+        },
+        {
+            name: 'releases the claim when the own-Job delete succeeds after an exhausted post-create verify',
+            claimRead: (read) => (read === 1 || spent(read) ? ours : { status: 500, body: 'unavailable' }),
+            deleteStatus: 200,
+            error: /in a row/,
+            claim: 'released',
+        },
+        {
+            // Uniformity: the unverifiable branch holds the claim on a failed delete exactly like
+            // the exhausted-patience branch — and here the release read WOULD answer ours, so the
+            // hold is the only thing standing between the claim and its release.
+            name: 'holds the claim when the verify cannot name a holder and the own-Job delete fails',
+            claimRead: (read) => (read === 2 ? noHolder : ours),
+            deleteStatus: 500,
+            error: /could not be confirmed/,
+            claim: 'held',
+        },
+    ];
+    it.each(verifyCases.map((row) => [row.name, row] as const))('%s', async (_name, row) => {
+        const { claimRead, deleteStatus, error, claim } = row;
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath) {
                 if (method === 'GET') {
                     reads += 1;
-                    // The pre-create verify reads ours; every later read — the post-create
-                    // verify's — answers 503 until the patience is spent.
-                    return Promise.resolve(
-                        reads === 1
-                            ? {
-                                  status: 200,
-                                  body: JSON.stringify({
-                                      metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, claimSeq: '1' },
-                                  }),
-                              }
-                            : { status: 503, body: 'unavailable' }
-                    );
+                    return Promise.resolve(claimRead(reads));
                 }
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 200, body: '{}' };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: deleteStatus, body: deleteStatus === 404 ? '{"kind":"Status"}' : '{}' };
             }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
 
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /in a row|unavailable|checkout claim/i
-        );
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(error);
         // The delete names only this attempt's own Job, Foreground — best-effort.
         expect(calls).toContainEqual({
             method: 'DELETE',
             path: `${jobPath(namespace, runnerJobName(job))}?propagationPolicy=Foreground`,
         });
-    });
-
-    // Same doctrine, other evidence: a post-create verify that DOES answer but cannot name a
-    // holder is neither provably ours nor a definitive loss — and still no runner stays behind.
-    it('removes its own Job when the post-create claim verify cannot name a holder', async () => {
-        const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
-        let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === claimPath) {
-                if (method === 'GET') {
-                    reads += 1;
-                    // The pre-create verify reads ours; every later read answers 200 with a
-                    // body that carries no holder at all.
-                    return Promise.resolve(
-                        reads === 1
-                            ? {
-                                  status: 200,
-                                  body: JSON.stringify({
-                                      metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, claimSeq: '1' },
-                                  }),
-                              }
-                            : { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-x' } }) }
-                    );
-                }
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
-
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /could not be confirmed/
-        );
-        expect(calls).toContainEqual({
-            method: 'DELETE',
-            path: `${jobPath(namespace, runnerJobName(job))}?propagationPolicy=Foreground`,
-        });
-    });
-
-    /*
-     * The failed-delete rule: a post-create stand-down whose own-Job DELETE answers neither 2xx
-     * nor 404 leaves the Job's fate to the kubelet's deadline — and this attempt's runner may
-     * still be on the checkout when a replacement claimant arrives. So the claim is NOT released:
-     * the checkout is never handed over voluntarily while this attempt's runner may still be on
-     * it, and the next claimant's stale-holder takeover (uid-preconditioned release, then a sweep
-     * of every `factory.job=<id>` Job) is the documented route that reclaims both.
-     */
-    it('holds the claim when the post-create verify exhausts its patience and the own-Job delete fails', async () => {
-        const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
-        let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === claimPath) {
-                if (method === 'GET') {
-                    reads += 1;
-                    // Read 1 is the pre-create verify (ours); reads 2 through
-                    // POLL_MAX_CONSECUTIVE_FAILURES + 2 are the post-create verify, answering 500
-                    // until its patience is spent; anything after would be the release's read.
-                    const spent = reads > 2 + POLL_MAX_CONSECUTIVE_FAILURES;
-                    return Promise.resolve(
-                        reads === 1 || spent
-                            ? {
-                                  status: 200,
-                                  body: JSON.stringify({
-                                      metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, claimSeq: '1' },
-                                  }),
-                              }
-                            : { status: 500, body: 'unavailable' }
-                    );
-                }
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                // The delete fails: whether the Job is really going away is unknown.
-                return Promise.resolve({ status: 500, body: 'refused' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
-
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/in a row/);
-        // The delete failed, so the Job may still be on the checkout: the claim is left held.
-        expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
-    });
-
-    // A 404 from the own-Job DELETE is a SUCCESS here: the Job is already gone, so nothing of
-    // this attempt's is left on the checkout and the claim may be released as usual.
-    it('releases the claim when the own-Job delete answers 404 — already gone is a success', async () => {
-        const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
-        let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === claimPath) {
-                if (method === 'GET') {
-                    reads += 1;
-                    const spent = reads > 2 + POLL_MAX_CONSECUTIVE_FAILURES;
-                    return Promise.resolve(
-                        reads === 1 || spent
-                            ? {
-                                  status: 200,
-                                  body: JSON.stringify({
-                                      metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, claimSeq: '1' },
-                                  }),
-                              }
-                            : { status: 500, body: 'unavailable' }
-                    );
-                }
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 404, body: '{"kind":"Status"}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
-
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/in a row/);
-        const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
-        expect(release).toBeDefined();
-        expect((release?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toBe(
-            'claim-uid-1'
-        );
-    });
-
-    // A 2xx from the own-Job DELETE is the ordinary success: the Job is going away, so the
-    // existing behavior is preserved and the claim is released, uid-preconditioned as ever.
-    it('releases the claim when the own-Job delete succeeds after an exhausted post-create verify', async () => {
-        const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
-        let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === claimPath) {
-                if (method === 'GET') {
-                    reads += 1;
-                    const spent = reads > 2 + POLL_MAX_CONSECUTIVE_FAILURES;
-                    return Promise.resolve(
-                        reads === 1 || spent
-                            ? {
-                                  status: 200,
-                                  body: JSON.stringify({
-                                      metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, claimSeq: '1' },
-                                  }),
-                              }
-                            : { status: 500, body: 'unavailable' }
-                    );
-                }
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
-
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/in a row/);
-        const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
-        expect(release).toBeDefined();
-        expect((release?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toBe(
-            'claim-uid-1'
-        );
+        if (claim === 'held') {
+            expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
+        } else {
+            const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
+            expect(release).toBeDefined();
+            expect((release?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toBe(
+                'claim-uid-1'
+            );
+        }
     });
 
     /*
@@ -5619,16 +4305,14 @@ describe('the kubernetes runner', () => {
      */
     it('leaves a taken-over claim untouched when the stand-down deletes nothing', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let jobPosted = false;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 jobPosted = true;
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath && method === 'GET') {
                 // The claim is ours until this attempt's Job exists; the takeover lands the
@@ -5651,39 +4335,11 @@ describe('the kubernetes runner', () => {
                           }
                 );
             }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 500, body: 'refused' });
+                return { status: 500, body: 'refused' };
             }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isClaimDelete(method, path)) return noAnswer(method, path);
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
             /taken over before the runner could start/
@@ -5698,93 +4354,16 @@ describe('the kubernetes runner', () => {
         expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
     });
 
-    // Uniformity: the unverifiable branch (a read that answers but names no holder) holds the
-    // claim on a failed delete exactly like the exhausted-patience branch — and here the release
-    // read WOULD answer ours, so the flag is the only thing standing between the claim and its
-    // release while this attempt's runner may still be on the checkout.
-    it('holds the claim when the verify cannot name a holder and the own-Job delete fails', async () => {
-        const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
-        let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === claimPath) {
-                if (method === 'GET') {
-                    reads += 1;
-                    // Read 1: the pre-create verify, ours. Read 2: the post-create verify, a 200
-                    // that names no holder — the unverifiable branch. Read 3+: the release read.
-                    return Promise.resolve(
-                        reads === 2
-                            ? { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-x' } }) }
-                            : {
-                                  status: 200,
-                                  body: JSON.stringify({
-                                      metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, claimSeq: '1' },
-                                  }),
-                              }
-                    );
-                }
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 500, body: 'refused' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
-
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /could not be confirmed/
-        );
-        expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
-    });
-
     // The sweep deletes only when the claim verify answers definitively: a blink on the claim
     // read is 'unknown' — nothing is deleted that round, and the fence looks again within its
     // bound, because deleting on a maybe is what would reach the winner's Job.
     it('deletes nothing on a round whose claim verify could not be confirmed, and looks again', async () => {
         const leftover = 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner';
-        const calls: Call[] = [];
         let claimReads = 0;
         let lists = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPathFor(job.id)) {
                 if (method === 'GET') {
@@ -5803,48 +4382,19 @@ describe('the kubernetes runner', () => {
                               }
                     );
                 }
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 lists += 1;
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({ items: lists <= 2 ? [{ metadata: { name: leftover } }] : [] }),
-                });
+                };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -5865,28 +4415,7 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
-            'POST',
-            'GET',
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'GET',
-            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            // The transcript artifact's read (issue #325): the twin Job, same shape.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            'GET',
-            'DELETE',
-            'DELETE',
+            ...RUN_FROM_SECRET,
         ]);
         expect(calls[9]?.path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
     });
@@ -5918,51 +4447,15 @@ describe('the kubernetes runner', () => {
     // pod may already have succeeded. The poll retries a bounded number of times instead of
     // abandoning the job to its lease and re-running it.
     it('keeps polling through transient API failures', async () => {
-        const calls: Call[] = [];
         let gets = 0;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (path === jobsPath(namespace) && method === 'POST') {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
+        const { request } = routed((method, path) => {
             if (path === jobPath(namespace, runnerJobName(job))) {
                 gets += 1;
-                if (gets <= 2) return Promise.resolve({ status: 503, body: 'unavailable' });
-                return Promise.resolve(FAKE.job as K8sResponse);
+                if (gets <= 2) return { status: 503, body: 'unavailable' };
+                return FAKE.job as K8sResponse;
             }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -6014,46 +4507,12 @@ describe('the kubernetes runner', () => {
             FAKE.job as K8sResponse,
         ];
         let served = 0;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (path === jobsPath(namespace) && method === 'POST') {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
+        const { request } = routed((method, path) => {
             if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(script[served++] ?? outage());
+                return script[served++] ?? outage();
             }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
@@ -6065,26 +4524,20 @@ describe('the kubernetes runner', () => {
      * A completed pod can be garbage-collected before the list that reads its exit code. The Job
      * status is then the verdict: this Job runs one pod and never retries it, so the controller
      * can only have counted success on an exit-0 termination — and a null exit code would map to
-     * `failed` in the loop, recording finished work as failed.
+     * `failed` in the loop, recording finished work as failed. A failed Job still reports failed.
      */
-    it('treats the Job status as the verdict when its pod is already gone', async () => {
-        const { request } = fakeRequest({ pods: { status: 200, body: JSON.stringify({ items: [] }) } });
+    it.each<[string, Record<string, unknown>, number | null]>([
+        ['treats the Job status as the verdict when its pod is already gone', {}, 0],
+        [
+            'still reports a failed job when its pod is gone',
+            { job: { status: 200, body: JSON.stringify({ status: { failed: 1 } }) } },
+            null,
+        ],
+    ])('%s', async (_name, overrides, exitCode) => {
+        const { request } = fakeRequest({ ...overrides, pods: { status: 200, body: JSON.stringify({ items: [] }) } });
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
-        expect(outcome.exitCode).toBe(0);
-        expect(outcome.output).toBe('');
-    });
-
-    it('still reports a failed job when its pod is gone', async () => {
-        const { request } = fakeRequest({
-            job: { status: 200, body: JSON.stringify({ status: { failed: 1 } }) },
-            pods: { status: 200, body: JSON.stringify({ items: [] }) },
-        });
-        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
-
-        expect(outcome.exitCode).toBeNull();
-        expect(outcome.timedOut).toBe(false);
-        expect(outcome.output).toBe('');
+        expect(outcome).toMatchObject({ exitCode, timedOut: false, output: '' });
     });
 
     // After a re-claim, the replaced attempt's pod can still be listed while it terminates — same
@@ -6121,24 +4574,21 @@ describe('the kubernetes runner', () => {
 
     // The deadline is enforced by the kubelet, so the Job reports failed with the reason attached;
     // the driver maps that onto the same verdict `docker kill` after DRIVER_JOB_TIMEOUT_MS gets.
-    it('treats DeadlineExceeded as a timeout', async () => {
-        const { request } = fakeRequest({ job: FAKE.failed });
-        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
-
-        expect(outcome.timedOut).toBe(true);
-    });
-
     // A current cluster marks the deadline `FailureTarget` first and `Failed` only once the pod is
     // gone; the runner reads the first terminal status it sees, so it must know both.
-    it('treats a DeadlineExceeded FailureTarget as a timeout too', async () => {
-        const { request } = fakeRequest({
-            job: {
+    it.each<[string, () => unknown]>([
+        ['treats DeadlineExceeded as a timeout', () => FAKE.failed],
+        [
+            'treats a DeadlineExceeded FailureTarget as a timeout too',
+            () => ({
                 status: 200,
                 body: JSON.stringify({
                     status: { failed: 1, conditions: [{ type: 'FailureTarget', reason: 'DeadlineExceeded' }] },
                 }),
-            },
-        });
+            }),
+        ],
+    ])('%s', async (_name, answer) => {
+        const { request } = fakeRequest({ job: answer() });
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
         expect(outcome.timedOut).toBe(true);
@@ -6153,22 +4603,7 @@ describe('the kubernetes runner', () => {
 
     it('keeps polling the pod list through transient API failures', async () => {
         let lists = 0;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
+        const { request } = routed((method, path) => {
             if (
                 path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
                 decodeURIComponent(path).includes('job-name=')
@@ -6176,26 +4611,10 @@ describe('the kubernetes runner', () => {
                 lists += 1;
                 // A 503 during an apiserver upgrade is not the run's verdict; the exit code is
                 // still out there. The third read succeeds.
-                return Promise.resolve(lists <= 2 ? { status: 503, body: 'unavailable' } : (FAKE.pods as K8sResponse));
+                return lists <= 2 ? { status: 503, body: 'unavailable' } : (FAKE.pods as K8sResponse);
             }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -6206,46 +4625,10 @@ describe('the kubernetes runner', () => {
     // A log read that fails outright — connection reset, pod gone — must not fail the report: the
     // exit code already carries the verdict, and re-running finished work is the worse outcome.
     it('keeps the verdict when the log read fails outright', async () => {
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
+        const { request } = routed((method, path) => {
             if (path.includes('/log')) return Promise.reject(new Error('connection reset'));
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -6344,15 +4727,12 @@ describe('the gate job spec', () => {
             'factory.lease': job.leaseToken,
         });
         expect(s.spec.template.metadata.labels).toEqual(s.metadata.labels);
-        expect(s.spec.template.spec.automountServiceAccountToken).toBe(false);
     });
 
     // The kubelet's deadline is the gate's wall-clock cap; the driver reads DeadlineExceeded
     // off the finished Job and reports exit 124.
     it('bounds the run with activeDeadlineSeconds from GATE_TIMEOUT_MS', () => {
         expect(gateSpec().spec.activeDeadlineSeconds).toBe(30);
-        expect(gateSpec().spec.backoffLimit).toBe(0);
-        expect(gateSpec().spec.template.spec.restartPolicy).toBe('Never');
     });
 
     // The env travels by reference and never as literals — the same rule that keeps claim
@@ -6672,26 +5052,26 @@ describe('the kubernetes gate manager', () => {
         expect(calls.some((c) => c.method === 'POST' && c.path === jobsPath(namespace))).toBe(false);
     });
 
-    it('rejects with the harness code when the cluster refuses the run', async () => {
-        const { request } = gateFake({ jobCreate: { status: 403, body: 'forbidden' } });
-        const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', { job });
-        await expect(m.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
-    });
-
-    // Verified bug (docs/plans/k8s-runner-prune.md Step 0): a transport failure that exhausts the
-    // status-poll retries used to rethrow the raw error with no CONTAINER_GONE code, while the
-    // 429/5xx exhaustion arm already wrapped it — so `gates.ts`'s ad-hoc endpoint (which maps
-    // CONTAINER_GONE to 409) answered 500 for a kubernetes API-server outage where docker answers
-    // 409 for the same harness failure.
-    it('rejects with the harness code when the api server cannot be reached at all', async () => {
-        const request: K8sRequest = (method, path) => {
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) return Promise.resolve({ status: 201, body: '{}' });
-            if (path === jobsPath(namespace)) return Promise.resolve({ status: 201, body: '{}' });
-            if (path.startsWith(`${jobsPath(namespace)}/`)) return Promise.reject(new Error('ECONNREFUSED'));
-            return Promise.reject(new Error(`gate fake has no answer for ${method} ${path}`));
-        };
-        const m = manager(request);
+    // The api-server row is a verified bug (docs/plans/k8s-runner-prune.md Step 0): a transport
+    // failure that exhausts the status-poll retries used to rethrow the raw error with no
+    // CONTAINER_GONE code, while the 429/5xx exhaustion arm already wrapped it — so `gates.ts`'s
+    // ad-hoc endpoint (which maps CONTAINER_GONE to 409) answered 500 for a kubernetes API-server
+    // outage where docker answers 409 for the same harness failure.
+    it.each<[string, () => K8sRequest]>([
+        ['the cluster refuses the run', () => gateFake({ jobCreate: { status: 403, body: 'forbidden' } }).request],
+        [
+            'the api server cannot be reached at all',
+            () => (method, path) => {
+                if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                    return Promise.resolve({ status: 201, body: '{}' });
+                }
+                if (path === jobsPath(namespace)) return Promise.resolve({ status: 201, body: '{}' });
+                if (path.startsWith(`${jobsPath(namespace)}/`)) return Promise.reject(new Error('ECONNREFUSED'));
+                return Promise.reject(new Error(`gate fake has no answer for ${method} ${path}`));
+            },
+        ],
+    ])('rejects with the harness code when %s', async (_when, request) => {
+        const m = manager(request());
         await m.acquire(KEY, 'node:24', '', { job });
         await expect(m.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
     });
@@ -7487,68 +5867,33 @@ describe('the kubernetes services flow', () => {
  * scrape rides the run's outcome the way docker's verdict does.
  */
 describe("scoping the kubernetes mounts to the job's own subtree", () => {
-    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-
     // Every volumeMount this executor emits names the job's own `<orgId>/<userId>` subtree as
     // its subPath. That is what makes a missing target fail loud — the kubelet cannot start a
     // pod whose subPath does not exist and leaves it stuck in ContainerCreating — and what
     // makes a broader fallback mount structurally impossible: there is no spec shape here that
     // mounts the workspaces PVC without a subPath.
-    it('mounts nothing broader than the member subtree — every spec names the exact target', () => {
-        const specs = [
-            runnerJobSpec(cfg(), job, { id: SESSION, resume: false }),
-            gateJobSpec(cfg(), job, {
-                key: `bellows/${USER}/.worktrees/${job.id}`,
-                image: 'node:24',
-                gateName: 't',
-                command: 'npm test',
-                run: 1,
-                envSecretName: null,
-                gateTimeoutMs: 30_000,
-            }),
-            bellowsJobSpec(cfg(), job),
-            opencodeReadoutJobSpec(cfg(), job, '2026-09-01T00:00:00Z'),
-            claudeTurnsJobSpec(cfg(), job, SESSION, '2026-09-01T00:00:00Z'),
-            syncJobSpec(cfg(), repoJob, null),
-            reclaimJobSpec(cfg(), repoJob),
-            publishStepJobSpec(cfg(), repoJob, {
-                step: 1,
-                publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
-                envSecret: null,
-                repo: '/wt',
-            }),
-        ];
-        for (const s of specs) {
-            const mount = s.spec.template.spec.containers[0].volumeMounts.find((m) => m.name === 'workspaces');
-            expect(mount?.subPath, s.metadata.name).toBe(`bellows/${USER}`);
-            expect(mount?.subPath.split('/').length, s.metadata.name).toBe(2);
+    it.each(JOB_POD_NAMES)(
+        'mounts nothing broader than the member subtree on %s — it names the exact target',
+        (name) => {
+            const { pod } = everyPodSpec({ RUNNER_SERVICES: '0' })[name]();
+            const mount = pod.containers[0]!.volumeMounts?.find((m) => m.name === 'workspaces');
+            expect(mount?.subPath).toBe(`bellows/${USER}`);
+            expect(mount?.subPath?.split('/').length).toBe(2);
         }
-    });
+    );
 
     // A claim whose workspace path fails the segment assertions is refused before any pod spec
     // exists — the mount can never name a path the assertions did not clear.
-    it('refuses to build any pod spec for a claim with a malformed workspace path', () => {
-        const broken = { ...job, workspacePath: '../../etc' };
-        expect(() => runnerJobSpec(cfg(), broken, { id: SESSION, resume: false })).toThrow(/workspace path/);
-        expect(() => bellowsJobSpec(cfg(), broken)).toThrow(/workspace path/);
-        expect(() => opencodeReadoutJobSpec(cfg(), broken, '2026-09-01T00:00:00Z')).toThrow(/workspace path/);
-        expect(() => claudeTurnsJobSpec(cfg(), broken, SESSION, '2026-09-01T00:00:00Z')).toThrow();
-        expect(() => syncJobSpec(cfg(), { ...broken, repo: 'Bellows-AI/factory' }, null)).toThrow();
-        expect(() => reclaimJobSpec(cfg(), { ...broken, repo: 'Bellows-AI/factory' })).toThrow();
-        expect(() =>
-            publishStepJobSpec(
-                cfg(),
-                { ...broken, repo: 'Bellows-AI/factory' },
-                {
-                    step: 1,
-                    publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
-                    envSecret: null,
-                    repo: '/wt',
-                }
-            )
-        ).toThrow(/workspace path/);
-    });
+    // The sync and the reclaim refuse it in their own words: no task worktree resolves.
+    it.each(JOB_POD_NAMES.filter((name) => name !== 'the gate'))(
+        'refuses to build %s for a claim with a malformed workspace path',
+        (name) => {
+            const build = everyPodSpec({ RUNNER_SERVICES: '0' }, { ...job, workspacePath: '../../etc' })[name];
+            expect(build).toThrow(
+                name === 'the sync' || name === 'the reclaim' ? /cannot resolve a task worktree/ : /workspace path/
+            );
+        }
+    );
 });
 
 describe('the runner job spec under opencode', () => {
@@ -7558,15 +5903,11 @@ describe('the runner job spec under opencode', () => {
         RUNNER_SERVICES: '0',
     });
 
-    it('runs a fresh job headless, with no session argv at all', () => {
-        const spec = runnerJobSpec(ocConfig, opencodeJob, null);
-        const container = spec.spec.template.spec.containers[0];
-        expect(container.args).toEqual(['run', '--agent', 'factory', 'fix the failing build']);
-    });
-
+    // The plan is pinned in runner-plan.test.ts; this is the kubernetes rendering of opencode's:
+    // the CLI args as the container's args, the env pairs as literal values, never a secretKeyRef.
     it('restores a follow-up session with run --session, the id the CLI itself minted', () => {
         const spec = runnerJobSpec(ocConfig, { ...opencodeJob, followUp: true }, { id: 'ses_abc123', resume: true });
-        const container = spec.spec.template.spec.containers[0];
+        const container = spec.spec.template.spec.containers[0]!;
         expect(container.args).toEqual([
             'run',
             '--agent',
@@ -7575,45 +5916,9 @@ describe('the runner job spec under opencode', () => {
             'ses_abc123',
             'fix the failing build',
         ]);
-    });
-
-    it('persists the session database on the workspaces volume, under the member tree', () => {
-        const spec = runnerJobSpec(ocConfig, opencodeJob, null);
-        const xdg = spec.spec.template.spec.containers[0].env.find((e) => e.name === 'XDG_DATA_HOME');
-        expect(xdg).toEqual({
-            name: 'XDG_DATA_HOME',
-            value: `/workspaces/bellows/${USER}/.opencode`,
-        });
-        // A value, not a secretKeyRef — a path like WORKDIR, never a credential.
-        expect(xdg?.valueFrom).toBeUndefined();
-    });
-
-    it('never sets XDG_DATA_HOME for claude-code, whose sessions are not file-persisted', () => {
-        const spec = runnerJobSpec(
-            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
-            job,
-            {
-                id: SESSION,
-                resume: false,
-            }
-        );
-        expect(spec.spec.template.spec.containers[0].env.some((e) => e.name === 'XDG_DATA_HOME')).toBe(false);
-    });
-
-    // The unified predicate is docker's: opencode mints its own ids and cannot ADOPT one minted
-    // in advance, which is exactly what a session with `resume: false` is. This platform used to
-    // refuse on `!job.followUp` instead, which rejected a legitimate resumed claim and accepted a
-    // minted one — the opposite of the rule the CLI actually has.
-    it('refuses to adopt a minted session, as dockerArgs does', () => {
-        expect(() => runnerJobSpec(ocConfig, opencodeJob, { id: 'ses_abc123', resume: false })).toThrow(
-            /cannot adopt a minted session/
-        );
-    });
-
-    it('refuses a session id that is not a safe token, before it reaches argv', () => {
-        expect(() =>
-            runnerJobSpec(ocConfig, { ...opencodeJob, followUp: true }, { id: 'bad id; rm -rf', resume: true })
-        ).toThrow(/not a safe token/);
+        expect(container.env).toContainEqual({ name: 'XDG_DATA_HOME', value: `/workspaces/bellows/${USER}/.opencode` });
+        expect(container.env).toContainEqual({ name: 'BELLOWS_SESSION_ID', value: 'ses_abc123' });
+        expect(container.env).toContainEqual({ name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' });
     });
 });
 
@@ -7662,13 +5967,6 @@ describe('the opencode session readout job', () => {
         expect(spec.spec.template.spec.containers[0].volumeMounts[0].readOnly).toBeUndefined();
     });
 
-    it('bounds itself with a deadline of its own and reaps its pod', () => {
-        const spec = opencodeReadoutJobSpec(config, job, START);
-        expect(spec.spec.activeDeadlineSeconds).toBeGreaterThan(0);
-        expect(spec.spec.backoffLimit).toBe(0);
-        expect(spec.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
-    });
-
     it('refuses a job whose workspace path it cannot assert', () => {
         expect(() => opencodeReadoutJobSpec(config, { ...job, workspacePath: null })).toThrow(/workspace path/);
     });
@@ -7693,10 +5991,6 @@ describe('the close-time claude-code turn read under kubernetes', () => {
         expect(spec.metadata.name).toBe(claudeTurnsJobName(job));
         expect(spec.metadata.name).toMatch(/^factory-cturns-/);
         expect(container.command).toEqual(['node', '-e', claudeTurnsScript]);
-        // The script is static: the transcript dir and the session id arrive by env, so no
-        // board-derived value is ever part of its text.
-        expect(claudeTurnsScript).not.toContain('/workspaces');
-        expect(claudeTurnsScript).not.toContain(SESSION);
         expect(container.env).toEqual([
             {
                 name: 'CLAUDE_TRANSCRIPT_DIR',
@@ -7709,12 +6003,6 @@ describe('the close-time claude-code turn read under kubernetes', () => {
         expect(container.volumeMounts).toEqual([
             { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
-    });
-
-    it('bounds itself with a deadline of its own and reaps its pod', () => {
-        expect(spec.spec.activeDeadlineSeconds).toBeGreaterThan(0);
-        expect(spec.spec.backoffLimit).toBe(0);
-        expect(spec.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
     });
 
     it('refuses a session id that is not a uuid', () => {
@@ -7744,8 +6032,6 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
         expect(spec.metadata.name).toBe(claudeTranscriptJobName(job));
         expect(spec.metadata.name).toMatch(/^factory-ctrans-/);
         expect(container.command).toEqual(['node', '-e', claudeTranscriptScript]);
-        expect(claudeTranscriptScript).not.toContain('/workspaces');
-        expect(claudeTranscriptScript).not.toContain(SESSION);
         expect(container.env).toEqual([
             { name: 'CLAUDE_TRANSCRIPT_DIR', value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}` },
             { name: 'CLAUDE_SESSION_ID', value: SESSION },
@@ -7776,13 +6062,6 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
         expect(() => opencodeTranscriptJobSpec(config, { ...job, workspacePath: null }, START)).toThrow(
             /workspace path/
         );
-    });
-
-    it('bounds itself with a deadline of its own and reaps its pod', () => {
-        const spec = claudeTranscriptJobSpec(config, job, SESSION, START);
-        expect(spec.spec.activeDeadlineSeconds).toBeGreaterThan(0);
-        expect(spec.spec.backoffLimit).toBe(0);
-        expect(spec.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
     });
 });
 
@@ -7903,48 +6182,6 @@ describe('the kubernetes runner under opencode', () => {
         expect(deleted).toBeGreaterThan(created);
     });
 
-    // A session line that also carries the session's last provider error: the run's cause, not
-    // the read's failure — it rides the outcome as its own field, exactly as the docker runner's.
-    it('carries the session’s last provider error on the outcome beside the session', async () => {
-        const { request } = opencodeFake({
-            log: JSON.stringify({
-                id: 'ses_n3w',
-                finish: 'tool-calls',
-                tokens: 100016,
-                cost: 0,
-                error: 'Error from provider (Console): Rate limit exceeded. Please try again later.',
-            }),
-        });
-        const outcome = await ocRunner(request).run(opencodeJob, null);
-
-        expect(outcome.sessionId).toBe('ses_n3w');
-        expect(outcome.finishReason).toBe('tool-calls');
-        expect(outcome.providerError).toBe(
-            'Error from provider (Console): Rate limit exceeded. Please try again later.'
-        );
-        expect(outcome.readoutError).toBeUndefined();
-    });
-
-    it('retries the scrape while the database is mid-checkpoint, then reports the session', async () => {
-        let scrapeRuns = 0;
-        const { request } = opencodeFake();
-        const flaky: K8sRequest = (method, path, body) => {
-            // The readout pod's log is the scrape's answer: empty twice (the database was still
-            // mid-checkpoint — "no session yet"), then the session line.
-            if (path === `${ns}/pods/${ocreadPod}/log`) {
-                scrapeRuns += 1;
-                return Promise.resolve({
-                    status: 200,
-                    body: scrapeRuns < 3 ? '' : JSON.stringify({ id: 'ses_late', finish: 'stop' }),
-                });
-            }
-            return request(method, path, body);
-        };
-        const outcome = await ocRunner(flaky).run(opencodeJob, null);
-        expect(scrapeRuns).toBe(3);
-        expect(outcome.sessionId).toBe('ses_late');
-    });
-
     it('fails no verdict when the scrape cannot run: the error rides readoutError instead', async () => {
         const { request, calls } = opencodeFake({ status: 'failed' });
         const outcome = await ocRunner(request).run(opencodeJob, null);
@@ -8039,9 +6276,6 @@ describe('the block-helper transport (issue #207)', () => {
         expect(container.env).toEqual([{ name: 'HELPER_INPUT', value: JSON.stringify({ a: 1 }) }]);
         expect(container.envFrom).toBeUndefined();
         expect(container.workingDir).toBe(WT);
-        expect(withRepo.spec.template.spec.automountServiceAccountToken).toBe(false);
-        expect(withRepo.spec.backoffLimit).toBe(0);
-        expect(withRepo.spec.activeDeadlineSeconds).toBeGreaterThan(0);
 
         // A command-only job (no repo): no working directory, the member root's own mount.
         const noRepo = helperJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), job, {
@@ -8198,12 +6432,6 @@ describe('the block-helper transport (issue #207)', () => {
         });
     });
 
-    it('reports malformed_output for stdout that is not the versioned verdict', async () => {
-        const { request } = fakeRequest({ log: { status: 200, body: 'not json at all' } });
-        const result = await runner(request).runHelper!(job, plan());
-        expect(result).toEqual({ ok: false, reason: 'malformed_output', message: expect.any(String) });
-    });
-
     it('reports runner_error when the API server refuses the Job create', async () => {
         const { request } = fakeRequest({ create: { status: 500, body: 'server error' } });
         const result = await runner(request).runHelper!(job, plan());
@@ -8214,87 +6442,52 @@ describe('the block-helper transport (issue #207)', () => {
 // A private registry is the normal case in a cluster, and every pod this driver specs pulls on its
 // own: the runner, each aux Job (sync shown — they all share `auxJobSpec`) and each service pod.
 describe('RUNNER_IMAGE_PULL_SECRETS', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-    const withSecrets = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_IMAGE_PULL_SECRETS: 'regcred, mirror ,' });
-    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
-
-    it('names every configured secret on the runner, aux and service pod specs', () => {
-        const expected = [{ name: 'regcred' }, { name: 'mirror' }];
-        expect(
-            runnerJobSpec(withSecrets, job, { id: SESSION, resume: false }).spec.template.spec.imagePullSecrets
-        ).toEqual(expected);
-        expect(syncJobSpec(withSecrets, repoJob, null).spec.template.spec.imagePullSecrets).toEqual(expected);
-        expect(servicePodSpec(withSecrets, job, service, 'svc-uid').spec.imagePullSecrets).toEqual(expected);
+    it.each(POD_NAMES)('names every configured secret on %s', (name) => {
+        const { pod } = everyPodSpec({ RUNNER_IMAGE_PULL_SECRETS: 'regcred, mirror ,' })[name]();
+        expect(pod.imagePullSecrets).toEqual([{ name: 'regcred' }, { name: 'mirror' }]);
     });
 
-    it('leaves the field off entirely when none are configured', () => {
-        const plain = loadDriverConfig({ EXECUTOR: 'kubernetes' });
-        expect(spec().spec.template.spec).not.toHaveProperty('imagePullSecrets');
-        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('imagePullSecrets');
-        expect(servicePodSpec(plain, job, service, 'svc-uid').spec).not.toHaveProperty('imagePullSecrets');
+    it.each(POD_NAMES)('leaves the field off %s entirely when none are configured', (name) => {
+        expect(everyPodSpec()[name]().pod).not.toHaveProperty('imagePullSecrets');
     });
 });
 
 // Issue #361: the chart's scheduling knobs reach the chart's own pods only; these are the runner
 // group's — the tainted node group agent-written code is meant to land on and nothing else. Every
-// pod the driver specs carries them: the runner, each aux Job (sync shown — they all share
-// `auxJobSpec`) and each service pod, exactly as RUNNER_IMAGE_PULL_SECRETS above does.
+// pod the driver specs carries them: the runner, each aux Job and each service pod, exactly as
+// RUNNER_IMAGE_PULL_SECRETS above does.
 describe('RUNNER NODE SELECTOR / TOLERATIONS / AFFINITY', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-    const scheduled = loadDriverConfig({
-        EXECUTOR: 'kubernetes',
+    const scheduled = {
         RUNNER_NODE_SELECTOR: '{"dedicated":"factory-runners"}',
         RUNNER_TOLERATIONS: '[{"key":"dedicated","operator":"Equal","value":"factory-runners","effect":"NoSchedule"}]',
         RUNNER_AFFINITY:
             '{"podAntiAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":[{"weight":1,"podAffinityTerm":{"topologyKey":"topology.kubernetes.io/zone","labelSelector":{"matchLabels":{"app.kubernetes.io/name":"factory"}}}}]}}',
-    });
-    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
-    const nodeSelector = { dedicated: 'factory-runners' };
-    const tolerations = [{ key: 'dedicated', operator: 'Equal', value: 'factory-runners', effect: 'NoSchedule' }];
+    };
 
-    it('schedules the runner, aux and service pods onto the configured node group', () => {
-        const runner = runnerJobSpec(scheduled, job, { id: SESSION, resume: false }).spec.template.spec;
-        expect(runner.nodeSelector).toEqual(nodeSelector);
-        expect(runner.tolerations).toEqual(tolerations);
-        expect(runner.affinity).toMatchObject({ podAntiAffinity: expect.anything() });
-        const sync = syncJobSpec(scheduled, repoJob, null).spec.template.spec;
-        expect(sync.nodeSelector).toEqual(nodeSelector);
-        expect(sync.tolerations).toEqual(tolerations);
-        expect(sync.affinity).toMatchObject({ podAntiAffinity: expect.anything() });
-        const servicePod = servicePodSpec(scheduled, job, service).spec;
-        expect(servicePod.nodeSelector).toEqual(nodeSelector);
-        expect(servicePod.tolerations).toEqual(tolerations);
-        expect(servicePod.affinity).toMatchObject({ podAntiAffinity: expect.anything() });
+    it.each(POD_NAMES)('schedules %s onto the configured node group', (name) => {
+        const { pod } = everyPodSpec(scheduled)[name]();
+        expect(pod.nodeSelector).toEqual({ dedicated: 'factory-runners' });
+        expect(pod.tolerations).toEqual([
+            { key: 'dedicated', operator: 'Equal', value: 'factory-runners', effect: 'NoSchedule' },
+        ]);
+        expect(pod.affinity).toMatchObject({ podAntiAffinity: expect.anything() });
     });
 
-    it('leaves the fields off entirely when none are configured', () => {
-        const plain = loadDriverConfig({ EXECUTOR: 'kubernetes' });
-        expect(spec().spec.template.spec).not.toHaveProperty('nodeSelector');
-        expect(spec().spec.template.spec).not.toHaveProperty('tolerations');
-        expect(spec().spec.template.spec).not.toHaveProperty('affinity');
-        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('nodeSelector');
-        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('tolerations');
-        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('affinity');
-        expect(servicePodSpec(plain, job, service).spec).not.toHaveProperty('nodeSelector');
-        expect(servicePodSpec(plain, job, service).spec).not.toHaveProperty('tolerations');
-        expect(servicePodSpec(plain, job, service).spec).not.toHaveProperty('affinity');
+    it.each(POD_NAMES)('leaves the fields off %s entirely when none are configured', (name) => {
+        const { pod } = everyPodSpec()[name]();
+        expect(pod).not.toHaveProperty('nodeSelector');
+        expect(pod).not.toHaveProperty('tolerations');
+        expect(pod).not.toHaveProperty('affinity');
     });
 });
 
 // The chart's runner NetworkPolicy selects by release, so every pod the driver specs must carry
 // the release label — not only the runner Job object, which is what bulk cleanup reads.
 describe('K8S_RELEASE on pod templates', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-    const released = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_RELEASE: 'dev' });
-    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
-    const instance = { 'app.kubernetes.io/instance': 'dev' };
-
-    it('labels the runner, aux and service pods with the release', () => {
-        expect(
-            runnerJobSpec(released, job, { id: SESSION, resume: false }).spec.template.metadata.labels
-        ).toMatchObject(instance);
-        expect(syncJobSpec(released, repoJob, null).spec.template.metadata.labels).toMatchObject(instance);
-        expect(servicePodSpec(released, job, service, 'svc-uid').metadata.labels).toMatchObject(instance);
+    it.each(POD_NAMES)('labels %s with the release', (name) => {
+        expect(everyPodSpec({ K8S_RELEASE: 'dev' })[name]().meta.labels).toMatchObject({
+            'app.kubernetes.io/instance': 'dev',
+        });
     });
 });
 
@@ -8311,82 +6504,21 @@ describe('RUNNER_DO_NOT_DISRUPT on pod templates', () => {
         'karpenter.sh/do-not-disrupt': 'true',
         'cluster-autoscaler.kubernetes.io/safe-to-evict': 'false',
     };
-    const disruptable = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_DO_NOT_DISRUPT: '1' });
-    const plain = loadDriverConfig({ EXECUTOR: 'kubernetes' });
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
-    const NOOP_DESCRIPTOR = lookupHelper('noop')!;
-    const NONCE = '77777777-7777-4777-8777-777777777777';
-    const plan = (): HelperPlan => ({ helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false });
-    const GATE_KEY = 'bellows/44444444-4444-4444-8444-444444444444/.worktrees/88888888-8888-4888-8888-888888888888';
-    const STARTED_AT = '2026-01-01T00:00:00.000Z';
 
-    it('annotates every pod the driver specs — runner, aux Jobs, declared services', () => {
-        // The annotations name the POD: Job specs carry them on the pod template (Karpenter reads
-        // pods, not Job objects); the bare service Pod carries them on its own metadata.
-        const jobSpecs: [string, { spec: { template: { metadata: { annotations?: object } } } }][] = [
-            ['the runner', runnerJobSpec(disruptable, job, { id: SESSION, resume: false })],
-            ['the sync', syncJobSpec(disruptable, repoJob, null)],
-            ['the reclaim', reclaimJobSpec(disruptable, repoJob)],
-            [
-                'the publish step',
-                publishStepJobSpec(disruptable, repoJob, {
-                    step: 1,
-                    publish: { label: 'git push', entrypoint: 'git', args: ['push'], env: false, inRepo: false },
-                    envSecret: null,
-                    repo: 'repo',
-                }),
-            ],
-            [
-                'the helper',
-                helperJobSpec(disruptable, repoJob, {
-                    plan: plan(),
-                    descriptor: NOOP_DESCRIPTOR,
-                    envSecret: null,
-                    nonce: NONCE,
-                }),
-            ],
-            [
-                'the gate',
-                gateJobSpec(disruptable, job, {
-                    key: GATE_KEY,
-                    image: 'node:20',
-                    gateName: 'test',
-                    command: 'true',
-                    run: 1,
-                    envSecretName: null,
-                    gateTimeoutMs: 60_000,
-                }),
-            ],
-            ['the bellows readout', bellowsJobSpec(disruptable, job)],
-            ['the claude turns readout', claudeTurnsJobSpec(disruptable, job, SESSION, STARTED_AT)],
-            ['the opencode session readout', opencodeReadoutJobSpec(disruptable, job, STARTED_AT)],
-            ['the claude transcript export', claudeTranscriptJobSpec(disruptable, job, SESSION, STARTED_AT)],
-            ['the opencode transcript export', opencodeTranscriptJobSpec(disruptable, job, STARTED_AT)],
-        ];
-        for (const [name, spec] of jobSpecs) {
-            expect(spec.spec.template.metadata.annotations, name).toEqual(ANNOTATIONS);
-            // Annotating the Job object itself would be cargo cult — Karpenter reads pods.
-            expect((spec as { metadata: { annotations?: object } }).metadata.annotations, name).toBeUndefined();
-        }
-        expect(servicePodSpec(disruptable, job, service).metadata.annotations).toEqual(ANNOTATIONS);
+    // The annotations name the POD: Job specs carry them on the pod template (Karpenter reads
+    // pods, not Job objects); the bare service Pod carries them on its own metadata.
+    it.each(POD_NAMES)('annotates %s', (name) => {
+        expect(everyPodSpec({ RUNNER_DO_NOT_DISRUPT: '1' })[name]().meta.annotations).toEqual(ANNOTATIONS);
     });
 
-    it('leaves the annotations off entirely when the switch is unset', () => {
-        expect(spec().spec.template.metadata).not.toHaveProperty('annotations');
-        expect(syncJobSpec(plain, repoJob, null).spec.template.metadata).not.toHaveProperty('annotations');
-        expect(
-            gateJobSpec(plain, job, {
-                key: GATE_KEY,
-                image: 'node:20',
-                gateName: 'test',
-                command: 'true',
-                run: 1,
-                envSecretName: null,
-                gateTimeoutMs: 60_000,
-            }).spec.template.metadata
-        ).not.toHaveProperty('annotations');
-        expect(servicePodSpec(plain, job, service).metadata).not.toHaveProperty('annotations');
+    // Annotating the Job object itself would be cargo cult — Karpenter reads pods.
+    it.each(JOB_POD_NAMES)('leaves the Job object of %s unannotated', (name) => {
+        const { job: jobObject } = everyPodSpec({ RUNNER_DO_NOT_DISRUPT: '1' })[name]();
+        expect((jobObject as { metadata: { annotations?: object } }).metadata.annotations).toBeUndefined();
+    });
+
+    it.each(POD_NAMES)('leaves the annotations off %s entirely when the switch is unset', (name) => {
+        expect(everyPodSpec()[name]().meta).not.toHaveProperty('annotations');
     });
 });
 

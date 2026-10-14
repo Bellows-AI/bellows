@@ -1,6 +1,7 @@
 import { OBJECTIVE_MODE, WORKFLOW_MODE } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
-import { FORBIDDEN, job, renderDetail } from './tasks-fixtures.js';
+import { job, renderDetail } from './tasks-fixtures.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 /** The outcome rail's own markup — the main column below may repeat a word in its own voice. */
 const railOf = (html: string): string => html.slice(html.indexOf('task-outcome'), html.indexOf('task-main'));
@@ -30,10 +31,11 @@ describe('TaskOutcome', () => {
                 }),
             ],
         });
-        expect(html).toContain('stopped');
-        expect(html).toContain('done by kim');
-        expect(html).toContain('stopped by lee');
-        expect(html).toContain('exit 0');
+        // The rail carries the closure verdict; the stop attribution is the run footer's.
+        const rail = railOf(html);
+        expect(rail).toContain('Stopped');
+        expect(rail).toContain('done by kim');
+        expect(rail).toContain('exit 0');
     });
 
     it('explains an open PR-review wait: what Bellows is waiting for, since when, and that no executor is occupied', () => {
@@ -102,10 +104,14 @@ describe('TaskOutcome', () => {
     });
 
     it('names the root author as Started by, unknown when nobody is recorded', () => {
-        const author = { id: 'u', login: 'kim', name: 'Kim Doe', avatarUrl: null };
-        expect(renderDetail({ jobs: [job({ author })] })).toContain('Started by');
-        expect(renderDetail({ jobs: [job({ author })] })).toContain('Kim Doe');
-        expect(renderDetail({ jobs: [job()] })).toContain('unknown');
+        const author = { id: 'u', login: 'kim', name: 'Kim Doe', avatarUrl: 'https://x/a.png' };
+        const started = renderDetail({ jobs: [job({ author })] });
+        expect(started).toContain('Started by');
+        expect(started).toContain('Kim Doe');
+        expect(started).toContain('https://x/a.png');
+        const unknown = renderDetail({ jobs: [job()] });
+        expect(unknown).toContain('Started by');
+        expect(unknown).toContain('unknown');
     });
 
     it('carries the task wall clock under the em-dash convention', () => {
@@ -208,6 +214,9 @@ describe('TaskOutcome — gates, publication and services', () => {
         });
         expect(html).not.toContain('View checks');
         const counted = renderDetail({ jobs: [job({ gates })] });
+        expect(counted).toContain('>View checks</a>');
+        expect(counted).toContain('href="#task-verification"');
+        expect(counted).toContain('id="task-verification"');
         expect(counted).toContain('1 passed');
         expect(counted).toContain('1 failed');
         expect(counted).toContain('1 running');
@@ -229,6 +238,7 @@ describe('TaskOutcome — gates, publication and services', () => {
         expect(linked).not.toContain('Open pull request');
         expect(linked).toContain('rel="noopener noreferrer"');
         expect(linked).not.toContain('PR state');
+        expect(linked.slice(linked.indexOf('task-published'))).toContain('aria-label="Copy branch name"');
 
         const unsafe = renderDetail({
             jobs: [job({ output: '[driver] published fix/5 — javascript:alert(1)' })],
@@ -378,7 +388,7 @@ describe('TaskOutcome — services and the placeholder sweep', () => {
                 }),
             ],
         });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 

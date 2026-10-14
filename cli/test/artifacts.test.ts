@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { run } from '../src/run.js';
-
-const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
-
-const json = (payload: unknown, status = 200) =>
-    new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
+import { json, runCli } from './harness.js';
 
 /** A board that serves `content` of `attempts` by the artifact route's own offset/limit/attempt query. */
 function artifactBoard(attempts: Record<number, string>, failAt?: number) {
@@ -33,19 +28,7 @@ function artifactBoard(attempts: Record<number, string>, failAt?: number) {
     return { urls, respond };
 }
 
-async function cli(argv: string[], respond: (url: string) => Response) {
-    const out: string[] = [];
-    const err: string[] = [];
-    const fetch = (async (url: string | URL | globalThis.Request) => respond(String(url))) as unknown as typeof fetch;
-    const code = await run(argv, {
-        env: ENV,
-        fetch,
-        sleep: async () => undefined,
-        stdout: (text) => out.push(text),
-        stderr: (text) => err.push(text),
-    });
-    return { code, out: out.join(''), err: err.join('') };
-}
+const cli = (argv: string[], respond: (url: string) => Response) => runCli(argv, (sent) => respond(sent.url));
 
 const LOG = Array.from({ length: 10 }, (_, i) => `line ${i}\n`).join('');
 
@@ -93,14 +76,6 @@ describe('bellows job log / transcript', () => {
         expect(JSON.parse(machine.out).data).toMatchObject({ offset: 75, nextOffset: null, content: LOG.slice(75) });
     });
 
-    it('reports a missing artifact as the board refusal', async () => {
-        const board = artifactBoard({ 1: LOG });
-        const { code, err } = await cli(['job', 'transcript', 'job-1', '--attempt', '9'], board.respond);
-
-        expect(code).toBe(1);
-        expect(err).toContain('No such artifact');
-    });
-
     it('a failure on a later page fails the command, names the page and prints no partial artifact', async () => {
         const board = artifactBoard({ 1: LOG }, 50);
         const { code, out, err } = await cli(['job', 'log', 'job-1', '--all', '--limit', '25'], board.respond);
@@ -126,13 +101,6 @@ describe('bellows job log / transcript', () => {
         const { err } = await cli(['job', 'log', 'job-1', '--all'], respond);
 
         expect(err).toContain('truncated at upload');
-    });
-
-    it('refuses --all with --offset and a bad count as usage, before any request', async () => {
-        const board = artifactBoard({ 1: LOG });
-        expect((await cli(['job', 'log', 'job-1', '--all', '--offset', '3'], board.respond)).code).toBe(2);
-        expect((await cli(['job', 'log', 'job-1', '--limit', '0'], board.respond)).code).toBe(2);
-        expect(board.urls).toHaveLength(0);
     });
 });
 

@@ -3,13 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import {
-    GIT_FIXTURE_CONFIG,
-    SCRIPT_IDENTITY,
-    git,
-    hasGit,
-    importEmptyCommits,
-} from './fixtures/git-worktree-support.js';
+import { SCRIPT_IDENTITY, git, hasGit, importEmptyCommits, makeOriginClone } from './fixtures/git-worktree-support.js';
 
 /*
  * The PR summary script (issues #82, #389): the publish flow opens the pull request with what
@@ -24,16 +18,8 @@ describe.skipIf(!hasGit())('the PR summary script', () => {
 
     beforeEach(() => {
         dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-pr-summary-')));
-        const work = join(dir, 'origin-work');
-        mkdirSync(work, { recursive: true });
-        git(work, 'init');
-        writeFileSync(join(work, 'README.md'), '# summary\n');
-        git(work, 'add', 'README.md');
-        git(work, 'commit', '-m', 'init');
-        const bare = join(dir, 'summary.git');
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', '--bare', work, bare], { stdio: 'ignore' });
         repo = join(dir, 'clone');
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', `file://${bare}`, repo], { stdio: 'ignore' });
+        makeOriginClone(dir, repo, 'summary');
     });
 
     const summarize = (
@@ -65,75 +51,76 @@ describe.skipIf(!hasGit())('the PR summary script', () => {
         work();
     };
 
-    it('titles the PR with the fix, not the opening regression test', () => {
+    it.each<[string, [file: string, content: string | Buffer, message: string][], string]>([
         // The issue's headline case: a test-first branch whose largest commit is the failing
         // test must still be titled by the commit that fixes the thing (source tier).
-        onBranch(() => {
-            commit('session.test.ts', lines(30), 'Add failing regression test');
-            commit('src/session.ts', lines(10), 'Fix session expiry during long-running tasks');
-        });
-
-        expect(summarize().title).toBe('Fix session expiry during long-running tasks');
-    });
-
-    it('reflects later scope changes in the title', () => {
-        onBranch(() => {
-            commit('a.txt', lines(1), 'Set up the module skeleton');
-            commit('src/sync.ts', lines(30), 'Add retry with backoff to the sync client');
-        });
-
-        expect(summarize().title).toBe('Add retry with backoff to the sync client');
-    });
-
-    it('does not advertise fully reverted work', () => {
-        onBranch(() => {
-            commit('rewriter.ts', lines(100), 'Add the experimental rewriter');
-            commit('fence.ts', lines(5), 'Fix the fence');
-            commit('rewriter.ts', '', 'Revert "Add the experimental rewriter"');
-        });
-
+        [
+            'titles the PR with the fix, not the opening regression test',
+            [
+                ['session.test.ts', lines(30), 'Add failing regression test'],
+                ['src/session.ts', lines(10), 'Fix session expiry during long-running tasks'],
+            ],
+            'Fix session expiry during long-running tasks',
+        ],
+        [
+            'reflects later scope changes in the title',
+            [
+                ['a.txt', lines(1), 'Set up the module skeleton'],
+                ['src/sync.ts', lines(30), 'Add retry with backoff to the sync client'],
+            ],
+            'Add retry with backoff to the sync client',
+        ],
         // rewriter.ts is absent from the final diff, so both the add and the revert score
         // nothing against it — the surviving fence fix is the title.
-        expect(summarize().title).toBe('Fix the fence');
-    });
-
-    it('titles an all-test branch by its heaviest surviving test commit', () => {
-        onBranch(() => {
-            commit('a.test.ts', lines(3), 'Add failing regression test');
-            commit('b.test.ts', lines(30), 'Cover the fence with a regression test');
-        });
-
-        expect(summarize().title).toBe('Cover the fence with a regression test');
-    });
-
-    it('titles a single-commit branch with its only subject', () => {
-        onBranch(() => {
-            commit('only.txt', lines(4), 'The one commit names itself');
-        });
-
-        expect(summarize().title).toBe('The one commit names itself');
-    });
-
-    it('a binary-only commit does not outrank a smaller text commit', () => {
-        onBranch(() => {
-            commit('asset.bin', Buffer.from([0x00, 0xff, 0x7f, 0x00, 0x01]), 'Add the compiled fixture');
-            commit('src/tiny.ts', lines(3), 'Add the parser guard');
-        });
-
+        [
+            'does not advertise fully reverted work',
+            [
+                ['rewriter.ts', lines(100), 'Add the experimental rewriter'],
+                ['fence.ts', lines(5), 'Fix the fence'],
+                ['rewriter.ts', '', 'Revert "Add the experimental rewriter"'],
+            ],
+            'Fix the fence',
+        ],
+        [
+            'titles an all-test branch by its heaviest surviving test commit',
+            [
+                ['a.test.ts', lines(3), 'Add failing regression test'],
+                ['b.test.ts', lines(30), 'Cover the fence with a regression test'],
+            ],
+            'Cover the fence with a regression test',
+        ],
+        [
+            'titles a single-commit branch with its only subject',
+            [['only.txt', lines(4), 'The one commit names itself']],
+            'The one commit names itself',
+        ],
         // Binary rows count zero churn, so the binary commit cannot win on bulk.
-        expect(summarize().title).toBe('Add the parser guard');
-    });
-
-    it('scores the surviving share, not the raw size', () => {
-        onBranch(() => {
-            commit('f.txt', lines(100), 'Add the parser');
-            commit('g.txt', lines(10), 'Add the docs pointer');
-            commit('f.txt', lines(50), 'Halve the parser');
-        });
-
+        [
+            'a binary-only commit does not outrank a smaller text commit',
+            [
+                ['asset.bin', Buffer.from([0x00, 0xff, 0x7f, 0x00, 0x01]), 'Add the compiled fixture'],
+                ['src/tiny.ts', lines(3), 'Add the parser guard'],
+            ],
+            'Add the parser guard',
+        ],
         // f.txt's final churn is 50; the first commit's surviving share min(100, 50) = 50 still
         // beats 10 — and the halving commit ties at 50, losing the tie to the earliest commit.
-        expect(summarize().title).toBe('Add the parser');
+        [
+            'scores the surviving share, not the raw size',
+            [
+                ['f.txt', lines(100), 'Add the parser'],
+                ['g.txt', lines(10), 'Add the docs pointer'],
+                ['f.txt', lines(50), 'Halve the parser'],
+            ],
+            'Add the parser',
+        ],
+        ['strips control characters from a subject', [['a.txt', 'a\n', 'Fix\x01 the fence']], 'Fix the fence'],
+    ])('%s', (_label, commits, title) => {
+        onBranch(() => {
+            for (const [file, content, message] of commits) commit(file, content, message);
+        });
+
+        expect(summarize().title).toBe(title);
     });
 
     it('never titles the PR with the driver’s backstop commit, whatever its churn', () => {
@@ -161,14 +148,6 @@ describe.skipIf(!hasGit())('the PR summary script', () => {
         expect(summarize('origin/main', { BACKSTOP_TITLE: 'both OK (#10)' }).title).toBeNull();
         // Without the env there is no exclusion — a plain subject stays usable.
         expect(summarize().title).toBe('both OK (#10)');
-    });
-
-    it('strips control characters from a subject', () => {
-        onBranch(() => {
-            commit('a.txt', 'a\n', 'Fix\x01 the fence');
-        });
-
-        expect(summarize().title).toBe('Fix the fence');
     });
 
     it('a subject with only control characters is no title', () => {
