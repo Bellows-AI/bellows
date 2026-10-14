@@ -617,48 +617,30 @@ describe("the board's environment", () => {
         expect(line).toEqual(expect.arrayContaining([`WORKDIR=/workspaces/bellows/${USER}`]));
     });
 
-    it('drops a member CRED_HELPER from the claim env and the env file', () => {
+    it.each<[string, Record<string, string>]>([
         // CRED_HELPER is the sync fetch's credential-helper CODE, a value the driver alone
         // chooses; a member's `!` helper riding the claim env into the sync container would be
         // member-controlled code execution, run by git as helper code.
-        const hijacked = { ...job, env: { CRED_HELPER: '!evil', OTHER: 'fine' } };
-        expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
-        expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
-    });
-
-    it('drops a member RESTORE from the claim env and the env file', () => {
+        ['CRED_HELPER', { CRED_HELPER: '!evil' }],
         // RESTORE is the sync's restore-mode switch (issue #58), and the claim env rides the
         // same sync container: a member value there would flip STARTING claims into restore
         // mode — no fetch, no rebase, a first attempt dead-ending on "the branch is gone" —
         // so the driver alone chooses it.
-        const hijacked = { ...job, env: { RESTORE: '1', OTHER: 'fine' } };
-        expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
-        expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
-    });
-
-    it('drops a member SYNC_LOCK_* from the claim env and the env file', () => {
+        ['RESTORE', { RESTORE: '1' }],
         // The startup sync lock's bounds (issue #307) are the script's defaults; a member value
         // riding the claim env into the sync container could shrink the wait to nothing or make
         // every sync steal its neighbour's live lock — so the names stay driver-owned, like
         // RESTORE beside them.
-        const hijacked = { ...job, env: { SYNC_LOCK_WAIT_MS: '1', SYNC_LOCK_STALE_MS: '1', OTHER: 'fine' } };
-        expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
-        expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
-    });
-
-    it('drops a member FACTORY_TRANSCRIPT_DIR from the claim env and the env file', () => {
+        ['SYNC_LOCK_*', { SYNC_LOCK_WAIT_MS: '1', SYNC_LOCK_STALE_MS: '1' }],
         // The transcript store's location is driver-composed (transcriptDir); a member value
         // would steer where headless transcripts are written — and, through the entrypoint's
         // redirect, where the CLI's whole config dir lands.
-        const hijacked = { ...job, env: { FACTORY_TRANSCRIPT_DIR: '/somewhere', OTHER: 'fine' } };
-        expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
-        expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
-    });
-
-    it('drops a member FACTORY_TURN_CONTEXT from the claim env and the env file', () => {
+        ['FACTORY_TRANSCRIPT_DIR', { FACTORY_TRANSCRIPT_DIR: '/somewhere' }],
         // The turn context is board-rendered (runner-plan.ts); a member value would reach the
         // model through the UserPromptSubmit hook as Factory's own context.
-        const hijacked = { ...job, env: { FACTORY_TURN_CONTEXT: 'spoof', OTHER: 'fine' } };
+        ['FACTORY_TURN_CONTEXT', { FACTORY_TURN_CONTEXT: 'spoof' }],
+    ])('drops a member %s from the claim env and the env file', (_name, member) => {
+        const hijacked = { ...job, env: { ...member, OTHER: 'fine' } };
         expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
         expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
     });
@@ -2245,37 +2227,41 @@ describe('the docker runner', () => {
         expect(ps).toContain('label=factory.service');
     });
 
-    /** A fleet read that fails costs the fleet, not the vitals — and never the sample. */
-    it('keeps the vitals when the service read fails', async () => {
-        const exec = vitest.fn((args: string[]) =>
-            args[0] === 'stats'
-                ? Promise.resolve({ stdout: '{"CPUPerc":"93.00%","MemUsage":"544MiB / 7.754GiB","MemPerc":"7.02%"}' })
-                : Promise.reject(new Error('daemon refused'))
-        ) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+    /**
+     * Each half of the sample stands on its own: a fleet read that fails costs the fleet, not the
+     * vitals — and never the sample; unreadable vitals must not silence the fleet (null numbers,
+     * real states); and only when both reads fail is the sample null.
+     */
+    const STATS = '{"CPUPerc":"93.00%","MemUsage":"544MiB / 7.754GiB","MemPerc":"7.02%"}';
+    const refused = new Error('daemon refused');
+    it.each<[string, string | Error, string | Error, unknown]>([
+        [
+            'keeps the vitals when the service read fails',
+            STATS,
+            refused,
+            { cpuPercent: 93, memUsedMb: 544, memPercent: 7.02 },
+        ],
+        [
+            'reports the service fleet even when the vitals read fails',
+            refused,
+            psLine({ name: 'db', image: 'postgres:16', state: 'running' }),
+            {
+                cpuPercent: null,
+                memUsedMb: null,
+                memPercent: null,
+                services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+            },
+        ],
+        ['answers null when the vitals sample cannot be taken', refused, refused, null],
+    ])('%s', async (_label, stats, ps, expected) => {
+        const answer = (value: string | Error) =>
+            value instanceof Error ? Promise.reject(value) : Promise.resolve({ stdout: value });
+        const exec = vitest.fn((args: string[]) => answer(args[0] === 'stats' ? stats : ps)) as unknown as (
+            args: string[]
+        ) => Promise<{ stdout: string }>;
         const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
 
-        await expect(runner.sampleRuntime(job)).resolves.toEqual({
-            cpuPercent: 93,
-            memUsedMb: 544,
-            memPercent: 7.02,
-        });
-    });
-
-    /** And the reverse: unreadable vitals must not silence the fleet — null numbers, real states. */
-    it('reports the service fleet even when the vitals read fails', async () => {
-        const exec = vitest.fn((args: string[]) =>
-            args[0] === 'stats'
-                ? Promise.reject(new Error('daemon refused'))
-                : Promise.resolve({ stdout: psLine({ name: 'db', image: 'postgres:16', state: 'running' }) })
-        ) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
-
-        await expect(runner.sampleRuntime(job)).resolves.toEqual({
-            cpuPercent: null,
-            memUsedMb: null,
-            memPercent: null,
-            services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
-        });
+        await expect(runner.sampleRuntime(job)).resolves.toEqual(expected);
     });
 
     /** Services off: the sample is exactly what it was before services were sampled. */
@@ -2374,15 +2360,6 @@ describe('the docker runner', () => {
 
         await expect(runner.deadServices(job)).resolves.toEqual([]);
         expect(exec).not.toHaveBeenCalled();
-    });
-
-    it('answers null when the vitals sample cannot be taken', async () => {
-        const exec = vitest.fn(() => Promise.reject(new Error('daemon refused'))) as unknown as (
-            args: string[]
-        ) => Promise<{ stdout: string }>;
-        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
-
-        await expect(runner.sampleRuntime(job)).resolves.toBeNull();
     });
 
     describe('parseDockerStats', () => {
@@ -3087,130 +3064,82 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(seen).toHaveLength(1);
     });
 
-    // A's close that lands LATE: A was killed — kill() tore A's own fleet down while it was
-    // still legitimately A's own — and the loop re-claimed the job as B before A's CLI client
-    // finally exited. The loop's release after A's verdict still runs its teardown, gate-free: the teardown is scoped to
-    // A's lease, so whatever it names is A's own, and B's live fleet is structurally
-    // unaddressable no matter how late the close lands.
-    it("scopes a killed attempt's late verdict teardown to its own lease when the replacement has stood its fleet up", async () => {
-        // Both children hold their close until released, so the interleaving — A still alive
-        // while B stands its fleet up, then A's close landing over it — is the test's to pace.
-        const closers: (() => void)[] = [];
-        const gatedSpawn = ((_command: string, _argv: string[]) => {
-            const c = new EventEmitter() as ChildProcess;
-            const stream = () => {
-                const s = new EventEmitter();
-                return s;
+    // A's close that lands LATE, over B's live fleet, two ways:
+    // - killed: A was killed — kill() tore A's own fleet down while it was still legitimately A's
+    //   own — and the loop re-claimed the job as B before A's CLI client finally exited (137).
+    // - natural close: NO kill anywhere — the lease expires server-side and the board re-claims
+    //   the job as B before any heartbeat delivers 'lost', so A's `killed` marker is never
+    //   recorded. B's fence removes A's leftovers, which closes A's CLI client (0). Not-killed is
+    //   not a free pass to skip the release — it runs unconditionally.
+    // Either way the loop's release after A's verdict still runs its teardown, gate-free: the
+    // teardown is scoped to A's lease, so whatever it names is A's own, and B's live fleet is
+    // structurally unaddressable no matter how late the close lands.
+    it.each([
+        ["a killed attempt's", true, 137],
+        ["a natural close's", false, 0],
+    ])(
+        'scopes %s late verdict teardown to its own lease when the replacement has stood its fleet up',
+        async (_label, killA, closeCode) => {
+            // Both children hold their close until released, so the interleaving — A still alive
+            // while B stands its fleet up, then A's close landing over it — is the test's to pace.
+            const closers: (() => void)[] = [];
+            const gatedSpawn = ((_command: string, _argv: string[]) => {
+                const c = new EventEmitter() as ChildProcess;
+                const stream = () => {
+                    const s = new EventEmitter();
+                    return s;
+                };
+                c.stdout = stream();
+                c.stderr = stream();
+                closers.push(() => process.nextTick(() => c.emit('close', closeCode)));
+                return c;
+            }) as unknown as typeof spawn;
+            const closeOf = async (index: number): Promise<() => void> => {
+                // Same macrotask yield as childAt above: the runner's env-file write is real fs on the
+                // way to each spawn, and a microtask-only wait would starve it.
+                while (closers.length <= index) await new Promise((r) => setImmediate(r));
+                return closers[index]!;
             };
-            c.stdout = stream();
-            c.stderr = stream();
-            closers.push(() => process.nextTick(() => c.emit('close', 137)));
-            return c;
-        }) as unknown as typeof spawn;
-        const closeOf = async (index: number): Promise<() => void> => {
-            // Same macrotask yield as childAt above: the runner's env-file write is real fs on the
-            // way to each spawn, and a microtask-only wait would starve it.
-            while (closers.length <= index) await new Promise((r) => setImmediate(r));
-            return closers[index]!;
-        };
 
-        const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
-            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
-            if (args[0] === 'ps') return { stdout: psAnswer(args) };
-            return { stdout: '' };
-        });
-        const runner = servicesRunner(exec, gatedSpawn);
+            const exec = vitest.fn(async (args: string[]) => {
+                if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
+                if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+                if (args[0] === 'ps') return { stdout: psAnswer(args) };
+                return { stdout: '' };
+            });
+            const runner = servicesRunner(exec, gatedSpawn);
 
-        const runA = runner.run(attemptA, { id: SESSION, resume: false });
-        const closeA = await closeOf(0); // A spawned; its CLI client is alive
-        // The loop loses A's lease and kills the attempt: A's own fleet torn down while it is
-        // still legitimately A's.
-        await runner.kill(attemptA);
-        // B re-claims the same job id and stands a fresh fleet up.
-        const runB = runner.run(attemptB, { id: SESSION, resume: false });
-        await closeOf(1); // B spawned; its network and service are live
-        const afterBCreation = exec.mock.calls.length;
+            const runA = runner.run(attemptA, { id: SESSION, resume: false });
+            const closeA = await closeOf(0); // A spawned; its CLI client is alive
+            // Killed: the loop loses A's lease and kills the attempt — A's own fleet torn down while
+            // it is still legitimately A's. Natural close: no kill in between; the heartbeat has not
+            // yet told the loop A's lease is gone, and B's fence removes A's leftovers by label.
+            if (killA) await runner.kill(attemptA);
+            // B re-claims the same job id and stands a fresh fleet up.
+            const runB = runner.run(attemptB, { id: SESSION, resume: false });
+            await closeOf(1); // B spawned; its network and service are live
+            const afterBCreation = exec.mock.calls.length;
 
-        // A's CLI client only now exits — daemon slowness makes the close arbitrarily late —
-        // and its verdict lands over B's live fleet; the loop releases A's services after it.
-        closeA();
-        await runA;
-        await runner.releaseServices(attemptA);
+            // A's CLI client only now exits — daemon slowness, or B's fence, makes the close
+            // arbitrarily late — and its verdict lands over B's live fleet; the loop releases A's
+            // services after it.
+            closeA();
+            await runA;
+            await runner.releaseServices(attemptA);
 
-        const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
-        // The teardown ran — and every call of it is A's: the ps filters carry A's lease, the
-        // removals carry A's id and A's network name, and nothing names B.
-        expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
-        expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
-        expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
-        expect(late.every((a) => !touchesB(a))).toBe(true);
+            const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
+            // The teardown ran — and every call of it is A's: the ps filters carry A's lease, the
+            // removals carry A's id and A's network name, and nothing names B.
+            expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
+            expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+            expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
+            expect(late.every((a) => !touchesB(a))).toBe(true);
 
-        // B is untouched and still finishes under its own verdict.
-        closers[1]!();
-        await expect(runB).resolves.toMatchObject({ exitCode: 137, started: true });
-    });
-
-    // The natural-close twin of the test above, with NO kill anywhere: the lease expires
-    // server-side and the board re-claims the job as B before any heartbeat delivers 'lost' —
-    // so the loop never kills A, and A's `killed` marker is never recorded. B's fence removes
-    // A's leftovers, which closes A's CLI client, and A's verdict then lands over B's live
-    // fleet. Not-killed is not a free pass to skip the release — it runs unconditionally —
-    // and it is safe unconditionally: scoped to A's lease, it can only ever name A's own.
-    it("scopes a natural close's late verdict teardown to its own lease when a replacement claim has stood its fleet up", async () => {
-        // Both children hold their close until released, so the interleaving — A still alive
-        // while B stands its fleet up, then A's close landing over it — is the test's to pace.
-        const closers: (() => void)[] = [];
-        const gatedSpawn = ((_command: string, _argv: string[]) => {
-            const c = new EventEmitter() as ChildProcess;
-            const stream = () => {
-                const s = new EventEmitter();
-                return s;
-            };
-            c.stdout = stream();
-            c.stderr = stream();
-            closers.push(() => process.nextTick(() => c.emit('close', 0)));
-            return c;
-        }) as unknown as typeof spawn;
-        const closeOf = async (index: number): Promise<() => void> => {
-            // Same macrotask yield as childAt above: the runner's env-file write is real fs on the
-            // way to each spawn, and a microtask-only wait would starve it.
-            while (closers.length <= index) await new Promise((r) => setImmediate(r));
-            return closers[index]!;
-        };
-
-        const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
-            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
-            if (args[0] === 'ps') return { stdout: psAnswer(args) };
-            return { stdout: '' };
-        });
-        const runner = servicesRunner(exec, gatedSpawn);
-
-        const runA = runner.run(attemptA, { id: SESSION, resume: false });
-        const closeA = await closeOf(0); // A spawned; its CLI client is alive — and never killed
-        // B re-claims the same job id with no kill in between: the heartbeat has not yet told
-        // the loop A's lease is gone. B's fence removes A's leftovers by label.
-        const runB = runner.run(attemptB, { id: SESSION, resume: false });
-        await closeOf(1); // B spawned; its network and service are live
-        const afterBCreation = exec.mock.calls.length;
-
-        // A's CLI client only now closes naturally — its container was fenced away by B — and
-        // the loop releases A's services after it.
-        closeA();
-        await runA;
-        await runner.releaseServices(attemptA);
-
-        const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
-        expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
-        expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
-        expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
-        expect(late.every((a) => !touchesB(a))).toBe(true);
-
-        // B is untouched and still finishes under its own verdict.
-        closers[1]!();
-        await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
-    });
+            // B is untouched and still finishes under its own verdict.
+            closers[1]!();
+            await expect(runB).resolves.toMatchObject({ exitCode: closeCode, started: true });
+        }
+    );
 
     // The late-kill twin of the two close tests above: the kill itself arrives AFTER the
     // replacement claimed the job and stood its fleet up — the heartbeat can be arbitrarily
@@ -4333,56 +4262,39 @@ describe('publishing the produced work', () => {
     // A fence that converts a failed `docker ps` into an empty answer reads "nothing left" —
     // and the sync would start while a previous attempt's runner is still writing the worktree.
     // The fence is infrastructure, not the command's verdict: it must throw, and the loop's
-    // try/catch around syncCheckout leaves the job to its lease.
-    it('fails the sync when the fence cannot list the job’s leftover containers', async () => {
-        const d = labelDaemon({
-            fail: (args) =>
-                args[0] === 'ps' ? 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock' : null,
-        });
+    // try/catch around syncCheckout leaves the job to its lease. The same holds for every verb
+    // of the fence, with the leftover the refused verb would have touched seeded.
+    it.each<[string, (args: string[]) => string | null, 'container' | 'network' | null]>([
+        [
+            'cannot list the job’s leftover containers',
+            (args) => (args[0] === 'ps' ? 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock' : null),
+            null,
+        ],
+        [
+            'cannot list the job’s stale networks',
+            (args) => (args[0] === 'network' && args[1] === 'ls' ? 'Cannot connect to the Docker daemon' : null),
+            null,
+        ],
+        [
+            'a leftover container refuses to be removed',
+            (args) => (args[0] === 'rm' ? 'Error: cannot remove container: device is busy' : null),
+            'container',
+        ],
+        [
+            'a leftover network refuses to be removed',
+            (args) => (args[0] === 'network' && args[1] === 'rm' ? 'Error: cannot remove network: in use' : null),
+            'network',
+        ],
+    ])('fails the sync when the fence %s', async (_label, fail, leftover) => {
+        const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
+        const d = labelDaemon({ fail });
+        const labels = { 'factory.job': job.id, 'factory.lease': OLD_TOKEN };
+        if (leftover === 'container') d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), labels);
+        if (leftover === 'network') d.networks.set(networkName({ ...job, leaseToken: OLD_TOKEN }), labels);
         const runner = dockerRunner(d.exec);
 
         await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
         // No sync container over an unfenced checkout: the throw precedes the run argv entirely.
-        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
-    });
-
-    it('fails the sync when the fence cannot list the job’s stale networks', async () => {
-        const d = labelDaemon({
-            fail: (args) => (args[0] === 'network' && args[1] === 'ls' ? 'Cannot connect to the Docker daemon' : null),
-        });
-        const runner = dockerRunner(d.exec);
-
-        await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
-        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
-    });
-
-    it('fails the sync when a leftover container refuses to be removed', async () => {
-        const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
-        const d = labelDaemon({
-            fail: (args) => (args[0] === 'rm' ? 'Error: cannot remove container: device is busy' : null),
-        });
-        d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), {
-            'factory.job': job.id,
-            'factory.lease': OLD_TOKEN,
-        });
-        const runner = dockerRunner(d.exec);
-
-        await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
-        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
-    });
-
-    it('fails the sync when a leftover network refuses to be removed', async () => {
-        const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
-        const d = labelDaemon({
-            fail: (args) => (args[0] === 'network' && args[1] === 'rm' ? 'Error: cannot remove network: in use' : null),
-        });
-        d.networks.set(networkName({ ...job, leaseToken: OLD_TOKEN }), {
-            'factory.job': job.id,
-            'factory.lease': OLD_TOKEN,
-        });
-        const runner = dockerRunner(d.exec);
-
-        await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
         expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
     });
 

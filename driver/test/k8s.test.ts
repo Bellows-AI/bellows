@@ -672,71 +672,127 @@ describe('the runner job spec', () => {
     });
 });
 
+/*
+ * Every pod the driver specs, by name: the runner, the ten aux builders (all through
+ * `auxJobSpec`) and a declared service's bare Pod. Each entry is a thunk, built inside the it
+ * bodies — the file's `namespace` is declared below, and nothing here may build eagerly. A
+ * builder that bypassed `auxJobSpec` altogether would need its own entry here, and the
+ * admission policy is the backstop that refuses it at the apiserver either way.
+ */
+const POD_NAMES = [
+    'the runner',
+    'the gate',
+    'the bellows readout',
+    'the opencode session readout',
+    'the claude turns readout',
+    'the claude transcript export',
+    'the opencode transcript export',
+    'the sync',
+    'the reclaim',
+    'the publish step',
+    'the helper',
+    'the service pod',
+] as const;
+type PodName = (typeof POD_NAMES)[number];
+/** Every Job-backed pod — all of them but the declared service's bare Pod. */
+const JOB_POD_NAMES = POD_NAMES.filter((name) => name !== 'the service pod');
+
+type JobSpecOf = ReturnType<typeof runnerJobSpec> | ReturnType<typeof syncJobSpec>;
+type ServicePodOf = ReturnType<typeof servicePodSpec>;
+interface PodView {
+    /** The Job object — absent on the service's bare Pod. */
+    job?: JobSpecOf;
+    /** The POD's metadata: the Job's pod template, or the bare Pod's own. */
+    meta: JobSpecOf['spec']['template']['metadata'] | ServicePodOf['metadata'];
+    /** The pod spec, read only through the fields every pod shares. */
+    pod: {
+        restartPolicy: string;
+        automountServiceAccountToken: boolean;
+        securityContext?: { seccompProfile?: { type: string } };
+        imagePullSecrets?: { name: string }[];
+        nodeSelector?: unknown;
+        tolerations?: unknown;
+        affinity?: unknown;
+        containers: {
+            resources?: unknown;
+            securityContext?: {
+                capabilities?: { drop?: string[] };
+                allowPrivilegeEscalation?: boolean;
+                readOnlyRootFilesystem?: boolean;
+            };
+            volumeMounts?: { name: string; subPath?: string }[];
+        }[];
+    };
+}
+const jobView = (spec: JobSpecOf): PodView => ({
+    job: spec,
+    meta: spec.spec.template.metadata,
+    pod: spec.spec.template.spec,
+});
+
+/** The gate builder's input, the one argument object every gate spec here starts from. */
+const gateArgs = (over: Partial<Parameters<typeof gateJobSpec>[2]> = {}): Parameters<typeof gateJobSpec>[2] => ({
+    key: `bellows/${USER}/.worktrees/${job.id}`,
+    image: 'node:24',
+    gateName: 't',
+    command: 'npm test',
+    run: 1,
+    envSecretName: null,
+    gateTimeoutMs: 30_000,
+    ...over,
+});
+
+const everyPodSpec = (env: NodeJS.ProcessEnv = {}, of: BoardJob = job): Record<PodName, () => PodView> => {
+    const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, ...env });
+    const repoJob: BoardJob = { ...of, repo: 'Bellows-AI/factory' };
+    const startedAt = '2026-09-01T00:00:00Z';
+    return {
+        'the runner': () => jobView(runnerJobSpec(config, of, { id: SESSION, resume: false })),
+        'the gate': () => jobView(gateJobSpec(config, of, gateArgs())),
+        'the bellows readout': () => jobView(bellowsJobSpec(config, of)),
+        'the opencode session readout': () => jobView(opencodeReadoutJobSpec(config, of, startedAt)),
+        'the claude turns readout': () => jobView(claudeTurnsJobSpec(config, of, SESSION, startedAt)),
+        'the claude transcript export': () => jobView(claudeTranscriptJobSpec(config, of, SESSION, startedAt)),
+        'the opencode transcript export': () => jobView(opencodeTranscriptJobSpec(config, of, startedAt)),
+        'the sync': () => jobView(syncJobSpec(config, repoJob, null)),
+        'the reclaim': () => jobView(reclaimJobSpec(config, repoJob)),
+        'the publish step': () =>
+            jobView(
+                publishStepJobSpec(config, repoJob, {
+                    step: 1,
+                    publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
+                    envSecret: null,
+                    repo: '/wt',
+                })
+            ),
+        'the helper': () =>
+            jobView(
+                helperJobSpec(config, of, {
+                    plan: { helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false },
+                    descriptor: lookupHelper('noop')!,
+                    envSecret: null,
+                    nonce: '77777777-7777-4777-8777-777777777777',
+                })
+            ),
+        'the service pod': () => {
+            const pod = servicePodSpec(config, of, { name: 'cache', image: 'redis', environment: [] }, 'svc-uid');
+            return { meta: pod.metadata, pod: pod.spec };
+        },
+    };
+};
+
 describe('resources on every pod the driver specs', () => {
     // Issue #360: the autoscaler sizes the whole runner fleet, not just the runner pod — an
     // unschedulable sync or gate on a right-sized node strands the run. One config, every
-    // builder: the requests render on each container from the same four variables. Built in the
-    // it bodies, not here — the file's `namespace` is declared below, and describe bodies of
-    // this suite build nothing eagerly.
+    // builder: the requests render on each container from the same four variables. The one Pod
+    // (not Job) in the fleet, a declared service under the attempt's headless Service, is sized
+    // like everything else, or it lands wherever a pod slot is free.
     const REQUESTS = { requests: { cpu: '500m', memory: '1Gi' } };
     const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-    const specs = () => {
-        const config = loadDriverConfig({
-            EXECUTOR: 'kubernetes',
-            K8S_NAMESPACE: namespace,
-            RUNNER_CPU_REQUEST: '500m',
-            RUNNER_MEMORY_REQUEST: '1Gi',
-        });
-        return [
-            runnerJobSpec(config, job, { id: SESSION, resume: false }),
-            gateJobSpec(config, job, {
-                key: `bellows/${USER}/.worktrees/${job.id}`,
-                image: 'node:24',
-                gateName: 't',
-                command: 'npm test',
-                run: 1,
-                envSecretName: null,
-                gateTimeoutMs: 30_000,
-            }),
-            bellowsJobSpec(config, job),
-            opencodeReadoutJobSpec(config, job, '2026-09-01T00:00:00Z'),
-            claudeTurnsJobSpec(config, job, SESSION, '2026-09-01T00:00:00Z'),
-            claudeTranscriptJobSpec(config, job, SESSION, '2026-09-01T00:00:00Z'),
-            opencodeTranscriptJobSpec(config, job, '2026-09-01T00:00:00Z'),
-            syncJobSpec(config, repoJob, null),
-            reclaimJobSpec(config, repoJob),
-            publishStepJobSpec(config, repoJob, {
-                step: 1,
-                publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
-                envSecret: null,
-                repo: '/wt',
-            }),
-            helperJobSpec(config, job, {
-                plan: { helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false },
-                descriptor: lookupHelper('noop')!,
-                envSecret: null,
-                nonce: '77777777-7777-4777-8777-777777777777',
-            }),
-        ];
-    };
 
-    it('carries the same requests on every aux Job and service pod', () => {
-        for (const s of specs()) {
-            expect(s.spec.template.spec.containers[0].resources, s.metadata.name).toEqual(REQUESTS);
-        }
-        // The one Pod (not Job) in the fleet: a declared service, under the attempt's headless
-        // Service — sized like everything else, or it lands wherever a pod slot is free.
-        const pod = servicePodSpec(
-            loadDriverConfig({
-                EXECUTOR: 'kubernetes',
-                K8S_NAMESPACE: namespace,
-                RUNNER_CPU_REQUEST: '500m',
-                RUNNER_MEMORY_REQUEST: '1Gi',
-            }),
-            job,
-            { name: 'cache', image: 'redis', environment: [] }
-        );
-        expect(pod.spec.containers[0].resources).toEqual(REQUESTS);
+    it.each(POD_NAMES)('carries the same requests on %s', (name) => {
+        const { pod } = everyPodSpec({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' })[name]();
+        expect(pod.containers[0]!.resources).toEqual(REQUESTS);
     });
 
     // Issue #507: a gate runs the whole suite, so it is sized by GATE_* — every other aux Job
@@ -751,15 +807,7 @@ describe('resources on every pod the driver specs', () => {
             GATE_CPU_REQUEST: '2',
             GATE_MEMORY_REQUEST: '2Gi',
         });
-        const gate = gateJobSpec(config, job, {
-            key: `bellows/${USER}/.worktrees/${job.id}`,
-            image: 'node:24',
-            gateName: 't',
-            command: 'npm test',
-            run: 1,
-            envSecretName: null,
-            gateTimeoutMs: 30_000,
-        });
+        const gate = gateJobSpec(config, job, gateArgs());
         expect(gate.spec.template.spec.containers[0].resources).toEqual({
             requests: { cpu: '2', memory: '2Gi' },
             limits: { cpu: '4' },
@@ -770,12 +818,25 @@ describe('resources on every pod the driver specs', () => {
         });
     });
 
-    it('carries no resources on any of them when none are configured', () => {
-        const plain = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
-        expect(syncJobSpec(plain, repoJob, null).spec.template.spec.containers[0].resources).toBeUndefined();
-        expect(
-            servicePodSpec(plain, job, { name: 'cache', image: 'redis', environment: [] }).spec.containers[0].resources
-        ).toBeUndefined();
+    it.each(POD_NAMES)('carries no resources on %s when none are configured', (name) => {
+        expect(everyPodSpec()[name]().pod.containers[0]!.resources).toBeUndefined();
+    });
+});
+
+// Every pod runs once and never talks to the apiserver: no restart, no service-account token.
+// Every Job-backed pod is bounded by a deadline of its own, never retried, and reaped once done.
+describe('the lifecycle of every pod the driver specs', () => {
+    it.each(POD_NAMES)('runs %s once, without a service-account token', (name) => {
+        const { pod } = everyPodSpec()[name]();
+        expect(pod.restartPolicy).toBe('Never');
+        expect(pod.automountServiceAccountToken).toBe(false);
+    });
+
+    it.each(JOB_POD_NAMES)('bounds %s with a deadline of its own, never retries it and reaps its pod', (name) => {
+        const { job: jobObject } = everyPodSpec()[name]();
+        expect(jobObject?.spec.activeDeadlineSeconds).toBeGreaterThan(0);
+        expect(jobObject?.spec.backoffLimit).toBe(0);
+        expect(jobObject?.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
     });
 });
 
@@ -785,105 +846,49 @@ describe('resources on every pod the driver specs', () => {
  * stands between that code and the node, and it is unconditional: there is no config knob, because
  * an operator who can turn it off is an operator who will find it off after an incident.
  *
- * What actually protects a NEW aux Job is not the list below — which is hand-written and can fall
+ * What actually protects a NEW aux Job is not the list above — which is hand-written and can fall
  * behind — but the single spread inside `auxJobSpec`, which every aux builder goes through. This
- * suite pins that the spread exists and reaches all ten of today's aux builders (the eleventh
- * entry is `runnerJobSpec`, which has its own spread and never goes through it); a builder that
- * bypassed `auxJobSpec` altogether would need its own line here, and the admission policy is the
- * backstop that refuses it at the apiserver either way.
+ * suite pins that the spread exists and reaches all ten of today's aux builders (`runnerJobSpec`
+ * has its own spread and never goes through it), and the declared service pod besides.
  */
 describe('the pod hardening on every pod the driver specs (#382)', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-    const hardened = () => {
-        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
-        return [
-            runnerJobSpec(config, job, { id: SESSION, resume: false }),
-            gateJobSpec(config, job, {
-                key: `bellows/${USER}/.worktrees/${job.id}`,
-                image: 'node:24',
-                gateName: 't',
-                command: 'npm test',
-                run: 1,
-                envSecretName: null,
-                gateTimeoutMs: 30_000,
-            }),
-            bellowsJobSpec(config, job),
-            opencodeReadoutJobSpec(config, job, '2026-09-01T00:00:00Z'),
-            claudeTurnsJobSpec(config, job, SESSION, '2026-09-01T00:00:00Z'),
-            claudeTranscriptJobSpec(config, job, SESSION, '2026-09-01T00:00:00Z'),
-            opencodeTranscriptJobSpec(config, job, '2026-09-01T00:00:00Z'),
-            syncJobSpec(config, repoJob, null),
-            reclaimJobSpec(config, repoJob),
-            publishStepJobSpec(config, repoJob, {
-                step: 1,
-                publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
-                envSecret: null,
-                repo: '/wt',
-            }),
-            helperJobSpec(config, job, {
-                plan: { helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false },
-                descriptor: lookupHelper('noop')!,
-                envSecret: null,
-                nonce: '77777777-7777-4777-8777-777777777777',
-            }),
-        ];
-    };
-
     // A capability is a slice of root the kernel hands a process without asking anyone. An agent
     // run needs none of them: it reads, writes and compiles inside its own worktree. Dropping ALL
     // is what makes `CAP_NET_RAW` (ARP spoofing a neighbour pod) and `CAP_DAC_OVERRIDE` (reading
     // past the file modes on the shared claim) unavailable rather than merely unused.
-    it('drops every capability on every aux Job and the runner', () => {
-        for (const s of hardened()) {
-            const container = s.spec.template.spec.containers[0]!;
-            expect(container.securityContext?.capabilities?.drop, s.metadata.name).toEqual(['ALL']);
-        }
+    it.each(POD_NAMES)('drops every capability on %s', (name) => {
+        expect(everyPodSpec()[name]().pod.containers[0]!.securityContext?.capabilities?.drop).toEqual(['ALL']);
     });
 
     // Without this a setuid binary inside the image re-acquires what the drop above removed, and
     // the drop becomes decoration. The two are one control; they are asserted separately because
     // a regression reaches for one at a time.
-    it('refuses privilege escalation on every aux Job and the runner', () => {
-        for (const s of hardened()) {
-            const container = s.spec.template.spec.containers[0]!;
-            expect(container.securityContext?.allowPrivilegeEscalation, s.metadata.name).toBe(false);
-        }
+    it.each(POD_NAMES)('refuses privilege escalation on %s', (name) => {
+        expect(everyPodSpec()[name]().pod.containers[0]!.securityContext?.allowPrivilegeEscalation).toBe(false);
     });
 
     // Pod level, not container level: seccomp is a property of the whole pod's containers, and
     // naming it once is what keeps a future sidecar from being born unfiltered. RuntimeDefault is
     // the runtime's own profile — it blocks the syscalls a container has no business making
     // (keyctl, the kernel module calls) without the per-image tuning a Localhost profile needs.
-    it('runs every pod under the runtime default seccomp profile', () => {
-        for (const s of hardened()) {
-            expect(s.spec.template.spec.securityContext?.seccompProfile, s.metadata.name).toEqual({
-                type: 'RuntimeDefault',
-            });
-        }
+    it.each(POD_NAMES)('runs %s under the runtime default seccomp profile', (name) => {
+        expect(everyPodSpec()[name]().pod.securityContext?.seccompProfile).toEqual({ type: 'RuntimeDefault' });
     });
 
     // The deliberate absence, pinned so a future tightening reads the reason before it lands: an
     // agent run writes its caches, its HOME and its git worktree, and a read-only root filesystem
     // fails it on the first npm install. The workspace is the writable surface by design; see
     // docs/security.md, "What the hardening does not do".
-    it('sets no readOnlyRootFilesystem, which an agent run needs', () => {
-        for (const s of hardened()) {
-            const container = s.spec.template.spec.containers[0]!;
-            expect(container.securityContext?.readOnlyRootFilesystem, s.metadata.name).toBeUndefined();
-        }
+    it.each(POD_NAMES)('sets no readOnlyRootFilesystem on %s, which an agent run needs', (name) => {
+        expect(everyPodSpec()[name]().pod.containers[0]!.securityContext?.readOnlyRootFilesystem).toBeUndefined();
     });
 
     // A declared service is the one pod in the fleet whose image the driver did not build: a
     // repository author names it in `.bellows.yaml` and the cluster pulls it. It is hardened like
-    // everything else — "every execution path" is the whole point of the issue — and the escape
-    // hatch below is a declaration, not a default.
+    // everything else (the rows above) — "every execution path" is the whole point of the issue —
+    // and the escape hatch below is a declaration, not a default.
     it('hardens a declared service pod like every other pod', () => {
-        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
-        const pod = servicePodSpec(config, job, { name: 'cache', image: 'redis', environment: [] }, 'svc-uid');
-        expect(pod.spec.securityContext?.seccompProfile).toEqual({ type: 'RuntimeDefault' });
-        expect(pod.spec.containers[0]!.securityContext?.capabilities?.drop).toEqual(['ALL']);
-        expect(pod.spec.containers[0]!.securityContext?.allowPrivilegeEscalation).toBe(false);
-        expect(pod.metadata.labels['factory.unhardened']).toBeUndefined();
+        expect(everyPodSpec()['the service pod']().meta.labels['factory.unhardened']).toBeUndefined();
     });
 
     // The opt-out, and exactly how far it goes. `unhardened: true` restores THE IMAGE'S DEFAULT
@@ -941,15 +946,7 @@ describe('the pod hardening on every pod the driver specs (#382)', () => {
     // visible symptom.
     it('keeps the gate uid:gid beside the seccomp profile', () => {
         const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
-        const gate = gateJobSpec(config, job, {
-            key: `bellows/${USER}/.worktrees/${job.id}`,
-            image: 'node:24',
-            gateName: 't',
-            command: 'npm test',
-            run: 1,
-            envSecretName: null,
-            gateTimeoutMs: 30_000,
-        });
+        const gate = gateJobSpec(config, job, gateArgs());
         expect(gate.spec.template.spec.securityContext).toEqual({
             runAsUser: 1000,
             runAsGroup: 1000,
@@ -1338,9 +1335,6 @@ describe('the worktree sync', () => {
             name: 'workspaces',
             persistentVolumeClaim: { claimName: 'factory-ai_workspaces' },
         });
-        expect(s.spec.template.spec.automountServiceAccountToken).toBe(false);
-        expect(s.spec.backoffLimit).toBe(0);
-        expect(s.spec.template.spec.restartPolicy).toBe('Never');
     });
 
     it('carries the claim env by reference, and a literal value only for the three paths', () => {
@@ -1552,137 +1546,91 @@ describe('the worktree sync', () => {
         expect(result.reason).toContain('Job.batch is invalid');
     });
 
-    it('answers ok:false when the log answers nothing parseable', async () => {
-        const { request } = fakeRequest({ log: { status: 404, body: 'gone' } });
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: the log of ${podName} answered 404: gone`,
-        });
-    });
-
     /*
      * Issue #344: every empty-log cause used to collapse into the bare "answered nothing
      * readable", and the sync Job — reaped by ttlSecondsAfterFinished — took its pod, events and
      * logs with it before anyone looked. Each cause now names itself in the reason the job's
      * output carries.
      */
-    it('names an empty pod list when the sync log has no pod to read', async () => {
-        const { request } = fakeRequest({ pods: { status: 200, body: '{"items":[]}' } });
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: no live pod for ${syncJobName(repoJob)} (none listed)`,
-        });
-    });
-
-    it('names all-terminating pods when the sync has no live pod', async () => {
-        const { request } = fakeRequest({
-            pods: {
-                status: 200,
-                body: JSON.stringify({
-                    items: [
-                        { metadata: { name: 'sync-pod-a', deletionTimestamp: '2026-09-29T00:00:00Z' } },
-                        { metadata: { name: 'sync-pod-b', deletionTimestamp: '2026-09-29T00:00:01Z' } },
-                    ],
-                }),
-            },
-        });
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: no live pod for ${syncJobName(repoJob)} (2 listed, all terminating)`,
-        });
-    });
-
-    it('names the pod list refusal when the pod list answers an error status', async () => {
-        const { request } = fakeRequest({ pods: { status: 500, body: 'nope' } });
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: the pod list of ${syncJobName(repoJob)} answered 500: nope`,
-        });
-    });
-
-    it('names the transport failure when the sync pod list GET throws', async () => {
-        const { request: base } = fakeRequest();
-        const request: K8sRequest = (method, path, body) => {
-            if (path?.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
-                return Promise.reject(new Error('connection reset'));
-            }
-            return base(method, path, body);
+    const rejecting =
+        (when: (path: string) => boolean, message: string): (() => K8sRequest) =>
+        () => {
+            const { request: base } = fakeRequest();
+            return (method, path, body) => (when(path) ? Promise.reject(new Error(message)) : base(method, path, body));
         };
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: the pod list of ${syncJobName(repoJob)} could not be read: connection reset`,
-        });
-    });
-
-    it('names the transport failure when the sync log GET throws', async () => {
-        const { request: base } = fakeRequest();
-        const request: K8sRequest = (method, path, body) => {
-            if (path?.includes('/log')) {
-                return Promise.reject(new Error('socket hung up'));
-            }
-            return base(method, path, body);
-        };
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: the log of ${podName} could not be read: socket hung up`,
-        });
-    });
-
-    it('names the live pod when it carries no name to read a log from', async () => {
-        const { request } = fakeRequest({
-            pods: {
-                status: 200,
-                body: JSON.stringify({ items: [{ metadata: {}, status: {} }] }),
-            },
-        });
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: the live pod of ${syncJobName(repoJob)} has no name`,
-        });
-    });
-
-    it('names the last log line when the sync prints non-JSON', async () => {
-        const { request } = fakeRequest({
-            log: { status: 200, body: 'fetching origin\nfatal: could not read from remote repository\n' },
-        });
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: 'the worktree sync answered nothing readable: last log line "fatal: could not read from remote repository"',
-        });
-    });
-
-    it('names the pod and its phase when the sync container printed nothing', async () => {
-        const { request } = fakeRequest({
-            log: { status: 200, body: '' },
-            pods: {
-                status: 200,
-                body: JSON.stringify({
-                    items: [{ metadata: { name: podName }, status: { phase: 'Succeeded' } }],
-                }),
-            },
-        });
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: `the worktree sync answered nothing readable: the container printed nothing (pod ${podName}, phase Succeeded)`,
-        });
-    });
-
-    it('names the kubelet’s reason when the sync container never started', async () => {
-        const { request } = fakeRequest(NEVER_STARTED);
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: 'the worktree sync container failed: StartError: exec: "node": executable file not found in $PATH',
-        });
+    const answering = (overrides: Record<string, unknown>) => () => fakeRequest(overrides).request;
+    const unreadable = 'the worktree sync answered nothing readable:';
+    it.each<[string, () => K8sRequest, string]>([
+        [
+            'answers ok:false when the log answers nothing parseable',
+            answering({ log: { status: 404, body: 'gone' } }),
+            `${unreadable} the log of ${podName} answered 404: gone`,
+        ],
+        [
+            'names an empty pod list when the sync log has no pod to read',
+            answering({ pods: { status: 200, body: '{"items":[]}' } }),
+            `${unreadable} no live pod for ${syncJobName(repoJob)} (none listed)`,
+        ],
+        [
+            'names all-terminating pods when the sync has no live pod',
+            answering({
+                pods: {
+                    status: 200,
+                    body: JSON.stringify({
+                        items: [
+                            { metadata: { name: 'sync-pod-a', deletionTimestamp: '2026-09-29T00:00:00Z' } },
+                            { metadata: { name: 'sync-pod-b', deletionTimestamp: '2026-09-29T00:00:01Z' } },
+                        ],
+                    }),
+                },
+            }),
+            `${unreadable} no live pod for ${syncJobName(repoJob)} (2 listed, all terminating)`,
+        ],
+        [
+            'names the pod list refusal when the pod list answers an error status',
+            answering({ pods: { status: 500, body: 'nope' } }),
+            `${unreadable} the pod list of ${syncJobName(repoJob)} answered 500: nope`,
+        ],
+        [
+            'names the transport failure when the sync pod list GET throws',
+            rejecting((path) => path.startsWith(`/api/v1/namespaces/${namespace}/pods?`), 'connection reset'),
+            `${unreadable} the pod list of ${syncJobName(repoJob)} could not be read: connection reset`,
+        ],
+        [
+            'names the transport failure when the sync log GET throws',
+            rejecting((path) => path.includes('/log'), 'socket hung up'),
+            `${unreadable} the log of ${podName} could not be read: socket hung up`,
+        ],
+        [
+            'names the live pod when it carries no name to read a log from',
+            answering({ pods: { status: 200, body: JSON.stringify({ items: [{ metadata: {}, status: {} }] }) } }),
+            `${unreadable} the live pod of ${syncJobName(repoJob)} has no name`,
+        ],
+        [
+            'names the last log line when the sync prints non-JSON',
+            answering({
+                log: { status: 200, body: 'fetching origin\nfatal: could not read from remote repository\n' },
+            }),
+            `${unreadable} last log line "fatal: could not read from remote repository"`,
+        ],
+        [
+            'names the pod and its phase when the sync container printed nothing',
+            answering({
+                log: { status: 200, body: '' },
+                pods: {
+                    status: 200,
+                    body: JSON.stringify({ items: [{ metadata: { name: podName }, status: { phase: 'Succeeded' } }] }),
+                },
+            }),
+            `${unreadable} the container printed nothing (pod ${podName}, phase Succeeded)`,
+        ],
+        [
+            'names the kubelet’s reason when the sync container never started',
+            answering(NEVER_STARTED),
+            'the worktree sync container failed: StartError: exec: "node": executable file not found in $PATH',
+        ],
+    ])('%s', async (_name, request, reason) => {
+        expect(await runner(request()).syncCheckout(repoJob)).toEqual({ ok: false, reason });
     });
 
     /*
@@ -1798,17 +1746,16 @@ describe('the worktree sync', () => {
 
     /*
      * The other side of the latch: a container that is running HAS answered the image question,
-     * so the watch stops reading the pod list instead of asking on every round.
+     * so the watch stops reading the pod list instead of asking on every round. The terminated
+     * arm settles the watch the same way a running one does.
      */
-    it('stops reading the pod list for the image question once the container is running', async () => {
+    it.each([
+        ['is running', { running: { startedAt: '2026-09-27T00:00:00Z' } }],
+        ['has terminated', { terminated: { exitCode: 0 } }],
+    ])('stops reading the pod list for the image question once the container %s', async (_state, state) => {
         const { request: base } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
-        const runningPod = JSON.stringify({
-            items: [
-                {
-                    metadata: { name: podName },
-                    status: { containerStatuses: [{ state: { running: { startedAt: '2026-09-27T00:00:00Z' } } }] },
-                },
-            ],
+        const settledPod = JSON.stringify({
+            items: [{ metadata: { name: podName }, status: { containerStatuses: [{ state }] } }],
         });
         let polls = 0;
         let podReads = 0;
@@ -1821,44 +1768,13 @@ describe('the worktree sync', () => {
             }
             if (method === 'GET' && path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
                 podReads += 1;
-                return { status: 200, body: runningPod };
+                return { status: 200, body: settledPod };
             }
             return base(method, path, body);
         };
         const result = await runner(request).syncCheckout(repoJob);
         expect(result).toEqual({ ok: true, reason: null });
         // One watch read settles it; the only later pod read is the verdict's own.
-        expect(podReads).toBe(2);
-    });
-
-    /* The terminated arm settles the watch the same way a running one does. */
-    it('stops reading the pod list for the image question once the container has terminated', async () => {
-        const { request: base } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
-        const terminatedPod = JSON.stringify({
-            items: [
-                {
-                    metadata: { name: podName },
-                    status: { containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
-                },
-            ],
-        });
-        let polls = 0;
-        let podReads = 0;
-        const request: K8sRequest = async (method, path, body) => {
-            if (method === 'GET' && path === jobPath(namespace, syncJobName(repoJob))) {
-                polls += 1;
-                return polls <= 3
-                    ? { status: 200, body: '{"status":{}}' }
-                    : { status: 200, body: JSON.stringify({ status: { succeeded: 1 } }) };
-            }
-            if (method === 'GET' && path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
-                podReads += 1;
-                return { status: 200, body: terminatedPod };
-            }
-            return base(method, path, body);
-        };
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({ ok: true, reason: null });
         expect(podReads).toBe(2);
     });
 
@@ -2192,8 +2108,6 @@ describe('the worktree reclaim', () => {
         expect(container.volumeMounts).toEqual([
             { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
-        expect(s.spec.backoffLimit).toBe(0);
-        expect(s.spec.template.spec.restartPolicy).toBe('Never');
     });
 
     it('refuses to build a reclaim for a worktree path it cannot assert', () => {
@@ -2556,10 +2470,6 @@ describe('publishing the produced work', () => {
         expect(container.volumeMounts).toEqual([
             { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
-        expect(spec.spec.template.spec.automountServiceAccountToken).toBe(false);
-        expect(spec.spec.backoffLimit).toBe(0);
-        expect(spec.spec.template.spec.restartPolicy).toBe('Never');
-        expect(spec.spec.activeDeadlineSeconds).toBeGreaterThan(0);
         // The pin that must survive: no credential VALUE anywhere in the spec — the helper is
         // CODE (the same class as the sync's CRED_HELPER literal), the token rides the Secret.
         expect(JSON.stringify(spec)).not.toContain('t0k-3n');
@@ -4530,11 +4440,84 @@ describe('the kubernetes runner', () => {
     });
 
     /*
-     * No runner stays on a checkout its driver cannot verify: when the post-create verify spends
-     * its whole patience without an answer, the loser best-effort deletes its OWN Job and burns
-     * the attempt — the alternative to two writers on one checkout, the fence's own rule.
+     * The post-create verify matrix. No runner stays on a checkout its driver cannot verify: when
+     * the post-create verify spends its whole patience without an answer — or answers but cannot
+     * name a holder, neither provably ours nor a definitive loss — the loser best-effort deletes
+     * its OWN Job (Foreground) and burns the attempt, the fence's own rule.
+     *
+     * The failed-delete rule: a stand-down whose own-Job DELETE answers neither 2xx nor 404 leaves
+     * the Job's fate to the kubelet's deadline — and this attempt's runner may still be on the
+     * checkout when a replacement claimant arrives. So the claim is NOT released: the next
+     * claimant's stale-holder takeover (uid-preconditioned release, then a sweep of every
+     * `factory.job=<id>` Job) is the documented route that reclaims both. A 404 is a SUCCESS (the
+     * Job is already gone) and a 2xx the ordinary success: both release the claim,
+     * uid-preconditioned as ever.
      */
-    it('removes its own Job when the post-create claim verify exhausts its patience', async () => {
+    const ours = {
+        status: 200,
+        body: JSON.stringify({ metadata: { uid: 'claim-uid-1' }, data: { holder: job.leaseToken, claimSeq: '1' } }),
+    };
+    const noHolder = { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-x' } }) };
+    // Read 1 is the pre-create verify (ours); reads 2 through POLL_MAX_CONSECUTIVE_FAILURES + 2 are
+    // the post-create verify; anything after would be the release's read.
+    const spent = (read: number): boolean => read > 2 + POLL_MAX_CONSECUTIVE_FAILURES;
+    const verifyCases: {
+        name: string;
+        claimRead: (read: number) => { status: number; body: string };
+        deleteStatus: number;
+        error: RegExp;
+        claim: 'held' | 'released';
+    }[] = [
+        {
+            name: 'removes its own Job when the post-create claim verify exhausts its patience',
+            // Every post-create read answers 503, the release's read too.
+            claimRead: (read) => (read === 1 ? ours : { status: 503, body: 'unavailable' }),
+            deleteStatus: 200,
+            error: /in a row|unavailable|checkout claim/i,
+            claim: 'held',
+        },
+        {
+            name: 'removes its own Job when the post-create claim verify cannot name a holder',
+            // Every later read answers 200 with a body that carries no holder at all.
+            claimRead: (read) => (read === 1 ? ours : noHolder),
+            deleteStatus: 200,
+            error: /could not be confirmed/,
+            claim: 'held',
+        },
+        {
+            name: 'holds the claim when the post-create verify exhausts its patience and the own-Job delete fails',
+            claimRead: (read) => (read === 1 || spent(read) ? ours : { status: 500, body: 'unavailable' }),
+            deleteStatus: 500,
+            error: /in a row/,
+            claim: 'held',
+        },
+        {
+            name: 'releases the claim when the own-Job delete answers 404 — already gone is a success',
+            claimRead: (read) => (read === 1 || spent(read) ? ours : { status: 500, body: 'unavailable' }),
+            deleteStatus: 404,
+            error: /in a row/,
+            claim: 'released',
+        },
+        {
+            name: 'releases the claim when the own-Job delete succeeds after an exhausted post-create verify',
+            claimRead: (read) => (read === 1 || spent(read) ? ours : { status: 500, body: 'unavailable' }),
+            deleteStatus: 200,
+            error: /in a row/,
+            claim: 'released',
+        },
+        {
+            // Uniformity: the unverifiable branch holds the claim on a failed delete exactly like
+            // the exhausted-patience branch — and here the release read WOULD answer ours, so the
+            // hold is the only thing standing between the claim and its release.
+            name: 'holds the claim when the verify cannot name a holder and the own-Job delete fails',
+            claimRead: (read) => (read === 2 ? noHolder : ours),
+            deleteStatus: 500,
+            error: /could not be confirmed/,
+            claim: 'held',
+        },
+    ];
+    it.each(verifyCases.map((row) => [row.name, row] as const))('%s', async (_name, row) => {
+        const { claimRead, deleteStatus, error, claim } = row;
         const claimPath = claimPathFor(job.id);
         let reads = 0;
         const { request, calls } = routed((method, path) => {
@@ -4544,204 +4527,30 @@ describe('the kubernetes runner', () => {
             if (path === claimPath) {
                 if (method === 'GET') {
                     reads += 1;
-                    // The pre-create verify reads ours; every later read — the post-create
-                    // verify's — answers 503 until the patience is spent.
-                    return Promise.resolve(
-                        reads === 1
-                            ? {
-                                  status: 200,
-                                  body: JSON.stringify({
-                                      metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, claimSeq: '1' },
-                                  }),
-                              }
-                            : { status: 503, body: 'unavailable' }
-                    );
+                    return Promise.resolve(claimRead(reads));
                 }
                 return { status: 200, body: '{}' };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return { status: 200, body: '{}' };
+                return { status: deleteStatus, body: deleteStatus === 404 ? '{"kind":"Status"}' : '{}' };
             }
         });
 
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /in a row|unavailable|checkout claim/i
-        );
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(error);
         // The delete names only this attempt's own Job, Foreground — best-effort.
         expect(calls).toContainEqual({
             method: 'DELETE',
             path: `${jobPath(namespace, runnerJobName(job))}?propagationPolicy=Foreground`,
         });
-    });
-
-    // Same doctrine, other evidence: a post-create verify that DOES answer but cannot name a
-    // holder is neither provably ours nor a definitive loss — and still no runner stays behind.
-    it('removes its own Job when the post-create claim verify cannot name a holder', async () => {
-        const claimPath = claimPathFor(job.id);
-        let reads = 0;
-        const { request, calls } = routed((method, path) => {
-            if (method === 'POST' && path === configmapsPath) {
-                return { status: 201, body: '{}' };
-            }
-            if (path === claimPath) {
-                if (method === 'GET') {
-                    reads += 1;
-                    // The pre-create verify reads ours; every later read answers 200 with a
-                    // body that carries no holder at all.
-                    return Promise.resolve(
-                        reads === 1
-                            ? {
-                                  status: 200,
-                                  body: JSON.stringify({
-                                      metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, claimSeq: '1' },
-                                  }),
-                              }
-                            : { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-x' } }) }
-                    );
-                }
-                return { status: 200, body: '{}' };
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return { status: 200, body: '{}' };
-            }
-        });
-
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /could not be confirmed/
-        );
-        expect(calls).toContainEqual({
-            method: 'DELETE',
-            path: `${jobPath(namespace, runnerJobName(job))}?propagationPolicy=Foreground`,
-        });
-    });
-
-    /*
-     * The failed-delete rule: a post-create stand-down whose own-Job DELETE answers neither 2xx
-     * nor 404 leaves the Job's fate to the kubelet's deadline — and this attempt's runner may
-     * still be on the checkout when a replacement claimant arrives. So the claim is NOT released:
-     * the checkout is never handed over voluntarily while this attempt's runner may still be on
-     * it, and the next claimant's stale-holder takeover (uid-preconditioned release, then a sweep
-     * of every `factory.job=<id>` Job) is the documented route that reclaims both.
-     */
-    it('holds the claim when the post-create verify exhausts its patience and the own-Job delete fails', async () => {
-        const claimPath = claimPathFor(job.id);
-        let reads = 0;
-        const { request, calls } = routed((method, path) => {
-            if (method === 'POST' && path === configmapsPath) {
-                return { status: 201, body: '{}' };
-            }
-            if (path === claimPath) {
-                if (method === 'GET') {
-                    reads += 1;
-                    // Read 1 is the pre-create verify (ours); reads 2 through
-                    // POLL_MAX_CONSECUTIVE_FAILURES + 2 are the post-create verify, answering 500
-                    // until its patience is spent; anything after would be the release's read.
-                    const spent = reads > 2 + POLL_MAX_CONSECUTIVE_FAILURES;
-                    return Promise.resolve(
-                        reads === 1 || spent
-                            ? {
-                                  status: 200,
-                                  body: JSON.stringify({
-                                      metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, claimSeq: '1' },
-                                  }),
-                              }
-                            : { status: 500, body: 'unavailable' }
-                    );
-                }
-                return { status: 200, body: '{}' };
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                // The delete fails: whether the Job is really going away is unknown.
-                return { status: 500, body: 'refused' };
-            }
-        });
-
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/in a row/);
-        // The delete failed, so the Job may still be on the checkout: the claim is left held.
-        expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
-    });
-
-    // A 404 from the own-Job DELETE is a SUCCESS here: the Job is already gone, so nothing of
-    // this attempt's is left on the checkout and the claim may be released as usual.
-    it('releases the claim when the own-Job delete answers 404 — already gone is a success', async () => {
-        const claimPath = claimPathFor(job.id);
-        let reads = 0;
-        const { request, calls } = routed((method, path) => {
-            if (method === 'POST' && path === configmapsPath) {
-                return { status: 201, body: '{}' };
-            }
-            if (path === claimPath) {
-                if (method === 'GET') {
-                    reads += 1;
-                    const spent = reads > 2 + POLL_MAX_CONSECUTIVE_FAILURES;
-                    return Promise.resolve(
-                        reads === 1 || spent
-                            ? {
-                                  status: 200,
-                                  body: JSON.stringify({
-                                      metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, claimSeq: '1' },
-                                  }),
-                              }
-                            : { status: 500, body: 'unavailable' }
-                    );
-                }
-                return { status: 200, body: '{}' };
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return { status: 404, body: '{"kind":"Status"}' };
-            }
-        });
-
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/in a row/);
-        const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
-        expect(release).toBeDefined();
-        expect((release?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toBe(
-            'claim-uid-1'
-        );
-    });
-
-    // A 2xx from the own-Job DELETE is the ordinary success: the Job is going away, so the
-    // existing behavior is preserved and the claim is released, uid-preconditioned as ever.
-    it('releases the claim when the own-Job delete succeeds after an exhausted post-create verify', async () => {
-        const claimPath = claimPathFor(job.id);
-        let reads = 0;
-        const { request, calls } = routed((method, path) => {
-            if (method === 'POST' && path === configmapsPath) {
-                return { status: 201, body: '{}' };
-            }
-            if (path === claimPath) {
-                if (method === 'GET') {
-                    reads += 1;
-                    const spent = reads > 2 + POLL_MAX_CONSECUTIVE_FAILURES;
-                    return Promise.resolve(
-                        reads === 1 || spent
-                            ? {
-                                  status: 200,
-                                  body: JSON.stringify({
-                                      metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, claimSeq: '1' },
-                                  }),
-                              }
-                            : { status: 500, body: 'unavailable' }
-                    );
-                }
-                return { status: 200, body: '{}' };
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return { status: 200, body: '{}' };
-            }
-        });
-
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/in a row/);
-        const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
-        expect(release).toBeDefined();
-        expect((release?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toBe(
-            'claim-uid-1'
-        );
+        if (claim === 'held') {
+            expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
+        } else {
+            const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
+            expect(release).toBeDefined();
+            expect((release?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toBe(
+                'claim-uid-1'
+            );
+        }
     });
 
     /*
@@ -4798,47 +4607,6 @@ describe('the kubernetes runner', () => {
         });
         expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes(NEW_TOKEN))).toBe(false);
         // And the claim that moved on is never deleted.
-        expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
-    });
-
-    // Uniformity: the unverifiable branch (a read that answers but names no holder) holds the
-    // claim on a failed delete exactly like the exhausted-patience branch — and here the release
-    // read WOULD answer ours, so the flag is the only thing standing between the claim and its
-    // release while this attempt's runner may still be on the checkout.
-    it('holds the claim when the verify cannot name a holder and the own-Job delete fails', async () => {
-        const claimPath = claimPathFor(job.id);
-        let reads = 0;
-        const { request, calls } = routed((method, path) => {
-            if (method === 'POST' && path === configmapsPath) {
-                return { status: 201, body: '{}' };
-            }
-            if (path === claimPath) {
-                if (method === 'GET') {
-                    reads += 1;
-                    // Read 1: the pre-create verify, ours. Read 2: the post-create verify, a 200
-                    // that names no holder — the unverifiable branch. Read 3+: the release read.
-                    return Promise.resolve(
-                        reads === 2
-                            ? { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-x' } }) }
-                            : {
-                                  status: 200,
-                                  body: JSON.stringify({
-                                      metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, claimSeq: '1' },
-                                  }),
-                              }
-                    );
-                }
-                return { status: 200, body: '{}' };
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return { status: 500, body: 'refused' };
-            }
-        });
-
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /could not be confirmed/
-        );
         expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
     });
 
@@ -5012,26 +4780,20 @@ describe('the kubernetes runner', () => {
      * A completed pod can be garbage-collected before the list that reads its exit code. The Job
      * status is then the verdict: this Job runs one pod and never retries it, so the controller
      * can only have counted success on an exit-0 termination — and a null exit code would map to
-     * `failed` in the loop, recording finished work as failed.
+     * `failed` in the loop, recording finished work as failed. A failed Job still reports failed.
      */
-    it('treats the Job status as the verdict when its pod is already gone', async () => {
-        const { request } = fakeRequest({ pods: { status: 200, body: JSON.stringify({ items: [] }) } });
+    it.each<[string, Record<string, unknown>, number | null]>([
+        ['treats the Job status as the verdict when its pod is already gone', {}, 0],
+        [
+            'still reports a failed job when its pod is gone',
+            { job: { status: 200, body: JSON.stringify({ status: { failed: 1 } }) } },
+            null,
+        ],
+    ])('%s', async (_name, overrides, exitCode) => {
+        const { request } = fakeRequest({ ...overrides, pods: { status: 200, body: JSON.stringify({ items: [] }) } });
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
-        expect(outcome.exitCode).toBe(0);
-        expect(outcome.output).toBe('');
-    });
-
-    it('still reports a failed job when its pod is gone', async () => {
-        const { request } = fakeRequest({
-            job: { status: 200, body: JSON.stringify({ status: { failed: 1 } }) },
-            pods: { status: 200, body: JSON.stringify({ items: [] }) },
-        });
-        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
-
-        expect(outcome.exitCode).toBeNull();
-        expect(outcome.timedOut).toBe(false);
-        expect(outcome.output).toBe('');
+        expect(outcome).toMatchObject({ exitCode, timedOut: false, output: '' });
     });
 
     // After a re-claim, the replaced attempt's pod can still be listed while it terminates — same
@@ -5068,24 +4830,21 @@ describe('the kubernetes runner', () => {
 
     // The deadline is enforced by the kubelet, so the Job reports failed with the reason attached;
     // the driver maps that onto the same verdict `docker kill` after DRIVER_JOB_TIMEOUT_MS gets.
-    it('treats DeadlineExceeded as a timeout', async () => {
-        const { request } = fakeRequest({ job: FAKE.failed });
-        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
-
-        expect(outcome.timedOut).toBe(true);
-    });
-
     // A current cluster marks the deadline `FailureTarget` first and `Failed` only once the pod is
     // gone; the runner reads the first terminal status it sees, so it must know both.
-    it('treats a DeadlineExceeded FailureTarget as a timeout too', async () => {
-        const { request } = fakeRequest({
-            job: {
+    it.each<[string, () => unknown]>([
+        ['treats DeadlineExceeded as a timeout', () => FAKE.failed],
+        [
+            'treats a DeadlineExceeded FailureTarget as a timeout too',
+            () => ({
                 status: 200,
                 body: JSON.stringify({
                     status: { failed: 1, conditions: [{ type: 'FailureTarget', reason: 'DeadlineExceeded' }] },
                 }),
-            },
-        });
+            }),
+        ],
+    ])('%s', async (_name, answer) => {
+        const { request } = fakeRequest({ job: answer() });
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
         expect(outcome.timedOut).toBe(true);
@@ -5224,15 +4983,12 @@ describe('the gate job spec', () => {
             'factory.lease': job.leaseToken,
         });
         expect(s.spec.template.metadata.labels).toEqual(s.metadata.labels);
-        expect(s.spec.template.spec.automountServiceAccountToken).toBe(false);
     });
 
     // The kubelet's deadline is the gate's wall-clock cap; the driver reads DeadlineExceeded
     // off the finished Job and reports exit 124.
     it('bounds the run with activeDeadlineSeconds from GATE_TIMEOUT_MS', () => {
         expect(gateSpec().spec.activeDeadlineSeconds).toBe(30);
-        expect(gateSpec().spec.backoffLimit).toBe(0);
-        expect(gateSpec().spec.template.spec.restartPolicy).toBe('Never');
     });
 
     // The env travels by reference and never as literals — the same rule that keeps claim
@@ -5552,26 +5308,26 @@ describe('the kubernetes gate manager', () => {
         expect(calls.some((c) => c.method === 'POST' && c.path === jobsPath(namespace))).toBe(false);
     });
 
-    it('rejects with the harness code when the cluster refuses the run', async () => {
-        const { request } = gateFake({ jobCreate: { status: 403, body: 'forbidden' } });
-        const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', { job });
-        await expect(m.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
-    });
-
-    // Verified bug (docs/plans/k8s-runner-prune.md Step 0): a transport failure that exhausts the
-    // status-poll retries used to rethrow the raw error with no CONTAINER_GONE code, while the
-    // 429/5xx exhaustion arm already wrapped it — so `gates.ts`'s ad-hoc endpoint (which maps
-    // CONTAINER_GONE to 409) answered 500 for a kubernetes API-server outage where docker answers
-    // 409 for the same harness failure.
-    it('rejects with the harness code when the api server cannot be reached at all', async () => {
-        const request: K8sRequest = (method, path) => {
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) return Promise.resolve({ status: 201, body: '{}' });
-            if (path === jobsPath(namespace)) return Promise.resolve({ status: 201, body: '{}' });
-            if (path.startsWith(`${jobsPath(namespace)}/`)) return Promise.reject(new Error('ECONNREFUSED'));
-            return Promise.reject(new Error(`gate fake has no answer for ${method} ${path}`));
-        };
-        const m = manager(request);
+    // The api-server row is a verified bug (docs/plans/k8s-runner-prune.md Step 0): a transport
+    // failure that exhausts the status-poll retries used to rethrow the raw error with no
+    // CONTAINER_GONE code, while the 429/5xx exhaustion arm already wrapped it — so `gates.ts`'s
+    // ad-hoc endpoint (which maps CONTAINER_GONE to 409) answered 500 for a kubernetes API-server
+    // outage where docker answers 409 for the same harness failure.
+    it.each<[string, () => K8sRequest]>([
+        ['the cluster refuses the run', () => gateFake({ jobCreate: { status: 403, body: 'forbidden' } }).request],
+        [
+            'the api server cannot be reached at all',
+            () => (method, path) => {
+                if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                    return Promise.resolve({ status: 201, body: '{}' });
+                }
+                if (path === jobsPath(namespace)) return Promise.resolve({ status: 201, body: '{}' });
+                if (path.startsWith(`${jobsPath(namespace)}/`)) return Promise.reject(new Error('ECONNREFUSED'));
+                return Promise.reject(new Error(`gate fake has no answer for ${method} ${path}`));
+            },
+        ],
+    ])('rejects with the harness code when %s', async (_when, request) => {
+        const m = manager(request());
         await m.acquire(KEY, 'node:24', '', { job });
         await expect(m.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
     });
@@ -6367,68 +6123,33 @@ describe('the kubernetes services flow', () => {
  * scrape rides the run's outcome the way docker's verdict does.
  */
 describe("scoping the kubernetes mounts to the job's own subtree", () => {
-    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-
     // Every volumeMount this executor emits names the job's own `<orgId>/<userId>` subtree as
     // its subPath. That is what makes a missing target fail loud — the kubelet cannot start a
     // pod whose subPath does not exist and leaves it stuck in ContainerCreating — and what
     // makes a broader fallback mount structurally impossible: there is no spec shape here that
     // mounts the workspaces PVC without a subPath.
-    it('mounts nothing broader than the member subtree — every spec names the exact target', () => {
-        const specs = [
-            runnerJobSpec(cfg(), job, { id: SESSION, resume: false }),
-            gateJobSpec(cfg(), job, {
-                key: `bellows/${USER}/.worktrees/${job.id}`,
-                image: 'node:24',
-                gateName: 't',
-                command: 'npm test',
-                run: 1,
-                envSecretName: null,
-                gateTimeoutMs: 30_000,
-            }),
-            bellowsJobSpec(cfg(), job),
-            opencodeReadoutJobSpec(cfg(), job, '2026-09-01T00:00:00Z'),
-            claudeTurnsJobSpec(cfg(), job, SESSION, '2026-09-01T00:00:00Z'),
-            syncJobSpec(cfg(), repoJob, null),
-            reclaimJobSpec(cfg(), repoJob),
-            publishStepJobSpec(cfg(), repoJob, {
-                step: 1,
-                publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
-                envSecret: null,
-                repo: '/wt',
-            }),
-        ];
-        for (const s of specs) {
-            const mount = s.spec.template.spec.containers[0].volumeMounts.find((m) => m.name === 'workspaces');
-            expect(mount?.subPath, s.metadata.name).toBe(`bellows/${USER}`);
-            expect(mount?.subPath.split('/').length, s.metadata.name).toBe(2);
+    it.each(JOB_POD_NAMES)(
+        'mounts nothing broader than the member subtree on %s — it names the exact target',
+        (name) => {
+            const { pod } = everyPodSpec({ RUNNER_SERVICES: '0' })[name]();
+            const mount = pod.containers[0]!.volumeMounts?.find((m) => m.name === 'workspaces');
+            expect(mount?.subPath).toBe(`bellows/${USER}`);
+            expect(mount?.subPath?.split('/').length).toBe(2);
         }
-    });
+    );
 
     // A claim whose workspace path fails the segment assertions is refused before any pod spec
     // exists — the mount can never name a path the assertions did not clear.
-    it('refuses to build any pod spec for a claim with a malformed workspace path', () => {
-        const broken = { ...job, workspacePath: '../../etc' };
-        expect(() => runnerJobSpec(cfg(), broken, { id: SESSION, resume: false })).toThrow(/workspace path/);
-        expect(() => bellowsJobSpec(cfg(), broken)).toThrow(/workspace path/);
-        expect(() => opencodeReadoutJobSpec(cfg(), broken, '2026-09-01T00:00:00Z')).toThrow(/workspace path/);
-        expect(() => claudeTurnsJobSpec(cfg(), broken, SESSION, '2026-09-01T00:00:00Z')).toThrow();
-        expect(() => syncJobSpec(cfg(), { ...broken, repo: 'Bellows-AI/factory' }, null)).toThrow();
-        expect(() => reclaimJobSpec(cfg(), { ...broken, repo: 'Bellows-AI/factory' })).toThrow();
-        expect(() =>
-            publishStepJobSpec(
-                cfg(),
-                { ...broken, repo: 'Bellows-AI/factory' },
-                {
-                    step: 1,
-                    publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
-                    envSecret: null,
-                    repo: '/wt',
-                }
-            )
-        ).toThrow(/workspace path/);
-    });
+    // The sync and the reclaim refuse it in their own words: no task worktree resolves.
+    it.each(JOB_POD_NAMES.filter((name) => name !== 'the gate'))(
+        'refuses to build %s for a claim with a malformed workspace path',
+        (name) => {
+            const build = everyPodSpec({ RUNNER_SERVICES: '0' }, { ...job, workspacePath: '../../etc' })[name];
+            expect(build).toThrow(
+                name === 'the sync' || name === 'the reclaim' ? /cannot resolve a task worktree/ : /workspace path/
+            );
+        }
+    );
 });
 
 describe('the runner job spec under opencode', () => {
@@ -6542,13 +6263,6 @@ describe('the opencode session readout job', () => {
         expect(spec.spec.template.spec.containers[0].volumeMounts[0].readOnly).toBeUndefined();
     });
 
-    it('bounds itself with a deadline of its own and reaps its pod', () => {
-        const spec = opencodeReadoutJobSpec(config, job, START);
-        expect(spec.spec.activeDeadlineSeconds).toBeGreaterThan(0);
-        expect(spec.spec.backoffLimit).toBe(0);
-        expect(spec.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
-    });
-
     it('refuses a job whose workspace path it cannot assert', () => {
         expect(() => opencodeReadoutJobSpec(config, { ...job, workspacePath: null })).toThrow(/workspace path/);
     });
@@ -6589,12 +6303,6 @@ describe('the close-time claude-code turn read under kubernetes', () => {
         expect(container.volumeMounts).toEqual([
             { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
-    });
-
-    it('bounds itself with a deadline of its own and reaps its pod', () => {
-        expect(spec.spec.activeDeadlineSeconds).toBeGreaterThan(0);
-        expect(spec.spec.backoffLimit).toBe(0);
-        expect(spec.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
     });
 
     it('refuses a session id that is not a uuid', () => {
@@ -6656,13 +6364,6 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
         expect(() => opencodeTranscriptJobSpec(config, { ...job, workspacePath: null }, START)).toThrow(
             /workspace path/
         );
-    });
-
-    it('bounds itself with a deadline of its own and reaps its pod', () => {
-        const spec = claudeTranscriptJobSpec(config, job, SESSION, START);
-        expect(spec.spec.activeDeadlineSeconds).toBeGreaterThan(0);
-        expect(spec.spec.backoffLimit).toBe(0);
-        expect(spec.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
     });
 });
 
@@ -6919,9 +6620,6 @@ describe('the block-helper transport (issue #207)', () => {
         expect(container.env).toEqual([{ name: 'HELPER_INPUT', value: JSON.stringify({ a: 1 }) }]);
         expect(container.envFrom).toBeUndefined();
         expect(container.workingDir).toBe(WT);
-        expect(withRepo.spec.template.spec.automountServiceAccountToken).toBe(false);
-        expect(withRepo.spec.backoffLimit).toBe(0);
-        expect(withRepo.spec.activeDeadlineSeconds).toBeGreaterThan(0);
 
         // A command-only job (no repo): no working directory, the member root's own mount.
         const noRepo = helperJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), job, {
@@ -7094,87 +6792,52 @@ describe('the block-helper transport (issue #207)', () => {
 // A private registry is the normal case in a cluster, and every pod this driver specs pulls on its
 // own: the runner, each aux Job (sync shown — they all share `auxJobSpec`) and each service pod.
 describe('RUNNER_IMAGE_PULL_SECRETS', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-    const withSecrets = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_IMAGE_PULL_SECRETS: 'regcred, mirror ,' });
-    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
-
-    it('names every configured secret on the runner, aux and service pod specs', () => {
-        const expected = [{ name: 'regcred' }, { name: 'mirror' }];
-        expect(
-            runnerJobSpec(withSecrets, job, { id: SESSION, resume: false }).spec.template.spec.imagePullSecrets
-        ).toEqual(expected);
-        expect(syncJobSpec(withSecrets, repoJob, null).spec.template.spec.imagePullSecrets).toEqual(expected);
-        expect(servicePodSpec(withSecrets, job, service, 'svc-uid').spec.imagePullSecrets).toEqual(expected);
+    it.each(POD_NAMES)('names every configured secret on %s', (name) => {
+        const { pod } = everyPodSpec({ RUNNER_IMAGE_PULL_SECRETS: 'regcred, mirror ,' })[name]();
+        expect(pod.imagePullSecrets).toEqual([{ name: 'regcred' }, { name: 'mirror' }]);
     });
 
-    it('leaves the field off entirely when none are configured', () => {
-        const plain = loadDriverConfig({ EXECUTOR: 'kubernetes' });
-        expect(spec().spec.template.spec).not.toHaveProperty('imagePullSecrets');
-        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('imagePullSecrets');
-        expect(servicePodSpec(plain, job, service, 'svc-uid').spec).not.toHaveProperty('imagePullSecrets');
+    it.each(POD_NAMES)('leaves the field off %s entirely when none are configured', (name) => {
+        expect(everyPodSpec()[name]().pod).not.toHaveProperty('imagePullSecrets');
     });
 });
 
 // Issue #361: the chart's scheduling knobs reach the chart's own pods only; these are the runner
 // group's — the tainted node group agent-written code is meant to land on and nothing else. Every
-// pod the driver specs carries them: the runner, each aux Job (sync shown — they all share
-// `auxJobSpec`) and each service pod, exactly as RUNNER_IMAGE_PULL_SECRETS above does.
+// pod the driver specs carries them: the runner, each aux Job and each service pod, exactly as
+// RUNNER_IMAGE_PULL_SECRETS above does.
 describe('RUNNER NODE SELECTOR / TOLERATIONS / AFFINITY', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-    const scheduled = loadDriverConfig({
-        EXECUTOR: 'kubernetes',
+    const scheduled = {
         RUNNER_NODE_SELECTOR: '{"dedicated":"factory-runners"}',
         RUNNER_TOLERATIONS: '[{"key":"dedicated","operator":"Equal","value":"factory-runners","effect":"NoSchedule"}]',
         RUNNER_AFFINITY:
             '{"podAntiAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":[{"weight":1,"podAffinityTerm":{"topologyKey":"topology.kubernetes.io/zone","labelSelector":{"matchLabels":{"app.kubernetes.io/name":"factory"}}}}]}}',
-    });
-    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
-    const nodeSelector = { dedicated: 'factory-runners' };
-    const tolerations = [{ key: 'dedicated', operator: 'Equal', value: 'factory-runners', effect: 'NoSchedule' }];
+    };
 
-    it('schedules the runner, aux and service pods onto the configured node group', () => {
-        const runner = runnerJobSpec(scheduled, job, { id: SESSION, resume: false }).spec.template.spec;
-        expect(runner.nodeSelector).toEqual(nodeSelector);
-        expect(runner.tolerations).toEqual(tolerations);
-        expect(runner.affinity).toMatchObject({ podAntiAffinity: expect.anything() });
-        const sync = syncJobSpec(scheduled, repoJob, null).spec.template.spec;
-        expect(sync.nodeSelector).toEqual(nodeSelector);
-        expect(sync.tolerations).toEqual(tolerations);
-        expect(sync.affinity).toMatchObject({ podAntiAffinity: expect.anything() });
-        const servicePod = servicePodSpec(scheduled, job, service).spec;
-        expect(servicePod.nodeSelector).toEqual(nodeSelector);
-        expect(servicePod.tolerations).toEqual(tolerations);
-        expect(servicePod.affinity).toMatchObject({ podAntiAffinity: expect.anything() });
+    it.each(POD_NAMES)('schedules %s onto the configured node group', (name) => {
+        const { pod } = everyPodSpec(scheduled)[name]();
+        expect(pod.nodeSelector).toEqual({ dedicated: 'factory-runners' });
+        expect(pod.tolerations).toEqual([
+            { key: 'dedicated', operator: 'Equal', value: 'factory-runners', effect: 'NoSchedule' },
+        ]);
+        expect(pod.affinity).toMatchObject({ podAntiAffinity: expect.anything() });
     });
 
-    it('leaves the fields off entirely when none are configured', () => {
-        const plain = loadDriverConfig({ EXECUTOR: 'kubernetes' });
-        expect(spec().spec.template.spec).not.toHaveProperty('nodeSelector');
-        expect(spec().spec.template.spec).not.toHaveProperty('tolerations');
-        expect(spec().spec.template.spec).not.toHaveProperty('affinity');
-        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('nodeSelector');
-        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('tolerations');
-        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('affinity');
-        expect(servicePodSpec(plain, job, service).spec).not.toHaveProperty('nodeSelector');
-        expect(servicePodSpec(plain, job, service).spec).not.toHaveProperty('tolerations');
-        expect(servicePodSpec(plain, job, service).spec).not.toHaveProperty('affinity');
+    it.each(POD_NAMES)('leaves the fields off %s entirely when none are configured', (name) => {
+        const { pod } = everyPodSpec()[name]();
+        expect(pod).not.toHaveProperty('nodeSelector');
+        expect(pod).not.toHaveProperty('tolerations');
+        expect(pod).not.toHaveProperty('affinity');
     });
 });
 
 // The chart's runner NetworkPolicy selects by release, so every pod the driver specs must carry
 // the release label — not only the runner Job object, which is what bulk cleanup reads.
 describe('K8S_RELEASE on pod templates', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-    const released = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_RELEASE: 'dev' });
-    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
-    const instance = { 'app.kubernetes.io/instance': 'dev' };
-
-    it('labels the runner, aux and service pods with the release', () => {
-        expect(
-            runnerJobSpec(released, job, { id: SESSION, resume: false }).spec.template.metadata.labels
-        ).toMatchObject(instance);
-        expect(syncJobSpec(released, repoJob, null).spec.template.metadata.labels).toMatchObject(instance);
-        expect(servicePodSpec(released, job, service, 'svc-uid').metadata.labels).toMatchObject(instance);
+    it.each(POD_NAMES)('labels %s with the release', (name) => {
+        expect(everyPodSpec({ K8S_RELEASE: 'dev' })[name]().meta.labels).toMatchObject({
+            'app.kubernetes.io/instance': 'dev',
+        });
     });
 });
 
@@ -7191,82 +6854,21 @@ describe('RUNNER_DO_NOT_DISRUPT on pod templates', () => {
         'karpenter.sh/do-not-disrupt': 'true',
         'cluster-autoscaler.kubernetes.io/safe-to-evict': 'false',
     };
-    const disruptable = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_DO_NOT_DISRUPT: '1' });
-    const plain = loadDriverConfig({ EXECUTOR: 'kubernetes' });
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
-    const NOOP_DESCRIPTOR = lookupHelper('noop')!;
-    const NONCE = '77777777-7777-4777-8777-777777777777';
-    const plan = (): HelperPlan => ({ helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false });
-    const GATE_KEY = 'bellows/44444444-4444-4444-8444-444444444444/.worktrees/88888888-8888-4888-8888-888888888888';
-    const STARTED_AT = '2026-01-01T00:00:00.000Z';
 
-    it('annotates every pod the driver specs — runner, aux Jobs, declared services', () => {
-        // The annotations name the POD: Job specs carry them on the pod template (Karpenter reads
-        // pods, not Job objects); the bare service Pod carries them on its own metadata.
-        const jobSpecs: [string, { spec: { template: { metadata: { annotations?: object } } } }][] = [
-            ['the runner', runnerJobSpec(disruptable, job, { id: SESSION, resume: false })],
-            ['the sync', syncJobSpec(disruptable, repoJob, null)],
-            ['the reclaim', reclaimJobSpec(disruptable, repoJob)],
-            [
-                'the publish step',
-                publishStepJobSpec(disruptable, repoJob, {
-                    step: 1,
-                    publish: { label: 'git push', entrypoint: 'git', args: ['push'], env: false, inRepo: false },
-                    envSecret: null,
-                    repo: 'repo',
-                }),
-            ],
-            [
-                'the helper',
-                helperJobSpec(disruptable, repoJob, {
-                    plan: plan(),
-                    descriptor: NOOP_DESCRIPTOR,
-                    envSecret: null,
-                    nonce: NONCE,
-                }),
-            ],
-            [
-                'the gate',
-                gateJobSpec(disruptable, job, {
-                    key: GATE_KEY,
-                    image: 'node:20',
-                    gateName: 'test',
-                    command: 'true',
-                    run: 1,
-                    envSecretName: null,
-                    gateTimeoutMs: 60_000,
-                }),
-            ],
-            ['the bellows readout', bellowsJobSpec(disruptable, job)],
-            ['the claude turns readout', claudeTurnsJobSpec(disruptable, job, SESSION, STARTED_AT)],
-            ['the opencode session readout', opencodeReadoutJobSpec(disruptable, job, STARTED_AT)],
-            ['the claude transcript export', claudeTranscriptJobSpec(disruptable, job, SESSION, STARTED_AT)],
-            ['the opencode transcript export', opencodeTranscriptJobSpec(disruptable, job, STARTED_AT)],
-        ];
-        for (const [name, spec] of jobSpecs) {
-            expect(spec.spec.template.metadata.annotations, name).toEqual(ANNOTATIONS);
-            // Annotating the Job object itself would be cargo cult — Karpenter reads pods.
-            expect((spec as { metadata: { annotations?: object } }).metadata.annotations, name).toBeUndefined();
-        }
-        expect(servicePodSpec(disruptable, job, service).metadata.annotations).toEqual(ANNOTATIONS);
+    // The annotations name the POD: Job specs carry them on the pod template (Karpenter reads
+    // pods, not Job objects); the bare service Pod carries them on its own metadata.
+    it.each(POD_NAMES)('annotates %s', (name) => {
+        expect(everyPodSpec({ RUNNER_DO_NOT_DISRUPT: '1' })[name]().meta.annotations).toEqual(ANNOTATIONS);
     });
 
-    it('leaves the annotations off entirely when the switch is unset', () => {
-        expect(spec().spec.template.metadata).not.toHaveProperty('annotations');
-        expect(syncJobSpec(plain, repoJob, null).spec.template.metadata).not.toHaveProperty('annotations');
-        expect(
-            gateJobSpec(plain, job, {
-                key: GATE_KEY,
-                image: 'node:20',
-                gateName: 'test',
-                command: 'true',
-                run: 1,
-                envSecretName: null,
-                gateTimeoutMs: 60_000,
-            }).spec.template.metadata
-        ).not.toHaveProperty('annotations');
-        expect(servicePodSpec(plain, job, service).metadata).not.toHaveProperty('annotations');
+    // Annotating the Job object itself would be cargo cult — Karpenter reads pods.
+    it.each(JOB_POD_NAMES)('leaves the Job object of %s unannotated', (name) => {
+        const { job: jobObject } = everyPodSpec({ RUNNER_DO_NOT_DISRUPT: '1' })[name]();
+        expect((jobObject as { metadata: { annotations?: object } }).metadata.annotations).toBeUndefined();
+    });
+
+    it.each(POD_NAMES)('leaves the annotations off %s entirely when the switch is unset', (name) => {
+        expect(everyPodSpec()[name]().meta).not.toHaveProperty('annotations');
     });
 });
 

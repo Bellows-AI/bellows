@@ -677,7 +677,12 @@ describe('the poll loop', () => {
 
         await drive({ ...board, runner });
 
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: 2, output: 'boom' });
+        expect(board.board.completed[0]).toMatchObject({
+            status: 'failed',
+            exitCode: 2,
+            output: 'boom',
+            failureKind: 'runner_error',
+        });
     });
 
     /**
@@ -693,7 +698,7 @@ describe('the poll loop', () => {
 
         await drive({ ...board, runner });
 
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: 0 });
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: 0, failureKind: 'runner_error' });
         expect(board.board.completed[0]?.output).toContain('finish reason: "length"');
     });
 
@@ -758,33 +763,26 @@ describe('the poll loop', () => {
         });
     });
 
-    it('reports the close-time agent-turn count with the verdict, and never a non-number', async () => {
+    // The first job's runner reads a value and it rides the report; the second job's runner read
+    // nothing, so the field stays OFF the wire entirely and the board stores unmeasured / null —
+    // the never-zero contract holds on the driver's side too.
+    it.each([
+        ['reports the close-time agent-turn count with the verdict, and never a non-number', 'agentTurns', 11],
+        // What the run did, in the agent's own words.
+        [
+            'reports the run summary with the verdict, and nothing when the read lifted none',
+            'summary',
+            'Fixed the failing gates',
+        ],
+    ] as const)('%s', async (_label, field, value) => {
         const board = stubBoard([job(1), job(2)]);
         let ran = 0;
-        const runner = stubRunner(async () => (ran++ === 0 ? ok({ agentTurns: 11 }) : ok()));
+        const runner = stubRunner(async () => (ran++ === 0 ? ok({ [field]: value }) : ok()));
 
         await drive({ ...board, runner });
 
-        // A measured count rides the report.
-        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', agentTurns: 11 });
-
-        // The second job's runner read nothing: the field stays OFF the wire entirely, so the
-        // board stores unmeasured — the never-zero contract holds on the driver's side too.
-        expect(board.board.completed[1]).not.toHaveProperty('agentTurns');
-    });
-
-    it('reports the run summary with the verdict, and nothing when the read lifted none', async () => {
-        const board = stubBoard([job(1), job(2)]);
-        let ran = 0;
-        const runner = stubRunner(async () => (ran++ === 0 ? ok({ summary: 'Fixed the failing gates' }) : ok()));
-
-        await drive({ ...board, runner });
-
-        // A summary rides the report: what the run did, in the agent's own words.
-        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', summary: 'Fixed the failing gates' });
-
-        // No summary read — the field stays off the wire, and the board stores null.
-        expect(board.board.completed[1]).not.toHaveProperty('summary');
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', [field]: value });
+        expect(board.board.completed[1]).not.toHaveProperty(field);
     });
 
     /**
@@ -984,12 +982,18 @@ describe('the poll loop', () => {
                 branch: null,
                 prUrl: null,
                 reason: 'git step failed: authentication refused',
+                cause: 'conflict',
             },
         });
 
         await drive({ ...board, runner });
 
-        expect(board.board.completed[0]?.status).toBe('failed');
+        // Issue #581: the publish's cause rides beside the kind.
+        expect(board.board.completed[0]).toMatchObject({
+            status: 'failed',
+            failureKind: 'publish',
+            failureCause: 'conflict',
+        });
         expect(board.board.completed[0]?.output).toContain(
             '[driver] publish failed — the work did not land: git step failed: authentication refused'
         );
@@ -1142,8 +1146,56 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.status).toBe('succeeded');
     });
 
-    it('fails a task whose selected executor profile no longer resolves, before anything runs', async () => {
-        const board = stubBoard([{ ...job(1), executorType: null }]);
+    // A pre-run refusal is the driver's own environment failing, never the agent's work: nothing
+    // syncs, no runner is reached, and the verdict names its kind (issue #339). A refused executor
+    // selection is deterministic — config, so the board rests the thread and a batch asks a person
+    // rather than retrying it as a transient runner error.
+    const suspendedReason = 'The personal executor "main" is suspended. Resume it or choose another executor.';
+    const skillsReason =
+        '[skills unavailable] skill "jira" needs the jira connection: set ATLASSIAN_SITE. Fix this, then retry the task.';
+    it.each<[string, BoardJob, unknown, 'config' | 'runner_error']>([
+        [
+            'fails a task whose selected executor profile no longer resolves, before anything runs',
+            { ...job(1), executorType: null },
+            expect.stringContaining('selected executor no longer exists'),
+            'config',
+        ],
+        // Issue 440: the loop is shared by the docker and kubernetes executors, so one refusal here is
+        // both executors' — the board's sentence reaches the task, and no runner is ever reached.
+        [
+            'fails a task whose executor profile is suspended with the board’s reason, before anything runs',
+            { ...job(1), executorType: null, executorRefusal: suspendedReason },
+            suspendedReason,
+            'config',
+        ],
+        // Issue #545: the same shared loop serves both executors, so one refusal here is both
+        // executors' — a recoverable config failure carrying the board's sentence, no runner reached.
+        [
+            'fails a task whose selected skills are unavailable as config with the board’s reason, before anything runs',
+            { ...job(1), skillRefusal: skillsReason },
+            skillsReason,
+            'config',
+        ],
+        // Issue #244: the board always renders a master prompt for every agent claim, so a missing
+        // one is a contract violation the driver refuses explicitly, before any setup — never a run
+        // with no Factory execution context.
+        [
+            'fails a task with no master prompt, before anything runs',
+            { ...job(1), masterPrompt: null },
+            expect.stringContaining('no Factory execution context'),
+            'runner_error',
+        ],
+        // The same no-fallback rule the null workspacePath refusal applies, extended to the task
+        // worktree (issue #35): a repo-shaped label this driver cannot resolve a worktree path for
+        // is failed with a reason, never run in a fallback location.
+        [
+            'fails a repo job whose worktree path cannot be resolved, before anything runs',
+            { ...job(1), repo: 'Bellows-AI/factory', rootJobId: 'not-a-uuid' },
+            expect.stringContaining('do not resolve to a task worktree'),
+            'runner_error',
+        ],
+    ])('%s', async (_label, claimed, output, failureKind) => {
+        const board = stubBoard([claimed]);
         const runner = stubRunner(async () => {
             throw new Error('the runner must never be reached');
         });
@@ -1151,76 +1203,7 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(runner.synced).toHaveLength(0);
-        expect(board.board.completed[0]?.status).toBe('failed');
-        expect(board.board.completed[0]?.output).toContain('selected executor no longer exists');
-    });
-
-    // Issue 440: the loop is shared by the docker and kubernetes executors, so one refusal here is
-    // both executors' — the board's sentence reaches the task, and no runner is ever reached.
-    it('fails a task whose executor profile is suspended with the board’s reason, before anything runs', async () => {
-        const reason = 'The personal executor "main" is suspended. Resume it or choose another executor.';
-        const board = stubBoard([{ ...job(1), executorType: null, executorRefusal: reason }]);
-        const runner = stubRunner(async () => {
-            throw new Error('the runner must never be reached');
-        });
-
-        await drive({ ...board, runner });
-
-        expect(runner.synced).toHaveLength(0);
-        expect(board.board.completed[0]).toMatchObject({
-            status: 'failed',
-            failureKind: 'config',
-            output: reason,
-        });
-    });
-
-    // Issue #545: the same shared loop serves both executors, so one refusal here is both
-    // executors' — a recoverable config failure carrying the board's sentence, no runner reached.
-    it('fails a task whose selected skills are unavailable as config with the board’s reason, before anything runs', async () => {
-        const reason =
-            '[skills unavailable] skill "jira" needs the jira connection: set ATLASSIAN_SITE. Fix this, then retry the task.';
-        const board = stubBoard([{ ...job(1), skillRefusal: reason }]);
-        const runner = stubRunner(async () => {
-            throw new Error('the runner must never be reached');
-        });
-
-        await drive({ ...board, runner });
-
-        expect(runner.synced).toHaveLength(0);
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config', output: reason });
-    });
-
-    // Issue #244: the board always renders a master prompt for every agent claim, so a missing
-    // one is a contract violation the driver refuses explicitly, before any setup — never a run
-    // with no Factory execution context.
-    it('fails a task with no master prompt, before anything runs', async () => {
-        const board = stubBoard([{ ...job(1), masterPrompt: null }]);
-        const runner = stubRunner(async () => {
-            throw new Error('the runner must never be reached');
-        });
-
-        await drive({ ...board, runner });
-
-        expect(runner.synced).toHaveLength(0);
-        expect(board.board.completed[0]?.status).toBe('failed');
-        expect(board.board.completed[0]?.output).toContain('no Factory execution context');
-    });
-
-    // The same no-fallback rule the null workspacePath refusal applies, extended to the task
-    // worktree (issue #35): a repo-shaped label this driver cannot resolve a worktree path for
-    // is failed with a reason, never run in a fallback location.
-    it('fails a repo job whose worktree path cannot be resolved, before anything runs', async () => {
-        const broken: BoardJob = { ...job(1), repo: 'Bellows-AI/factory', rootJobId: 'not-a-uuid' };
-        const board = stubBoard([broken]);
-        const runner = stubRunner(async () => {
-            throw new Error('the runner must never be reached');
-        });
-
-        await drive({ ...board, runner });
-
-        expect(runner.synced).toHaveLength(0);
-        expect(board.board.completed[0]?.status).toBe('failed');
-        expect(board.board.completed[0]?.output).toContain('do not resolve to a task worktree');
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind, output });
     });
 
     it('fails the attempt with the reason when the checkout sync fails', async () => {
@@ -1235,8 +1218,9 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(runner.synced).toHaveLength(1);
-        // The run never started on an unknown tree.
-        expect(board.board.completed[0]?.status).toBe('failed');
+        // The run never started on an unknown tree — and an unnamed sync refusal is the driver's
+        // environment, not the agent's work (issue #339).
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
         expect(board.board.completed[0]?.output).toContain('could not be synced with the remote');
         expect(board.board.completed[0]?.output).toContain('conflict in driver/src/loop.ts');
     });
@@ -1272,10 +1256,12 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(board.board.gatesReread).toBe(1);
-        // The run never started: a broken gates file is a failed job, now and not next task.
+        // The run never started: a broken gates file is a failed job, now and not next task. A
+        // refused .bellows.yaml is deterministic — its own kind, config, so the board rests the
+        // thread rather than retrying it as a transient runner error (issue #339).
         expect(runner.synced).toHaveLength(1);
         expect(runner.published).toHaveLength(0);
-        expect(board.board.completed[0]?.status).toBe('failed');
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
         expect(board.board.completed[0]?.output).toContain('could not be read as a gate declaration');
     });
 
@@ -1393,33 +1379,36 @@ describe('the poll loop', () => {
         expect(seen).toBe('Factory turn context');
     });
 
-    it('reports the verdict untouched when the reclaim refuses, and logs the reason', async () => {
-        const logs: string[] = [];
-        const board = stubBoard([job(1)], { threadDone: true });
-        const runner = stubRunner(async () => ok(), {
-            reclaim: {
+    it.each([
+        [
+            'reports the verdict untouched when the reclaim refuses, and logs the reason',
+            {
                 ok: false,
                 removed: false,
                 reason: 'refusing to remove /workspaces/bellows/44444444-4444-4444-8444-444444444444/.worktrees/0000000',
             },
-        });
-        await drive({ ...board, runner, log: (m) => logs.push(m) });
-
-        expect(board.board.completed[0]?.status).toBe('succeeded');
-        expect(logs.some((m) => m.includes('task worktree could not be reclaimed'))).toBe(true);
-    });
-
-    it('reports the verdict untouched when the reclaim throws, and logs the error', async () => {
+            null,
+            'task worktree could not be reclaimed',
+        ],
+        [
+            'reports the verdict untouched when the reclaim throws, and logs the error',
+            undefined,
+            new Error('daemon refused'),
+            'daemon refused',
+        ],
+    ] as const)('%s', async (_label, reclaim, thrown, logged) => {
         const logs: string[] = [];
         const board = stubBoard([job(1)], { threadDone: true });
-        const runner = stubRunner(async () => ok());
-        runner.reclaimWorktree = async () => {
-            throw new Error('daemon refused');
-        };
+        const runner = stubRunner(async () => ok(), { reclaim });
+        if (thrown) {
+            runner.reclaimWorktree = async () => {
+                throw thrown;
+            };
+        }
         await drive({ ...board, runner, log: (m) => logs.push(m) });
 
         expect(board.board.completed[0]?.status).toBe('succeeded');
-        expect(logs.some((m) => m.includes('daemon refused'))).toBe(true);
+        expect(logs.some((m) => m.includes(logged))).toBe(true);
     });
 
     it('does not reclaim a job whose verdict was lost to the board', async () => {
@@ -1564,7 +1553,7 @@ describe('the poll loop', () => {
 
         await drive({ ...board, runner });
 
-        expect(board.board.completed[0]?.status).toBe('failed');
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'cache_lost' });
         const output = board.board.completed[0]?.output ?? '';
         expect(output).toContain('[driver] killed — the model provider stopped serving prompt cache');
         expect(output).toContain('3 consecutive turns with no prompt-cache reads');
@@ -1572,9 +1561,31 @@ describe('the poll loop', () => {
         expect(output).not.toContain('ended before it finished');
     });
 
-    // The whole reason the heartbeat exists: two containers must not go on writing to one checkout.
-    it('kills the container and reports nothing once the lease is lost', async () => {
-        const board = stubBoard([job(1)], { lease: 'lost' });
+    it.each([
+        // The whole reason the heartbeat exists: two containers must not go on writing to one checkout.
+        ['kills the container and reports nothing once the lease is lost', { lease: 'lost' }, []],
+        // A Stop (issue #41) is a park, not an end: the board stamps the running row with the flag,
+        // the heartbeat carries it back, and the container is killed so the run stops editing the
+        // checkout — but the job goes back on the board, session intact, for a human to resume from
+        // the Claude UI. Exactly the landing an idle run gets, and reporting nothing lets it stay
+        // there.
+        [
+            'kills the container and parks the job when the heartbeat reports a stop request',
+            { cancelRequested: true },
+            [job(1).id],
+        ],
+        // Remove's defensive half this side of the fence: the only way a heartbeat sees a 404 is the
+        // board having deleted the thread while this attempt ran. The container dies, and nothing is
+        // parked or reported — there is no row left to park and nobody left to read a verdict. (The
+        // server refuses to remove a running thread, so this is a race the server already closes; the
+        // driver still answers the status rather than reading it as a broken board.)
+        [
+            'kills the container and reports nothing when the board says the thread was removed',
+            { removedOnBeat: true },
+            [],
+        ],
+    ] as const)('%s', async (_label, beat, suspended) => {
+        const board = stubBoard([job(1)], beat);
         let finish = () => {};
         const runner = stubRunner(
             () =>
@@ -1590,6 +1601,7 @@ describe('the poll loop', () => {
         await started;
 
         expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual(suspended);
         expect(board.board.completed).toEqual([]);
     });
 
@@ -1615,31 +1627,6 @@ describe('the poll loop', () => {
         expect(runner.killed).toEqual([]);
         expect(board.board.completed).toHaveLength(1);
         expect(logs.filter((message) => message.includes('heartbeat failed, continuing'))).toHaveLength(1);
-    });
-
-    // A Stop (issue #41) is a park, not an end: the board stamps the running row with the flag,
-    // the heartbeat carries it back, and the container is killed so the run stops editing the
-    // checkout — but the job goes back on the board, session intact, for a human to resume from
-    // the Claude UI. Exactly the landing an idle run gets, and reporting nothing lets it stay
-    // there.
-    it('kills the container and parks the job when the heartbeat reports a stop request', async () => {
-        const board = stubBoard([job(1)], { cancelRequested: true });
-        let finish = () => {};
-        const runner = stubRunner(
-            () =>
-                new Promise<RunOutcome>((resolve) => {
-                    finish = () => resolve(ok());
-                })
-        );
-
-        const started = drive({ ...board, runner });
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        finish();
-        await started;
-
-        expect(runner.killed).toEqual([job(1).id]);
-        expect(board.board.suspended).toEqual([job(1).id]);
-        expect(board.board.completed).toEqual([]);
     });
 
     // The park is the follow-up's launching pad, and a stopped opencode run's session id is
@@ -1671,43 +1658,41 @@ describe('the poll loop', () => {
         expect(board.board.completed).toEqual([]);
     });
 
-    // An opencode run ALWAYS leaves a session, so an empty scrape on a stopped run is the
-    // readout having failed — said out loud on the stopped path too, because the cost is a
-    // task that can never take a follow-up (issue #152).
-    it('says so when a stopped opencode run has no session to report', async () => {
+    it.each([
+        // An opencode run ALWAYS leaves a session, so an empty scrape on a stopped run is the
+        // readout having failed — said out loud on the stopped path too, because the cost is a
+        // task that can never take a follow-up (issue #152).
+        {
+            label: 'says so when a stopped opencode run has no session to report',
+            claimed: { ...job(1), executorType: 'opencode' as const },
+            outcome: ok({ readoutError: 'the readout container failed: boom' }),
+            sessions: 0,
+            complains: true,
+        },
+        // A stopped claude-code run has no scrape and no empty-scrape notice: the session was minted
+        // and reported at spawn — the one session counted — and the helper must not fire the
+        // opencode-only complaint (issue #152).
+        {
+            label: 'reports nothing extra when a stopped claude-code run has no scraped session',
+            claimed: job(1),
+            outcome: ok(),
+            sessions: 1,
+            complains: false,
+        },
+    ])('$label', async ({ claimed, outcome, sessions, complains }) => {
         const options: { cancelRequested?: boolean } = {};
-        const board = stubBoard([{ ...job(1), executorType: 'opencode' }], options);
+        const board = stubBoard([claimed], options);
         const logs: string[] = [];
         const runner = stubRunner(async () => {
             options.cancelRequested = true;
             await new Promise((resolve) => setTimeout(resolve, 20));
-            return ok({ readoutError: 'the readout container failed: boom' });
+            return outcome;
         });
 
         await drive({ ...board, runner, log: (m) => logs.push(m) });
 
-        expect(logs.some((m) => m.includes('the session readout came up empty'))).toBe(true);
-        expect(board.board.sessions).toEqual([]);
-        expect(board.board.suspended).toEqual([job(1).id]);
-    });
-
-    // A stopped claude-code run has no scrape and no empty-scrape notice: the session was minted
-    // and reported at spawn, and the helper must not fire the opencode-only complaint (issue #152).
-    it('reports nothing extra when a stopped claude-code run has no scraped session', async () => {
-        const options: { cancelRequested?: boolean } = {};
-        const board = stubBoard([job(1)], options);
-        const logs: string[] = [];
-        const runner = stubRunner(async () => {
-            options.cancelRequested = true;
-            await new Promise((resolve) => setTimeout(resolve, 20));
-            return ok();
-        });
-
-        await drive({ ...board, runner, log: (m) => logs.push(m) });
-
-        // The spawn-time mint report only — nothing scraped, nothing added on the stopped path.
-        expect(board.board.sessions).toHaveLength(1);
-        expect(logs.some((m) => m.includes('the session readout came up empty'))).toBe(false);
+        expect(logs.some((m) => m.includes('the session readout came up empty'))).toBe(complains);
+        expect(board.board.sessions).toHaveLength(sessions);
         expect(board.board.suspended).toEqual([job(1).id]);
     });
 
@@ -1716,8 +1701,19 @@ describe('the poll loop', () => {
     // With the flag already set at the first beat (which beats before sleeping, not after), the
     // attempt ends before the sync even starts: the runner never spawns and the park lands at
     // once.
-    it('stands a job down before the runner spawns when the stop arrived during setup', async () => {
-        const board = stubBoard([job(1)], { cancelRequested: true });
+    // A Remove racing the setup is answered the same way — nothing spawned, and nothing parked or
+    // reported: the rows are gone and the tree belongs to the queue's reclaim. A lease lost during
+    // setup leaves the job to its new holder: no verdict, no park.
+    it.each([
+        [
+            'stands a job down before the runner spawns when the stop arrived during setup',
+            { cancelRequested: true },
+            [job(1).id],
+        ],
+        ['reports nothing when the thread is removed during setup', { removedOnBeat: true }, []],
+        ['reports nothing when the lease is lost during setup', { lease: 'lost' }, []],
+    ] as const)('%s', async (_label, beat, suspended) => {
+        const board = stubBoard([job(1)], beat);
         let ran = false;
         const runner = stubRunner(async () => {
             ran = true;
@@ -1729,7 +1725,7 @@ describe('the poll loop', () => {
         expect(ran).toBe(false);
         expect(runner.synced).toEqual([]);
         expect(runner.killed).toEqual([job(1).id]);
-        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual(suspended);
         expect(board.board.completed).toEqual([]);
     });
 
@@ -1760,35 +1756,6 @@ describe('the poll loop', () => {
         expect(seen?.aborted).toBe(true);
         expect(runner.killed).toEqual([job(1).id]);
         expect(board.board.suspended).toEqual([job(1).id]);
-        expect(board.board.completed).toEqual([]);
-    });
-
-    // A Remove racing the setup is answered the same way — nothing spawned, and nothing parked or
-    // reported: the rows are gone and the tree belongs to the queue's reclaim.
-    it('reports nothing when the thread is removed during setup', async () => {
-        const board = stubBoard([job(1)], { removedOnBeat: true });
-        const runner = stubRunner(async () => {
-            throw new Error('the runner must not spawn');
-        });
-
-        await drive({ ...board, runner });
-
-        expect(runner.killed).toEqual([job(1).id]);
-        expect(board.board.suspended).toEqual([]);
-        expect(board.board.completed).toEqual([]);
-    });
-
-    // A lease lost during setup leaves the job to its new holder: no verdict, no park.
-    it('reports nothing when the lease is lost during setup', async () => {
-        const board = stubBoard([job(1)], { lease: 'lost' });
-        const runner = stubRunner(async () => {
-            throw new Error('the runner must not spawn');
-        });
-
-        await drive({ ...board, runner });
-
-        expect(runner.killed).toEqual([job(1).id]);
-        expect(board.board.suspended).toEqual([]);
         expect(board.board.completed).toEqual([]);
     });
 
@@ -1940,31 +1907,6 @@ describe('the poll loop', () => {
         expect(board.board.completed).toEqual([]);
     });
 
-    // Remove's defensive half this side of the fence: the only way a heartbeat sees a 404 is the
-    // board having deleted the thread while this attempt ran. The container dies, and nothing is
-    // parked or reported — there is no row left to park and nobody left to read a verdict. (The
-    // server refuses to remove a running thread, so this is a race the server already closes; the
-    // driver still answers the status rather than reading it as a broken board.)
-    it('kills the container and reports nothing when the board says the thread was removed', async () => {
-        const board = stubBoard([job(1)], { removedOnBeat: true });
-        let finish = () => {};
-        const runner = stubRunner(
-            () =>
-                new Promise<RunOutcome>((resolve) => {
-                    finish = () => resolve(ok());
-                })
-        );
-
-        const started = drive({ ...board, runner });
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        finish();
-        await started;
-
-        expect(runner.killed).toEqual([job(1).id]);
-        expect(board.board.suspended).toEqual([]);
-        expect(board.board.completed).toEqual([]);
-    });
-
     // The other half of Remove (issue #41): the thread's rows are gone and the queue hands this
     // driver the tree to take down. The worktree is reclaimed through the same runner call a
     // terminal thread's report() uses, fed a job synthesised from the row's identity, and acked
@@ -2100,9 +2042,15 @@ describe('the poll loop', () => {
             heldClaim,
         });
 
-        it('reaps an orphaned claim when the board no longer knows the holder job, then retries and acks', async () => {
+        it.each<[string, BoardLease[] | undefined]>([
+            ['reaps an orphaned claim when the board no longer knows the holder job, then retries and acks', undefined],
+            [
+                'reaps when the holder row is terminal — no attempt can ever come',
+                [{ id: root, status: 'succeeded', leaseToken: null }],
+            ],
+        ])('%s', async (_label, leaseRows) => {
             const logs: string[] = [];
-            const board = stubBoard([], { idleBeforeStop: 1, reclaims: [heldRow] });
+            const board = stubBoard([], { idleBeforeStop: 1, reclaims: [heldRow], leaseRows });
             const runner = stubRunner(async () => ok(), {
                 reclaimSequence: [heldRefusal(), { ok: true, removed: true, reason: null }],
                 reapOrphanedClaim: async () => true,
@@ -2121,29 +2069,15 @@ describe('the poll loop', () => {
             expect(logs.some((m) => m.includes('could not be reclaimed'))).toBe(false);
         });
 
-        it('reaps when the holder row is terminal — no attempt can ever come', async () => {
-            const board = stubBoard([], {
-                idleBeforeStop: 1,
-                reclaims: [heldRow],
-                leaseRows: [{ id: root, status: 'succeeded', leaseToken: null }],
-            });
-            const runner = stubRunner(async () => ok(), {
-                reclaimSequence: [heldRefusal(), { ok: true, removed: true, reason: null }],
-                reapOrphanedClaim: async () => true,
-            });
-            await drive({ ...board, runner });
-
-            expect(runner.reapAttempts.map((j) => j.id)).toEqual([root]);
-            expect(board.board.reclaimAcks).toEqual([rowId]);
-        });
-
-        it('does not reap when the board still knows the holder job as live', async () => {
+        it.each<[string, BoardLease[] | null]>([
+            [
+                'does not reap when the board still knows the holder job as live',
+                [{ id: root, status: 'running', leaseToken: null }],
+            ],
+            ['does not reap when the board cannot answer the lease lookup', null],
+        ])('%s', async (_label, leaseRows) => {
             const logs: string[] = [];
-            const board = stubBoard([], {
-                idleBeforeStop: 1,
-                reclaims: [heldRow],
-                leaseRows: [{ id: root, status: 'running', leaseToken: null }],
-            });
+            const board = stubBoard([], { idleBeforeStop: 1, reclaims: [heldRow], leaseRows });
             const runner = stubRunner(async () => ok(), {
                 reclaimSequence: [heldRefusal()],
                 reapOrphanedClaim: async () => true,
@@ -2153,18 +2087,6 @@ describe('the poll loop', () => {
             expect(runner.reapAttempts).toEqual([]);
             expect(board.board.reclaimAcks).toEqual([]);
             expect(logs.some((m) => m.includes('could not be reclaimed'))).toBe(true);
-        });
-
-        it('does not reap when the board cannot answer the lease lookup', async () => {
-            const board = stubBoard([], { idleBeforeStop: 1, reclaims: [heldRow], leaseRows: null });
-            const runner = stubRunner(async () => ok(), {
-                reclaimSequence: [heldRefusal()],
-                reapOrphanedClaim: async () => true,
-            });
-            await drive({ ...board, runner });
-
-            expect(runner.reapAttempts).toEqual([]);
-            expect(board.board.reclaimAcks).toEqual([]);
         });
 
         it('answers false from the reap without orphan fanfare, leaving the throttled failure log', async () => {
@@ -2872,10 +2794,25 @@ describe('the poll loop', () => {
     // The board hands the session back on the claim, and the runner restores it rather than being
     // given a new one. A fresh id here would strand the transcript the conversation continues
     // from and move the link.
-    it('resumes the session the board hands back, and does not report it again', async () => {
-        const parked = '44444444-4444-4444-8444-444444444444';
-        const board = stubBoard([job(1, parked)]);
-        let given: RunSession | null = null;
+    //
+    // The opencode row is the follow-up carve-out, and the reason an opencode task is
+    // follow-up-able at all: the child's session is opencode's OWN (scraped and reported when the
+    // parent ran), so the runner restores it with `--session` and delivers the new command into
+    // it. Already on the board from the insert — nothing re-reported at spawn.
+    it.each([
+        [
+            'resumes the session the board hands back, and does not report it again',
+            job(1, '44444444-4444-4444-8444-444444444444'),
+            '44444444-4444-4444-8444-444444444444',
+        ],
+        [
+            'runs an opencode follow-up, restoring the session it carries',
+            { ...job(1, 'ses_f86188c3dffeZGYO4yZq4atba9'), executorType: 'opencode' as const, followUp: true },
+            'ses_f86188c3dffeZGYO4yZq4atba9',
+        ],
+    ])('%s', async (_label, claimed, resumed) => {
+        const board = stubBoard([claimed]);
+        let given: RunSession | null | undefined;
         const runner = stubRunner(async (_job, session) => {
             given = session;
             return ok();
@@ -2883,7 +2820,8 @@ describe('the poll loop', () => {
 
         await drive({ ...board, runner });
 
-        expect(given).toEqual({ id: parked, resume: true });
+        expect(given).toEqual({ id: resumed, resume: true });
+        expect(board.board.completed).toHaveLength(1);
         expect(board.board.sessions).toEqual([]);
     });
 
@@ -2938,29 +2876,6 @@ describe('an opencode runner', () => {
                 contextCostUsd: null,
             },
         ]);
-    });
-
-    /**
-     * The follow-up carve-out, and the reason an opencode task is follow-up-able at all: the
-     * child's session is opencode's OWN (scraped and reported when the parent ran), so the runner
-     * restores it with `--session` and delivers the new command into it.
-     */
-    it('runs an opencode follow-up, restoring the session it carries', async () => {
-        const board = stubBoard([
-            { ...job(1, 'ses_f86188c3dffeZGYO4yZq4atba9'), executorType: 'opencode', followUp: true },
-        ]);
-        let given: RunSession | null | undefined;
-        const runner = stubRunner(async (_job, session) => {
-            given = session;
-            return ok();
-        });
-
-        await drive({ ...board, runner });
-
-        expect(given).toEqual({ id: 'ses_f86188c3dffeZGYO4yZq4atba9', resume: true });
-        expect(board.board.completed).toHaveLength(1);
-        // Already on the board from the insert — nothing re-reported at spawn.
-        expect(board.board.sessions).toEqual([]);
     });
 
     // opencode mints its own session id, so the loop learns it from the outcome — the runner
@@ -3018,7 +2933,8 @@ describe('verification gates', () => {
 
         expect(stack.stack.ran.names).toEqual(['test', 'lint']);
         const complete = board.board.completed[0]!;
-        expect(complete.status).toBe('failed');
+        // Issue #581: the cause rides beside the kind — a gate's real exit is a verification failure.
+        expect(complete).toMatchObject({ status: 'failed', failureKind: 'gate', failureCause: 'verification' });
         expect(complete.exitCode).toBe(3);
         expect(complete.output).toContain('lint');
         expect(complete.output).toContain('lint failed badly');
@@ -3618,7 +3534,11 @@ describe('block-helper steps (issue #207)', () => {
         await drive({ ...board, runner });
 
         expect(calls[0]!.plan.phase).toBe('post');
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+        expect(board.board.completed[0]).toMatchObject({
+            status: 'failed',
+            failureKind: 'helper',
+            failureCause: 'unknown',
+        });
         expect(board.board.completed[0]!.output).toContain('unreadable verdict');
         // Publish never runs: a failed post-helper dooms the verdict exactly like a failed gate.
         expect(runner.published).toEqual([]);
@@ -4280,170 +4200,6 @@ describe('a service that dies during the gates (issue #437)', () => {
         await drive({ ...board, runner, gates: stack.gates });
 
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'gate' });
-    });
-});
-
-describe('the verdict failure kind (issue #339)', () => {
-    /**
-     * Every terminal path names its kind on the verdict, so "how many timeouts this week" and
-     * "timeouts where the gates passed" are queries, not archaeology. Precedence when several
-     * conditions land on one run: timeout, then cache, then gate, then helper, then publish,
-     * then the plain runner error.
-     */
-    it('names a failed gate gate', async () => {
-        const board = stubBoard([gatedJob(1)]);
-        const runner = stubRunner(async () => ok());
-        const { gates } = stubGateStack({ test: 3 });
-
-        await drive({ ...board, runner, gates });
-
-        // Issue #581: the cause rides beside the kind — a gate's real exit is a verification failure.
-        expect(board.board.completed[0]).toMatchObject({
-            status: 'failed',
-            failureKind: 'gate',
-            failureCause: 'verification',
-        });
-    });
-
-    it('names an unlanded publish publish', async () => {
-        const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok(), {
-            publish: {
-                ok: false,
-                published: false,
-                branch: null,
-                prUrl: null,
-                reason: 'the push was refused',
-                repository: null,
-                baseBranch: null,
-                prNumber: null,
-                cause: 'conflict',
-            },
-        });
-
-        await drive({ ...board, runner });
-
-        expect(board.board.completed[0]).toMatchObject({
-            status: 'failed',
-            failureKind: 'publish',
-            failureCause: 'conflict',
-        });
-    });
-
-    it('names a failed post-helper helper', async () => {
-        const board = stubBoard([
-            { ...job(1), helperPlans: [{ helperId: 'noop', phase: 'post', input: null, githubWriting: false }] },
-        ]);
-        const runner = stubRunner(async () => ok());
-        runner.runHelper = async () => ({ ok: false, reason: 'malformed_output', message: 'unreadable verdict' });
-
-        await drive({ ...board, runner });
-
-        expect(board.board.completed[0]).toMatchObject({
-            status: 'failed',
-            failureKind: 'helper',
-            failureCause: 'unknown',
-        });
-    });
-
-    it('names a failed pre-helper helper — the agent never launched', async () => {
-        const board = stubBoard([
-            { ...job(1), helperPlans: [{ helperId: 'noop', phase: 'pre', input: null, githubWriting: false }] },
-        ]);
-        const runner = stubRunner(async () => {
-            throw new Error('the runner must never be reached');
-        });
-        runner.runHelper = async () => ({ ok: false, reason: 'runner_error', message: 'the helper blew up' });
-
-        await drive({ ...board, runner });
-
-        expect(board.board.completed[0]).toMatchObject({
-            status: 'failed',
-            failureKind: 'helper',
-            failureCause: 'transport',
-        });
-    });
-
-    it('names a cache kill cache_lost', async () => {
-        const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () =>
-            ok({ exitCode: 1, output: 'cut', cacheLost: '3 consecutive turns with no prompt-cache reads' })
-        );
-
-        await drive({ ...board, runner });
-
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'cache_lost' });
-    });
-
-    it('names a plain non-zero exit and a premature finish runner_error', async () => {
-        const board = stubBoard([job(1), job(2)]);
-        let ran = 0;
-        const runner = stubRunner(async () =>
-            ran++ === 0 ? ok({ exitCode: 2, output: 'boom' }) : ok({ output: 'reads only', finishReason: 'length' })
-        );
-
-        await drive({ ...board, runner });
-
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
-        expect(board.board.completed[1]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
-    });
-
-    it('puts no kind on a succeeded verdict', async () => {
-        const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok());
-
-        await drive({ ...board, runner });
-
-        expect(board.board.completed[0]?.status).toBe('succeeded');
-        expect(board.board.completed[0]).not.toHaveProperty('failureKind');
-    });
-
-    it('names every pre-run refusal runner_error, or config when only a person can fix it', async () => {
-        // The claim refusals and setup refusals are the driver's own environment failing, never
-        // the agent's work — none is a gate (that name is reserved for a gate RUN that failed).
-        const refusalCases: {
-            job: BoardJob;
-            fragment: string;
-            sync?: SyncResult;
-            rereadGates?: { gates: BoardJob['gates']; gateError: string | null } | null;
-        }[] = [
-            { job: { ...job(1), executorType: null }, fragment: 'selected executor no longer exists' },
-            { job: { ...job(1), masterPrompt: null }, fragment: 'no Factory execution context' },
-            {
-                job: { ...job(1), repo: 'Bellows-AI/factory', rootJobId: 'not-a-uuid' },
-                fragment: 'do not resolve to a task worktree',
-            },
-            {
-                job: job(2),
-                fragment: 'could not be synced with the remote',
-                sync: { ok: false, reason: 'the task branch could not be rebased onto origin/main' },
-            },
-            {
-                job: job(3),
-                fragment: 'could not be read as a gate declaration',
-                rereadGates: { gates: null, gateError: '.bellows.yaml line 3: unknown key "ports"' },
-            },
-        ];
-        for (const refusal of refusalCases) {
-            const board = stubBoard([refusal.job], { rereadGates: refusal.rereadGates });
-            const runner = stubRunner(
-                async () => {
-                    throw new Error('the runner must never be reached');
-                },
-                { sync: refusal.sync }
-            );
-
-            await drive({ ...board, runner });
-
-            expect(board.board.completed[0]?.status, refusal.fragment).toBe('failed');
-            expect(board.board.completed[0]?.output, refusal.fragment).toContain(refusal.fragment);
-            // A refused .bellows.yaml or executor selection is deterministic: its own kind, so the
-            // board rests the thread — and a batch asks a person — rather than retrying the same
-            // configuration as a transient runner error.
-            const deterministic = ['gate declaration', 'selected executor'].some((f) => refusal.fragment.includes(f));
-            const kind = deterministic ? 'config' : 'runner_error';
-            expect(board.board.completed[0]?.failureKind, refusal.fragment).toBe(kind);
-        }
     });
 });
 
@@ -5110,26 +4866,13 @@ describe('a cooperative stop (issue #442)', () => {
         expect(board.board.suspended).toEqual([]);
     });
 
-    it('stops at once, as before, when the driver has no control endpoint', async () => {
+    it.each([
+        ['stops at once, as before, when the driver has no control endpoint', undefined],
+        ['kills at once when no runner ever polled the control endpoint', { control: true, polled: false }],
+    ] as const)('%s', async (_label, control) => {
         const options: { cancelRequested?: boolean } = {};
         const board = stubBoard([job(1)], options);
-        const { gates } = stubGateStack();
-        const runner = stubRunner(async () => {
-            options.cancelRequested = true;
-            await until(() => runner.killed.length > 0);
-            return ok();
-        });
-
-        await driveControlled({ ...board, runner, gates });
-
-        expect(runner.killed).toEqual([job(1).id]);
-        expect(board.board.suspended).toEqual([job(1).id]);
-    });
-
-    it('kills at once when no runner ever polled the control endpoint', async () => {
-        const options: { cancelRequested?: boolean } = {};
-        const board = stubBoard([job(1)], options);
-        const { stack, gates } = stubGateStack({}, { control: true, polled: false });
+        const { stack, gates } = stubGateStack({}, control);
         const runner = stubRunner(async () => {
             options.cancelRequested = true;
             await until(() => runner.killed.length > 0);

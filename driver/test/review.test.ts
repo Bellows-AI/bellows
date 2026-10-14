@@ -138,15 +138,45 @@ describe('the review reply planner', () => {
         expect(inline.targets).toEqual([planned({ id: '111', kind: 'inline', reply: 'fixed' })]);
     });
 
-    it('refuses a target the collected state does not hold', () => {
-        const plan = buildReviewReply(collection(), [request({ id: '999', kind: 'general', reply: 'hi' })]);
-        expect(plan.targets).toEqual([
+    it.each<[string, ReviewReplyRequest, ReturnType<typeof planned>, Parameters<typeof collection>[0]?]>([
+        [
+            'a general target the collected state does not hold',
+            request({ id: '999', kind: 'general', reply: 'hi' }),
             planned({ id: '999', kind: 'general', status: 'refused', reason: 'unknown_target' }),
-        ]);
-        const thread = buildReviewReply(collection(), [request({ id: 'T_ghost', kind: 'thread', resolve: true })]);
-        expect(thread.targets).toEqual([
+        ],
+        [
+            'a thread target the collected state does not hold',
+            request({ id: 'T_ghost', kind: 'thread', resolve: true }),
             planned({ id: 'T_ghost', kind: 'thread', status: 'refused', reason: 'unknown_target' }),
-        ]);
+        ],
+        [
+            'to plan a resolve for an already-resolved thread',
+            request({ id: 'T_b', kind: 'thread', resolve: true }),
+            planned({ id: 'T_b', kind: 'resolve', resolve: true, status: 'refused', reason: 'already_resolved' }),
+        ],
+        [
+            'a thread intent with neither a reply nor a resolve',
+            request({ id: 'T_a', kind: 'thread' }),
+            planned({ id: 'T_a', kind: 'thread', status: 'refused', reason: 'no_action' }),
+        ],
+        [
+            'a thread reply when the thread has no comment to anchor to',
+            request({ id: 'T_empty', kind: 'thread', reply: 'hi' }),
+            planned({ id: 'T_empty', kind: 'thread', status: 'refused', reason: 'no_reply_target' }),
+            {
+                threads: [
+                    { id: 'T_empty', isResolved: false, isOutdated: false, path: null, line: null, comments: [] },
+                ],
+            },
+        ],
+        [
+            'a target with no matching id in the collected state',
+            { id: '', kind: 'general', reply: 'hi' } as ReviewReplyRequest,
+            planned({ id: '', kind: 'general', status: 'refused', reason: 'unknown_target' }),
+        ],
+    ])('refuses %s', (_label, intent, expected, state) => {
+        const plan = buildReviewReply(collection(state), [intent]);
+        expect(plan.targets).toEqual([expected]);
     });
 
     it('refuses an empty or missing reply body', () => {
@@ -175,35 +205,6 @@ describe('the review reply planner', () => {
                 status: 'planned',
             }),
             planned({ id: 'T_a', kind: 'resolve', resolve: true, status: 'planned' }),
-        ]);
-    });
-
-    it('refuses to plan a resolve for an already-resolved thread', () => {
-        const plan = buildReviewReply(collection(), [request({ id: 'T_b', kind: 'thread', resolve: true })]);
-        expect(plan.targets).toEqual([
-            planned({ id: 'T_b', kind: 'resolve', resolve: true, status: 'refused', reason: 'already_resolved' }),
-        ]);
-    });
-
-    it('refuses a thread intent with neither a reply nor a resolve', () => {
-        const plan = buildReviewReply(collection(), [request({ id: 'T_a', kind: 'thread' })]);
-        expect(plan.targets).toEqual([planned({ id: 'T_a', kind: 'thread', status: 'refused', reason: 'no_action' })]);
-    });
-
-    it('refuses a thread reply when the thread has no comment to anchor to', () => {
-        const noComments = collection({
-            threads: [{ id: 'T_empty', isResolved: false, isOutdated: false, path: null, line: null, comments: [] }],
-        });
-        const plan = buildReviewReply(noComments, [request({ id: 'T_empty', kind: 'thread', reply: 'hi' })]);
-        expect(plan.targets).toEqual([
-            planned({ id: 'T_empty', kind: 'thread', status: 'refused', reason: 'no_reply_target' }),
-        ]);
-    });
-
-    it('refuses a target with no matching id in the collected state', () => {
-        const plan = buildReviewReply(collection(), [{ id: '', kind: 'general', reply: 'hi' } as ReviewReplyRequest]);
-        expect(plan.targets).toEqual([
-            planned({ id: '', kind: 'general', status: 'refused', reason: 'unknown_target' }),
         ]);
     });
 

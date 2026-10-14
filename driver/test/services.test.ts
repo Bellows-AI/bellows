@@ -297,9 +297,59 @@ describe('parseBellows: escape grammar', () => {
 });
 
 describe('parseBellows: refusals', () => {
-    it('refuses a service with no name or no image', () => {
-        expect(() => parseBellows('services:\n  - image: redis\n')).toThrow(/missing "name"/);
-        expect(() => parseBellows('services:\n  - name: cache\n')).toThrow(/missing "image"/);
+    // `-e` values travel on a `docker run` argv, and execve caps a single argument far below
+    // what a pasted certificate collection weighs — better a refusal that names the key than
+    // a daemon error that reads as infrastructure.
+    const MAX_ENV_VALUE = 8192;
+    const MAX_ENV_KEY = 256;
+
+    it.each([
+        ['a service with no name', 'services:\n  - image: redis\n', /missing "name"/],
+        ['a service with no image', 'services:\n  - name: cache\n', /missing "image"/],
+        // A full pipeline syntax would silently do nothing here. Saying "unknown key" turns a
+        // pasted Drone file from a quiet no-op into an error a human reads.
+        ['an unknown top-level key', 'pipeline:\n  - name: cache\n    image: redis\n', /unknown key "pipeline"/],
+        // Services are reachable only from inside the job's network. `ports:` is how a CI config
+        // would publish them on the HOST, and the driver's daemon is root on that host, so a
+        // published port is not a supported feature that failed but a key that never parses.
+        [
+            'an unknown service key — ports, which is where port publishing dies',
+            'services:\n  - name: db\n    image: postgres\n    ports: ["5432:5432"]\n',
+            /unknown service key "ports"/,
+        ],
+        [
+            'an unknown service key — volumes',
+            'services:\n  - name: db\n    image: postgres\n    volumes: ["/x:/y"]\n',
+            /unknown service key "volumes"/,
+        ],
+        [
+            'a duplicate service name in one file',
+            'services:\n  - name: cache\n    image: redis\n  - name: cache\n    image: valkey\n',
+            /duplicate service name "cache"/,
+        ],
+        [
+            'an environment key that is not a shell identifier',
+            'services:\n  - name: db\n    image: postgres\n    environment:\n      "A B": 1\n',
+            /not a valid environment variable name/,
+        ],
+        // Two `A:` lines would reach docker as `-e A=1 -e A=2` and silently resolve to the last.
+        [
+            'a duplicate environment key in one service, like every other duplicate',
+            'services:\n  - name: db\n    image: postgres\n    environment:\n      A: 1\n      A: 2\n',
+            /duplicate environment key "A"/,
+        ],
+        [
+            'an environment value too heavy for an argv',
+            `services:\n  - name: db\n    image: postgres\n    environment:\n      PEM: ${'x'.repeat(MAX_ENV_VALUE + 1)}\n`,
+            /too long/,
+        ],
+        [
+            'an environment key too heavy for an argv',
+            `services:\n  - name: db\n    image: postgres\n    environment:\n      ${'K'.repeat(MAX_ENV_KEY + 1)}: 1\n`,
+            /too long/,
+        ],
+    ])('refuses %s', (_label, yaml, reason) => {
+        expect(() => parseBellows(yaml)).toThrow(reason);
     });
 
     it('refuses a name that is not a lowercase DNS label', () => {
@@ -314,24 +364,6 @@ describe('parseBellows: refusals', () => {
         }
         expect(parseBellows('services:\n  - name: a\n    image: redis\n')).toHaveLength(1);
         expect(parseBellows(`services:\n  - name: ${'a'.repeat(NAME_MAX_LENGTH)}\n    image: redis\n`)).toHaveLength(1);
-    });
-
-    it('refuses an unknown top-level key', () => {
-        // A full pipeline syntax would silently do nothing here. Saying "unknown key" turns a
-        // pasted Drone file from a quiet no-op into an error a human reads.
-        expect(() => parseBellows('pipeline:\n  - name: cache\n    image: redis\n')).toThrow(/unknown key "pipeline"/);
-    });
-
-    it('refuses unknown service keys — which is where port publishing dies', () => {
-        // Services are reachable only from inside the job's network. `ports:` is how a CI config
-        // would publish them on the HOST, and the driver's daemon is root on that host, so a
-        // published port is not a supported feature that failed but a key that never parses.
-        expect(() => parseBellows('services:\n  - name: db\n    image: postgres\n    ports: ["5432:5432"]\n')).toThrow(
-            /unknown service key "ports"/
-        );
-        expect(() => parseBellows('services:\n  - name: db\n    image: postgres\n    volumes: ["/x:/y"]\n')).toThrow(
-            /unknown service key "volumes"/
-        );
     });
 
     it('refuses an unhardened value that is not the literal true', () => {
@@ -357,41 +389,6 @@ describe('parseBellows: refusals', () => {
                 bad
             ).toThrow(/"user" must be a numeric non-root "uid:gid"/);
         }
-    });
-
-    it('refuses a duplicate service name in one file', () => {
-        expect(() =>
-            parseBellows('services:\n  - name: cache\n    image: redis\n  - name: cache\n    image: valkey\n')
-        ).toThrow(/duplicate service name "cache"/);
-    });
-
-    it('refuses an environment key that is not a shell identifier', () => {
-        expect(() =>
-            parseBellows('services:\n  - name: db\n    image: postgres\n    environment:\n      "A B": 1\n')
-        ).toThrow(/not a valid environment variable name/);
-    });
-
-    it('refuses a duplicate environment key in one service, like every other duplicate', () => {
-        // Two `A:` lines would reach docker as `-e A=1 -e A=2` and silently resolve to the last.
-        expect(() =>
-            parseBellows('services:\n  - name: db\n    image: postgres\n    environment:\n      A: 1\n      A: 2\n')
-        ).toThrow(/duplicate environment key "A"/);
-    });
-
-    it('refuses an environment entry too heavy for an argv', () => {
-        // `-e` values travel on a `docker run` argv, and execve caps a single argument far below
-        // what a pasted certificate collection weighs — better a refusal that names the key than
-        // a daemon error that reads as infrastructure.
-        const MAX_ENV_VALUE = 8192;
-        const MAX_ENV_KEY = 256;
-        const big = 'x'.repeat(MAX_ENV_VALUE + 1);
-        expect(() =>
-            parseBellows(`services:\n  - name: db\n    image: postgres\n    environment:\n      PEM: ${big}\n`)
-        ).toThrow(/too long/);
-        const longKey = 'K'.repeat(MAX_ENV_KEY + 1);
-        expect(() =>
-            parseBellows(`services:\n  - name: db\n    image: postgres\n    environment:\n      ${longKey}: 1\n`)
-        ).toThrow(/too long/);
     });
 
     it('refuses an image that is not an image reference', () => {
@@ -746,25 +743,17 @@ describe('awaitServicesRunning (issue #560)', () => {
         expect(lists).toBe(2);
     });
 
-    it('throws naming what never ran once the timeout has passed', async () => {
-        let slept = 0;
-        const sleep = async (ms: number) => {
-            slept += ms;
-        };
-        await expect(awaitServicesRunning(specs, async () => [status('db', 'running')], sleep)).rejects.toThrow(
-            'service "cache" not running 300s after the restart'
-        );
-        expect(slept).toBe(300_000);
-    });
-
-    it('stops at a supplied budget, still naming the whole restart timeout', async () => {
+    it.each<[string, { timeoutMs: number } | undefined, number]>([
+        ['throws naming what never ran once the timeout has passed', undefined, 300_000],
+        ['stops at a supplied budget, still naming the whole restart timeout', { timeoutMs: 6_000 }, 6_000],
+    ])('%s', async (_label, options, budget) => {
         let slept = 0;
         const sleep = async (ms: number) => {
             slept += ms;
         };
         await expect(
-            awaitServicesRunning(specs, async () => [status('db', 'running')], sleep, { timeoutMs: 6_000 })
+            awaitServicesRunning(specs, async () => [status('db', 'running')], sleep, options)
         ).rejects.toThrow('service "cache" not running 300s after the restart');
-        expect(slept).toBe(6_000);
+        expect(slept).toBe(budget);
     });
 });
