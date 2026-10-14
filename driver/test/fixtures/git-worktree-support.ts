@@ -158,7 +158,11 @@ export function setupWorktreeFixture(): WorktreeFixture {
         git(cwd, 'commit', '-m', message);
     };
 
-    beforeEach(() => {
+    beforeEach(async () => {
+        // Every git call here is synchronous, and vitest awaits tests without a macrotask turn, so
+        // the worker reads no RPC reply until something yields: a suite of these past 60s times out
+        // its own `onTaskUpdate` calls and the run loses files' reports. One event-loop turn per test.
+        await new Promise((resolve) => setImmediate(resolve));
         dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-worktree-')));
         // The real layout: the clone sits at <mount>/<org>/<user>/<repo>, worktrees beside it.
         clone = join(dir, 'bellows', USER, 'factory');
