@@ -9,7 +9,7 @@
 // tools (title generation, quota probes) get a short text answer and are not counted, so
 // `GET /requests` is exactly the number of agent model requests — what a cooperative Stop must
 // keep from growing. `GET /control` plays the driver's run-control endpoint: it answers
-// `{"stop":true}` from the moment the first agent request arrives.
+// `{"stop":true}` from the moment the first agent request arrives — never in the question modes.
 //
 // `--ask` is the AskUserQuestion mode (issue #226): the first agent reply is an AskUserQuestion
 // tool call (one question, options Red and Blue), `POST /question` records the question, and
@@ -19,7 +19,7 @@
 //
 // `--ask-prose` is the plain-text variant: the first agent reply is prose ending "Which one should
 // I use: Red or Blue?" with `end_turn`, so the baked Stop hook runs. The endpoint plays the hook's
-// evaluator too: a request carrying the hook's prompt text is answered `{"ok": false, …}` the
+// evaluator too: a tool-less request carrying the hook's prompt text is answered `{"ok": false, …}` the
 // first time and `{"ok": true}` after, and is not an agent request. The next agent request then
 // calls AskUserQuestion, and the run goes on as in `--ask`. `GET /hooks` counts the evaluations.
 import { createServer } from 'node:http';
@@ -148,9 +148,12 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
             }
             if (url === CONTROL_PATH) {
                 // The driver's control endpoint, played here: a Stop is raised the moment the first
-                // agent request arrives, so it always lands INSIDE the first model step.
+                // agent request arrives, so it always lands INSIDE the first model step. Never in the
+                // question modes: the entrypoint's stop poller reads this too, and a Stop would make
+                // the bridge deny the question as stopped.
                 reply.setHeader('content-type', 'application/json');
-                return reply.end(JSON.stringify({ stop: agentRequests > 0 || firstInFlight }));
+                const stop = !ask && !askProse && (agentRequests > 0 || firstInFlight);
+                return reply.end(JSON.stringify({ stop }));
             }
             if (url === HOOKS_PATH) {
                 reply.setHeader('content-type', 'application/json');
@@ -187,8 +190,10 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
                 // An unparseable body is answered like a tool-less request.
             }
             const tools = Array.isArray(body.tools) ? body.tools : [];
-            // The Stop hook's evaluation, whatever shape the CLI sends it in: recognised by its prompt.
-            const isHookRequest = askProse && JSON.stringify(body).includes(STOP_HOOK_PROMPT);
+            // The Stop hook's evaluation, whatever shape the CLI sends it in: recognised by its prompt
+            // on a request with no tools. The agent's continuation after a block quotes the prompt
+            // back ("Stop hook feedback") but carries the tools, and is an agent step.
+            const isHookRequest = askProse && tools.length === 0 && JSON.stringify(body).includes(STOP_HOOK_PROMPT);
             const isAgentStep = tools.length > 0 && !isHookRequest;
             // The delay is the "stop during a model step" window: the answer to the FIRST agent
             // request is held, so a Stop raised meanwhile lands inside the step.

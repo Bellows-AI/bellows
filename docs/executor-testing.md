@@ -7,7 +7,7 @@ Which lane proves what for the board/driver/runner/telemetry control plane, list
 | `npm run test:executors` | nothing | Board routes, orchestration, both runners, image/config artifacts, OTLP parsing — offline. Config in `vitest.executors.config.ts`. |
 | `npm run test:coverage:executors` | nothing | The same surface against the thresholds in that config. |
 | `DATABASE_URL=…/factory_test npm run test:db` | postgres | Real lease, fencing, attribution, deduplication and rollup SQL (`vitest.db.config.ts`), and the CLI scripting flow over real board HTTP and SQL with no driver or runner (`server/test-db/cli.scripting.test.ts`). |
-| `npm run test:jobs` | docker, port 8129 | Real board HTTP, a real driver, real containers, a disposable database (`scripts/test-jobs.sh`). Required before changing docker runner behavior. |
+| `npm run test:jobs` | docker, port 8129 | Real board HTTP, a real driver, real containers, a disposable database (`scripts/test-jobs.sh`); every task runs against a ready fixture repository whose origin is a bare repo in the driver volume (`server/test/test-jobs.harness.test.ts`). Required before changing docker runner behavior. |
 | the cooperative-Stop phase of `npm run test:jobs` | docker, `make runners` | The real `claude` and `opencode` in the executor images against `scripts/fake-model-endpoint.mjs` (offline, no credential): a Stop raised inside the first model step ends the run after that step's tool call and before a second model request. The endpoint's own protocol is pinned in `driver/test/fake-model-endpoint.test.ts`. |
 | the question round-trip phase of `npm run test:jobs` | docker, `make runners` | Board + driver + the real `claude-executor` against the endpoint's `--ask` mode: the job shows a pending question, a member's answer settles it `succeeded` with `ANSWER=Blue`, a second answer is 409 `QUESTION_ANSWERED`; a Stop while pending settles `stopped` and the question reads `closed`. Kubernetes has no such lane — a stated limit in [kubernetes.md](kubernetes.md). |
 | `npm run test:k8s` | helm | `helm lint`/`helm template` assertions in both the local and the EKS value shapes, including the rendered CEL and the port-scoped egress rules. Required before changing Kubernetes runner behavior. |
@@ -32,6 +32,11 @@ Which lane proves what for the board/driver/runner/telemetry control plane, list
 
 ## What no lane covers
 
+- **`npm run test:jobs` on a Linux docker daemon.** The compose-driver and question-round-trip phases
+  reach the open board and the driver's control server through `host.docker.internal`, which only
+  Docker Desktop forwards to the host's loopback, and `AUTH_MODE=none` refuses any other bind
+  (`assertNoneModeBindable`, `server/src/config.ts`) — so those 9 checks of `scripts/test-jobs.sh`
+  need host networking there, and the lane is not in CI ([ci.md](ci.md)).
 - **The real collector** is in neither end-to-end path; `test:jobs` and `--cluster` assert the
   driver's export, not a stored-and-rolled-up datapoint.
 - **A cloud cluster.** `--cluster` refuses every non-kind context deliberately (it deletes runner

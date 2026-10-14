@@ -43,4 +43,6 @@ Three workflows and no configured secret — the only credential any uses is `gi
 - `driver/test/executor-images.test.ts` and `driver/test/review-reply-script.test.ts` spawn real processes and can
   time out on a contended runner; re-run the job.
 - CI never runs `npm run test:jobs` or `npm run test:k8s`, and no lane runs a real cloud cluster
-  ([eks-runbook.md](eks-runbook.md)).
+  ([eks-runbook.md](eks-runbook.md)). `test:jobs` is out because of Linux docker networking: on
+  ubuntu-latest 9 checks (the compose-driver and question-round-trip phases of `scripts/test-jobs.sh`)
+  need host networking to reach the loopback-only open board ([executor-testing.md](executor-testing.md)).

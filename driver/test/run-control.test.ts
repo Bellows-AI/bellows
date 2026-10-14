@@ -214,6 +214,21 @@ describe("OpenCode's stop plugin", () => {
         expect(running.aborted).toEqual([]);
     });
 
+    // The entrypoint reads this record to tell a Stop's abort from a genuine opencode failure.
+    it('records the abort beside the marker, and only once the abort succeeded', async () => {
+        const stopped = await withMarker(true);
+        await stopped.hooks['tool.execute.after']({ sessionID: 'ses_5' });
+        expect(existsSync(`${process.env.FACTORY_STOP_MARKER}.aborted`)).toBe(true);
+
+        const marker = join(scratch(), 'stop');
+        writeFileSync(marker, 'stop\n');
+        process.env.FACTORY_STOP_MARKER = marker;
+        const failing = { session: { abort: async () => Promise.reject(new Error('no such session')) } };
+        const hooks = await (await load())({ client: failing });
+        await hooks['tool.execute.after']({ sessionID: 'ses_6' });
+        expect(existsSync(`${marker}.aborted`)).toBe(false);
+    });
+
     it('ignores events that are not a finished step', async () => {
         const { hooks, aborted } = await withMarker(true);
         await hooks.event({

@@ -20,6 +20,20 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).toContain('env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1');
     });
 
+    // /api/health answers while the migrations still run; the truncate needs the schema they create.
+    it('waits for the migrated board, not the live one, before it touches the schema', () => {
+        const boot = SCRIPT.slice(0, SCRIPT.indexOf("-c 'truncate job, workflow cascade'"));
+        expect(boot).toContain('[ "$(status "$(api GET /api/ready)")" = \'200\' ]');
+        expect(boot).not.toContain('api GET /api/health)")" = \'200\'');
+    });
+
+    // job_question and the batch tables reference job: a plain truncate of a named list is refused
+    // by postgres the day a migration adds a referencing table, which is how the harness broke.
+    it('empties every table that references a job, not a list that rots', () => {
+        expect(SCRIPT).toContain("-c 'truncate job, workflow cascade'");
+        expect(SCRIPT).not.toMatch(/truncate job, workflow, /);
+    });
+
     // The route is gone from the board (404 Route not found); the claim's resumeSessionId has no
     // slash, so the legitimate field assertion cannot trip this.
     it('scripts/ holds no reference to the removed /resume route', () => {
@@ -50,8 +64,7 @@ describe('the test-jobs harness', () => {
     });
 
     it('truncates the queue and the workflow table before the board checks', () => {
-        expect(SCRIPT).toContain('truncate job, workflow, job_artifact');
-        expect(SCRIPT.indexOf('truncate job, workflow, job_artifact')).toBeLessThan(
+        expect(SCRIPT.indexOf("-c 'truncate job, workflow cascade'")).toBeLessThan(
             SCRIPT.indexOf("expect_status 'stores the task-selectable executors'")
         );
     });
@@ -61,20 +74,112 @@ describe('the test-jobs harness', () => {
         // run unchecked, a failed truncate leaves those rows — and the seeded workflow — in place,
         // and the claim checks below then fail with queue or lease symptoms instead of naming the
         // fixture as the cause. A failed truncate stops the harness.
-        // job_artifact (046) references job, so it truncates with it.
-        expect(SCRIPT).toMatch(/truncate job, workflow, job_artifact' >\/dev\/null 2>&1 \|\| \{/);
-        expect(SCRIPT).toContain("echo 'test-jobs: could not truncate job, workflow, job_artifact'");
-        // No bare statement: the truncate line must carry the guard, not end there.
-        expect(SCRIPT).not.toMatch(/'truncate job, workflow, job_artifact' >\/dev\/null 2>&1\n/);
+        expect(SCRIPT).toMatch(/truncate job, workflow cascade' >\/dev\/null 2>&1 \|\| \{/);
+        expect(SCRIPT).toContain("echo 'test-jobs: could not truncate job, workflow'");
+    });
+
+    // POST /api/jobs refuses a create whose repo is not the author's ready selection (#263,
+    // 372f5630) — every check from 'queues a job' on failed with REPO_REQUIRED until the harness
+    // seeded one. The fixture is what a finished clone leaves: the ready row, and the clone.
+    it('selects a ready repository for the stand-in member before the first task', () => {
+        const firstTask = SCRIPT.indexOf("create_job 'board only'");
+        const seeded = SCRIPT.indexOf(
+            'insert into user_repo (org_id, user_id, repo_owner, repo_name, status, ready_at)'
+        );
+        expect(SCRIPT).toContain('member="$(body "$(api GET /api/auth/me)")"');
+        expect(seeded).toBeGreaterThan(-1);
+        expect(seeded).toBeLessThan(firstTask);
+        expect(SCRIPT).toContain("'ready', now())");
+        expect(SCRIPT).toContain('git init -q --bare -b main .smoke-origin.git');
+        expect(SCRIPT.indexOf('git clone -q "$PWD/.smoke-origin.git" "$1"')).toBeLessThan(firstTask);
+    });
+
+    it('every task the harness means to queue names the fixture repository', () => {
+        expect(SCRIPT).toContain('repo: process.argv[4]');
+        // The fourth argv slot of create_job's one node call is the fixture repository.
+        expect(SCRIPT).toMatch(/process\.argv\[4\],.*" "\$SMOKE_REPO"\)"$/m);
+        for (const command of ['x\\",\\"workflow\\":\\"ghost', 'walk me end to end', 'flag walk', 'bound walk']) {
+            const at = SCRIPT.indexOf(command);
+            expect(at).toBeGreaterThan(-1);
+            expect(SCRIPT.slice(at, SCRIPT.indexOf('\n', at))).toContain('\\"repo\\":\\"$SMOKE_REPO\\"');
+        }
+        // A single-quoted body cannot carry $SMOKE_REPO: only the bodies meant to be refused before
+        // the repository is read (an empty command, the unauthenticated and worker-token creates).
+        const literal = [...SCRIPT.matchAll(/POST \/api\/jobs '(\{"command":[^']*\})'/g)].map((m) => m[1]);
+        expect(literal.sort()).toEqual(['{"command":""}', '{"command":"echo hi"}', '{"command":"rm -rf /"}']);
     });
 
     it('provisions the board-issued member subpath in the named driver volume', () => {
         expect(SCRIPT).toContain('workspace_path="$(field "$fu_claim" workspacePath)"');
+        expect(SCRIPT).toContain('[ "$workspace_path" = "$member_path" ]');
         expect(SCRIPT).toContain('docker volume create "$VOLUME"');
-        expect(SCRIPT).toContain('mkdir -p "/workspaces/$workspace_path"');
+        // uid 1000: the user every runner, sync and gate container writes the tree as.
+        expect(SCRIPT).toContain("mkdir -p '/workspaces/$member_path' && chown 1000:1000 '/workspaces/$member_path'");
         expect(SCRIPT.indexOf('docker volume create "$VOLUME"')).toBeLessThan(
             SCRIPT.indexOf('start_driver "$IMAGE_OK"')
         );
+    });
+
+    // The driver runs the startup sync in the job's executor image with `--entrypoint node`, so a
+    // bare alpine stub cannot sync the checkout every task now has.
+    it("the stub runners stand on node and git as the executor images' uid-1000 user", () => {
+        expect(SCRIPT).toContain('RUN apk add --no-cache git\\nUSER node\\n\' >"$work/Dockerfile.base"');
+        for (const file of ['"$work/Dockerfile.ok"', '"$work/Dockerfile.fail"', '"$work/run/Dockerfile"']) {
+            const line = SCRIPT.split('\n').find((l) => l.includes(`>${file}`)) ?? '';
+            expect(line).toMatch(/^printf 'FROM %s\\n/);
+            expect(line).toContain(`"$IMAGE_BASE" >${file}`);
+        }
+        expect(SCRIPT).toContain(
+            'docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_BASE"'
+        );
+    });
+
+    // The services readout reads the task worktree, which the sync branches from origin/main.
+    it('the .bellows.yaml fixture is committed to the origin, not dropped into the clone', () => {
+        expect(SCRIPT).toContain('git -C /tmp/tree push -q origin HEAD:main');
+        expect(SCRIPT).not.toContain('/demo/.bellows.yaml');
+    });
+
+    // docker-compose.yml requires JOB_BOARD_TOKEN for the dashboard, and compose interpolates the
+    // whole file on every call (on ubuntu-latest even `exec`): with no .env (a worktree, CI) the
+    // postgres start and the driver build were refused.
+    it('every compose call goes through the helper that can interpolate the compose file', () => {
+        expect(SCRIPT).toContain('compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose "$@"; }');
+        const code = SCRIPT.split('\n').filter((l) => !l.trimStart().startsWith('#'));
+        expect(code.filter((l) => l.includes('docker compose'))).toEqual([
+            'compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose "$@"; }',
+        ]);
+        expect(SCRIPT).toContain('compose -p "$COMPOSE_PROJECT" build driver');
+        expect(SCRIPT).toContain('    -e JOB_BOARD_TOKEN= \\\n');
+    });
+
+    // The auth phase takes the open board down; the question round trip after it queues on $BASE.
+    it('the open board is back up before the phases that follow the auth one', () => {
+        const restart = SCRIPT.lastIndexOf('start_open_board\n');
+        expect(restart).toBeGreaterThan(SCRIPT.indexOf("ok 'a worker token cannot queue a job'"));
+        expect(restart).toBeLessThan(SCRIPT.lastIndexOf('ask_roundtrip_lane'));
+    });
+
+    // The bridge the claude entrypoint execs refuses any argv not ending in `-p <prompt>` (#536).
+    it('the real-claude lanes pass the prompt last, as the driver does', () => {
+        expect(SCRIPT).toContain(
+            "--dangerously-skip-permissions --model fake-model\n            -p 'touch the step markers')"
+        );
+        expect(SCRIPT).toContain("--dangerously-skip-permissions --model fake-model -p 'ask which colour' >");
+        expect(SCRIPT).not.toMatch(/"\$image" -p '/);
+    });
+
+    // opencode's abort exit is the entrypoint's to map (docker/opencode-executor/entrypoint.sh):
+    // both CLIs exit 0 after a Stop, and never by the timeout.
+    it('the cooperative-Stop lane wants exit 0 from both CLIs', () => {
+        expect(SCRIPT).toContain('if [ "$status" = 0 ]; then\n        ok "$cli exits on its own after the stop"');
+        expect(SCRIPT).not.toContain('want_exit');
+    });
+
+    // The opencode message is the turn context, then the prompt (#518): the stub's final line.
+    it('the opencode check reads the prompt off the message end, not the argv head', () => {
+        expect(SCRIPT).not.toContain("'run --agent factory opencode prompt'");
+        expect(SCRIPT).toContain('[ "$oc_last" = \'opencode prompt\' ]');
     });
 
     it('the leftover checks are scoped to the jobs this run created', () => {

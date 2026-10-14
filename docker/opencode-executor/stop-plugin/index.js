@@ -4,7 +4,7 @@
 // marker — never the control credential. Aborting is the chosen mechanism because throwing from
 // `tool.execute.before` shows the model a tool error and it keeps going. Fails open: any error
 // leaves the run going, and the driver's grace kill is the backstop.
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 
 const DEFAULT_MARKER = '/tmp/factory-stop';
 const STEP_FINISH = 'step-finish';
@@ -14,10 +14,18 @@ export const FactoryStopPlugin = async ({ client }) => {
     const aborted = new Set();
     const stopIfRequested = async (sessionID) => {
         if (!sessionID || aborted.has(sessionID)) return;
-        if (!existsSync(process.env.FACTORY_STOP_MARKER || DEFAULT_MARKER)) return;
+        const marker = process.env.FACTORY_STOP_MARKER || DEFAULT_MARKER;
+        if (!existsSync(marker)) return;
         aborted.add(sessionID);
         try {
             await client.session.abort({ path: { id: sessionID } });
+            // The entrypoint's proof that opencode's `Error: Aborted` exit was this Stop, not a
+            // failure: it reports such a run as exit 0. Written only once the abort succeeded.
+            try {
+                writeFileSync(`${marker}.aborted`, `${sessionID}\n`);
+            } catch (e) {
+                console.error(`factory-stop: could not record the abort: ${e?.message ?? e}`);
+            }
         } catch (e) {
             // Said once on stderr: a wrong SDK call shape would otherwise silently leave every
             // Stop to the driver's grace kill.
