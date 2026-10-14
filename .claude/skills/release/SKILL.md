@@ -56,9 +56,11 @@ log on disk; read the summary, then the failures.
 
 **Suites** — on an idle machine; a red under load is re-run before it is trusted. Run every one,
 not only what CI runs: read `.github/workflows/ci.yml` for which suites gate a PR — a suite CI
-never runs is one that has rotted since the last release, and its failures predate this branch.
-`npm test` exiting 1 with every test passed is vitest's own worker timing out
-(`Timeout calling "onTaskUpdate"`); count the errors' messages before calling it red.
+never runs may have rotted unnoticed. Call a failure pre-existing only after it reproduces on a
+known-good commit (the last tag, or the commit before the suspected change); otherwise it is this
+release's. `npm test` exiting 1 with every test passed is load only when **every** reported error
+is vitest's own worker timeout (`Timeout calling "onTaskUpdate"`); any other error — an unhandled
+rejection the code throws — is red, the rule `driver/src/gate-cause.ts` applies to gates.
 
 ```bash
 npm run typecheck
