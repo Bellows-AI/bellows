@@ -11,17 +11,23 @@ describe('the 401 listener', () => {
     it('notifies every subscriber, and an unsubscribe leaves the others live', () => {
         const shell = vi.fn();
         const page = vi.fn();
+        // The listener Set is module state shared by every file in the fork (`isolate: false`),
+        // so nothing subscribed here may outlive the test, a failed assertion included.
         const offShell = subscribeUnauthenticated(shell);
-        subscribeUnauthenticated(page);
+        const offPage = subscribeUnauthenticated(page);
+        try {
+            reportUnauthenticated();
+            expect(shell).toHaveBeenCalledTimes(1);
+            expect(page).toHaveBeenCalledTimes(1);
 
-        reportUnauthenticated();
-        expect(shell).toHaveBeenCalledTimes(1);
-        expect(page).toHaveBeenCalledTimes(1);
-
-        offShell();
-        reportUnauthenticated();
-        expect(shell).toHaveBeenCalledTimes(1);
-        expect(page).toHaveBeenCalledTimes(2);
+            offShell();
+            reportUnauthenticated();
+            expect(shell).toHaveBeenCalledTimes(1);
+            expect(page).toHaveBeenCalledTimes(2);
+        } finally {
+            offShell();
+            offPage();
+        }
     });
 });
 
