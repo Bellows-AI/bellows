@@ -1,8 +1,7 @@
-import type { FastifyInstance } from 'fastify';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import {
@@ -15,6 +14,15 @@ import {
     stubTelemetryClient,
     testConfig,
 } from './helpers.js';
+import {
+    HTTP_BAD_REQUEST,
+    HTTP_CONFLICT,
+    HTTP_CREATED,
+    HTTP_FORBIDDEN,
+    HTTP_NOT_FOUND,
+    HTTP_OK,
+    trackApps,
+} from './helpers-http.js';
 
 /**
  * Offline: the HTTP contract of the executor lifecycle (issue 440) — removing and suspending a
@@ -23,18 +31,7 @@ import {
  * server/test-db/user-executor-store.test.ts and job-store.executor-scope.test.ts.
  */
 
-const HTTP_OK = 200;
-const HTTP_CREATED = 201;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_FORBIDDEN = 403;
-const HTTP_NOT_FOUND = 404;
-const HTTP_CONFLICT = 409;
-
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 let root: string;
 beforeEach(() => {
@@ -80,7 +77,7 @@ async function boot() {
         }),
         auth,
     });
-    app = instance;
+    track(instance);
     return {
         instance,
         executors,

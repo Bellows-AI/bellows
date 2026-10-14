@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { run } from '../src/run.js';
-
-const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
+import { ENV, runCli, type Sent as Recorded } from './harness.js';
 const ID = '11111111-1111-4111-8111-111111111111';
 
 const PLAN = {
@@ -154,28 +153,16 @@ interface Sent {
     key: string | null;
 }
 
+/** What a batch command sent, the body `null` when there was none. */
+const asSent = ({ method, url, body, key }: Recorded): Sent => ({ method, url, body: body ?? null, key });
+
 async function cli(
     argv: string[],
     respond: (sent: Sent, n: number) => Response,
     extra: { files?: Record<string, string>; clock?: { t: number } } = {}
 ) {
-    const out: string[] = [];
-    const err: string[] = [];
-    const sent: Sent[] = [];
     const clock = extra.clock ?? { t: 0 };
-    const fetch = (async (url: string | URL | globalThis.Request, init?: RequestInit) => {
-        const entry: Sent = {
-            method: init?.method ?? 'GET',
-            url: String(url),
-            body: typeof init?.body === 'string' ? JSON.parse(init.body) : null,
-            key: new Headers(init?.headers).get('idempotency-key'),
-        };
-        sent.push(entry);
-        return respond(entry, sent.length);
-    }) as unknown as typeof globalThis.fetch;
-    const code = await run(argv, {
-        env: ENV,
-        fetch,
+    const result = await runCli(argv, (entry, index) => respond(asSent(entry), index + 1), {
         now: () => clock.t,
         sleep: async (ms) => {
             clock.t += ms;
@@ -185,10 +172,8 @@ async function cli(
             if (text === undefined) throw new Error('ENOENT');
             return text;
         },
-        stdout: (text) => out.push(text),
-        stderr: (text) => err.push(text),
     });
-    return { code, out: out.join(''), err: err.join(''), sent };
+    return { ...result, sent: result.sent.map(asSent) };
 }
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>

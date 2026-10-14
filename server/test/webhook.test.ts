@@ -14,12 +14,10 @@ import {
 } from './helpers.js';
 
 import type { OrgRuntime } from '../src/orgs.js';
+import { HTTP_NOT_FOUND, HTTP_OK, HTTP_UNAUTHORIZED } from './helpers-http.js';
 
 const SECRET = 'webhook-secret-for-the-installation-round-trip';
 const ORG = '424242';
-const HTTP_OK = 200;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_NOT_FOUND = 404;
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {

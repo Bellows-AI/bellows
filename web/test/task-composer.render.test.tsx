@@ -8,7 +8,8 @@ import { WorkflowParameterFields } from '../src/components/WorkflowParameterFiel
 import { TaskComposerPage } from '../src/pages/TaskComposerPage.js';
 import { TaskDetailPage } from '../src/pages/TaskDetailPage.js';
 import { type WorkflowParamChoice, clampedWorkflow, paramsComplete, paramValueMatches } from '../src/task-composer.js';
-import { FORBIDDEN, renderComposer } from './tasks-fixtures.js';
+import { renderComposer } from './tasks-fixtures.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 describe('the tasks pages', () => {
     /**
@@ -241,7 +242,7 @@ describe('TaskComposer — the prompt and the launch', () => {
             executors: [{ name: 'main', type: 'claude' }],
             actionError: null,
         });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 
     it('hides the workflow chip when no workflow list is given', () => {
@@ -505,7 +506,7 @@ describe('the workflow parameter fields', () => {
 
     it('never emits a placeholder value', () => {
         const html = renderFields([issue], { issue: '#12' }, { issue: true });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 

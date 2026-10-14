@@ -2,13 +2,13 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { telemetryStats } from '@factory-ai/core';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { Session } from '../src/api/useSession.js';
 import type { StatsPayload } from '../src/api/useStats.js';
 import { LoginGate } from '../src/components/LoginGate.js';
 import type { PendingSignInPayload } from '../src/onboarding.js';
 import { OnboardingPage } from '../src/pages/OnboardingPage.js';
 import { ThemeProvider } from '../src/theme.js';
 import { renderApp, renderAt, stubFetch } from './dom.js';
+import { memberSession } from './fixtures.js';
 
 /**
  * The sign-in surfaces a component can answer for on its own: the gate's refusal reason, the
@@ -92,17 +92,12 @@ describe('the selection screen', () => {
 
 const ORG = { id: 'test-org', name: 'Test Org' };
 
-const member: Session = {
-    authenticated: true,
-    user: { id: 'u-1', login: 'e2e-user', name: null, githubUserId: 1, avatarUrl: null },
-    role: 'member',
+const member = memberSession({
+    user: { id: 'u-1', login: 'e2e-user', name: null, githubUserId: 1 },
     membership: { invitedAt: null, claimedAt: '2026-08-01T00:00:00Z' },
-    account: { createdAt: null, lastLoginAt: null },
     organization: ORG,
     organizations: [ORG],
-    workspacePath: null,
-    mode: 'github',
-};
+});
 
 /** An empty-telemetry stats payload whose meta echoes the scope the request asked for. */
 const stats = (scope: 'org' | 'mine'): StatsPayload => ({

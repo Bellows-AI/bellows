@@ -13,6 +13,7 @@ import {
     stubTelemetryClient,
     testConfig,
 } from './helpers.js';
+import { HTTP_FOUND, HTTP_OK } from './helpers-http.js';
 
 const ORG = '999999';
 
@@ -21,8 +22,6 @@ const ORG = '999999';
  * screen would be holding. `reselect=1` parks even a first sign-in, which is how these tests get
  * a screen to complete with a single installation.
  */
-const HTTP_FOUND = 302;
-const HTTP_OK = 200;
 
 async function beginOnboarding(app: FastifyInstance): Promise<string> {
     const begin = await app.inject({ method: 'GET', url: '/api/auth/github?reselect=1' });

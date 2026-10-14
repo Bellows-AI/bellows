@@ -1007,19 +1007,10 @@ describe('an opencode runner', () => {
      * produced lands, a failed readout costing neither.
      */
     it('scrapes the finish reason beside the session id when an opencode run closes', async () => {
-        const exec = vitest.fn((args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
-                return Promise.resolve({
-                    stdout: '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"length","tokens":90433,"cost":0.31}\n',
-                });
-            }
-            return Promise.resolve({ stdout: '' });
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
-            exec
+        const { exec } = entrypointAnswers(
+            '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"length","tokens":90433,"cost":0.31}\n'
         );
+        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
 
         const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(outcome).toMatchObject({
@@ -1038,19 +1029,10 @@ describe('an opencode runner', () => {
      * instead of leaving the author a finish reason to decode.
      */
     it('carries the session’s last provider error on the outcome beside the session', async () => {
-        const exec = vitest.fn((args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
-                return Promise.resolve({
-                    stdout: '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"tool-calls","tokens":100016,"cost":0,"error":"Error from provider (Console): Rate limit exceeded. Please try again later."}\n',
-                });
-            }
-            return Promise.resolve({ stdout: '' });
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
-            exec
+        const { exec } = entrypointAnswers(
+            '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"tool-calls","tokens":100016,"cost":0,"error":"Error from provider (Console): Rate limit exceeded. Please try again later."}\n'
         );
+        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
 
         const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(outcome.sessionId).toBe('ses_f86188c3dffeZGYO4yZq4atba9');
@@ -1079,20 +1061,11 @@ describe('an opencode runner', () => {
 
     it('retries a readout that answers nothing, and takes the session when a later try answers', async () => {
         let calls = 0;
-        const exec = vitest.fn((args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
-                calls += 1;
-                return Promise.resolve({
-                    stdout: calls === 1 ? '' : '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"stop"}\n',
-                });
-            }
-            return Promise.resolve({ stdout: '' });
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig(ocServicesOff),
-            (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec } = entrypointAnswers(() => {
+            calls += 1;
+            return calls === 1 ? '' : '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"stop"}\n';
+        });
+        const runner = dockerRunner(exec, { env: ocServicesOff, spawn: spawnChild('done\n', '', 0) });
 
         const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         // Two readout tries, plus the transcript export's own container (issue #325).
@@ -1103,18 +1076,11 @@ describe('an opencode runner', () => {
 
     it('carries the readout’s error on the outcome when every try fails', async () => {
         let calls = 0;
-        const exec = vitest.fn((args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
-                calls += 1;
-                return Promise.resolve({ stdout: '{"error":"no such column: role"}\n' });
-            }
-            return Promise.resolve({ stdout: '' });
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig(ocServicesOff),
-            (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec } = entrypointAnswers(() => {
+            calls += 1;
+            return '{"error":"no such column: role"}\n';
+        });
+        const runner = dockerRunner(exec, { env: ocServicesOff, spawn: spawnChild('done\n', '', 0) });
 
         const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         // Three readout tries, plus the transcript export's own container (issue #325).
@@ -1124,15 +1090,10 @@ describe('an opencode runner', () => {
     });
 
     it('carries a refused readout container on the outcome too', async () => {
-        const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) throw new Error('daemon refused the readout');
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig(ocServicesOff),
-            (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec } = entrypointAnswers(() => {
+            throw new Error('daemon refused the readout');
+        });
+        const runner = dockerRunner(exec, { env: ocServicesOff, spawn: spawnChild('done\n', '', 0) });
 
         const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(outcome.readoutError).toBe('the readout container failed: daemon refused the readout');
@@ -1456,14 +1417,13 @@ describe('the cache watch', () => {
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const { spawn: childSpawn, close } = openChild();
-        const runner = createDockerRunner(
-            loadDriverConfig({
+        const runner = dockerRunner(exec, {
+            env: {
                 RUNNER_CACHE_WATCH: '1',
                 RUNNER_CACHE_WATCH_POLL_MS: '250',
-            }),
-            childSpawn,
-            exec
-        );
+            },
+            spawn: childSpawn,
+        });
 
         const pending = runner.run({ ...opencodeJob, followUp: false }, null);
         while (!calls.some((a) => a[0] === 'kill')) await new Promise((r) => setTimeout(r, 5));
@@ -1482,7 +1442,7 @@ describe('the cache watch', () => {
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const { spawn: childSpawn, close } = openChild();
-        const runner = createDockerRunner(loadDriverConfig({}), childSpawn, exec);
+        const runner = dockerRunner(exec, { spawn: childSpawn });
 
         const pending = runner.run({ ...opencodeJob, followUp: false }, null);
         // Two poll periods of a live run, had the watch been armed at the same 250ms the armed
@@ -1502,11 +1462,10 @@ describe('the cache watch', () => {
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const { spawn: childSpawn, close } = openChild();
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_CACHE_WATCH: '1', RUNNER_CACHE_WATCH_POLL_MS: '250' }),
-            childSpawn,
-            exec
-        );
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_CACHE_WATCH: '1', RUNNER_CACHE_WATCH_POLL_MS: '250' },
+            spawn: childSpawn,
+        });
 
         const pending = runner.run(job, { id: SESSION, resume: false });
         await new Promise((r) => setTimeout(r, 500));
@@ -1833,6 +1792,124 @@ function fakeChild(stdout: string, stderr: string, code: number | null): ChildPr
     return child;
 }
 
+/** A spawn whose every call hands back one {@link fakeChild}. */
+function spawnChild(stdout: string, stderr?: string, code?: number | null): typeof spawn {
+    return (() => fakeChild(stdout, stderr as string, code as number | null)) as unknown as typeof spawn;
+}
+
+/**
+ * A stateful daemon: containers and networks live in maps keyed by id/name with their labels,
+ * `ps` and `network ls` honor `--filter label=` pairs, and `rm -f` / `network rm` remove exactly
+ * what they are told. Service containers, networks and the runner's own `docker create` register
+ * through the exec seam, so cross-attempt "B is untouched" assertions are state, not argv. The
+ * throwaway `run … --entrypoint` container answers `readout` (default: the sync's success
+ * verdict). `fail`, when given, turns the matching call into an execFile-shaped rejection —
+ * stderr on the error, the way the promisified execFile carries a daemon refusal.
+ */
+function labelDaemon({
+    readout = '{"ok":true,"reason":null}',
+    fail,
+}: {
+    readout?: string;
+    fail?: (args: string[]) => string | null;
+} = {}) {
+    const containers = new Map<string, Record<string, string>>();
+    const networks = new Map<string, Record<string, string>>();
+    const calls: string[][] = [];
+    const labelsOf = (args: string[]): Record<string, string> => {
+        const labels: Record<string, string> = {};
+        for (let i = 0; i < args.length; i += 1) {
+            if (args[i] === '--label') {
+                const [key, value] = (args[i + 1] ?? '').split('=');
+                if (key && value !== undefined) labels[key] = value;
+            }
+        }
+        return labels;
+    };
+    const filtersOf = (args: string[]): [string, string][] => {
+        const filters: [string, string][] = [];
+        for (let i = 0; i < args.length; i += 1) {
+            if (args[i] === '--filter' && (args[i + 1] ?? '').startsWith('label=')) {
+                const [key, value] = (args[i + 1] ?? '').slice('label='.length).split('=');
+                if (key && value !== undefined) filters.push([key, value]);
+            }
+        }
+        return filters;
+    };
+    const listed = (entries: Map<string, Record<string, string>>, args: string[]) => {
+        const filters = filtersOf(args);
+        return {
+            stdout: [...entries.entries()]
+                .filter(([, labels]) => filters.every(([key, value]) => labels[key] === value))
+                .map(([name]) => name)
+                .join('\n'),
+        };
+    };
+    const exec = vitest.fn(async (args: string[]) => {
+        calls.push(args);
+        const refused = fail?.(args);
+        if (refused) {
+            throw Object.assign(new Error(`Command failed: docker ${args.join(' ')}`), { stderr: refused });
+        }
+        if (args[0] === 'ps') return listed(containers, args);
+        if (args[0] === 'rm' && args[1] === '-f') {
+            for (const id of args.slice(2)) containers.delete(id);
+            return { stdout: '' };
+        }
+        if (args[0] === 'network' && args[1] === 'ls') return listed(networks, args);
+        if (args[0] === 'network' && args[1] === 'rm') {
+            for (const name of args.slice(2)) networks.delete(name);
+            return { stdout: '' };
+        }
+        if (args[0] === 'network' && args[1] === 'create') {
+            networks.set(args[args.length - 1]!, labelsOf(args));
+            return { stdout: '' };
+        }
+        if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: readout };
+        if ((args[0] === 'run' && args.includes('--network-alias')) || args[0] === 'create') {
+            containers.set(args[args.indexOf('--name') + 1]!, labelsOf(args));
+            return { stdout: '' };
+        }
+        return { stdout: '' };
+    }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+    return { containers, networks, calls, exec };
+}
+
+/**
+ * The common daemon stub: the throwaway `run … --entrypoint` container (a readout, a sync)
+ * prints `answer` — a function sees the argv and may throw, as a refusing daemon does — and
+ * every other docker verb answers empty. Every argv is recorded in `calls`.
+ */
+function entrypointAnswers(answer: string | ((args: string[]) => string)): {
+    exec: (args: string[]) => Promise<{ stdout: string }>;
+    calls: string[][];
+} {
+    const calls: string[][] = [];
+    const exec = vitest.fn(async (args: string[]) => {
+        calls.push(args);
+        if (args[0] === 'run' && args.includes('--entrypoint')) {
+            return { stdout: typeof answer === 'string' ? answer : answer(args) };
+        }
+        return { stdout: '' };
+    });
+    return { exec, calls };
+}
+
+/**
+ * The runner under test: configured from `env`, the daemon stood in by `exec`, and a spawn whose
+ * child prints nothing and exits 0 unless the test hands its own.
+ */
+function dockerRunner(
+    exec: Parameters<typeof createDockerRunner>[2],
+    {
+        env = {},
+        spawn: spawnFn = spawnChild('', '', 0),
+        files,
+    }: { env?: Parameters<typeof loadDriverConfig>[0]; spawn?: typeof spawn; files?: RunnerFiles } = {}
+): ReturnType<typeof createDockerRunner> {
+    return createDockerRunner(loadDriverConfig(env), spawnFn, exec, files);
+}
+
 describe('the docker runner', () => {
     // The daemon is stood in by `execDocker`, so the suite never shells out: the fence and the
     // cleanup `rm` answer empty, and the `inspect` that classifies a 125 close is scripted per
@@ -1841,28 +1918,17 @@ describe('the docker runner', () => {
         if (args[0] === 'inspect') throw new Error('Error: No such object');
         return Promise.resolve({ stdout: '' });
     };
-    const child = (stdout: string, stderr: string, code: number | null) =>
-        (() => {
-            const c = new EventEmitter() as ChildProcess;
-            const stream = (text: string) => {
-                const s = new EventEmitter();
-                if (text) process.nextTick(() => s.emit('data', Buffer.from(text)));
-                return s;
-            };
-            c.stdout = stream(stdout);
-            c.stderr = stream(stderr);
-            process.nextTick(() => c.emit('close', code));
-            return c;
-        }) as unknown as typeof spawn;
 
     it('reads a daemon refusal as a container that never started', async () => {
         // The run printed the daemon's error — and so would a command that echoed it. The
         // classifier does not read this stream at all: the daemon says no container exists.
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            child('', 'docker: Error response from daemon: Conflict. The container name is already in use\n', 125),
-            noContainer
-        );
+        const runner = dockerRunner(noContainer, {
+            spawn: spawnChild(
+                '',
+                'docker: Error response from daemon: Conflict. The container name is already in use\n',
+                125
+            ),
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 125, started: false });
     });
@@ -1877,11 +1943,10 @@ describe('the docker runner', () => {
             return noContainer(args);
         };
         const spawnFn = vitest.fn(() => fakeChild('', '', 0));
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0', RUNNER_OTEL_ENDPOINT: 'http://otel.example:4318' }),
-            spawnFn as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0', RUNNER_OTEL_ENDPOINT: 'http://otel.example:4318' },
+            spawn: spawnFn as unknown as typeof spawn,
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
 
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
@@ -1903,11 +1968,9 @@ describe('the docker runner', () => {
             calls.push({ args, ...(options?.input ? { input: options.input } : {}) });
             return noContainer(args);
         };
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0', RUNNER_OTEL_ENDPOINT: 'http://otel.example:4318' }),
-            child('', '', 0),
-            exec
-        );
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0', RUNNER_OTEL_ENDPOINT: 'http://otel.example:4318' },
+        });
         await runner.run(opencodeJob, null);
         const cp = calls.find((call) => call.args[0] === 'cp');
         expect(cp?.args).toEqual(['cp', '-', `${containerName(opencodeJob)}:/etc`]);
@@ -1931,11 +1994,7 @@ describe('the docker runner', () => {
             return noContainer(args);
         };
         const spawnFn = vitest.fn(() => fakeChild('', '', 0));
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0' }),
-            spawnFn as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnFn as unknown as typeof spawn });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 125, started: false });
         expect(outcome.output).toContain('Error response from daemon: Conflict');
@@ -1951,11 +2010,10 @@ describe('the docker runner', () => {
             args[0] === 'inspect'
                 ? Promise.resolve({ stdout: '{"Status":"created","ExitCode":0}\n' })
                 : Promise.resolve({ stdout: '' });
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0' }),
-            child('', 'Error response from daemon: failed to create task for container\n', 1),
-            exec
-        );
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild('', 'Error response from daemon: failed to create task for container\n', 1),
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 1, started: false });
     });
@@ -1965,7 +2023,7 @@ describe('the docker runner', () => {
             args[0] === 'inspect'
                 ? Promise.resolve({ stdout: '{"Status":"exited","ExitCode":1}\n' })
                 : Promise.resolve({ stdout: '' });
-        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('', 'boom\n', 1), exec);
+        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('', 'boom\n', 1) });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 1, started: true });
     });
@@ -1982,7 +2040,7 @@ describe('the docker runner', () => {
                       })
                   )
                 : Promise.resolve({ stdout: '' });
-        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('', '', 137), exec);
+        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('', '', 137) });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({
             exitCode: 137,
@@ -1994,7 +2052,7 @@ describe('the docker runner', () => {
     it('reads an inspect that fails for any other reason as no loss', async () => {
         const exec = (args: string[]) =>
             args[0] === 'inspect' ? Promise.reject(new Error('daemon unreachable')) : Promise.resolve({ stdout: '' });
-        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('', '', 1), exec);
+        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('', '', 1) });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 1, started: true });
         expect(outcome).not.toHaveProperty('infraLoss');
@@ -2006,11 +2064,10 @@ describe('the docker runner', () => {
     it('carries the full log on the outcome, capped tail-true, beside the unchanged report tail', async () => {
         // Past the artifact cap (512 KiB), so the accumulator really has to cut.
         const fullOutput = `${'head\n'.repeat(20)}${'body line\n'.repeat(60_000)}`;
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0' }),
-            child(fullOutput, '', 0),
-            noContainer
-        );
+        const runner = dockerRunner(noContainer, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild(fullOutput, '', 0),
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
         // The full log is the whole stream tail-kept at the cap: its last line survives, its
@@ -2025,11 +2082,10 @@ describe('the docker runner', () => {
 
     it('keeps the full log byte-true under the cap when the run never exceeded it', async () => {
         const fullOutput = 'short run\n';
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0' }),
-            child(fullOutput, '', 0),
-            noContainer
-        );
+        const runner = dockerRunner(noContainer, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild(fullOutput, '', 0),
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome.fullLog).toBe('short run\n');
         expect(outcome.logTruncated).toBe(false);
@@ -2041,11 +2097,7 @@ describe('the docker runner', () => {
     // env file's values included) would break it.
     it('makes the full log exactly the stream — no claim env value can enter the artifact', async () => {
         const stdout = 'plain run output\nwith a second line\n';
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0' }),
-            child(stdout, '', 0),
-            noContainer
-        );
+        const runner = dockerRunner(noContainer, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild(stdout, '', 0) });
         const outcome = await runner.run(
             { ...job, env: { SENTINEL_SECRET: 'shh-do-not-store' } },
             { id: SESSION, resume: false }
@@ -2063,11 +2115,9 @@ describe('the docker runner', () => {
                 ? Promise.resolve({ stdout: '{"Status":"exited","ExitCode":125}\n' })
                 : Promise.resolve({ stdout: '' })
         );
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            child('work done\n', 'reproduced: docker: Error response from daemon: Conflict\n', 125),
-            inspect as unknown as (args: string[]) => Promise<{ stdout: string }>
-        );
+        const runner = dockerRunner(inspect as unknown as (args: string[]) => Promise<{ stdout: string }>, {
+            spawn: spawnChild('work done\n', 'reproduced: docker: Error response from daemon: Conflict\n', 125),
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 125, started: true });
         expect(inspect).toHaveBeenCalled();
@@ -2075,11 +2125,9 @@ describe('the docker runner', () => {
 
     it('never asks the daemon about a run whose exit code is unambiguous', async () => {
         const inspect = vitest.fn((_args: string[]) => Promise.resolve({ stdout: '' }));
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            child('done\n', '', 0),
-            inspect as unknown as (args: string[]) => Promise<{ stdout: string }>
-        );
+        const runner = dockerRunner(inspect as unknown as (args: string[]) => Promise<{ stdout: string }>, {
+            spawn: spawnChild('done\n', '', 0),
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
         // The fence and the cleanup `rm` go through the same seam; only the inspect is the
@@ -2097,7 +2145,7 @@ describe('the docker runner', () => {
             if (args[0] === 'create') create = args;
             return noContainer(args);
         };
-        const runner = createDockerRunner(loadDriverConfig({}), spawnFn as unknown as typeof spawn, exec);
+        const runner = dockerRunner(exec, { spawn: spawnFn as unknown as typeof spawn });
         const outcome = await runner.run({ ...job, env: { MY_TOKEN: 'board-secret' } }, { id: SESSION, resume: false });
 
         expect(outcome).toMatchObject({ exitCode: 0 });
@@ -2120,7 +2168,7 @@ describe('the docker runner', () => {
      */
     it('hands every chunk it reads to the output stream', async () => {
         const tails: string[] = [];
-        const runner = createDockerRunner(loadDriverConfig({}), child('step one\n', 'warn\n', 0), noContainer);
+        const runner = dockerRunner(noContainer, { spawn: spawnChild('step one\n', 'warn\n', 0) });
 
         const outcome = await runner.run(job, { id: SESSION, resume: false }, (tail) => tails.push(tail));
 
@@ -2147,7 +2195,7 @@ describe('the docker runner', () => {
             expect(args[0]).toBe('ps');
             return Promise.resolve({ stdout: '' });
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
 
         await expect(runner.sampleRuntime(job)).resolves.toEqual({
             cpuPercent: 93,
@@ -2179,7 +2227,7 @@ describe('the docker runner', () => {
                     psLine({ name: 'cache', image: 'redis:7', state: 'exited' }),
             });
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
 
         await expect(runner.sampleRuntime(job)).resolves.toEqual({
             cpuPercent: 93,
@@ -2204,7 +2252,7 @@ describe('the docker runner', () => {
                 ? Promise.resolve({ stdout: '{"CPUPerc":"93.00%","MemUsage":"544MiB / 7.754GiB","MemPerc":"7.02%"}' })
                 : Promise.reject(new Error('daemon refused'))
         ) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
 
         await expect(runner.sampleRuntime(job)).resolves.toEqual({
             cpuPercent: 93,
@@ -2220,7 +2268,7 @@ describe('the docker runner', () => {
                 ? Promise.reject(new Error('daemon refused'))
                 : Promise.resolve({ stdout: psLine({ name: 'db', image: 'postgres:16', state: 'running' }) })
         ) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
 
         await expect(runner.sampleRuntime(job)).resolves.toEqual({
             cpuPercent: null,
@@ -2237,7 +2285,7 @@ describe('the docker runner', () => {
             commands.push(args[0]!);
             return Promise.resolve({ stdout: '{"CPUPerc":"93.00%","MemUsage":"544MiB / 7.754GiB","MemPerc":"7.02%"}' });
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('done\n', '', 0), exec);
+        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('done\n', '', 0) });
 
         await expect(runner.sampleRuntime(job)).resolves.toEqual({
             cpuPercent: 93,
@@ -2281,7 +2329,7 @@ describe('the docker runner', () => {
                     : { stdout: '' }
             );
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
 
         await expect(runner.deadServices(job)).resolves.toEqual([
             { name: 'cache', image: 'redis:7', state: 'dead', exitCode: 137, reason: 'OOMKilled', logTail: '' },
@@ -2308,23 +2356,21 @@ describe('the docker runner', () => {
                 ? Promise.resolve({ stdout: psLine({ name: 'mongo', image: 'mongo:8', state: 'exited' }) })
                 : Promise.reject(new Error('No such container'))
         ) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        await expect(
-            createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), fleet).deadServices(job)
-        ).resolves.toEqual([
+        await expect(dockerRunner(fleet, { spawn: spawnChild('done\n', '', 0) }).deadServices(job)).resolves.toEqual([
             { name: 'mongo', image: 'mongo:8', state: 'exited', exitCode: null, reason: null, logTail: '' },
         ]);
 
         const refused = vitest.fn(() => Promise.reject(new Error('daemon refused'))) as unknown as (
             args: string[]
         ) => Promise<{ stdout: string }>;
-        await expect(
-            createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), refused).deadServices(job)
-        ).rejects.toThrow('daemon refused');
+        await expect(dockerRunner(refused, { spawn: spawnChild('done\n', '', 0) }).deadServices(job)).rejects.toThrow(
+            'daemon refused'
+        );
     });
 
     it('answers no dead services without asking the daemon when services are off', async () => {
         const exec = vitest.fn(() => Promise.resolve({ stdout: '' }));
-        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('done\n', '', 0), exec);
+        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('done\n', '', 0) });
 
         await expect(runner.deadServices(job)).resolves.toEqual([]);
         expect(exec).not.toHaveBeenCalled();
@@ -2334,7 +2380,7 @@ describe('the docker runner', () => {
         const exec = vitest.fn(() => Promise.reject(new Error('daemon refused'))) as unknown as (
             args: string[]
         ) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+        const runner = dockerRunner(exec, { spawn: spawnChild('done\n', '', 0) });
 
         await expect(runner.sampleRuntime(job)).resolves.toBeNull();
     });
@@ -2436,7 +2482,7 @@ describe('the docker runner', () => {
             }
             return noContainer(args);
         };
-        const runner = createDockerRunner(loadDriverConfig({}), child('', '', 0), exec);
+        const runner = dockerRunner(exec);
 
         const outcome = await runner.run(
             { ...job, gateEnv: { BELLOWS_GATE_URL: 'http://host.docker.internal:9099', BELLOWS_GATE_TOKEN: 'tok' } },
@@ -2482,12 +2528,7 @@ describe('the docker runner', () => {
         };
 
         const spawnSpy = vitest.fn(() => fakeChild('', '', 0));
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            spawnSpy as unknown as typeof spawn,
-            noContainer,
-            files
-        );
+        const runner = dockerRunner(noContainer, { spawn: spawnSpy as unknown as typeof spawn, files: files });
 
         const pending = runner.run({ ...job, env: { MY_TOKEN: 'board-secret' } }, { id: SESSION, resume: false });
         await writeUnderway; // the run is parked inside the env-file write
@@ -2518,11 +2559,7 @@ describe('the docker runner', () => {
             return noContainer(args);
         };
         const spawnSpy = vitest.fn(() => fakeChild('', '', 0));
-        runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '0' }),
-            spawnSpy as unknown as typeof spawn,
-            exec
-        );
+        runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnSpy as unknown as typeof spawn });
 
         await expect(runner.run(job, { id: SESSION, resume: false })).rejects.toThrow(
             /killed while setting up services/
@@ -2585,11 +2622,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     };
 
     const servicesRunner = (exec: ReturnType<typeof daemon>, fn: typeof spawn) =>
-        createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '1' }),
-            fn,
-            exec as unknown as (args: string[]) => Promise<{ stdout: string }>
-        );
+        dockerRunner(exec as unknown as (args: string[]) => Promise<{ stdout: string }>, {
+            env: { RUNNER_SERVICES: '1' },
+            spawn: fn,
+        });
 
     // A spawn stub whose children never emit on their own: each spawn hands the test a fire
     // function, so the interleaving — one attempt's error or close landing after another
@@ -2644,83 +2680,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         return lease ? `${idFor(lease)}\n` : 'stale-leftover\n';
     };
 
-    /*
-     * A stateful daemon for the cross-attempt tests: containers and networks live in maps keyed
-     * by id/name with their labels, `ps` and `network ls` honor `--filter label=` pairs, and rm /
-     * network rm remove exactly what they are told. Service containers, networks and the
-     * runner's own `docker create` all register through the exec seam. With this daemon the "B is untouched"
-     * assertions stop being argv-shaped and become state: B's entries are still in the maps
-     * after everything A did.
-     */
-    const scriptedDaemon = (readout: string) => {
-        const containers = new Map<string, Record<string, string>>();
-        const networks = new Map<string, Record<string, string>>();
-        const calls: string[][] = [];
-        const labelsOf = (args: string[]): Record<string, string> => {
-            const labels: Record<string, string> = {};
-            for (let i = 0; i < args.length; i += 1) {
-                if (args[i] === '--label') {
-                    const [key, value] = (args[i + 1] ?? '').split('=');
-                    if (key && value !== undefined) labels[key] = value;
-                }
-            }
-            return labels;
-        };
-        const filtersOf = (args: string[]): [string, string][] => {
-            const filters: [string, string][] = [];
-            for (let i = 0; i < args.length; i += 1) {
-                if (args[i] === '--filter' && (args[i + 1] ?? '').startsWith('label=')) {
-                    const [key, value] = (args[i + 1] ?? '').slice('label='.length).split('=');
-                    if (key && value !== undefined) filters.push([key, value]);
-                }
-            }
-            return filters;
-        };
-        const matches = (filters: [string, string][], labels: Record<string, string>): boolean =>
-            filters.every(([key, value]) => labels[key] === value);
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            if (args[0] === 'ps') {
-                const filters = filtersOf(args);
-                return {
-                    stdout: [...containers.entries()]
-                        .filter(([, labels]) => matches(filters, labels))
-                        .map(([id]) => id)
-                        .join('\n'),
-                };
-            }
-            if (args[0] === 'rm' && args[1] === '-f') {
-                for (const id of args.slice(2)) containers.delete(id);
-                return { stdout: '' };
-            }
-            if (args[0] === 'kill') return { stdout: '' };
-            if (args[0] === 'network' && args[1] === 'ls') {
-                const filters = filtersOf(args);
-                return {
-                    stdout: [...networks.entries()]
-                        .filter(([, labels]) => matches(filters, labels))
-                        .map(([name]) => name)
-                        .join('\n'),
-                };
-            }
-            if (args[0] === 'network' && args[1] === 'rm') {
-                for (const name of args.slice(2)) networks.delete(name);
-                return { stdout: '' };
-            }
-            if (args[0] === 'network' && args[1] === 'create') {
-                networks.set(args[args.length - 1]!, labelsOf(args));
-                return { stdout: '' };
-            }
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: readout };
-            if ((args[0] === 'run' && args.includes('--network-alias')) || args[0] === 'create') {
-                containers.set(args[args.indexOf('--name') + 1]!, labelsOf(args));
-                return { stdout: '' };
-            }
-            return { stdout: '' };
-        });
-        return { containers, networks, calls, exec };
-    };
-
     it('reads .bellows.yaml, creates the job network, starts the service, and joins the runner to it', async () => {
         const exec = daemon(READOUT);
         const { fn, seen } = spawnRecording('ran\n', 0);
@@ -2766,11 +2725,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             });
         const run = async (tree: ReturnType<typeof bellowsTree>) => {
             const exec = treeDaemon(tree);
-            const runner = createDockerRunner(
-                loadDriverConfig({ RUNNER_SERVICES: '1', WORKSPACE_MOUNT: tree.mount }),
-                spawnRecording('ran\n', 0).fn,
-                exec as unknown as (args: string[]) => Promise<{ stdout: string }>
-            );
+            const runner = dockerRunner(exec as unknown as (args: string[]) => Promise<{ stdout: string }>, {
+                env: { RUNNER_SERVICES: '1', WORKSPACE_MOUNT: tree.mount },
+                spawn: spawnRecording('ran\n', 0).fn,
+            });
             const outcome = await runner.run(repoJob, { id: SESSION, resume: false });
             const services = exec.mock.calls
                 .map((c) => c[0])
@@ -3561,19 +3519,17 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // kill: fired from A's own runner after B stands its fleet up, every call it issues
     // carries A's lease, B's names appear in no argv, and B finishes its run untouched.
     it("keeps a replacement attempt unaddressable to a stale attempt's late kill across two runner instances", async () => {
-        const d = scriptedDaemon(READOUT);
+        const d = labelDaemon({ readout: READOUT });
         const spawnA = gatedSpawns();
         const spawnB = gatedSpawns();
-        const runner1 = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '1' }),
-            spawnA.fn,
-            d.exec as unknown as (args: string[]) => Promise<{ stdout: string }>
-        );
-        const runner2 = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '1' }),
-            spawnB.fn,
-            d.exec as unknown as (args: string[]) => Promise<{ stdout: string }>
-        );
+        const runner1 = dockerRunner(d.exec, {
+            env: { RUNNER_SERVICES: '1' },
+            spawn: spawnA.fn,
+        });
+        const runner2 = dockerRunner(d.exec, {
+            env: { RUNNER_SERVICES: '1' },
+            spawn: spawnB.fn,
+        });
 
         const runA = runner1.run(attemptA, { id: SESSION, resume: false });
         await spawnA.childAt(0); // A's fleet and runner stand on the daemon
@@ -3627,7 +3583,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(serviceContainerName(attemptB, 'stub')).not.toBe(serviceContainerName(attemptA, 'stub'));
 
         // A's leftovers still exist on the daemon when B's run starts.
-        const d = scriptedDaemon(READOUT);
+        const d = labelDaemon({ readout: READOUT });
         d.containers.set(containerName(attemptA), { 'factory.job': job.id, 'factory.lease': ATTEMPT_A });
         d.containers.set(serviceContainerName(attemptA, 'stub'), {
             'factory.job': job.id,
@@ -3636,11 +3592,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         });
 
         const { fn, seen } = spawnRecording('ran\n', 0);
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '1' }),
-            fn,
-            d.exec as unknown as (args: string[]) => Promise<{ stdout: string }>
-        );
+        const runner = dockerRunner(d.exec, {
+            env: { RUNNER_SERVICES: '1' },
+            spawn: fn,
+        });
         await runner.run(attemptB, { id: SESSION, resume: false });
 
         // The fence removed both of A's leftovers by label.
@@ -3659,7 +3614,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     it('fences every leftover of the job by label — containers, networks, and the legacy network — and nothing else', async () => {
         const oldA = { ...job, leaseToken: 'aaaaaaaa-1111-4111-8111-111111111111' };
         const oldB = { ...job, leaseToken: 'bbbbbbbb-2222-4222-8222-222222222222' };
-        const d = scriptedDaemon(READOUT);
+        const d = labelDaemon({ readout: READOUT });
         d.containers.set(containerName(oldA), { 'factory.job': job.id, 'factory.lease': oldA.leaseToken });
         d.containers.set(serviceContainerName(oldB, 'stub'), {
             'factory.job': job.id,
@@ -3682,11 +3637,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             return answer;
         };
         const { fn } = spawnRecording('ran\n', 0);
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_SERVICES: '1' }),
-            fn,
-            exec as unknown as (args: string[]) => Promise<{ stdout: string }>
-        );
+        const runner = dockerRunner(exec as unknown as (args: string[]) => Promise<{ stdout: string }>, {
+            env: { RUNNER_SERVICES: '1' },
+            spawn: fn,
+        });
         await runner.run(attemptB, { id: SESSION, resume: false });
 
         // All four leftovers are gone; the other job's container is not this fence's business.
@@ -3996,17 +3950,8 @@ describe('publishing the produced work', () => {
     });
 
     it('hands the sync the clone, the worktree and the branch, by env', async () => {
-        const calls: string[][] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: '{"ok":true,"reason":null}' };
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec, calls } = entrypointAnswers('{"ok":true,"reason":null}');
+        const runner = dockerRunner(exec);
         const result = await runner.syncCheckout(repoJob);
 
         expect(result).toEqual({ ok: true, reason: null });
@@ -4035,17 +3980,8 @@ describe('publishing the produced work', () => {
     // password would break it). The VALUE passed is helper CODE, never the credential — the
     // token itself travels only in the env file, where the helper reads it.
     it('hands the sync the credential-helper code only when the claim env carries GITHUB_TOKEN', async () => {
-        const calls: string[][] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: '{"ok":true,"reason":null}' };
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec, calls } = entrypointAnswers('{"ok":true,"reason":null}');
+        const runner = dockerRunner(exec);
 
         await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } });
         const run = calls.find((a) => a[0] === 'run')!;
@@ -4072,17 +4008,8 @@ describe('publishing the produced work', () => {
     // written (restore talks only to the local clone — nothing to credential), and the fetch's
     // helper code is absent even when the claim carries a token.
     it('restores a claim that continues a session instead of syncing it', async () => {
-        const calls: string[][] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: '{"ok":true,"reason":null}' };
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec, calls } = entrypointAnswers('{"ok":true,"reason":null}');
+        const runner = dockerRunner(exec);
 
         await runner.syncCheckout({ ...repoJob, followUp: true, env: { GITHUB_TOKEN: 't0k-3n' } });
         const follow = calls.filter((a) => a[0] === 'run')[0]!;
@@ -4113,11 +4040,7 @@ describe('publishing the produced work', () => {
             if (args[0] === 'run') return { stdout: '{"ok":true,"removed":true,"reason":null}' };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec);
         const result = await runner.reclaimWorktree(repoJob);
 
         expect(result).toEqual({ ok: true, removed: true, reason: null });
@@ -4149,11 +4072,7 @@ describe('publishing the produced work', () => {
             calls.push(args);
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec);
         expect(await runner.reclaimWorktree(job)).toEqual({ ok: true, removed: false, reason: null });
         expect(calls).toHaveLength(0);
     });
@@ -4165,16 +4084,8 @@ describe('publishing the produced work', () => {
      * verdict is by construction an exit-0 container.)
      */
     it('names the last stdout line when the sync container answers nothing parseable', async () => {
-        const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint'))
-                return { stdout: 'fetching origin\nfatal: could not read from remote repository\n' };
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec } = entrypointAnswers('fetching origin\nfatal: could not read from remote repository\n');
+        const runner = dockerRunner(exec);
         const result = await runner.syncCheckout(repoJob);
         expect(result).toEqual({
             ok: false,
@@ -4201,11 +4112,7 @@ describe('publishing the produced work', () => {
             if (args[0] === 'wait') return wait();
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec);
         return { calls, runner };
     };
     const killed = () => Object.assign(new Error('Command failed: docker run'), { killed: true, signal: 'SIGTERM' });
@@ -4248,11 +4155,7 @@ describe('publishing the produced work', () => {
             if (args[0] === 'ps') return { stdout: listings.shift() ?? '' };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec);
 
         const result = await runner.syncCheckout(repoJob);
         let settled = false;
@@ -4331,18 +4234,11 @@ describe('publishing the produced work', () => {
         const reason =
             'transient worktree sync: the checkout lock /w/.git/factory-sync.lock is still held after 20000ms';
         const runs: string[][] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
-                runs.push(args);
-                return { stdout: `${JSON.stringify({ ok: false, reason })}\n` };
-            }
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec } = entrypointAnswers((args) => {
+            runs.push(args);
+            return `${JSON.stringify({ ok: false, reason })}\n`;
+        });
+        const runner = dockerRunner(exec);
 
         const result = await runner.syncCheckout(repoJob);
 
@@ -4353,28 +4249,15 @@ describe('publishing the produced work', () => {
 
     it('carries the script’s failure kind through the sync container’s stdout (issue #666)', async () => {
         const verdict = { ok: false, reason: 'the repository clone /w/r does not exist', kind: 'missing_clone' };
-        const exec = vitest.fn(async (args: string[]) => ({
-            stdout: args[0] === 'run' && args.includes('--entrypoint') ? `${JSON.stringify(verdict)}\n` : '',
-        })) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec } = entrypointAnswers(`${JSON.stringify(verdict)}\n`);
+        const runner = dockerRunner(exec);
 
         expect(await runner.syncCheckout(repoJob)).toMatchObject(verdict);
     });
 
     it('says the sync container printed nothing when its stdout is empty', async () => {
-        const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: '' };
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const { exec } = entrypointAnswers('');
+        const runner = dockerRunner(exec);
         const result = await runner.syncCheckout(repoJob);
         expect(result).toEqual({
             ok: false,
@@ -4387,11 +4270,7 @@ describe('publishing the produced work', () => {
             if (args[0] === 'run') return { stdout: 'rm: permission denied\n' };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec);
         const result = await runner.reclaimWorktree(repoJob);
         expect(result).toEqual({
             ok: false,
@@ -4408,84 +4287,18 @@ describe('publishing the produced work', () => {
                 };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec);
         const result = await runner.reclaimWorktree(repoJob);
         expect(result.ok).toBe(false);
         expect(result.reason).toContain('registered worktree');
     });
 
-    /*
-     * A minimal stateful daemon for the sync's fence: containers and networks live in maps,
-     * `ps` and `network ls` honor their `--filter label=` pairs, and rm removes what it names.
-     * The sync container itself answers the script's success verdict. `fail`, when given, turns
-     * the matching call into an execFile-shaped rejection — stderr on the error, the way the
-     * promisified execFile carries a daemon refusal — so a test can script the daemon saying no.
-     */
-    const fenceDaemon = (fail?: (args: string[]) => string | null) => {
-        const containers = new Map<string, Record<string, string>>();
-        const networks = new Map<string, Record<string, string>>();
-        const calls: string[][] = [];
-        const matches = (args: string[], labels: Record<string, string>): boolean => {
-            for (let i = 0; i < args.length; i += 1) {
-                if (args[i] === '--filter' && (args[i + 1] ?? '').startsWith('label=')) {
-                    const [key, value] = (args[i + 1] ?? '').slice('label='.length).split('=');
-                    if (labels[key] !== value) return false;
-                }
-            }
-            return true;
-        };
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            const refused = fail?.(args);
-            if (refused) {
-                throw Object.assign(new Error(`Command failed: docker ${args.join(' ')}`), { stderr: refused });
-            }
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
-                return { stdout: '{"ok":true,"reason":null}' };
-            }
-            if (args[0] === 'ps') {
-                return {
-                    stdout: [...containers.entries()]
-                        .filter(([, labels]) => matches(args, labels))
-                        .map(([id]) => id)
-                        .join('\n'),
-                };
-            }
-            if (args[0] === 'rm') {
-                for (const id of args.slice(1)) containers.delete(id);
-                return { stdout: '' };
-            }
-            if (args[0] === 'network' && args[1] === 'ls') {
-                return {
-                    stdout: [...networks.entries()]
-                        .filter(([, labels]) => matches(args, labels))
-                        .map(([name]) => name)
-                        .join('\n'),
-                };
-            }
-            if (args[0] === 'network' && args[1] === 'rm') {
-                for (const name of args.slice(2)) networks.delete(name);
-                return { stdout: '' };
-            }
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        return { containers, networks, calls, exec };
-    };
-
     // The fence before the sync (PR #46 review): the loop calls syncCheckout before the
     // runner's own fence, so the sweep has to come here — the sync is the first writer on the
     // task worktree, and starting it over a previous attempt's live runner would mix edits.
     it('sweeps the job label before the sync container is created', async () => {
-        const d = fenceDaemon();
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            d.exec
-        );
+        const d = labelDaemon();
+        const runner = dockerRunner(d.exec);
         const result = await runner.syncCheckout(repoJob);
 
         expect(result).toEqual({ ok: true, reason: null });
@@ -4500,16 +4313,12 @@ describe('publishing the produced work', () => {
     it('removes a previous attempt’s still-running runner before the sync runs', async () => {
         const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
         const NEW_TOKEN = 'bbbbbbbb-2222-4222-8222-222222222222';
-        const d = fenceDaemon();
+        const d = labelDaemon();
         d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), {
             'factory.job': job.id,
             'factory.lease': OLD_TOKEN,
         });
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            d.exec
-        );
+        const runner = dockerRunner(d.exec);
         const result = await runner.syncCheckout({ ...repoJob, leaseToken: NEW_TOKEN });
 
         expect(result).toEqual({ ok: true, reason: null });
@@ -4526,14 +4335,11 @@ describe('publishing the produced work', () => {
     // The fence is infrastructure, not the command's verdict: it must throw, and the loop's
     // try/catch around syncCheckout leaves the job to its lease.
     it('fails the sync when the fence cannot list the job’s leftover containers', async () => {
-        const d = fenceDaemon((args) =>
-            args[0] === 'ps' ? 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock' : null
-        );
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            d.exec
-        );
+        const d = labelDaemon({
+            fail: (args) =>
+                args[0] === 'ps' ? 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock' : null,
+        });
+        const runner = dockerRunner(d.exec);
 
         await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
         // No sync container over an unfenced checkout: the throw precedes the run argv entirely.
@@ -4541,14 +4347,10 @@ describe('publishing the produced work', () => {
     });
 
     it('fails the sync when the fence cannot list the job’s stale networks', async () => {
-        const d = fenceDaemon((args) =>
-            args[0] === 'network' && args[1] === 'ls' ? 'Cannot connect to the Docker daemon' : null
-        );
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            d.exec
-        );
+        const d = labelDaemon({
+            fail: (args) => (args[0] === 'network' && args[1] === 'ls' ? 'Cannot connect to the Docker daemon' : null),
+        });
+        const runner = dockerRunner(d.exec);
 
         await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
         expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
@@ -4556,16 +4358,14 @@ describe('publishing the produced work', () => {
 
     it('fails the sync when a leftover container refuses to be removed', async () => {
         const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
-        const d = fenceDaemon((args) => (args[0] === 'rm' ? 'Error: cannot remove container: device is busy' : null));
+        const d = labelDaemon({
+            fail: (args) => (args[0] === 'rm' ? 'Error: cannot remove container: device is busy' : null),
+        });
         d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), {
             'factory.job': job.id,
             'factory.lease': OLD_TOKEN,
         });
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            d.exec
-        );
+        const runner = dockerRunner(d.exec);
 
         await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
         expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
@@ -4573,18 +4373,14 @@ describe('publishing the produced work', () => {
 
     it('fails the sync when a leftover network refuses to be removed', async () => {
         const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
-        const d = fenceDaemon((args) =>
-            args[0] === 'network' && args[1] === 'rm' ? 'Error: cannot remove network: in use' : null
-        );
+        const d = labelDaemon({
+            fail: (args) => (args[0] === 'network' && args[1] === 'rm' ? 'Error: cannot remove network: in use' : null),
+        });
         d.networks.set(networkName({ ...job, leaseToken: OLD_TOKEN }), {
             'factory.job': job.id,
             'factory.lease': OLD_TOKEN,
         });
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            d.exec
-        );
+        const runner = dockerRunner(d.exec);
 
         await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
         expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
@@ -4595,20 +4391,17 @@ describe('publishing the produced work', () => {
     // attempts on the daemon confirming a removal already finished.
     it('proceeds when the fence’s rm answers that the container is already gone', async () => {
         const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
-        const d = fenceDaemon((args) =>
-            args[0] === 'rm'
-                ? `Error response from daemon: No such container: ${containerName({ ...job, leaseToken: OLD_TOKEN })}`
-                : null
-        );
+        const d = labelDaemon({
+            fail: (args) =>
+                args[0] === 'rm'
+                    ? `Error response from daemon: No such container: ${containerName({ ...job, leaseToken: OLD_TOKEN })}`
+                    : null,
+        });
         d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), {
             'factory.job': job.id,
             'factory.lease': OLD_TOKEN,
         });
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            d.exec
-        );
+        const runner = dockerRunner(d.exec);
 
         expect(await runner.syncCheckout(repoJob)).toEqual({ ok: true, reason: null });
         expect(d.calls.some((a) => a[0] === 'run')).toBe(true);
@@ -4787,12 +4580,7 @@ describe('publishing the produced work', () => {
             if (args.includes('pr') && args.includes('create')) return { stdout: `${PR_URL}\n` };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('')) as unknown as typeof spawn,
-            exec,
-            opts.files
-        );
+        const runner = dockerRunner(exec, { spawn: spawnChild(''), files: opts.files });
         return { calls, envBodies, runner };
     };
 
@@ -4843,7 +4631,7 @@ describe('publishing the produced work', () => {
             cancel.abort();
             throw new Error('The operation was aborted');
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(loadDriverConfig({}), (() => fakeChild('')) as unknown as typeof spawn, exec);
+        const runner = dockerRunner(exec, { spawn: spawnChild('') });
 
         expect(await runner.probeTree?.(ISSUE_JOB, cancel.signal)).toBeNull();
 
@@ -5178,12 +4966,9 @@ describe('the block-helper transport (issue #207)', () => {
         ...over,
     });
 
-    const runnerWith = (exec: (args: string[]) => Promise<{ stdout: string }>) =>
-        createDockerRunner(loadDriverConfig({}), (() => fakeChild('', '', 0)) as unknown as typeof spawn, exec);
-
     it('fails an unknown helper id before any container starts', async () => {
         const exec = vitest.fn(async () => ({ stdout: NOOP_VERDICT }));
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         const result = await runner.runHelper!(job, plan({ helperId: 'not-a-real-helper' }));
         expect(result).toEqual({
             ok: false,
@@ -5199,7 +4984,7 @@ describe('the block-helper transport (issue #207)', () => {
             calls.push(args);
             return { stdout: NOOP_VERDICT };
         });
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         const result = await runner.runHelper!(repoJob, plan());
 
         expect(result).toEqual({ ok: true, output: { echoed: true } });
@@ -5238,7 +5023,7 @@ describe('the block-helper transport (issue #207)', () => {
             }
             return { stdout: '' };
         });
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         const result = await runner.runHelper!(job, plan());
         expect(result).toEqual({ ok: false, reason: 'timeout', message: expect.stringContaining('ms bound') });
         const run = calls.find((a) => a[0] === 'run')!;
@@ -5262,11 +5047,7 @@ describe('the block-helper transport (issue #207)', () => {
             }
             return { stdout: '' };
         });
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
-            exec
-        );
+        const runner = dockerRunner(exec);
 
         const result = await runner.runHelper!(job, plan(), undefined, controller.signal);
 
@@ -5291,7 +5072,7 @@ describe('the block-helper transport (issue #207)', () => {
             }
             return { stdout: NOOP_VERDICT };
         });
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         const result = await runner.runHelper!(repoJob, plan({ githubWriting: true }), 'fresh-install-token');
 
         expect(result).toEqual({ ok: true, output: { echoed: true } });
@@ -5309,14 +5090,14 @@ describe('the block-helper transport (issue #207)', () => {
             calls.push(args);
             return { stdout: NOOP_VERDICT };
         });
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         await runner.runHelper!(repoJob, plan({ githubWriting: true }), 'super-secret-token');
         expect(calls[0]!.some((a) => a.includes('super-secret-token'))).toBe(false);
     });
 
     it('maps a malformed helper answer to a named failure, never a thrown context leak', async () => {
         const exec = vitest.fn(async () => ({ stdout: 'not json at all' }));
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         const result = await runner.runHelper!(job, plan());
         expect(result).toEqual({ ok: false, reason: 'malformed_output', message: expect.any(String) });
     });
@@ -5327,7 +5108,7 @@ describe('the block-helper transport (issue #207)', () => {
             (err as unknown as { killed: boolean }).killed = true;
             throw err;
         });
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         const result = await runner.runHelper!(job, plan());
         expect(result).toEqual({ ok: false, reason: 'timeout', message: expect.stringContaining('ms bound') });
     });
@@ -5338,7 +5119,7 @@ describe('the block-helper transport (issue #207)', () => {
             err.stderr = 'permission denied while running the helper';
             throw err;
         });
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         const result = await runner.runHelper!(job, plan());
         expect(result).toEqual({
             ok: false,
@@ -5353,7 +5134,7 @@ describe('the block-helper transport (issue #207)', () => {
             calls.push(args);
             return { stdout: NOOP_VERDICT };
         });
-        const runner = runnerWith(exec);
+        const runner = dockerRunner(exec);
         await runner.runHelper!(job, plan());
         expect(calls[0]).not.toContain('-w');
     });
@@ -5458,15 +5239,11 @@ describe('every container the driver runs is hardened (#382)', () => {
             if (args[0] === 'run') return { stdout: '{"ok":true,"removed":true,"reason":null}' };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+        const runner = dockerRunner(
             exec,
             // A fake `files`: the publish path writes a real env file into os.tmpdir() under the
             // default, and an offline unit test has no business touching the filesystem.
-            { writeFile: async () => undefined, rm: async () => undefined } as unknown as Parameters<
-                typeof createDockerRunner
-            >[3]
+            { files: { writeFile: async () => undefined, rm: async () => undefined } as unknown as RunnerFiles }
         );
         await drive(runner).catch(() => undefined);
         return calls.filter((a) => a[0] === 'run');

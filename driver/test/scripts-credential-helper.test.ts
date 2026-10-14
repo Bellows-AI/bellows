@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { makeOriginClone } from './fixtures/git-worktree-support.js';
 import { hasGit, hasOpenssl } from './fixtures/scripts-support.js';
 
 const execFile = promisify(execFileCb);
@@ -73,20 +74,8 @@ function credentialHelperFixture(): CredentialHelperFixture {
 
     beforeEach(async () => {
         dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-cred-')));
-        const work = join(dir, 'origin-work');
-        mkdirSync(work, { recursive: true });
-        git(work, 'init');
-        writeFileSync(join(work, 'README.md'), '# cred\n');
-        execFileSync('git', [...FIXTURE_CONFIG, '-C', work, 'add', 'README.md'], { stdio: 'ignore' });
-        execFileSync(
-            'git',
-            [...FIXTURE_CONFIG, '-C', work, '-c', 'user.email=t@e.c', '-c', 'user.name=T', 'commit', '-m', 'init'],
-            { stdio: 'ignore' }
-        );
-        bare = join(dir, 'cred.git');
-        execFileSync('git', [...FIXTURE_CONFIG, 'clone', '--bare', work, bare], { stdio: 'ignore' });
-        execFileSync('git', [...FIXTURE_CONFIG, 'clone', `file://${bare}`, join(dir, 'clone')], { stdio: 'ignore' });
         clone = join(dir, 'clone');
+        ({ bare } = makeOriginClone(dir, clone, 'cred'));
         // A throwaway self-signed certificate for the loopback https remote — the transport the
         // token would really leave over.
         const key = join(dir, 'key.pem');

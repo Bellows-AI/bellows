@@ -1,14 +1,8 @@
 import { expect, test } from '@playwright/test';
-import type { ConsoleMessage, Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { FORBIDDEN, watchConsole } from './page-health.js';
 
 const SHOTS = 'artifacts/ui';
-
-/**
- * The four states the null-not-zero contract can produce on screen. A literal 'NaN' or
- * 'undefined' is what a missing null guard looks like to a reader, and neither type checking
- * nor the SSR smoke test catches it.
- */
-const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
 /**
  * The analytics anchor: the metric summary when the selection is ready, the one empty state
@@ -17,16 +11,6 @@ const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
  */
 function analyticsAnchor(page: Page) {
     return page.locator('.usage-summary, .usage-empty').first();
-}
-
-function watchConsole(page: Page): string[] {
-    const problems: string[] = [];
-    page.on('console', (msg: ConsoleMessage) => {
-        if (msg.type() === 'error') problems.push(`console: ${msg.text()}`);
-    });
-    page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
-    page.on('requestfailed', (r) => problems.push(`requestfailed: ${r.url()}`));
-    return problems;
 }
 
 /** The dashboard answers 202 while the first read runs, so wait for the anchor, not for load. */
