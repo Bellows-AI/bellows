@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { resolveBatchPlan, validateBatchPlan, type BatchPlan } from '@factory-ai/core';
+import { resolveBatchPlan, type BatchPlan } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { createBatchStore, type BatchStore } from '../src/db/batch-store.js';
 import { claimDue, commitObservation } from '../src/db/batch-store-observation.js';
@@ -10,6 +10,13 @@ import type { JobStore } from '../src/db/job-store-types.js';
 import { createOrgRegistry } from '../src/orgs.js';
 import { testConfig } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
+import {
+    batchPlan,
+    headOf as sharedHeadOf,
+    jobCount as sharedJobCount,
+    recordPr,
+    startBatch,
+} from './batch-fixtures.js';
 
 /**
  * Dispatch against a real database (docs/batches.md): the scheduler's transactions, the unique
@@ -51,19 +58,8 @@ const task = (key: string, extra: Record<string, unknown> = {}) => ({
     ...extra,
 });
 
-function plan(stages: Record<string, unknown>[], concurrency = 2): BatchPlan {
-    const result = validateBatchPlan({
-        planVersion: 1,
-        title: 'Dispatch',
-        targets: [{ key: 'web', repo: 'acme/web' }],
-        defaultTarget: 'web',
-        executor: 'claude',
-        concurrency,
-        stages,
-    });
-    if (!result.ok) throw new Error(JSON.stringify(result.issues));
-    return result.plan;
-}
+const plan = (stages: Record<string, unknown>[], concurrency = 2): BatchPlan =>
+    batchPlan('Dispatch', stages, { concurrency });
 
 const parallelThenJoin = (concurrency = 2) =>
     plan(
@@ -74,31 +70,14 @@ const parallelThenJoin = (concurrency = 2) =>
         concurrency
     );
 
-/** A frozen batch, not yet dispatched: start queues nothing, reconcile is dispatch. */
-async function frozen(source: BatchPlan, target: BatchStore = store): Promise<string> {
-    const { id } = await target.create(source, ALICE);
-    const started = await target.start({
-        id,
-        version: 1,
-        plan: resolveBatchPlan(source, { 'acme/web': 'main' }),
-        startedBy: ALICE,
-    });
-    expect(started).toMatchObject({ result: 'ok' });
-    return id;
-}
+const frozen = (source: BatchPlan, target: BatchStore = store) => startBatch(target, source, ALICE);
 
 const stateOf = async (id: string) => {
     const record = (await store.get(id))!;
     return Object.fromEntries(record.tasks.map((t) => [t.key, t]));
 };
 
-/** The thread's newest job, whatever a retry has added. */
-async function headOf(root: string) {
-    const [row] = await sql<{ id: string; status: string }[]>`
-        select id, status from job where root_job_id = ${root} order by created_at desc, id desc limit 1
-    `;
-    return row!;
-}
+const headOf = (root: string) => sharedHeadOf(sql, root);
 
 const setStatus = async (root: string, status: 'running' | 'succeeded' | 'failed') => {
     const head = await headOf(root);
@@ -109,7 +88,7 @@ const setStatus = async (root: string, status: 'running' | 'succeeded' | 'failed
     }
 };
 
-const jobCount = async () => Number((await sql`select count(*) from job`)[0]!.count);
+const jobCount = () => sharedJobCount(sql);
 const decisions = async (id: string) =>
     (await sql<{ key: string }[]>`select key from batch_decision where batch_id = ${id} order by key`).map(
         (r) => r.key
@@ -769,14 +748,7 @@ const prUrlOf = (repo: string, number: number) => `https://github.com/${repo}/pu
 /** Records the PR a task's thread published, as the verdict's publication does. */
 async function publish(root: string, base = 'main', repo = REPO): Promise<number> {
     nextPr += 1;
-    await prs.recordPublication({
-        root,
-        repo,
-        prNumber: nextPr,
-        prUrl: prUrlOf(repo, nextPr),
-        headBranch: `factory/${root}`,
-        baseBranch: base,
-    });
+    await recordPr(prs, root, nextPr, { repo, base });
     return nextPr;
 }
 
@@ -927,20 +899,8 @@ function clockedStore() {
     };
 }
 
-function planWith(stages: Record<string, unknown>[], budgets: Record<string, number> = {}): BatchPlan {
-    const result = validateBatchPlan({
-        planVersion: 1,
-        title: 'Recovery',
-        targets: [{ key: 'web', repo: REPO }],
-        defaultTarget: 'web',
-        executor: 'claude',
-        concurrency: 2,
-        ...budgets,
-        stages,
-    });
-    if (!result.ok) throw new Error(JSON.stringify(result.issues));
-    return result.plan;
-}
+const planWith = (stages: Record<string, unknown>[], budgets: Record<string, number> = {}): BatchPlan =>
+    batchPlan('Recovery', stages, budgets);
 
 /** Ends the thread head's run as failed with a structured reason and its cause, as the verdict does. */
 async function failWith(
