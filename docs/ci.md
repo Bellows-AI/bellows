@@ -6,7 +6,7 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
 | Concern | Code | Test |
 | --- | --- | --- |
 | Validation, the db suite (`test-db`) and the browser lane | `.github/workflows/ci.yml`, `vitest.db.config.ts` | `core/test/ci-workflows.test.ts` |
-| Tag fold, image matrix, scan gate, manifest, chart publish | `.github/workflows/release-image.yml`, `.trivyignore` | `core/test/ci-workflows.test.ts` |
+| Tag fold, buildkit mirror, image matrix, scan gate, manifest, chart publish | `.github/workflows/release-image.yml`, `.trivyignore` | `core/test/ci-workflows.test.ts` |
 | CLI publish: `@bellows-ai/bellows-cli` on npmjs.org, trusted publishing, `VERSION` stamped over `0.0.0` | `.github/workflows/release-image.yml` (`npm`), `cli/package.json`, `cli/src/version.ts` | `core/test/ci-workflows.test.ts`, `cli/test/diagnostics.test.ts` |
 | Release command: patch bump, version-only commit, tag, atomic push | `scripts/release.sh`, `VERSION` | `core/test/release-script.test.ts` |
 | The images a release builds | `docker/Dockerfile`, `docker/driver.Dockerfile`, `docker/{claude,opencode}-executor/` | `driver/test/executor-images.test.ts` |
@@ -26,12 +26,14 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
   `release-image.yml` makes. No release commit carries `[skip ci]`.
 - **Node is `24`, matching `docker/Dockerfile`'s runtime base**; there is no `.nvmrc`, so the test is the only pin.
 - **Every base image and the e2e `postgres` service pull from `public.ecr.aws/docker/library/`** (Docker Hub
-  rate-limits shared runner IPs).
+  rate-limits shared runner IPs). Buildkit comes from `public.ecr.aws/vend/moby/buildkit`, pulled once per release by
+  the `buildkit` job into `<registry>/buildkit`: every build cell boots from that mirror, and only that one pull
+  retries on `toomanyrequests`.
 - **Every `uses:` on a job holding `packages: write` is GitHub-owned**, pinned by major tag; Trivy runs as a pinned
   container and helm from a checksum-verified tarball.
-- **Each build job builds to a tarball, scans it, and only then runs `docker login`.** Two Trivy passes: SARIF
-  upload (`--exit-code 0`) and the gate (`--exit-code 1`, `CRITICAL,HIGH`), narrowed only by `--ignore-unfixed`
-  and `--skip-files /usr/local/bin/acli`.
+- **Each build job builds to a tarball, scans it, and only then runs `docker login`**; the one earlier login, for the
+  buildkit pull, is logged out before the scan. Two Trivy passes: SARIF upload (`--exit-code 0`) and the gate
+  (`--exit-code 1`, `CRITICAL,HIGH`), narrowed only by `--ignore-unfixed` and `--skip-files /usr/local/bin/acli`.
 - **All four images the chart renders are built, each architecture natively**, pushed as `<image>:<tag>-<arch>` and
   merged by `manifest`; `--provenance=false` keeps the merge from nesting manifest lists. The collector image is
   mirrored too, its version read from `charts/factory/values.yaml`.

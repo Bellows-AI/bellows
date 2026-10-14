@@ -56,6 +56,39 @@ jobs:
                   # mixed-case path is rejected rather than folded.
                   printf 'registry=ghcr.io/%s\n' "$(printf '%s' "$OWNER" | tr 'A-Z' 'a-z')" >>"$GITHUB_OUTPUT"
 
+    # The buildkit image every build cell boots its builder from, pulled from ECR Public once and
+    # copied into the release registry. Eight cells pulling it anonymously at once trip ECR
+    # Public's per-IP rate and data limits; a retry inside a cell reuses the same IP, so only the
+    # one pull here retries. imagetools copies the manifest list, so both arches come along. The
+    # cells pull it logged in, so the package's visibility does not matter.
+    buildkit:
+        needs: [tag]
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        env:
+            BUILDKIT: public.ecr.aws/vend/moby/buildkit:buildx-stable-1
+        steps:
+            - name: docker login ghcr.io
+              env:
+                  TOKEN: ${{ github.token }}
+                  ACTOR: ${{ github.actor }}
+              run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+            - name: docker buildx imagetools create buildkit
+              env:
+                  REGISTRY: ${{ needs.tag.outputs.registry }}
+              run: |
+                  # Retried only on a throttle; anything else is a real failure and fails now.
+                  for attempt in 1 2 3; do
+                      [ "$attempt" -eq 1 ] || sleep $((attempt * 30))
+                      if docker buildx imagetools create -t "$REGISTRY/buildkit:buildx-stable-1" "$BUILDKIT" 2>/tmp/err; then
+                          cat /tmp/err >&2
+                          exit 0
+                      fi
+                      cat /tmp/err >&2
+                      grep -q toomanyrequests /tmp/err || exit 1
+                  done
+                  exit 1
+
     # The four images the chart renders, each built natively on its own architecture. QEMU would
     # need one job instead of two, but every executor image runs a full npm install, and under
     # emulation that is tens of minutes per arch. GitHub's arm64 runners are free to public
@@ -65,7 +98,7 @@ jobs:
     # alternative — pushing by digest and passing eight digests between jobs as artifacts — buys
     # only the absence of the two extra tags in the registry.
     build:
-        needs: [validate, tag]
+        needs: [validate, tag, buildkit]
         strategy:
             # One image failing should not hide whether the other three build.
             fail-fast: false
@@ -101,9 +134,21 @@ jobs:
         steps:
             - uses: actions/checkout@v4
             # The default builder uses the `docker` driver, which cannot --push. A docker-container
-            # builder can, and is what produces an image a manifest list may reference.
+            # builder can, and is what produces an image a manifest list may reference. It boots
+            # from the private mirror `buildkit` made, so the credential is on the runner for the
+            # pull alone: --bootstrap pulls now rather than at the first build, and the logout
+            # lands before any third-party scanner runs.
+            - name: docker login ghcr.io
+              env:
+                  TOKEN: ${{ github.token }}
+                  ACTOR: ${{ github.actor }}
+              run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
             - name: docker buildx create
-              run: docker buildx create --use --driver docker-container --driver-opt image=public.ecr.aws/vend/moby/buildkit:buildx-stable-1
+              env:
+                  REGISTRY: ${{ needs.tag.outputs.registry }}
+              run: docker buildx create --use --bootstrap --driver docker-container --driver-opt "image=$REGISTRY/buildkit:buildx-stable-1"
+            - name: docker logout ghcr.io
+              run: docker logout ghcr.io
             # Built to a tarball first, NOT pushed and not even loaded into the daemon: the scan
             # below gets the exact bytes that would ship, and nothing has left the runner yet if
             # it fails. The push step rebuilds, which is a cache hit on this builder.
