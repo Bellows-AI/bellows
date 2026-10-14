@@ -1,11 +1,23 @@
 {
-    "name": "@factory-ai/cli",
-    "version": "0.1.0",
-    "private": true,
-    "type": "module",
-    "bin": {
-        "factory": "dist/index.js"
+    "name": "@bellows-ai/bellows-cli",
+    "version": "0.0.0",
+    "description": "Command-line client for the Bellows Factory board",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/Bellows-AI/factory.git",
+        "directory": "cli"
     },
+    "type": "module",
+    "engines": {
+        "node": ">=22"
+    },
+    "bin": {
+        "bellows": "dist/index.js"
+    },
+    "files": [
+        "dist/**/*.js"
+    ],
     "scripts": {
         "build": "tsc -b",
         "dev": "tsx --env-file-if-exists=../.env src/index.ts"

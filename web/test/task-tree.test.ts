@@ -122,6 +122,10 @@ describe('taskDotClass', () => {
         );
     });
 
+    it('turns a run waiting on an answer the blue your-turn dot', () => {
+        expect(taskDotClass(status({ status: 'running', needsAnswer: true }))).toBe('sidenav-dot-review');
+    });
+
     it('holds grey for queued runs', () => {
         expect(taskDotClass(status({ status: 'queued' }))).toBe('sidenav-dot-paused');
     });

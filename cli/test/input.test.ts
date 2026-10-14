@@ -32,7 +32,7 @@ const COMMANDS = [
     { name: 'follow-up', argv: ['job', 'follow-up', 'job-1'] },
 ] as const;
 
-describe.each(COMMANDS)('factory job $name prompt input', ({ argv }) => {
+describe.each(COMMANDS)('bellows job $name prompt input', ({ argv }) => {
     it('sends file text untouched: multiline, Unicode, trailing newline', async () => {
         const { bodies, io } = harness({ 'prompt.md': MULTILINE });
 
@@ -98,7 +98,7 @@ describe.each(COMMANDS)('factory job $name prompt input', ({ argv }) => {
     });
 });
 
-describe('factory job follow-up id', () => {
+describe('bellows job follow-up id', () => {
     it('still needs a job id when the text comes from stdin', async () => {
         const { err, bodies, io } = harness({}, 'again');
 

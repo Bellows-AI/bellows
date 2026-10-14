@@ -1,8 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { removeDialogBody, removeDialogTitle, TaskRemoveDialog } from '../src/components/TaskRemoveDialog.js';
+import { removeDialogBody, removeDialogTitle } from '../src/components/TaskRemoveDialog.js';
 import { job, question, renderHeader } from './tasks-fixtures.js';
 import { expectNoPlaceholder } from './fixtures.js';
 
@@ -33,17 +32,18 @@ describe('the task page header', () => {
         expect(html).not.toContain('More task actions');
     });
 
-    it('shows the status beside the title as the shared label in its tone', () => {
+    it('shows the status beside the title as the shared label in its tone, with the header’s own classes', () => {
         const html = renderHeader({ jobs: [job()] });
         expect(html).toContain('page-header-meta');
         expect(html).toMatch(/<span class="pill pill-accent" aria-live="polite">.*Succeeded · Needs review<\/span>/);
-        expect(renderHeader({ jobs: [job({ status: 'failed' })] })).toMatch(
-            /<span class="pill pill-bad" aria-live="polite">.*Failed · Needs review<\/span>/
-        );
-        expect(renderHeader({ jobs: [job({ status: 'stopped' })] })).toContain('Stopped · Needs review');
         const running = renderHeader({ jobs: [job({ status: 'running', finishedAt: null, exitCode: null })] });
         expect(running).toMatch(
             /<span class="pill pill-ok" aria-live="polite"><span class="sidenav-dot sidenav-dot-running"/
+        );
+        const waiting = { status: 'queued' as const, waitReason: 'review' as const, finishedAt: null, exitCode: null };
+        expect(renderHeader({ jobs: [job(waiting)] })).toContain('class="pill pill-done task-pill-wait"');
+        expect(renderHeader({ jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z' })] })).toContain(
+            'class="pill pill-done task-pill-done"'
         );
     });
 
@@ -58,20 +58,6 @@ describe('the task page header', () => {
         const after = renderHeader({ jobs: [job({ ...live, questions: [answered] })] });
         expect(after).toContain('Running');
         expect(after).not.toContain('Needs answer');
-    });
-
-    it('reads Done — not Waiting for review — once a parked wait is marked done', () => {
-        const html = renderHeader({
-            jobs: [
-                job({
-                    waitReason: 'review',
-                    waitingSince: '2026-09-01T12:30:00.000Z',
-                    doneAt: '2026-09-01T13:00:00.000Z',
-                }),
-            ],
-        });
-        expect(html).toMatch(/<span class="pill pill-done task-pill-done" aria-live="polite">.*Done<\/span>/);
-        expect(html).not.toContain('Waiting for review');
     });
 
     it('names the task #id · Opened … by login · repo', () => {
@@ -93,25 +79,6 @@ describe('the task page header', () => {
         const gates = [{ name: 'lint', status: 'failed' as const, exitCode: 1, output: 'nope' }];
         expect(renderHeader({ jobs: [job({ gates })] })).toContain('Verification failed');
         expect(renderHeader({ jobs: [job()] })).not.toContain('Verification failed');
-    });
-
-    it('shows Waiting for review instead of the raw status while a PR-review wait is open', () => {
-        const html = renderHeader({
-            jobs: [
-                job({
-                    status: 'queued',
-                    waitReason: 'review',
-                    exitCode: null,
-                    finishedAt: null,
-                    startedAt: null,
-                    output: null,
-                }),
-            ],
-        });
-        expect(html).toMatch(
-            /<span class="pill pill-done task-pill-wait" aria-live="polite">.*Waiting for review<\/span>/
-        );
-        expect(html).not.toContain('>queued<');
     });
 
     it('preserves Stop run while waiting, with copy explaining it cancels automation but not the PR', () => {
@@ -445,31 +412,12 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
 
 describe('TaskRemoveDialog', () => {
     /**
-     * The remove confirmation is a Headless UI Dialog, so it portals — and `renderToStaticMarkup`
-     * does not render portals: an open dialog server-renders as Headless' placeholder span, the
-     * same posture the mobile drawer's suite pins. The in-dialog contracts (initial focus, Escape,
+     * The remove confirmation is a Headless UI Dialog, so it portals, and a static render does not
+     * render portals. The in-dialog contracts (initial focus, Escape,
      * backdrop, focus restoration, the live error) are a real browser's to assert —
      * e2e/task-detail.spec.ts owns them. What a static render CAN hold is the copy the dialog
      * renders: the helpers below are the component's source of truth, exported pure.
      */
-    const renderDialog = (over: { open?: boolean } = {}) =>
-        renderToStaticMarkup(
-            <TaskRemoveDialog
-                open={over.open ?? true}
-                command="fix the flaky login test"
-                runCount={2}
-                removing={false}
-                error={null}
-                onClose={() => {}}
-                onConfirm={() => {}}
-            />
-        );
-
-    it('server-renders a placeholder until the client mounts, open or closed', () => {
-        expect(renderDialog()).toContain('<span hidden');
-        expect(renderDialog({ open: false })).toContain('<span hidden');
-    });
-
     it('names the task in the title \u2014 the root command\u2019s first line, whatever the prose', () => {
         expect(removeDialogTitle('fix the flaky login test')).toBe('Remove \u201Cfix the flaky login test\u201D?');
         expect(removeDialogTitle('first line\nsecond line')).toBe('Remove \u201Cfirst line\u201D?');

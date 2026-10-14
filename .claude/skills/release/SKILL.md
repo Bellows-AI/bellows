@@ -8,7 +8,8 @@ description: Cut a Factory release end to end — analyze everything since the l
 A release is a tag. `npm run release` (`scripts/release.sh`) patch-bumps `VERSION`, commits only
 that, tags `vX.Y.Z` and pushes branch and tag atomically; the tag starts
 `.github/workflows/release-image.yml`, which re-runs CI, builds and scans the images, and publishes
-them and the chart — the chart's version is the tag, never `charts/*/Chart.yaml`'s. Nothing in the
+them, the chart and the `@bellows-ai/bellows-cli` npm package — the chart's and the package's version is the tag,
+never `charts/*/Chart.yaml`'s or `cli/package.json`'s. Nothing in the
 workflow writes release notes: this skill does, with `gh release create`.
 
 Run the phases in order. Stop and ask at every **Confirm**; everything else runs on its own.
@@ -129,19 +130,22 @@ notes** (migrations, chart values, env vars, removed images — what an operator
 **Validation** (what ran live), **Known limits** (what was deferred, with its issue). No commit
 list; the tag carries that.
 
-**Confirm** with the user: name the tag, the HEAD sha and the notes. A pushed tag publishes images
-and a chart that deployments resolve by version; it is not taken back.
+**Confirm** with the user: name the tag, the HEAD sha and the notes. A pushed tag publishes images,
+a chart that deployments resolve by version and an npm version that can never be reused; it is not taken back.
 
 ```bash
 npm run release                                   # prints "released vX.Y.Z"
 TAG=$(git describe --tags --abbrev=0)
 gh run list --workflow release-image.yml --limit 1
-gh run watch <run-id> --exit-status              # validate, build, scan, manifest, chart
+gh run watch <run-id> --exit-status              # validate, build, scan, manifest, chart, npm
+npm view @bellows-ai/bellows-cli version                      # the tag minus its v
 gh release create "$TAG" --verify-tag --title "$TAG" --notes-file <notes.md>
 ```
 
-A failed workflow leaves the tag without published images: read the failing job
-(`gh run view <run-id> --log-failed`), fix forward in a PR, and cut the next patch — never move or
+A failed workflow can leave the tag half published — the `npm` job needs only `validate`, so the
+images and chart can ship while the package fails, or the reverse. Read the failing job
+(`gh run view <run-id> --log-failed`), check which artifacts the run did publish, then fix forward
+in a PR and cut the next patch — never move or
 delete a pushed tag. Create the GitHub release only after the workflow succeeds.
 
 ## Reporting back

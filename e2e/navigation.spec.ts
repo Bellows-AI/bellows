@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { appearance, chooseAppearance, expectAppearanceOptions } from './appearance.js';
 import { seededTaskId } from './routes.js';
-import { controlsOutsideViewport, noHorizontalOverflow } from './viewport.js';
+import { noHorizontalOverflow } from './viewport.js';
 
 const SHOTS = 'artifacts/ui';
 
@@ -284,27 +284,23 @@ test.describe('the responsive shell', () => {
         });
     }
 
-    for (const width of [360, 390]) {
-        test(`toolbar groups wrap and every action stays reachable at ${width}px`, async ({ page }) => {
-            await page.setViewportSize({ width, height: 844 });
+    // Groups wrap as units: the wrap is the mechanism that keeps actions on-screen. Whether every
+    // control stays inside the viewport is matrix.spec.ts's overflow sweep, at the narrower 320.
+    test('toolbar groups wrap at 390px', async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 844 });
 
-            await page.goto('/');
-            await settle(page, '/');
-            const controls = page.locator('.dashboard-controls');
-            await expect(controls).toBeVisible();
-            // Groups wrap as units: the wrap is the mechanism that keeps actions on-screen,
-            // so it is asserted where the reachability below could otherwise pass by luck.
-            await expect(controls).toHaveCSS('flex-wrap', 'wrap');
-            expect(await controlsOutsideViewport(page, width), 'controls pushed outside the viewport').toEqual([]);
+        await page.goto('/');
+        await settle(page, '/');
+        const controls = page.locator('.dashboard-controls');
+        await expect(controls).toBeVisible();
+        await expect(controls).toHaveCSS('flex-wrap', 'wrap');
 
-            await page.goto('/tasks');
-            await settle(page, '/tasks');
-            const filters = page.locator('.inbox-filters');
-            await expect(filters).toBeVisible();
-            await expect(filters).toHaveCSS('flex-wrap', 'wrap');
-            expect(await controlsOutsideViewport(page, width), 'controls pushed outside the viewport').toEqual([]);
-        });
-    }
+        await page.goto('/tasks');
+        await settle(page, '/tasks');
+        const filters = page.locator('.inbox-filters');
+        await expect(filters).toBeVisible();
+        await expect(filters).toHaveCSS('flex-wrap', 'wrap');
+    });
 
     test('200% zoom keeps every primary route free of page-level overflow', async ({ page }) => {
         // Real browser zoom does two things at once, and Playwright has no native lever for

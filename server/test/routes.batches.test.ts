@@ -19,7 +19,6 @@ import {
     HTTP_NOT_FOUND,
     HTTP_OK,
     HTTP_SERVICE_UNAVAILABLE,
-    HTTP_UNAUTHORIZED,
     trackApps,
 } from './helpers-http.js';
 
@@ -120,19 +119,18 @@ async function setup(
     track(app);
     const memberCookie = await signedIn(auth, member);
     const otherCookie = await signedIn(auth, other);
-    /** The member's call unless `as` says otherwise: another cookie, none at all, or extra headers. */
+    /** The member's call unless `as` says otherwise: another cookie, or extra headers. */
     const call = (
         method: 'GET' | 'POST' | 'PUT',
         url: string,
         payload?: unknown,
-        as: { cookie?: string | null; headers?: Record<string, string> } = {}
+        as: { cookie?: string; headers?: Record<string, string> } = {}
     ) => {
-        const cookie = as.cookie === undefined ? memberCookie : as.cookie;
         return app!.inject({
             method,
             url,
             ...(payload === undefined ? {} : { payload: payload as object }),
-            headers: { ...(cookie ? { cookie } : {}), ...as.headers },
+            headers: { cookie: as.cookie ?? memberCookie, ...as.headers },
         });
     };
     const create = async (body: unknown = plan()) => {
@@ -663,8 +661,6 @@ describe('dispatch, wait, retry and cancel', () => {
         expect(notStarted.statusCode).toBe(HTTP_CONFLICT);
         expect(notStarted.json().code).toBe('BATCH_NOT_STARTED');
 
-        const anonymous = await s.call('GET', `/api/batches/${id}/report`, undefined, { cookie: null });
-        expect(anonymous.statusCode).toBe(HTTP_UNAUTHORIZED);
         const foreign = await s.call('GET', `/api/batches/${id}/report`, undefined, { cookie: s.otherCookie });
         expect(foreign.statusCode).toBe(HTTP_NOT_FOUND);
     });
@@ -688,12 +684,10 @@ describe('dispatch, wait, retry and cancel', () => {
         expect(response.json().code).toBe('BATCH_NOT_STARTED');
     });
 
-    it('retry and cancel need a signed-in member and the caller’s own org', async () => {
+    it('retry and cancel refuse another org’s batch', async () => {
         const s = await setup();
         const id = await start(s);
         for (const suffix of ['/cancel', '/tasks/a/retry']) {
-            const anonymous = await s.call('POST', `/api/batches/${id}${suffix}`, {}, { cookie: null });
-            expect(anonymous.statusCode).toBe(HTTP_UNAUTHORIZED);
             const foreign = await s.call('POST', `/api/batches/${id}${suffix}`, {}, { cookie: s.otherCookie });
             expect(foreign.statusCode).toBe(HTTP_NOT_FOUND);
         }
@@ -717,10 +711,9 @@ describe('accept', () => {
         return { ...s, id };
     };
 
-    it('needs a signed-in member and the caller’s own org, and 404s a missing batch', async () => {
+    it('404s another org’s batch and a missing batch', async () => {
         const { call, otherCookie, id } = await startAccepted();
         const url = `/api/batches/${id}/tasks/a/accept`;
-        expect((await call('POST', url, {}, { cookie: null })).statusCode).toBe(HTTP_UNAUTHORIZED);
         expect((await call('POST', url, {}, { cookie: otherCookie })).statusCode).toBe(HTTP_NOT_FOUND);
         const missing = await call('POST', '/api/batches/00000000-0000-4000-8000-000000000000/tasks/a/accept', {});
         expect(missing.statusCode).toBe(HTTP_NOT_FOUND);

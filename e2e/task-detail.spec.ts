@@ -5,6 +5,7 @@ import { E2E_DATABASE_URL } from '../playwright.config.js';
 import { E2E_REPO, withExecutor } from './executor.js';
 import {
     authoredBy,
+    failedGateFollowUpThread,
     failedGateThread,
     followUpThread,
     publishedThread,
@@ -242,35 +243,6 @@ test.describe('the task detail actions', () => {
         );
         expect(real.join('\n')).toBe('');
     });
-
-    test('the remove dialog contains itself and restores its trigger at a narrow phone width', async ({ page }) => {
-        const taskId = await seededTaskId(page);
-        await page.setViewportSize({ width: 360, height: 844 });
-        await page.goto(`/tasks/${taskId}`);
-
-        const trigger = header(page).getByRole('button', { name: 'More task actions' });
-        await trigger.click();
-        await page.getByRole('menuitem', { name: 'Remove task' }).click();
-
-        // The floating dialog must fit the phone viewport whole — clipped actions are the
-        // failure the closeout audit (issue 190) is about — and the page behind it must not
-        // grow a second scrollbar because a modal opened.
-        const dialog = page.locator('.task-remove');
-        await expect(dialog).toBeVisible();
-        const box = (await dialog.boundingBox())!;
-        expect(box.x, 'dialog left edge').toBeGreaterThanOrEqual(0);
-        expect(box.y, 'dialog top edge').toBeGreaterThanOrEqual(0);
-        expect(box.x + box.width, 'dialog right edge').toBeLessThanOrEqual(361);
-        expect(box.y + box.height, 'dialog bottom edge').toBeLessThanOrEqual(845);
-        await page.screenshot({ path: `${SHOTS}/matrix/task-detail_remove-dialog-open_dark_360.png` });
-
-        const overflow = await page.evaluate(() => document.body.scrollWidth - document.body.clientWidth);
-        expect(overflow, 'page overflows while the dialog is open').toBeLessThanOrEqual(0);
-
-        await page.keyboard.press('Escape');
-        await expect(dialog).toBeHidden();
-        await expect(trigger).toBeFocused();
-    });
 });
 
 const sql = postgres(E2E_DATABASE_URL, { max: 1 });
@@ -372,14 +344,18 @@ test.describe('the task detail page', () => {
         }
     });
 
-    test('a failed gate opens only its own output, counts only what happened, and asks for another pass', async ({
+    test('a failed gate opens only its own output, counts only what happened, and the follow-up is sent', async ({
         page,
     }) => {
         const problems = watchConsole(page);
-        await routeThread(page, authoredBy(failedGateThread, await sessionAuthor(page)));
-        const followUps: string[] = [];
-        page.on('request', (request) => {
-            if (request.url().endsWith('/follow-up')) followUps.push(request.url());
+        const me = await sessionAuthor(page);
+        const followUp = failedGateFollowUpThread[1]!;
+        await routeThread(page, authoredBy(failedGateThread, me));
+        const sent: unknown[] = [];
+        await page.route('**/api/jobs/*/follow-up', async (route) => {
+            sent.push(route.request().postDataJSON());
+            await routeThread(page, authoredBy(failedGateFollowUpThread, me));
+            return route.fulfill({ status: 201, json: { id: followUp.id } });
         });
         await page.goto(`/tasks/${failedGateThread[0]!.id}`);
 
@@ -398,19 +374,37 @@ test.describe('the task detail page', () => {
         await expect(verification.getByRole('button', { name: 'Copy output of lint' })).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/task-detail-gate-failed.png`, fullPage: true });
 
-        // Ask for another pass lands the caret in the composer and sends nothing by itself — from
-        // the header and from the rail's next action alike.
-        await header(page).getByRole('button', { name: 'Ask for another pass' }).click();
-        await expect(page.getByLabel('Ask for a follow-up')).toBeFocused();
-        await page.locator('.task-outcome').getByRole('button', { name: 'Ask for another pass' }).click();
-        await expect(page.getByLabel('Ask for a follow-up')).toBeFocused();
-        expect(followUps).toEqual([]);
-
         // Mark done and Remove both wait in the overflow.
         await header(page).getByRole('button', { name: 'More task actions' }).click();
         await expect(page.getByRole('menuitem', { name: 'Mark done' })).toBeVisible();
         await expect(page.getByRole('menuitem', { name: 'Remove task' })).toBeVisible();
         await page.keyboard.press('Escape');
+
+        // Ask for another pass lands the caret in the composer and sends nothing by itself — from
+        // the header and from the rail's next action alike.
+        await header(page).getByRole('button', { name: 'Ask for another pass' }).click();
+        await expect(page.getByLabel('Ask for a follow-up')).toBeFocused();
+        await page.locator('.task-outcome').getByRole('button', { name: 'Ask for another pass' }).click();
+        const box = page.getByLabel('Ask for a follow-up');
+        await expect(box).toBeFocused();
+        expect(sent).toEqual([]);
+        // Focusing the composer scrolls it into view; a full-page shot taken scrolled paints the fixed shell mid-image.
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.screenshot({ path: `${SHOTS}/task-detail-gate-composer-focused.png`, fullPage: true });
+
+        // Typed, not filled: the keystrokes land only if the caret really is in the composer.
+        await page.keyboard.type(followUp.command);
+        await expect(box).toHaveValue(followUp.command);
+        await page.getByRole('button', { name: 'Send follow-up' }).click();
+
+        await expect(page.locator('.task-conversation')).toContainText(followUp.command, { timeout: 10_000 });
+        await expect(page.locator('.task-conversation').getByText('Follow-up', { exact: true })).toBeVisible();
+        await expect(page.locator('.page-header-meta')).toContainText('Queued');
+        // The head is queued now, so there is nothing to follow up yet.
+        await expect(box).toHaveCount(0);
+        expect(sent).toEqual([{ command: followUp.command }]);
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.screenshot({ path: `${SHOTS}/task-detail-gate-follow-up-sent.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });
 });

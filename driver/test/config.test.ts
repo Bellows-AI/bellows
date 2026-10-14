@@ -411,7 +411,9 @@ describe('the driver config: runner resources', () => {
             requests: { memory: '1Gi' },
             limits: { cpu: '2', memory: '4Gi' },
         });
-        expect(dockerArgs(config, job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })).toEqual(
+        // Docker flags, so before the image: past it they would be the CLI's argv.
+        const argv = dockerArgs(config, job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' });
+        expect(argv.slice(0, argv.indexOf('claude-executor'))).toEqual(
             expect.arrayContaining(['--cpus', '2', '--memory', '4294967296', '--memory-reservation', '1073741824'])
         );
     });

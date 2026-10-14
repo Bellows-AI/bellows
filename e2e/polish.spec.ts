@@ -258,22 +258,13 @@ test.describe('polish (issue 189)', () => {
         });
     }
 
-    test('controls clear 44px at 390px', async ({ page }) => {
+    // The inbox tabs are links, which matrix.spec.ts's compact-target sweep exempts; every other
+    // control here is in that sweep at 390.
+    test('the inbox tabs clear 44px at 390px', async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 800 });
         await page.goto('/tasks');
-        for (const [label, target] of [
-            ['app bar trigger', page.locator('.appbar-trigger')],
-            ['inbox tab', page.locator('.inbox-tab').first()],
-            ['inbox search input', inboxSearch(page)],
-            ['inbox repository select', inboxRepo(page)],
-            ['inbox filter button', page.locator('.inbox-search button')],
-        ] as const) {
-            const box = await target.boundingBox();
-            expect(box?.height ?? 0, `${label} touch target`).toBeGreaterThanOrEqual(44);
-        }
-        await page.goto('/');
-        const rangeTriggerBox = await page.locator('#range-select').boundingBox();
-        expect(rangeTriggerBox?.height ?? 0, 'range dropdown touch target').toBeGreaterThanOrEqual(44);
+        const box = await page.locator('.inbox-tab').first().boundingBox();
+        expect(box?.height ?? 0, 'inbox tab touch target').toBeGreaterThanOrEqual(44);
     });
 
     test('forced colors keep keyboard focus visible', async ({ page }) => {

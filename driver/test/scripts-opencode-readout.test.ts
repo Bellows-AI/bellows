@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { opencodeReadoutScript } from '../src/container-scripts.js';
 import { insertMessage, MINE, seedOpencodeDb } from './fixtures/opencode-db.js';
 import { hasNodeSqlite, pathOf } from './fixtures/scripts-support.js';
 
@@ -69,6 +70,11 @@ describe.skipIf(!hasNodeSqlite())('the opencode session readout', () => {
             encoding: 'utf8',
         });
         expect(JSON.parse(stdout.trim()).error).toContain('OPENCODE_DIR');
+    });
+
+    // The sqlite handle, not the mount: the kubernetes readout mounts read-write for WAL recovery.
+    it('opens the session database read-only', () => {
+        expect(opencodeReadoutScript).toContain('readOnly: true');
     });
 
     it('carries the finish reason, context and cost of the in-scope session', () => {

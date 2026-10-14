@@ -306,6 +306,9 @@ describe('telemetry panels render — usage summary panel', () => {
         const html = render(telemetry, meta());
         expect(html).not.toMatch(/pull request/i);
         expect(html).not.toContain('merged');
+        expect(html).not.toMatch(/revert rate/i);
+        const byUser = renderToStaticMarkup(<ByUserPanel telemetry={telemetry} meta={telemetryMeta()} />);
+        expect(byUser).not.toMatch(/pull request|revert rate|merged/i);
     });
 });
 
@@ -466,6 +469,8 @@ describe('token usage series granularity', () => {
         const dailyHtml = renderToStaticMarkup(<TokenUsagePanel telemetry={daily} meta={telemetryMeta()} />);
         expect(dailyHtml).toContain('Input and output tokens by day; sessions use the right axis.');
         expect(dailyHtml).toContain('The hatched bucket is a partial period.');
+        // The caption keys a real fill: the hatch pattern the partial bucket is painted with.
+        expect(dailyHtml.match(/<pattern[^>]*id="partial-hatch"/g)).toHaveLength(1);
         expect(dailyHtml).not.toContain('NaN');
     });
 

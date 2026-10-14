@@ -70,7 +70,7 @@ describe('the task-control skill', () => {
         // --limit 1` reaches the CLI as `job list 1`. One layer is the most that forwards.
         expect(skill).toContain('npm run dev -w cli -- job wait <id> --timeout');
         expect(skill).toContain('npm run dev -w cli -- job remove <id> --yes');
-        expect(skill).not.toMatch(/^factory job /m);
+        expect(skill).not.toMatch(/^bellows job /m);
         expect(skill).not.toMatch(/npm run cli -- job/);
     });
 

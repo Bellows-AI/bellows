@@ -1,41 +1,41 @@
-/** The CLI's whole help text: `factory help` prints it, and every usage error ends with it. */
-export const USAGE = `usage: factory job create (<command...> | --file <path> | --stdin) [--repo owner/name] [--executor name] [--executor-scope user|org]
+/** The CLI's whole help text: `bellows help` prints it, and every usage error ends with it. */
+export const USAGE = `usage: bellows job create (<command...> | --file <path> | --stdin) [--repo owner/name] [--executor name] [--executor-scope user|org]
                           [--skill name]... [--jira-connection <id>] [--idempotency-key <key>] [--json]
-       factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
-       factory task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
+       bellows job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
+       bellows task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
                          [--sort newest|oldest] [--limit <n>] [--cursor <cursor>] [--json]
-       factory job investigate <id> [--json]
-       factory job log|transcript <id> [--attempt <n>] [--offset <n>] [--limit <n>] [--all] [--json]
-       factory job activity <id> [--json]
-       factory job wait <id> [--timeout <seconds>] [--json]
-       factory job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
-       factory job retry <id> [--idempotency-key <key>] [--json]
-       factory job edit <id> (<command...> | --file <path> | --stdin) [--json]
-       factory job questions <id> [--json]
-       factory job answer <id> <question-id> --answer <text>... [--json]
-       factory job stop <id> [--json]
-       factory job done <id> [--force] [--json]
-       factory job reopen <id> [--json]
-       factory job remove <id> --yes [--json]
-       factory repo list [--json]          repositories visible to the board, and which are synced
-       factory executor list [--json]      executor profiles by scope (--executor-scope)
-       factory skill list [--json]         skills a task may select (--skill)
-       factory connection list [--json]    managed connections you may select (--jira-connection)
-       factory job preflight [--repo owner/name] [--executor name] [--executor-scope user|org]
+       bellows job investigate <id> [--json]
+       bellows job log|transcript <id> [--attempt <n>] [--offset <n>] [--limit <n>] [--all] [--json]
+       bellows job activity <id> [--json]
+       bellows job wait <id> [--timeout <seconds>] [--json]
+       bellows job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
+       bellows job retry <id> [--idempotency-key <key>] [--json]
+       bellows job edit <id> (<command...> | --file <path> | --stdin) [--json]
+       bellows job questions <id> [--json]
+       bellows job answer <id> <question-id> --answer <text>... [--json]
+       bellows job stop <id> [--json]
+       bellows job done <id> [--force] [--json]
+       bellows job reopen <id> [--json]
+       bellows job remove <id> --yes [--json]
+       bellows repo list [--json]          repositories visible to the board, and which are synced
+       bellows executor list [--json]      executor profiles by scope (--executor-scope)
+       bellows skill list [--json]         skills a task may select (--skill)
+       bellows connection list [--json]    managed connections you may select (--jira-connection)
+       bellows job preflight [--repo owner/name] [--executor name] [--executor-scope user|org]
                              [--skill name]... [--jira-connection <id>] [--json]
-       factory batch import (--file <path> | --stdin) [--idempotency-key <key>] [--json]
-       factory batch update <id> --version <n> (--file <path> | --stdin) [--json]
-       factory batch validate <id> [--json]
-       factory batch start <id> --version <n> [--idempotency-key <key>] [--json]
-       factory batch inspect <id> [--json]
-       factory batch report <id> [--json]
-       factory batch list [--json]
-       factory batch wait <id> [--timeout <seconds>] [--json]
-       factory batch retry <id> <task> [--json]
-       factory batch accept <id> <task> [--json]
-       factory batch cancel <id> [--json]
-       factory auth status [--json]      the configuration, the board's version, and who the token acts as
-       factory help | --help | -h          this text; factory --version prints the CLI's version
+       bellows batch import (--file <path> | --stdin) [--idempotency-key <key>] [--json]
+       bellows batch update <id> --version <n> (--file <path> | --stdin) [--json]
+       bellows batch validate <id> [--json]
+       bellows batch start <id> --version <n> [--idempotency-key <key>] [--json]
+       bellows batch inspect <id> [--json]
+       bellows batch report <id> [--json]
+       bellows batch list [--json]
+       bellows batch wait <id> [--timeout <seconds>] [--json]
+       bellows batch retry <id> <task> [--json]
+       bellows batch accept <id> <task> [--json]
+       bellows batch cancel <id> [--json]
+       bellows auth status [--json]      the configuration, the board's version, and who the token acts as
+       bellows help | --help | -h          this text; bellows --version prints the CLI's version
                                            (neither needs FACTORY_URL)
 
 preflight checks a create's selection against the board's reads and only reads. It is advisory:
@@ -43,7 +43,7 @@ the board rechecks at create and at claim, and its refusal is the answer.
 
 unattended use (cron, CI): mint a personal token (fat_...) from the board's settings page and hand
 it to the job as FACTORY_TOKEN from the scheduler's secret store — never as an argument, never
-committed. It acts as you until revoked or your membership ends; \`factory auth status\` checks it
+committed. It acts as you until revoked or your membership ends; \`bellows auth status\` checks it
 and only reads. An org token (oat_...) only reads and cannot queue a task.
 
 'task list' is one row per task plus its head run; 'job list' is per run. A --cursor fits only its own filters.
@@ -95,7 +95,7 @@ is no longer waiting is refused (exit 1) and never retried.
 refused here, before any request.
 
 '--' ends option parsing, so a create command that takes flags of its own can follow it:
-  factory job create --repo owner/name -- npm test --watch
+  bellows job create --repo owner/name -- npm test --watch
 
 retry re-runs the finished task's own command as a fresh attempt in the same thread; a follow-up
 is the command for NEW instructions.

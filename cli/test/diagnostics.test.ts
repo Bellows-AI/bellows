@@ -5,7 +5,8 @@ import { recordingBoard, json, routed } from './harness.js';
 
 const SECRET = 'fat_s3cr3t-DO-NOT-PRINT';
 const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: SECRET };
-const VERSION = readFileSync(new URL('../../VERSION', import.meta.url), 'utf8').trim();
+const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string })
+    .version;
 
 /** Answers each path from `routes`; a path not listed answers 404. Every request is recorded. */
 function harness(routes: Record<string, () => Response>, env: NodeJS.ProcessEnv = ENV) {
@@ -83,7 +84,7 @@ describe('help and version, with no board configured', () => {
         async (line) => {
             const { out, err, calls, io } = harness({}, {});
             expect(await run(line.split(' '), io)).toBe(0);
-            expect(out.join('')).toContain('usage: factory job create');
+            expect(out.join('')).toContain('usage: bellows job create');
             expect(err).toEqual([]);
             expect(calls).toEqual([]);
         }
@@ -98,7 +99,7 @@ describe('help and version, with no board configured', () => {
     it.each([['--version'], ['version']])('%s prints the CLI version and exits 0, making no request', async (flag) => {
         const { out, calls, io } = harness({}, {});
         expect(await run([flag], io)).toBe(0);
-        expect(out.join('')).toBe(`factory ${VERSION}\n`);
+        expect(out.join('')).toBe(`bellows ${VERSION}\n`);
         expect(calls).toEqual([]);
     });
 
@@ -106,7 +107,7 @@ describe('help and version, with no board configured', () => {
         const help = harness({}, {});
         expect(await run(['--help', '--json'], help.io)).toBe(0);
         expect(envelope(help.out)).toMatchObject({ ok: true, command: 'help' });
-        expect(envelope(help.out).data.usage).toContain('usage: factory');
+        expect(envelope(help.out).data.usage).toContain('usage: bellows');
 
         const version = harness({}, {});
         expect(await run(['--version', '--json'], version.io)).toBe(0);
@@ -119,7 +120,7 @@ describe('help and version, with no board configured', () => {
     });
 });
 
-describe('factory auth status: configuration', () => {
+describe('bellows auth status: configuration', () => {
     it.each([
         ['a missing FACTORY_URL', {}, /FACTORY_URL/],
         ['a non-http FACTORY_URL', { FACTORY_URL: 'dashboard:8080' }, /FACTORY_URL/],
@@ -143,7 +144,7 @@ describe('factory auth status: configuration', () => {
     });
 });
 
-describe('factory auth status: identity', () => {
+describe('bellows auth status: identity', () => {
     it('reports the configuration, board version and identity, reading only', async () => {
         const { out, calls, io } = harness(board());
 
@@ -242,7 +243,7 @@ describe('factory auth status: identity', () => {
     });
 });
 
-describe('factory job preflight', () => {
+describe('bellows job preflight', () => {
     const preflight = async (args: string[], routes = board()) => {
         const h = harness(routes);
         const code = await run(['job', 'preflight', ...args, '--json'], h.io);

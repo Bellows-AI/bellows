@@ -2,8 +2,6 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import {
     authoredBy,
-    failedGateFollowUpThread,
-    failedGateThread,
     mockedActivityOf,
     parkedReviewWaitMarkedDoneThread,
     parkedReviewWaitRunningThread,
@@ -17,9 +15,9 @@ import { useTheme, watchConsole } from './page-health.js';
 
 /**
  * The task journey's hand-backs across the merged lanes (#286), in one theme — the theme only
- * changes the screenshots: (a) a parked review wait closed with Mark done, (b) a failed gate
- * answered with another pass. The states are the #270 fixtures, each branch following one task
- * id. The configure-from-the-blocker launch is composer.spec.ts's F1 journey; another author's
+ * changes the screenshots: a parked review wait closed with Mark done. The states are the #270
+ * fixtures, following one task id. A failed gate answered with another pass is task-detail.spec.ts's;
+ * the configure-from-the-blocker launch is composer.spec.ts's F1 journey; another author's
  * refusal is web/test/task-detail.render.test.tsx's.
  */
 
@@ -135,51 +133,6 @@ test.describe('task journeys', () => {
         await expect(row.locator('.sidenav-dot-done')).toBeVisible();
         await expect(row).not.toContainText('Waiting for review');
         await shoot(page, 'wait', 'inbox-done', theme);
-        expect(problems.join('\n')).toBe('');
-    });
-
-    test('a failed gate opens expanded, Ask for another pass focuses the composer, and the follow-up is sent', async ({
-        page,
-    }) => {
-        const problems = watchConsole(page);
-        await useTheme(page, theme);
-        const me = await sessionAuthor(page);
-        const followUp = failedGateFollowUpThread[1]!;
-        const held = { jobs: authoredBy(failedGateThread, me) };
-        await routeTask(page, held);
-        const sent: unknown[] = [];
-        await page.route('**/api/jobs/*/follow-up', (route) => {
-            sent.push(route.request().postDataJSON());
-            held.jobs = authoredBy(failedGateFollowUpThread, me);
-            return route.fulfill({ status: 201, json: { id: followUp.id } });
-        });
-        await page.goto(`/tasks/${failedGateThread[0]!.id}`);
-
-        await expect(meta(page)).toContainText('Failed · Needs review');
-        await expect(meta(page)).toContainText('Verification failed');
-        const verification = page.locator('#task-verification');
-        await expect(verification.locator('details', { hasText: 'lint' })).toHaveAttribute('open', '');
-        await expect(verification.locator('details', { hasText: 'build' })).not.toHaveAttribute('open');
-        await shoot(page, 'failed-gate', 'expanded', theme);
-
-        await header(page).getByRole('button', { name: 'Ask for another pass' }).click();
-        const box = page.getByLabel('Ask for a follow-up');
-        await expect(box).toBeFocused();
-        expect(sent).toEqual([]);
-        await shoot(page, 'failed-gate', 'composer-focused', theme);
-
-        // Typed, not filled: the keystrokes land only if the caret really is in the composer.
-        await page.keyboard.type(followUp.command);
-        await expect(box).toHaveValue(followUp.command);
-        await page.getByRole('button', { name: 'Send follow-up' }).click();
-
-        await expect(page.locator('.task-conversation')).toContainText(followUp.command, { timeout: 10_000 });
-        await expect(page.locator('.task-conversation').getByText('Follow-up', { exact: true })).toBeVisible();
-        await expect(meta(page)).toContainText('Queued');
-        // The head is queued now, so there is nothing to follow up yet.
-        await expect(box).toHaveCount(0);
-        expect(sent).toEqual([{ command: followUp.command }]);
-        await shoot(page, 'failed-gate', 'follow-up-sent', theme);
         expect(problems.join('\n')).toBe('');
     });
 });

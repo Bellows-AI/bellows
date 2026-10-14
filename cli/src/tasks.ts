@@ -2,7 +2,7 @@ import { TASK_SORTS, TASK_STATES } from './board.js';
 import type { BoardClient } from './board.js';
 import { UsageError } from './input.js';
 
-/** The `factory task list` flags; the board validates the text filters, the CLI the enums and the limit. */
+/** The `bellows task list` flags; the board validates the text filters, the CLI the enums and the limit. */
 export const TASK_LIST_OPTIONS = {
     state: { type: 'string' },
     q: { type: 'string' },

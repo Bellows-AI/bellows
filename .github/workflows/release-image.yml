@@ -285,3 +285,46 @@ jobs:
                   # Under `<owner>/charts`, so the chart does not collide with the `factory-ai`
                   # image package in the same namespace.
                   helm push "/tmp/chart/factory-$VERSION.tgz" "oci://$REGISTRY/charts"
+
+    # The CLI, as `@bellows-ai/bellows-cli` on npmjs.org. It is an HTTP client of the board with no runtime
+    # dependency, so it waits only on the gates, not on the images. npm trusted publishing
+    # exchanges this job's OIDC token for a one-shot publish credential, so no repository secret
+    # exists; the package's trusted publisher on npmjs.com must name this repository and this
+    # workflow file, or the publish is refused.
+    npm:
+        needs: [validate]
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        # Job-level permissions replace the workflow's: no packages or security-events here, and
+        # the OIDC token only here.
+        permissions:
+            contents: read
+            id-token: write
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-node@v4
+              with:
+                  # Node 24 ships npm 11.5.1+, the floor for trusted publishing.
+                  node-version: '24'
+                  registry-url: https://registry.npmjs.org
+            # No install script runs on a job that can mint a publish credential; the CLI's build
+            # is tsc alone.
+            - name: npm ci --ignore-scripts
+              run: npm ci --ignore-scripts
+            - name: npm run build -w cli
+              run: npm run build -w cli
+            # The checked-in cli/package.json holds 0.0.0; the published one holds the release.
+            # VERSION is what release.sh bumped, and a tag that disagrees with it was not cut by
+            # release.sh, so it publishes nothing.
+            - name: stamp VERSION into cli/package.json
+              env:
+                  TAG: ${{ github.ref_name }}
+              run: |
+                  VERSION=$(cat VERSION)
+                  test "v$VERSION" = "$TAG" || { echo "VERSION holds $VERSION but the tag is $TAG"; exit 1; }
+                  npm pkg set version="$VERSION" -w cli
+            # The license the package declares ships with it; the repository keeps one copy.
+            - name: cp LICENSE cli/LICENSE
+              run: cp LICENSE cli/LICENSE
+            - name: npm publish -w cli --access public
+              run: npm publish -w cli --access public

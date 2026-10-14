@@ -97,7 +97,7 @@ function outputBlock(output: string | null): string[] {
     const tail = outputTail(output);
     if (tail.length === 0) return [field('output:', DASH)];
     // A tail is the end of the stream, never the artifact: say so, and where the whole one is.
-    return ['output: (tail only — `factory job log <id>` reads the full log)', ...tail.map((line) => `  ${line}`)];
+    return ['output: (tail only — `bellows job log <id>` reads the full log)', ...tail.map((line) => `  ${line}`)];
 }
 
 /** The gate rows: name, verdict and exit code, and a failed gate's own tail beneath it. */
