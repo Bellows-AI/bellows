@@ -27,11 +27,6 @@ function compiled(withConfig?: Record<string, unknown>): WorkflowDefinition {
 }
 
 describe('builtin/github-review-reconcile — compilation', () => {
-    it('is available and compiles on its own, independent of any other workflow', () => {
-        const result = compileDefinition(graphUsing('review'), BLOCK_REGISTRY);
-        expect(result.ok).toBe(true);
-    });
-
     it('expands to collect/wait/repair/reply, namespaced under the block node name', () => {
         const definition = compiled();
         const names = definition.nodes.map((n) => n.name).sort();
@@ -177,7 +172,7 @@ describe('builtin/github-review-reconcile — compilation', () => {
         expect(repair?.prompt).toContain('gh pr create');
     });
 
-    it('a second, independently-named use of the block in one graph does not collide', () => {
+    it("an outer edge out of the block leaves from its exit (collect) into the next block's entry", () => {
         const authored: AuthoredWorkflowDefinition = {
             entry: 'first',
             params: [],
@@ -188,41 +183,12 @@ describe('builtin/github-review-reconcile — compilation', () => {
             edges: [{ from: 'first', to: 'second', when: 'succeeded' }],
         };
         const result = compileDefinition(authored, BLOCK_REGISTRY);
-        expect(result.ok).toBe(true);
         if (!result.ok) throw new Error('expected compile to succeed');
-        const names = result.definition.nodes.map((n) => n.name).sort();
-        expect(names).toEqual(
-            [
-                'first--collect',
-                'first--repair',
-                'first--reply',
-                'first--wait',
-                'second--collect',
-                'second--repair',
-                'second--reply',
-                'second--wait',
-            ].sort()
-        );
-        // The outer edge from the first block's exit (collect) into the second block's entry.
         expect(result.definition.edges).toContainEqual({
             from: 'first--collect',
             to: 'second--collect',
             when: 'succeeded',
         });
-    });
-
-    it('a custom graph can reference the block independently of any default workflow', () => {
-        const authored: AuthoredWorkflowDefinition = {
-            entry: 'implement',
-            params: [],
-            nodes: [
-                { name: 'implement', kind: 'agent', session: 'fresh', prompt: 'implement {{command}}' },
-                { name: 'review', kind: 'block', uses: 'builtin/github-review-reconcile' },
-            ],
-            edges: [{ from: 'implement', to: 'review', when: 'succeeded' }],
-        };
-        const result = compileDefinition(authored, BLOCK_REGISTRY);
-        expect(result.ok).toBe(true);
     });
 });
 

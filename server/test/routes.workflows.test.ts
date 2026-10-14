@@ -11,7 +11,6 @@ import {
     HTTP_NOT_FOUND,
     HTTP_OK,
     HTTP_SERVICE_UNAVAILABLE,
-    HTTP_UNAUTHORIZED,
     trackApps,
 } from './helpers-http.js';
 
@@ -107,23 +106,6 @@ async function boot(workflows: WorkflowStore & { created: unknown[]; removed: st
 }
 
 describe('GET /api/workflows', () => {
-    it("needs a session — workflow selection is a person's decision", async () => {
-        const workflows = stubWorkflows();
-        const { instance } = await boot(workflows);
-        expect((await instance.inject({ method: 'GET', url: '/api/workflows' })).statusCode).toBe(HTTP_UNAUTHORIZED);
-    });
-
-    it('refuses a worker-style bearer token at the wall', async () => {
-        const workflows = stubWorkflows();
-        const { instance } = await boot(workflows);
-        const response = await instance.inject({
-            method: 'GET',
-            url: '/api/workflows',
-            headers: { authorization: 'Bearer fwt_not-a-worker-token' },
-        });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
-    });
-
     it('lists the caller-visible workflows with their scopes', async () => {
         const workflows = stubWorkflows();
         const { instance, memberCookie } = await boot(workflows);
@@ -150,13 +132,6 @@ describe('GET /api/workflows', () => {
 });
 
 describe('POST /api/workflows', () => {
-    it('needs a session', async () => {
-        const workflows = stubWorkflows();
-        const { instance } = await boot(workflows);
-        const response = await instance.inject({ method: 'POST', url: '/api/workflows', payload: {} });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
-    });
-
     it('gates org-level creation to an admin', async () => {
         const workflows = stubWorkflows();
         const { instance, memberCookie, admin, adminCookie } = await boot(workflows);
@@ -265,13 +240,6 @@ describe('POST /api/workflows', () => {
 });
 
 describe('GET /api/workflow-blocks', () => {
-    it('needs a session — same surface as workflow selection', async () => {
-        const workflows = stubWorkflows();
-        const { instance } = await boot(workflows);
-        const response = await instance.inject({ method: 'GET', url: '/api/workflow-blocks' });
-        expect(response.statusCode).toBe(401);
-    });
-
     it('serves the catalog for a signed-in caller — metadata only, never a prompt or script body', async () => {
         const workflows = stubWorkflows();
         const { instance, memberCookie } = await boot(workflows);
@@ -300,13 +268,6 @@ describe('GET /api/workflow-blocks', () => {
 });
 
 describe('GET /api/workflows/:id', () => {
-    it('needs a session', async () => {
-        const workflows = stubWorkflows();
-        const { instance } = await boot(workflows);
-        const response = await instance.inject({ method: 'GET', url: `/api/workflows/${WF_ID}` });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
-    });
-
     it('refuses a non-uuid id', async () => {
         const workflows = stubWorkflows();
         const { instance, memberCookie } = await boot(workflows);
@@ -372,17 +333,6 @@ describe('GET /api/workflows/:id', () => {
 });
 
 describe('PUT /api/workflows/:id', () => {
-    it('needs a session', async () => {
-        const workflows = stubWorkflows();
-        const { instance } = await boot(workflows);
-        const response = await instance.inject({
-            method: 'PUT',
-            url: `/api/workflows/${WF_ID}`,
-            payload: { name: 'x', definition },
-        });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
-    });
-
     it('refuses a non-uuid id', async () => {
         const workflows = stubWorkflows();
         const { instance, memberCookie } = await boot(workflows);

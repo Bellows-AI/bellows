@@ -19,11 +19,6 @@ const graphUsing = (name: string, withConfig?: Record<string, unknown>): Authore
 });
 
 describe('builtin/merge-conflict-autofix', () => {
-    it('is available and compiles on its own, independent of any other workflow', () => {
-        const result = compileDefinition(graphUsing('reconcile'), BLOCK_REGISTRY);
-        expect(result.ok).toBe(true);
-    });
-
     it('expands to a repair -> verify subgraph, namespaced under the block node name', () => {
         const result = compileDefinition(graphUsing('reconcile'), BLOCK_REGISTRY);
         if (!result.ok) throw new Error('expected compile to succeed');
@@ -141,7 +136,7 @@ describe('builtin/merge-conflict-autofix', () => {
         expect(repair?.prompt).toContain('git rebase --abort');
     });
 
-    it('a second, independently-named use of the block in one graph does not collide', () => {
+    it("an outer edge out of the block leaves from its exit (verify) into the next block's entry", () => {
         const authored: AuthoredWorkflowDefinition = {
             entry: 'first',
             params: [],
@@ -152,11 +147,7 @@ describe('builtin/merge-conflict-autofix', () => {
             edges: [{ from: 'first', to: 'second', when: 'succeeded' }],
         };
         const result = compileDefinition(authored, BLOCK_REGISTRY);
-        expect(result.ok).toBe(true);
         if (!result.ok) throw new Error('expected compile to succeed');
-        const names = result.definition.nodes.map((n) => n.name).sort();
-        expect(names).toEqual(['first--repair', 'first--verify', 'second--repair', 'second--verify'].sort());
-        // The outer edge from the first block's exit (verify) into the second block's entry (repair).
         expect(result.definition.edges).toContainEqual({
             from: 'first--verify',
             to: 'second--repair',

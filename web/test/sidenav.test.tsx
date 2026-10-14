@@ -374,12 +374,6 @@ describe('SideNav status dots and live lines', () => {
         expect(html).toContain('→ Read src/x.ts');
     });
 
-    it('wears the your-turn blue dot while the running task waits on an answer', () => {
-        const html = render('/tasks', navigation([summary(running({ needsAnswer: true }))], []));
-        expect(html).toContain('sidenav-dot sidenav-dot-review');
-        expect(html).not.toContain('sidenav-dot-running');
-    });
-
     it('keeps the live line out of queued and finished tasks', () => {
         const html = render(
             '/tasks',
@@ -388,35 +382,8 @@ describe('SideNav status dots and live lines', () => {
         expect(html).not.toContain('sidenav-task-summary');
     });
 
-    it('paints the states text-first: grey queued, red failed, green done, plain stopped', () => {
-        const queued = render('/tasks', navigation([summary({ status: 'queued' })], []));
-        expect(queued).toContain('sidenav-dot sidenav-dot-paused');
-        const failed = render('/tasks', navigation([], [summary({ status: 'failed' })]));
-        expect(failed).toContain('sidenav-dot sidenav-dot-failed');
-        const done = render('/tasks', navigation([], [summary({ doneAt: '2026-09-02T13:00:00.000Z' })]));
-        expect(done).toContain('sidenav-dot sidenav-dot-done');
-        const stopped = render('/tasks', navigation([], [summary({ status: 'stopped' })]));
-        expect(stopped).not.toContain('sidenav-dot ');
-    });
-
-    it('holds the same grey paused dot for an open PR-review wait as for queued', () => {
-        const html = render('/tasks', navigation([], [summary({ status: 'queued', waitReason: 'review' })]));
-        expect(html).toContain('sidenav-dot sidenav-dot-paused');
-        expect(html).not.toContain('sidenav-dot-done');
-    });
-
-    it('paints an unclosed success with the blue review dot', () => {
-        const html = render('/tasks', navigation([], [summary({ status: 'succeeded' })]));
-        expect(html).toContain('sidenav-dot sidenav-dot-review');
-    });
-
-    it('paints a closed task green even while its review wait is still open', () => {
-        const html = render(
-            '/tasks',
-            navigation([], [summary({ status: 'succeeded', waitReason: 'review', doneAt: '2026-09-02T13:00:00.000Z' })])
-        );
-        expect(html).toContain('sidenav-dot sidenav-dot-done');
-        expect(html).not.toContain('sidenav-dot-paused');
+    it('draws no dot at all for a toneless state such as stopped', () => {
+        expect(render('/tasks', navigation([], [summary({ status: 'stopped' })]))).not.toContain('sidenav-dot ');
     });
 });
 

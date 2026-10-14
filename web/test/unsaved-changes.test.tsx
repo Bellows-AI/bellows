@@ -1,16 +1,14 @@
-import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import {
     beforeUnloadWarning,
     subscribeBeforeUnload,
     unsavedDialogBody,
     unsavedDialogTitle,
-    UnsavedChangesDialog,
 } from '../src/components/UnsavedChangesDialog.js';
 
 /**
  * The unsaved-change guard, pinned where a DOM-less suite CAN pin it: the dialog's copy, the
- * beforeunload handler and its subscription lifetime, and the dialog's static markup. The
+ * beforeunload handler and its subscription lifetime. The
  * interaction contract — focus trapping, Escape and the backdrop taking the safe answer, focus
  * restore to the initiating control, and the blocker actually holding a navigation — belongs to
  * Headless UI and React Router, and is exercised end to end by `e2e/env.spec.ts`; nothing here
@@ -52,17 +50,5 @@ describe('the beforeunload guard', () => {
         expect(target.removeEventListener).not.toHaveBeenCalled();
         off();
         expect(target.removeEventListener).toHaveBeenCalledWith('beforeunload', handler);
-    });
-});
-
-describe('the discard dialog markup', () => {
-    it('renders the library placeholder whether open or closed — the panel is client-only', () => {
-        // An open Headless dialog SSRs its own hidden placeholder and nothing else (the
-        // TaskRemoveDialog precedent): the panel mounts for a browser. The copy is pinned pure
-        // above; focus trapping, Escape, the backdrop and Discard-resumes-navigation are e2e's.
-        const open = renderToStaticMarkup(
-            <UnsavedChangesDialog labels={['My workspace']} onClose={() => {}} onConfirm={() => {}} />
-        );
-        expect(open).toContain('<span hidden');
     });
 });

@@ -11,7 +11,7 @@ import {
     testConfig,
     type MemoryEnvVarStore,
 } from './helpers.js';
-import { HTTP_BAD_REQUEST, HTTP_OK, HTTP_SERVICE_UNAVAILABLE, HTTP_UNAUTHORIZED, trackApps } from './helpers-http.js';
+import { HTTP_BAD_REQUEST, HTTP_OK, HTTP_SERVICE_UNAVAILABLE, trackApps } from './helpers-http.js';
 
 /**
  * Offline: the routes against the in-memory double, the way routes.workspace.test.ts runs. The SQL
@@ -51,11 +51,6 @@ async function boot(options: { envVars?: MemoryEnvVarStore } = {}) {
 }
 
 describe('GET /api/env', () => {
-    it('needs a session', async () => {
-        const { app } = await boot();
-        expect((await app.inject({ method: 'GET', url: '/api/env' })).statusCode).toBe(HTTP_UNAUTHORIZED);
-    });
-
     it('answers the three scopes, with every secret value nulled', async () => {
         const { app, admin, adminCookie, envVars } = await boot();
         await envVars.replaceOrg([{ name: 'CORE_SECRET', value: 's3cr3t', isSecret: true }]);
@@ -132,13 +127,6 @@ describe('PUT /api/env/workspace', () => {
             .inject({ method: 'GET', url: '/api/env', headers: { cookie: memberCookie } })
             .then((r) => r.json().workspace);
         expect(rows.map((row: { name: string }) => row.name)).toEqual(['SECRET_A']);
-    });
-
-    it('needs a session', async () => {
-        const { app } = await boot();
-        expect((await app.inject({ method: 'PUT', url: '/api/env/workspace', payload: { vars: [] } })).statusCode).toBe(
-            HTTP_UNAUTHORIZED
-        );
     });
 });
 

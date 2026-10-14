@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
+import { BATCH_DETAIL_STATES, BatchBoard } from './fixtures/batch-board.js';
 import {
     agentFailedThread,
     doneThread,
@@ -73,11 +74,26 @@ const THREADS: [state: string, fixture: string, jobs: readonly ThreadJob[]][] = 
     ['null-author', 'nullAuthorThread', nullAuthorThread],
 ];
 
+/** A started batch's detail page, served by the fake board: the open board runs no scheduler. */
+const BATCH_SHOTS: Shot[] = Object.entries(BATCH_DETAIL_STATES).map(([state, { record, report }]) => ({
+    route: 'batch-detail',
+    state,
+    fixture: 'BATCH_DETAIL_STATES',
+    open: async (page) => {
+        const board = new BatchBoard(page);
+        await board.install();
+        board.adopt(record, report);
+        await page.goto(`/batches/${record.id}`);
+        return page.locator('[data-task="task-1"]');
+    },
+}));
+
 const SHOTS: Shot[] = [
     DASHBOARD_SHOT,
     INBOX_SHOT,
     COMPOSER_SHOT,
     ...THREADS.map(([state, fixture, jobs]) => threadShot(state, fixture, jobs)),
+    ...BATCH_SHOTS,
     ...SETTINGS_SHOTS,
     ...ENTRY_SHOTS,
 ];

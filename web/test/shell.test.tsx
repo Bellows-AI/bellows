@@ -60,6 +60,13 @@ describe('AppShell', () => {
         expect(html).not.toContain('<h1');
     });
 
+    it('carries no pull-request vocabulary in the app bar or the navigation', () => {
+        const html = renderShell('/');
+        expect(html).not.toMatch(/pull requests?/i);
+        expect(html).not.toMatch(/revert rate/i);
+        expect(html).not.toMatch(/merged into/i);
+    });
+
     it('exposes the drawer trigger with its contracts, ahead of the actions', () => {
         const html = renderShell('/');
         expect(html).toContain('aria-expanded="false"');

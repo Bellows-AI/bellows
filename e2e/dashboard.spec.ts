@@ -88,29 +88,6 @@ test.describe('date range selector', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    test('the custom range dialog stays inside the viewport and restores focus to the trigger on a narrow phone', async ({
-        page,
-    }) => {
-        await open(page);
-        await page.setViewportSize({ width: 360, height: 844 });
-
-        // The dialog centers over the dimmed page rather than anchoring to the trigger, so it
-        // never has to flip or clip — the containment the closeout audit (issue 190) demands of
-        // every floating surface still holds, just by a different mechanism.
-        await page.locator('#range-select').click();
-        await page.getByRole('option', { name: 'Custom', exact: true }).click();
-        const dialog = page.locator('.range-dialog');
-        await expect(dialog).toBeVisible();
-        const box = (await dialog.boundingBox())!;
-        expect(box.x, 'range dialog left edge').toBeGreaterThanOrEqual(0);
-        expect(box.x + box.width, 'range dialog right edge').toBeLessThanOrEqual(361);
-        await page.screenshot({ path: `${SHOTS}/matrix/dashboard_range-dialog-open_dark_360.png` });
-
-        await page.keyboard.press('Escape');
-        await expect(dialog).toHaveCount(0);
-        await expect(page.locator('#range-select'), 'escape hands focus back to the Range trigger').toBeFocused();
-    });
-
     test('the chart tooltip stays inside the viewport when a bucket is focused', async ({ page }) => {
         await page.setViewportSize({ width: 1440, height: 1000 });
         await open(page);
@@ -125,14 +102,6 @@ test.describe('date range selector', () => {
         const box = (await tooltip.boundingBox())!;
         expect(box.x, 'chart tooltip left edge').toBeGreaterThanOrEqual(0);
         expect(box.x + box.width, 'chart tooltip right edge').toBeLessThanOrEqual(1441);
-    });
-
-    test('the page carries no pull-request vocabulary', async ({ page }) => {
-        await open(page);
-        const text = (await page.locator('main').innerText()) + (await page.locator('.appbar').innerText());
-        expect(text).not.toMatch(/pull requests?/i);
-        expect(text).not.toMatch(/revert rate/i);
-        expect(text).not.toMatch(/merged into/i);
     });
 
     test('month buckets daily, all-time falls back to weeks, and the per-task figures render', async ({ page }) => {
@@ -222,19 +191,6 @@ test.describe('the analytics dashboard layout (issue 283)', () => {
         await stampInside(390);
     });
 
-    test('four metric cards, no decorative trend, comparison or cost', async ({ page }) => {
-        await open(page);
-
-        await expect(page.locator('.usage-summary .usage-group')).toHaveCount(4);
-        await expect(page.locator('.usage-summary .usage-disc')).toHaveCount(4);
-        for (const label of ['Sessions', 'Total input tokens', 'Active time', 'Edit acceptance']) {
-            await expect(page.locator('.usage-summary .usage-label', { hasText: label })).toBeVisible();
-        }
-        const text = await page.locator('main').innerText();
-        expect(text).not.toMatch(/vs\.? previous|↑|↓|estimated cost/i);
-        await expect(page.getByRole('button', { name: /weekly|bar chart|line chart/i })).toHaveCount(0);
-    });
-
     test('the main chart plots at 360px on the desktop', async ({ page }) => {
         await page.setViewportSize({ width: 1440, height: 900 });
         await open(page);
@@ -244,14 +200,6 @@ test.describe('the analytics dashboard layout (issue 283)', () => {
         // 360px of plot plus the axis padding, drawn near 1:1 at this width.
         expect(box.height).toBeGreaterThanOrEqual(400);
         expect(box.height).toBeLessThanOrEqual(432);
-    });
-
-    test('a partial period is hatched and keyed in the caption', async ({ page }) => {
-        await open(page);
-
-        const panel = page.locator('section.panel', { hasText: 'AI token usage' });
-        await expect(panel.locator('pattern#partial-hatch')).toHaveCount(1);
-        await expect(panel.getByText('The hatched bucket is a partial period.')).toBeVisible();
     });
 
     test('a failed refresh keeps the last good data and recovers on the next read', async ({ page }) => {

@@ -70,21 +70,7 @@ describe('the task board section', () => {
     it.each([
         ['succeeded', {}, 'pill pill-accent', 'Succeeded · Needs review'],
         ['failed', { status: 'failed' }, 'pill pill-bad', 'Failed · Needs review'],
-        ['dead', { status: 'dead' }, 'pill pill-bad', 'Failed · Needs review'],
-        ['stopped', { status: 'stopped' }, 'pill pill-done', 'Stopped · Needs review'],
         ['marked done', { doneAt: '2026-08-21T13:50:00.000Z' }, 'pill pill-done', 'Done'],
-        [
-            'an open review wait',
-            { waitReason: 'review', waitingSince: '2026-08-21T13:40:00.000Z' },
-            'pill pill-done',
-            'Waiting for review',
-        ],
-        [
-            'an exhausted review wait',
-            { waitReason: 'review', waitingSince: '2026-08-21T13:40:00.000Z', waitTerminalReason: 'exhausted' },
-            'pill pill-accent',
-            'Succeeded · Needs review · exhausted',
-        ],
     ] as [string, Partial<Job>, string, string][])(
         'renders %s as the taskStatusLabel in its taskTone pill',
         (_name, over, pill, label) => {

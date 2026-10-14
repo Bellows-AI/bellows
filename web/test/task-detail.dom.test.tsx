@@ -194,6 +194,28 @@ describe('the task detail page', () => {
         expect(dialog()!.contains(document.activeElement)).toBe(true);
     });
 
+    it("your own task offers the composer, and the board's 403 renders inside it and keeps the draft", async () => {
+        const jobs = authoredBy(missingSummaryThread, LOCAL_AUTHOR);
+        const refusal = 'Only the account that queued the task can follow it up';
+        const calls = board(jobs, (call) =>
+            call.method === 'POST' && /\/api\/jobs\/[^/]+\/follow-up$/.test(call.url)
+                ? { status: 403, body: { error: refusal, code: 'FORBIDDEN' } }
+                : undefined
+        );
+        const { container } = renderApp(`/tasks/${jobs[0]!.id}`);
+        const user = userEvent.setup();
+
+        const box = (await screen.findByLabelText('Ask for a follow-up')) as HTMLTextAreaElement;
+        expect(screen.queryByText(/can continue this session/)).toBeNull();
+        await user.type(box, 'one more pass');
+        await user.click(screen.getByRole('button', { name: 'Send follow-up' }));
+
+        const composer = await mounted(container, '.composer');
+        await waitFor(() => expect(composer.textContent).toContain(refusal));
+        expect(calls.filter((call) => call.method === 'POST' && call.url.endsWith('/follow-up'))).toHaveLength(1);
+        expect(box.value).toBe('one more pass');
+    });
+
     it('an action that resolves after navigating to another task is ignored', async () => {
         const first = authoredBy(publishedThread, LOCAL_AUTHOR);
         const other = authoredBy(missingSummaryThread, LOCAL_AUTHOR);

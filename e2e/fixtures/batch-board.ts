@@ -1,5 +1,12 @@
 import type { Page, Route } from '@playwright/test';
-import type { BatchRecord, BatchReportView, BatchSummary } from '../../web/src/batch-model.js';
+import {
+    type BatchRecord,
+    type BatchReportView,
+    type BatchSummary,
+    type BatchTaskState,
+    blankPlan,
+    updateTask,
+} from '../../web/src/batch-model.js';
 
 /**
  * A stand-in for the board's scheduler on the open e2e board, where no driver runs a task: it
@@ -107,3 +114,72 @@ export class BatchBoard {
         throw new Error(`the fake board has no answer for ${method} ${rest.join('/')} (${HTTP_NOT_FOUND})`);
     }
 }
+
+/** A one-task batch running its first stage, `task-1` finished with a pull request. */
+function runningBatch(
+    id: string,
+    over: { plan: Partial<BatchRecord['plan']>; task?: Partial<BatchTaskState> },
+    verification: BatchRecord['verification'] = []
+): BatchRecord {
+    const plan = updateTask({ ...blankPlan('acme/widgets'), ...over.plan }, 'task-1', (task) => ({
+        ...task,
+        objective: 'Bump it',
+        acceptance: 'Builds',
+        verification: 'npm test',
+    }));
+    const now = new Date().toISOString();
+    return {
+        id,
+        status: 'running',
+        version: 3,
+        createdBy: null,
+        startedBy: null,
+        createdAt: now,
+        updatedAt: now,
+        startedAt: now,
+        cancelledAt: null,
+        completedAt: null,
+        expiredAt: null,
+        activeStage: 'stage-1',
+        plan,
+        tasks: [
+            {
+                key: 'task-1',
+                stage: 'stage-1',
+                execution: 'succeeded',
+                pr: 'https://github.com/acme/widgets/pull/9',
+                gate: 'passed',
+                waitReason: null,
+                rootJobId: null,
+                attempt: 1,
+                ...over.task,
+            },
+        ],
+        verification,
+    };
+}
+
+/** The batch-detail states the nightly gallery shoots: each a record, and the report the board would assemble. */
+export const BATCH_DETAIL_STATES: Record<string, { record: BatchRecord; report?: BatchReportView }> = {
+    'verification-failed': {
+        record: runningBatch('0f53d75f-0000-4000-8000-000000000654', { plan: { title: 'Held stage' } }, [
+            {
+                stage: 'stage-1',
+                state: 'failed',
+                detail: 'checks on main at cd89f3d2 fail: e2e failing',
+                headSha: 'cd89f3d2aabbccdd',
+                checkedAt: new Date().toISOString(),
+            },
+        ]),
+    },
+    'board-merging': {
+        record: runningBatch('0f53d75f-0000-4000-8000-000000000693', {
+            plan: { title: 'Board merging', policy: 'automerge' },
+            task: { gate: 'open', waitReason: 'waiting for the board to merge https://github.com/acme/widgets/pull/9' },
+        }),
+        report: {
+            state: 'running',
+            tasks: [{ key: 'task-1', execution: 'succeeded', attempts: 1, next: { action: 'wait' } }],
+        },
+    },
+};
