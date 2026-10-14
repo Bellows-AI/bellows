@@ -10,6 +10,7 @@ import {
 import { COLLECT_HELPER_ID, REPLY_HELPER_ID } from '../src/db/workflow-blocks/github-review-reconcile.js';
 import { PROBE_HELPER_ID } from '../src/db/workflow-blocks/merge-conflict-autofix.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
+import { readSkillCatalog } from '../src/skills.js';
 
 const OBJECTIVE: MasterPromptClaimInput = {
     mode: OBJECTIVE_MODE,
@@ -66,7 +67,7 @@ const defaultSnapshot = (options: { review?: boolean; merge?: boolean } = {}): W
 describe('resolveMasterPrompt: objective', () => {
     it('renders the objective mode with no per-turn values', () => {
         const prompt = resolveMasterPrompt(OBJECTIVE);
-        expect(MASTER_PROMPT_VERSION).toBe('factory-master-prompt/v5');
+        expect(MASTER_PROMPT_VERSION).toBe('factory-master-prompt/v6');
         expect(prompt).toBe(
             `Factory execution contract (${MASTER_PROMPT_VERSION})
 
@@ -79,7 +80,9 @@ Rules for this turn
 - Factory decides what happens next from this turn's verdict and final output.
 - Factory runs the declared gates and a publish after your turn, and reuses any pull request you opened; do not emulate the other capabilities this turn's Factory turn context lists.
 - You may push the task branch and open or update a pull request. Run the relevant declared gates before you publish and report any failure; a failed, skipped or unavailable gate does not stop you from publishing or continuing. Never say a gate passed that did not.
-- Do not merge or close a pull request, enable auto-merge, comment on or reply to GitHub reviews, poll or wait for GitHub activity, or start the next workflow step.
+- Do not merge or close a pull request, enable auto-merge, or start the next workflow step.
+- You may wait for CI checks and reviews on the pull request you published, fix what they find and push again, and reply to each review comment you addressed saying what changed.
+- After you push and open or update a pull request, load the pr-land skill and follow it to wait for CI and review before you finish.
 - You may edit files, run tests and other local verification, and commit, as the current task requires.
 - If the current task defines an exact output line or marker, end with exactly that line, then stop.
 - If you cannot proceed for a reason outside the repository (missing credentials, no access, an unreachable service), end your final message with the line FACTORY_BLOCKED: <one-line reason>, then stop. Never print that line when you are not blocked.`
@@ -96,6 +99,24 @@ Rules for this turn
         });
         expect(prompt).toContain('Do not push, open, update, merge or close a pull request');
         expect(resolveMasterPrompt(OBJECTIVE)).not.toContain('Do not push, open');
+    });
+
+    it('keeps the GitHub-wait permission and the pr-land hint out of a workflow turn', () => {
+        const prompt = resolveMasterPrompt({
+            workflowNode: 'task',
+            mode: WORKFLOW_MODE,
+            workflowName: 'default',
+            snapshot: defaultSnapshot(),
+            helperPlans: undefined,
+        });
+        expect(prompt).toContain('poll or wait for GitHub activity');
+        expect(prompt).not.toContain('You may wait for CI');
+        expect(prompt).not.toContain('pr-land');
+    });
+
+    it('names a skill the runner images ship', () => {
+        expect(resolveMasterPrompt(OBJECTIVE)).toContain('load the pr-land skill');
+        expect(readSkillCatalog().map((skill) => skill.name)).toContain('pr-land');
     });
 
     it('never contains a brace — the opencode template-substitution vector', () => {
@@ -122,7 +143,10 @@ describe('resolveMasterPrompt: selected skills', () => {
     });
 
     it('stays inside the character cap with every shipped skill selected', () => {
-        const prompt = resolveMasterPrompt({ ...OBJECTIVE, skills: ['backend-fix', 'gates', 'github', 'jira'] });
+        const prompt = resolveMasterPrompt({
+            ...OBJECTIVE,
+            skills: ['backend-fix', 'gates', 'github', 'jira', 'pr-land', 'review'],
+        });
         expect(prompt).not.toBeNull();
     });
 });

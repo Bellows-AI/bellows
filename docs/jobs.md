@@ -55,6 +55,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | Container scripts | `driver/src/container-scripts.ts`, `driver/src/scripts/` | `driver/test/scripts.test.ts`, `scripts-*.test.ts` |
 | Orphan reaper; lease-owned Kubernetes Jobs and service resources | `driver/src/reaper.ts`, `docker-reaper.ts`, `k8s-reaper.ts` | `driver/test/reaper.test.ts`, `docker-reaper.test.ts`, `k8s-reaper.test.ts` |
 | Optional `backend-fix` playbook | `docker/skills/backend-fix/SKILL.md` | `driver/test/executor-images.test.ts` |
+| Objective PR landing loop (wait for CI and review, fix, reply), hinted by the master prompt | `docker/skills/pr-land/SKILL.md`, `pr-status.sh`, `server/src/db/master-prompt.ts` | `driver/test/executor-images.test.ts`, `pr-land-status-script.test.ts`, `server/test/master-prompt.test.ts` |
 | Board + driver end to end | `scripts/test-jobs.sh` | `server/test/test-jobs.harness.test.ts`, `driver/test/compose.test.ts` |
 
 ## CLI (`bellows …`)

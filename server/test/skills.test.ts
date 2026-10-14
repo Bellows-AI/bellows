@@ -27,7 +27,8 @@ function skillsDir(files: Record<string, string>): string {
 describe('readSkillCatalog', () => {
     it('loads the shipped skills with their declared requirements', () => {
         const byName = Object.fromEntries(readSkillCatalog().map((skill) => [skill.name, skill]));
-        expect(Object.keys(byName).sort()).toEqual(['backend-fix', 'gates', 'github', 'jira', 'review']);
+        expect(Object.keys(byName).sort()).toEqual(['backend-fix', 'gates', 'github', 'jira', 'pr-land', 'review']);
+        expect(byName['pr-land']?.requires).toEqual({ tools: ['gh'], connections: ['github'] });
         expect(byName.jira?.requires).toEqual({ tools: ['curl'], connections: ['jira'] });
         expect(skillCatalog()).toEqual(readSkillCatalog());
     });
