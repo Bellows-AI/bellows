@@ -67,8 +67,10 @@ the reason is on stderr.
    alone. A review summary or PR-level comment gets `gh pr comment <N> --body '<what changed>'`;
    a line comment gets a reply in its own thread:
    `gh api repos/{owner}/{repo}/pulls/<N>/comments/<comment-id>/replies -f body='<what changed>'`.
-   A comment you disagree with gets a reply saying why, not silence. Pushed anything? Back to
-   step 2; otherwise run the helper once more to confirm `unanswered_threads=0`, and finish.
+   A comment you disagree with gets a reply saying why, not silence. A reply that only
+   acknowledges your fix asks nothing: never answer it, and count a thread it ends as answered.
+   Pushed anything? Back to step 2; otherwise run the helper once more to confirm no thread is
+   left unanswered, and finish.
 
 Factory's publish after your turn reuses this pull request and never pushes over your commits.
 
