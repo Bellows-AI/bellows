@@ -1,18 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { type BoardJob, createBoard } from '../src/board.js';
+import { boardJob } from './fixtures/board-job.js';
 
 /** The board client's review calls (issue #549) and how a claim's `reviewRun` arrives. */
 
-const job = {
-    id: 'job-1',
-    command: 'echo hi',
-    attempts: 1,
-    claimSeq: 1,
-    leaseToken: 'token-1',
-    leaseExpiresAt: '2026-08-21T12:05:00.000Z',
-    resumeSessionId: null,
-    userId: null,
-} as unknown as BoardJob;
+const job = boardJob() as unknown as BoardJob;
 
 const REVIEW = {
     id: 'review-1',

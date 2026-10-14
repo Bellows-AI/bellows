@@ -1000,6 +1000,20 @@ const ctransCalls = (j: BoardJob): string[] => [
     `DELETE ${jobPath(namespace, claudeTranscriptJobName(j))}`,
 ];
 
+/**
+ * The methods of a runner attempt from its Secret on: the Secret POST, the claim verify, the
+ * Job POST, the claim verify, the status poll, the pod list and the log; then the close-time
+ * claude-code turn read and the transcript read (issue #325) — one aux Job each, posted,
+ * polled, its pod listed, logged and reaped; then the claim read, its release and the Secret's
+ * reap. The fence tests spell out everything before it.
+ */
+const RUN_FROM_SECRET = [
+    ...['POST', 'GET', 'POST', 'GET', 'GET', 'GET', 'GET'],
+    ...['POST', 'GET', 'GET', 'GET', 'DELETE'],
+    ...['POST', 'GET', 'GET', 'GET', 'DELETE'],
+    ...['GET', 'DELETE', 'DELETE'],
+];
+
 const FAKE: Record<string, unknown> = {
     create: { status: 201, body: '{}' },
     // The fence: a label LIST that answers empty (nothing left to delete). fenceDelete stays
@@ -1113,6 +1127,36 @@ const fakeRequest = (overrides: Record<string, unknown> = {}): { request: K8sReq
     return { request, calls };
 };
 
+/** A test's own routes, tried before fakeRequest's; `undefined` falls through to them. */
+type Special = (method: K8sMethod, path: string, body: unknown) => K8sResponse | Promise<K8sResponse> | undefined;
+
+/**
+ * fakeRequest with the routes a test is about in front of it: `special` answers first, and
+ * anything it leaves (`undefined`) falls through to fakeRequest — whose claim server, Job,
+ * pod, log, Secret and aux routes answer as usual, and whose unscripted paths still reject.
+ * Every call is recorded, the ones `special` answered included.
+ */
+const routed = (special: Special, overrides: Record<string, unknown> = {}): { request: K8sRequest; calls: Call[] } => {
+    const calls: Call[] = [];
+    const base = fakeRequest(overrides);
+    const request: K8sRequest = (method, path, body) => {
+        calls.push({ method, path, body });
+        const answer = special(method, path, body);
+        return answer === undefined ? base.request(method, path, body) : Promise.resolve(answer);
+    };
+    return { request, calls };
+};
+
+/** The answer a hand-written fake gave a call it did not script. */
+const noAnswer = (method: K8sMethod, path: string): Promise<K8sResponse> =>
+    Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+/** A DELETE of one Job by name — a `routed` fake whose original never scripted it rejects it. */
+const isJobDelete = (method: K8sMethod, path: string): boolean =>
+    method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`);
+/** A DELETE of the checkout claim — likewise rejected where the original never scripted it. */
+const isClaimDelete = (method: K8sMethod, path: string): boolean =>
+    method === 'DELETE' && path.startsWith(`${configmapsPath}/`);
+
 const runner = (request: K8sRequest, env: Record<string, string> = {}, leases?: Board['leases']) =>
     createKubernetesRunner(
         loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0', ...env }),
@@ -1131,7 +1175,7 @@ const boardLease =
  * Default answers for the objects the runner touches beyond the runner Job itself: the fence
  * sweeps service pods and headless Services by the job label, the lease teardown lists them,
  * and aux Jobs (gates, the .bellows.yaml readout) ride the same Job routes the tests script.
- * Every inline router falls through to this before rejecting, so a test only scripts the
+ * fakeRequest (and so every routed fake) falls through to this before rejecting, so a test only scripts the
  * objects it is about. Lists answer empty — nothing to sweep, nothing to tear down.
  */
 const AUX: Record<string, K8sResponse> = {
@@ -3561,54 +3605,17 @@ describe('the kubernetes runner', () => {
     it('streams the log tail while the pod runs, and reports the finished log at the end', async () => {
         const tails: string[] = [];
         let gets = 0;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
+        const { request } = routed((method, path) => {
             if (path === jobPath(namespace, runnerJobName(job))) {
                 gets += 1;
                 // First poll: still running, and worth a look at the log. Second: done.
-                return Promise.resolve(
-                    gets === 1 ? { status: 200, body: JSON.stringify({ status: {} }) } : (FAKE.job as K8sResponse)
-                );
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
+                return gets === 1 ? { status: 200, body: JSON.stringify({ status: {} }) } : (FAKE.job as K8sResponse);
             }
             if (path.includes('/log')) {
-                return gets === 1
-                    ? Promise.resolve({ status: 200, body: 'partial output\n' })
-                    : Promise.resolve(FAKE.log as K8sResponse);
+                return gets === 1 ? { status: 200, body: 'partial output\n' } : (FAKE.log as K8sResponse);
             }
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false }, (tail) => tails.push(tail));
 
@@ -3635,49 +3642,14 @@ describe('the kubernetes runner', () => {
     it('streams nothing, and fails nothing, when the mid-run log read answers badly', async () => {
         const tails: string[] = [];
         let gets = 0;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
+        const { request } = routed((method, path) => {
             if (path === jobPath(namespace, runnerJobName(job))) {
                 gets += 1;
-                return Promise.resolve(
-                    gets === 1 ? { status: 200, body: JSON.stringify({ status: {} }) } : (FAKE.job as K8sResponse)
-                );
+                return gets === 1 ? { status: 200, body: JSON.stringify({ status: {} }) } : (FAKE.job as K8sResponse);
             }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve({ status: 500, body: 'unavailable' });
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (path.includes('/log')) return { status: 500, body: 'unavailable' };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false }, (tail) => tails.push(tail));
 
@@ -3693,63 +3665,20 @@ describe('the kubernetes runner', () => {
      * names would make a name-targeted delete miss every previous attempt.
      */
     it('sweeps leftover jobs by label before creating, and waits for the sweep to land', async () => {
-        const calls: Call[] = [];
         const leftover = 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner';
         let lists = 0;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
+        const { request, calls } = routed((method, path) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 lists += 1;
                 // First read: the old Job is still listed. Second: gone. Everything after is
                 // the NEW Job's own status poll. The fixture carries no creationTimestamp —
                 // the fence classifies nothing, so it reads none.
-                return Promise.resolve(
-                    lists === 1
-                        ? {
-                              status: 200,
-                              body: JSON.stringify({
-                                  items: [{ metadata: { name: leftover } }],
-                              }),
-                          }
-                        : { status: 200, body: JSON.stringify({ items: [] }) }
-                );
+                return lists === 1
+                    ? { status: 200, body: JSON.stringify({ items: [{ metadata: { name: leftover } }] }) }
+                    : { status: 200, body: JSON.stringify({ items: [] }) };
             }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) return { status: 200, body: '{}' };
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
@@ -3773,28 +3702,7 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
-            'POST',
-            'GET',
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'GET',
-            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            // The transcript artifact's read (issue #325): the twin Job, same shape.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            'GET',
-            'DELETE',
-            'DELETE',
+            ...RUN_FROM_SECRET,
         ]);
         expect(calls[1].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
         expect(calls[5].path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
@@ -3809,38 +3717,16 @@ describe('the kubernetes runner', () => {
         const leftover = {
             metadata: { name: 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner' },
         };
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
+        const { request } = routed((method, path) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [leftover] }) });
+                return { status: 200, body: JSON.stringify({ items: [leftover] }) };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 // Answered, and yet the object never leaves the list — the failure mode the
                 // bound exists for.
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/never disappeared/);
     });
@@ -3856,66 +3742,37 @@ describe('the kubernetes runner', () => {
         const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
         const newerJobName = runnerJobName(newerJob);
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let replacementAlive = true;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             // The claim is held by attempt 2; this run is attempt 1.
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 409, body: '{"reason":"AlreadyExists"}' });
+                return { status: 409, body: '{"reason":"AlreadyExists"}' };
             }
             if (path === claimPath && method === 'GET') {
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({
                         metadata: { uid: 'claim-uid-2' },
                         data: { holder: NEW_TOKEN, claimSeq: '2' },
                     }),
-                });
+                };
             }
             // The replacement's runner Job is live and answers the label selector.
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({
                         items: replacementAlive ? [{ metadata: { name: newerJobName } }] : [],
                     }),
-                });
+                };
             }
             if (method === 'DELETE' && path.startsWith(`${jobPath(namespace, newerJobName)}?`)) {
                 replacementAlive = false;
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+            if (isClaimDelete(method, path)) return noAnswer(method, path);
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/stands down/);
         // The replacement's Job still exists — a superseded attempt never reaches the winner.
@@ -3989,11 +3846,9 @@ describe('the kubernetes runner', () => {
         const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
         const claimPath = claimPathFor(job.id);
         const serve = claimServer();
-        const calls: Call[] = [];
         // A leftover from the older attempt: the first claim POST stores it under claim-uid-1.
         let seeded = false;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path, body) => {
             if (!seeded) {
                 seeded = true;
                 serve('POST', configmapsPath, {
@@ -4001,41 +3856,9 @@ describe('the kubernetes runner', () => {
                     data: { holder: job.leaseToken, claimSeq: '1' },
                 });
             }
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(newerJob))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+            return serve(method, path, body);
+        });
 
         const outcome = await createKubernetesRunner(
             loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
@@ -4089,8 +3912,6 @@ describe('the kubernetes runner', () => {
         const olderJob: BoardJob = { ...job, attempts: 1, claimSeq: 1 };
         const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
         const newerJobName = runnerJobName(newerJob);
-        const serve = claimServer();
-        const calls: Call[] = [];
         const liveJobs = new Set<string>();
 
         let signalOlderClaimed!: () => void;
@@ -4102,51 +3923,23 @@ describe('the kubernetes runner', () => {
             openOlderList = resolve;
         });
 
-        const shared = (method: K8sMethod, path: string, body?: unknown): Promise<K8sResponse> => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
+        // One fake for both attempts: they share its claim server, as they share the apiserver.
+        const { request: shared, calls } = routed((method, path, body) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({ items: [...liveJobs].map((name) => ({ metadata: { name } })) }),
-                });
+                };
             }
             if (method === 'POST' && path === jobsPath(namespace)) {
                 liveJobs.add((body as { metadata?: { name?: string } })?.metadata?.name ?? '');
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 liveJobs.delete(path.slice(jobsPath(namespace).length + 1).split('?')[0] ?? '');
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (path === jobPath(namespace, runnerJobName(olderJob)) || path === jobPath(namespace, newerJobName)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
         // The older attempt's fence: its first label list is held until the test has run the
         // newer attempt to completion, so the sweep sees the replacement's live Job.
         const olderRequest: K8sRequest = (method, path, body) => {
@@ -4200,52 +3993,11 @@ describe('the kubernetes runner', () => {
     // claim env. The fence sweeps JOBS by label and nothing else — and the Secret's name carries
     // this attempt's own lease token, so there is no previous attempt's Secret at this name.
     it('keeps the freshly created Secret across the label fence', async () => {
-        const calls: Call[] = [];
         const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path.startsWith(`${secretsPath}/`)) return Promise.resolve({ status: 200, body: '{}' });
-            if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        // Every delete but the claim's answers plainly; the claim keeps its uid precondition.
+        const { request, calls } = routed((method, path) =>
+            method === 'DELETE' && !path.startsWith(configmapsPath) ? { status: 200, body: '{}' } : undefined
+        );
 
         const envJob: BoardJob = { ...job, env: { CORE_TOKEN: 'shh' } };
         const outcome = await createKubernetesRunner(
@@ -4291,17 +4043,12 @@ describe('the kubernetes runner', () => {
         const freshJob = { metadata: { name: freshName, creationTimestamp: new Date(now).toISOString() } };
         let old = true;
         let fresh = true;
-        const calls: Call[] = [];
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
+        const { request, calls } = routed((method, path) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({ items: [old ? oldJob : null, fresh ? freshJob : null].filter(Boolean) }),
-                });
+                };
             }
             // The API server evaluates a selector at processing time: a collection DELETE would
             // take EVERY Job of the id — including this attempt's own once created. The fence
@@ -4309,43 +4056,14 @@ describe('the kubernetes runner', () => {
             if (method === 'DELETE' && path.includes('labelSelector=')) {
                 old = false;
                 fresh = false;
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 if (path.startsWith(`${jobPath(namespace, oldName)}`)) old = false;
                 if (path.startsWith(`${jobPath(namespace, freshName)}`)) fresh = false;
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -4378,28 +4096,7 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
-            'POST',
-            'GET',
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'GET',
-            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            // The transcript artifact's read (issue #325): the twin Job, same shape.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            'GET',
-            'DELETE',
-            'DELETE',
+            ...RUN_FROM_SECRET,
         ]);
     });
 
@@ -4417,56 +4114,22 @@ describe('the kubernetes runner', () => {
     it('deletes a live predecessor the age filter would have called fresh, and waits for it before creating', async () => {
         const predecessor = 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner';
         let predecessorAlive = true;
-        const calls: Call[] = [];
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
+        const { request, calls } = routed((method, path) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({
                         items: predecessorAlive
                             ? [{ metadata: { name: predecessor, creationTimestamp: new Date().toISOString() } }]
                             : [],
                     }),
-                });
+                };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 if (path.startsWith(jobPath(namespace, predecessor))) predecessorAlive = false;
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
 
         // A 10s lease puts the entry-time cutoff 5s back: the predecessor — younger than that
         // at the deciding list — is a live writer on this checkout, and it must not survive.
@@ -4502,73 +4165,19 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
-            'POST',
-            'GET',
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'GET',
-            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            // The transcript artifact's read (issue #325): the twin Job, same shape.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            'GET',
-            'DELETE',
-            'DELETE',
+            ...RUN_FROM_SECRET,
         ]);
     });
 
     // A collection that answers 404 has nothing behind it to fence: straight to the create, no
     // second list, no deletes.
     it('treats a 404 from the label list as nothing left to fence', async () => {
-        const calls: Call[] = [];
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
+        const { request, calls } = routed((method, path) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 404, body: '{"kind":"Status"}' });
+                return { status: 404, body: '{"kind":"Status"}' };
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -4580,41 +4189,15 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
-            'POST',
-            'GET',
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'GET',
-            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            // The transcript artifact's read (issue #325): the twin Job, same shape.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            'GET',
-            'DELETE',
-            'DELETE',
+            ...RUN_FROM_SECRET,
         ]);
     });
 
     // A dropped connection says nothing about whether the objects are gone; the fence keeps
     // polling within the same bound instead of creating alongside what may still be there.
     it('keeps fencing through a transport failure on the list', async () => {
-        const calls: Call[] = [];
         let lists = 0;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
+        const { request, calls } = routed((method, path) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 lists += 1;
                 // First read: the connection drops. Second: the selector answers nothing.
@@ -4622,36 +4205,8 @@ describe('the kubernetes runner', () => {
                     ? Promise.reject(new Error('connection reset'))
                     : Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -4667,28 +4222,7 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
-            'POST',
-            'GET',
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'GET',
-            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            // The transcript artifact's read (issue #325): the twin Job, same shape.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            'GET',
-            'DELETE',
-            'DELETE',
+            ...RUN_FROM_SECRET,
         ]);
     });
 
@@ -4720,9 +4254,7 @@ describe('the kubernetes runner', () => {
         // (b) The claim answers gone at release time: no DELETE on the configmaps path at all.
         let reads = 0;
         const serve = claimServer();
-        const calls: Call[] = [];
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path, body) => {
             const claimAnswer = serve(method, path, body);
             if (claimAnswer) {
                 // The verify reads (our claim, still held) succeed; every later read — the
@@ -4732,42 +4264,8 @@ describe('the kubernetes runner', () => {
                 if (reads > 3) return { status: 404, body: '{"kind":"Status"}' };
                 return claimAnswer;
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
         // The acquire POST and the two verifies around the Job POST happened — reads 1 through
@@ -4782,10 +4280,8 @@ describe('the kubernetes runner', () => {
     it('takes over a claim object that carries no claim sequence once the board proves the lease', async () => {
         const claimPath = claimPathFor(job.id);
         const serve = claimServer();
-        const calls: Call[] = [];
         let seeded = false;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path, body) => {
             if (!seeded) {
                 seeded = true;
                 // A hand-made claim: a holder, but no attempt field at all.
@@ -4794,41 +4290,9 @@ describe('the kubernetes runner', () => {
                     data: { holder: 'someone-else' },
                 });
             }
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+            return serve(method, path, body);
+        });
 
         const outcome = await runner(request, {}, boardLease(job)).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -4860,16 +4324,14 @@ describe('the kubernetes runner', () => {
      */
     it('stands down and removes its own Job when the claim is taken over between the Job POST and the verify', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let jobPosted = false;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 jobPosted = true;
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath) {
                 if (method === 'GET') {
@@ -4893,38 +4355,10 @@ describe('the kubernetes runner', () => {
                               }
                     );
                 }
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
             /taken over before the runner could start/
@@ -4943,52 +4377,20 @@ describe('the kubernetes runner', () => {
     // runner refuses instead: fail loud, leave the job to its lease, delete nothing.
     it('refuses to release a claim it cannot identify, rather than deleting unconditioned', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 409, body: '{"reason":"AlreadyExists"}' });
+                return { status: 409, body: '{"reason":"AlreadyExists"}' };
             }
             if (path === claimPath && method === 'GET') {
                 // An older holder by attempt number, but a body with no uid on it.
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({ data: { holder: 'someone-else', claimSeq: '0' } }),
-                });
+                };
             }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+            if (isClaimDelete(method, path)) return noAnswer(method, path);
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
             /could not be identified/
@@ -5002,12 +4404,10 @@ describe('the kubernetes runner', () => {
     // same bounded patience the status poll has, and only a definitive answer stands the run down.
     it('keeps the run through a transient failure on the post-create claim verify', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath) {
                 if (method === 'GET') {
@@ -5025,41 +4425,10 @@ describe('the kubernetes runner', () => {
                               }
                     );
                 }
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -5083,58 +4452,25 @@ describe('the kubernetes runner', () => {
      */
     it('stands down before creating the runner job when the claim is taken over before the POST', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath && method === 'GET') {
                 // The takeover lands between the sweep and the Job POST.
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({
                         metadata: { uid: 'claim-uid-7' },
                         data: { holder: NEW_TOKEN, claimSeq: '2' },
                     }),
-                });
-            }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isClaimDelete(method, path)) return noAnswer(method, path);
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/stands down/);
         // The takeover was visible before the POST: no Job is ever created...
@@ -5150,12 +4486,10 @@ describe('the kubernetes runner', () => {
     // once, only after the claim is confirmed.
     it('waits out a blink on the pre-create claim verify, and posts the Job only after it', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath) {
                 if (method === 'GET') {
@@ -5174,41 +4508,10 @@ describe('the kubernetes runner', () => {
                               }
                     );
                 }
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -5233,12 +4536,10 @@ describe('the kubernetes runner', () => {
      */
     it('removes its own Job when the post-create claim verify exhausts its patience', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath) {
                 if (method === 'GET') {
@@ -5257,44 +4558,12 @@ describe('the kubernetes runner', () => {
                             : { status: 503, body: 'unavailable' }
                     );
                 }
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 200, body: '{}' };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
             /in a row|unavailable|checkout claim/i
@@ -5310,12 +4579,10 @@ describe('the kubernetes runner', () => {
     // holder is neither provably ours nor a definitive loss — and still no runner stays behind.
     it('removes its own Job when the post-create claim verify cannot name a holder', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath) {
                 if (method === 'GET') {
@@ -5334,44 +4601,12 @@ describe('the kubernetes runner', () => {
                             : { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-x' } }) }
                     );
                 }
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 200, body: '{}' };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
             /could not be confirmed/
@@ -5392,12 +4627,10 @@ describe('the kubernetes runner', () => {
      */
     it('holds the claim when the post-create verify exhausts its patience and the own-Job delete fails', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath) {
                 if (method === 'GET') {
@@ -5418,45 +4651,13 @@ describe('the kubernetes runner', () => {
                             : { status: 500, body: 'unavailable' }
                     );
                 }
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 200, body: '{}' };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 // The delete fails: whether the Job is really going away is unknown.
-                return Promise.resolve({ status: 500, body: 'refused' });
+                return { status: 500, body: 'refused' };
             }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/in a row/);
         // The delete failed, so the Job may still be on the checkout: the claim is left held.
@@ -5467,12 +4668,10 @@ describe('the kubernetes runner', () => {
     // this attempt's is left on the checkout and the claim may be released as usual.
     it('releases the claim when the own-Job delete answers 404 — already gone is a success', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath) {
                 if (method === 'GET') {
@@ -5490,44 +4689,12 @@ describe('the kubernetes runner', () => {
                             : { status: 500, body: 'unavailable' }
                     );
                 }
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 200, body: '{}' };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 404, body: '{"kind":"Status"}' });
+                return { status: 404, body: '{"kind":"Status"}' };
             }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/in a row/);
         const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
@@ -5541,12 +4708,10 @@ describe('the kubernetes runner', () => {
     // existing behavior is preserved and the claim is released, uid-preconditioned as ever.
     it('releases the claim when the own-Job delete succeeds after an exhausted post-create verify', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath) {
                 if (method === 'GET') {
@@ -5564,44 +4729,12 @@ describe('the kubernetes runner', () => {
                             : { status: 500, body: 'unavailable' }
                     );
                 }
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 200, body: '{}' };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/in a row/);
         const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
@@ -5619,16 +4752,14 @@ describe('the kubernetes runner', () => {
      */
     it('leaves a taken-over claim untouched when the stand-down deletes nothing', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let jobPosted = false;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 jobPosted = true;
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath && method === 'GET') {
                 // The claim is ours until this attempt's Job exists; the takeover lands the
@@ -5651,39 +4782,11 @@ describe('the kubernetes runner', () => {
                           }
                 );
             }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 500, body: 'refused' });
+                return { status: 500, body: 'refused' };
             }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isClaimDelete(method, path)) return noAnswer(method, path);
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
             /taken over before the runner could start/
@@ -5704,12 +4807,10 @@ describe('the kubernetes runner', () => {
     // release while this attempt's runner may still be on the checkout.
     it('holds the claim when the verify cannot name a holder and the own-Job delete fails', async () => {
         const claimPath = claimPathFor(job.id);
-        const calls: Call[] = [];
         let reads = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPath) {
                 if (method === 'GET') {
@@ -5728,44 +4829,12 @@ describe('the kubernetes runner', () => {
                               }
                     );
                 }
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 200, body: '{}' };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 500, body: 'refused' });
+                return { status: 500, body: 'refused' };
             }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
             /could not be confirmed/
@@ -5778,13 +4847,11 @@ describe('the kubernetes runner', () => {
     // bound, because deleting on a maybe is what would reach the winner's Job.
     it('deletes nothing on a round whose claim verify could not be confirmed, and looks again', async () => {
         const leftover = 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner';
-        const calls: Call[] = [];
         let claimReads = 0;
         let lists = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
+        const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
-                return Promise.resolve({ status: 201, body: '{}' });
+                return { status: 201, body: '{}' };
             }
             if (path === claimPathFor(job.id)) {
                 if (method === 'GET') {
@@ -5803,48 +4870,19 @@ describe('the kubernetes runner', () => {
                               }
                     );
                 }
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 lists += 1;
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({ items: lists <= 2 ? [{ metadata: { name: leftover } }] : [] }),
-                });
+                };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
+                return { status: 200, body: '{}' };
             }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -5865,28 +4903,7 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
-            'POST',
-            'GET',
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'GET',
-            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            // The transcript artifact's read (issue #325): the twin Job, same shape.
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-            'DELETE',
-            'GET',
-            'DELETE',
-            'DELETE',
+            ...RUN_FROM_SECRET,
         ]);
         expect(calls[9]?.path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
     });
@@ -5918,51 +4935,15 @@ describe('the kubernetes runner', () => {
     // pod may already have succeeded. The poll retries a bounded number of times instead of
     // abandoning the job to its lease and re-running it.
     it('keeps polling through transient API failures', async () => {
-        const calls: Call[] = [];
         let gets = 0;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (path === jobsPath(namespace) && method === 'POST') {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
+        const { request } = routed((method, path) => {
             if (path === jobPath(namespace, runnerJobName(job))) {
                 gets += 1;
-                if (gets <= 2) return Promise.resolve({ status: 503, body: 'unavailable' });
-                return Promise.resolve(FAKE.job as K8sResponse);
+                if (gets <= 2) return { status: 503, body: 'unavailable' };
+                return FAKE.job as K8sResponse;
             }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -6014,46 +4995,12 @@ describe('the kubernetes runner', () => {
             FAKE.job as K8sResponse,
         ];
         let served = 0;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (path === jobsPath(namespace) && method === 'POST') {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
+        const { request } = routed((method, path) => {
             if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(script[served++] ?? outage());
+                return script[served++] ?? outage();
             }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
@@ -6153,22 +5100,7 @@ describe('the kubernetes runner', () => {
 
     it('keeps polling the pod list through transient API failures', async () => {
         let lists = 0;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
+        const { request } = routed((method, path) => {
             if (
                 path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
                 decodeURIComponent(path).includes('job-name=')
@@ -6176,26 +5108,10 @@ describe('the kubernetes runner', () => {
                 lists += 1;
                 // A 503 during an apiserver upgrade is not the run's verdict; the exit code is
                 // still out there. The third read succeeds.
-                return Promise.resolve(lists <= 2 ? { status: 503, body: 'unavailable' } : (FAKE.pods as K8sResponse));
+                return lists <= 2 ? { status: 503, body: 'unavailable' } : (FAKE.pods as K8sResponse);
             }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -6206,46 +5122,10 @@ describe('the kubernetes runner', () => {
     // A log read that fails outright — connection reset, pod gone — must not fail the report: the
     // exit code already carries the verdict, and re-running finished work is the worse outcome.
     it('keeps the verdict when the log read fails outright', async () => {
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                decodeURIComponent(path).includes('job-name=')
-            ) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
+        const { request } = routed((method, path) => {
             if (path.includes('/log')) return Promise.reject(new Error('connection reset'));
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+            if (isJobDelete(method, path)) return noAnswer(method, path);
+        });
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);

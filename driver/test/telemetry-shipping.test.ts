@@ -1,7 +1,4 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
     claudeManagedSettings,
@@ -10,9 +7,7 @@ import {
     telemetryConfigTar,
     telemetryCopyTarget,
 } from '../src/telemetry-config.js';
-
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const read = (relative: string): string => readFileSync(join(ROOT, relative), 'utf8');
+import { readRepoFile as read } from './fixtures/repo-files.js';
 
 describe('runner telemetry shipping', () => {
     // The driver's copy of the baked managed settings (it may not import from docker/): the file
