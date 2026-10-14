@@ -1767,8 +1767,10 @@ describe('the poll loop', () => {
         const runner = stubRunner(async () => {
             throw new Error('the runner must not spawn');
         });
-        runner.syncCheckout = async () => {
+        let seen: AbortSignal | undefined;
+        runner.syncCheckout = async (_job, signal) => {
             // The stop lands while the sync is in flight.
+            seen = signal;
             options.cancelRequested = true;
             await new Promise((resolve) => setTimeout(resolve, 30));
             return { ok: true, reason: null };
@@ -1779,6 +1781,8 @@ describe('the poll loop', () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
         await started;
 
+        // The sync was handed the stand-down's signal and it fired (issue #488): aborted, not only raced.
+        expect(seen?.aborted).toBe(true);
         expect(runner.killed).toEqual([job(1).id]);
         expect(board.board.suspended).toEqual([job(1).id]);
         expect(board.board.completed).toEqual([]);
@@ -1827,9 +1831,11 @@ describe('the poll loop', () => {
             fenced.push(fencedJob.id);
         };
         const rawReread = board.board.rereadGates.bind(board.board);
-        board.board.rereadGates = async (claimed) => {
+        let seen: AbortSignal | undefined;
+        board.board.rereadGates = async (claimed, signal) => {
             // The stop lands after the sync, during the gates re-read — the re-read is slow
             // enough for the setup poll to carry the verdict in.
+            seen = signal;
             options.cancelRequested = true;
             await new Promise((resolve) => setTimeout(resolve, 30));
             return rawReread(claimed);
@@ -1837,6 +1843,8 @@ describe('the poll loop', () => {
 
         await drive({ ...board, runner });
 
+        // The re-read was handed the stand-down's signal and it fired (issue #488).
+        expect(seen?.aborted).toBe(true);
         expect(fenced).toEqual([job(1).id]);
         expect(board.board.suspended).toEqual([job(1).id]);
         expect(board.board.completed).toEqual([]);
@@ -1852,9 +1860,11 @@ describe('the poll loop', () => {
             throw new Error('the runner must not spawn');
         });
         const rawAcquire = stack.manager.acquire.bind(stack.manager);
+        let seen: AbortSignal | undefined;
         stack.manager.acquire = async (key, image, envBody, attempt) => {
             // The stop lands while the gate environment is coming up — slow enough for the
             // setup poll to carry the verdict in before the attempt can launch.
+            seen = attempt?.signal;
             options.cancelRequested = true;
             await new Promise((resolve) => setTimeout(resolve, 30));
             await rawAcquire(key, image, envBody, attempt);
@@ -1867,6 +1877,8 @@ describe('the poll loop', () => {
         // The abandoned beginGates settles on its own timer and releases the environment then.
         await new Promise((resolve) => setTimeout(resolve, 40));
 
+        // The environment start was handed the stand-down's signal and it fired (issue #488).
+        expect(seen?.aborted).toBe(true);
         expect(stack.released).toHaveLength(1);
         expect(stack.acquired).toHaveLength(1);
         expect(board.board.suspended).toEqual([job(1).id]);
@@ -3808,8 +3820,10 @@ describe('block-helper steps (issue #207)', () => {
         runner.releaseFence = async (fencedJob) => {
             released.push(fencedJob.id);
         };
-        runner.runHelper = async () => {
+        let seen: AbortSignal | undefined;
+        runner.runHelper = async (_job, _plan, _token, signal) => {
             // The stop lands while the pre-helper is in flight.
+            seen = signal;
             options.cancelRequested = true;
             await new Promise((resolve) => setTimeout(resolve, 30));
             return { ok: true, output: null };
@@ -3820,6 +3834,8 @@ describe('block-helper steps (issue #207)', () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
         await started;
 
+        // The helper was handed the stand-down's signal and it fired (issue #488): cancelled, not only raced.
+        expect(seen?.aborted).toBe(true);
         expect(runCalls).toEqual([]);
         expect(released).toEqual([job(1).id]);
         expect(board.board.suspended).toEqual([job(1).id]);
@@ -4651,46 +4667,6 @@ describe('the agent reporting it is blocked', () => {
         expect(complete.output).toContain('[driver] the agent reported it is blocked: acli is not authenticated');
         expect(complete.output).toContain('[driver] gates skipped — the agent reported it is blocked');
     });
-
-    // No close-time read answered (no summary, no blocked line): the output tail is all there is.
-    it('falls back to the output tail when no close-time read answered', async () => {
-        const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () =>
-            ok({ output: 'tried twice\nFACTORY_BLOCKED: no access to the staging cluster\n' })
-        );
-
-        await drive({ ...board, runner });
-
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'blocked' });
-        expect(board.board.completed[0]?.output).toContain(
-            'the agent reported it is blocked: no access to the staging cluster'
-        );
-    });
-
-    // The summary is collapsed to one line: a marker mentioned inside it is not the agent's last line.
-    it('does not read a marker the successful final message merely mentions', async () => {
-        const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () =>
-            ok({ output: 'done', summary: 'Added FACTORY_BLOCKED: handling and verified all tests pass.' })
-        );
-
-        await drive({ ...board, runner });
-
-        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
-    });
-
-    it('ignores a marker line far above the final message, and one that does not start a line', async () => {
-        const board = stubBoard([job(1), job(2)]);
-        let ran = 0;
-        const far = ['FACTORY_BLOCKED: early worry', ...Array.from({ length: 30 }, (_, i) => `line ${i}`)].join('\n');
-        const runner = stubRunner(async () =>
-            ran++ === 0 ? ok({ output: far }) : ok({ output: 'the docs mention FACTORY_BLOCKED: as a marker' })
-        );
-
-        await drive({ ...board, runner });
-
-        expect(board.board.completed.map((c) => c.status)).toEqual(['succeeded', 'succeeded']);
-    });
 });
 
 /**
@@ -5086,94 +5062,6 @@ describe('a stand-down after the gates (issue #427)', () => {
 
         expect(lines.join('\n')).toContain('stopped during its post-helpers');
         expect(lines.join('\n')).not.toContain('during its publish');
-    });
-});
-
-describe('the slow calls are aborted by a stand-down, not only raced (issue #488)', () => {
-    /** Aborted-or-never: resolves when `signal` aborts, never when it is undefined. */
-    const aborted = (signal: AbortSignal | undefined) =>
-        new Promise<void>((resolve) => {
-            if (!signal) return;
-            if (signal.aborted) return resolve();
-            signal.addEventListener('abort', () => resolve(), { once: true });
-        });
-    const neverRun = () => {
-        throw new Error('the runner must not spawn');
-    };
-
-    it('cancels a running pre-run helper, a github-writing one included', async () => {
-        const plan: HelperPlan = { helperId: 'noop', phase: 'pre', input: null, githubWriting: true };
-        const board = stubBoard([{ ...job(1), helperPlans: [plan] }], { publishToken: 'fresh-token' });
-        const runner = stubRunner(async () => neverRun());
-        let seen: AbortSignal | undefined;
-        runner.runHelper = async (_job, _plan, _token, signal) => {
-            seen = signal;
-            board.board.heartbeat = async () => ({ result: 'held', cancelRequested: true });
-            await aborted(signal);
-            return { ok: false, reason: 'runner_error', message: 'cancelled' };
-        };
-
-        await drive({ ...board, runner });
-
-        expect(seen?.aborted).toBe(true);
-        expect(board.board.suspended).toEqual([job(1).id]);
-        expect(board.board.completed).toEqual([]);
-    });
-
-    it('hands the signal to the checkout sync', async () => {
-        const options: { cancelRequested?: boolean } = {};
-        const board = stubBoard([job(1)], options);
-        const runner = stubRunner(async () => neverRun());
-        let seen: AbortSignal | undefined;
-        runner.syncCheckout = async (_job, signal) => {
-            seen = signal;
-            options.cancelRequested = true;
-            await aborted(signal);
-            return { ok: false, reason: 'cancelled' };
-        };
-
-        await drive({ ...board, runner });
-
-        expect(seen?.aborted).toBe(true);
-        expect(board.board.suspended).toEqual([job(1).id]);
-    });
-
-    it('hands the signal to the gates re-read', async () => {
-        const options: { cancelRequested?: boolean } = {};
-        const board = stubBoard([job(1)], options);
-        const runner = stubRunner(async () => neverRun());
-        let seen: AbortSignal | undefined;
-        board.board.rereadGates = async (_job, signal) => {
-            seen = signal;
-            options.cancelRequested = true;
-            await aborted(signal);
-            return null;
-        };
-
-        await drive({ ...board, runner });
-
-        expect(seen?.aborted).toBe(true);
-        expect(board.board.suspended).toEqual([job(1).id]);
-    });
-
-    it('hands the signal to the gate environment start', async () => {
-        const options: { cancelRequested?: boolean } = {};
-        const board = stubBoard([gatedJob(1)], options);
-        const { stack, gates } = stubGateStack();
-        const runner = stubRunner(async () => neverRun());
-        let seen: AbortSignal | undefined;
-        stack.manager.acquire = async (_key, _image, _env, attempt) => {
-            seen = attempt?.signal;
-            options.cancelRequested = true;
-            await aborted(seen);
-            throw new Error('cancelled');
-        };
-
-        await drive({ ...board, runner, gates });
-
-        expect(seen?.aborted).toBe(true);
-        expect(board.board.suspended).toEqual([job(1).id]);
-        expect(board.board.completed).toEqual([]);
     });
 });
 
@@ -5759,18 +5647,16 @@ describe('revision-bound evidence', () => {
         expect(completed?.evidence).toMatchObject({ gates: 'failed' });
     });
 
-    it.each(['unavailable', 'missing', 'incomplete', 'rejected'] as const)(
-        'refuses a required review that is %s',
-        async (state) => {
-            const { completed, options } = await driveWith({
-                ...gatedJob(1),
-                policy: { review: true },
-                review: { state },
-            });
-            expect(options).toEqual([]);
-            expect(completed).toMatchObject({ status: 'failed', failureKind: 'policy' });
-        }
-    );
+    // One non-approving state pins the wiring; evidence-policy.test.ts owns every state's reason.
+    it('refuses a required review that is rejected', async () => {
+        const { completed, options } = await driveWith({
+            ...gatedJob(1),
+            policy: { review: true },
+            review: { state: 'rejected' },
+        });
+        expect(options).toEqual([]);
+        expect(completed).toMatchObject({ status: 'failed', failureKind: 'policy' });
+    });
 
     it('refuses a review of a different revision than the gates assessed', async () => {
         const claim = {

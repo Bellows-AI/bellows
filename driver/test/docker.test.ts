@@ -1139,7 +1139,9 @@ describe('an opencode runner', () => {
     });
 
     it('uses the image configured for its selected executor type', () => {
-        expect(oc({ OPENCODE_EXECUTOR_IMAGE: 'registry/oc:2' }).slice(-4)).toEqual([
+        // The image is the argument before the command; the default would read `opencode-executor`.
+        expect(oc({ OPENCODE_EXECUTOR_IMAGE: 'registry/oc:2' }).slice(-5)).toEqual([
+            'registry/oc:2',
             'run',
             '--agent',
             'factory',

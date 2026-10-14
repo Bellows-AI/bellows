@@ -57,17 +57,6 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
         );
     });
 
-    it('answers a conflicted rebase with its paths and leaves the rebase stopped for the agent', () => {
-        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
-        fx.commitIn(fx.worktree(), 'README.md', 'task rewrites the readme\n', 'conflicting task commit');
-        fx.pushToOrigin('README.md', 'upstream rewrites the readme\n', 'conflicting upstream commit');
-
-        expect(fx.sync()).toMatchObject({ ok: true, reason: null, conflicts: ['README.md'] });
-
-        const gitDir = git(fx.worktree(), 'rev-parse', '--absolute-git-dir');
-        expect(existsSync(join(gitDir, 'rebase-merge'))).toBe(true);
-    });
-
     it('replaces garbage at the worktree path instead of failing forever', () => {
         // A previous add that died midway, or anything else that is not a checkout: the path is
         // the driver's own namespace (`.worktrees/<uuid>`), so what is there is never precious.

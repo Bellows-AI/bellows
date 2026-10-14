@@ -133,10 +133,12 @@ describe.runIf(enabled)('gates on the job store', () => {
         const GATE_FOX_GITHUB_ID = 6005;
         const userId = await account(GATE_FOX_GITHUB_ID, 'gate-fox');
         await store.create('fix the bug', userId, { repo: 'acme/web', executor: null });
-        await store.claim('driver-1', LEASE_SECONDS);
+        const claim = await store.claim('driver-1', LEASE_SECONDS);
         const report: GateReport[] = [{ name: 'test', status: 'passed', exitCode: 0, output: null }];
 
-        // A stale token is a lost lease, not a missing row; an absent job is missing.
+        // A stale token is a lost lease, not a missing row — and writes nothing; an absent job is missing.
+        expect(await store.gates(claim!.id, TOKEN, report)).toBe('lost');
+        expect((await store.get(claim!.id))?.gates ?? null).toBeNull();
         expect(await store.gates(ABSENT, TOKEN, report)).toBe('missing');
     });
 
