@@ -34,9 +34,10 @@ export const USAGE = `usage: bellows job create (<command...> | --file <path> | 
        bellows batch retry <id> <task> [--json]
        bellows batch accept <id> <task> [--json]
        bellows batch cancel <id> [--json]
-       bellows auth status [--json]      the configuration, the board's version, and who the token acts as
+       bellows auth status [--json]      the configuration and each value's source, the board's version,
+                                         and who the token acts as
        bellows help | --help | -h          this text; bellows --version prints the CLI's version
-                                           (neither needs FACTORY_URL)
+                                           (neither reads any configuration)
 
 preflight checks a create's selection against the board's reads and only reads. It is advisory:
 the board rechecks at create and at claim, and its refusal is the answer.
@@ -64,6 +65,9 @@ config:
                  omit it against an open (AUTH_MODE=none) board
   FACTORY_REQUEST_TIMEOUT_S  one request's deadline, headers and body included (default 30)
   FACTORY_READ_RETRIES       re-issues of a failed read or keyed write, never an unkeyed write (default 3; 0 = off)
+  ~/.bellows/settings.json   the same four as JSON keys url, token, requestTimeoutS, readRetries;
+                             a set variable wins over its key. A file holding a token must be mode 600.
+  --config <path>            on any command: read that settings file instead (it must exist)
 
 exit codes: 0 ok (a wait: the run succeeded), 1 the board refused, 2 usage or configuration,
             3 a wait ran out of budget, 4 the run failed or died, 5 the run was stopped on the

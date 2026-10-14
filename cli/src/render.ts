@@ -312,10 +312,11 @@ export function renderAuthStatus(status: {
     identity: { login: string; organization: { name: string }; role: string; authMode: string };
 }): string {
     const { config, board, identity } = status;
+    const { sources } = config;
     return [
-        `board    ${config.url} (version ${board.version})`,
-        `token    ${config.token.set ? `set (${config.token.kind})` : 'not set'}`,
-        `requests ${config.requestTimeoutSeconds}s deadline, ${config.readRetries} read retries`,
+        `board    ${config.url} (version ${board.version}) [${sources.url}]`,
+        `token    ${config.token.set ? `set (${config.token.kind})` : 'not set'} [${sources.token}]`,
+        `requests ${config.requestTimeoutSeconds}s deadline [${sources.requestTimeoutS}], ${config.readRetries} read retries [${sources.readRetries}]`,
         `identity ${identity.login} in ${identity.organization.name} (${identity.role}), board auth ${identity.authMode}`,
     ].join('\n');
 }

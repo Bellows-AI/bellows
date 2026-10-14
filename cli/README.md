@@ -15,7 +15,15 @@ bellows job wait <id>
 bellows help                        # every command, flag and exit code
 ```
 
-`--json` on any command prints one machine-readable envelope. Keep `FACTORY_TOKEN` in your
-environment or a secret store, never on the command line.
+Instead of exporting, keep the same values in `~/.bellows/settings.json` (`chmod 600` it: a
+file holding a token readable by anyone else is refused), or name another file with
+`--config <path>` on any command. A set variable wins over the file's key.
+
+```json
+{ "url": "https://factory.example.com", "token": "fat_...", "requestTimeoutS": 30, "readRetries": 3 }
+```
+
+`--json` on any command prints one machine-readable envelope. Keep the token in your
+environment, a `0600` settings file or a secret store, never on the command line.
 
 MIT licensed.

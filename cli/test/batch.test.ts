@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { run } from '../src/run.js';
-import { ENV, runCli, type Sent as Recorded } from './harness.js';
+import { ENV, NO_SETTINGS, runCli, type Sent as Recorded } from './harness.js';
 const ID = '11111111-1111-4111-8111-111111111111';
 
 const PLAN = {
@@ -539,6 +539,7 @@ describe('batch wait', () => {
 
         const code = await run(['batch', 'wait', ID, '--json'], {
             env: ENV,
+            settings: NO_SETTINGS,
             fetch,
             signal: controller.signal,
             sleep: async () => controller.abort(),

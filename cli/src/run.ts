@@ -4,7 +4,7 @@ import { createBoardClient, HTTP_OK, QUESTION_ANSWERED_CODE } from './board.js';
 import { TASK_LIST_OPTIONS, taskListFilters } from './tasks.js';
 import type { BoardClient, JobCreated, JobWait, QuestionRecord } from './board.js';
 import { activityCommand, artifactCommand } from './artifacts.js';
-import { CliConfigError, loadCliConfig } from './config.js';
+import { CliConfigError, loadCliConfig, type SettingsFile, takeConfigFlag } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
 import type { CommandResult, ErrorDetail } from './outcome.js';
 import { authStatusCommand, preflightCommand } from './diagnose.js';
@@ -38,8 +38,8 @@ import {
 
 /**
  * The command surface: parse, load config, call the board, print, return an exit code. Every
- * effect is injected — config from `io.env`, HTTP from `io.fetch`, output through `io.stdout` /
- * `io.stderr` — so tests run the whole CLI in-process against a recorded fetch and string
+ * effect is injected — config from `io.env` and `io.settings`, HTTP from `io.fetch`, output through
+ * `io.stdout` / `io.stderr` — so tests run the whole CLI in-process against a recorded fetch and string
  * arrays, and `index.ts` stays a small shim.
  *
  * A command never prints: it returns a `CommandResult`, and `run` alone decides how that is shown.
@@ -65,6 +65,8 @@ const JSON_OPTION = { json: { type: 'boolean', default: false } } as const;
 
 export interface RunIo extends InputIo {
     env: NodeJS.ProcessEnv;
+    /** The settings file under the environment: the default path, or what `--config` named. */
+    settings: SettingsFile;
     fetch?: typeof globalThis.fetch | undefined;
     /** The clock the wait's budget is measured on — injected so tests spend no real time. */
     now?: (() => number) | undefined;
@@ -97,7 +99,7 @@ function parseWaitTimeout(raw: string | undefined): number {
 
 /** Config and client in one step: every command needs both, and neither takes an argument. */
 function boardFor(io: RunIo, deadlineAt?: number): BoardClient {
-    const config = loadCliConfig(io.env);
+    const config = loadCliConfig(io.env, io.settings);
     return createBoardClient({
         url: config.url,
         token: config.token,
@@ -481,7 +483,7 @@ async function runConnectionList(args: readonly string[], io: RunIo): Promise<Co
 
 async function runAuthStatus(args: readonly string[], io: RunIo): Promise<CommandResult> {
     noArguments(args, 'auth status');
-    const config = configSummary(loadCliConfig(io.env));
+    const config = configSummary(loadCliConfig(io.env, io.settings));
     return authStatusCommand(config, boardFor(io), (error) => failureOf(error, io));
 }
 
@@ -567,19 +569,20 @@ function wantsHelp(args: readonly string[]): boolean {
     return args[0] === 'help' || optionsOf(args).some((arg) => HELP_FLAGS.includes(arg));
 }
 
-async function dispatch(
-    argv: readonly string[],
-    io: RunIo
-): Promise<{ command: string | null; result: CommandResult }> {
-    const [topic, command] = argv;
-    // Help and version are answered here, before any configuration is read.
-    const key = wantsHelp(argv) ? 'help' : VERSION_ARGS.includes(topic ?? '') ? 'version' : `${topic} ${command}`;
-    const handler = Object.hasOwn(COMMANDS, key) ? COMMANDS[key] : undefined;
+type Dispatched = { command: string | null; result: CommandResult };
+
+async function dispatch(rawArgv: readonly string[], io: RunIo): Promise<Dispatched> {
     // A line that names no command reports none, so a parse failure never invents one.
-    const name = handler ? key : null;
+    let name: string | null = null;
     try {
+        const { argv, settings } = takeConfigFlag(rawArgv);
+        const [topic, command] = argv;
+        // Help and version are answered here, before any configuration is read.
+        const key = wantsHelp(argv) ? 'help' : VERSION_ARGS.includes(topic ?? '') ? 'version' : `${topic} ${command}`;
+        const handler = Object.hasOwn(COMMANDS, key) ? COMMANDS[key] : undefined;
         if (!handler) throw new UsageError(USAGE);
-        return { command: name, result: await handler(argv.slice(2), io) };
+        name = key;
+        return { command: name, result: await handler(argv.slice(2), { ...io, settings: settings ?? io.settings }) };
     } catch (error) {
         return { command: name, result: failureOf(error, io) };
     }

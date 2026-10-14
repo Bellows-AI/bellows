@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { run } from '../src/run.js';
-import { recordingBoard, ENV, json } from './harness.js';
+import { recordingBoard, ENV, json, NO_SETTINGS } from './harness.js';
 
 const job = (overrides: Record<string, unknown> = {}) => ({
     id: 'job-1',
@@ -695,6 +695,7 @@ describe('--json on every outcome', () => {
         const err: string[] = [];
         const io = {
             env: ENV,
+            settings: NO_SETTINGS,
             fetch,
             signal: controller.signal,
             stdout: (text: string) => out.push(text),

@@ -1,8 +1,13 @@
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { type RunIo, run } from '../src/run.js';
 
 /** The board every CLI test talks to. */
 export const BOARD_URL = 'http://board';
 export const ENV = { FACTORY_URL: BOARD_URL, FACTORY_TOKEN: 'fat_abc' };
+/** A default settings path that never exists, so no test reads the developer's own file. */
+export const NO_SETTINGS = { path: join(tmpdir(), `bellows-absent-${randomUUID()}`, 'settings.json'), explicit: false };
 
 export const json = (payload: unknown, status = 200) =>
     new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
@@ -23,7 +28,7 @@ export interface Sent {
 /**
  * A board that answers each request with `respond` and records what was sent, plus the io a
  * `run()` needs: output collected, read retries backing off without spending real time. `io`
- * overrides any of it (`env`, `now`, `sleep`, `readFile`, `readStdin`).
+ * overrides any of it (`env`, `settings`, `now`, `sleep`, `readFile`, `readStdin`).
  */
 export function recordingBoard(
     respond: (sent: Sent, index: number) => Response | Promise<Response>,
@@ -47,6 +52,7 @@ export function recordingBoard(
     }) as unknown as typeof globalThis.fetch;
     const runIo: RunIo = {
         env: ENV,
+        settings: NO_SETTINGS,
         fetch,
         sleep: async () => {},
         stdout: (text: string) => out.push(text),
