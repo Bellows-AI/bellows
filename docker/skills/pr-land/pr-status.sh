@@ -57,7 +57,14 @@ done
 
 case "$TARGET" in
     '') PR=$(gh pr view --json number --jq .number) || die 'no pull request for the current branch' ;;
-    */pull/*) PR=$(printf '%s\n' "$TARGET" | sed 's#.*/pull/\([0-9][0-9]*\).*#\1#') ;;
+    */pull/*)
+        PR=$(printf '%s\n' "$TARGET" | sed 's#.*/pull/\([0-9][0-9]*\).*#\1#')
+        # The URL's own HOST/OWNER/REPO, not the checkout's: gh reads GH_REPO for every pr command
+        # and for the {owner}/{repo} placeholders alike.
+        GH_REPO=$(printf '%s\n' "$TARGET" | sed -n 's#^\(https\{0,1\}://\)\{0,1\}\([^/][^/]*/[^/][^/]*/[^/][^/]*\)/pull/.*#\2#p')
+        [ -n "$GH_REPO" ] || die "cannot read a repository from: $TARGET"
+        export GH_REPO
+        ;;
     *) PR=$TARGET ;;
 esac
 case "$PR" in
@@ -81,8 +88,10 @@ DEADLINE=$((START + TIMEOUT))
 while :; do
     checks
     PENDING=$(printf '%s\n' "$CHECKS" | grep -c '^pending ' || true)
+    # A failure is known now: the fix need not wait for the checks still running beside it.
+    FAILED=$(printf '%s\n' "$CHECKS" | grep -c -e '^fail ' -e '^cancel ' || true)
     NOW=$(date +%s)
-    [ "$WAIT" -eq 1 ] && [ "$NOW" -lt "$DEADLINE" ] || break
+    [ "$WAIT" -eq 1 ] && [ "$NOW" -lt "$DEADLINE" ] && [ "$FAILED" -eq 0 ] || break
     if [ -z "$CHECKS" ]; then
         [ "$NOW" -lt $((START + NONE_GRACE)) ] || break
     else
@@ -91,14 +100,13 @@ while :; do
     LEFT=$((DEADLINE - NOW))
     if [ "$INTERVAL" -lt "$LEFT" ]; then sleep "$INTERVAL"; else sleep "$LEFT"; fi
 done
-FAILED=$(printf '%s\n' "$CHECKS" | grep -c -e '^fail ' -e '^cancel ' || true)
 
 if [ -z "$CHECKS" ]; then
     CI=none
-elif [ "$PENDING" -gt 0 ]; then
-    CI=pending
 elif [ "$FAILED" -gt 0 ]; then
     CI=red
+elif [ "$PENDING" -gt 0 ]; then
+    CI=pending
 else
     CI=green
 fi

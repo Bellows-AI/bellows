@@ -24,9 +24,10 @@ the reason is on stderr.
   finds nothing new.
 - At most 45 minutes of waiting in total, in calls of 540 seconds or less (the helper's default):
   a foreground tool call is killed at 600 seconds, having printed nothing.
-- Done only when `ci=green` (or `none`, reported), `unanswered_threads=0`, and every review summary you read has been
-  addressed or answered. A `CHANGES_REQUESTED` decision clears only when the reviewer reviews
-  again: once you have answered everything, say it is still requested and finish.
+- Done only when `ci=green` (or `none`, reported), `unanswered_threads=0`, and every review
+  summary you read has been addressed or answered. A `CHANGES_REQUESTED` decision clears only when
+  the reviewer reviews again, and `REVIEW_REQUIRED` only when a required reviewer approves: once
+  you have answered everything, name that decision as still blocking the merge and finish.
 - Fix the root cause. Never `--no-verify`, never skip, delete or loosen a failing test, never
   disable a CI step to get green.
 - Never merge, close or reopen the pull request, and never enable auto-merge.
@@ -44,18 +45,27 @@ the reason is on stderr.
    - `green` — step 4.
    - `none` — no check registered on this head even after the helper's grace period: note it for
      your report and go on to step 4.
-3. **Fix a red check.** Find the run of each `failing=` link and read its failed log to a file,
-   then search it — never read a whole log into the conversation:
-   `gh run view <run-id> --log-failed > /tmp/ci-<run-id>.log`. Decide what failed:
-   - Your change: fix it, run the relevant declared gates (see the gates skill), commit, push,
-     back to step 2.
+3. **Fix a red check.** Read each failure's log to a file, then search it — never read a whole
+   log into the conversation. A `failing=` link of the form `…/actions/runs/<run-id>/job/…` is a
+   GitHub Actions run: `gh run view <run-id> --log-failed > /tmp/ci-<run-id>.log`. Any other link
+   is an external CI provider: fetch it with `curl -sL <link> > /tmp/ci-<name>.log`; if it needs
+   a login you lack, report the check as unreadable and treat it as infrastructure. Decide what
+   failed:
+   - Your change: fix it and run the relevant declared gates — the names under `gates:` in
+     `.bellows.yaml`, one per call:
+     `curl -sf -X POST "$BELLOWS_GATE_URL/run" -H "authorization: Bearer $BELLOWS_GATE_TOKEN"
+     -H "content-type: application/json" -d '{"gate":"<name>"}'`. The answer's `exitCode` 0 is a
+     pass; otherwise its `output` tail says what to fix. With `BELLOWS_GATE_URL` unset, run the
+     failing check's own command instead. Commit, push, back to step 2.
    - A flake the log proves (a network timeout, a runner lost mid-job): `gh run rerun <run-id>
      --failed` once per run, back to step 2.
    - Infrastructure, secrets or permissions outside the repository: report it and stop.
 4. **Address the review.** Read the review summaries, not only the line comments:
-   `gh pr view <N> --json reviews,comments` and `gh api repos/{owner}/{repo}/pulls/<N>/comments`.
-   Fix what is real, commit, push, then reply to each comment you addressed saying what changed
-   and how (the github skill's convention). Reply in a line comment's own thread:
+   `gh pr view <N> --json reviews,comments` and
+   `gh api --paginate repos/{owner}/{repo}/pulls/<N>/comments`. Fix what is real, commit, push,
+   then reply to each comment you addressed saying what changed and how — never "fixed in <sha>"
+   alone. A review summary or PR-level comment gets `gh pr comment <N> --body '<what changed>'`;
+   a line comment gets a reply in its own thread:
    `gh api repos/{owner}/{repo}/pulls/<N>/comments/<comment-id>/replies -f body='<what changed>'`.
    A comment you disagree with gets a reply saying why, not silence. Pushed anything? Back to
    step 2; otherwise run the helper once more to confirm `unanswered_threads=0`, and finish.

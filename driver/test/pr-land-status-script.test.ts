@@ -19,6 +19,7 @@ const { appendFileSync, readFileSync, writeFileSync, existsSync } = require('nod
 const { execFileSync } = require('node:child_process');
 const args = process.argv.slice(2);
 appendFileSync(process.env.GH_CALLS, JSON.stringify(args) + '\\n');
+appendFileSync(process.env.GH_CALLS + '.repo', (process.env.GH_REPO ?? '') + '\\n');
 const jqAt = args.indexOf('--jq');
 const answer = (json, code = 0) => {
     process.stdout.write(execFileSync('jq', ['-r', args[jqAt + 1]], { input: JSON.stringify(json) }));
@@ -86,7 +87,7 @@ const VIEW = { number: 42, state: 'OPEN', headRefOid: 'abc123', reviewDecision: 
 async function run(
     args: string[],
     stub: Stub = {}
-): Promise<{ code: number; stdout: string; stderr: string; calls: string[][] }> {
+): Promise<{ code: number; stdout: string; stderr: string; calls: string[][]; repos: string[] }> {
     const dir = mkdtempSync(join(tmpdir(), 'pr-land-'));
     tempDirs.push(dir);
     writeFileSync(join(dir, 'gh'), FAKE_GH);
@@ -116,7 +117,8 @@ async function run(
         ({ code, stdout, stderr } = failed);
     }
     const lines = readFileSync(calls, 'utf8').split('\n').filter(Boolean);
-    return { code, stdout, stderr, calls: lines.map((line) => JSON.parse(line) as string[]) };
+    const repos = lines.length ? readFileSync(`${calls}.repo`, 'utf8').split('\n').slice(0, lines.length) : [];
+    return { code, stdout, stderr, calls: lines.map((line) => JSON.parse(line) as string[]), repos };
 }
 
 describe('pr-land pr-status.sh', () => {
@@ -134,6 +136,15 @@ describe('pr-land pr-status.sh', () => {
         expect(result.stdout).toContain('ci=red\n');
         expect(result.stdout).toContain('failing=lint js https://ci.example/lint js\n');
         expect(result.stdout).toContain('failing=build https://ci.example/build\n');
+    });
+
+    it('reports ci=red as soon as a check fails, without waiting for the pending ones', async () => {
+        const result = await run(['42', '--interval', '0'], {
+            checks: [[pending('test')], [fail('lint'), pending('test')], [pass('lint'), pass('test')]],
+        });
+        expect(result.stdout).toContain('ci=red\n');
+        expect(result.stdout).toContain('failing=lint https://ci.example/lint\n');
+        expect(result.calls.filter(([group, verb]) => group === 'pr' && verb === 'checks')).toHaveLength(2);
     });
 
     it('counts a cancelled check as failing, never as green', async () => {
@@ -203,10 +214,17 @@ describe('pr-land pr-status.sh', () => {
         expect(result.stdout).toContain('unanswered_threads=2\n');
     });
 
-    it('resolves a pull request URL to its number', async () => {
+    it('resolves a pull request URL to its number, in the URL’s own repository', async () => {
         const result = await run(['https://github.com/acme/app/pull/42/files']);
         expect(result.code).toBe(0);
         expect(result.calls).toContainEqual(expect.arrayContaining(['checks', '42']));
+        expect(result.repos.length).toBeGreaterThan(0);
+        for (const repo of result.repos) expect(repo).toBe('github.com/acme/app');
+    });
+
+    it('leaves the repository to the checkout when given a bare number', async () => {
+        const result = await run(['42']);
+        for (const repo of result.repos) expect(repo).toBe('');
     });
 
     it('resolves the current branch’s pull request when given no target', async () => {
