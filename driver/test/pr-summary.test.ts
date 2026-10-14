@@ -3,13 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import {
-    GIT_FIXTURE_CONFIG,
-    SCRIPT_IDENTITY,
-    git,
-    hasGit,
-    importEmptyCommits,
-} from './fixtures/git-worktree-support.js';
+import { SCRIPT_IDENTITY, git, hasGit, importEmptyCommits, makeOriginClone } from './fixtures/git-worktree-support.js';
 
 /*
  * The PR summary script (issues #82, #389): the publish flow opens the pull request with what
@@ -24,16 +18,8 @@ describe.skipIf(!hasGit())('the PR summary script', () => {
 
     beforeEach(() => {
         dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-pr-summary-')));
-        const work = join(dir, 'origin-work');
-        mkdirSync(work, { recursive: true });
-        git(work, 'init');
-        writeFileSync(join(work, 'README.md'), '# summary\n');
-        git(work, 'add', 'README.md');
-        git(work, 'commit', '-m', 'init');
-        const bare = join(dir, 'summary.git');
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', '--bare', work, bare], { stdio: 'ignore' });
         repo = join(dir, 'clone');
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', `file://${bare}`, repo], { stdio: 'ignore' });
+        makeOriginClone(dir, repo, 'summary');
     });
 
     const summarize = (

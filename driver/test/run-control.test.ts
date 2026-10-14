@@ -1,10 +1,11 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.js';
 
 /*
  * The runner's half of the cooperative Stop (issue #442): the stop poller turns the driver's
@@ -12,9 +13,7 @@ import { afterEach, describe, expect, it } from 'vitest';
  * OpenCode's plugin — reads only that marker. The real binaries are the `test:jobs` lane's
  * business (scripts/test-jobs.sh); what is pinned here is every file the images ship.
  */
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const path = (rel: string): string => join(ROOT, rel);
-const read = (rel: string): string => readFileSync(path(rel), 'utf8');
 
 const CLAUDE_POLLER = 'docker/claude-executor/stop-poller.cjs';
 const OPENCODE_POLLER = 'docker/opencode-executor/stop-poller.cjs';

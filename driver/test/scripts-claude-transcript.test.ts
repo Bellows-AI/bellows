@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { pathOf } from './fixtures/scripts-support.js';
+import { pathOf, writeSessionJsonl } from './fixtures/scripts-support.js';
 
 const SESSION_ID = '33333333-3333-4333-8333-333333333333';
 const KIB = 1024;
@@ -29,8 +29,6 @@ function runScript(dir: string, env: Record<string, string | undefined> = {}): {
 
 /** Writes a transcript with one assistant entry per line, `count` of them, timestamps spread. */
 function writeTranscript(dir: string, count: number, sizePerLine = 40): void {
-    const project = join(dir, 'projects', '-workspaces-org-member-.worktrees-mine');
-    mkdirSync(project, { recursive: true });
     const lines: string[] = [];
     for (let i = 0; i < count; i += 1) {
         lines.push(
@@ -41,7 +39,7 @@ function writeTranscript(dir: string, count: number, sizePerLine = 40): void {
             })
         );
     }
-    writeFileSync(join(project, `${SESSION_ID}.jsonl`), `${lines.join('\n')}\n`);
+    writeSessionJsonl(dir, SESSION_ID, [...lines, '']);
 }
 
 /**
@@ -75,9 +73,7 @@ describe('the claude-code transcript export', () => {
     });
 
     it('never exports a subagent conversation', () => {
-        const project = join(dir, 'projects', '-workspaces-org-member-.worktrees-mine');
-        mkdirSync(project, { recursive: true });
-        writeFileSync(join(project, `${SESSION_ID}.jsonl`), `${JSON.stringify({ type: 'assistant' })}\n`);
+        const project = writeSessionJsonl(dir, SESSION_ID, [JSON.stringify({ type: 'assistant' }), '']);
         // A different session id: a subagent conversation under the newer layout. Never read.
         writeFileSync(
             join(project, '44444444-4444-4444-8444-444444444444.jsonl'),
