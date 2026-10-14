@@ -134,10 +134,18 @@ describe.skipIf(!hasGit())('the worktree reclaim script', () => {
         expect(git(clone, 'worktree', 'list', '--porcelain')).toContain(`worktree ${stale}`);
     });
 
-    it('removes a bare leftover with no .git at the path', () => {
+    // Each of these holds whether or not the parent clone is still there (the purge, below).
+    const CLONE_STATES = [
+        ['with the clone present', false],
+        ['when the parent clone is gone', true],
+    ] as const;
+
+    it.each(CLONE_STATES)('removes a bare leftover with no .git at the path, %s', (_state, cloneGone) => {
         const wt = wtPath(UNREGISTERED);
         mkdirSync(wt, { recursive: true });
         writeFileSync(join(wt, 'leftover.txt'), 'not a worktree');
+        if (cloneGone) rmSync(clone, { recursive: true, force: true });
+
         expect(remove(wt).verdict).toEqual({ ok: true, removed: true });
         expect(existsSync(wt)).toBe(false);
     });
@@ -163,7 +171,8 @@ describe.skipIf(!hasGit())('the worktree reclaim script', () => {
         expect(git(clone, 'worktree', 'list', '--porcelain')).toContain(`worktree ${stale}`);
     });
 
-    it('is a no-op when there is nothing at the path', () => {
+    it.each(CLONE_STATES)('is a no-op when there is nothing at the path, %s', (_state, cloneGone) => {
+        if (cloneGone) rmSync(clone, { recursive: true, force: true });
         expect(remove(wtPath(ROOT)).verdict).toEqual({ ok: true, removed: false });
     });
 
@@ -213,16 +222,6 @@ describe.skipIf(!hasGit())('the worktree reclaim script', () => {
             expect(existsSync(refused)).toBe(true);
         });
 
-        it('removes a bare leftover with no .git at the path', () => {
-            const wt = wtPath(UNREGISTERED);
-            mkdirSync(wt, { recursive: true });
-            writeFileSync(join(wt, 'leftover.txt'), 'not a worktree');
-            rmSync(clone, { recursive: true, force: true });
-
-            expect(remove(wt).verdict).toEqual({ ok: true, removed: true });
-            expect(existsSync(wt)).toBe(false);
-        });
-
         it('refuses a tree whose .git is a dangling symlink, with no clone to prove it against', () => {
             // The purge scenario of the review: with the clone gone, a dangling .git symlink
             // reads as "no .git" and the bare-leftover branch would delete the tree and every
@@ -240,11 +239,6 @@ describe.skipIf(!hasGit())('the worktree reclaim script', () => {
             expect(verdict.reason).toContain('not a registered worktree');
             expect(readFileSync(join(refused, 'PRECIOUS.md'), 'utf8')).toBe('uncommitted work\n');
             expect(lstatSync(join(refused, '.git')).isSymbolicLink()).toBe(true);
-        });
-
-        it('is a no-op when neither the clone nor the worktree is there', () => {
-            rmSync(clone, { recursive: true, force: true });
-            expect(remove(wtPath(ROOT)).verdict).toEqual({ ok: true, removed: false });
         });
     });
 });

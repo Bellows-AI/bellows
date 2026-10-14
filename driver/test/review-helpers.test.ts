@@ -98,33 +98,18 @@ describe('the review-collect-probe helper', () => {
         expect(result).toEqual({ ok: true, output: 'REVIEW-CLEAN', control: 'conclude' });
     });
 
-    it('concludes REVIEW-WAIT when a reviewer is requested but nothing is actionable yet', async () => {
-        const { verdict } = await probe(REVIEW_COLLECT_PROBE_ID, {
-            GH_FIXTURES: emptyFixture({ users: ['reviewer-a'] }),
-        });
-        expect(verdict.output).toBe('REVIEW-WAIT');
+    // Regression (the head-check rows): collect ran 17s after the PR opened, while the CI run
+    // carrying the claude[bot] review job was still in progress, concluded REVIEW-CLEAN and ended
+    // the block before the review landed — a review bot may still be running.
+    it.each<[string, Parameters<typeof emptyFixture>[0], string]>([
+        ['a reviewer is requested but nothing is actionable yet', { users: ['reviewer-a'] }, 'REVIEW-WAIT'],
+        ['a head check run is queued', { checkStatuses: ['completed', 'queued'] }, 'REVIEW-WAIT'],
+        ['a head check run is in_progress', { checkStatuses: ['completed', 'in_progress'] }, 'REVIEW-WAIT'],
+        ['every head check run completed', { checkStatuses: ['completed', 'completed'] }, 'REVIEW-CLEAN'],
+    ])('concludes when %s', async (_label, over, marker) => {
+        const { verdict } = await probe(REVIEW_COLLECT_PROBE_ID, { GH_FIXTURES: emptyFixture(over) });
+        expect(verdict.output).toBe(marker);
         expect(verdict.control).toBe('conclude');
-    });
-
-    it.each(['queued', 'in_progress'])(
-        'concludes REVIEW-WAIT while a head check run is %s — a review bot may still be running',
-        async (status) => {
-            // Regression: collect ran 17s after the PR opened, while the CI run carrying the
-            // claude[bot] review job was still in progress, concluded REVIEW-CLEAN and ended the
-            // block before the review landed.
-            const { verdict } = await probe(REVIEW_COLLECT_PROBE_ID, {
-                GH_FIXTURES: emptyFixture({ checkStatuses: ['completed', status] }),
-            });
-            expect(verdict.output).toBe('REVIEW-WAIT');
-            expect(verdict.control).toBe('conclude');
-        }
-    );
-
-    it('concludes REVIEW-CLEAN once every head check run completed', async () => {
-        const { verdict } = await probe(REVIEW_COLLECT_PROBE_ID, {
-            GH_FIXTURES: emptyFixture({ checkStatuses: ['completed', 'completed'] }),
-        });
-        expect(verdict.output).toBe('REVIEW-CLEAN');
     });
 
     it("surfaces a review bot's feedback — only Factory's own marked replies are skipped", async () => {

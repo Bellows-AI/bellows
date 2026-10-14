@@ -138,6 +138,14 @@ describe.skipIf(!enabled)('listTasks', () => {
         expect(review.page.items[0]!.waitingSince).not.toBeNull();
     });
 
+    it('buckets an open wait as past once the task is done, never running', async () => {
+        const root = await craft({ status: 'queued', createdMinutesAgo: 30, doneMinutesAgo: 5 });
+        await enterWait(root, { activeMinutesAgo: 10 });
+
+        const { navigation } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30 });
+        expect(navigation.counts).toEqual({ running: 0, review: 0, past: 1 });
+    });
+
     it('falls back to the ordinary bucket once the wait has gone terminal', async () => {
         const root = await craft({ status: 'queued', command: 'exhausted wait task', createdMinutesAgo: 30 });
         await enterWait(root, { activeMinutesAgo: 20, completed: true, terminalReason: 'exhausted' });
@@ -415,6 +423,35 @@ describe.skipIf(!enabled)('listTasks: organization-wide summary', () => {
 
         expect(page.items).toHaveLength(1);
         expect(page.items[0]).toMatchObject({ id: root, headRunId: head, status: 'running' });
+    });
+
+    // A retry is a thread member with no parent (issue #326): it folds into its task, never a second one.
+    it('folds a parentless retry row into its thread', async () => {
+        const root = await craft({ status: 'failed', createdMinutesAgo: 60, finishedMinutesAgo: 55 });
+        const retry = await craft({ root, status: 'running', createdMinutesAgo: 10 });
+
+        const { navigation, page } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30 });
+
+        expect(navigation.counts).toEqual({ running: 1, review: 0, past: 0 });
+        expect(page.items).toHaveLength(1);
+        expect(page.items[0]).toMatchObject({ id: root, headRunId: retry });
+    });
+
+    it('caps the running preview at three and the review preview at five, newest first', async () => {
+        const RUNNING = 4;
+        const REVIEW = 6;
+        const running: string[] = [];
+        for (let i = 0; i < RUNNING; i++) running.push(await craft({ status: 'running', createdMinutesAgo: 10 + i }));
+        const review: string[] = [];
+        for (let i = 0; i < REVIEW; i++) {
+            review.push(await craft({ status: 'succeeded', createdMinutesAgo: 30 + i, finishedMinutesAgo: 30 + i }));
+        }
+
+        const { navigation } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30 });
+
+        expect(navigation.counts).toEqual({ running: RUNNING, review: REVIEW, past: 0 });
+        expect(navigation.running.map((task) => task.id)).toEqual(running.slice(0, 3));
+        expect(navigation.review.map((task) => task.id)).toEqual(review.slice(0, 5));
     });
 
     it('keeps counts and previews organization-wide while the page obeys the filters', async () => {

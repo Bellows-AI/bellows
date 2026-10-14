@@ -235,8 +235,14 @@ describe('the branch reporter: wire shape and redirects', () => {
  * clock: the warning is printed when the timer is armed and the throw is synchronous.
  */
 describe('the branch reporter: timeout overrides', () => {
-    for (const value of ['Infinity', '-1', '2147483648', 'soon']) {
-        it(`falls back to the default request budget for ${value}`, async () => {
+    const budgets = [
+        ['request', 'BRANCH_REPORTER_REQUEST_TIMEOUT_MS'],
+        ['git', 'BRANCH_REPORTER_GIT_TIMEOUT_MS'],
+    ];
+    const values = ['Infinity', '-1', '2147483648', 'soon'];
+    it.each(values.flatMap((value) => budgets.map(([budget, name]) => [budget!, value, name!])))(
+        'falls back to the default %s budget for %s',
+        async (_budget, value, name) => {
             const { url, requests } = await board();
             const dir = gitRepo();
             try {
@@ -244,26 +250,7 @@ describe('the branch reporter: timeout overrides', () => {
                     FACTORY_STATS_URL: url,
                     BELLOWS_SESSION_ID: SESSION,
                     WORKDIR: dir,
-                    BRANCH_REPORTER_REQUEST_TIMEOUT_MS: value,
-                });
-                expect(status).toBe(0);
-                expect(stdout).toBe('');
-                expect(stderr).toBe('');
-                expect(requests).toHaveLength(1);
-            } finally {
-                rmSync(dir, { recursive: true, force: true });
-            }
-        });
-
-        it(`falls back to the default git budget for ${value}`, async () => {
-            const { url, requests } = await board();
-            const dir = gitRepo();
-            try {
-                const { status, stdout, stderr } = await run(CLAUDE_REPORTER, {
-                    FACTORY_STATS_URL: url,
-                    BELLOWS_SESSION_ID: SESSION,
-                    WORKDIR: dir,
-                    BRANCH_REPORTER_GIT_TIMEOUT_MS: value,
+                    [name]: value,
                 });
                 expect(status).toBe(0);
                 expect(stdout).toBe('');
@@ -273,8 +260,8 @@ describe('the branch reporter: timeout overrides', () => {
             } finally {
                 rmSync(dir, { recursive: true, force: true });
             }
-        });
-    }
+        }
+    );
 });
 
 describe('the branch reporter: endpoint and git state', () => {

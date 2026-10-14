@@ -107,23 +107,22 @@ describe('the control server: POST /review and GET /review/:key', () => {
         }
     );
 
-    it.each<[ReviewVerdict, number]>([
+    // The refused row also pins the board's own reason as the request's answer.
+    it.each<[ReviewVerdict, number, { error: string }?]>([
         ['forbidden', FORBIDDEN_STATUS],
         ['unsupported', NOT_IMPLEMENTED_STATUS],
         ['gone', UNAUTHORIZED_STATUS],
-        [{ refused: 'No reviewer named "x" is declared' }, CONFLICT_STATUS],
-    ])('maps %j to %i', async (verdict, status) => {
+        [
+            { refused: 'No reviewer named "x" is declared' },
+            CONFLICT_STATUS,
+            { error: 'No reviewer named "x" is declared' },
+        ],
+    ])('maps %j to %i', async (verdict, status, body) => {
         const { server, port } = await opened(relayOf(verdict));
-        expect((await request(port, 'tok-r', { key: 'k', profile: 'security' })).status).toBe(status);
+        const answer = await request(port, 'tok-r', { key: 'k', profile: 'security' });
+        expect(answer.status).toBe(status);
+        if (body) await expect(answer.json()).resolves.toEqual(body);
         expect((await read(port, 'tok-r', 'k')).status).toBe(status);
-        await server.close();
-    });
-
-    it('says the board’s own reason when it refused', async () => {
-        const { server, port } = await opened(relayOf({ refused: 'No reviewer named "x" is declared' }));
-        await expect((await request(port, 'tok-r', { key: 'k', profile: 'security' })).json()).resolves.toEqual({
-            error: 'No reviewer named "x" is declared',
-        });
         await server.close();
     });
 
