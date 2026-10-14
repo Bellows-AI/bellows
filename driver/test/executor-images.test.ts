@@ -1052,6 +1052,7 @@ describe('the executor PR boundary', () => {
             GITHUB_SKILL,
             'docker/skills/gates/SKILL.md',
             'docker/skills/backend-fix/SKILL.md',
+            'docker/skills/pr-land/SKILL.md',
             'docker/opencode-executor/opencode-home/AGENTS.md',
         ];
         for (const skill of skills) {
@@ -1076,6 +1077,17 @@ describe('the executor PR boundary', () => {
         expect(text).toMatch(/is\s+the\s+one\s+the\s+driver\s+reuses/);
         // The one command that moves HEAD onto a PR stays named only as denied policy.
         expect(text).not.toMatch(/^\s*gh pr checkout\b/m);
+    });
+
+    it('the pr-land skill waits and fixes but never merges, closes or bypasses (issue #729)', () => {
+        const text = read('docker/skills/pr-land/SKILL.md');
+        expect(text).toContain('sh <this skill directory>/pr-status.sh');
+        expect(text).toContain('At most 5 fix-and-push iterations.');
+        expect(text).toContain('At most 45 minutes of waiting in total');
+        expect(text).toContain('Never merge, close or reopen the pull request, and never enable auto-merge.');
+        expect(text).not.toMatch(/^\s*gh pr (merge|close|reopen|checkout)\b/m);
+        expect(text).not.toMatch(/^\s*git (push --force|rebase|switch|checkout)\b/m);
+        expect(text).not.toMatch(/--auto\b/);
     });
 
     it('the opencode fence denies gh pr checkout and leaves gh pr create to the agent', () => {

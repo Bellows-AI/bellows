@@ -18,7 +18,7 @@ import { PROBE_HELPER_ID } from './workflow-blocks/merge-conflict-autofix.js';
 import { nodeOf, type WorkflowDefinition } from './workflow-schema.js';
 
 /** Versioned so tests and later migrations can name the exact behavior they expect. */
-export const MASTER_PROMPT_VERSION = 'factory-master-prompt/v5';
+export const MASTER_PROMPT_VERSION = 'factory-master-prompt/v6';
 
 /**
  * The character cap on each rendered text, the master prompt and the turn context alike. Generous
@@ -68,12 +68,15 @@ ${RULES_TAIL}`;
 
 /**
  * An objective turn (issue #573): the agent directs publication. Gates are guidance, never a
- * permission check; the board's own end-of-run publish reuses the agent's pull request.
+ * permission check; the board's own end-of-run publish reuses the agent's pull request. The agent
+ * may wait on its own pull request's CI and reviews, through the pr-land runner skill (issue #729).
  */
 const OBJECTIVE_RULES = `${RULES_HEAD}
 - Factory runs the declared gates and a publish after your turn, and reuses any pull request you opened; do not emulate the other capabilities this turn's Factory turn context lists.
 - You may push the task branch and open or update a pull request. Run the relevant declared gates before you publish and report any failure; a failed, skipped or unavailable gate does not stop you from publishing or continuing. Never say a gate passed that did not.
-- Do not merge or close a pull request, enable auto-merge, comment on or reply to GitHub reviews, poll or wait for GitHub activity, or start the next workflow step.
+- Do not merge or close a pull request, enable auto-merge, or start the next workflow step.
+- You may wait for CI checks and reviews on the pull request you published, fix what they find and push again, and reply to each review comment you addressed saying what changed.
+- After you push and open or update a pull request, load the pr-land skill and follow it to wait for CI and review before you finish.
 - You may edit files, run tests and other local verification, and commit, as the current task requires.
 ${RULES_TAIL}`;
 
