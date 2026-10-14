@@ -36,7 +36,7 @@ function harness(...responses: Response[]) {
 
 const queryOf = (url: string) => Object.fromEntries(new URL(url).searchParams);
 
-describe('factory task list', () => {
+describe('bellows task list', () => {
     it('asks for no filter by default and names the task and its head run', async () => {
         const { out, urls, io } = harness(answer([task()]));
 

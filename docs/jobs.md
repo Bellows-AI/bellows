@@ -57,7 +57,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | Optional `backend-fix` playbook | `docker/skills/backend-fix/SKILL.md` | `driver/test/executor-images.test.ts` |
 | Board + driver end to end | `scripts/test-jobs.sh` | `server/test/test-jobs.harness.test.ts`, `driver/test/compose.test.ts` |
 
-## CLI (`factory …`)
+## CLI (`bellows …`)
 
 | Concern | Code | Test |
 | --- | --- | --- |

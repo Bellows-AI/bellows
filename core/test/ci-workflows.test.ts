@@ -15,6 +15,7 @@ interface Step {
 
 interface Job {
     uses?: string;
+    permissions?: unknown;
     // A single dependency is written as a scalar, several as a sequence.
     needs?: string | string[];
     if?: string;
@@ -123,8 +124,10 @@ describe('ci workflows', () => {
             read('docker/Dockerfile')
         )?.[1];
         expect(imageMajor).toBeTruthy();
-        const setups = Object.values(workflow(CI).jobs).flatMap((job) =>
-            (job.steps ?? []).filter((step) => step.uses?.startsWith('actions/setup-node@'))
+        const setups = [CI, RELEASE].flatMap((path) =>
+            Object.values(workflow(path).jobs).flatMap((job) =>
+                (job.steps ?? []).filter((step) => step.uses?.startsWith('actions/setup-node@'))
+            )
         );
         expect(setups.length).toBeGreaterThan(0);
         for (const step of setups) {
@@ -377,6 +380,48 @@ describe('ci workflows', () => {
             packages: 'write',
             'security-events': 'write',
         });
+        // The OIDC token mints an npm publish credential, so exactly one job may request it, and
+        // that job holds nothing else of the workflow's.
+        const scoped = Object.entries(workflow(RELEASE).jobs).filter(([, job]) => job.permissions !== undefined);
+        expect(Object.fromEntries(scoped.map(([name, job]) => [name, job.permissions]))).toEqual({
+            npm: { contents: 'read', 'id-token': 'write' },
+        });
+    });
+
+    // Trusted publishing: npmjs.com accepts this workflow's OIDC token for `@bellows-ai/bellows-cli`, so the
+    // publish needs no secret, and nothing ships that did not pass the same gates as the images.
+    it('publishes the CLI to npmjs after validation, at the version release.sh bumped', () => {
+        const npm = workflow(RELEASE).jobs.npm!;
+        expect(needs(npm)).toEqual(['validate']);
+        const setup = (npm.steps ?? []).find((step) => step.uses?.startsWith('actions/setup-node@'));
+        expect(setup?.with?.['registry-url']).toBe('https://registry.npmjs.org');
+        const commands = runs(npm);
+        expect(commands).toContain('npm ci --ignore-scripts');
+        const stamp = commands.findIndex((run) => run.includes('npm pkg set version="$VERSION" -w cli'));
+        const publish = commands.indexOf('npm publish -w cli --access public');
+        expect(stamp, 'the published package.json is never stamped').toBeGreaterThan(-1);
+        expect(stamp).toBeLessThan(publish);
+        expect(commands[stamp]).toContain('test "v$VERSION" = "$TAG"');
+        const license = commands.indexOf('cp LICENSE cli/LICENSE');
+        expect(license, 'the package ships without the license it declares').toBeGreaterThan(-1);
+        expect(license).toBeLessThan(publish);
+    });
+
+    // What `npm publish -w cli` ships: the name and command the release promises, only the build,
+    // and a repository npm's provenance check can match against this workflow's.
+    it('ships cli/package.json as the public @bellows-ai/bellows-cli package', () => {
+        const pkg = JSON.parse(read('cli/package.json')) as Record<string, unknown>;
+        expect(pkg).toMatchObject({
+            name: '@bellows-ai/bellows-cli',
+            version: '0.0.0',
+            bin: { bellows: 'dist/index.js' },
+            // The compiled JS only: no declarations (nothing imports a CLI) and no source maps
+            // (they point at src/, which does not ship).
+            files: ['dist/**/*.js'],
+            repository: { url: 'git+https://github.com/Bellows-AI/factory.git', directory: 'cli' },
+        });
+        expect(pkg.private).toBeUndefined();
+        expect(pkg.dependencies).toBeUndefined();
     });
 
     // The whole point of the gate: an image that fails it must not exist in the registry, so the

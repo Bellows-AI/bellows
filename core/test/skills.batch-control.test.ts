@@ -47,8 +47,8 @@ describe('the batch-control skill', () => {
     it('uses only CLI verbs the usage lists, through the one npm layer', () => {
         const verbs = [...skill.matchAll(/npm run dev -w cli -- (batch|job) ([a-z-]+)/g)];
         expect(verbs.length).toBeGreaterThan(0);
-        for (const [, noun, verb] of verbs) expect(usage).toContain(`factory ${noun} ${verb} `);
-        expect(skill).not.toMatch(/^factory batch /m);
+        for (const [, noun, verb] of verbs) expect(usage).toContain(`bellows ${noun} ${verb} `);
+        expect(skill).not.toMatch(/^bellows batch /m);
         expect(skill).not.toMatch(/npm run cli -- batch/);
     });
 

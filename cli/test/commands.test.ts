@@ -77,7 +77,7 @@ const waitBody = (
     ...overrides,
 });
 
-describe('factory job create', () => {
+describe('bellows job create', () => {
     it('posts the joined command, prints the queued id, and exits 0', async () => {
         const { out, calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
 
@@ -126,7 +126,7 @@ describe('factory job create', () => {
     });
 });
 
-describe('factory job list', () => {
+describe('bellows job list', () => {
     it('prints one line per job', async () => {
         const { out, io } = harness(ENV, () =>
             json({ jobs: [job(), job({ id: 'job-2', status: 'queued', command: 'second task' })] })
@@ -161,7 +161,7 @@ describe('factory job list', () => {
     });
 });
 
-describe('factory job investigate', () => {
+describe('bellows job investigate', () => {
     it('prints the job header, gates, output tail, and every thread member', async () => {
         const detail = job();
         const thread = {
@@ -230,7 +230,7 @@ describe('factory job investigate', () => {
     });
 });
 
-describe('factory job wait', () => {
+describe('bellows job wait', () => {
     it("re-issues on the board's timeout result until a terminal one, then prints the row and exits 0", async () => {
         // Only the board's `timeout` result is re-issued; there is no sleep between the polls.
         const { out, calls, io } = harness(
@@ -392,7 +392,7 @@ describe('factory job wait', () => {
     });
 });
 
-describe('factory job follow-up', () => {
+describe('bellows job follow-up', () => {
     it('posts the joined command to the follow-up route and prints the new queued id', async () => {
         const { out, calls, io } = harness(ENV, () => json({ id: 'job-2', status: 'queued' }, 201));
 
@@ -405,7 +405,7 @@ describe('factory job follow-up', () => {
     });
 });
 
-describe('factory job stop', () => {
+describe('bellows job stop', () => {
     it('reports the settled stop', async () => {
         const { out, calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'stopped' }));
 
@@ -432,7 +432,7 @@ describe('factory job stop', () => {
     });
 });
 
-describe('factory job done', () => {
+describe('bellows job done', () => {
     it('marks the task done and prints the stamp', async () => {
         const { out, calls, io } = harness(ENV, () =>
             json({ id: 'job-1', status: 'succeeded', doneAt: '2026-09-29T13:02:00.000Z' })
@@ -485,7 +485,7 @@ describe('factory job done', () => {
     });
 });
 
-describe('factory job remove', () => {
+describe('bellows job remove', () => {
     it('deletes the thread once --yes is given', async () => {
         const { out, calls, io } = harness(ENV, () => json({ id: 'job-1', removed: true }));
 

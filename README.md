@@ -80,7 +80,7 @@ installation is the list ([repos](docs/repos.md)); sign-in is a separate OAuth A
 | `server/` | Fastify API: ingest and store, the GitHub App credential and repo list, SPA hosting. |
 | `web/` | Vite + React SPA. |
 | `driver/` | Claims jobs from the board and runs a runner per job. Depends on nothing. |
-| `cli/` | Board CLI over HTTP (`npm run dev -w cli -- job …`). |
+| `cli/` | Board CLI over HTTP (`npm run dev -w cli -- job …`); released as `@bellows-ai/bellows-cli` (`npm i -g @bellows-ai/bellows-cli`, then `bellows`). |
 | `docker/` | The deploy image and the executor images: [claude-executor](docker/claude-executor/README.md), [opencode-executor](docker/opencode-executor/README.md). |
 
 Every command, the build coupling and the test suites: [AGENTS.md](AGENTS.md).

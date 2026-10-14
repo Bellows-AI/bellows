@@ -32,7 +32,7 @@ const cli = (argv: string[], respond: (url: string) => Response) => runCli(argv,
 
 const LOG = Array.from({ length: 10 }, (_, i) => `line ${i}\n`).join('');
 
-describe('factory job log / transcript', () => {
+describe('bellows job log / transcript', () => {
     it('--all walks every page in order and prints the whole artifact', async () => {
         const board = artifactBoard({ 1: LOG });
         const { code, out } = await cli(['job', 'log', 'job-1', '--all', '--limit', '25'], board.respond);
@@ -104,7 +104,7 @@ describe('factory job log / transcript', () => {
     });
 });
 
-describe('factory job activity', () => {
+describe('bellows job activity', () => {
     it('prints one row per bucket and keeps the payload under --json', async () => {
         const body = {
             jobId: 'job-1',
@@ -134,7 +134,7 @@ describe('factory job activity', () => {
     });
 });
 
-describe('factory job investigate evidence', () => {
+describe('bellows job investigate evidence', () => {
     const job = {
         id: 'job-1',
         rootJobId: 'job-1',

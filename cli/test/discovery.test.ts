@@ -31,7 +31,7 @@ const workspace = (overrides: Record<string, unknown> = {}) => ({
     ...overrides,
 });
 
-describe('factory repo list', () => {
+describe('bellows repo list', () => {
     it('joins visible with synced and keeps a synced repo the installation no longer shows', async () => {
         const { out, calls, io } = harness({
             '/api/repos': () => json(visible()),
@@ -91,7 +91,7 @@ describe('factory repo list', () => {
     });
 });
 
-describe('factory executor list', () => {
+describe('bellows executor list', () => {
     it('lists personal then org profiles with their scope, suspension and the default', async () => {
         const { out, io } = harness({ '/api/workspace': () => json(workspace()) });
 
@@ -127,7 +127,7 @@ describe('factory executor list', () => {
     });
 });
 
-describe('factory skill list', () => {
+describe('bellows skill list', () => {
     const skills = [
         {
             name: 'jira',
@@ -157,7 +157,7 @@ describe('factory skill list', () => {
     });
 });
 
-describe('factory connection list', () => {
+describe('bellows connection list', () => {
     const connection = {
         id: '3f2b6c1e-0000-4000-8000-000000000001',
         kind: 'jira',
@@ -188,7 +188,7 @@ describe('factory connection list', () => {
     });
 });
 
-describe('factory job create --jira-connection', () => {
+describe('bellows job create --jira-connection', () => {
     const ID = '3f2b6c1e-0000-4000-8000-000000000001';
 
     it('sends the selected connection id in the create body, and nothing when absent', async () => {

@@ -37,7 +37,7 @@ const asked = (overrides: Record<string, unknown> = {}) => ({
 
 const threadWith = (...questions: unknown[]) => json({ jobs: [run1({ questions })] });
 
-describe('factory job questions', () => {
+describe('bellows job questions', () => {
     it('lists the id, prompt, options, free-text note and state', async () => {
         const { out, calls, io } = harness(() => threadWith(asked()));
 
@@ -82,7 +82,7 @@ describe('factory job questions', () => {
     });
 });
 
-describe('factory job answer', () => {
+describe('bellows job answer', () => {
     const answerRoute = 'http://board/api/jobs/job-1/questions/toolu_1/answer';
     const answeredBody = () => json(asked({ status: 'answered' }));
 
