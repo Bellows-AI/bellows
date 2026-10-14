@@ -1,5 +1,5 @@
 {
-    "name": "bellows-cli",
+    "name": "@bellows-ai/bellows-cli",
     "version": "0.0.0",
     "description": "Command-line client for the Bellows Factory board",
     "license": "MIT",

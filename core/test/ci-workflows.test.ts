@@ -388,7 +388,7 @@ describe('ci workflows', () => {
         });
     });
 
-    // Trusted publishing: npmjs.com accepts this workflow's OIDC token for `bellows-cli`, so the
+    // Trusted publishing: npmjs.com accepts this workflow's OIDC token for `@bellows-ai/bellows-cli`, so the
     // publish needs no secret, and nothing ships that did not pass the same gates as the images.
     it('publishes the CLI to npmjs after validation, at the version release.sh bumped', () => {
         const npm = workflow(RELEASE).jobs.npm!;
@@ -409,10 +409,10 @@ describe('ci workflows', () => {
 
     // What `npm publish -w cli` ships: the name and command the release promises, only the build,
     // and a repository npm's provenance check can match against this workflow's.
-    it('ships cli/package.json as the public bellows-cli package', () => {
+    it('ships cli/package.json as the public @bellows-ai/bellows-cli package', () => {
         const pkg = JSON.parse(read('cli/package.json')) as Record<string, unknown>;
         expect(pkg).toMatchObject({
-            name: 'bellows-cli',
+            name: '@bellows-ai/bellows-cli',
             version: '0.0.0',
             bin: { bellows: 'dist/index.js' },
             // The compiled JS only: no declarations (nothing imports a CLI) and no source maps

@@ -286,7 +286,7 @@ jobs:
                   # image package in the same namespace.
                   helm push "/tmp/chart/factory-$VERSION.tgz" "oci://$REGISTRY/charts"
 
-    # The CLI, as `bellows-cli` on npmjs.org. It is an HTTP client of the board with no runtime
+    # The CLI, as `@bellows-ai/bellows-cli` on npmjs.org. It is an HTTP client of the board with no runtime
     # dependency, so it waits only on the gates, not on the images. npm trusted publishing
     # exchanges this job's OIDC token for a one-shot publish credential, so no repository secret
     # exists; the package's trusted publisher on npmjs.com must name this repository and this

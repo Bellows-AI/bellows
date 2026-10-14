@@ -7,7 +7,7 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
 | --- | --- | --- |
 | Validation, the db suite (`test-db`) and the browser lane | `.github/workflows/ci.yml`, `vitest.db.config.ts` | `core/test/ci-workflows.test.ts` |
 | Tag fold, image matrix, scan gate, manifest, chart publish | `.github/workflows/release-image.yml`, `.trivyignore` | `core/test/ci-workflows.test.ts` |
-| CLI publish: `bellows-cli` on npmjs.org, trusted publishing, `VERSION` stamped over `0.0.0` | `.github/workflows/release-image.yml` (`npm`), `cli/package.json`, `cli/src/version.ts` | `core/test/ci-workflows.test.ts`, `cli/test/diagnostics.test.ts` |
+| CLI publish: `@bellows-ai/bellows-cli` on npmjs.org, trusted publishing, `VERSION` stamped over `0.0.0` | `.github/workflows/release-image.yml` (`npm`), `cli/package.json`, `cli/src/version.ts` | `core/test/ci-workflows.test.ts`, `cli/test/diagnostics.test.ts` |
 | Release command: patch bump, version-only commit, tag, atomic push | `scripts/release.sh`, `VERSION` | `core/test/release-script.test.ts` |
 | The images a release builds | `docker/Dockerfile`, `docker/driver.Dockerfile`, `docker/{claude,opencode}-executor/` | `driver/test/executor-images.test.ts` |
 | Browser-lane databases and ports | `e2e/reset-db.mjs`, `playwright.config.ts` | `core/test/e2e-config.test.ts` |
@@ -39,7 +39,7 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
   is the tag exactly, which `factory.image` falls back to. Each package's first push is private
   ([eks-runbook.md](eks-runbook.md), step 3).
 - **`npm` is the only job holding `id-token: write`**, and needs only `validate`. npmjs.com's trusted publisher for
-  `bellows-cli` must name `Bellows-AI/factory` and `release-image.yml`, or the publish is refused; a tag that
+  `@bellows-ai/bellows-cli` must name `Bellows-AI/factory` and `release-image.yml`, or the publish is refused; a tag that
   disagrees with `VERSION` publishes nothing.
 
 ## Stated limits

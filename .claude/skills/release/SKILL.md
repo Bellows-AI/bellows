@@ -8,7 +8,7 @@ description: Cut a Factory release end to end — analyze everything since the l
 A release is a tag. `npm run release` (`scripts/release.sh`) patch-bumps `VERSION`, commits only
 that, tags `vX.Y.Z` and pushes branch and tag atomically; the tag starts
 `.github/workflows/release-image.yml`, which re-runs CI, builds and scans the images, and publishes
-them, the chart and the `bellows-cli` npm package — the chart's and the package's version is the tag,
+them, the chart and the `@bellows-ai/bellows-cli` npm package — the chart's and the package's version is the tag,
 never `charts/*/Chart.yaml`'s or `cli/package.json`'s. Nothing in the
 workflow writes release notes: this skill does, with `gh release create`.
 
@@ -138,7 +138,7 @@ npm run release                                   # prints "released vX.Y.Z"
 TAG=$(git describe --tags --abbrev=0)
 gh run list --workflow release-image.yml --limit 1
 gh run watch <run-id> --exit-status              # validate, build, scan, manifest, chart, npm
-npm view bellows-cli version                      # the tag minus its v
+npm view @bellows-ai/bellows-cli version                      # the tag minus its v
 gh release create "$TAG" --verify-tag --title "$TAG" --notes-file <notes.md>
 ```
 

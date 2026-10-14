@@ -1,10 +1,10 @@
-# bellows-cli
+# @bellows-ai/bellows-cli
 
 Command-line client for a [Bellows Factory](https://github.com/Bellows-AI/factory) board: queue
 tasks, wait on them, follow up, and drive batches over the board's HTTP API.
 
 ```bash
-npm install -g bellows-cli          # Node.js 22 or newer
+npm install -g @bellows-ai/bellows-cli          # Node.js 22 or newer
 
 export FACTORY_URL=https://factory.example.com
 export FACTORY_TOKEN=fat_...        # personal token from the board's settings page
