@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SESSION_COOKIE } from '../src/auth/session.js';
 import { ORG, beginOnboarding, finishOnboarding, setup, signIn } from './auth.oauth-fixtures.js';
-
-const HTTP_NO_CONTENT = 204;
+import { HTTP_NO_CONTENT } from './helpers-http.js';
 
 describe('identity is the numeric id, not the login', () => {
     it('follows a rename: the same account keeps its membership under a new login', async () => {

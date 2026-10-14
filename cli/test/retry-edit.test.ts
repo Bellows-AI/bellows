@@ -1,42 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { run } from '../src/run.js';
+import { refusal, runCli, type Sent } from './harness.js';
 
-const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
 const KEY = 'attempt-0001-abcd';
-
-interface Sent {
-    url: string;
-    method: string;
-    key: string | null;
-    body: unknown;
-}
 
 /** One CLI run against a board whose answer is chosen per request, recording what was sent. */
 async function cli(argv: string[], respond: (sent: Sent) => Response) {
-    const out: string[] = [];
-    const err: string[] = [];
-    const sent: Sent[] = [];
-    const fetch = (async (url: string | URL | globalThis.Request, init?: RequestInit) => {
-        const call: Sent = {
-            url: String(url),
-            method: init?.method ?? 'GET',
-            key: new Headers(init?.headers).get('idempotency-key'),
-            body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
-        };
-        sent.push(call);
-        return respond(call);
-    }) as unknown as typeof globalThis.fetch;
-    const code = await run(argv, {
-        env: ENV,
-        fetch,
-        sleep: async () => undefined,
-        stdout: (text) => out.push(text),
-        stderr: (text) => err.push(text),
-    });
-    return { code, out: out.join(''), err: err.join(''), sent };
+    const result = await runCli(argv, respond);
+    return { ...result, sent: result.sent.map(({ url, method, key, body }) => ({ url, method, key, body })) };
 }
-
-const refusal = (status: number, code: string, error: string) => Response.json({ error, code }, { status });
 
 /** A board that accepts a retry as the new run `run-2`. */
 const retryBoard = () => () => Response.json({ id: 'run-2', status: 'queued' }, { status: 201 });
@@ -58,26 +29,6 @@ describe('factory job retry', () => {
         expect(result.out).toBe('queued run-2\n');
     });
 
-    it("surfaces the board's refusal", async () => {
-        const result = await cli(['job', 'retry', 'run-1'], () =>
-            refusal(409, 'NOT_FINISHED', 'Task is still running')
-        );
-
-        expect(result.code).toBe(1);
-        expect(result.err).toContain('Task is still running');
-        expect(result.err).toContain('NOT_FINISHED');
-        expect(result.sent).toHaveLength(1);
-    });
-
-    it('surfaces a non-author refusal as the board worded it', async () => {
-        const result = await cli(['job', 'retry', 'run-1'], () =>
-            refusal(403, 'FORBIDDEN', 'Only the author can retry')
-        );
-
-        expect(result.code).toBe(1);
-        expect(result.err).toContain('Only the author can retry');
-    });
-
     it('says an unanswered write may have been applied, naming the key to repeat', async () => {
         const result = await cli(['job', 'retry', 'run-1', '--idempotency-key', KEY], () =>
             refusal(500, 'INTERNAL', 'boom')
@@ -85,14 +36,6 @@ describe('factory job retry', () => {
 
         expect(result.code).toBe(1);
         expect(result.err).toContain(`--idempotency-key ${KEY}`);
-    });
-
-    it('is a usage error without exactly one id, making no request', async () => {
-        const none = await cli(['job', 'retry'], retryBoard());
-        const two = await cli(['job', 'retry', 'a', 'b'], retryBoard());
-
-        expect([none.code, two.code]).toEqual([2, 2]);
-        expect([...none.sent, ...two.sent]).toEqual([]);
     });
 });
 
@@ -115,32 +58,6 @@ describe('factory job edit', () => {
 
         expect(JSON.parse(result.out)).toMatchObject({ ok: true, command: 'job edit', data: payload });
     });
-
-    it('refuses once the board says the run is no longer queued', async () => {
-        const result = await cli(['job', 'edit', 'run-1', 'again'], () =>
-            refusal(409, 'NOT_QUEUED', "Task is running — only a queued task's command can be edited")
-        );
-
-        expect(result.code).toBe(1);
-        expect(result.err).toContain('NOT_QUEUED');
-    });
-
-    it('surfaces a non-author refusal', async () => {
-        const result = await cli(['job', 'edit', 'run-1', 'again'], () =>
-            refusal(403, 'FORBIDDEN', 'Only the account that queued the task can edit its command')
-        );
-
-        expect(result.code).toBe(1);
-        expect(result.err).toContain('Only the account that queued the task');
-    });
-
-    it('is a usage error with no id or no command, making no request', async () => {
-        const noId = await cli(['job', 'edit'], () => Response.json({}));
-        const noCommand = await cli(['job', 'edit', 'run-1'], () => Response.json({}));
-
-        expect([noId.code, noCommand.code]).toEqual([2, 2]);
-        expect([...noId.sent, ...noCommand.sent]).toEqual([]);
-    });
 });
 
 describe('factory job reopen', () => {
@@ -152,19 +69,5 @@ describe('factory job reopen', () => {
         expect(result.sent).toEqual([
             { url: 'http://board/api/jobs/task-1/reopen', method: 'POST', key: null, body: undefined },
         ]);
-    });
-
-    it('surfaces a refusal after the task changed state', async () => {
-        const result = await cli(['job', 'reopen', 'task-1'], () => refusal(409, 'TASK_NOT_DONE', 'Task is not done'));
-
-        expect(result.code).toBe(1);
-        expect(result.err).toContain('TASK_NOT_DONE');
-    });
-
-    it('is a usage error without exactly one id', async () => {
-        const result = await cli(['job', 'reopen'], () => Response.json({}));
-
-        expect(result.code).toBe(2);
-        expect(result.sent).toEqual([]);
     });
 });

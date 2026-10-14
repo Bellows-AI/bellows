@@ -6,6 +6,8 @@ import type { Session } from '../src/api/useSession.js';
 import type { WorkspacePayload, UseWorkspace } from '../src/api/useWorkspace.js';
 import { SettingsOverviewPage } from '../src/pages/SettingsOverviewPage.js';
 import { deriveReadiness } from '../src/settings/readiness.js';
+import { expectNoPlaceholder, memberSession } from './fixtures.js';
+import { rootlessWorkspace } from './settings-board.js';
 
 /**
  * The configuration overview's pure derivation (issue 180): five ordered readiness items computed
@@ -362,26 +364,11 @@ describe('deriveReadiness — organization identity', () => {
     });
 });
 
-/** The same contract panels.render.test.tsx pins: a null metric never leaks as a value. */
-const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
-
-const fullSession: Session = {
-    authenticated: true,
-    user: {
-        id: '00000000-0000-4000-8000-000000000001',
-        login: 'octocat',
-        name: 'The Octocat',
-        githubUserId: 1,
-        avatarUrl: null,
-    },
-    role: 'member',
-    membership: { invitedAt: null, claimedAt: null },
-    account: { createdAt: null, lastLoginAt: null },
-    organization: { id: 'bellows', name: 'Bellows AI' },
-    organizations: [{ id: 'bellows', name: 'Bellows AI' }],
+const fullSession = memberSession({
+    user: { githubUserId: 1 },
     workspacePath: '/workspaces/octocat',
     mode: 'none',
-};
+});
 
 const idleWorkspace = {
     data: null,
@@ -437,7 +424,7 @@ describe('SettingsOverviewPage (render) — identity and headings', () => {
         expect(html).toContain('Configuration overview');
         expect(html).toContain('Settings</p>');
         expect(html).toContain('Review what is configured for Bellows AI and your workspace.');
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 
     it('shows the identity definition list without the internal id', () => {
@@ -530,18 +517,7 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
         expect(answered).toContain('<p class="readiness-status pill">No custom environment values</p>');
         expect(answered).toContain('<li class="readiness-item">');
         const rootless = render({
-            workspace: {
-                loading: false,
-                data: {
-                    root: null,
-                    repos: [],
-                    orphaned: [],
-                    checkoutTotalBytes: 0,
-                    executors: [],
-                    orgExecutors: [],
-                    defaultExecutor: null,
-                },
-            },
+            workspace: rootlessWorkspace(0),
             env: { loading: false, data: emptyEnv },
         });
         expect(rootless).toContain(
@@ -554,18 +530,7 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
 
     it('sends a missing root to the workspace setup page, never a generic fix', () => {
         const html = render({
-            workspace: {
-                loading: false,
-                data: {
-                    root: null,
-                    repos: [],
-                    orphaned: [],
-                    checkoutTotalBytes: 0,
-                    executors: [],
-                    orgExecutors: [],
-                    defaultExecutor: null,
-                },
-            },
+            workspace: rootlessWorkspace(0),
             env: { loading: false, data: emptyEnv },
         });
         expect(html).toContain('Workspace is not configured; tasks cannot run');

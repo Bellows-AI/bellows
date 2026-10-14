@@ -1,9 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import type { FastifyInstance } from 'fastify';
+import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
-import type { Job } from '../src/db/job-store-types.js';
-import type { JobStore, TaskListFilters, TaskListResponse } from '../src/db/job-store-types.js';
-import { encodeCursor, memoryTaskList } from '../src/db/task-summary.js';
+import type { JobStore, TaskListFilters, TaskListResponse, TaskSummary } from '../src/db/job-store-types.js';
+import { encodeCursor } from '../src/db/task-summary.js';
 import {
     TEST_JOB_BOARD_TOKEN,
     githubAuth,
@@ -13,18 +11,11 @@ import {
     stubTelemetryClient,
     testConfig,
 } from './helpers.js';
+import { HTTP_BAD_REQUEST, HTTP_OK, HTTP_SERVICE_UNAVAILABLE, HTTP_UNAUTHORIZED, trackApps } from './helpers-http.js';
 
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 const ORG = 'test-org';
-const HTTP_OK = 200;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_SERVICE_UNAVAILABLE = 503;
 
 const UUID_SEGMENT_WIDTH = 12;
 
@@ -37,112 +28,52 @@ const MS_PER_MINUTE = 60_000;
 const at = (minutes: number): string =>
     new Date(Date.parse('2026-09-10T12:00:00.000Z') - minutes * MS_PER_MINUTE).toISOString();
 
-const job = (overrides: Partial<Job> & { id: string }): Job => ({
-    command: 'crafted',
-    status: 'queued',
-    attempts: 1,
-    maxAttempts: 3,
-    claimedBy: null,
-    createdBy: null,
-    author: null,
-    stoppedBy: null,
-    doneBy: null,
-    sessionId: null,
-    exitCode: null,
-    output: null,
-    summary: null,
-    failureKind: null,
-    gates: null,
-    runtime: null,
+const summary = (n: number, status: TaskSummary['status']): TaskSummary => ({
+    id: uid(n),
+    headRunId: uid(n),
+    command: `task ${n}`,
+    status,
+    cancelRequestedAt: null,
+    doneAt: null,
     repo: null,
     executor: null,
-    followUpTo: null,
-    rootJobId: overrides.id,
-    workflowNode: null,
-    doneAt: null,
-    cancelRequestedAt: null,
-    workspacePath: null,
+    executorScope: 'user',
+    author: null,
+    activity: null,
+    summary: null,
+    waitReason: null,
+    waitingSince: null,
+    waitTerminalReason: null,
+    needsAnswer: false,
     createdAt: at(60),
-    startedAt: null,
-    finishedAt: null,
-    wallClockMs: null,
-    taskWallClockMs: null,
-    questions: [],
-    ...overrides,
+    activityAt: at(1),
 });
 
-const HEAD_STARTED_MIN = 59;
-const FOLLOWUP_ID = 11;
-const FOLLOWUP_CREATED_MIN = 20;
-const FOLLOWUP_STARTED_MIN = 19;
-const DOCS_ID = 2;
-const DOCS_CREATED_MIN = 50;
-const DOCS_FINISHED_MIN = 45;
-const FOOTER_ID = 3;
-const FOOTER_CREATED_MIN = 40;
-const FOOTER_FINISHED_MIN = 35;
-const FOOTER_DONE_MIN = 30;
-
 /**
- * The fixture board: one thread of each bucket, the running one carrying exactly the fields a
- * task summary must not leak — the output tail, the gate reports, the runtime object.
+ * The store's answer, canned: the route hands it through untouched. The read model itself —
+ * buckets, navigation, filters, paging — is the SQL's, pinned in server/test-db/job-store.tasks.test.ts.
  */
-const FIXTURE: Job[] = [
-    job({
-        id: uid(1),
-        command: 'fix the login bug',
-        status: 'running',
-        createdAt: at(60),
-        startedAt: at(HEAD_STARTED_MIN),
-    }),
-    job({
-        id: uid(FOLLOWUP_ID),
-        command: 'now adjust it',
-        status: 'running',
-        rootJobId: uid(1),
-        followUpTo: uid(1),
-        createdAt: at(FOLLOWUP_CREATED_MIN),
-        startedAt: at(FOLLOWUP_STARTED_MIN),
-        // The head run's run-detail fields — exactly what a task summary must not leak.
-        output: 'a long tail',
-        gates: [],
-        runtime: { cpuPercent: 3, memUsedMb: 4, memPercent: 5, activity: 'the live line', sampledAt: at(1) },
-    }),
-    job({
-        id: uid(DOCS_ID),
-        command: 'write the docs',
-        status: 'succeeded',
-        createdAt: at(DOCS_CREATED_MIN),
-        finishedAt: at(DOCS_FINISHED_MIN),
-        summary: 'docs written',
-    }),
-    job({
-        id: uid(FOOTER_ID),
-        command: 'fix the footer',
-        status: 'failed',
-        createdAt: at(FOOTER_CREATED_MIN),
-        finishedAt: at(FOOTER_FINISHED_MIN),
-        doneAt: at(FOOTER_DONE_MIN),
-        output: 'a finished tail',
-    }),
-];
+const ANSWER: TaskListResponse = {
+    navigation: {
+        counts: { running: 1, review: 1, past: 0 },
+        running: [summary(1, 'running')],
+        review: [summary(2, 'succeeded')],
+    },
+    page: { items: [summary(1, 'running'), summary(2, 'succeeded')], nextCursor: null },
+};
 
 interface TaskStub extends JobStore {
     asked: TaskListFilters[];
 }
 
-/**
- * A real read over a fixture array — `memoryTaskList`, the same rules the store serves — with the
- * filters each call saw recorded. Not a canned shape: the response contract is computed, so a
- * payload bug cannot agree with itself.
- */
-const taskStub = (jobs: readonly Job[] = FIXTURE, options: { fail?: boolean } = {}): TaskStub => {
+/** A board answering ANSWER, with the filters each call saw recorded. */
+const taskStub = (options: { fail?: boolean } = {}): TaskStub => {
     const stub = {
         asked: [] as TaskListFilters[],
         async listTasks(filters: TaskListFilters): Promise<TaskListResponse> {
             if (options.fail) throw new Error('database is down');
             stub.asked.push(filters);
-            return memoryTaskList(jobs, filters);
+            return ANSWER;
         },
     };
     return stub as unknown as TaskStub;
@@ -154,7 +85,7 @@ async function openHarness(jobs?: TaskStub) {
         config,
         orgs: staticRegistry({ config, jobs, telemetry: stubTelemetryClient() }),
     });
-    app = instance;
+    track(instance);
     return instance;
 }
 
@@ -166,85 +97,22 @@ async function githubHarness(jobs?: TaskStub, orgsFor?: readonly string[]) {
         orgs: staticRegistry({ config, jobs, telemetry: stubTelemetryClient(), ...(orgsFor ? { orgsFor } : {}) }),
         auth: store,
     });
-    app = instance;
+    track(instance);
     return { instance, store };
 }
 
 const mint = (payload: Record<string, unknown>): string => Buffer.from(JSON.stringify(payload)).toString('base64url');
 
 describe('GET /api/tasks', () => {
-    it('answers the default attention page as exactly { navigation, page }', async () => {
+    it('answers the store response untouched, asking with the default filters', async () => {
         const store = taskStub();
         const instance = await openHarness(store);
 
         const response = await instance.inject({ method: 'GET', url: '/api/tasks' });
 
         expect(response.statusCode).toBe(HTTP_OK);
-        const body = response.json();
-        expect(body.navigation.counts).toEqual({ running: 1, review: 1, past: 1 });
-        // The previews are the org's, not the page's: one running thread, newest first.
-        expect(body.navigation.running.map((item: { id: string }) => item.id)).toEqual([uid(1)]);
-        expect(body.navigation.review.map((item: { id: string }) => item.id)).toEqual([uid(2)]);
-        expect(body.page.nextCursor).toBeNull();
-        // The row is exactly the summary contract — no output tail, no gate reports, no runtime
-        // object, nothing the store row carried beyond what a task list renders.
-        expect(body.page.items).toHaveLength(2);
-        expect(body.page.items[0]).toEqual({
-            id: uid(1),
-            headRunId: uid(11),
-            command: 'fix the login bug',
-            status: 'running',
-            cancelRequestedAt: null,
-            doneAt: null,
-            repo: null,
-            executor: null,
-            author: null,
-            activity: 'the live line',
-            summary: null,
-            // No PR-wait rows in the in-memory board, so the fields read null — the stored shape.
-            waitReason: null,
-            waitingSince: null,
-            waitTerminalReason: null,
-            needsAnswer: false,
-            createdAt: at(60),
-            activityAt: at(FOLLOWUP_STARTED_MIN),
-        });
-        expect(Object.keys(body.page.items[1])).toEqual([
-            'id',
-            'headRunId',
-            'command',
-            'status',
-            'cancelRequestedAt',
-            'doneAt',
-            'repo',
-            'executor',
-            'author',
-            'activity',
-            'summary',
-            'waitReason',
-            'waitingSince',
-            'waitTerminalReason',
-            'needsAnswer',
-            'createdAt',
-            'activityAt',
-        ]);
+        expect(response.json()).toEqual(ANSWER);
         expect(store.asked).toEqual([{ state: 'attention', sort: 'newest', limit: 30 }]);
-    });
-
-    it.each([
-        ['attention', { running: 1, review: 1, past: 1 }, 2],
-        ['running', { running: 1, review: 1, past: 1 }, 1],
-        ['review', { running: 1, review: 1, past: 1 }, 1],
-        ['past', { running: 1, review: 1, past: 1 }, 1],
-    ])('answers the %s state — page filtered, navigation untouched', async (state, counts, expectedItems) => {
-        const store = taskStub();
-        const instance = await openHarness(store);
-
-        const response = await instance.inject({ method: 'GET', url: `/api/tasks?state=${state}` });
-
-        expect(response.statusCode).toBe(HTTP_OK);
-        expect(response.json().navigation.counts).toEqual(counts);
-        expect(response.json().page.items).toHaveLength(expectedItems);
     });
 });
 
@@ -342,7 +210,7 @@ describe('GET /api/tasks: filters and cursors', () => {
 
 describe('GET /api/tasks: failures', () => {
     it('answers 503 when the store fails, without echoing the query', async () => {
-        const instance = await openHarness(taskStub([], { fail: true }));
+        const instance = await openHarness(taskStub({ fail: true }));
         const response = await instance.inject({ method: 'GET', url: '/api/tasks?q=claude%20-p%20secret-prompt' });
         expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
         expect(JSON.stringify(response.json())).not.toContain('secret-prompt');

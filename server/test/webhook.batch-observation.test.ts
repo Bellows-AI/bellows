@@ -5,6 +5,7 @@ import { buildApp } from '../src/app.js';
 import type { BatchPrObserver } from '../src/batch-pr-observer.js';
 import type { RefreshHint } from '../src/db/batch-store-observation.js';
 import { githubAuth, memoryAuthStore, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
+import { HTTP_OK, HTTP_UNAUTHORIZED } from './helpers-http.js';
 
 /**
  * Webhooks are hints for the batch PR observer (docs/batches.md): a delivery that can move a
@@ -12,8 +13,6 @@ import { githubAuth, memoryAuthStore, staticRegistry, stubTelemetryClient, testC
  */
 const SECRET = 'webhook-secret-for-the-installation-round-trip';
 const ORG = '424242';
-const HTTP_OK = 200;
-const HTTP_UNAUTHORIZED = 401;
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {

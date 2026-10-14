@@ -15,8 +15,6 @@ import type { FollowUpViewer } from '../src/task-outcome.js';
  * never runs under renderToStaticMarkup, so the hooks are exercised by the pages that own them and
  * this suite exercises what the reader actually sees.
  */
-export const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
-
 export function job(overrides: Partial<Job> = {}): Job {
     return {
         id: '11111111-1111-4111-8111-111111111111',

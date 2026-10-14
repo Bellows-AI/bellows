@@ -7,6 +7,7 @@ import { AppBar } from '../src/components/AppBar.js';
 import type { Session } from '../src/api/useSession.js';
 import type { StatsPayload } from '../src/api/useStats.js';
 import { ThemeProvider } from '../src/theme.js';
+import { memberSession } from './fixtures.js';
 
 const CONFIG: OrganizationMeta = {
     mode: 'config',
@@ -134,25 +135,12 @@ describe('AppBar', () => {
 
     it('renders the user menu once the session is known, and nothing before it', () => {
         expect(html()).not.toContain('user-menu-button');
-        const withSession: Session = {
-            user: {
-                id: '00000000-0000-4000-8000-000000000001',
-                login: 'octocat',
-                name: 'The Octocat',
-                githubUserId: 4242,
-                avatarUrl: null,
-            },
-            role: 'member',
-            membership: { invitedAt: null, claimedAt: null },
-            account: { createdAt: null, lastLoginAt: null },
-            organization: { id: 'bellows', name: 'Bellows AI' },
+        const withSession = memberSession({
             organizations: [
                 { id: 'bellows', name: 'Bellows AI' },
                 { id: 'acme', name: 'Acme Inc' },
             ],
-            workspacePath: null,
-            mode: 'github',
-        };
+        });
         const markup = html(payload.meta, withSession);
         expect(markup).toContain('user-menu-button');
         expect(markup).toContain('octocat');

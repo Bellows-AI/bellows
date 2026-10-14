@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
-import type { ConsoleMessage, Locator, Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { FORBIDDEN, watchConsole } from './page-health.js';
 
 const SHOTS = 'artifacts/ui';
 
@@ -10,17 +11,6 @@ const SHOTS = 'artifacts/ui';
  * workspace at /settings/workspace, Per repository at /settings/repos. Issue #182 is the draft
  * editor and its guards: real tabs, secret states, pending removal with Undo, the advanced .env
  * disclosure, and the discard confirmation behind navigation and repository switches. */
-const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
-
-function watchConsole(page: Page): string[] {
-    const problems: string[] = [];
-    page.on('console', (msg: ConsoleMessage) => {
-        if (msg.type() === 'error') problems.push(`console: ${msg.text()}`);
-    });
-    page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
-    page.on('requestfailed', (r) => problems.push(`requestfailed: ${r.url()}`));
-    return problems;
-}
 
 /** The Core (organization) scope's panel — the editor on the Organization section. */
 function corePanel(page: Page) {

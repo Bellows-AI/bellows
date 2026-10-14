@@ -3,7 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { removeDialogBody, removeDialogTitle, TaskRemoveDialog } from '../src/components/TaskRemoveDialog.js';
-import { FORBIDDEN, job, question, renderHeader } from './tasks-fixtures.js';
+import { job, question, renderHeader } from './tasks-fixtures.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 describe('the task page header', () => {
     /**
@@ -131,44 +132,6 @@ describe('the task page header', () => {
         expect(html).toMatch(/not close|does not close/i);
     });
 
-    /** The action matrix: stoppable = queued/running, done = the one primary, closed = text. */
-    it('offers Stop run on every state a stop can land on — queued, running', () => {
-        // The board accepts queued stops, not just a moving run.
-        for (const status of ['queued', 'running'] as const) {
-            const html = renderHeader({
-                jobs: [job({ status, exitCode: null, finishedAt: null, startedAt: null, output: null })],
-            });
-            expect(html, status).toContain('>Stop run<');
-            expect(html, status).toContain('chat-stop');
-        }
-        for (const status of ['succeeded', 'failed', 'dead', 'stopped'] as const) {
-            const html = renderHeader({ jobs: [job({ status })] });
-            expect(html, status).not.toContain('>Stop run<');
-            expect(html, status).not.toContain('Stopping…');
-        }
-    });
-
-    it('says Stopping, not Stop run, once the stop request has landed but the run has not parked', () => {
-        // The board settles the stop at the worker's next heartbeat: pending is not terminal, so
-        // the pending state is a disabled, busy control, never one that looks clickable again.
-        const html = renderHeader({
-            jobs: [
-                job({
-                    status: 'running',
-                    cancelRequestedAt: '2026-09-01T12:01:00.000Z',
-                    exitCode: null,
-                    finishedAt: null,
-                    startedAt: null,
-                    output: null,
-                }),
-            ],
-        });
-        expect(html).toContain('Stopping…');
-        expect(html).not.toContain('>Stop run<');
-        // A run in flight cannot be removed yet: the board refuses with TASK_RUNNING.
-        expect(html).not.toContain('More task actions');
-    });
-
     it('says Stopping while the stop request itself is in flight, and cannot be re-clicked', () => {
         const task = job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null });
         const html = renderHeader({ jobs: [task], stoppingId: task.id });
@@ -181,27 +144,6 @@ describe('the task page header', () => {
 });
 
 describe('the task page header — Mark done, overflow and meta', () => {
-    it('offers Mark done as the one primary action on an open task', () => {
-        const open = renderHeader({ jobs: [job()] });
-        expect(open).toContain('>Mark done<');
-        const LOOKBEHIND_CHARS = 300;
-        const doneButton = open.slice(open.indexOf('>Mark done<') - LOOKBEHIND_CHARS, open.indexOf('>Mark done<'));
-        expect(doneButton).toContain('class="primary"');
-        // Failed, dead and stopped are open too until somebody closes them; a failure the viewer
-        // cannot follow up (another member's) offers Mark done as its primary.
-        const other = { loading: false, id: 'someone-else' };
-        for (const status of ['failed', 'dead', 'stopped'] as const) {
-            expect(renderHeader({ jobs: [job({ status })], viewer: other }), status).toContain('>Mark done<');
-        }
-
-        const done = renderHeader({ jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z' })] });
-        expect(done).not.toContain('>Mark done<');
-
-        // Done is unrelated to sessions and stays available for a run without one.
-        const sessionless = renderHeader({ jobs: [job({ sessionId: null })] });
-        expect(sessionless).toContain('>Mark done<');
-    });
-
     it('labels an in-flight Mark done and disables it', () => {
         const task = job();
         const html = renderHeader({ jobs: [task], doneId: task.id });
@@ -223,21 +165,6 @@ describe('the task page header — Mark done, overflow and meta', () => {
         expect(plain).toContain('Closed · <time dateTime="2026-09-01T13:00:00.000Z"');
         expect(plain).not.toContain('disabled');
         expect(plain).not.toContain('>Mark done<');
-    });
-
-    it('keeps Remove task out of the main action row, behind More task actions', () => {
-        for (const status of ['queued', 'succeeded', 'failed', 'dead', 'stopped'] as const) {
-            const html = renderHeader({ jobs: [job({ status })] });
-            expect(html, status).toContain('More task actions');
-            // The destructive item lives in the anchored menu, which only the client renders;
-            // the server-rendered action row must carry no Remove control of its own.
-            expect(html, status).not.toContain('>Remove task<');
-            expect(html, status).not.toContain('>Remove<');
-            // The overflow trigger is a secondary control — the page's one primary is Mark done.
-            const at = html.indexOf('More task actions');
-            const trigger = html.slice(html.lastIndexOf('<button', at), at);
-            expect(trigger, status).not.toContain('primary');
-        }
     });
 
     it('hides More task actions while any member of the thread is running', () => {
@@ -315,57 +242,195 @@ describe('the task page header — Mark done, overflow and meta', () => {
         const html = renderHeader({
             jobs: [job({ taskWallClockMs: null, output: null, exitCode: null, finishedAt: null, startedAt: null })],
         });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 
 describe('the task page header — the action matrix (plan §3.2)', () => {
+    /** The action matrix: stoppable = queued/running, done = the one primary, closed = text. */
     const me = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', login: 'me', name: null, avatarUrl: null };
     const other = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', login: 'kim', name: null, avatarUrl: null };
     const viewer = { loading: false, id: me.id };
+    const someoneElse = { loading: false, id: 'someone-else' };
+    const stranger = { loading: false, id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' };
     const moving = { exitCode: null, finishedAt: null, output: null };
+    const unstarted = { ...moving, startedAt: null };
     const wait = { waitReason: 'review', waitingSince: '2026-09-01T12:30:00.000Z' };
     const failedGate = [{ name: 'lint', status: 'failed' as const, exitCode: 1, output: 'nope' }];
+    const doneAt = '2026-09-01T13:00:00.000Z';
     const MARK_DONE_COPY = 'Closes this task in Bellows. Does not merge or close the pull request.';
     const PARKED_COPY = 'No executor is running. The workflow is waiting for review.';
+    const STOPPING_BUTTON =
+        '<button type="button" class="chat-resume chat-stop" disabled="" aria-busy="true">Stopping…</button>';
     /** The primary button's markup: the one `class="primary"` button in the row. */
     const primaryOf = (html: string) => html.match(/<button type="button" class="primary"[^>]*>([^<]*)</)?.[1] ?? null;
 
-    it('queued: Stop run, with Remove in More and no Mark done', () => {
-        const html = renderHeader({ jobs: [job({ status: 'queued', startedAt: null, ...moving })], viewer });
-        expect(html).toContain('>Stop run<');
-        expect(primaryOf(html)).toBeNull();
-        expect(html).toContain('More task actions');
-    });
+    type Row = {
+        label: string;
+        args: Parameters<typeof renderHeader>[0];
+        /** The one primary button's label; `null` = no primary; absent = not asserted. */
+        primary?: string | null;
+        has?: string[];
+        lacks?: string[];
+        /**
+         * More task actions present (true) or hidden (false). Present also pins that Remove lives
+         * only in the client-rendered menu and that the overflow trigger is never the primary.
+         */
+        more?: boolean;
+    };
 
-    it('running: Stop run, and no More while a member runs', () => {
-        const html = renderHeader({ jobs: [job({ status: 'running', ...moving })], viewer });
-        expect(html).toContain('>Stop run<');
-        expect(html).not.toContain('More task actions');
-    });
+    const rows: Row[] = [
+        // The board accepts queued stops, not just a moving run.
+        ...(['queued', 'running'] as const).map((status) => ({
+            label: `${status}: offers Stop run`,
+            args: { jobs: [job({ status, ...unstarted })] },
+            has: ['>Stop run<', 'chat-stop'],
+        })),
+        ...(['succeeded', 'failed', 'dead', 'stopped'] as const).map((status) => ({
+            label: `${status}: no Stop run and no Stopping`,
+            args: { jobs: [job({ status })] },
+            lacks: ['>Stop run<', 'Stopping…'],
+        })),
+        {
+            // The board settles the stop at the worker's next heartbeat: pending is not terminal,
+            // so the pending state is a disabled, busy control. A run in flight cannot be removed
+            // yet: the board refuses with TASK_RUNNING.
+            label: 'stop requested, not yet parked: Stopping, not Stop run, and no More',
+            args: {
+                jobs: [job({ status: 'running', cancelRequestedAt: '2026-09-01T12:01:00.000Z', ...unstarted })],
+            },
+            has: ['Stopping…'],
+            lacks: ['>Stop run<'],
+            more: false,
+        },
+        {
+            label: 'open task: Mark done is the one primary',
+            args: { jobs: [job()] },
+            primary: 'Mark done',
+            has: ['>Mark done<'],
+        },
+        // Failed, dead and stopped are open too until somebody closes them; a failure the viewer
+        // cannot follow up (another member's) offers Mark done as its primary.
+        ...(['failed', 'dead', 'stopped'] as const).map((status) => ({
+            label: `${status}, another member's: Mark done`,
+            args: { jobs: [job({ status })], viewer: someoneElse },
+            has: ['>Mark done<'],
+        })),
+        { label: 'done: no Mark done', args: { jobs: [job({ doneAt })] }, lacks: ['>Mark done<'] },
+        {
+            // Done is unrelated to sessions and stays available for a run without one.
+            label: 'sessionless: Mark done',
+            args: { jobs: [job({ sessionId: null })] },
+            has: ['>Mark done<'],
+        },
+        ...(['queued', 'succeeded', 'failed', 'dead', 'stopped'] as const).map((status) => ({
+            label: `${status}: Remove task behind More task actions`,
+            args: { jobs: [job({ status })] },
+            more: true,
+        })),
+        {
+            label: 'queued: Stop run, with Remove in More and no Mark done',
+            args: { jobs: [job({ status: 'queued', startedAt: null, ...moving })], viewer },
+            primary: null,
+            has: ['>Stop run<'],
+            more: true,
+        },
+        {
+            label: 'running: Stop run, and no More while a member runs',
+            args: { jobs: [job({ status: 'running', ...moving })], viewer },
+            has: ['>Stop run<'],
+            more: false,
+        },
+        {
+            label: 'running with a stop requested: one disabled, busy Stopping… button',
+            args: {
+                jobs: [job({ status: 'running', cancelRequestedAt: '2026-09-01T12:01:00.000Z', ...moving })],
+                viewer,
+            },
+            has: [STOPPING_BUTTON],
+            lacks: ['>Stop run<'],
+            more: false,
+        },
+        // A failure parked on its review wait is the wait's to settle — no Ask for another pass.
+        ...(['succeeded', 'failed'] as const).map((status) => ({
+            label: `${status} with an open wait: Mark done and the parked copy, never Stop run`,
+            args: { jobs: [job({ status, author: me, ...wait })], viewer },
+            primary: 'Mark done',
+            has: [PARKED_COPY],
+            lacks: ['>Stop run<'],
+            more: true,
+        })),
+        ...[
+            ['failed', job({ status: 'failed', author: me })],
+            ['dead', job({ status: 'dead', author: me })],
+            ['verification failed', job({ author: me, gates: failedGate })],
+            ['failed and sessionless', job({ status: 'failed', author: me, sessionId: null })],
+        ].map(([what, latest]) => ({
+            label: `${what as string}, and eligible: Ask for another pass, Mark done moves to More`,
+            args: { jobs: [latest as ReturnType<typeof job>], viewer },
+            primary: 'Ask for another pass',
+            lacks: [MARK_DONE_COPY],
+            more: true,
+        })),
+        {
+            label: 'failed and not eligible, another member: Mark done',
+            args: { jobs: [job({ status: 'failed', author: other })], viewer },
+            primary: 'Mark done',
+            lacks: ['Ask for another pass'],
+        },
+        {
+            label: 'failed and not eligible, a session still loading: Mark done',
+            args: { jobs: [job({ status: 'failed', author: me })], viewer: { loading: true, id: null } },
+            primary: 'Mark done',
+            lacks: ['Ask for another pass'],
+        },
+        {
+            label: 'stopped: Mark done',
+            args: { jobs: [job({ status: 'stopped', author: me })], viewer },
+            primary: 'Mark done',
+        },
+        {
+            label: 'done, whatever the wait: no primary, the closure, and Remove in More',
+            args: { jobs: [job({ status: 'failed', author: me, doneAt, doneBy: me, ...wait })], viewer },
+            primary: null,
+            has: ['Closed by me'],
+            lacks: [PARKED_COPY],
+            more: true,
+        },
+        // Stop, Mark done and Remove carry no author restriction.
+        {
+            label: "a stranger on another member's running task: Stop run",
+            args: { jobs: [job({ status: 'running', author: other, ...moving })], viewer: stranger },
+            has: ['>Stop run<'],
+        },
+        {
+            label: "a stranger on another member's open task: Mark done, and Remove in More",
+            args: { jobs: [job({ author: other })], viewer: stranger },
+            primary: 'Mark done',
+            more: true,
+        },
+    ];
 
-    it('running with a stop requested: one disabled, busy Stopping… button', () => {
-        const html = renderHeader({
-            jobs: [job({ status: 'running', cancelRequestedAt: '2026-09-01T12:01:00.000Z', ...moving })],
-            viewer,
-        });
-        expect(html).toContain(
-            '<button type="button" class="chat-resume chat-stop" disabled="" aria-busy="true">Stopping…</button>'
-        );
-        expect(html).not.toContain('>Stop run<');
-        expect(html).not.toContain('More task actions');
-    });
-
-    it('terminal with an open wait: Mark done and the parked copy, never Stop run', () => {
-        for (const status of ['succeeded', 'failed'] as const) {
-            const html = renderHeader({ jobs: [job({ status, author: me, ...wait })], viewer });
-            // A failure parked on its review wait is the wait's to settle — no Ask for another pass.
-            expect(primaryOf(html), status).toBe('Mark done');
-            expect(html, status).toContain(PARKED_COPY);
-            expect(html, status).not.toContain('>Stop run<');
-            expect(html, status).toContain('More task actions');
+    it.each(rows.map((row) => [row.label, row] as const))(
+        '%s',
+        (_label, { args, primary, has = [], lacks = [], more }) => {
+            const html = renderHeader(args);
+            if (primary !== undefined) expect(primaryOf(html)).toBe(primary);
+            for (const text of has) expect(html).toContain(text);
+            for (const text of lacks) expect(html).not.toContain(text);
+            if (more === false) expect(html).not.toContain('More task actions');
+            if (more === true) {
+                expect(html).toContain('More task actions');
+                // The destructive item lives in the anchored menu, which only the client renders;
+                // the server-rendered action row must carry no Remove control of its own.
+                expect(html).not.toContain('>Remove task<');
+                expect(html).not.toContain('>Remove<');
+                // The overflow trigger is a secondary control — the page's one primary is Mark done.
+                const at = html.indexOf('More task actions');
+                expect(html.slice(html.lastIndexOf('<button', at), at)).not.toContain('primary');
+            }
         }
-    });
+    );
 
     it('succeeded with no wait: Mark done, with what it does and does not do', () => {
         const html = renderHeader({ jobs: [job({ author: me })], viewer });
@@ -375,58 +440,6 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
         const describedBy = html.match(/aria-describedby="([^"]+)"/)?.[1];
         expect(describedBy).toBeDefined();
         expect(html).toContain(`id="${describedBy}">${MARK_DONE_COPY}`);
-    });
-
-    it('failed, dead or verification failed, and eligible: Ask for another pass, Mark done moves to More', () => {
-        const cases = [
-            job({ status: 'failed', author: me }),
-            job({ status: 'dead', author: me }),
-            job({ author: me, gates: failedGate }),
-            job({ status: 'failed', author: me, sessionId: null }),
-        ];
-        for (const latest of cases) {
-            const html = renderHeader({ jobs: [latest], viewer });
-            expect(primaryOf(html), latest.status).toBe('Ask for another pass');
-            expect(html, latest.status).not.toContain(MARK_DONE_COPY);
-            expect(html, latest.status).toContain('More task actions');
-        }
-    });
-
-    it('failed and not eligible: Mark done — another member, or a session still loading', () => {
-        const refusals = [
-            { jobs: [job({ status: 'failed', author: other })], viewer },
-            { jobs: [job({ status: 'failed', author: me })], viewer: { loading: true, id: null } },
-        ];
-        for (const args of refusals) {
-            const html = renderHeader(args);
-            expect(primaryOf(html)).toBe('Mark done');
-            expect(html).not.toContain('Ask for another pass');
-        }
-    });
-
-    it('stopped: Mark done', () => {
-        expect(primaryOf(renderHeader({ jobs: [job({ status: 'stopped', author: me })], viewer }))).toBe('Mark done');
-    });
-
-    it('done, whatever the wait: no primary, the closure, and Remove in More', () => {
-        const html = renderHeader({
-            jobs: [job({ status: 'failed', author: me, doneAt: '2026-09-01T13:00:00.000Z', doneBy: me, ...wait })],
-            viewer,
-        });
-        expect(primaryOf(html)).toBeNull();
-        expect(html).toContain('Closed by me');
-        expect(html).not.toContain(PARKED_COPY);
-        expect(html).toContain('More task actions');
-    });
-
-    it('Stop, Mark done and Remove carry no author restriction', () => {
-        const stranger = { loading: false, id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' };
-        expect(
-            renderHeader({ jobs: [job({ status: 'running', author: other, ...moving })], viewer: stranger })
-        ).toContain('>Stop run<');
-        const done = renderHeader({ jobs: [job({ author: other })], viewer: stranger });
-        expect(primaryOf(done)).toBe('Mark done');
-        expect(done).toContain('More task actions');
     });
 });
 

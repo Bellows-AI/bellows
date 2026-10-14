@@ -21,6 +21,7 @@ import {
 import { OnboardingOrganization } from '../src/components/OnboardingOrganization.js';
 import { ThemeProvider } from '../src/theme.js';
 import { OnboardingPage, StartAgainPanel } from '../src/pages/OnboardingPage.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 /**
  * The page carries the appearance control (issue 188) in the public header's actions cell, and
@@ -32,8 +33,6 @@ const renderPage = (props: { payload?: PendingSignInPayload; listings?: Record<s
             <OnboardingPage {...props} />
         </ThemeProvider>
     );
-
-const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
 const pending: PendingSignInPayload = {
     identity: { login: 'octocat', displayName: 'The Octocat', avatarUrl: null },
@@ -94,7 +93,7 @@ describe('OnboardingPage', () => {
 
     it('never emits a placeholder value for an absent display name', () => {
         const html = renderPage({ payload: { ...pending, identity: { ...pending.identity, displayName: null } } });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
         expect(html).toContain('octocat');
     });
 
@@ -105,7 +104,7 @@ describe('OnboardingPage', () => {
         expect(html).toContain('onboarding-loading');
         // A placeholder enables no action and invents no rows.
         expect(html).not.toContain('Continue');
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 
@@ -120,7 +119,7 @@ describe('OnboardingPage state recovery (issue 187)', () => {
     it('the restart link falls back to the root when no return path survived', () => {
         const html = renderToStaticMarkup(<StartAgainPanel />);
         expect(html).toContain('href="/api/auth/github?returnTo=%2F"');
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 
     it('a defensive zero-installation payload explains itself and offers Start again', () => {
@@ -221,7 +220,7 @@ describe('OnboardingPage listings (issue 187)', () => {
         expect(checkedRadios(html)).toBe(1);
         expect(html).toContain('1 of 2 repositories selected');
         expect(html).toContain('1 specific repository');
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 
     it('a fully-stale specific selection stands at nothing and says what to do about it', () => {
@@ -336,7 +335,7 @@ describe('seeding from a stored narrowing (#135 review)', () => {
         // The org (selected) plus its one surviving stored repo; 'acme/other' is listed but
         // unstored, so unchecked.
         expect(checkedBoxes(html)).toBe(2);
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 

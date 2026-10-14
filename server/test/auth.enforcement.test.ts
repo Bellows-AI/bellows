@@ -1,13 +1,12 @@
 import { existsSync } from 'node:fs';
-import { afterEach, describe, expect, it } from 'vitest';
-import Fastify, { type FastifyInstance } from 'fastify';
+import { describe, expect, it } from 'vitest';
+import Fastify from 'fastify';
 import { buildApp } from '../src/app.js';
 import { requirementFor } from '../src/auth/plugin.js';
 import { SESSION_COOKIE } from '../src/auth/session.js';
 import type { AuthConfig } from '../src/config.js';
 import type { Claim, Job } from '../src/db/job-store-types.js';
 import type { JobStore } from '../src/db/job-store-types.js';
-import type { TelemetryStore } from '../src/telemetry/store.js';
 import type { AppDeps } from '../src/app.js';
 import type { OrgRegistry } from '../src/orgs.js';
 import { batchRoutes } from '../src/routes/batches.js';
@@ -15,6 +14,7 @@ import { jobRoutes } from '../src/routes/jobs.js';
 import { readVersion } from '../src/version.js';
 import type { MemoryAuthStore } from './helpers.js';
 import {
+    buildWithAuth,
     githubAuth,
     memoryAuthStore,
     signedIn,
@@ -22,26 +22,26 @@ import {
     stubTelemetryClient,
     testConfig,
     TEST_JOB_BOARD_TOKEN,
+    telemetryStoreStub,
 } from './helpers.js';
+import {
+    HTTP_ACCEPTED,
+    HTTP_CONFLICT,
+    HTTP_CREATED,
+    HTTP_FORBIDDEN,
+    HTTP_NOT_FOUND,
+    HTTP_OK,
+    HTTP_SERVICE_UNAVAILABLE,
+    HTTP_UNAUTHORIZED,
+    trackApps,
+} from './helpers-http.js';
 
 const ORG = 'test-org';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
 const LEASE = '22222222-2222-4222-8222-222222222222';
 const WORKER_TOKEN = TEST_JOB_BOARD_TOKEN;
-const HTTP_OK = 200;
-const HTTP_CREATED = 201;
-const HTTP_ACCEPTED = 202;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
-const HTTP_NOT_FOUND = 404;
-const HTTP_CONFLICT = 409;
-const HTTP_SERVICE_UNAVAILABLE = 503;
 
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 const jobStub = (overrides: Partial<JobStore> = {}): JobStore =>
     ({
@@ -96,13 +96,6 @@ const jobStub = (overrides: Partial<JobStore> = {}): JobStore =>
         ...overrides,
     }) as JobStore;
 
-const telemetryStub = (): TelemetryStore => ({
-    async insertMetrics() {
-        return 0;
-    },
-    async recordBranch() {},
-});
-
 async function build(
     auth: AuthConfig,
     store: MemoryAuthStore,
@@ -111,20 +104,21 @@ async function build(
     // where an org that does not exist resolves to nothing.
     orgsFor?: readonly string[]
 ) {
-    const config = testConfig({ auth });
-    app = await buildApp({
-        config,
-        orgs: staticRegistry({ config, jobs: jobStub(), telemetry: stubTelemetryClient(), orgsFor }),
-        store: telemetryStub(),
-        auth: store,
-        // The attempt-scoped pair the runner's branch reporter presents. Default: the one live
-        // attempt the constants below describe; a test passes its own to model a lost lease.
-        orgOfLease:
-            orgOfLease ?? (async (jobId, leaseToken) => (jobId === JOB_ID && leaseToken === LEASE ? ORG : null)),
-        // The worker routes' org resolvers: the one job the constants describe, nothing else.
-        orgOfJob: async (jobId) => (jobId === JOB_ID ? ORG : null),
-        orgOfReclaim: async (reclaimId) => (reclaimId === JOB_ID ? ORG : null),
-    });
+    const app = await buildWithAuth(
+        auth,
+        store,
+        { jobs: jobStub(), orgsFor },
+        {
+            // The attempt-scoped pair the runner's branch reporter presents. Default: the one live
+            // attempt the constants below describe; a test passes its own to model a lost lease.
+            orgOfLease:
+                orgOfLease ?? (async (jobId, leaseToken) => (jobId === JOB_ID && leaseToken === LEASE ? ORG : null)),
+            // The worker routes' org resolvers: the one job the constants describe, nothing else.
+            orgOfJob: async (jobId) => (jobId === JOB_ID ? ORG : null),
+            orgOfReclaim: async (reclaimId) => (reclaimId === JOB_ID ? ORG : null),
+        }
+    );
+    track(app);
     return app;
 }
 
@@ -525,7 +519,7 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
             [ORG, board(jobStub())],
             [otherOrg, board(jobStub({ answerQuestion: async () => ({ result: 'unknown' }) }))],
         ]);
-        app = await buildApp({
+        const app = await buildApp({
             config,
             orgs: {
                 for: async (orgId) => {
@@ -535,9 +529,10 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
                 list: async () => [...boards.keys()].map((id) => ({ id, name: id, installationId: null })),
                 warmAll: async () => {},
             },
-            store: telemetryStub(),
+            store: telemetryStoreStub(),
             auth: store,
         });
+        track(app);
         const cookie = await signedIn(store, store.seedMember(otherOrg, 'mallory'));
 
         const response = await app.inject({
@@ -955,10 +950,10 @@ describe('AUTH_MODE=none', () => {
         const server = await buildApp({
             config,
             orgs: staticRegistry({ config, jobs: jobStub(), telemetry: stubTelemetryClient() }),
-            store: telemetryStub(),
+            store: telemetryStoreStub(),
             auth: store,
         });
-        app = server;
+        track(server);
 
         const response = await server.inject({ method: 'GET', url: '/api/auth/me' });
 

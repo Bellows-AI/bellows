@@ -13,6 +13,7 @@ import {
     taskSummaryOf,
 } from './fixtures/threads.js';
 import { type Theme, VIEWPORTS } from './screenshot-matrix.js';
+import { useTheme, watchConsole } from './page-health.js';
 
 /**
  * The task journey's hand-backs across the merged lanes (#286), in one theme — the theme only
@@ -26,23 +27,6 @@ const SHOTS = 'artifacts/ui/journeys';
 
 // The matrix's desktop width, not the Desktop Chrome device's 1280.
 test.use({ viewport: VIEWPORTS[0] });
-
-/** Console errors, page errors and failed requests are all failures — collected, asserted once. */
-function watchConsole(page: Page): string[] {
-    const problems: string[] = [];
-    page.on('console', (msg) => {
-        if (msg.type() === 'error') problems.push(`console: ${msg.text()}`);
-    });
-    page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
-    page.on('requestfailed', (r) => problems.push(`requestfailed: ${r.url()}`));
-    return problems;
-}
-
-/** Every page of the journey in `theme`: the stored preference and the OS agree, so either wins. */
-async function atTheme(page: Page, theme: Theme): Promise<void> {
-    await page.emulateMedia({ colorScheme: theme });
-    await page.addInitScript((t) => localStorage.setItem('factory.theme', t), theme);
-}
 
 /** One step of one journey, named `<journey>_<step>_<theme>_<width>` like the baseline gallery. */
 async function shoot(page: Page, journey: string, step: string, theme: Theme): Promise<void> {
@@ -100,7 +84,7 @@ test.describe('task journeys', () => {
         page,
     }) => {
         const problems = watchConsole(page);
-        await atTheme(page, theme);
+        await useTheme(page, theme);
         const me = await sessionAuthor(page);
         const id = parkedReviewWaitThread[0]!.id;
         const held = { jobs: authoredBy(parkedReviewWaitRunningThread, me) };
@@ -158,7 +142,7 @@ test.describe('task journeys', () => {
         page,
     }) => {
         const problems = watchConsole(page);
-        await atTheme(page, theme);
+        await useTheme(page, theme);
         const me = await sessionAuthor(page);
         const followUp = failedGateFollowUpThread[1]!;
         const held = { jobs: authoredBy(failedGateThread, me) };

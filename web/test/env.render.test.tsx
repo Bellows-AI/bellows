@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { EnvVarsPanel } from '../src/panels/EnvVarsPanel.js';
 import { AdvancedEnvEditor } from '../src/panels/env-vars-panel-parts.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 /**
  * The env draft editor, server-render-tested by markup assertions — this file holds everything
@@ -13,9 +14,6 @@ import { AdvancedEnvEditor } from '../src/panels/env-vars-panel-parts.js';
  * the pure layer in `env-draft.ts` (pinned by `env-draft.test.ts`) and driven under jsdom by
  * `env.dom.test.tsx`.
  */
-
-/** The same contract panels.render.test.tsx pins: a placeholder never leaks into the markup. */
-const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
 const noop = async () => ({ error: null, vars: [] });
 
@@ -95,7 +93,7 @@ describe('the env draft editor', () => {
         expect(html).toContain('Leave blank to keep the current secret');
         expect(html).toContain('Set');
         expect(html).not.toContain('checkbox');
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 
     it('renders the advanced disclosure closed, with no textarea and no warning', () => {
@@ -181,7 +179,7 @@ describe('the env draft editor', () => {
         expect(html).toContain('Save changes');
         expect(html).toContain('type="password"');
         expect(html).toContain('disabled');
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 
     it('renders a polite status region for confirmations — alerts are for errors only', () => {

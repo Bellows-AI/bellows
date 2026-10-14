@@ -8,16 +8,7 @@ import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { sweepRuntimeWakes } from '../src/db/workflow-blocks/runtime.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
-
-/**
- * A create whose refusal would be a broken setup, never a case under test: narrows the store's
- * honest union (`{ id } | 'purging'`, issue #92) so the call sites read as they did before.
- */
-const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
-    p.then((ref) => {
-        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
-        return ref;
-    });
+import { expireLease, mustCreate, testUser } from './fixtures.js';
 
 /**
  * Durable block waits against a real database (issue #231): a workflow transition into a node
@@ -40,18 +31,8 @@ const ORG = 'test-org';
 const WORKER = 'worker-1';
 const REPO = 'acme/widgets';
 
-const HEX_RADIX = 16;
-const UUID_HEX_SLICE_LENGTH = 8;
-const ALICE = {
-    id: randomUUID(),
-    githubUserId: Number.parseInt(randomUUID().slice(0, UUID_HEX_SLICE_LENGTH), HEX_RADIX),
-    login: 'alice-wait',
-};
-const BOB = {
-    id: randomUUID(),
-    githubUserId: Number.parseInt(randomUUID().slice(0, UUID_HEX_SLICE_LENGTH), HEX_RADIX),
-    login: 'bob-wait',
-};
+const ALICE = testUser('alice-wait');
+const BOB = testUser('bob-wait');
 
 const db = useTestDb({ orgs: [ORG], users: [ALICE, BOB], max: 8 });
 
@@ -545,7 +526,7 @@ describe.skipIf(!enabled)('durable block waits — concurrency and cancellation'
         const claim = (await store.claim(WORKER, 60)) as Claim;
         expect(claim.attempts).toBe(1);
 
-        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${claim.id}`;
+        await expireLease(sql, claim.id);
 
         const reclaimed = (await store.claim('worker-2', 60)) as Claim;
         expect(reclaimed).not.toBeNull();
@@ -589,33 +570,39 @@ describe.skipIf(!enabled)('durable block waits — user control (issue #328)', (
         expect((await prs.waitOf(root))?.cancelledAt).not.toBeNull();
     });
 
-    it('cancel answers no_wait for a thread that never waited and one whose wait already ended', async () => {
-        // An entry completion with no publication rests the thread — nothing parked, no wait row.
-        // Authored by ALICE, so ALICE gets past the scoping check and reaches the no_wait answer.
-        const never = await queueWaitingThread('control-cancel-never', ALICE.id);
-        const claim = (await store.claim(WORKER, 60)) as Claim;
-        await store.complete(claim.id, claim.leaseToken, { status: 'succeeded', exitCode: 0, output: 'no pr' });
-        expect(await prs.waitOf(never)).toBeNull();
-        expect(await store.cancelWait(never, ALICE.id)).toBe('no_wait');
+    // Cancel and poke address the same wait and refuse it alike.
+    describe.each([
+        { op: 'cancel', run: (id: string, by: string | null) => store.cancelWait(id, by) },
+        { op: 'poke', run: (id: string, by: string | null) => store.pokeWait(id, by) },
+    ])('$op refuses like its twin', ({ op, run }) => {
+        it(`${op} answers no_wait for a thread that never waited and one whose wait already ended`, async () => {
+            // An entry completion with no publication rests the thread — nothing parked, no wait row.
+            // Authored by ALICE, so ALICE gets past the scoping check and reaches the no_wait answer.
+            const never = await queueWaitingThread(`control-${op}-never`, ALICE.id);
+            const claim = (await store.claim(WORKER, 60)) as Claim;
+            await store.complete(claim.id, claim.leaseToken, { status: 'succeeded', exitCode: 0, output: 'no pr' });
+            expect(await prs.waitOf(never)).toBeNull();
+            expect(await run(never, ALICE.id)).toBe('no_wait');
 
-        const root = await publishAndTransition('control-cancel-terminal', 22, ALICE.id);
-        expect(await store.cancelWait(root, ALICE.id)).toEqual({ result: 'ok' });
-        // A replay after the first cancel finds nothing open — honest 409 material, not a rewrite.
-        expect(await store.cancelWait(root, ALICE.id)).toBe('no_wait');
-    });
+            const root = await publishAndTransition(`control-${op}-terminal`, 22, ALICE.id);
+            expect(await store.cancelWait(root, ALICE.id)).toEqual({ result: 'ok' });
+            // A replay after the cancel finds nothing open — honest 409 material, not a rewrite.
+            expect(await run(root, ALICE.id)).toBe('no_wait');
+        });
 
-    it('cancel is author-scoped: another member and the anonymous caller are refused', async () => {
-        const root = await publishAndTransition('control-cancel-scoped', 23, ALICE.id);
-        expect(await store.cancelWait(root, BOB.id)).toBe('forbidden');
-        expect(await store.cancelWait(root, null)).toBe('forbidden');
-        // An un-authored thread (queued before accounts, or AUTH_MODE=none) accepts the
-        // anonymous caller — the null-safe pairing the follow-up route uses.
-        const anonymous = await publishAndTransition('control-cancel-anonymous', 24, null);
-        expect(await store.cancelWait(anonymous, null)).toEqual({ result: 'ok' });
-    });
+        it(`${op} is author-scoped: another member and the anonymous caller are refused`, async () => {
+            const root = await publishAndTransition(`control-${op}-scoped`, 23, ALICE.id);
+            expect(await run(root, BOB.id)).toBe('forbidden');
+            expect(await run(root, null)).toBe('forbidden');
+            // An un-authored thread (queued before accounts, or AUTH_MODE=none) accepts the
+            // anonymous caller — the null-safe pairing the follow-up route uses.
+            const anonymous = await publishAndTransition(`control-${op}-anonymous`, 24, null);
+            expect(await run(anonymous, null)).toMatchObject({ result: 'ok' });
+        });
 
-    it('cancel answers missing for an id that does not exist', async () => {
-        expect(await store.cancelWait(randomUUID(), ALICE.id)).toBe('missing');
+        it(`${op} answers missing for an id that does not exist`, async () => {
+            expect(await run(randomUUID(), ALICE.id)).toBe('missing');
+        });
     });
 
     it('a cancelled wait never wakes — a later delivery folds into nothing', async () => {
@@ -715,13 +702,6 @@ describe.skipIf(!enabled)('durable block waits — user control (issue #328)', (
         expect(audit!.last_delivery_id).toBeNull();
     });
 
-    it('poke answers no_wait for a thread with no open wait', async () => {
-        const root = await publishAndTransition('control-poke-terminal', 29, ALICE.id);
-        expect(await store.cancelWait(root, ALICE.id)).toEqual({ result: 'ok' });
-        expect(await store.pokeWait(root, ALICE.id)).toBe('no_wait');
-        expect(await store.pokeWait(randomUUID(), ALICE.id)).toBe('missing');
-    });
-
     it('poke with nothing parked answers woken: false and inserts nothing — replay-safe', async () => {
         const root = await publishAndTransition('control-poke-replay', 30, ALICE.id);
         await prs.recordDelivery({
@@ -761,12 +741,6 @@ describe.skipIf(!enabled)('durable block waits — user control (issue #328)', (
 
         expect(await store.pokeWait(root, ALICE.id)).toEqual({ result: 'ok', woken: false });
         expect((await roundRows(root))[0]!.woken_at).toBeNull();
-    });
-
-    it('poke is author-scoped like cancel', async () => {
-        const root = await publishAndTransition('control-poke-scoped', 32, ALICE.id);
-        expect(await store.pokeWait(root, BOB.id)).toBe('forbidden');
-        expect(await store.pokeWait(root, null)).toBe('forbidden');
     });
 
     it('two concurrent pokes wake exactly one round', async () => {

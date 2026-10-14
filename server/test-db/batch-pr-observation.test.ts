@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { resolveBatchPlan, validateBatchPlan, type BatchPlan, type PrFacts } from '@factory-ai/core';
+import type { BatchPlan, PrFacts } from '@factory-ai/core';
 import { createBatchPrObserver, type BatchPrObserver, type PrReader } from '../src/batch-pr-observer.js';
 import { createBatchStore, type BatchStore } from '../src/db/batch-store.js';
 import {
@@ -15,6 +15,17 @@ import type { JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { GitHubReadError } from '../src/github/pr-read.js';
 import { useTestDb } from './harness.js';
+import {
+    batchPlan,
+    checks,
+    facts,
+    jobCount as sharedJobCount,
+    prTask,
+    recordPr,
+    rootOf as sharedRootOf,
+    setSucceeded,
+    startBatch,
+} from './batch-fixtures.js';
 
 /**
  * PR observation against a real database (docs/batches.md): leases, supersession, invalidation by
@@ -82,91 +93,21 @@ beforeEach(() => {
     if (enabled) observer = observerFor(ORG, jobs, store);
 });
 
-const prTask = (key: string) => ({
-    key,
-    objective: `do ${key}`,
-    acceptance: `${key} works`,
-    verification: 'npm test',
-    completion: { kind: 'pr' },
-});
+const plan = (stages: Record<string, unknown>[], extra: Record<string, number> = {}): BatchPlan =>
+    batchPlan('Observe', stages, extra);
 
-function plan(stages: Record<string, unknown>[], extra: Record<string, number> = {}): BatchPlan {
-    const result = validateBatchPlan({
-        planVersion: 1,
-        title: 'Observe',
-        targets: [{ key: 'web', repo: REPO }],
-        defaultTarget: 'web',
-        executor: 'claude',
-        concurrency: 2,
-        ...extra,
-        stages,
-    });
-    if (!result.ok) throw new Error(JSON.stringify(result.issues));
-    return result.plan;
-}
+const frozen = (source: BatchPlan, target: BatchStore = store) => startBatch(target, source, ALICE);
 
-async function frozen(source: BatchPlan, target: BatchStore = store): Promise<string> {
-    const { id } = await target.create(source, ALICE);
-    const started = await target.start({
-        id,
-        version: 1,
-        plan: resolveBatchPlan(source, { [REPO]: 'main' }),
-        startedBy: ALICE,
-    });
-    expect(started).toMatchObject({ result: 'ok' });
-    return id;
-}
-
-async function rootOf(id: string, key: string, target: BatchStore = store): Promise<string> {
-    const record = (await target.get(id))!;
-    return record.tasks.find((t) => t.key === key)!.rootJobId!;
-}
-
-async function setSucceeded(root: string) {
-    const [head] = await sql<{ id: string }[]>`
-        select id from job where root_job_id = ${root} order by created_at desc, id desc limit 1
-    `;
-    await sql`update job set status = 'succeeded', finished_at = now(), lease_token = null where id = ${head!.id}`;
-}
+const rootOf = (id: string, key: string, target: BatchStore = store) => sharedRootOf(target, id, key);
 
 let nextPr = 2000;
 async function publish(root: string, store: PrLifecycleStore = prs, repo = REPO): Promise<number> {
     nextPr += 1;
-    await store.recordPublication({
-        root,
-        repo,
-        prNumber: nextPr,
-        prUrl: `https://github.com/${repo}/pull/${nextPr}`,
-        headBranch: `factory/${root}`,
-        baseBranch: 'main',
-    });
+    await recordPr(store, root, nextPr, { repo });
     return nextPr;
 }
 
-const checks = (state: 'passing' | 'failing' | 'pending') => [
-    { name: 'build', state, url: 'https://ci/1', detail: null },
-];
-
-const facts = (number: number, extra: Partial<PrFacts> = {}): PrFacts => ({
-    repo: REPO,
-    number,
-    url: `https://github.com/${REPO}/pull/${number}`,
-    state: 'open',
-    merged: false,
-    mergedAt: null,
-    mergeCommitSha: null,
-    baseBranch: 'main',
-    headSha: 'h1',
-    targetSha: 't1',
-    mergeable: true,
-    requiredContexts: ['build'],
-    requiredApprovals: 0,
-    approvals: 0,
-    checks: checks('passing'),
-    ...extra,
-});
-
-const jobCount = async () => Number((await sql`select count(*) from job`)[0]!.count);
+const jobCount = () => sharedJobCount(sql);
 
 /** A one-task batch whose run succeeded and whose PR is published: the state observation exists for. */
 async function succeededWithPr() {
@@ -174,7 +115,7 @@ async function succeededWithPr() {
     await store.reconcile(id);
     const root = await rootOf(id, 'a');
     const number = await publish(root);
-    await setSucceeded(root);
+    await setSucceeded(sql, root);
     await store.reconcile(id);
     return { id, root, number };
 }
@@ -338,7 +279,7 @@ describe.skipIf(!enabled)('PR observation', () => {
         await store.reconcile(id);
         const root = await rootOf(id, 'a');
         const number = await publish(root, prs, 'evil/web');
-        await setSucceeded(root);
+        await setSucceeded(sql, root);
         await store.reconcile(id);
         github.replies.set(number, facts(number, { repo: 'evil/web' }));
 
@@ -462,7 +403,7 @@ describe.skipIf(!enabled)('merge observation', () => {
         await store.reconcile(id);
         const root = await rootOf(id, 'a');
         const number = await publish(root);
-        await setSucceeded(root);
+        await setSucceeded(sql, root);
         await store.reconcile(id);
         const mergedAt = new Date(Date.now() + 5_000).toISOString();
         github.replies.set(number, facts(number, { state: 'closed', merged: true, mergedAt, mergeCommitSha: 'mc1' }));
@@ -538,7 +479,7 @@ describe.skipIf(!enabled)('organization scope', () => {
         await storeOther.reconcile(idOther);
         const rootOther = await rootOf(idOther, 'a', storeOther);
         const numberOther = await publish(rootOther, prsOther);
-        await setSucceeded(rootOther);
+        await setSucceeded(sql, rootOther);
         await storeOther.reconcile(idOther);
         github.replies.set(numberOther, facts(numberOther, { checks: checks('failing') }));
 
@@ -666,7 +607,7 @@ describe.skipIf(!enabled)('observed recovery (#581)', () => {
         await store.reconcile(id);
         const root = await rootOf(id, 'a');
         const number = await publish(root);
-        await setSucceeded(root);
+        await setSucceeded(sql, root);
         await store.reconcile(id);
         github.replies.set(number, facts(number, { checks: checks('failing') }));
         await observer.observeDue();
@@ -689,14 +630,14 @@ describe.skipIf(!enabled)('observed recovery (#581)', () => {
         await store.reconcile(id);
         const root = await rootOf(id, 'a');
         const number = await publish(root);
-        await setSucceeded(root);
+        await setSucceeded(sql, root);
         await store.reconcile(id);
         github.replies.set(number, facts(number, { checks: checks('failing') }));
         await observer.observeDue();
         await store.reconcile(id);
         expect(await repairsOf(id)).toHaveLength(1);
 
-        await setSucceeded(root);
+        await setSucceeded(sql, root);
         await store.reconcile(id);
         github.replies.set(number, facts(number, { headSha: 'h2', checks: checks('failing') }));
         clock.ms += 61_000;
@@ -707,36 +648,48 @@ describe.skipIf(!enabled)('observed recovery (#581)', () => {
         expect(await taskOf(id)).toMatchObject({ execution: 'succeeded', attention: 'budget' });
     });
 
-    it('repairs nothing in a cancelled batch', async () => {
-        const { id, number } = await succeededWithPr();
-        await store.cancel(id, ALICE);
-        github.replies.set(number, facts(number, { checks: checks('failing') }));
-        await observer.observeDue();
-        const jobsBefore = await jobCount();
+    // A fenced batch repairs nothing: each row observes a failing PR, fences the batch, reconciles,
+    // and answers the batch id after its own checks; the shared tail is no repair and no decision.
+    it.each<{ name: string; fencedReconcile: () => Promise<string> }>([
+        {
+            name: 'repairs nothing in a cancelled batch',
+            fencedReconcile: async () => {
+                const { id, number } = await succeededWithPr();
+                await store.cancel(id, ALICE);
+                github.replies.set(number, facts(number, { checks: checks('failing') }));
+                await observer.observeDue();
+                const jobsBefore = await jobCount();
 
-        await store.reconcile(id);
+                await store.reconcile(id);
 
-        expect(await repairsOf(id)).toEqual([]);
-        expect(await repairDecisions(id)).toBe(0);
-        expect(await jobCount()).toBe(jobsBefore);
-    });
+                expect(await jobCount()).toBe(jobsBefore);
+                return id;
+            },
+        },
+        {
+            name: 'repairs nothing once the time limit expired',
+            fencedReconcile: async () => {
+                const timed = createBatchStore({ sql, orgId: ORG, stop: (id, by) => jobs.stop(id, by), now });
+                const timedObserver = observerFor(ORG, jobs, timed);
+                const id = await frozen(plan([{ key: 'one', tasks: [prTask('a')] }], { timeLimitMinutes: 1 }), timed);
+                await timed.reconcile(id);
+                const root = await rootOf(id, 'a', timed);
+                const number = await publish(root);
+                await setSucceeded(sql, root);
+                await timed.reconcile(id);
+                github.replies.set(number, facts(number, { checks: checks('failing') }));
+                await timedObserver.observeDue();
 
-    it('repairs nothing once the time limit expired', async () => {
-        const timed = createBatchStore({ sql, orgId: ORG, stop: (id, by) => jobs.stop(id, by), now });
-        const timedObserver = observerFor(ORG, jobs, timed);
-        const id = await frozen(plan([{ key: 'one', tasks: [prTask('a')] }], { timeLimitMinutes: 1 }), timed);
-        await timed.reconcile(id);
-        const root = await rootOf(id, 'a', timed);
-        const number = await publish(root);
-        await setSucceeded(root);
-        await timed.reconcile(id);
-        github.replies.set(number, facts(number, { checks: checks('failing') }));
-        await timedObserver.observeDue();
+                clock.ms += 120_000;
+                await timed.reconcile(id);
 
-        clock.ms += 120_000;
-        await timed.reconcile(id);
+                expect((await timed.get(id))!.expiredAt).not.toBeNull();
+                return id;
+            },
+        },
+    ])('$name', async ({ fencedReconcile }) => {
+        const id = await fencedReconcile();
 
-        expect((await timed.get(id))!.expiredAt).not.toBeNull();
         expect(await repairsOf(id)).toEqual([]);
         expect(await repairDecisions(id)).toBe(0);
     });
@@ -751,7 +704,7 @@ describe.skipIf(!enabled)('observed recovery (#581)', () => {
         await observer.observeDue();
         expect(await observer.list(id)).toEqual([]);
 
-        await setSucceeded(root);
+        await setSucceeded(sql, root);
         await store.reconcile(id);
         expect(await repairsOf(id)).toHaveLength(1);
         expect(await taskOf(id)).toMatchObject({ execution: 'succeeded', gate: 'open', attention: null });
@@ -769,7 +722,7 @@ describe.skipIf(!enabled)('observed recovery (#581)', () => {
         await store.reconcile(id);
         const root = await rootOf(id, 'a');
         const number = await publish(root);
-        await setSucceeded(root);
+        await setSucceeded(sql, root);
         await store.reconcile(id);
         github.replies.set(number, facts(number, { checks: checks('failing') }));
         await observer.observeDue();
@@ -778,7 +731,7 @@ describe.skipIf(!enabled)('observed recovery (#581)', () => {
         expect(await repairsOf(id)).toEqual([]);
 
         await requestRefresh({ sql, orgId: ORG, now }, { repo: REPO, numbers: [number] });
-        await setSucceeded(await rootOf(id, 'b'));
+        await setSucceeded(sql, await rootOf(id, 'b'));
         await store.reconcile(id);
         return { id, number };
     }
@@ -811,7 +764,7 @@ describe.skipIf(!enabled)('observed recovery (#581)', () => {
         const id = await frozen(plan([{ key: 'one', tasks: [prTask('a'), prTask('b')] }], { concurrency: 1 }));
         await store.reconcile(id);
         const number = await publish(await rootOf(id, 'a'));
-        await setSucceeded(await rootOf(id, 'a'));
+        await setSucceeded(sql, await rootOf(id, 'a'));
         await store.reconcile(id);
         github.replies.set(number, facts(number, { checks: checks('failing') }));
         await observer.observeDue();
@@ -827,7 +780,7 @@ describe.skipIf(!enabled)('observed recovery (#581)', () => {
         await observer.observeDue();
         expect(await sql`select 1 from pr_merge where pr_number = ${number}`).toHaveLength(1);
 
-        await setSucceeded(await rootOf(id, 'b'));
+        await setSucceeded(sql, await rootOf(id, 'b'));
         await store.reconcile(id);
 
         expect(await repairsOf(id)).toEqual([]);
@@ -838,7 +791,7 @@ describe.skipIf(!enabled)('observed recovery (#581)', () => {
         const { id, number } = await repairWaitingForSlot();
         await jobs.closeMergedPr(REPO, number, randomUUID());
 
-        await setSucceeded(await rootOf(id, 'b'));
+        await setSucceeded(sql, await rootOf(id, 'b'));
         await store.reconcile(id);
 
         expect(await repairsOf(id)).toEqual([]);
@@ -850,7 +803,7 @@ describe.skipIf(!enabled)('observed recovery (#581)', () => {
         await store.reconcile(id);
         const root = await rootOf(id, 'a');
         const number = await publish(root);
-        await setSucceeded(root);
+        await setSucceeded(sql, root);
         await store.reconcile(id);
         github.replies.set(number, facts(number, { checks: checks('failing') }));
         await observer.observeDue();

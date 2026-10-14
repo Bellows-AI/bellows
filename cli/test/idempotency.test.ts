@@ -1,31 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { run } from '../src/run.js';
+import { runCli } from './harness.js';
 
-const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
 const KEY = 'attempt-0001-abcd';
-
-interface Sent {
-    url: string;
-    key: string | null;
-}
 
 /** One CLI run against a board that answers with `respond`, recording the key header of each request. */
 async function cli(argv: string[], respond: () => Response | Promise<Response>) {
-    const out: string[] = [];
-    const err: string[] = [];
-    const sent: Sent[] = [];
-    const fetch = (async (url: string | URL | globalThis.Request, init?: RequestInit) => {
-        sent.push({ url: String(url), key: new Headers(init?.headers).get('idempotency-key') });
-        return respond();
-    }) as unknown as typeof globalThis.fetch;
-    const code = await run(argv, {
-        env: ENV,
-        fetch,
-        sleep: async () => undefined,
-        stdout: (text) => out.push(text),
-        stderr: (text) => err.push(text),
-    });
-    return { code, out: out.join(''), err: err.join(''), sent };
+    const result = await runCli(argv, () => respond());
+    return { ...result, sent: result.sent.map(({ url, key }) => ({ url, key })) };
 }
 
 const created = (headers: Record<string, string> = {}) =>

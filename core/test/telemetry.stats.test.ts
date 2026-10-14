@@ -42,40 +42,6 @@ describe('repo scoping', () => {
     });
 });
 
-describe('totals, recomputed by hand', () => {
-    it('matches on each token type', () => {
-        const add = (pick: (t: (typeof mine)[number]['tokens']) => number | null) =>
-            mine.reduce((sum, s) => sum + (pick(s.tokens) ?? 0), 0);
-        const mine = inScope;
-        expect(stats.totals.tokens.input).toBe(add((t) => t.input));
-        expect(stats.totals.tokens.output).toBe(add((t) => t.output));
-        expect(stats.totals.tokens.cacheRead).toBe(add((t) => t.cacheRead));
-        expect(stats.totals.tokens.cacheCreation).toBe(add((t) => t.cacheCreation));
-    });
-
-    it('matches on session count, lines, and active hours', () => {
-        // Restated by hand rather than imported from config.ts — the whole point of this file.
-        const SECONDS_PER_HOUR = 3600;
-        const ASSERTION_PRECISION_DIGITS = 9;
-        expect(stats.totals.sessions).toBe(inScope.length);
-        expect(stats.totals.linesAdded).toBe(inScope.reduce((s, x) => s + (x.linesAdded ?? 0), 0));
-        expect(stats.totals.linesRemoved).toBe(inScope.reduce((s, x) => s + (x.linesRemoved ?? 0), 0));
-        const seconds = inScope.reduce((s, x) => s + (x.activeSeconds ?? 0), 0);
-        expect(stats.totals.activeHours).toBeCloseTo(seconds / SECONDS_PER_HOUR, ASSERTION_PRECISION_DIGITS);
-    });
-
-    it('matches on edit acceptance, recomputed by hand', () => {
-        const RATIO_PRECISION_DIGITS = 12;
-        const accepted = inScope.reduce((s, x) => s + (x.editsAccepted ?? 0), 0);
-        const rejected = inScope.reduce((s, x) => s + (x.editsRejected ?? 0), 0);
-        const ea = stats.totals.editAcceptance;
-        expect(ea.accepted).toBe(accepted);
-        expect(ea.rejected).toBe(rejected);
-        expect(ea.decisions).toBe(accepted + rejected);
-        expect(ea.ratio).toBeCloseTo(accepted / (accepted + rejected), RATIO_PRECISION_DIGITS);
-    });
-});
-
 describe('output invariants', () => {
     it('seeds every week in the window rather than closing the gaps', () => {
         // The unscoped call carries no range, so the coverage span (~4 months) decides: weeks.

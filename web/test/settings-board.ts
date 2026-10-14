@@ -3,7 +3,7 @@ import type { ConnectionView } from '../src/api/connections.js';
 import type { OrgExecutorFull } from '../src/api/orgExecutors.js';
 import type { InstallationRepo } from '../src/api/useRepos.js';
 import type { Session } from '../src/api/useSession.js';
-import type { WorkspaceExecutorFull, WorkspaceRepo } from '../src/api/useWorkspace.js';
+import type { WorkspaceExecutorFull, WorkspacePayload, WorkspaceRepo } from '../src/api/useWorkspace.js';
 import type { FetchCall, FetchHandler, FetchReply } from './dom.js';
 
 /**
@@ -38,6 +38,22 @@ export function settingsBoard(overrides: Partial<SettingsBoard> = {}): SettingsB
         ...overrides,
     };
 }
+
+/** A loaded workspace read on a deployment with no workspace root: nothing checked out, nothing selected. */
+export const rootlessWorkspace = (
+    checkoutTotalBytes: number | null = null
+): { loading: false; data: WorkspacePayload } => ({
+    loading: false,
+    data: {
+        root: null,
+        repos: [],
+        orphaned: [],
+        checkoutTotalBytes,
+        executors: [],
+        orgExecutors: [],
+        defaultExecutor: null,
+    },
+});
 
 export const installationRepo = (owner: string, name: string): InstallationRepo => ({
     owner,

@@ -112,22 +112,25 @@ describe.skipIf(!enabled)('the env var store', () => {
         ]);
     });
 
-    it('refuses a row that is both user- and repo-scoped, at the row', async () => {
-        await expect(
-            sql`
+    it.each<{ name: string; insert: () => Promise<unknown>; check: RegExp }>([
+        {
+            name: 'refuses a row that is both user- and repo-scoped, at the row',
+            insert: () => sql`
                 insert into env_var (org_id, user_id, repo_owner, repo_name, name, value)
                 values (${ORG}, ${ALICE}, 'Bellows-AI', 'bellows.ai', 'X', '1')
-            `
-        ).rejects.toThrow(/env_var_scope_ck/);
-    });
-
-    it('refuses a name that is not a legal environment variable name, at the row', async () => {
-        await expect(
-            sql`
+            `,
+            check: /env_var_scope_ck/,
+        },
+        {
+            name: 'refuses a name that is not a legal environment variable name, at the row',
+            insert: () => sql`
                 insert into env_var (org_id, user_id, repo_owner, repo_name, name, value)
                 values (${ORG}, null, null, null, 'not a name', '1')
-            `
-        ).rejects.toThrow(/env_var_name_ck/);
+            `,
+            check: /env_var_name_ck/,
+        },
+    ])('$name', async ({ insert, check }) => {
+        await expect(insert()).rejects.toThrow(check);
     });
 });
 

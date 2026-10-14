@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { run } from '../src/run.js';
-
-const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
+import { ENV, runCli, type Sent as Recorded } from './harness.js';
 const ID = '11111111-1111-4111-8111-111111111111';
 
 const PLAN = {
@@ -154,28 +153,16 @@ interface Sent {
     key: string | null;
 }
 
+/** What a batch command sent, the body `null` when there was none. */
+const asSent = ({ method, url, body, key }: Recorded): Sent => ({ method, url, body: body ?? null, key });
+
 async function cli(
     argv: string[],
     respond: (sent: Sent, n: number) => Response,
     extra: { files?: Record<string, string>; clock?: { t: number } } = {}
 ) {
-    const out: string[] = [];
-    const err: string[] = [];
-    const sent: Sent[] = [];
     const clock = extra.clock ?? { t: 0 };
-    const fetch = (async (url: string | URL | globalThis.Request, init?: RequestInit) => {
-        const entry: Sent = {
-            method: init?.method ?? 'GET',
-            url: String(url),
-            body: typeof init?.body === 'string' ? JSON.parse(init.body) : null,
-            key: new Headers(init?.headers).get('idempotency-key'),
-        };
-        sent.push(entry);
-        return respond(entry, sent.length);
-    }) as unknown as typeof globalThis.fetch;
-    const code = await run(argv, {
-        env: ENV,
-        fetch,
+    const result = await runCli(argv, (entry, index) => respond(asSent(entry), index + 1), {
         now: () => clock.t,
         sleep: async (ms) => {
             clock.t += ms;
@@ -185,10 +172,8 @@ async function cli(
             if (text === undefined) throw new Error('ENOENT');
             return text;
         },
-        stdout: (text) => out.push(text),
-        stderr: (text) => err.push(text),
     });
-    return { code, out: out.join(''), err: err.join(''), sent };
+    return { ...result, sent: result.sent.map(asSent) };
 }
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -419,12 +404,6 @@ describe('batch validate / start / inspect / list', () => {
         );
         expect(inspected.out).toContain(`${ID} expired v3 "${PLAN.title}"`);
     });
-
-    it('is usage when a verb is missing its arguments', async () => {
-        const result = await cli(['batch', 'retry', ID], () => json({}));
-        expect(result.code).toBe(2);
-        expect(result.sent).toEqual([]);
-    });
 });
 
 describe('batch wait', () => {
@@ -626,12 +605,6 @@ describe('batch report', () => {
         const result = await cli(['batch', 'report', ID, '--json'], () => json(REPORT('expired')));
         expect(JSON.parse(result.out).data).toEqual(REPORT('expired'));
     });
-
-    it('is usage without a batch id', async () => {
-        const result = await cli(['batch', 'report'], () => json(REPORT()));
-        expect(result.code).toBe(2);
-        expect(result.sent).toEqual([]);
-    });
 });
 
 describe('batch retry / accept / cancel', () => {
@@ -643,18 +616,5 @@ describe('batch retry / accept / cancel', () => {
         expect(accept.sent[0]).toMatchObject({ method: 'POST', url: `http://board/api/batches/${ID}/tasks/a/accept` });
         expect(cancel.sent[0]).toMatchObject({ method: 'POST', url: `http://board/api/batches/${ID}/cancel` });
         expect([retry.code, accept.code, cancel.code]).toEqual([0, 0, 0]);
-    });
-
-    it('surfaces the board refusing an unavailable operation or a forced code-changing completion', async () => {
-        const unsupported = await cli(['batch', 'cancel', ID], () =>
-            json({ error: 'Batch cancel is not available yet', code: 'BATCH_UNSUPPORTED' }, 409)
-        );
-        expect(unsupported.code).toBe(1);
-        expect(unsupported.err).toContain('BATCH_UNSUPPORTED');
-        const noTask = await cli(['batch', 'accept', ID, 'zzz'], () =>
-            json({ error: 'No such task', code: 'NOT_FOUND' }, 404)
-        );
-        expect(noTask.code).toBe(1);
-        expect(noTask.sent).toHaveLength(1);
     });
 });

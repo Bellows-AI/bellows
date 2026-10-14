@@ -1,16 +1,8 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import type { FastifyInstance } from 'fastify';
+import { describe, expect, it } from 'vitest';
 import { EMPTY_TELEMETRY, harness, stubTelemetryClient } from './helpers.js';
+import { HTTP_ACCEPTED, HTTP_OK, HTTP_SERVICE_UNAVAILABLE, trackApps } from './helpers-http.js';
 
-const HTTP_OK = 200;
-const HTTP_ACCEPTED = 202;
-const HTTP_SERVICE_UNAVAILABLE = 503;
-
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 describe('GET /api/stats: payload and attribution', () => {
     it('answers 202 while the cold read is running, then 200', async () => {
@@ -25,7 +17,7 @@ describe('GET /api/stats: payload and attribution', () => {
             },
         });
         const h = await harness({ telemetry });
-        app = h.app;
+        const app = track(h.app);
 
         const cold = await app.inject({ method: 'GET', url: '/api/stats' });
         expect(cold.statusCode).toBe(HTTP_ACCEPTED);
@@ -41,7 +33,7 @@ describe('GET /api/stats: payload and attribution', () => {
 
     it('serves telemetry with repo and freshness metadata, and no PR fields', async () => {
         const h = await harness();
-        app = h.app;
+        const app = track(h.app);
         await app.inject({ method: 'GET', url: '/api/stats' });
         await h.settle();
 
@@ -75,7 +67,7 @@ describe('GET /api/stats: payload and attribution', () => {
 
     it('reports the two setup failures separately', async () => {
         const h = await harness();
-        app = h.app;
+        const app = track(h.app);
         await app.inject({ method: 'GET', url: '/api/stats' });
         await h.settle();
 
@@ -86,7 +78,7 @@ describe('GET /api/stats: payload and attribution', () => {
 
     it('serves per-user attribution beside the totals', async () => {
         const h = await harness();
-        app = h.app;
+        const app = track(h.app);
         await app.inject({ method: 'GET', url: '/api/stats' });
         await h.settle();
 
@@ -114,7 +106,7 @@ describe('GET /api/stats: range filtering and TTL', () => {
 
     it('filters sessions by overlap for a narrowed range', async () => {
         const h = await harness();
-        app = h.app;
+        const app = track(h.app);
         await app.inject({ method: 'GET', url: '/api/stats' });
         await h.settle();
 
@@ -131,7 +123,7 @@ describe('GET /api/stats: range filtering and TTL', () => {
     it('does not refetch inside the TTL', async () => {
         const telemetry = stubTelemetryClient();
         const h = await harness({ telemetry });
-        app = h.app;
+        const app = track(h.app);
         await app.inject({ method: 'GET', url: '/api/stats' });
         await h.settle();
         expect(telemetry.rollupCalls).toBe(1);
@@ -147,7 +139,7 @@ describe('GET /api/stats: range filtering and TTL', () => {
     it('serves the stale entry and refetches exactly once past the TTL', async () => {
         const telemetry = stubTelemetryClient();
         const h = await harness({ telemetry });
-        app = h.app;
+        const app = track(h.app);
         await app.inject({ method: 'GET', url: '/api/stats' });
         await h.settle();
 
@@ -177,7 +169,7 @@ describe('GET /api/stats: failure handling', () => {
             },
         });
         const h = await harness({ telemetry });
-        app = h.app;
+        const app = track(h.app);
         await app.inject({ method: 'GET', url: '/api/stats' });
         await h.settle();
 
@@ -198,7 +190,7 @@ describe('GET /api/stats: failure handling', () => {
             },
         });
         const h = await harness({ telemetry });
-        app = h.app;
+        const app = track(h.app);
 
         await app.inject({ method: 'GET', url: '/api/stats' });
         await h.settle();
@@ -215,7 +207,7 @@ describe('GET /api/stats: failure handling', () => {
             },
         });
         const h = await harness({ telemetry });
-        app = h.app;
+        const app = track(h.app);
 
         await app.inject({ method: 'GET', url: '/api/stats' });
         await h.settle();
@@ -236,7 +228,7 @@ describe('GET /api/stats: failure handling', () => {
     it('collapses concurrent cold requests into one read', async () => {
         const telemetry = stubTelemetryClient();
         const h = await harness({ telemetry });
-        app = h.app;
+        const app = track(h.app);
 
         const CONCURRENT_REQUESTS = 5;
         await Promise.all(

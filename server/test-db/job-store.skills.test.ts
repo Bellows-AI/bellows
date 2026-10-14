@@ -5,6 +5,7 @@ import { createConnectionStore } from '../src/db/connection-store.js';
 import { createJobStore } from '../src/db/job-store.js';
 import type { Claim, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
+import { expireLease } from './fixtures.js';
 
 /**
  * Issue 545: a task selects skills at creation; the selection lives on the root row, every claim of
@@ -199,7 +200,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
         const store = storeWithEnv(GITHUB_ENV);
         const id = await queue(store, ['github']);
         const first = await claim(store);
-        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
+        await expireLease(sql, id);
 
         const second = await claim(store);
         expect(second.id).toBe(id);

@@ -1,20 +1,21 @@
-import type { FastifyInstance } from 'fastify';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { ConnectionOfLease, LiveConnection } from '../src/db/connection-store.js';
 import { githubAuth, memoryAuthStore, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
+import {
+    HTTP_BAD_GATEWAY,
+    HTTP_BAD_REQUEST,
+    HTTP_FORBIDDEN,
+    HTTP_OK,
+    HTTP_UNAUTHORIZED,
+    trackApps,
+} from './helpers-http.js';
 
 /**
  * Offline: the Jira connector proxy's HTTP contract (issue #546) against a stub per-call check and
  * a stub Atlassian. The check's own SQL — lease rotation, cancel, membership — is pinned by
  * server/test-db/connection-store.test.ts.
  */
-
-const HTTP_OK = 200;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_BAD_GATEWAY = 502;
 
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
 const LEASE = '22222222-2222-4222-8222-222222222222';
@@ -32,11 +33,7 @@ const live = (access: 'read' | 'write' = 'read'): LiveConnection => ({
     access,
 });
 
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 interface Upstream {
     url: string;
@@ -55,13 +52,14 @@ async function boot(answer: LiveConnection, mode: 'github' | 'none' = 'github') 
         return new Response('{"key":"ABC-1"}', { status: HTTP_OK, headers: { 'content-type': 'application/json' } });
     }) as unknown as typeof fetch;
     const config = testConfig({ auth: mode === 'github' ? githubAuth() : testConfig().auth });
-    app = await buildApp({
+    const app = await buildApp({
         config,
         orgs: staticRegistry({ config, telemetry: stubTelemetryClient() }),
         auth: memoryAuthStore(),
         connectionOfLease,
         fetchFn,
     });
+    track(app);
     return { instance: app, calls, lookups };
 }
 
@@ -171,7 +169,7 @@ describe('the Jira connector proxy', () => {
 
     it('answers 502 without echoing the upstream error or the credential when Atlassian is down', async () => {
         const config = testConfig({ auth: githubAuth() });
-        app = await buildApp({
+        const app = await buildApp({
             config,
             orgs: staticRegistry({ config, telemetry: stubTelemetryClient() }),
             auth: memoryAuthStore(),
@@ -180,6 +178,7 @@ describe('the Jira connector proxy', () => {
                 throw new Error(`connect failed for ${API_TOKEN}`);
             }) as unknown as typeof fetch,
         });
+        track(app);
         const res = await app.inject({ method: 'GET', url: `${BASE}/myself`, headers: PAIR });
         expect(res.statusCode).toBe(HTTP_BAD_GATEWAY);
         expect(res.body).not.toContain(API_TOKEN);
