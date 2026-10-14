@@ -478,6 +478,42 @@ describe('the entrypoint as PID 1, run locally under /bin/sh', () => {
         CASE_TIMEOUT_MS
     );
 
+    // opencode ends a session the stop plugin aborted with `Error: Aborted` and exit 1. That is the
+    // run ending as the Stop asked, so the entrypoint reports 0 — only when the poller's stop marker
+    // AND the plugin's abort record exist, and only for that exit 1. Anything else keeps its status.
+    // The marker lives under TMPDIR, so each case gets its own instead of the shared /tmp one.
+    it.each([
+        ['a stop the plugin carried out', { stop: true, aborted: true, status: 1 }, 0],
+        ['a failure with no stop', { stop: false, aborted: false, status: 1 }, 1],
+        ['a stop the plugin never carried out', { stop: true, aborted: false, status: 1 }, 1],
+        ['another failure after a stop', { stop: true, aborted: true, status: STUB_EXIT_CODE }, STUB_EXIT_CODE],
+    ])(
+        'the opencode entrypoint exits right for %s',
+        async (_label, run, want) => {
+            const sandbox = makeSandbox();
+            try {
+                writeFileSync(
+                    join(sandbox.bin, 'opencode'),
+                    [
+                        '#!/bin/sh',
+                        ...(run.stop ? ['echo stop > "$FACTORY_STOP_MARKER"'] : []),
+                        ...(run.aborted ? ['echo aborted > "$FACTORY_STOP_MARKER.aborted"'] : []),
+                        'echo "Error: Aborted" >&2',
+                        `exit ${run.status}`,
+                        '',
+                    ].join('\n')
+                );
+                const child = runEntrypoint('docker/opencode-executor/entrypoint.sh', sandbox, {
+                    TMPDIR: sandbox.work,
+                });
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(want);
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
+
     it.each([
         ['docker/claude-executor/entrypoint.sh', 'claude'],
         ['docker/opencode-executor/entrypoint.sh', 'opencode'],

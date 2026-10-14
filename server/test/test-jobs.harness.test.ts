@@ -169,11 +169,11 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).not.toMatch(/"\$image" -p '/);
     });
 
-    // A stopped attempt is parked whatever its exit, so each CLI's own exit after a Stop is pinned.
-    it('the cooperative-Stop lane wants each CLI its own exit, and never the timeout', () => {
-        expect(SCRIPT).toContain('local want_exit=0 status');
-        expect(SCRIPT).toContain('[ "$cli" = opencode ] && want_exit=1');
-        expect(SCRIPT).toContain('if [ "$status" = "$want_exit" ]; then');
+    // opencode's abort exit is the entrypoint's to map (docker/opencode-executor/entrypoint.sh):
+    // both CLIs exit 0 after a Stop, and never by the timeout.
+    it('the cooperative-Stop lane wants exit 0 from both CLIs', () => {
+        expect(SCRIPT).toContain('if [ "$status" = 0 ]; then\n        ok "$cli exits on its own after the stop"');
+        expect(SCRIPT).not.toContain('want_exit');
     });
 
     // The opencode message is the turn context, then the prompt (#518): the stub's final line.

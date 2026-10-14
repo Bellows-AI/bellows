@@ -1131,17 +1131,15 @@ stop_lane() { # stop_lane <claude|opencode>
         run+=(-e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
             "$image" run 'touch the step markers')
     fi
-    # On its own: not the timeout's 124. opencode reports the session the stop plugin aborted as
-    # `Error: Aborted` and exits 1; claude ends the turn and exits 0. The driver parks a stopped
-    # attempt whatever the exit (driver/src/loop-fence.ts standDown), so each CLI's own is pinned.
-    local want_exit=0 status
-    [ "$cli" = opencode ] && want_exit=1
+    # On its own, and 0 for both CLIs: opencode's `Error: Aborted` exit after the stop plugin's abort
+    # is mapped to 0 by its entrypoint (docker/opencode-executor/entrypoint.sh).
+    local status
     timeout 180 "${run[@]}" >"$work/stop-$cli.log" 2>&1
     status=$?
-    if [ "$status" = "$want_exit" ]; then
+    if [ "$status" = 0 ]; then
         ok "$cli exits on its own after the stop"
     else
-        bad "$cli exits on its own after the stop" "exit $status, wanted $want_exit: $(tail -5 "$work/stop-$cli.log")"
+        bad "$cli exits on its own after the stop" "exit $status: $(tail -5 "$work/stop-$cli.log")"
     fi
     requests="$(node -e 'fetch(process.argv[1] + "/requests").then((r) => r.json()).then((j) => console.log(j.agentRequests))' "http://127.0.0.1:$port")"
     kill "$fake_pid" 2>/dev/null

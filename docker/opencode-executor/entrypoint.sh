@@ -154,9 +154,10 @@ REPORTER_PID=$!
 # stop marker the baked factory-stop plugin checks at each step boundary. Exported so the poller
 # and the plugin agree on one path; any marker left from before is cleared first. A background
 # sibling like the reporter, stdio discarded.
-FACTORY_STOP_MARKER=/tmp/factory-stop
+# Under TMPDIR when one is set (the offline suite gives each case its own), /tmp in the image.
+FACTORY_STOP_MARKER="${TMPDIR:-/tmp}/factory-stop"
 export FACTORY_STOP_MARKER
-rm -f "$FACTORY_STOP_MARKER"
+rm -f "$FACTORY_STOP_MARKER" "$FACTORY_STOP_MARKER.aborted"
 node /usr/local/bin/stop-poller.cjs >/dev/null 2>&1 &
 STOP_POLLER_PID=$!
 # The CLI is forked through a subshell that CLEARS the inherited handler and execs. A background
@@ -196,6 +197,14 @@ while :; do
     kill -0 "$CLI_PID" 2>/dev/null || break
 done
 set -e
+
+# opencode ends a session the stop plugin aborted with `Error: Aborted` and exit 1. That is the run
+# ending as the Stop asked, so it is reported as 0 — only for that exit 1, and only when the
+# poller's marker AND the plugin's abort record both exist. Every other status, a genuine failure
+# or a signal death, is re-raised as it came. The image is the same for docker and kubernetes.
+if [ "$STATUS" -eq 1 ] && [ -e "$FACTORY_STOP_MARKER" ] && [ -e "$FACTORY_STOP_MARKER.aborted" ]; then
+    STATUS=0
+fi
 
 # The run is over: stop the sampler and the watcher and reap them before the close-time sample,
 # which is the last thing that runs.
