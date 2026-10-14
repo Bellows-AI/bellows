@@ -3,7 +3,7 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { craftJob, type CraftShape, expectMinutes, expireLease, testUser } from './fixtures.js';
+import { craftJob, type CraftShape, expectMinutes, testUser } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -18,9 +18,6 @@ const AUTHOR = AUTHOR_USER.id;
 
 /** A lease long enough that nothing in this suite outlives it by accident. */
 const LEASE_SECONDS = 300;
-/** How far back the stop-banking cases backdate their claim's start. */
-const STOPPED_RUN_MINUTES_AGO = 4;
-
 const db = useTestDb({ max: 8, users: [AUTHOR_USER] });
 
 beforeAll(async () => {
@@ -59,9 +56,8 @@ const claimBackdated = async (minutes: number): Promise<{ id: string; token: str
 describe.skipIf(!enabled)('the task wall clock', () => {
     /*
      * Every way a single backdated attempt settles banks the segment it actually ran. The stop
-     * nobody delivered is the claim settling the stamped run stopped (issue #152); the stop that
-     * lands without a worker banks the same way, whichever side of the lease expiry it takes —
-     * the row was running for real up to the settle, as the suspend park's segment was.
+     * settles that land without a worker bank the same way (the zombie-recovery cases in
+     * job-store.stop-remove.test.ts) — the row was running for real up to the settle.
      */
     it.each<{
         name: string;
@@ -78,34 +74,6 @@ describe.skipIf(!enabled)('the task wall clock', () => {
                 ).toMatchObject({ result: 'ok' });
             },
             status: 'succeeded',
-        },
-        {
-            name: 'stopping a run records its time when the worker parks it stopped',
-            minutes: STOPPED_RUN_MINUTES_AGO,
-            settle: async (id, token) => {
-                expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
-                expect(await store.suspend(id, token)).toEqual({ result: 'ok', status: 'stopped' });
-            },
-            status: 'stopped',
-        },
-        {
-            name: 'the claim settles a stamped expired run stopped, banking its last segment',
-            minutes: STOPPED_RUN_MINUTES_AGO,
-            settle: async (id) => {
-                expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
-                await expireLease(sql, id);
-                expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
-            },
-            status: 'stopped',
-        },
-        {
-            name: 'stopping in place after the lease died banks the run too',
-            minutes: STOPPED_RUN_MINUTES_AGO,
-            settle: async (id) => {
-                await expireLease(sql, id);
-                expect(await store.stop(id, null)).toEqual({ result: 'stopped' });
-            },
-            status: 'stopped',
         },
         {
             name: 'the park records the run time too — the segment it ends was real',

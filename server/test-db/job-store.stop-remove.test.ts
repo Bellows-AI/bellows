@@ -4,7 +4,15 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { account, craftJob, type CraftShape, expireLease, randomGithubId, testUser } from './fixtures.js';
+import {
+    account,
+    craftJob,
+    type CraftShape,
+    expectMinutes,
+    expireLease,
+    randomGithubId,
+    testUser,
+} from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -360,6 +368,11 @@ describe.skipIf(!enabled)('lifecycle actors', () => {
 });
 
 describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
+    /** How long the stuck run ran before its stop settled — backdated, never slept. */
+    const RAN_MINUTES = 4;
+    const backdateStart = (id: string) =>
+        sql`update job set started_at = now() - (${RAN_MINUTES} * interval '1 minute') where id = ${id}`;
+
     // A stop nobody delivers — the driver died before its heartbeat could carry the kill order —
     // must not re-issue the run (issue #152): the claim settles the stamped row `stopped` instead
     // of handing it to a new attempt, and the session the stopped run kept is what the follow-up
@@ -370,6 +383,7 @@ describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
         const token = (await store.claim('w1', LEASE_SECONDS))!.leaseToken;
         const sid = randomUUID();
         await store.session(id, token, sid);
+        await backdateStart(id);
         expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
         await expireLease(sql, id);
 
@@ -383,6 +397,8 @@ describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
         // The park hands the attempt back, exactly as the delivered stop's suspend does — a stop
         // is a park, not a failed try.
         expect(job?.attempts).toBe(0);
+        // The settle banks the segment the run really ran.
+        expectMinutes(job?.wallClockMs ?? null, RAN_MINUTES);
     });
 
     // Exhausted attempts do not change the verdict: a stamped row is a park, not a failure, so
@@ -414,6 +430,7 @@ describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
         const token = (await store.claim('w1', LEASE_SECONDS))!.leaseToken;
         const sid = randomUUID();
         await store.session(id, token, sid);
+        await backdateStart(id);
         await expireLease(sql, id);
 
         expect(await store.stop(id, AUTHOR)).toEqual({ result: 'stopped' });
@@ -424,6 +441,7 @@ describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
         expect(job?.cancelRequestedAt).toBeNull();
         expect(job?.sessionId).toBe(sid);
         expect(job?.attempts).toBe(0);
+        expectMinutes(job?.wallClockMs ?? null, RAN_MINUTES);
         // The stale worker's next beat is its kill order — the row no longer runs under this
         // lease.
         expect(await store.heartbeat(id, token, LEASE_SECONDS)).toMatchObject({ result: 'lost' });

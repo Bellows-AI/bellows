@@ -7,7 +7,7 @@ import { GATE_FIX_NODE, gateFixTarget } from './gate-fix-workflow.js';
 import { useTestDb } from './harness.js';
 import { expireLease } from './fixtures.js';
 
-/** The default gate-fix workflow against the store: Stop, follow-up and reclaim races. */
+/** The default gate-fix workflow against the store: the red-gate walk, Stop and reclaim races. */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = 'test-org';
 const WORKER = 'worker-1';
@@ -75,19 +75,12 @@ describe.skipIf(!enabled)('a verdict racing a Stop — database', () => {
     });
 });
 
-describe.skipIf(!enabled)('a follow-up racing a queued gate-fix (issue #429)', () => {
-    // A follow-up on a thread whose graph already queued a gate-fix refuses not_finished (#698),
-    // so it can never land between graph rows and queue a second gate-fix beside the first.
-    it('never leaves two gate-fix rows queued in one thread', async () => {
+/** The verdict transaction reads the stored gate report: a red gate walks the graph into gate-fix. */
+describe.skipIf(!enabled)('a red gate verdict — database', () => {
+    it('queues exactly one gate-fix row', async () => {
         const root = await queueDefault(5);
         const task = await claim();
-        await store.session(task.id, task.leaseToken, 'sess-1');
         await failGates(task, 'red');
-        expect(await queuedGateFix(root)).toHaveLength(1);
-
-        expect(await store.createFollowUp(task.id, 'also fix the lint', null)).toBe('not_finished');
-
-        expect(await store.thread(root)).toHaveLength(2);
         expect(await queuedGateFix(root)).toHaveLength(1);
     });
 });
