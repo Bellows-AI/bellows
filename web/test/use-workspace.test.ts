@@ -12,8 +12,11 @@ import * as useSession from '../src/api/useSession.js';
 const json = (body: unknown, status = 200): Response =>
     new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
+// The `reportUnauthenticated` spies patch the shared useSession module (`isolate: false`); each
+// dies with its test rather than waiting on vitest's end-of-file restore.
 afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
 });
 
 describe('listExecutorConfigs', () => {

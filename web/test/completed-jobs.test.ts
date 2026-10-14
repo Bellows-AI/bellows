@@ -49,8 +49,11 @@ const job = (id: string): Job =>
 const json = (body: unknown, status = 200): Response =>
     new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
+// The `reportUnauthenticated` spy patches the shared useSession module (`isolate: false`); it
+// dies with its test rather than waiting on vitest's end-of-file restore.
 afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
 });
 
 describe('pollCompletedJobs', () => {
