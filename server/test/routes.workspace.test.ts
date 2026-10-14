@@ -16,15 +16,7 @@ import {
 import { MAX_EXECUTORS_PER_USER } from '../src/routes/executor-fields.js';
 import { createFactsCache } from '../src/workspace/facts.js';
 import { createPurger, type Purger } from '../src/workspace/purge.js';
-import {
-    HTTP_ACCEPTED,
-    HTTP_BAD_REQUEST,
-    HTTP_CONFLICT,
-    HTTP_NO_CONTENT,
-    HTTP_OK,
-    HTTP_UNAUTHORIZED,
-    trackApps,
-} from './helpers-http.js';
+import { HTTP_ACCEPTED, HTTP_BAD_REQUEST, HTTP_CONFLICT, HTTP_NO_CONTENT, HTTP_OK, trackApps } from './helpers-http.js';
 
 /**
  * Offline: nothing here clones. `PUT` only writes rows and answers 202 — the clone happens in the
@@ -119,11 +111,6 @@ describe('GET /api/workspace', () => {
             defaultExecutor: null,
             checkoutTotalBytes: null,
         });
-    });
-
-    it('needs a session', async () => {
-        const { app } = await boot();
-        expect((await app.inject({ method: 'GET', url: '/api/workspace' })).statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('reports a queued repo with no on-disk facts, never with zeroes', async () => {
@@ -486,13 +473,6 @@ describe('DELETE /api/workspace/repos/:owner/:name', () => {
         expect(store.rows().filter((r) => r.status === 'purging')).toHaveLength(0);
     });
 
-    it('needs a session', async () => {
-        const { app } = await bootWithPurger();
-        expect((await app.inject({ method: 'DELETE', url: '/api/workspace/repos/acme/web' })).statusCode).toBe(
-            HTTP_UNAUTHORIZED
-        );
-    });
-
     it('answers 409 when workspaces are switched off', async () => {
         const { app, cookie } = await boot({ withRoot: false });
         const response = await del(app, cookie, 'acme', 'web');
@@ -601,16 +581,6 @@ describe('PUT /api/workspace/repos', () => {
         // The deletion is undisturbed: nothing was re-selected behind its back.
         expect(await store.list(caller.user.id)).toHaveLength(0);
         expect((await store.orphaned(caller.user.id))[0]?.status).toBe('purging');
-    });
-
-    it('needs a session', async () => {
-        const { app } = await boot();
-        const response = await app.inject({
-            method: 'PUT',
-            url: '/api/workspace/repos',
-            payload: { repos: [] },
-        });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 });
 
@@ -892,16 +862,6 @@ describe('executors: PUT lifecycle', () => {
         expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json().executors[0]).toMatchObject({ name: 'main', type: 'claude-code' });
     });
-
-    it('needs a session', async () => {
-        const { app } = await boot();
-        const response = await app.inject({
-            method: 'PUT',
-            url: '/api/workspace/executors',
-            payload: { executors: [] },
-        });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
-    });
 });
 
 describe('executors: GET /api/workspace/executors', () => {
@@ -953,11 +913,5 @@ describe('executors: GET /api/workspace/executors', () => {
 
         expect(response.statusCode).toBe(HTTP_CONFLICT);
         expect(response.json().code).toBe('WORKSPACE_DISABLED');
-    });
-
-    it('needs a session for the config read', async () => {
-        const { app } = await boot();
-        const response = await app.inject({ method: 'GET', url: '/api/workspace/executors' });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 });

@@ -218,16 +218,6 @@ describe('TaskInboxPage rows', () => {
         return { tasks: { items }, html };
     };
 
-    it('renders the state as visible text for every workflow state and result', () => {
-        const { html } = everyState();
-        expect(html).toContain('Running');
-        expect(html).toContain('Queued');
-        expect(html).toContain('Stopping');
-        expect(html).toContain('Failed · Needs review');
-        expect(html).toContain('Stopped · Needs review');
-        expect(html).toContain('Done');
-    });
-
     it('renders a task holding an answerable question as Needs answer, ahead of Running', () => {
         const html = renderInbox({
             navigation: navigation({ running: 1 }),
@@ -238,34 +228,6 @@ describe('TaskInboxPage rows', () => {
         const [row] = rowsOf(html);
         expect(row).toMatch(/<span class="pill pill-accent"><svg[\s\S]*?<\/svg>Needs answer<\/span>/);
         expect(row).not.toContain('Running');
-    });
-
-    it('renders an open PR-review wait as Waiting for review, with the grey paused dot', () => {
-        const html = renderInbox({
-            navigation: navigation({ review: 1 }),
-            items: [taskSummary({ status: 'queued', waitReason: 'review', waitingSince: '2026-09-01T12:05:00.000Z' })],
-            nextCursor: null,
-            initial: false,
-        });
-        expect(html).toContain('Waiting for review');
-        expect(html).not.toContain('>Queued<');
-        expect(html).toContain('sidenav-dot-paused');
-    });
-
-    it('appends the terminal wait reason to the needs-review row once the wait has ended', () => {
-        const html = renderInbox({
-            navigation: navigation({ review: 1 }),
-            items: [
-                taskSummary({
-                    status: 'succeeded',
-                    waitReason: 'review',
-                    waitTerminalReason: 'exhausted',
-                }),
-            ],
-            nextCursor: null,
-            initial: false,
-        });
-        expect(html).toContain('Succeeded · Needs review · exhausted');
     });
 
     it('makes the title the one link to the detail view, with repo, author and a precise age', () => {

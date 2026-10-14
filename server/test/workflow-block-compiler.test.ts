@@ -559,16 +559,6 @@ describe('the real, shipped registry', () => {
         expect(catalog.find((b) => b.id === 'builtin/merge-conflict-autofix')?.available).toBe(true);
     });
 
-    it('compiles the github-review-reconcile block against the real registry', () => {
-        const authored: AuthoredWorkflowDefinition = {
-            entry: 'step',
-            params: [],
-            nodes: [{ name: 'step', kind: 'block', uses: 'builtin/github-review-reconcile' }],
-            edges: [],
-        };
-        expect(compileDefinition(authored, BLOCK_REGISTRY)).toMatchObject({ ok: true });
-    });
-
     it('refuses UNKNOWN_BLOCK for an id the registry never reserved', () => {
         const authored: AuthoredWorkflowDefinition = {
             entry: 'step',

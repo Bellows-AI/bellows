@@ -9,6 +9,7 @@ import {
     SUSPEND_LABEL,
     SUSPENDED_LABEL,
 } from '../src/panels/WorkspaceExecutorsPanel.js';
+import { ADD_LABEL } from '../src/workspace/executors.js';
 import { renderApp, stubFetch } from './dom.js';
 import { boardHandler, orgExecutor, personalExecutor, settingsBoard } from './settings-board.js';
 
@@ -105,5 +106,58 @@ describe('Suspend', () => {
         expect(within(menu).queryByRole('menuitem', { name: 'Make default' })).toBeNull();
         await user.click(within(menu).getByRole('menuitem', { name: RESUME_LABEL }));
         await waitFor(async () => expect((await orgRow(name)).textContent).not.toContain(SUSPENDED_LABEL));
+    });
+});
+
+describe('an organization profile’s writes', () => {
+    it('Delete only asks: Cancel writes nothing, the confirm deletes once and the table refreshes', async () => {
+        const board = settingsBoard({ orgExecutors: [orgExecutor('Shared'), orgExecutor('Kept')] });
+        const sharedId = board.orgExecutors[0]!.id;
+        const calls = stubFetch(boardHandler(board));
+        const deletes = () => calls.filter((call) => call.method === 'DELETE');
+        const user = userEvent.setup();
+        renderApp('/settings/executors');
+        const openDelete = async () => {
+            await user.click(await screen.findByRole('button', { name: 'Actions for Shared' }));
+            await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Delete' }));
+            return screen.findByRole('dialog');
+        };
+
+        const confirm = await openDelete();
+        within(confirm).getByRole('heading', { name: confirmTitle({ action: 'delete', name: 'Shared' }) });
+        await user.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        await orgRow('Shared');
+        expect(deletes()).toEqual([]);
+
+        const again = await openDelete();
+        await user.click(
+            within(again).getByRole('button', { name: confirmLabel({ action: 'delete', name: 'Shared' }) })
+        );
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        const region = await screen.findByRole('region', { name: 'Organization executors' });
+        await waitFor(() => expect(within(region).queryByRole('row', { name: /Shared/ })).toBeNull());
+        expect(deletes().map((call) => call.url)).toEqual([`/api/org/executors/${sharedId}`]);
+        await orgRow('Kept');
+    });
+
+    it('a saved add refreshes the table with the new row', async () => {
+        const board = settingsBoard();
+        stubFetch(
+            boardHandler(board, ({ method, url, body }) => {
+                if (method !== 'POST' || url !== '/api/org/executors') return;
+                board.orgExecutors.push(orgExecutor((body as { name: string }).name));
+                return { status: 201, body: {} };
+            })
+        );
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+
+        await user.click(await screen.findByRole('button', { name: 'Add organization executor' }));
+        const dialog = await screen.findByRole('dialog', { name: /^Add executor$/ });
+        await user.type(within(dialog).getByLabelText('Name', { exact: true }), 'Fresh');
+        await user.click(within(dialog).getByRole('button', { name: ADD_LABEL }));
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        await orgRow('Fresh');
     });
 });

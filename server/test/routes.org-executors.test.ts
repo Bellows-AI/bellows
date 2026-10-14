@@ -24,7 +24,6 @@ import {
     HTTP_FORBIDDEN,
     HTTP_NOT_FOUND,
     HTTP_OK,
-    HTTP_UNAUTHORIZED,
     HTTP_UNAVAILABLE,
     trackApps,
 } from './helpers-http.js';
@@ -79,16 +78,6 @@ function build(executors: MemoryUserExecutorStore, auth: AuthStore, config: AppC
 }
 
 describe('organization executors: permissions', () => {
-    it('needs a session', async () => {
-        const { instance } = await boot();
-        expect((await instance.inject({ method: 'GET', url: '/api/org/executors' })).statusCode).toBe(
-            HTTP_UNAUTHORIZED
-        );
-        expect(
-            (await instance.inject({ method: 'POST', url: '/api/org/executors', payload: CLAUDE_CODE })).statusCode
-        ).toBe(HTTP_UNAUTHORIZED);
-    });
-
     it('a member reads selection metadata, never the configuration', async () => {
         const { instance, adminCookie, memberCookie } = await boot();
         await instance.inject({

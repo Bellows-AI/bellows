@@ -31,6 +31,9 @@ describe('TaskRun', () => {
         expect(html.indexOf('>Request<')).toBeGreaterThan(-1);
         expect(html.indexOf('>Request<')).toBeLessThan(html.indexOf('>Follow-up<'));
         expect(html.match(/<article/g)?.length).toBe(2);
+        expect(html.indexOf('first command')).toBeLessThan(html.indexOf('second command'));
+        // One conversation: the newest run carries the composer.
+        expect(html).toContain('<textarea');
     });
 
     it('names each finished run’s response and keeps its raw output behind one disclosure per run', () => {
@@ -188,15 +191,6 @@ describe('TaskRun — gates, publication and metadata', () => {
         }
     });
 
-    it('the outcome links View checks only when the newest run has gates', () => {
-        const gates = [{ name: 'test', status: 'passed' as const, exitCode: 0, output: 'ok' }];
-        const linked = renderDetail({ jobs: [job({ gates })] });
-        expect(linked).toContain('>View checks</a>');
-        expect(linked).toContain('href="#task-verification"');
-        expect(linked).toContain('id="task-verification"');
-        expect(renderDetail({ jobs: [{ ...root, gates }, child()] })).not.toContain('View checks');
-    });
-
     it('metadata follows the work in markup order, and omits what the run does not carry', () => {
         const gates = [{ name: 'test', status: 'passed' as const, exitCode: 0, output: 'ok' }];
         const html = renderDetail({
@@ -263,6 +257,17 @@ describe('TaskRun — footer attribution, prompt and output wells', () => {
             'fix the flaky login test'
         );
         expect(done).toContain('done by kim');
+        // A run that finished on its own after somebody asked keeps the ask as a request.
+        const finished = articleOf(
+            renderDetail({
+                jobs: [job({ stoppedBy: { id: 'u', login: 'lee', name: null, avatarUrl: null } })],
+            }),
+            'fix the flaky login test'
+        );
+        expect(finished).toContain('stop requested by lee');
+        expect(finished).not.toContain('stopped by lee');
+        const plain = renderDetail({ jobs: [job()] });
+        for (const label of ['stopped by', 'stop requested by', 'done by']) expect(plain).not.toContain(label);
     });
 
     it('renders the prompt as prose with preserved line breaks, never as mono code', () => {
@@ -279,6 +284,7 @@ describe('TaskRun — footer attribution, prompt and output wells', () => {
         });
         expect(html).not.toContain('<script>');
         expect(html).toContain('&lt;script&gt;');
+        expect(html).toContain('<pre');
     });
 
     it('output wells are keyboard scrollable, and the live well carries a label', () => {

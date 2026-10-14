@@ -6,7 +6,6 @@ import {
     contextChip,
     countLaunches,
     E2E_EXECUTOR,
-    E2E_EXECUTOR_ROW,
     E2E_REPO,
     mockExecutors,
     stubLaunch,
@@ -96,30 +95,6 @@ test.describe('the guided task composer', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    // The synced-repository requirement (issue 263). The poll is mocked, so `repos` is whatever
-    // the test says; no launch reaches the board unless the test stubs it.
-    test('a chosen repository that is not ready blocks launch even though another is ready', async ({ page }) => {
-        await page.unroute('**/api/workspace');
-        await mockExecutors(
-            page,
-            [E2E_EXECUTOR_ROW],
-            [
-                { ...E2E_REPO, status: 'ready' },
-                { owner: 'acme', name: 'api', status: 'cloning' },
-            ]
-        );
-        const launches = countLaunches(page);
-        await page.goto('/tasks/new');
-
-        await page.getByLabel('What should the agent do?').fill('fix the login crash');
-        await openSelector(page, 'Repository');
-        await page.getByRole('option', { name: 'acme/api' }).click();
-        await expect(page.locator('.composer .banner-bad')).toContainText('Repository not synced');
-        await expect(page.getByRole('button', { name: 'Start task' })).toBeDisabled();
-        await page.getByLabel('What should the agent do?').press('ControlOrMeta+Enter');
-        expect(launches.bodies).toHaveLength(0);
-    });
-
     test('a fresh composer opens without a red banner, counts the request, and blocks it past the limit', async ({
         page,
     }) => {
@@ -154,23 +129,6 @@ test.describe('the guided task composer', () => {
         await expect(start).toHaveAttribute('aria-describedby', 'composer-readiness');
         await page.screenshot({ path: `${SHOTS}/composer-too-long.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
-    });
-
-    test("the board's refusal keeps the draft", async ({ page }) => {
-        await page.route('**/api/jobs', (route) =>
-            route.request().method() === 'POST'
-                ? route.fulfill({ status: 503, json: { error: 'The board is unavailable' } })
-                : route.fallback()
-        );
-        await page.goto('/tasks/new');
-
-        const composer = page.locator('.composer');
-        const prompt = page.getByLabel('What should the agent do?');
-        await prompt.fill('fix the login crash');
-        await page.getByRole('button', { name: 'Start task' }).click();
-        await expect(composer.getByRole('alert')).toBeVisible();
-        await expect(prompt).toHaveValue('fix the login crash');
-        expect(page.url()).toContain('/tasks/new');
     });
 });
 

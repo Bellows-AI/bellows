@@ -3,16 +3,8 @@ import { buildApp } from '../src/app.js';
 import type { Job } from '../src/db/job-store-types.js';
 import type { JobStore, TaskListFilters, TaskListResponse } from '../src/db/job-store-types.js';
 import { encodeCursor, memoryTaskList } from '../src/db/task-summary.js';
-import {
-    TEST_JOB_BOARD_TOKEN,
-    githubAuth,
-    memoryAuthStore,
-    signedIn,
-    staticRegistry,
-    stubTelemetryClient,
-    testConfig,
-} from './helpers.js';
-import { HTTP_BAD_REQUEST, HTTP_OK, HTTP_SERVICE_UNAVAILABLE, HTTP_UNAUTHORIZED, trackApps } from './helpers-http.js';
+import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
+import { HTTP_BAD_REQUEST, HTTP_OK, HTTP_SERVICE_UNAVAILABLE, trackApps } from './helpers-http.js';
 
 const track = trackApps();
 
@@ -349,13 +341,6 @@ describe('GET /api/tasks: failures', () => {
 });
 
 describe('GET /api/tasks authorization', () => {
-    it('401s an anonymous caller', async () => {
-        const { instance } = await githubHarness(taskStub());
-        const response = await instance.inject({ method: 'GET', url: '/api/tasks' });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
-        expect(response.json().code).toBe('UNAUTHENTICATED');
-    });
-
     it('answers a signed-in member', async () => {
         const { instance, store } = await githubHarness(taskStub());
         const caller = store.seedMember(ORG, 'octocat');
@@ -374,17 +359,6 @@ describe('GET /api/tasks authorization', () => {
             headers: { authorization: `Bearer ${token}` },
         });
         expect(response.statusCode).toBe(HTTP_OK);
-    });
-
-    it('refuses the worker secret — the read model is a person route', async () => {
-        const { instance } = await githubHarness(taskStub());
-        const response = await instance.inject({
-            method: 'GET',
-            url: '/api/tasks',
-            headers: { authorization: `Bearer ${TEST_JOB_BOARD_TOKEN}` },
-        });
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
-        expect(response.json().code).toBe('UNAUTHENTICATED');
     });
 
     it('resolves the organization from the credential, never the query', async () => {

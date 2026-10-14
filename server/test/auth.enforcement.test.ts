@@ -142,6 +142,30 @@ const BATCH_PATHS: readonly (readonly [string, string])[] = [
     ['POST', `/api/batches/${JOB_ID}/tasks/a/accept`],
 ];
 
+// The person routes outside the job board and the batches: settings, workflows and the task read
+// model. Each falls through to `user` by the safe default rather than being listed anywhere.
+const PERSON_ROUTES: readonly (readonly [string, string])[] = [
+    ['GET', '/api/env'],
+    ['PUT', '/api/env/workspace'],
+    ['GET', '/api/org/executors'],
+    ['POST', '/api/org/executors'],
+    ['GET', '/api/org/members'],
+    ['PUT', `/api/org/members/${JOB_ID}/role`],
+    ['GET', '/api/workflows'],
+    ['POST', '/api/workflows'],
+    ['GET', `/api/workflows/${JOB_ID}`],
+    ['PUT', `/api/workflows/${JOB_ID}`],
+    ['GET', '/api/workflow-blocks'],
+    // The task read model (#157): a person's inbox view over the same board. A worker token
+    // reading every task summary of the board would be the thread-read hole again, one level up.
+    ['GET', '/api/tasks'],
+    ['GET', '/api/workspace'],
+    ['PUT', '/api/workspace/repos'],
+    ['DELETE', '/api/workspace/repos/acme/web'],
+    ['GET', '/api/workspace/executors'],
+    ['PUT', '/api/workspace/executors'],
+];
+
 const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/health', 'open'],
     // The kubelet's startup probe carries no credential.
@@ -169,11 +193,6 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/settings/workspace', 'open'],
     ['/api/stats', 'user'],
     ['/api/jobs', 'user'],
-    // The task read model (#157): a person's inbox view over the same board. It falls through
-    // to `user` by the safe default rather than being listed anywhere — pinned here because a
-    // worker token reading every task summary of the board would be the thread-read hole
-    // again, one level up.
-    ['/api/tasks', 'user'],
     [`/api/jobs/${JOB_ID}`, 'user'],
     // All three are person's actions on a finished task — a follow-up asks for adjustments,
     // retry re-runs the thread head's command fresh, done declares the task finished by
@@ -258,8 +277,6 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // default is the safe one, so a new route is walled unless somebody deliberately opens it.
     ['/api/repos', 'user'],
     ['/api/skills', 'user'],
-    ['/api/workspace', 'user'],
-    ['/api/workspace/repos', 'user'],
     // Access-token management: a person's settings act, so session cookie or personal bearer —
     // never a worker token, and an org token is 403'd by the hook (not on its allowlist).
     ['/api/tokens', 'user'],
@@ -267,6 +284,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     [`/api/tokens/${JOB_ID}/revoke`, 'user'],
     // Batches are a person's: no batch path is a worker route or on the organization-token allowlist.
     ...BATCH_PATHS.map(([, path]) => [path, 'user'] as [string, string]),
+    ...[...new Set(PERSON_ROUTES.map(([, path]) => path))].map((path) => [path, 'user'] as [string, string]),
 ];
 
 describe('the route table', () => {
@@ -744,6 +762,31 @@ describe('the batch routes are a person’s', () => {
         const response = await server.inject({ method: 'GET', url: '/api/batches', headers: { cookie } });
         // No batch store behind this registry, so the route's own 503: it got past the hook.
         expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+    });
+});
+
+describe('the person routes need a session', () => {
+    it.each(PERSON_ROUTES)('%s %s refuses a request with no credential', async (method, url) => {
+        const server = await build(githubAuth(), memoryAuthStore());
+        const response = await server.inject({
+            method: method as 'GET',
+            url,
+            ...(method === 'GET' || method === 'DELETE' ? {} : { payload: {} }),
+        });
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+        expect(response.json().code).toBe('UNAUTHENTICATED');
+    });
+
+    it.each(PERSON_ROUTES)('%s %s refuses the worker token', async (method, url) => {
+        const server = await build(githubAuth(), memoryAuthStore());
+        const response = await server.inject({
+            method: method as 'GET',
+            url,
+            ...(method === 'GET' || method === 'DELETE' ? {} : { payload: {} }),
+            headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+        });
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+        expect(response.json().code).toBe('UNAUTHENTICATED');
     });
 });
 

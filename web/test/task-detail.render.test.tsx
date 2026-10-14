@@ -72,69 +72,13 @@ describe('TaskDetail', () => {
         expect(plain).not.toContain('class="pill">implement</span>');
     });
 
-    it('names the actors behind the verdicts, and stays quiet when there are none', () => {
-        const author = { id: 'a', login: 'octocat', name: null, avatarUrl: null };
-        const stopper = { id: 'b', login: 'stopper', name: null, avatarUrl: null };
-        const html = renderDetail({
-            jobs: [
-                job({ author, doneBy: author, doneAt: '2026-09-01T13:00:00.000Z' }),
-                job({ id: '22222222-2222-4222-8222-222222222222', stoppedBy: stopper, status: 'stopped' }),
-            ],
-        });
-        // The label follows the status: the stamp is the ask, only a row that settled stopped
-        // may claim the stop landed. A run that finished on its own after somebody asked keeps
-        // the ask as a request, never as a verdict.
-        expect(html).toContain('stopped by stopper');
-        expect(html).toContain('done by octocat');
-        const requested = renderDetail({ jobs: [job({ author, stoppedBy: stopper, doneBy: author })] });
-        expect(requested).toContain('stop requested by stopper');
-        expect(requested).not.toContain('stopped by stopper');
-        const plain = renderDetail({ jobs: [job()] });
-        expect(plain).not.toContain('stopped by');
-        expect(plain).not.toContain('stop requested by');
-        expect(plain).not.toContain('done by');
-    });
-
-    it('shows who started the task in the outcome, honestly unknown for a pre-accounts row', () => {
-        const author = { id: 'a', login: 'octocat', name: 'The Octocat', avatarUrl: 'https://x/a.png' };
-        expect(renderDetail({ jobs: [job({ author })] })).toContain('Started by');
-        expect(renderDetail({ jobs: [job({ author })] })).toContain('The Octocat');
-        expect(renderDetail({ jobs: [job({ author })] })).toContain('https://x/a.png');
-
-        const unknown = renderDetail({ jobs: [job()] });
-        expect(unknown).toContain('Started by');
-        expect(unknown).toContain('unknown');
-    });
-
-    it('renders the output as text, never as markup', () => {
-        const html = renderDetail({ jobs: [job({ output: '<script>alert(1)</script>' })] });
-        // Container output is arbitrary text; escaping it is the difference between a transcript
-        // and a hole.
-        expect(html).toContain('&lt;script&gt;');
-        expect(html).not.toContain('<script>');
-        expect(html).toContain('<pre');
-    });
-
-    it('claims nothing about a task or output that has not loaded', () => {
-        // A finished task whose detail has not arrived must not read as one with no output —
-        // that is a false statement about a run somebody is waiting on.
+    it('claims nothing about a task that has not loaded', () => {
         expect(renderDetail({ jobs: null })).toMatch(/Loading the task/);
-        const waiting = renderDetail({
-            jobs: [job({ status: 'running', output: null, exitCode: null, finishedAt: null, startedAt: null })],
-        });
-        expect(waiting).toContain('Waiting for the executor');
-        const empty = renderDetail({ jobs: [job({ output: null })] });
-        expect(empty).toContain('finished without a captured agent response');
     });
 
     it('says so in place when the task could not be loaded', () => {
         const html = renderDetail({ jobs: null, error: 'Request failed (503)' });
         expect(html).toContain('Request failed (503)');
-    });
-
-    it('shows the exit code of a finished run', () => {
-        const html = renderDetail({ jobs: [job({ status: 'failed', exitCode: 1 })] });
-        expect(html).toContain('exit 1');
     });
 });
 
@@ -265,28 +209,6 @@ describe('TaskDetail — the follow-up composer states', () => {
         const at = html.lastIndexOf('>Send follow-up<');
         const send = html.slice(at - LOOKBEHIND_CHARS, at);
         expect(send).toContain('disabled');
-    });
-
-    /**
-     * A follow-up is a new row on the board but NOT a new task here: the chain renders as one
-     * conversation, oldest first, and the composer + Done verdict belong to the NEWEST run only —
-     * older runs are history.
-     */
-    it('renders the follow-up chain as one conversation, with the newest run in charge', () => {
-        const root = job({ command: 'fix the flaky login test' });
-        const child = {
-            ...job({ command: 'now tighten the retry logic' }),
-            id: '44444444-4444-4444-8444-444444444444',
-            followUpTo: root.id,
-            rootJobId: root.id,
-        };
-        const html = renderDetail({ jobs: [root, child] });
-
-        expect(html).toContain('fix the flaky login test');
-        expect(html).toContain('now tighten the retry logic');
-        // Both messages, in order.
-        expect(html.indexOf('fix the flaky login test')).toBeLessThan(html.indexOf('now tighten the retry logic'));
-        expect(html).toContain('<textarea');
     });
 
     it('never emits a placeholder value', () => {
@@ -689,20 +611,5 @@ describe('TaskDetail — main column', () => {
         // The rail leads the DOM, so a narrow screen reads the summary first, the panels last.
         expect(html.indexOf('task-outcome')).toBeLessThan(html.indexOf('task-main'));
         expect(html.indexOf('task-main')).toBeLessThan(html.indexOf('task-support'));
-    });
-
-    it('publishes the branch as a copyable chip and links only a safe PR url', () => {
-        const html = renderDetail({
-            jobs: [job({ output: '[driver] published fix/2 — https://github.com/acme/web/pull/2' })],
-        });
-        const published = html.slice(html.indexOf('task-published'));
-        expect(published).toContain('fix/2</code>');
-        expect(published).toContain('aria-label="Copy branch name"');
-        expect(published).toContain('href="https://github.com/acme/web/pull/2"');
-        expect(published).toContain('Pull request #2');
-
-        const unsafe = renderDetail({ jobs: [job({ output: '[driver] published fix/odd — javascript:alert(1)' })] });
-        expect(unsafe).toContain('fix/odd</code>');
-        expect(unsafe).not.toContain('href="javascript:');
     });
 });

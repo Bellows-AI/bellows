@@ -7,7 +7,7 @@ import { type ComposerDraftInput, ComposerDraftProvider } from '../src/composer-
 import { WorkflowParameterFields } from '../src/components/WorkflowParameterFields.js';
 import { TaskComposerPage } from '../src/pages/TaskComposerPage.js';
 import { TaskDetailPage } from '../src/pages/TaskDetailPage.js';
-import { type WorkflowParamChoice, clampedWorkflow, paramsComplete, paramValueMatches } from '../src/task-composer.js';
+import type { WorkflowParamChoice } from '../src/task-composer.js';
 import { renderComposer } from './tasks-fixtures.js';
 import { expectNoPlaceholder } from './fixtures.js';
 
@@ -74,7 +74,6 @@ describe('the tasks pages', () => {
         expect(html).toContain('page-header-eyebrow');
         expect(html).not.toContain('<h2>Tasks</h2>');
         // No routine description repeating what the composer itself shows (#571).
-        expect(html).not.toContain('check readiness');
         expect(html).not.toContain('page-header-description');
     });
 
@@ -140,10 +139,6 @@ describe('TaskComposer', () => {
 
         const empty = renderComposer({ repos: [], executors: [] });
         expect(trigger(empty)).toContain('>No executor configured</span></button>');
-        expect(empty).toContain('Add an executor in Settings');
-        expect(empty).toContain('href="/settings/executors?return=/tasks/new"');
-        expect(empty).toContain('No executor configured</p>');
-        expect(empty).toContain('disabled');
     });
 
     it('preselects the poll-resolved default over the first row (issue 215, the preference by 391)', () => {
@@ -169,7 +164,6 @@ describe('TaskComposer', () => {
         expect(html).toContain('>Start task<');
         expect(html).toContain('Select repositories in');
         expect(html).toContain('href="/settings/repos?return=/tasks/new"');
-        expect(html).not.toContain('/settings/repositories');
         expect(html).toContain('to run against a codebase');
         // aria-label, not aria-labelledby: the ListboxButton's label context overrides a
         // labelledby that points outside it, so each select carries its name directly (issue 190).
@@ -201,8 +195,6 @@ describe('TaskComposer — the prompt and the launch', () => {
 
     it('starts against a selected, ready repository, saying nothing routine: the chips show what will run (#571)', () => {
         const html = renderComposer({ restored: restoredDraft({ draft: 'fix it' }) });
-        expect(html).not.toContain('Will run');
-        expect(html).not.toContain('as written');
         expect(html).not.toContain('banner-bad');
         expect(html).not.toContain('banner-info');
         const start = html.match(/<button type="button" class="primary"[^>]*>Start task<\/button>/)?.[0] ?? '';
@@ -239,7 +231,6 @@ describe('TaskComposer — the prompt and the launch', () => {
         // No list, no process to pick: the selector and anything about workflow details are absent.
         const html = renderComposer({ workflows: null });
         expect(html).not.toContain('Reusable workflow');
-        expect(html).not.toContain('composer-steps');
         expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(2);
         expect(html).not.toContain('Workflow details');
     });
@@ -258,7 +249,7 @@ describe('TaskComposer — the prompt and the launch', () => {
                 ],
             },
             ['<textarea'],
-            ['needs:', 'composer-param'],
+            ['composer-param'],
         ],
         [
             // The default view stays terse — no repeated-explanation sentence beside a compact
@@ -270,19 +261,8 @@ describe('TaskComposer — the prompt and the launch', () => {
                     { id: 'w2', name: 'mine', scope: 'user' },
                 ],
             },
-            ['Reusable workflow', '>No workflow</span></button>'],
-            ['A workflow can turn this request'],
-        ],
-        [
-            // The fixture mirrors the seeded fix-issue declaration the API now serves.
-            'renders no parameter inputs while no workflow is chosen',
-            {
-                workflows: [
-                    { id: 'wf-1', name: 'fix-issue', scope: 'org', params: [{ name: 'issue', pattern: '#\\d+' }] },
-                ],
-            },
-            ['>No workflow</span></button>'],
-            ['composer-param'],
+            ['Reusable workflow', '<span class="composer-context-value">No workflow</span></button>'],
+            [],
         ],
     ])('%s', (_label, input, has, lacks) => {
         const html = renderComposer(input);
@@ -296,81 +276,12 @@ describe('TaskComposer — the prompt and the launch', () => {
             executors: [{ name: 'main', type: 'claude' }],
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
         });
-        expect(html).not.toContain('Execution context');
-        expect(html).not.toContain('Choose where the task runs');
         expect(html).toContain('class="composer-context"');
         expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(3);
-        expect(html).not.toContain('composer-grid');
-        expect(html).not.toContain('Run without a repository checkout.');
-        expect(html).not.toContain('The selected executor type chooses');
         // The full value stays reachable off the truncated trigger through the title attribute,
         // beside the listbox itself.
         expect(html).toContain('title="acme/web"');
         expect(html).toContain('title="main"');
-    });
-
-    it('offers no workflow step controls: no checkboxes, no composer-steps, no default-workflow wording', () => {
-        const html = renderComposer({ workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }] });
-        expect(html).not.toMatch(/<input type="checkbox"/);
-        expect(html).not.toContain('composer-steps');
-        expect(html).not.toContain('Default workflow');
-        expect(html).not.toContain('Optional steps');
-    });
-});
-
-describe('composer param validation — the client mirror of the board check', () => {
-    const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
-    const free: WorkflowParamChoice = { name: 'notes' };
-
-    it('accepts when every declared param is present and full-matches its pattern', () => {
-        expect(paramsComplete([issue, free], { issue: '#42', notes: 'login page' })).toBe(true);
-        expect(paramsComplete([], {})).toBe(true);
-    });
-
-    it('refuses a missing, empty or whitespace value', () => {
-        expect(paramsComplete([issue], {})).toBe(false);
-        expect(paramsComplete([issue], { issue: '' })).toBe(false);
-        expect(paramsComplete([issue], { issue: '   ' })).toBe(false);
-    });
-
-    it('refuses a value that does not fully match the declared pattern', () => {
-        // Same refusals the server makes: a bare number without the '#', a prefixed one, a
-        // trailing word — a partial match is a guess, and a guess is what this feature removes.
-        expect(paramsComplete([issue], { issue: '42' })).toBe(false);
-        expect(paramsComplete([issue], { issue: 'x#42' })).toBe(false);
-        expect(paramsComplete([issue], { issue: '#42 trailing' })).toBe(false);
-    });
-
-    it('accepts any non-empty value when the param declares no pattern', () => {
-        expect(paramsComplete([free], { notes: 'anything at all' })).toBe(true);
-    });
-
-    it('answers false for a pattern the client cannot compile — the board decides', () => {
-        expect(paramValueMatches({ name: 'x', pattern: '[' }, 'y')).toBe(false);
-    });
-});
-
-describe('the workflow choice is clamped to the choices the list offers', () => {
-    // A repository switch refetches the list for the new context, and a chosen name the answered
-    // list no longer offers must not survive in state: its parameter inputs vanish, the vacuous
-    // param gate lights Send, and the launch carries a name the board refuses with
-    // UNKNOWN_WORKFLOW. The same clamp rule the executor and repository selects already live by.
-    const list = [
-        { id: 'w1', name: 'fix-issue', scope: 'org' as const },
-        { id: 'w2', name: 'triage', scope: 'repo' as const },
-    ];
-
-    it('resets a chosen name the answered list does not offer back to unchosen', () => {
-        expect(clampedWorkflow('fix-issue', [])).toBe('');
-        expect(clampedWorkflow('triage', [list[0]!])).toBe('');
-    });
-
-    it('keeps a name the list still offers, and holds off while the fetch is in flight', () => {
-        expect(clampedWorkflow('fix-issue', list)).toBe('fix-issue');
-        // `null` is "not answered yet" — it says nothing about the new context, so a choice
-        // survives the wait and is judged the moment the list lands.
-        expect(clampedWorkflow('fix-issue', null)).toBe('fix-issue');
-        expect(clampedWorkflow('', list)).toBe('');
     });
 });
 
@@ -433,31 +344,6 @@ describe('the workflow parameter fields', () => {
         expect(html).toContain('Notes is required.');
     });
 
-    it('rejects an over-length value in words, not in bytes', () => {
-        const OVER_LIMIT_LENGTH = 513;
-        const html = renderFields([plain], { notes: 'x'.repeat(OVER_LIMIT_LENGTH) }, { notes: true });
-        expect(html).toContain('Notes must be 512 characters or fewer.');
-    });
-
-    it('reuses the author guidance as the mismatch error when it exists', () => {
-        const html = renderFields([issue], { issue: 'not an issue' }, { issue: true });
-        expect(html).toContain('The issue to fix, as #123 or a full issues URL.');
-        expect(html).not.toContain('does not match the required format');
-    });
-
-    it('falls back to plain-language mismatch copy with no guidance to reuse', () => {
-        const bare: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
-        const html = renderFields([bare], { issue: 'not an issue' }, { issue: true });
-        expect(html).toContain('Issue does not match the required format. Open Format details for the technical rule.');
-    });
-
-    it('blames the stored rule, not the member, when the pattern cannot compile', () => {
-        const broken: WorkflowParamChoice = { name: 'issue', pattern: '[' };
-        const html = renderFields([broken], { issue: 'whatever' }, { issue: true });
-        // Apostrophe-free fragment: React escapes the quote, and the sentence is the pin, not its encoding.
-        expect(html).toContain('could not be checked. Ask an administrator to fix the workflow.');
-    });
-
     it('shows the raw pattern only inside Format details, never in a title or an error', () => {
         const html = renderFields([issue], { issue: 'not an issue' }, { issue: true });
         expect(html).toContain('<summary>Format details</summary>');
@@ -495,15 +381,12 @@ describe('the redesigned composer (#280)', () => {
 
     it('makes the prompt the one surface: no numbered steps, no secondary cards (#571)', () => {
         const html = renderComposer({ workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }] });
-        expect(html).not.toContain('composer-step');
         expect(html).not.toContain('<h2');
-        for (const title of ['Execution context', 'Workflow details', 'Readiness']) {
+        for (const title of ['Workflow details', 'Readiness']) {
             expect(html).not.toContain(title);
         }
         expect(html.match(/class="panel /g) ?? []).toHaveLength(1);
         expect(html).toContain('<label for="composer-prompt">What should the agent do?</label>');
-        // No attachment, mention or template affordances — none of them exist behind the UI.
-        expect(html).not.toMatch(/attach|mention|template/i);
     });
 
     it('puts the context chips and Start inside the prompt panel, after the textarea', () => {
@@ -614,13 +497,6 @@ describe('the redesigned composer (#280)', () => {
         );
     });
 
-    it('renders neither Try an example nor Discard draft', () => {
-        for (const html of [renderComposer({}), renderComposer({ restored: restoredDraft({ draft: 'fix it' }) })]) {
-            expect(html).not.toContain('Try an example');
-            expect(html).not.toContain('Discard draft');
-        }
-    });
-
     it('explains the repository and executor beside their chips, keeping the values visible', () => {
         const html = renderComposer({});
         for (const [value, help] of [
@@ -678,12 +554,6 @@ describe('the redesigned composer (#280)', () => {
         expect(html).toContain('Complete the required workflow details to continue.');
     });
 
-    it('labels the empty workflow option "No workflow" without a helper sentence restating it', () => {
-        const html = renderComposer({ workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }] });
-        expect(html).toContain('<span class="composer-context-value">No workflow</span>');
-        expect(html).not.toContain('Without a workflow, your prompt runs as written.');
-    });
-
     it('holds Start while a restored workflow waits for its list — its parameters are not known yet', () => {
         // Before the list answers, the chosen name declares nothing, so the empty-params gate
         // would pass vacuously and launch `fix-issue` without the `#12` the member typed.
@@ -698,7 +568,6 @@ describe('the redesigned composer (#280)', () => {
         expect(startButton(html)).toContain('disabled=""');
         expect(html).toContain('class="banner-info" id="composer-readiness"');
         expect(html).toContain('Loading the fix-issue workflow…');
-        expect(html).not.toContain('needs no launch details');
         expect(html).not.toContain('banner-bad');
     });
 

@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ORG_CONNECTION_SCOPE, USER_CONNECTION_SCOPE, type ConnectionView } from '../src/api/connections.js';
-import { JiraConnectionDialog, SCOPED_TOKEN_HINT } from '../src/components/JiraConnectionDialog.js';
+import { SCOPED_TOKEN_HINT } from '../src/components/JiraConnectionDialog.js';
 import {
     ADD_CONNECTION_LABEL,
     DEFAULT_CONNECTION_CAPTION,
@@ -72,24 +72,9 @@ describe('the Jira connections panel', () => {
     });
 });
 
-/**
- * The add dialog is a Headless UI Dialog and portals, which `renderToStaticMarkup` does not
- * render: its fields, the scoped-token help and the in-dialog refusal are web/test/jira-connections.dom.test.tsx's.
- */
-describe('the Jira connection dialog', () => {
-    it('server-renders a placeholder, open or closed', () => {
-        for (const open of [false, true]) {
-            const html = renderToStaticMarkup(
-                <JiraConnectionDialog
-                    open={open}
-                    scope={ORG_CONNECTION_SCOPE}
-                    saving={false}
-                    onClose={() => {}}
-                    onCreate={async () => null}
-                />
-            );
-            expect(html).toContain('<span hidden');
-        }
+/** The add dialog portals: its fields and in-dialog refusal are web/test/jira-connections.dom.test.tsx's. */
+describe('the Jira connection dialog copy', () => {
+    it('asks for a scoped service-account token', () => {
         expect(SCOPED_TOKEN_HINT).toMatch(/scoped \(service-account\) token/);
     });
 });
