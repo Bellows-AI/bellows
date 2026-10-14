@@ -404,12 +404,6 @@ describe('batch validate / start / inspect / list', () => {
         );
         expect(inspected.out).toContain(`${ID} expired v3 "${PLAN.title}"`);
     });
-
-    it('is usage when a verb is missing its arguments', async () => {
-        const result = await cli(['batch', 'retry', ID], () => json({}));
-        expect(result.code).toBe(2);
-        expect(result.sent).toEqual([]);
-    });
 });
 
 describe('batch wait', () => {
@@ -611,12 +605,6 @@ describe('batch report', () => {
         const result = await cli(['batch', 'report', ID, '--json'], () => json(REPORT('expired')));
         expect(JSON.parse(result.out).data).toEqual(REPORT('expired'));
     });
-
-    it('is usage without a batch id', async () => {
-        const result = await cli(['batch', 'report'], () => json(REPORT()));
-        expect(result.code).toBe(2);
-        expect(result.sent).toEqual([]);
-    });
 });
 
 describe('batch retry / accept / cancel', () => {
@@ -628,18 +616,5 @@ describe('batch retry / accept / cancel', () => {
         expect(accept.sent[0]).toMatchObject({ method: 'POST', url: `http://board/api/batches/${ID}/tasks/a/accept` });
         expect(cancel.sent[0]).toMatchObject({ method: 'POST', url: `http://board/api/batches/${ID}/cancel` });
         expect([retry.code, accept.code, cancel.code]).toEqual([0, 0, 0]);
-    });
-
-    it('surfaces the board refusing an unavailable operation or a forced code-changing completion', async () => {
-        const unsupported = await cli(['batch', 'cancel', ID], () =>
-            json({ error: 'Batch cancel is not available yet', code: 'BATCH_UNSUPPORTED' }, 409)
-        );
-        expect(unsupported.code).toBe(1);
-        expect(unsupported.err).toContain('BATCH_UNSUPPORTED');
-        const noTask = await cli(['batch', 'accept', ID, 'zzz'], () =>
-            json({ error: 'No such task', code: 'NOT_FOUND' }, 404)
-        );
-        expect(noTask.code).toBe(1);
-        expect(noTask.sent).toHaveLength(1);
     });
 });

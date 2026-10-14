@@ -141,67 +141,54 @@ describe('npm run release', () => {
         expect(git(fixture, fixture.remote, 'tag', '--list')).toBe('v0.0.3');
     });
 
-    it('refuses a modified tracked file', () => {
+    it.each<[string, (fixture: Fixture) => void, RegExp]>([
+        ['a modified tracked file', (f) => writeFileSync(join(f.work, 'README.md'), 'edited\n'), /not clean/],
+        ['an untracked file', (f) => writeFileSync(join(f.work, 'stray.txt'), 'stray\n'), /not clean/],
+        ['a checkout behind origin', (f) => publish(f, { 'README.md': 'moved on\n' }), /origin\/main/],
+        [
+            'a checkout ahead of origin',
+            (f) => {
+                writeFileSync(join(f.work, 'README.md'), 'unpushed\n');
+                git(f, f.work, 'commit', '-q', '-am', 'unpushed');
+            },
+            /origin\/main/,
+        ],
+        ['a branch other than main', (f) => git(f, f.work, 'switch', '-q', '-c', 'feature'), /not on main/],
+        [
+            'the next tag already existing locally',
+            (f) => {
+                // A tag on HEAD would trip the already-released guard first; put it on another commit.
+                git(f, f.work, 'commit', '-q', '--allow-empty', '-m', 'elsewhere');
+                git(f, f.work, 'tag', 'v0.0.3');
+                git(f, f.work, 'reset', '-q', '--hard', 'origin/main');
+            },
+            /v0\.0\.3 already exists/,
+        ],
+        [
+            'the next tag existing only on the remote',
+            (f) => {
+                git(f, f.seed, 'commit', '-q', '--allow-empty', '-m', 'elsewhere');
+                git(f, f.seed, 'tag', 'v0.0.3');
+                git(f, f.seed, 'push', '-q', 'origin', 'v0.0.3');
+            },
+            /v0\.0\.3 already exists/,
+        ],
+    ])('refuses %s', (_label, arrange, reason) => {
         const fixture = setup();
-        writeFileSync(join(fixture.work, 'README.md'), 'edited\n');
-        expectRefusal(fixture, /not clean/);
+        arrange(fixture);
+        expectRefusal(fixture, reason);
     });
 
-    it('refuses an untracked file', () => {
-        const fixture = setup();
-        writeFileSync(join(fixture.work, 'stray.txt'), 'stray\n');
-        expectRefusal(fixture, /not clean/);
-    });
-
-    it('refuses a checkout behind origin', () => {
-        const fixture = setup();
-        publish(fixture, { 'README.md': 'moved on\n' });
-        expectRefusal(fixture, /origin\/main/);
-    });
-
-    it('refuses a checkout ahead of origin', () => {
-        const fixture = setup();
-        writeFileSync(join(fixture.work, 'README.md'), 'unpushed\n');
-        git(fixture, fixture.work, 'commit', '-q', '-am', 'unpushed');
-        expectRefusal(fixture, /origin\/main/);
-    });
-
-    it('refuses a branch other than main', () => {
-        const fixture = setup();
-        git(fixture, fixture.work, 'switch', '-q', '-c', 'feature');
-        expectRefusal(fixture, /not on main/);
-    });
-
-    it('refuses when the next tag already exists locally', () => {
-        const fixture = setup();
-        // A tag on HEAD would trip the already-released guard first; put it on another commit.
-        git(fixture, fixture.work, 'commit', '-q', '--allow-empty', '-m', 'elsewhere');
-        git(fixture, fixture.work, 'tag', 'v0.0.3');
-        git(fixture, fixture.work, 'reset', '-q', '--hard', 'origin/main');
-        expectRefusal(fixture, /v0\.0\.3 already exists/);
-    });
-
-    it('refuses when the next tag exists only on the remote', () => {
-        const fixture = setup();
-        git(fixture, fixture.seed, 'commit', '-q', '--allow-empty', '-m', 'elsewhere');
-        git(fixture, fixture.seed, 'tag', 'v0.0.3');
-        git(fixture, fixture.seed, 'push', '-q', 'origin', 'v0.0.3');
-        expectRefusal(fixture, /v0\.0\.3 already exists/);
-    });
-
-    it.each([
+    it.each<[string, string | null]>([
         ['a leading v', 'v0.0.2\n'],
         ['two components', '0.0\n'],
         ['a prerelease', '0.0.2-rc.1\n'],
         ['a leading zero', '0.01.2\n'],
         ['two lines', '0.0.2\n0.0.3\n'],
         ['an empty file', ''],
+        ['no file at all', null],
     ])('refuses a VERSION with %s', (_label, contents) => {
         expectRefusal(setup(contents), /VERSION/);
-    });
-
-    it('refuses a missing VERSION', () => {
-        expectRefusal(setup(null), /VERSION/);
     });
 
     it('lands nothing when the remote rejects either ref, and undoes its own commit and tag', () => {
