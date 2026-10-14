@@ -1,13 +1,8 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import type { FastifyInstance } from 'fastify';
+import { describe, expect, it } from 'vitest';
 import { TEST_REPO, githubAuth, harness, memoryAuthStore, signedIn, stubTelemetryClient } from './helpers.js';
-const HTTP_BAD_REQUEST = 400;
+import { HTTP_BAD_REQUEST, trackApps } from './helpers-http.js';
 
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 describe('GET /api/stats scope: rejections', () => {
     const scopedHarness = async (telemetry = stubTelemetryClient()) => {
@@ -18,7 +13,7 @@ describe('GET /api/stats scope: rejections', () => {
 
     it('names the org scope the figures were computed under', async () => {
         const h = await harness();
-        app = h.app;
+        const app = track(h.app);
         await app.inject({ method: 'GET', url: '/api/stats' });
         await h.settle();
 
@@ -29,7 +24,7 @@ describe('GET /api/stats scope: rejections', () => {
 
     it('rejects caller scope when nothing is signed in (open auth mode)', async () => {
         const h = await harness();
-        app = h.app;
+        const app = track(h.app);
         const res = await app.inject({ method: 'GET', url: '/api/stats?scope=mine' });
         expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(res.json().code).toBe('SCOPE_REQUIRES_USER');
@@ -37,7 +32,7 @@ describe('GET /api/stats scope: rejections', () => {
 
     it('rejects caller scope for an organization token, which names no person', async () => {
         const h = await scopedHarness();
-        app = h.app;
+        const app = track(h.app);
         const token = h.store.seedAccessToken('test-org', 'org', { label: 'board reader' });
         const res = await app!.inject({
             method: 'GET',
@@ -50,7 +45,7 @@ describe('GET /api/stats scope: rejections', () => {
 
     it('rejects a scope it does not know', async () => {
         const h = await harness();
-        app = h.app;
+        const app = track(h.app);
         const res = await app.inject({ method: 'GET', url: '/api/stats?scope=team' });
         expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(res.json().code).toBe('BAD_SCOPE');
@@ -118,7 +113,7 @@ describe('GET /api/stats scope: computed figures', () => {
             ],
         });
         const h = await harness({ telemetry, auth: store, config: { auth: githubAuth() } });
-        app = h.app;
+        const app = track(h.app);
         const cookie = await signedIn(store, caller);
         await app.inject({ method: 'GET', url: '/api/stats', headers: { cookie } });
         await h.settle();
@@ -154,7 +149,7 @@ describe('GET /api/stats scope: computed figures', () => {
         const caller = store.seedMember('test-org', 'carol');
         const telemetry = stubTelemetryClient();
         const h = await harness({ telemetry, auth: store, config: { auth: githubAuth() } });
-        app = h.app;
+        const app = track(h.app);
         const headers = { cookie: await signedIn(store, caller) };
         await app.inject({ method: 'GET', url: '/api/stats', headers });
         await h.settle();

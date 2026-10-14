@@ -3,27 +3,19 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import type { Session } from '../src/api/useSession.js';
 import { UserMenu } from '../src/components/UserMenu.js';
+import { memberSession } from './fixtures.js';
 
 /**
  * `MemoryRouter` rather than a browser router: this suite has no DOM, and the menu's Settings link
  * is a `NavLink`, which needs a router context to render at all.
  */
 
-const session: Session = {
-    user: {
-        id: '00000000-0000-4000-8000-000000000001',
-        login: 'octocat',
-        name: 'The Octocat',
-        githubUserId: 4242,
-        avatarUrl: 'https://avatars.githubusercontent.com/u/4242.png',
-    },
-    role: 'member',
+const session = memberSession({
+    user: { avatarUrl: 'https://avatars.githubusercontent.com/u/4242.png' },
     membership: { invitedAt: '2026-01-15T09:30:00.000Z', claimedAt: '2026-01-16T10:00:00.000Z' },
     account: { createdAt: '2026-01-15T09:30:00.000Z', lastLoginAt: '2026-08-21T12:00:00.000Z' },
-    organization: { id: 'bellows', name: 'Bellows AI' },
     workspacePath: '/workspaces/bellows/00000000-0000-4000-8000-000000000001',
-    mode: 'github',
-};
+});
 
 const render = (forSession: Session) =>
     renderToStaticMarkup(

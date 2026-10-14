@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { run } from '../src/run.js';
-
-const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
+import { recordingBoard } from './harness.js';
 
 const task = (overrides: Record<string, unknown> = {}) => ({
     id: 'task-1',
@@ -27,20 +26,11 @@ const answer = (items: unknown[], nextCursor: string | null = null) =>
 
 /** Answers each request in turn from `responses`, recording the URL the CLI asked for. */
 function harness(...responses: Response[]) {
-    const out: string[] = [];
-    const err: string[] = [];
     const urls: string[] = [];
-    const fetch = (async (url: string | URL | globalThis.Request) => {
-        urls.push(String(url));
-        return responses[urls.length - 1] ?? Response.json({ error: 'unexpected', code: 'X' }, { status: 500 });
-    }) as unknown as typeof globalThis.fetch;
-    const io = {
-        env: ENV,
-        fetch,
-        sleep: async () => {},
-        stdout: (t: string) => out.push(t),
-        stderr: (t: string) => err.push(t),
-    };
+    const { out, err, io } = recordingBoard((sent, index) => {
+        urls.push(sent.url);
+        return responses[index] ?? Response.json({ error: 'unexpected', code: 'X' }, { status: 500 });
+    });
     return { out, err, urls, io };
 }
 

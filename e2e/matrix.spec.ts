@@ -20,6 +20,7 @@ import {
 } from './routes.js';
 import { MATRIX_VIEWPORTS, THEMES, type Theme } from './screenshot-matrix.js';
 import { controlsOutsideViewport, NAMED_SCROLL_REGIONS, pageOverflow } from './viewport.js';
+import { useTheme } from './page-health.js';
 
 /**
  * The responsive and accessibility matrix (issue 287, plan §8): every route family × the
@@ -103,13 +104,6 @@ const ANONYMOUS_ENTRY = ENTRY_SHOTS.filter((shot) => shot.route !== 'account');
 const SETTLED = { timeout: SLOW };
 
 const label = (shot: Shot) => `${shot.route}/${shot.state}`;
-
-/** Both theme mechanisms the bootstrap reads — the stored preference and the OS scheme — so the
- *  real before-paint path picks the theme on both origins and across every navigation. */
-async function useTheme(page: Page, theme: Theme): Promise<void> {
-    await page.emulateMedia({ colorScheme: theme });
-    await page.addInitScript((t) => localStorage.setItem('factory.theme', t), theme);
-}
 
 /** Navigate, wait for the route's data anchor and the fonts, and confirm the theme took. Every
  *  family runs in the same page, so the previous family's mocked routes are dropped first — a

@@ -1,6 +1,7 @@
 import { OBJECTIVE_MODE, WORKFLOW_MODE } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
-import { FORBIDDEN, job, renderDetail } from './tasks-fixtures.js';
+import { job, renderDetail } from './tasks-fixtures.js';
+import { expectNoPlaceholder } from './fixtures.js';
 
 /** The outcome rail's own markup — the main column below may repeat a word in its own voice. */
 const railOf = (html: string): string => html.slice(html.indexOf('task-outcome'), html.indexOf('task-main'));
@@ -378,7 +379,7 @@ describe('TaskOutcome — services and the placeholder sweep', () => {
                 }),
             ],
         });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        expectNoPlaceholder(html);
     });
 });
 

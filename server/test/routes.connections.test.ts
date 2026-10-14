@@ -1,33 +1,31 @@
 import type { FastifyInstance } from 'fastify';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { ConnectionStore, ConnectionView, NewConnection } from '../src/db/connection-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
+import {
+    HTTP_BAD_GATEWAY,
+    HTTP_BAD_REQUEST,
+    HTTP_CREATED,
+    HTTP_FORBIDDEN,
+    HTTP_NOT_FOUND,
+    HTTP_NO_CONTENT,
+    HTTP_OK,
+    HTTP_UNAUTHORIZED,
+    trackApps,
+} from './helpers-http.js';
 
 /**
  * Offline: the connection routes' HTTP contract (issue #546) and the task-create selection check,
  * against an in-memory store double. The store's SQL is pinned by server/test-db/connection-store.test.ts.
  */
 
-const HTTP_OK = 200;
-const HTTP_CREATED = 201;
-const HTTP_NO_CONTENT = 204;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
-const HTTP_NOT_FOUND = 404;
-const HTTP_BAD_GATEWAY = 502;
-
 const CLOUD_ID = 'bc18dcc3-123a-4216-a5a2-4f7b0e55b297';
 const API_TOKEN = 'secret-atlassian-token';
 const SITE = { site: 'https://Example.atlassian.net/', email: 'agent@example.com', apiToken: API_TOKEN };
 
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 /** A store double with the real scoping rule, holding tokens like the table does. */
 function memoryConnections(): ConnectionStore & { rows: (NewConnection & { id: string })[] } {
@@ -83,12 +81,13 @@ async function boot() {
         },
     } as unknown as JobStore;
     const config = testConfig({ auth: githubAuth() });
-    app = await buildApp({
+    const app = await buildApp({
         config,
         orgs: staticRegistry({ config, telemetry: stubTelemetryClient(), connections, jobs }),
         auth,
         cloudIdLookup: async (host) => (host === 'example.atlassian.net' ? CLOUD_ID : null),
     });
+    track(app);
     return {
         instance: app,
         connections,

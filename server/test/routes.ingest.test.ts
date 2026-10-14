@@ -1,25 +1,22 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import type { FastifyInstance } from 'fastify';
+import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { MetricRow } from '../src/telemetry/otlp.js';
 import type { SessionBranchReport, TelemetryStore } from '../src/telemetry/store.js';
 import { githubAuth, memoryAuthStore, stubTelemetryClient, testConfig } from './helpers.js';
+import {
+    HTTP_ACCEPTED,
+    HTTP_BAD_REQUEST,
+    HTTP_NOT_FOUND,
+    HTTP_OK,
+    HTTP_PAYLOAD_TOO_LARGE,
+    HTTP_SERVICE_UNAVAILABLE,
+    HTTP_UNAUTHORIZED,
+    HTTP_UNSUPPORTED_MEDIA_TYPE,
+    trackApps,
+} from './helpers-http.js';
 
-const HTTP_OK = 200;
-const HTTP_ACCEPTED = 202;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_NOT_FOUND = 404;
-const HTTP_PAYLOAD_TOO_LARGE = 413;
-const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
-const HTTP_SERVICE_UNAVAILABLE = 503;
-
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 interface Recorded {
     report: SessionBranchReport;
@@ -58,7 +55,7 @@ async function harnessWith(store?: StoreStub) {
         now: () => Date.parse('2026-08-21T12:00:00.000Z'),
     });
     const instance = await buildApp({ config, service, store });
-    app = instance;
+    track(instance);
     return instance;
 }
 
@@ -90,7 +87,7 @@ async function githubHarnessWith(
             orgOfLease ??
             (async (jobId, leaseToken) => (jobId === JOB_ID && leaseToken === LEASE ? CREDENTIAL_ORG : null)),
     });
-    app = instance;
+    track(instance);
     return instance;
 }
 

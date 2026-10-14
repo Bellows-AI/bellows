@@ -1,9 +1,9 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
+import { craftJob, type CraftShape, expireLease, testUser } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -12,23 +12,16 @@ let store: JobStore;
 
 const ORG = 'test-org';
 
-/**
- * The jobs' author. A generated identity, never a literal: integration tests do not hardcode ids,
- * and a random one cannot collide with a real backfilled user the way a memorable constant
- * eventually would. Re-planted before every test, because `created_by` is a uuid foreign key.
- */
-const AUTHOR = randomUUID();
-/** Turns a slice of a uuid into a plausible github id — hex digits, parsed as base 16. */
-const UUID_HEX_SLICE_LENGTH = 8;
-const HEX_RADIX = 16;
-const AUTHOR_GITHUB_ID = Number.parseInt(randomUUID().slice(0, UUID_HEX_SLICE_LENGTH), HEX_RADIX);
+/** The jobs' author. Re-planted before every test, because `created_by` is a uuid foreign key. */
+const AUTHOR_USER = testUser('wall-clock-cat');
+const AUTHOR = AUTHOR_USER.id;
 
 /** A lease long enough that nothing in this suite outlives it by accident. */
 const LEASE_SECONDS = 300;
 /** How far back the stop-banking cases backdate their claim's start. */
 const STOPPED_RUN_MINUTES_AGO = 4;
 
-const db = useTestDb({ max: 8, users: [{ id: AUTHOR, githubUserId: AUTHOR_GITHUB_ID, login: 'wall-clock-cat' }] });
+const db = useTestDb({ max: 8, users: [AUTHOR_USER] });
 
 beforeAll(async () => {
     if (!enabled) return;
@@ -43,37 +36,7 @@ beforeAll(async () => {
  * always starts expired: every case that runs the row claims it first, and the rest never reach
  * the claim.
  */
-const craft = async (
-    shape: {
-        parent?: string | null;
-        status?: 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
-        startedMinutesAgo?: number;
-        wallClockMs?: number;
-    } = {}
-): Promise<string> => {
-    const id = randomUUID();
-    await sql`
-        insert into job (org_id, id, command, status, parent_job_id, root_job_id, created_by, repo,
-                         lease_expires_at, created_at, started_at, wall_clock_ms)
-        values (
-            ${ORG}, ${id}, 'crafted',
-            ${shape.status ?? 'queued'},
-            ${shape.parent ?? null},
-            ${shape.parent ?? id},
-            ${AUTHOR},
-            'acme/widgets',
-            now() - interval '1 second',
-            now(),
-            ${
-                shape.startedMinutesAgo === undefined
-                    ? null
-                    : sql`now() - (${shape.startedMinutesAgo} * interval '1 minute')`
-            },
-            ${shape.wallClockMs ?? null}
-        )
-    `;
-    return id;
-};
+const craft = (shape: CraftShape = {}) => craftJob({ sql, org: ORG, author: AUTHOR }, shape);
 
 /** The row's banked wall clock, read back with straight SQL. postgres.js hands a bigint over as a
  * string, the same coercion `toJob` does. */
@@ -170,7 +133,7 @@ describe.skipIf(!enabled)('the task wall clock', () => {
     it('the claim settles a stamped expired run stopped, banking its last segment', async () => {
         const { id } = await claimBackdated(STOPPED_RUN_MINUTES_AGO);
         expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
-        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
+        await expireLease(sql, id);
 
         expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
 
@@ -186,7 +149,7 @@ describe.skipIf(!enabled)('the task wall clock', () => {
     // to the settle, whichever side of the lease expiry the landing takes.
     it('stopping in place after the lease died banks the run too', async () => {
         const { id } = await claimBackdated(STOPPED_RUN_MINUTES_AGO);
-        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
+        await expireLease(sql, id);
 
         expect(await store.stop(id, null)).toEqual({ result: 'stopped' });
 

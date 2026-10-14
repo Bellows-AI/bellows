@@ -1,5 +1,5 @@
 import { OBJECTIVE_MODE, WORKFLOW_MODE } from '@factory-ai/core';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import { LOCAL_ORG_ID } from '../src/config.js';
@@ -18,6 +18,7 @@ import type {
     SettleOutcome,
     SettleResult,
 } from '../src/db/job-store-types.js';
+import { trackApps } from './helpers-http.js';
 import type {
     AnswerQuestionResult,
     ArtifactKind,
@@ -54,11 +55,7 @@ import {
     TEST_JOB_BOARD_TOKEN,
 } from './helpers.js';
 
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 const ID = '11111111-1111-4111-8111-111111111111';
 
@@ -491,7 +488,7 @@ async function harnessWith(jobs?: StoreStub, workflows?: WorkflowStore, telemetr
         config,
         orgs: staticRegistry({ config, jobs, workflows, telemetry }),
     });
-    app = instance;
+    track(instance);
     return instance;
 }
 
@@ -527,7 +524,7 @@ async function harnessOfBoards(boards: readonly (readonly [string, StoreStub])[]
             warmAll: async () => {},
         },
     });
-    app = instance;
+    track(instance);
     return instance;
 }
 
@@ -1287,7 +1284,7 @@ describe('POST /api/jobs/leases — the orphan reaper’s batched lookup (issue 
                 warmAll: async () => {},
             },
         });
-        app = instance;
+        track(instance);
 
         const response = await postAsWorker(instance, '/api/jobs/leases', { ids: [ID] });
 
@@ -1331,7 +1328,7 @@ describe('POST /api/jobs/leases — the orphan reaper’s batched lookup (issue 
                 warmAll: async () => {},
             },
         });
-        app = instance;
+        track(instance);
 
         const response = await post(instance, '/api/jobs/leases', { ids: [ID] });
 
@@ -2213,7 +2210,7 @@ describe('lifecycle actor attribution', () => {
             orgs: staticRegistry({ config, jobs: store, telemetry: stubTelemetryClient() }),
             auth,
         });
-        app = instance;
+        track(instance);
         const caller = auth.seedMember('test-org', 'octocat');
         const cookie = await signedIn(auth, caller);
         return { instance, store, caller, cookie };
@@ -2708,7 +2705,7 @@ describe('POST /api/jobs/:id/done', () => {
             },
         };
         const config = testConfig();
-        app = await buildApp({ config, orgs: staticRegistry({ config, jobs, batches }) });
+        const app = track(await buildApp({ config, orgs: staticRegistry({ config, jobs, batches }) }));
         return { instance: app, calls };
     }
 

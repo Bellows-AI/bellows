@@ -25,7 +25,7 @@ posture: [security.md](security.md) · routes and codes: [api.md](api.md).
   invite, no auto-join. `server/src/auth/store.ts`, `server/test-db/auth-store.test.ts`.
 - **Every credential's reach is a live `org_membership` join** — `findSession`,
   `findPersonalToken`, `findOrgToken` — so a removed membership ends sessions and both token kinds
-  on the next request. `server/src/auth/store.ts`, `server/test-db/auth-store.access-tokens.org.test.ts`.
+  on the next request. `server/src/auth/store.ts`, `server/test-db/auth-store.access-tokens.test.ts`.
 - **An org's first materialized membership lands `admin`**, and demoting the last admin is refused
   in the statement (`409 LAST_ADMIN`). `server/src/auth/store.ts`, `server/test/routes.org-members.test.ts`.
 - **`github_user_id` is the identity; `github_login` is a label** nothing keys on. `server/src/auth/store.ts`.

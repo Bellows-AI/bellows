@@ -1,35 +1,31 @@
 import { createHash } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
-import type { FastifyInstance } from 'fastify';
-import { buildApp } from '../src/app.js';
+import { describe, expect, it } from 'vitest';
 import type { AuthConfig } from '../src/config.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
-import type { TelemetryStore } from '../src/telemetry/store.js';
 import type { MemoryAuthStore } from './helpers.js';
-import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
+import { buildWithAuth, githubAuth, memoryAuthStore, signedIn } from './helpers.js';
+import {
+    HTTP_ACCEPTED,
+    HTTP_BAD_REQUEST,
+    HTTP_CREATED,
+    HTTP_FORBIDDEN,
+    HTTP_NOT_FOUND,
+    HTTP_OK,
+    HTTP_UNAUTHORIZED,
+    HTTP_UNAVAILABLE,
+    trackApps,
+} from './helpers-http.js';
 
 const ORG = 'test-org';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
-const HTTP_OK = 200;
-const HTTP_CREATED = 201;
-const HTTP_ACCEPTED = 202;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
-const HTTP_NOT_FOUND = 404;
-const HTTP_UNAVAILABLE = 503;
 
 // The prefixes are the wire contract — greppable when leaked — so they are asserted as literals
 // here rather than re-imported from the implementation.
 const FAT = 'fat_';
 const OAT = 'oat_';
 
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 /** Records the author every created job carries — the audit property this whole feature guards.
  *  `waits`, when given, records the settle long-poll's holds the same way (issue #323). */
@@ -54,28 +50,14 @@ const jobStub = (authors: string[], waits: { id: string; timeoutMs: number }[] =
         },
     }) as JobStore;
 
-const telemetryStub = (): TelemetryStore => ({
-    async insertMetrics() {
-        return 0;
-    },
-    async recordBranch() {},
-});
-
 async function build(
     auth: AuthConfig,
     store: MemoryAuthStore,
     authors: string[] = [],
     waits: { id: string; timeoutMs: number }[] = []
 ) {
-    const config = testConfig({ auth });
     const repos = staticRepoSource([{ owner: 'Bellows-AI', name: 'bellows.ai' }]);
-    app = await buildApp({
-        config,
-        orgs: staticRegistry({ config, repos, jobs: jobStub(authors, waits), telemetry: stubTelemetryClient() }),
-        store: telemetryStub(),
-        auth: store,
-    });
-    return app;
+    return track(await buildWithAuth(auth, store, { repos, jobs: jobStub(authors, waits) }));
 }
 
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` });

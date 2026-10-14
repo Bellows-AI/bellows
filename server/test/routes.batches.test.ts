@@ -1,5 +1,4 @@
-import type { FastifyInstance } from 'fastify';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
@@ -13,6 +12,16 @@ import {
     stubTelemetryClient,
     testConfig,
 } from './helpers.js';
+import {
+    HTTP_BAD_REQUEST,
+    HTTP_CONFLICT,
+    HTTP_CREATED,
+    HTTP_NOT_FOUND,
+    HTTP_OK,
+    HTTP_SERVICE_UNAVAILABLE,
+    HTTP_UNAUTHORIZED,
+    trackApps,
+} from './helpers-http.js';
 
 /**
  * Offline: the HTTP contract of the batch routes against an in-memory store double. The store's
@@ -20,24 +29,12 @@ import {
  * server/test-db/batch-store.test.ts, which needs a database.
  */
 
-const HTTP_OK = 200;
-const HTTP_CREATED = 201;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_NOT_FOUND = 404;
-const HTTP_CONFLICT = 409;
-const HTTP_SERVICE_UNAVAILABLE = 503;
-
 const ORG = 'test-org';
 const OTHER_ORG = 'other-org';
 const WEB = { owner: 'Bellows-AI', name: 'bellows.ai' };
 const API = { owner: 'Bellows-AI', name: 'api' };
 
-let app: FastifyInstance | null = null;
-afterEach(async () => {
-    await app?.close();
-    app = null;
-});
+const track = trackApps();
 
 const task = (key: string, extra: Record<string, unknown> = {}) => ({
     key,
@@ -107,7 +104,7 @@ async function setup(
             { ...API, defaultBranch: 'main' },
         ]
     );
-    app = await buildApp({
+    const app = await buildApp({
         config,
         orgs: staticRegistry({
             config,
@@ -120,6 +117,7 @@ async function setup(
         }),
         auth,
     });
+    track(app);
     const memberCookie = await signedIn(auth, member);
     const otherCookie = await signedIn(auth, other);
     /** The member's call unless `as` says otherwise: another cookie, none at all, or extra headers. */
@@ -502,7 +500,7 @@ describe('org scoping and availability', () => {
         const auth = memoryAuthStore();
         const member = auth.seedMember(ORG, 'octocat');
         const config = testConfig({ auth: githubAuth() });
-        app = await buildApp({ config, orgs: staticRegistry({ config }), auth });
+        const app = track(await buildApp({ config, orgs: staticRegistry({ config }), auth }));
         const response = await app.inject({
             method: 'GET',
             url: '/api/batches',
