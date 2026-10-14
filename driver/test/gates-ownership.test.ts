@@ -238,26 +238,19 @@ describe('gate ownership: ad-hoc cancel races', () => {
 });
 
 describe('gate ownership: teardown vs re-acquire', () => {
-    it('a re-acquire right after a release (cooldown 0) gets a working environment', async () => {
-        // The released container takes 50ms to die; the follow-up's acquire lands inside that.
+    // The released container takes 50ms to die; the follow-up's acquire lands inside that —
+    // either straight after the release, or after the cooldown fired with its rm still in flight.
+    it.each([
+        ['a re-acquire right after a release (cooldown 0) gets a working environment', 0, 0],
+        ['the cooldown teardown firing just before a re-acquire does not fail the next gate', 5, 15],
+    ])('%s', async (_label, cooldownMs, waitMs) => {
         const { execDocker } = fakeDocker({ rmDelay: (n) => (n === 0 ? 50 : 0) });
-        const manager = createGateManager({ config, cooldownMs: 0, execDocker });
+        const manager = createGateManager({ config, cooldownMs, execDocker });
         await manager.acquire(KEY, 'node:24', '', { job: JOB(LEASE_A) });
         manager.release(KEY, JOB(LEASE_A));
+        if (waitMs > 0) await delay(waitMs);
 
         await expect(manager.acquire(KEY, 'node:24', '', { job: JOB(LEASE_B) })).resolves.toBeUndefined();
-        await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toMatchObject({ exitCode: 0 });
-        await manager.stop();
-    });
-
-    it('the cooldown teardown firing just before a re-acquire does not fail the next gate', async () => {
-        const { execDocker } = fakeDocker({ rmDelay: (n) => (n === 0 ? 50 : 0) });
-        const manager = createGateManager({ config, cooldownMs: 5, execDocker });
-        await manager.acquire(KEY, 'node:24', '', { job: JOB(LEASE_A) });
-        manager.release(KEY, JOB(LEASE_A));
-        await delay(15); // cooldown fired; its rm is still in flight
-
-        await manager.acquire(KEY, 'node:24', '', { job: JOB(LEASE_B) });
         await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toMatchObject({ exitCode: 0 });
         await manager.stop();
     });

@@ -37,27 +37,20 @@ const DESCRIPTOR: HelperDescriptor = {
 const TIGHT_DESCRIPTOR: HelperDescriptor = { ...DESCRIPTOR, outputCapBytes: 64 };
 
 describe('the helper registry', () => {
-    it('ships the noop fixture and the merge-conflict-autofix and github-review-reconcile probes, with their fixed schema/version', () => {
+    it('ships the noop fixture and the merge-conflict-autofix and github-review-reconcile probes', () => {
         expect(HELPER_REGISTRY.size).toBe(4);
-        const noop = lookupHelper('noop');
-        expect(noop).not.toBeNull();
-        expect(noop?.schema).toBe('helper-noop/v1');
-        expect(noop?.version).toBe(1);
+    });
 
-        const probe = lookupHelper('merge-conflict-probe');
-        expect(probe).not.toBeNull();
-        expect(probe?.schema).toBe('merge-conflict-probe/v1');
-        expect(probe?.version).toBe(1);
-
-        const collect = lookupHelper('review-collect-probe');
-        expect(collect).not.toBeNull();
-        expect(collect?.schema).toBe('review-collect-probe/v1');
-        expect(collect?.version).toBe(1);
-
-        const reply = lookupHelper('review-reply-probe');
-        expect(reply).not.toBeNull();
-        expect(reply?.schema).toBe('review-reply-probe/v1');
-        expect(reply?.version).toBe(1);
+    it.each([
+        ['noop', 'helper-noop/v1'],
+        ['merge-conflict-probe', 'merge-conflict-probe/v1'],
+        ['review-collect-probe', 'review-collect-probe/v1'],
+        ['review-reply-probe', 'review-reply-probe/v1'],
+    ])('registers %s with its fixed schema %s at version 1', (id, schema) => {
+        const helper = lookupHelper(id);
+        expect(helper).not.toBeNull();
+        expect(helper?.schema).toBe(schema);
+        expect(helper?.version).toBe(1);
     });
 
     it('answers null for an id nothing registered — unknown BEFORE any container starts', () => {
@@ -67,19 +60,65 @@ describe('the helper registry', () => {
 });
 
 describe('parseHelperOutput', () => {
-    it('parses a well-formed verdict', () => {
-        const line = JSON.stringify({ schema: 'fixture/v1', version: 1, ok: true, output: { a: 1 } });
-        expect(parseHelperOutput(DESCRIPTOR, line)).toEqual({ ok: true, output: { a: 1 } });
-    });
+    const verdict = (fields: Record<string, unknown>) =>
+        JSON.stringify({ schema: 'fixture/v1', version: 1, ...fields });
 
-    it('reads the LAST non-empty line, tolerating banner noise before it', () => {
-        const line = `some banner\n${JSON.stringify({ schema: 'fixture/v1', version: 1, ok: true, output: null })}\n`;
-        expect(parseHelperOutput(DESCRIPTOR, line)).toEqual({ ok: true, output: null });
-    });
-
-    it('defaults a missing output field to null, never undefined', () => {
-        const line = JSON.stringify({ schema: 'fixture/v1', version: 1, ok: true });
-        expect(parseHelperOutput(DESCRIPTOR, line)).toEqual({ ok: true, output: null });
+    // `exact` rows compare with toEqual; the others pin only the refusal reason with toMatchObject.
+    it.each<[string, string, boolean, object]>([
+        ['parses a well-formed verdict', verdict({ ok: true, output: { a: 1 } }), true, { ok: true, output: { a: 1 } }],
+        [
+            'reads the LAST non-empty line, tolerating banner noise before it',
+            `some banner\n${verdict({ ok: true, output: null })}\n`,
+            true,
+            { ok: true, output: null },
+        ],
+        [
+            'defaults a missing output field to null, never undefined',
+            verdict({ ok: true }),
+            true,
+            { ok: true, output: null },
+        ],
+        [
+            'refuses unparseable stdout as malformed_output, never a thrown context leak',
+            'not json at all',
+            true,
+            { ok: false, reason: 'malformed_output', message: expect.any(String) },
+        ],
+        ['refuses empty stdout as malformed_output', '', false, { ok: false, reason: 'malformed_output' }],
+        [
+            'refuses a wrong schema as wrong_version, never agent context',
+            JSON.stringify({ schema: 'other/v1', version: 1, ok: true, output: null }),
+            false,
+            { ok: false, reason: 'wrong_version' },
+        ],
+        [
+            'refuses a wrong version as wrong_version, never agent context',
+            JSON.stringify({ schema: 'fixture/v1', version: 2, ok: true, output: null }),
+            false,
+            { ok: false, reason: 'wrong_version' },
+        ],
+        [
+            'trusts a known failure reason the script names',
+            verdict({ ok: false, reason: 'auth_failed', error: '401 from the forge' }),
+            true,
+            { ok: false, reason: 'auth_failed', message: '401 from the forge' },
+        ],
+        [
+            'folds an unknown failure reason to runner_error',
+            verdict({ ok: false, reason: 'made-up-reason', error: 'boom' }),
+            true,
+            { ok: false, reason: 'runner_error', message: 'boom' },
+        ],
+        [
+            'folds a failure with no reason to runner_error',
+            verdict({ ok: false }),
+            true,
+            { ok: false, reason: 'runner_error', message: 'the helper reported failure' },
+        ],
+    ])('%s', (_label, line, exact, expected) => {
+        const result = parseHelperOutput(DESCRIPTOR, line);
+        if (exact) expect(result).toEqual(expected);
+        else expect(result).toMatchObject(expected);
     });
 
     // Order matters: the byte cap is checked BEFORE JSON.parse is ever attempted — an oversized
@@ -91,55 +130,6 @@ describe('parseHelperOutput', () => {
             ok: false,
             reason: 'oversized_output',
             message: expect.stringContaining(String(TIGHT_DESCRIPTOR.outputCapBytes)),
-        });
-    });
-
-    it('refuses unparseable stdout as malformed_output, never a thrown context leak', () => {
-        expect(parseHelperOutput(DESCRIPTOR, 'not json at all')).toEqual({
-            ok: false,
-            reason: 'malformed_output',
-            message: expect.any(String),
-        });
-        expect(parseHelperOutput(DESCRIPTOR, '')).toMatchObject({ ok: false, reason: 'malformed_output' });
-    });
-
-    it('refuses a wrong schema or version as wrong_version, never agent context', () => {
-        expect(
-            parseHelperOutput(DESCRIPTOR, JSON.stringify({ schema: 'other/v1', version: 1, ok: true, output: null }))
-        ).toMatchObject({ ok: false, reason: 'wrong_version' });
-        expect(
-            parseHelperOutput(DESCRIPTOR, JSON.stringify({ schema: 'fixture/v1', version: 2, ok: true, output: null }))
-        ).toMatchObject({ ok: false, reason: 'wrong_version' });
-    });
-
-    it('trusts a known failure reason the script names, and folds an unknown one to runner_error', () => {
-        const authFailed = JSON.stringify({
-            schema: 'fixture/v1',
-            version: 1,
-            ok: false,
-            reason: 'auth_failed',
-            error: '401 from the forge',
-        });
-        expect(parseHelperOutput(DESCRIPTOR, authFailed)).toEqual({
-            ok: false,
-            reason: 'auth_failed',
-            message: '401 from the forge',
-        });
-
-        const invented = JSON.stringify({
-            schema: 'fixture/v1',
-            version: 1,
-            ok: false,
-            reason: 'made-up-reason',
-            error: 'boom',
-        });
-        expect(parseHelperOutput(DESCRIPTOR, invented)).toEqual({ ok: false, reason: 'runner_error', message: 'boom' });
-
-        const noReason = JSON.stringify({ schema: 'fixture/v1', version: 1, ok: false });
-        expect(parseHelperOutput(DESCRIPTOR, noReason)).toEqual({
-            ok: false,
-            reason: 'runner_error',
-            message: 'the helper reported failure',
         });
     });
 });
