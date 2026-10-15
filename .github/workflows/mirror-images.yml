@@ -1,0 +1,50 @@
+name: Mirror images
+
+# The postgres every CI job service runs, copied from ECR Public into GHCR. A job service is pulled
+# by the runner before any step, so it can neither log in nor retry, and ECR Public's per-IP data
+# limit fails it on a shared runner IP however often it is re-run. Weekly picks up 17.x patches.
+on:
+    schedule:
+        - cron: '41 4 * * 1'
+    workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+    group: mirror-images
+    cancel-in-progress: false
+
+jobs:
+    postgres:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: read
+            packages: write
+        env:
+            # docker-compose.yml's pin; core/test/ci-workflows.test.ts keeps the two equal.
+            SOURCE: public.ecr.aws/docker/library/postgres:17
+        steps:
+            - name: docker login ghcr.io
+              env:
+                  TOKEN: ${{ github.token }}
+                  ACTOR: ${{ github.actor }}
+              run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+            - name: docker buildx imagetools create postgres
+              env:
+                  OWNER: ${{ github.repository_owner }}
+              run: |
+                  # GHCR paths are lowercase even where the org's login is not.
+                  REGISTRY="ghcr.io/$(printf '%s' "$OWNER" | tr 'A-Z' 'a-z')"
+                  # Retried only on a throttle; anything else is a real failure and fails now.
+                  # imagetools copies the manifest list, so both arches come along.
+                  for attempt in 1 2 3; do
+                      [ "$attempt" -eq 1 ] || sleep $((attempt * 30))
+                      if docker buildx imagetools create -t "$REGISTRY/postgres:17" "$SOURCE" 2>/tmp/err; then
+                          cat /tmp/err >&2
+                          exit 0
+                      fi
+                      cat /tmp/err >&2
+                      grep -q toomanyrequests /tmp/err || exit 1
+                  done
+                  exit 1
