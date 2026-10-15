@@ -1,6 +1,6 @@
 environment:
     image: node:24
-    setup: "npm ci"
+    setup: "npm ci && sh scripts/gate-jq.sh"
     gates:
          - name: test
            command: "npm test"
