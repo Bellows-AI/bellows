@@ -6,7 +6,7 @@ import type { JobStore } from '../src/db/job-store-types.js';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
 import type { ParamValues, WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
-import { mustCreate } from './fixtures.js';
+import { mustCreate, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -14,7 +14,7 @@ let sql: Sql;
 let store: JobStore;
 let workflows: ReturnType<typeof createWorkflowStore>;
 
-const ORG = 'test-org';
+const ORG = testOrg();
 const WORKER = 'worker-1';
 
 const db = useTestDb({ orgs: [ORG], max: 8 });

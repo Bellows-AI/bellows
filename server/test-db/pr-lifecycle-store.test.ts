@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { useTestDb } from './harness.js';
+import { testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -9,10 +11,10 @@ let sql: Sql;
 let store: PrLifecycleStore;
 let otherOrg: PrLifecycleStore;
 
-const ORG = 'test-org';
-const ORG_OTHER = 'other-org';
-const ROOT = '00000000-0000-4000-8000-00000000f202';
-const ROOT_TWO = '00000000-0000-4000-8000-00000000f203';
+const ORG = testOrg();
+const ORG_OTHER = testOrg();
+/** Sorted, so ROOT reads first wherever a query orders by root_job_id. */
+const [ROOT, ROOT_TWO] = [randomUUID(), randomUUID()].sort() as [string, string];
 const REPO = 'Bellows-AI/factory';
 const PR = 42;
 

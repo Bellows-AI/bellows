@@ -11,6 +11,7 @@ import {
     expectMinutes,
     expireLease,
     randomGithubId,
+    testOrg,
     testUser,
 } from './fixtures.js';
 
@@ -19,7 +20,7 @@ const enabled = Boolean(process.env.DATABASE_URL);
 let sql: Sql;
 let store: JobStore;
 
-const ORG = 'test-org';
+const ORG = testOrg();
 
 /**
  * The jobs' author — the workspace-path derivation reads it. Re-planted before every test,

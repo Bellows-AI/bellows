@@ -5,11 +5,11 @@ import type { Claim, GateReport, JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { GATE_FIX_NODE, gateFixTarget } from './gate-fix-workflow.js';
 import { useTestDb } from './harness.js';
-import { expireLease } from './fixtures.js';
+import { expireLease, testOrg } from './fixtures.js';
 
 /** The default gate-fix workflow against the store: the red-gate walk, Stop and reclaim races. */
 const enabled = Boolean(process.env.DATABASE_URL);
-const ORG = 'test-org';
+const ORG = testOrg();
 const WORKER = 'worker-1';
 const db = useTestDb({ orgs: [ORG], max: 8 });
 

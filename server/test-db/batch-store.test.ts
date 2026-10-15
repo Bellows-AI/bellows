@@ -5,14 +5,16 @@ import { resolveBatchPlan, validateBatchPlan, type BatchPlan, type ResolvedBatch
 import { createBatchStore, type BatchStartInput, type BatchStore } from '../src/db/batch-store.js';
 import { IdempotencyKeyReusedError } from '../src/db/job-store-idempotency.js';
 import { useTestDb } from './harness.js';
+import { testOrg, testUser } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
-const ORG = 'test-org';
-const OTHER_ORG = 'other-org';
-const ALICE = '00000000-0000-4000-8000-00000000ba70';
+const ORG = testOrg();
+const OTHER_ORG = testOrg();
+const ALICE_USER = testUser('alice');
+const ALICE = ALICE_USER.id;
 
-const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [{ id: ALICE, githubUserId: 90078, login: 'alice' }] });
+const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [ALICE_USER] });
 
 let sql: Sql;
 let store: BatchStore;

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +15,7 @@ import { createOrgRegistry } from '../src/orgs.js';
 import { createFactsCache } from '../src/workspace/facts.js';
 import { githubAuth, testConfig, TEST_JOB_BOARD_TOKEN } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
+import { randomGithubId, testOrg } from './fixtures.js';
 
 /**
  * The CLI's scripting contract (#596) against the real board: the CLI's own `run` over HTTP to a
@@ -27,7 +28,6 @@ const db = useTestDb();
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const ENVELOPE_KEYS = ['command', 'data', 'error', 'exitCode', 'ok', 'outcome'];
-const ORG_ID_MAX = 1_000_000_000;
 const ARTIFACT_LENGTH = 25;
 const PAGE = 10;
 const TASK_COUNT = 3;
@@ -51,12 +51,12 @@ interface Envelope {
 beforeEach(async () => {
     if (!enabled) return;
     const sql = db.sql;
-    const orgId = String(randomInt(1, ORG_ID_MAX));
+    const orgId = testOrg();
     await sql`insert into organization (id, name) values (${orgId}, ${`cli-org-${orgId}`})`;
     const auth = createAuthStore({ sql });
     const login = `cli-${randomUUID().slice(0, 8)}`;
     const caller = await auth.signIn(
-        { githubUserId: randomInt(1, ORG_ID_MAX), login, displayName: login, avatarUrl: null },
+        { githubUserId: randomGithubId(), login, displayName: login, avatarUrl: null },
         orgId,
         [{ id: orgId, name: orgId }]
     );

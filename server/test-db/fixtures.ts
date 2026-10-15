@@ -27,6 +27,9 @@ export const randomGithubId = (): number => Number.parseInt(randomUUID().slice(0
  */
 export const testUser = (login: string): TestUser => ({ id: randomUUID(), githubUserId: randomGithubId(), login });
 
+/** A generated org id for `useTestDb({ orgs })` — numeric, because a real org id is an installation id. */
+export const testOrg = (): string => String(randomGithubId());
+
 /** Upserts an account by github id and answers its row id. */
 export const account = async (sql: Sql, githubUserId: number, login: string): Promise<string> => {
     const [row] = await sql<{ id: string }[]>`

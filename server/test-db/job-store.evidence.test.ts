@@ -1,16 +1,19 @@
+import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import type { EvidencePolicy, RecordedEvidence } from '../src/db/evidence-policy.js';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
+import { randomGithubId, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
-const ORG = 'test-org';
+const ORG = testOrg();
+/** A well-formed lease token no claim holds. */
+const STALE_LEASE = randomUUID();
 const LEASE_SECONDS = 300;
-const GITHUB_ID_BASE = 7100;
 
 const db = useTestDb({ max: 4 });
 
@@ -24,7 +27,7 @@ const account = async (): Promise<string> => {
     accounts += 1;
     const [row] = await sql<{ id: string }[]>`
         insert into app_user (github_user_id, github_login)
-        values (${GITHUB_ID_BASE + accounts}, ${`evidence-${accounts}`})
+        values (${randomGithubId()}, ${`evidence-${accounts}`})
         on conflict (github_user_id) do update set github_login = excluded.github_login
         returning id
     `;
@@ -128,7 +131,7 @@ describe.runIf(enabled)('revision-bound evidence on the job store', () => {
     it('records nothing for a stale attempt: a verdict on a reclaimed lease is refused', async () => {
         const store = storeWith({ gates: true });
         const claim = await claimed(store);
-        const answer = await store.complete(claim.id, '99999999-9999-4999-8999-999999999999', {
+        const answer = await store.complete(claim.id, STALE_LEASE, {
             status: 'succeeded',
             exitCode: 0,
             output: 'ok',

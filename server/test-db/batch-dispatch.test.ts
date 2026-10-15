@@ -10,6 +10,7 @@ import type { JobStore } from '../src/db/job-store-types.js';
 import { createOrgRegistry } from '../src/orgs.js';
 import { testConfig } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
+import { testOrg, testUser } from './fixtures.js';
 import {
     batchPlan,
     headOf as sharedHeadOf,
@@ -26,12 +27,15 @@ import {
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
-const ORG = 'test-org';
+const ORG = testOrg();
 /** Its own org, so its claims see no queued row another test left behind. */
-const CLAIM_ORG = 'test-org-claim';
-const ALICE = '00000000-0000-4000-8000-00000000ba70';
+const CLAIM_ORG = testOrg();
+const ALICE_USER = testUser('alice');
+const ALICE = ALICE_USER.id;
+/** A well-formed uuid no batch carries. */
+const ABSENT = randomUUID();
 
-const db = useTestDb({ orgs: [ORG, CLAIM_ORG], users: [{ id: ALICE, githubUserId: 90078, login: 'alice' }], max: 10 });
+const db = useTestDb({ orgs: [ORG, CLAIM_ORG], users: [ALICE_USER], max: 10 });
 
 let sql: Sql;
 let jobs: JobStore;
@@ -407,7 +411,7 @@ describe.skipIf(!enabled)('batch cancel', () => {
 
         const draft = (await store.create(parallelThenJoin(), ALICE)).id;
         expect(await store.cancel(draft, ALICE)).toEqual({ result: 'not_started' });
-        expect(await store.cancel('00000000-0000-4000-8000-000000000000', ALICE)).toEqual({ result: 'missing' });
+        expect(await store.cancel(ABSENT, ALICE)).toEqual({ result: 'missing' });
         expect(await decisions(id)).toContain('cancel');
     });
 
@@ -1433,7 +1437,7 @@ describe.skipIf(!enabled)('the morning report', () => {
             next: { action: 'retry', method: 'POST', path: `/api/batches/${id}/tasks/c/retry` },
         });
         expect(byKey.d).toMatchObject({ execution: 'pending', next: { action: 'wait' } });
-        expect(await store.report('00000000-0000-4000-8000-000000000000')).toBeNull();
+        expect(await store.report(ABSENT)).toBeNull();
     });
 
     it('states remaining budgets, manual retries apart from automatic ones, observation freshness and unavailable usage', async () => {

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import type { EvidencePolicy, RecordedEvidence } from '../src/db/evidence-policy.js';
@@ -6,15 +7,17 @@ import { reviewRefOf } from '../src/db/job-store-reviews.js';
 import type { Claim, JobStore, ReviewerSpec } from '../src/db/job-store-types.js';
 import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from '../src/db/workflow-templates.js';
 import { useTestDb } from './harness.js';
+import { randomGithubId, testOrg } from './fixtures.js';
 
 /** Independent reviewer invocation (issue #549) on a real database: the SQL is what is under test. */
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
-const ORG = 'test-org';
+const ORG = testOrg();
+/** A well-formed lease token no claim holds. */
+const STALE_LEASE = randomUUID();
 const LEASE_SECONDS = 300;
-const GITHUB_ID_BASE = 7300;
 const REVIEWED = 'h:2';
 
 const db = useTestDb({ max: 4 });
@@ -29,7 +32,7 @@ const account = async (): Promise<string> => {
     accounts += 1;
     const [row] = await sql<{ id: string }[]>`
         insert into app_user (github_user_id, github_login)
-        values (${GITHUB_ID_BASE + accounts}, ${`reviews-${accounts}`})
+        values (${randomGithubId()}, ${`reviews-${accounts}`})
         on conflict (github_user_id) do update set github_login = excluded.github_login
         returning id
     `;
@@ -161,11 +164,12 @@ describe.runIf(enabled)('named reviewer invocation on the job store', () => {
         const caller = await claimed(storeWith({ reviewers: [SECURITY] }));
         expect(await ask(caller, 'k', { profile: 'style' })).toEqual({ result: 'unknown_profile' });
         expect(await ask(caller, 'k', { ref: 'refs/heads/main' })).toEqual({ result: 'invalid_ref' });
-        const lost = await storeWith({ reviewers: [SECURITY] }).requestReview(
-            caller.id,
-            '99999999-9999-4999-8999-999999999999',
-            { key: 'k', profile: 'security', revision: REVIEWED, ref: reviewRefOf(caller.id, 'k') }
-        );
+        const lost = await storeWith({ reviewers: [SECURITY] }).requestReview(caller.id, STALE_LEASE, {
+            key: 'k',
+            profile: 'security',
+            revision: REVIEWED,
+            ref: reviewRefOf(caller.id, 'k'),
+        });
         expect(lost).toEqual({ result: 'lost' });
         expect(await reviewRows(caller.id)).toHaveLength(0);
     });

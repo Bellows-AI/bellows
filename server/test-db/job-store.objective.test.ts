@@ -4,7 +4,7 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { Claim, GateReport, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { expireLease } from './fixtures.js';
+import { expireLease, testOrg } from './fixtures.js';
 
 /**
  * Issue 543: a task created without a workflow is OBJECTIVE mode — an ordinary claimable job with
@@ -12,7 +12,7 @@ import { expireLease } from './fixtures.js';
  * by every follow-up and retry.
  */
 const enabled = Boolean(process.env.DATABASE_URL);
-const ORG = 'test-org';
+const ORG = testOrg();
 const WORKER = 'worker-1';
 const db = useTestDb({ orgs: [ORG], max: 8 });
 

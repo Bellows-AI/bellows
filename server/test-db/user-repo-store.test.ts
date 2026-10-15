@@ -5,6 +5,7 @@ import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { createUserRepoStore, PurgeConflictError, type UserRepoStore } from '../src/db/user-repo-store.js';
 import { useTestDb } from './harness.js';
+import { testOrg, testUser } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -12,9 +13,12 @@ let sql: Sql;
 let store: UserRepoStore;
 let jobs: JobStore;
 
-const ORG = 'test-org';
-const ALICE = '00000000-0000-4000-8000-00000000a11c';
-const BOB = '00000000-0000-4000-8000-00000000b0b0';
+const ORG = testOrg();
+const ALICE_USER = testUser('alice');
+const BOB_USER = testUser('bob');
+const ALICE = ALICE_USER.id;
+const BOB = BOB_USER.id;
+const SESSION = randomUUID();
 
 const web = { owner: 'acme', name: 'web' };
 const api = { owner: 'acme', name: 'api' };
@@ -25,10 +29,7 @@ const CLAIM_LIMIT = 5;
 const db = useTestDb({
     max: 8,
     orgs: [ORG],
-    users: [
-        { id: ALICE, githubUserId: 90001, login: 'alice' },
-        { id: BOB, githubUserId: 90002, login: 'bob' },
-    ],
+    users: [ALICE_USER, BOB_USER],
 });
 
 beforeAll(async () => {
@@ -194,7 +195,7 @@ describe.skipIf(!enabled)('the user repo store', () => {
         expect(await store.list(BOB)).toEqual([]);
 
         await sql`
-            insert into app_user (id, github_user_id, github_login) values (${BOB}, 90002, 'bob')
+            insert into app_user (id, github_user_id, github_login) values (${BOB}, ${BOB_USER.githubUserId}, 'bob')
             on conflict (github_user_id) do update set id = excluded.id
         `;
     });
@@ -439,7 +440,7 @@ describe.skipIf(!enabled)('the purge races', () => {
         await sql`
             insert into job (org_id, id, command, status, repo, created_by, session_id, root_job_id)
             values (${ORG}, ${parentId}, 'root', 'succeeded', 'acme/web', ${ALICE},
-                    ${'33333333-3333-4333-8333-333333333333'}, ${parentId})
+                    ${SESSION}, ${parentId})
         `;
         expect(await jobs.createFollowUp(parentId, 'again', ALICE)).toBe('purging');
 
@@ -489,7 +490,7 @@ describe.skipIf(!enabled)('the purge races', () => {
             await sql`
                 insert into job (org_id, id, command, status, repo, created_by, session_id, root_job_id)
                 values (${ORG}, ${parentId}, 'root', 'succeeded', 'ghost/repo', ${ALICE},
-                        ${'33333333-3333-4333-8333-333333333333'}, ${parentId})
+                        ${SESSION}, ${parentId})
             `;
             return parentId;
         };

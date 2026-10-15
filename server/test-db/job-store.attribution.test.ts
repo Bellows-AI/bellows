@@ -5,14 +5,14 @@ import type { CreateJobStoreDeps, JobStore } from '../src/db/job-store-types.js'
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
-import { account, mustCreate, randomGithubId } from './fixtures.js';
+import { account, mustCreate, randomGithubId, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: JobStore;
 
-const ORG = 'test-org';
+const ORG = testOrg();
 /** A lease long enough that nothing in this suite outlives it by accident. */
 const LEASE_SECONDS = 300;
 
@@ -43,7 +43,7 @@ const queue = async (command: string) => {
 };
 describe.runIf(enabled)('attribution', () => {
     it('records who queued a job and reports it back on read', async () => {
-        const OCTOCAT_GITHUB_ID = 5001;
+        const OCTOCAT_GITHUB_ID = randomGithubId();
         const userId = await account(sql, OCTOCAT_GITHUB_ID, 'octocat');
 
         const { id } = await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
@@ -52,7 +52,7 @@ describe.runIf(enabled)('attribution', () => {
     });
 
     it('reports the author and their workspace to the worker that claims it', async () => {
-        const OCTODOG_GITHUB_ID = 5002;
+        const OCTODOG_GITHUB_ID = randomGithubId();
         const userId = await account(sql, OCTODOG_GITHUB_ID, 'octodog');
         await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
 
@@ -80,7 +80,7 @@ describe.runIf(enabled)('attribution', () => {
          * is honest here.
          */
         const rootless = createJobStore({ sql, orgId: ORG, hasWorkspaces: false });
-        const NOWHERE_GITHUB_ID = 5004;
+        const NOWHERE_GITHUB_ID = randomGithubId();
         const userId = await account(sql, NOWHERE_GITHUB_ID, 'nowhere');
         await mustCreate(rootless.create('echo hi', userId, { repo: null, executor: null }));
 
@@ -90,7 +90,7 @@ describe.runIf(enabled)('attribution', () => {
     });
 
     it('carries the stacked environment on the claim, resolved for the author and repo label', async () => {
-        const ENV_CAT_GITHUB_ID = 5005;
+        const ENV_CAT_GITHUB_ID = randomGithubId();
         const userId = await account(sql, ENV_CAT_GITHUB_ID, 'env-cat');
         const envStore = createEnvVarStore({ sql, orgId: ORG });
         await envStore.replaceOrg([{ name: 'CORE', value: 'org-value', isSecret: true }]);
@@ -114,7 +114,7 @@ describe.runIf(enabled)('attribution', () => {
     });
 
     it('carries no environment when the board was built without a resolver', async () => {
-        const PLAIN_CAT_GITHUB_ID = 5006;
+        const PLAIN_CAT_GITHUB_ID = randomGithubId();
         const userId = await account(sql, PLAIN_CAT_GITHUB_ID, 'plain-cat');
         await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
         const claim = await store.claim('driver-1', LEASE_SECONDS);
@@ -433,7 +433,7 @@ describe.runIf(enabled)('attribution', () => {
     it('keeps the job when the account that queued it is deleted', async () => {
         // `on delete set null`, never cascade: removing a person must not erase the record of what
         // they ran, on the one route that runs shell commands.
-        const DEPARTING_GITHUB_ID = 5003;
+        const DEPARTING_GITHUB_ID = randomGithubId();
         const userId = await account(sql, DEPARTING_GITHUB_ID, 'departing');
         const { id } = await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
 
@@ -452,7 +452,7 @@ describe.runIf(enabled)('attribution', () => {
          * dashboard polls. An unattributed job answers null — the same null the claim reports,
          * for the same reason.
          */
-        const READING_CAT_GITHUB_ID = 5008;
+        const READING_CAT_GITHUB_ID = randomGithubId();
         const userId = await account(sql, READING_CAT_GITHUB_ID, 'reading-cat');
         const { id } = await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
 
@@ -475,7 +475,7 @@ describe.runIf(enabled)('attribution', () => {
          * or the sidebar would show a path that does not exist.
          */
         const rootless = createJobStore({ sql, orgId: ORG, hasWorkspaces: false });
-        const UNREAD_CAT_GITHUB_ID = 5009;
+        const UNREAD_CAT_GITHUB_ID = randomGithubId();
         const userId = await account(sql, UNREAD_CAT_GITHUB_ID, 'unread-cat');
         const { id } = await mustCreate(rootless.create('echo hi', userId, { repo: null, executor: null }));
 

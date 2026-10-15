@@ -15,6 +15,7 @@ import type { JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { GitHubReadError } from '../src/github/pr-read.js';
 import { useTestDb } from './harness.js';
+import { testOrg, testUser } from './fixtures.js';
 import {
     batchPlan,
     checks,
@@ -36,12 +37,13 @@ import {
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
-const ORG = 'test-org';
-const OTHER = 'other-org';
-const ALICE = '00000000-0000-4000-8000-00000000ba70';
+const ORG = testOrg();
+const OTHER = testOrg();
+const ALICE_USER = testUser('alice');
+const ALICE = ALICE_USER.id;
 const REPO = 'acme/web';
 
-const db = useTestDb({ orgs: [ORG, OTHER], users: [{ id: ALICE, githubUserId: 90078, login: 'alice' }], max: 10 });
+const db = useTestDb({ orgs: [ORG, OTHER], users: [ALICE_USER], max: 10 });
 
 let sql: Sql;
 let jobs: JobStore;

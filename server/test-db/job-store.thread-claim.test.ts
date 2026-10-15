@@ -5,13 +5,14 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
+import { testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: JobStore;
 
-const ORG = 'test-org';
+const ORG = testOrg();
 /** A lease long enough that nothing in this suite outlives it by accident. */
 const LEASE_SECONDS = 300;
 

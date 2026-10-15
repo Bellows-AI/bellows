@@ -9,15 +9,15 @@ import {
 import { createJobStore } from '../src/db/job-store.js';
 import type { Claim, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { expireLease } from './fixtures.js';
+import { expireLease, testOrg, testUser } from './fixtures.js';
 
 /** The managed connections (051, issue #546): scoping and the proxy's per-call check, on a real database. */
 const enabled = Boolean(process.env.DATABASE_URL);
-const ORG = 'test-org';
-const OTHER_ORG = 'other-org';
+const ORG = testOrg();
+const OTHER_ORG = testOrg();
 const LEASE_SECONDS = 300;
-const OWNER = { id: '00000000-0000-4000-8000-0000000c0001', githubUserId: 91001, login: 'conn-owner' };
-const STRANGER = { id: '00000000-0000-4000-8000-0000000c0002', githubUserId: 91002, login: 'conn-stranger' };
+const OWNER = testUser('conn-owner');
+const STRANGER = testUser('conn-stranger');
 const API_TOKEN = 'db-test-token';
 
 const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [OWNER, STRANGER] });

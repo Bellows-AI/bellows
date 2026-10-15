@@ -3,14 +3,14 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { craftJob, type CraftShape, expectMinutes, testUser } from './fixtures.js';
+import { craftJob, type CraftShape, expectMinutes, testOrg, testUser } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: JobStore;
 
-const ORG = 'test-org';
+const ORG = testOrg();
 
 /** The jobs' author. Re-planted before every test, because `created_by` is a uuid foreign key. */
 const AUTHOR_USER = testUser('wall-clock-cat');

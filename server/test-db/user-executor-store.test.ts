@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import {
@@ -7,22 +8,23 @@ import {
     type UserExecutorStore,
 } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
+import { testOrg, testUser } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: UserExecutorStore;
 
-const ORG = 'test-org';
-const ALICE = '00000000-0000-4000-8000-00000000a11c';
-const BOB = '00000000-0000-4000-8000-00000000b0b0';
+const ORG = testOrg();
+const ALICE_USER = testUser('alice');
+const BOB_USER = testUser('bob');
+const ALICE = ALICE_USER.id;
+const BOB = BOB_USER.id;
+const ABSENT = randomUUID();
 
 const db = useTestDb({
     orgs: [ORG],
-    users: [
-        { id: ALICE, githubUserId: 90001, login: 'alice' },
-        { id: BOB, githubUserId: 90002, login: 'bob' },
-    ],
+    users: [ALICE_USER, BOB_USER],
 });
 
 beforeAll(async () => {
@@ -73,7 +75,7 @@ describe.skipIf(!enabled)('the user executor store', () => {
         });
         expect(await store.configFor(ALICE, 'deleted')).toBeNull();
         // Another member's row is not this member's answer.
-        expect(await store.configFor('00000000-0000-4000-8000-00000000b22d', 'main')).toBeNull();
+        expect(await store.configFor(ABSENT, 'main')).toBeNull();
     });
 
     it('stores and lists gateFixRounds, the column default filling an omitted value', async () => {
@@ -283,7 +285,7 @@ describe.skipIf(!enabled)('removing and suspending profiles by id (issue 440)', 
 
         expect(await store.removePersonal(BOB, alice.id)).toBe(false);
         expect(await store.removePersonal(ALICE, org.id)).toBe(false);
-        expect(await store.removePersonal(ALICE, '00000000-0000-4000-8000-000000000000')).toBe(false);
+        expect(await store.removePersonal(ALICE, ABSENT)).toBe(false);
         expect(await store.removePersonal(ALICE, alice.id)).toBe(true);
 
         expect(await store.list(ALICE)).toEqual([]);

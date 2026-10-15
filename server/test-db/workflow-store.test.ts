@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
 import { checkWorkflowParams } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
+import { testOrg, testUser } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -11,11 +13,14 @@ let sql: Sql;
 let store: ReturnType<typeof createWorkflowStore>;
 
 const MIGRATION = new URL('../migrations/057_drop_seeded_fix_issue.sql', import.meta.url);
-const ORG = 'test-org';
-const ALICE = '00000000-0000-4000-8000-00000000e118';
+const ORG = testOrg();
+const ALICE_USER = testUser('alice');
+const ALICE = ALICE_USER.id;
+const SOMEONE_ELSE = randomUUID();
+const ABSENT = randomUUID();
 const REPO = { owner: 'Bellows-AI', name: 'bellows.ai' };
 
-const db = useTestDb({ orgs: [ORG], users: [{ id: ALICE, githubUserId: 90042, login: 'alice' }] });
+const db = useTestDb({ orgs: [ORG], users: [ALICE_USER] });
 
 /** The smallest definition that passes the validator: one publish-reachable loop of two nodes. */
 const definition = {
@@ -169,7 +174,7 @@ describe.skipIf(!enabled)('the workflow store', () => {
         const alice = await store.listVisible({ userId: ALICE, repo: `${REPO.owner}/${REPO.name}` });
         expect(alice.map((row) => row.name).sort()).toEqual(['org-wf', 'repo-wf', 'user-wf']);
 
-        const someoneElse = await store.listVisible({ userId: '00000000-0000-4000-8000-00000000e999', repo: null });
+        const someoneElse = await store.listVisible({ userId: SOMEONE_ELSE, repo: null });
         expect(someoneElse.map((row) => row.name)).toEqual(['org-wf']);
     });
 
@@ -206,7 +211,7 @@ describe.skipIf(!enabled)('the workflow store', () => {
     });
 
     it('returns notFound for an id the org does not hold', async () => {
-        const result = await store.update('99999999-9999-4999-8999-999999999999', { name: 'x', definition });
+        const result = await store.update(ABSENT, { name: 'x', definition });
         expect(result).toEqual({ notFound: true });
     });
 

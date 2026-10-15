@@ -3,16 +3,23 @@ import type { Sql } from 'postgres';
 import { hashToken } from '../src/auth/session.js';
 import { createAuthStore, type AuthStore } from '../src/auth/store.js';
 import { useTestDb } from './harness.js';
+import { randomGithubId, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: AuthStore;
 
-const ORG = '911001';
-const SECOND_ORG = '911002';
-/** Every account this file creates is numbered from here, so the cleanup can be precise. */
-const ID_BASE = 90000;
+const ORG = testOrg();
+const SECOND_ORG = testOrg();
+
+/** Each account sequence number keeps one generated GitHub id, so a re-sign-in is the same account. */
+const githubIds = new Map<number, number>();
+const githubId = (n: number): number => {
+    const id = githubIds.get(n) ?? randomGithubId();
+    githubIds.set(n, id);
+    return id;
+};
 
 const db = useTestDb({ orgs: [ORG, SECOND_ORG] });
 
@@ -23,7 +30,7 @@ beforeAll(async () => {
 });
 
 const identity = (n: number, login: string) => ({
-    githubUserId: ID_BASE + n,
+    githubUserId: githubId(n),
     login,
     displayName: login,
     avatarUrl: null,
