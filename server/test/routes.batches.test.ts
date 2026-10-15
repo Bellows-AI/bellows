@@ -82,6 +82,8 @@ async function setup(
         userExecutors?: UserExecutorStore;
         /** The org's board holds an installation it can merge through. */
         canMerge?: boolean;
+        /** The branches the installation can read, on every repository; absent offline. */
+        branches?: readonly string[];
     } = {}
 ) {
     const auth = memoryAuthStore();
@@ -112,6 +114,12 @@ async function setup(
             telemetry: stubTelemetryClient(),
             batchesByOrg: { [ORG]: batches, [OTHER_ORG]: otherBatches },
             ...(options.canMerge ? { batchMerger: { mergeDue: async () => 0 } } : {}),
+            ...(options.branches
+                ? {
+                      branchHead: async (_repo: string, branch: string) =>
+                          options.branches!.includes(branch) ? `sha-${branch}` : null,
+                  }
+                : {}),
             ...(options.userExecutors ? { userExecutors: options.userExecutors } : {}),
         }),
         auth,
@@ -334,14 +342,44 @@ describe('launch checks: validate and start', () => {
         expect((await call('GET', `/api/batches/${id}`)).json().status).toBe('draft');
     });
 
-    it('answers 409 BATCH_UNSUPPORTED for a branch other than the default', async () => {
+    it('validates and starts a target on a non-default branch the remote has', async () => {
+        const { call, create } = await setup({ branches: ['main', 'batch-sandbox'] });
+        const { id } = await create(
+            plan({ targets: [{ key: 'web', repo: 'Bellows-AI/bellows.ai', branch: 'batch-sandbox' }] })
+        );
+        const validate = await call('POST', `/api/batches/${id}/validate`, {});
+        expect(validate.statusCode).toBe(HTTP_OK);
+        expect(validate.json().plan.targets).toEqual([
+            { key: 'web', repo: 'Bellows-AI/bellows.ai', branch: 'batch-sandbox' },
+        ]);
+        const start = await call('POST', `/api/batches/${id}/start`, { version: 1 });
+        expect(start.statusCode).toBe(HTTP_OK);
+        expect(start.json()).toMatchObject({ id, status: 'running' });
+    });
+
+    it('accepts a non-default branch unchecked on a board that reads no branches', async () => {
         const { call, create } = await setup();
         const { id } = await create(
-            plan({ targets: [{ key: 'web', repo: 'Bellows-AI/bellows.ai', branch: 'release' }] })
+            plan({ targets: [{ key: 'web', repo: 'Bellows-AI/bellows.ai', branch: 'batch-sandbox' }] })
         );
-        const response = await call('POST', `/api/batches/${id}/validate`, {});
-        expect(response.statusCode).toBe(HTTP_CONFLICT);
-        expect(response.json()).toMatchObject({ code: 'BATCH_UNSUPPORTED', reason: 'non_default_branch' });
+        expect((await call('POST', `/api/batches/${id}/validate`, {})).statusCode).toBe(HTTP_OK);
+    });
+
+    it('answers 409 BATCH_UNKNOWN_BRANCH at validate and start for a branch the remote lacks', async () => {
+        const { call, create, batches, jobCreates } = await setup({ branches: ['main'] });
+        const { id } = await create(
+            plan({ targets: [{ key: 'web', repo: 'Bellows-AI/bellows.ai', branch: 'batch-sandbox' }] })
+        );
+        for (const response of [
+            await call('POST', `/api/batches/${id}/validate`, {}),
+            await call('POST', `/api/batches/${id}/start`, { version: 1 }),
+        ]) {
+            expect(response.statusCode).toBe(HTTP_CONFLICT);
+            expect(response.json()).toMatchObject({ code: 'BATCH_UNKNOWN_BRANCH' });
+            expect(response.json().error).toContain('batch-sandbox');
+        }
+        expect(jobCreates).toEqual([]);
+        expect(batches.writes).toEqual(['create']);
     });
 
     it('answers 409 BATCH_UNSUPPORTED for an automerge stage on a board that cannot merge', async () => {

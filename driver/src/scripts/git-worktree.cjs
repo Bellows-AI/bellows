@@ -8,6 +8,10 @@
 //   REPO        — the clone, where `origin` lives and the worktree is created FROM;
 //   WORKTREE    — the task's own tree;
 //   BRANCH      — the branch the worktree runs on (`factory/<thread root id>`);
+//   BASE_BRANCH — optional, STARTING claims only: the branch the task bases on (a batch task's
+//                 target branch). The worktree is created off, and rebased onto, origin/<base>
+//                 instead of origin/<default>; the clone still fast-forwards its own default. A
+//                 base the fetched remote lacks is a named refusal, never the empty-remote path.
 //   RESTORE     — set to `1` for a claim that CONTINUES a session (a follow-up): the task is mid-flight, and git operations that touch the
 //                 remote belong to the task's beginning and end, never its middle. No fetch,
 //                 no rebase: the existing tree is left byte-for-byte as the run before it
@@ -75,6 +79,7 @@ const wt = process.env.WORKTREE;
 const branch = process.env.BRANCH;
 const restore = process.env.RESTORE === '1';
 const reviewRef = process.env.REVIEW_REF;
+const baseBranch = process.env.BASE_BRANCH || '';
 const GIT_ERROR_MAX_LENGTH = 200;
 const SYNC_ERROR_MAX_LENGTH = 300;
 const FACTORY_STATE_EXCLUDE = '/.factory/';
@@ -227,6 +232,7 @@ const handOver = () => {
 const KIND_MISSING_WORKSPACE = 'missing_workspace';
 const KIND_MISSING_CLONE = 'missing_clone';
 const KIND_BRANCH_UNRESTORABLE = 'branch_unrestorable';
+const KIND_MISSING_BASE_BRANCH = 'missing_base_branch';
 const fail = (r, kind) => {
     if (!restore) {
         try {
@@ -547,8 +553,18 @@ try {
     }
     // An empty remote (a scaffolding task's repository has no commits yet) has no origin/<def>:
     // nothing to fast-forward, branch from or rebase onto.
-    const hasBase = hasRemoteBase(def);
-    if (hasBase) fastForwardClone(def);
+    if (hasRemoteBase(def)) fastForwardClone(def);
+    const base = baseBranch || def;
+    const hasBase = hasRemoteBase(base);
+    if (baseBranch && !hasBase) {
+        fail(
+            'the base branch origin/' +
+                base +
+                ' does not exist on the remote; create it, or point the batch target at a branch that does',
+            KIND_MISSING_BASE_BRANCH
+        );
+        process.exit(0);
+    }
     let existing = false;
     try {
         inw('rev-parse', '--is-inside-work-tree');
@@ -563,7 +579,7 @@ try {
             process.exit(0);
         }
         try {
-            inw('rebase', '--autostash', 'origin/' + def);
+            inw('rebase', '--autostash', 'origin/' + base);
         } catch (e) {
             // A conflicted rebase stays in place for the agent; any other failure is a refusal.
             if (unmergedPaths().length) {
@@ -572,7 +588,7 @@ try {
             }
             fail(
                 'the task worktree could not be rebased onto origin/' +
-                    def +
+                    base +
                     ': ' +
                     String((e && e.stderr) || (e && e.message) || e).slice(0, GIT_ERROR_MAX_LENGTH)
             );
@@ -596,7 +612,7 @@ try {
         try {
             git('worktree', 'add', wt, branch);
         } catch {
-            if (hasBase) git('worktree', 'add', '-b', branch, wt, 'origin/' + def);
+            if (hasBase) git('worktree', 'add', '-b', branch, wt, 'origin/' + base);
             else addUnbornWorktree();
         }
     }

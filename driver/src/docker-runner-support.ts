@@ -22,7 +22,14 @@ import {
 } from './docker.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import { telemetryConfig, telemetryConfigTar, telemetryCopyTarget } from './telemetry-config.js';
-import { worktreeBranch, CREDENTIAL_HELPER, gitWorktreeScript, SYNC_DEADLINE_MS, type SyncResult } from './publish.js';
+import {
+    baseBranchOf,
+    worktreeBranch,
+    CREDENTIAL_HELPER,
+    gitWorktreeScript,
+    SYNC_DEADLINE_MS,
+    type SyncResult,
+} from './publish.js';
 import type { RunOutcome, RunSession } from './runner.js';
 import {
     declaredServiceSpecs,
@@ -253,6 +260,8 @@ export function syncCheckoutArgs(
         // A named reviewer's tree starts at the snapshot ref its caller froze (issue #549): a ref
         // name, never a credential — the same literal class as the paths above.
         ...(job.reviewRun ? ['-e', `REVIEW_REF=${job.reviewRun.ref}`] : []),
+        // The branch a batch task bases on: a validated branch name, the same literal class.
+        ...(baseBranchOf(job) ? ['-e', `BASE_BRANCH=${baseBranchOf(job)}`] : []),
         // The fetch's credential helper, as CODE in an env VALUE — the same class of value as
         // the three paths above, and the same mechanism as the push's `-c credential.helper=`.
         // Only when the claim env carries the token the helper reads; the token itself travels

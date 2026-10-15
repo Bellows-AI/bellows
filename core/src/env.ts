@@ -42,6 +42,7 @@ export const RESERVED_ENV_NAMES: readonly string[] = [
     'CRED_HELPER',
     'RESTORE',
     'REVIEW_REF',
+    'BASE_BRANCH',
     'SYNC_LOCK_WAIT_MS',
     'SYNC_LOCK_STALE_MS',
     'FACTORY_TRANSCRIPT_DIR',

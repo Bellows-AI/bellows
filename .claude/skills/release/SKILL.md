@@ -100,10 +100,13 @@ hold for rows the last release could have written. Drop `factory_upgrade_seed` a
 rebuilds and rolls out from the current tree (`make start` installs a fresh cluster). Then drive
 a small batch through the `batch-control` skill against the kind board, never the production URL
 `.env` may carry: one stage, two parallel tasks that both add the same scratch file outside
-`docs/`, `automerge`. That exercises dispatch, gates, automerge, a conflicting PR, conflict repair
-and stage verification in one run. It opens and merges real PRs: **Confirm** with the user first,
-and remove the scratch file from `main` afterwards. Audit the outcome — the merged file holds both
-tasks' lines, the batch reads `completed`, its stage verification `passed` — and read every
+`docs/`, `automerge`, its target `branch` a sandbox branch pushed fresh from `main` for the run
+(`git push origin origin/main:refs/heads/batch-sandbox-<version>`). That exercises dispatch, gates,
+automerge, a conflicting PR, conflict repair and stage verification in one run. It opens and
+merges real PRs into the sandbox branch: **Confirm** with the user first, and delete the sandbox
+branch afterwards. Audit the outcome — both PRs target the sandbox branch, the merged file holds
+both tasks' lines, `main` is untouched, the batch reads `completed`, its stage verification
+`passed` — and read every
 `waitReason`, question and repair prompt on the way: wrong guidance to the agent is a defect even
 when the batch ends green.
 

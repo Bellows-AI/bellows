@@ -19,9 +19,9 @@ import { HTTP_CONFLICT, HTTP_NOT_FOUND } from './job-limits.js';
 
 /**
  * The launch checks, in the order the issue fixes, shared by validate and start: structural
- * validity, installation visibility per target, branch resolution, what the executors can run,
- * then the executors themselves. Each step answers its own refusal and returns false once it has;
- * none writes.
+ * validity, installation visibility per target, branch resolution, each non-default branch on
+ * the remote, what the executors can run, then the executors themselves. Each step answers its own
+ * refusal and returns false once it has; none writes.
  */
 
 const reposOf = (plan: BatchPlan): Repo[] =>
@@ -69,6 +69,44 @@ async function defaultBranchesOf(
         HTTP_CONFLICT
     );
     return null;
+}
+
+/** The used targets off their repository's default branch: the ones whose branch must be read. */
+const offDefaultTargets = (plan: ResolvedBatchPlan, defaults: DefaultBranches) => {
+    const used = new Set(plan.stages.flatMap((stage) => stage.tasks.map((task) => task.target)));
+    return plan.targets.filter((target) => used.has(target.key) && defaults[target.repo] !== target.branch);
+};
+
+/**
+ * Each target off its repository's default branch must exist on the remote, or every task would
+ * fail at checkout. Offline the board reads no branches and the checkout's own refusal stands.
+ */
+async function targetBranchesExist(
+    ctx: Context,
+    request: FastifyRequest,
+    reply: FastifyReply,
+    targets: ResolvedBatchPlan['targets']
+) {
+    const branchHead = ctx.runtime.branchHead;
+    if (!branchHead) return true;
+    for (const target of targets) {
+        const head = await guard(
+            reply,
+            (e) => request.log.error({ err: e }, 'batch target branch read failed'),
+            () => branchHead(target.repo, target.branch)
+        );
+        if (!head.ok) return false;
+        if (head.value !== null) continue;
+        bad(
+            reply,
+            ERROR_CODES.BATCH_UNKNOWN_BRANCH,
+            `"${target.repo}" has no branch ${target.branch} the installation can read, ` +
+                `so "${target.key}" cannot run on it`,
+            HTTP_CONFLICT
+        );
+        return false;
+    }
+    return true;
 }
 
 /** Each (executor, scope) the plan names, once; a task left to the claim's default names none. */
@@ -125,7 +163,8 @@ export async function launchChecks(
     if (!defaults) return null;
 
     const resolved = resolveBatchPlan(plan, defaults);
-    const capability = batchExecutionCapability(resolved, defaults, {
+    if (!(await targetBranchesExist(ctx, request, reply, offDefaultTargets(resolved, defaults)))) return null;
+    const capability = batchExecutionCapability(resolved, {
         canMerge: ctx.runtime.batchMerger !== undefined,
     });
     if (!capability.ok) {

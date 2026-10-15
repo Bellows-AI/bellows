@@ -56,6 +56,8 @@ export interface OrgRuntime {
     batchObserver?: BatchPrObserver | undefined;
     /** Merges the PRs of automerge stages and verifies each merged stage (064); absent offline, where the board cannot merge. */
     batchMerger?: BatchMerger | undefined;
+    /** A branch's tip through the org's installation, null when it cannot be read; absent offline. */
+    branchHead?: ((repo: string, branch: string) => Promise<string | null>) | undefined;
     /** The managed connector connections (054) a task may select; present with the other stores. */
     connections?: ConnectionStore | undefined;
     userRepos?: UserRepoStore | undefined;
@@ -311,6 +313,7 @@ export function createOrgRegistry({
             repos,
             telemetry,
             service: createStatsService({ config, repos, telemetry }),
+            ...(client ? { branchHead: (repo: string, branch: string) => client.readBranchHead(repo, branch) } : {}),
         };
 
         if (withStores) {

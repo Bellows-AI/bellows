@@ -323,6 +323,7 @@ const CONTAINER_GUARD_NAMES = [
     'OTEL_EXPORTER_OTLP_ENDPOINT',
     'XDG_DATA_HOME',
     'DEFAULT_BRANCH',
+    'BASE_BRANCH',
 ];
 // Budgets for the cases below that run a real entrypoint under /bin/sh. One such run boots four
 // node processes serially plus a git or two; the original 10s/5s were measured on an idle box and
@@ -764,6 +765,20 @@ describe('the claude-executor git guard', () => {
             .map(([, command]) => [command])
     )('allows %s', (command) => {
         expect(loadGuard().decide(command).deny).toBe(false);
+    });
+
+    it('names the base branch a batch task bases on in the merge hint, else the origin/HEAD default', () => {
+        const hint = () => loadGuard().decide('git merge feature').reason ?? '';
+        const saved = process.env.BASE_BRANCH;
+        try {
+            process.env.BASE_BRANCH = 'batch-sandbox';
+            expect(hint()).toContain('`git merge origin/batch-sandbox`');
+            delete process.env.BASE_BRANCH;
+            expect(hint()).toContain('`git merge origin/<default>`');
+        } finally {
+            if (saved === undefined) delete process.env.BASE_BRANCH;
+            else process.env.BASE_BRANCH = saved;
+        }
     });
 
     // The wire contract with Claude Code: JSON on stdin, the deny decision as JSON on stdout,
@@ -1220,6 +1235,21 @@ describe('the opencode-executor git guard policy', () => {
             const inline = JSON.parse(await runEntrypoint({ defaultBranch: 'develop' }));
             expect(inline).toEqual({
                 permission: { bash: Object.fromEntries(MERGE_ALLOWS('origin/develop').map((r) => [r, 'allow'])) },
+            });
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it(
+        'allows merging the claim’s base branch over the origin/HEAD default',
+        async () => {
+            const inline = JSON.parse(
+                await runEntrypoint({ defaultBranch: 'main', env: { BASE_BRANCH: 'batch-sandbox' } })
+            );
+            expect(inline).toEqual({
+                permission: {
+                    bash: Object.fromEntries(MERGE_ALLOWS('origin/batch-sandbox').map((r) => [r, 'allow'])),
+                },
             });
         },
         CASE_TIMEOUT_MS
