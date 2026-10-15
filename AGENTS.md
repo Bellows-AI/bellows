@@ -20,6 +20,13 @@ panel, page, style, label or `aria-*` name — or to a payload a panel renders r
 regressed, the spec if the UI changed on purpose. CI runs the e2e job only after merge to `main`
 (`.github/workflows/ci.yml`), so a PR never catches it.
 
+**This repo is public: anonymize every real case.** Issues, PRs, commit messages, code comments,
+docs and test fixtures never name a real deployment, customer, organization, repository, ticket key,
+task id, hostname or person. Describe the case in the abstract — "a multi-package node monorepo",
+"a production deployment", "a task" — keeping only the evidence that matters (exit codes, timings,
+error text with names stripped). Scrub before posting: GitHub keeps edit history, and a pushed
+commit message needs a force-push to fix.
+
 ## Read before you touch
 
 | Touching | Read |
