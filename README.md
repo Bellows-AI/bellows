@@ -49,7 +49,7 @@ npm run verify:ui
 ```
 
 `docker compose up` runs the same `npm run dev` against the bind-mounted tree, plus the database,
-the collector and the driver. `docker build -f docker/Dockerfile --target runtime -t factory-ai .`
+the S3 store, the collector and the driver. `docker build -f docker/Dockerfile --target runtime -t factory-ai .`
 is what deploys.
 
 ## Running tasks
