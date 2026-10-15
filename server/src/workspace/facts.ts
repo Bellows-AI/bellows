@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { realpath } from 'node:fs/promises';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
@@ -63,8 +64,11 @@ export interface FactsCache {
      */
     get(dir: string): CheckoutFacts;
 
-    /** `get`'s size alone, for a directory that is not a checkout (a repo's package cache). */
-    sizeOf(dir: string): number | null;
+    /**
+     * `get`'s size alone, for a directory that is not a checkout (a repo's package cache), measured
+     * only where it really lies strictly inside `root` (`readContainedSize`); null otherwise.
+     */
+    sizeOf(dir: string, root: string): number | null;
 
     /**
      * Forgets one directory's facts, so a tree that is about to be deleted cannot lend them to
@@ -100,6 +104,12 @@ async function readHead(dir: string): Promise<Pick<CheckoutFacts, 'branch' | 'la
     };
 }
 
+/** The bytes in `du -sk` output's leading kibibyte count, or null when it has none. */
+function bytesOfDu(stdout: string): number | null {
+    const kib = Number.parseInt(stdout.trim().split(/\s+/)[0] ?? '', 10);
+    return Number.isFinite(kib) ? kib * BYTES_PER_KIB : null;
+}
+
 /**
  * `du`, not a walk in this process.
  *
@@ -116,8 +126,7 @@ async function readHead(dir: string): Promise<Pick<CheckoutFacts, 'branch' | 'la
 async function readSize(dir: string): Promise<number | null> {
     try {
         const { stdout } = await run('du', ['-sk', dir], { timeout: SIZE_TIMEOUT_MS });
-        const kib = Number.parseInt(stdout.trim().split(/\s+/)[0] ?? '', 10);
-        return Number.isFinite(kib) ? kib * BYTES_PER_KIB : null;
+        return bytesOfDu(stdout);
     } catch {
         // Timed out, or `du` is absent. Null renders as an em dash, which is the honest answer:
         // nobody measured it. Never 0, which would claim an empty checkout.
@@ -125,19 +134,47 @@ async function readSize(dir: string): Promise<number | null> {
     }
 }
 
+/**
+ * `cd -P` lands on the directory the path REALLY names, symlinks resolved; `pwd -P` reports where
+ * that is, derived from the landed directory itself, so no symlink swapped in afterwards can change
+ * the answer; and `du .` measures the landed directory, following nothing below it. Anything that
+ * lands outside `$2` exits before `du` runs.
+ */
+const CONTAINED_DU = 'cd -P -- "$1" || exit 1; case "$(pwd -P)" in "$2"/*) exec du -sk . ;; esac; exit 3';
+
+/**
+ * `readSize` for a directory whose path runs through components a member's agent can write: the
+ * repo's package cache under `<member>/.cache/`. The board sees every org's tree, so a symlink
+ * planted there must never turn the reading into another tenant's directory size — and a
+ * check-then-measure on the path would race a symlink swapped between the two.
+ */
+async function readContainedSize(dir: string, root: string): Promise<number | null> {
+    try {
+        const { stdout } = await run('sh', ['-c', CONTAINED_DU, 'sh', dir, await realpath(root)], {
+            timeout: SIZE_TIMEOUT_MS,
+        });
+        return bytesOfDu(stdout);
+    } catch {
+        // Absent, outside the root, timed out: not measured.
+        return null;
+    }
+}
+
 export function createFactsCache(now: () => number = Date.now): FactsCache {
     const entries = new Map<string, Entry>();
 
-    const refresh = (dir: string, entry: Entry, withHead: boolean): void => {
+    /** `root` set: a size-only reading confined to it (`sizeOf`); unset: a checkout (`get`). */
+    const refresh = (dir: string, entry: Entry, root?: string): void => {
         if (entry.pending) return;
-        const wantHead = withHead && now() - entry.headAt >= HEAD_TTL_MS;
+        const wantHead = root === undefined && now() - entry.headAt >= HEAD_TTL_MS;
         const wantSize = now() - entry.sizeAt >= SIZE_TTL_MS;
         if (!wantHead && !wantSize) return;
 
         entry.pending = (async () => {
             // Both off the request path — nothing awaits this promise — and both concurrent with
             // each other, because they are separate processes reading the same directory.
-            const [head, size] = await Promise.all([wantHead ? readHead(dir) : null, wantSize ? readSize(dir) : null]);
+            const measure = () => (root === undefined ? readSize(dir) : readContainedSize(dir, root));
+            const [head, size] = await Promise.all([wantHead ? readHead(dir) : null, wantSize ? measure() : null]);
             if (head) {
                 entry.facts = { ...entry.facts, ...head };
                 entry.headAt = now();
@@ -169,15 +206,15 @@ export function createFactsCache(now: () => number = Date.now): FactsCache {
     return {
         get(dir) {
             const entry = entryOf(dir);
-            refresh(dir, entry, true);
+            refresh(dir, entry);
             return entry.facts;
         },
 
-        sizeOf(dir) {
+        sizeOf(dir, root) {
             const entry = entryOf(dir);
             // A cache a run has just created must not wait out the TTL behind an absent reading.
             if (entry.absent && existsSync(dir)) entry.sizeAt = 0;
-            refresh(dir, entry, false);
+            refresh(dir, entry, root);
             return entry.facts.sizeBytes;
         },
 

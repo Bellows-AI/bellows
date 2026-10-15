@@ -59,6 +59,7 @@ Mount shape and its boundary: [security.md](security.md). Task worktrees: [jobs.
   only (`driver/src/scripts/git-worktree.cjs`).
 - **Stated limit:** 20 repositories and 10 executor profiles per member; two clones at a time.
 - **Stated limit:** the package cache is per member and repo, never shared across members, and never
-  evicted; its size is the repo's `Package cache` reading, and the purge is deleting
-  `<member>/.cache/<owner>/<repo>`. Concurrent tasks share it: npm's cache is safe for that, a tool
+  evicted; its size is the repo's `Package cache` reading, measured only where the path really
+  lies inside the member tree (`readContainedSize`, `server/test/workspace.facts.test.ts`), and
+  the purge is deleting `<member>/.cache/<owner>/<repo>`. Concurrent tasks share it: npm's cache is safe for that, a tool
   whose cache is not (yarn classic) is the repo's risk. `driver/src/claim.ts`.

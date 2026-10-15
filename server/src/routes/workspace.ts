@@ -174,7 +174,7 @@ function describeRepo(ctx: { facts: FactsCache; root: string; orgId: string; use
         selectedAt: row.selectedAt,
         readyAt: row.readyAt,
         ...(onDisk ?? { branch: null, lastCommit: null, sizeBytes: null }),
-        cacheSizeBytes: row.status === 'ready' ? ctx.facts.sizeOf(cacheDir) : null,
+        cacheSizeBytes: row.status === 'ready' ? ctx.facts.sizeOf(cacheDir, userDir) : null,
     };
 }
 
