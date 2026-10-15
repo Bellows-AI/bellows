@@ -373,7 +373,7 @@ describe.skipIf(!enabled)('session attribution', () => {
 
     it('resolves the user of the board task a session belongs to', async () => {
         const userId = await member('attributor');
-        const jobId = await job({ session: 'attr-1', createdBy: userId });
+        await job({ session: 'attr-1', createdBy: userId });
         await point({ session: 'attr-1', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
         await branch({
             session: 'attr-1',
@@ -389,8 +389,6 @@ describe.skipIf(!enabled)('session attribution', () => {
             name: null,
             avatarUrl: null,
         });
-        await sql`delete from job where id = ${jobId}`;
-        await sql`delete from app_user where id = ${userId}`;
     });
 
     it('carries the display labels the account has, and null when it has none', async () => {
@@ -401,7 +399,7 @@ describe.skipIf(!enabled)('session attribution', () => {
                 returning id
             `
         )[0]!.id;
-        const jobId = await job({ session: 'attr-2', createdBy: userId });
+        await job({ session: 'attr-2', createdBy: userId });
         await point({ session: 'attr-2', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
         await branch({
             session: 'attr-2',
@@ -417,8 +415,6 @@ describe.skipIf(!enabled)('session attribution', () => {
             name: 'Ada Lovelace',
             avatarUrl: 'https://example.com/ada.png',
         });
-        await sql`delete from job where id = ${jobId}`;
-        await sql`delete from app_user where id = ${userId}`;
     });
 
     it('keeps a session with no matching task unattributed rather than guessed', async () => {
@@ -455,13 +451,11 @@ describe.skipIf(!enabled)('session attribution', () => {
         const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
         expect(input.sessions).toHaveLength(1);
         expect(input.sessions[0]?.user?.login).toBe('thread-author');
-        await sql`delete from job where root_job_id = ${rootId}`;
-        await sql`delete from app_user where id = ${userId}`;
     });
 
     it("does not attribute one organization's session through another organization's job", async () => {
         const userId = await member('other-org-author');
-        const jobId = await job({ session: 'attr-5', createdBy: userId, org: OTHER_ORG });
+        await job({ session: 'attr-5', createdBy: userId, org: OTHER_ORG });
         await branch({
             session: 'attr-5',
             branch: 'feat/a',
@@ -472,8 +466,6 @@ describe.skipIf(!enabled)('session attribution', () => {
 
         const mine = (await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups()).input;
         expect(mine.sessions[0]?.user).toBeNull();
-        await sql`delete from job where id = ${jobId}`;
-        await sql`delete from app_user where id = ${userId}`;
     });
 });
 
@@ -502,8 +494,6 @@ describe.skipIf(!enabled)('task attribution', () => {
         const { input } = await fetchOrg();
         expect(input.sessions[0]?.user?.login).toBe('task-author');
         expect(input.sessions[0]?.taskKey).toBe(rootId);
-        await sql`delete from job`;
-        await sql`delete from app_user where id = ${userId}`;
     });
 
     it('resolves a follow-up chain to the one thread root', async () => {
@@ -517,8 +507,6 @@ describe.skipIf(!enabled)('task attribution', () => {
         const { input } = await fetchOrg();
         expect(input.sessions).toHaveLength(1);
         expect(input.sessions[0]?.taskKey).toBe(rootId);
-        await sql`delete from job`;
-        await sql`delete from app_user where id = ${userId}`;
     });
 
     it('keeps a session with no matching job row task-less, exactly as it is member-less', async () => {
@@ -537,7 +525,6 @@ describe.skipIf(!enabled)('task attribution', () => {
         const { input } = await fetchOrg();
         expect(input.sessions[0]?.taskKey).toBe(rootId);
         expect(input.sessions[0]?.user).toBeNull();
-        await sql`delete from job`;
     });
 
     it('leaves a removed thread with neither member nor task, its tokens still in the totals', async () => {
@@ -560,7 +547,6 @@ describe.skipIf(!enabled)('task attribution', () => {
         const stats = telemetryStats(input);
         expect(stats.unattributedSessions).toBe(1);
         expect(stats.totals.tokens.input).toBe(10);
-        await sql`delete from app_user where id = ${userId}`;
     });
 
     it('fetches the org run rows beside the rollups, and never another orgs', async () => {
@@ -574,7 +560,6 @@ describe.skipIf(!enabled)('task attribution', () => {
         expect(runs.map((r) => r.rootJobId)).toEqual([mineRoot]);
         // The column is new: every row so far reads unmeasured, never zero.
         expect(runs[0]?.agentTurns).toBeNull();
-        await sql`delete from job`;
     });
 });
 
