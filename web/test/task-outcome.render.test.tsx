@@ -31,10 +31,13 @@ describe('TaskOutcome', () => {
                 }),
             ],
         });
-        // The rail carries the closure verdict; the stop attribution is the run footer's.
+        // The rail carries one closure verdict and a done outranks a stop; the stop attribution
+        // is the run footer's.
         const rail = railOf(html);
         expect(rail).toContain('Stopped');
         expect(rail).toContain('done by kim');
+        expect(rail).not.toContain('stopped by lee');
+        expect(html).toContain('stopped by lee');
         expect(rail).toContain('exit 0');
     });
 
