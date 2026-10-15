@@ -16,7 +16,18 @@
     },
     "permissions": {
         "additionalDirectories": ["/workspaces", "/tmp"],
-        "allow": ["Bash(sed -i *)", "Bash(grep *)", "Edit(//tmp/**)", "Write(//tmp/**)"]
+        "allow": [
+            "Bash(sed -i *)",
+            "Bash(grep *)",
+            "Bash(npm install)",
+            "Bash(npm install *)",
+            "Bash(npm i)",
+            "Bash(npm i *)",
+            "Bash(npm ci)",
+            "Bash(npm ci *)",
+            "Edit(//tmp/**)",
+            "Write(//tmp/**)"
+        ]
     },
     "autoMode": {
         "environment": [

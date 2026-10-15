@@ -36,7 +36,18 @@ export function claudeManagedSettings(endpoint: string): string {
         // A headless run's permission prompt ends in a deny; these routine commands must not ask.
         permissions: {
             additionalDirectories: ['/workspaces', '/tmp'],
-            allow: ['Bash(sed -i *)', 'Bash(grep *)', 'Edit(//tmp/**)', 'Write(//tmp/**)'],
+            allow: [
+                'Bash(sed -i *)',
+                'Bash(grep *)',
+                'Bash(npm install)',
+                'Bash(npm install *)',
+                'Bash(npm i)',
+                'Bash(npm i *)',
+                'Bash(npm ci)',
+                'Bash(npm ci *)',
+                'Edit(//tmp/**)',
+                'Write(//tmp/**)',
+            ],
         },
         // The runner's `-p` session runs in auto mode; without these the classifier denies a
         // task's own dependency change and credential check as if on a developer machine.
