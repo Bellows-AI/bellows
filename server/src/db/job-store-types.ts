@@ -997,7 +997,7 @@ export interface JobStore {
     /**
      * The user's reopening of a done task (issue #327): clears the done stamp on EVERY member of
      * the thread and withdraws a queued task_reclaim row, so a task closed by mistake can be
-     * followed up again — `createFollowUp`'s `done_at is null` predicate is what this reverses.
+     * followed up again — `createFollowUp`'s thread-wide done predicate is what this reverses.
      * Decided under the same per-thread advisory lock the claim and remove take, so the checks,
      * the withdraw and the clear see every earlier claim of the thread commit; the withdraw only
      * takes rows no worker holds a LIVE claim on, and re-verifies after the delete, so a row

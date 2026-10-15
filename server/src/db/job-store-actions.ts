@@ -118,12 +118,12 @@ export async function insertJobInTx(
 }
 
 /**
- * createFollowUp's body. One conditional insert: the select carries every precondition (finished, not done, has a
- * session, same org), so a follow-up can never land on a parent that fails one. The select also
- * takes the parent row's lock, which is what makes a racing markDone impossible to answer from a
- * stale snapshot: under READ COMMITTED, whichever statement gets the lock second re-checks the
- * qualifications against the row's newest committed version — a done parent yields no row and the
- * read below answers task_done, never a done task with queued follow-up work. The author
+ * createFollowUp's body. One conditional insert: the select carries every precondition (a finished
+ * thread, no done on any of its members, same author, same org), so a follow-up can never land on a
+ * parent that fails one. The done is the THREAD's, as a retry reads it: markDone stamps only the
+ * named row, so a follow-up on another member of a done thread refuses task_done. The per-thread
+ * advisory lock below makes a racing markDone on any member impossible to answer from a stale
+ * snapshot — never a done task with queued follow-up work. The author
  * predicate is null-safe (`is not distinct from`): a null caller may only follow up a parent with
  * no author — the state every pre-accounts task is in — and an authored parent refuses a caller
  * with no account, which is the read below's forbidden answer. The session ids AND the executor
@@ -182,7 +182,6 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
                 from job
                 where org_id = ${orgId} and id = ${parentId}
                   and status in ('succeeded','failed','dead','stopped')
-                  and done_at is null
                   and created_by is not distinct from ${createdBy}
                   -- A named-profile review is not a task: a follow-up of it would run as an
                   -- ordinary job with the author's full env and token (issue #549).
@@ -219,11 +218,17 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
                    parent.root_job_id, parent.workflow_name, parent.mode
             from parent, root, primary_session
             -- Eligibility is the THREAD's, as a retry's is (#698): a finished parent whose thread
-            -- still holds unfinished work refuses, so a repeat never queues a second follow-up.
+            -- still holds unfinished work, or carries a done on any member, refuses — so a repeat
+            -- never queues a second follow-up, and a closed thread never gets queued work.
             where not exists (
                 select 1 from job m
                 where m.org_id = ${orgId} and m.root_job_id = parent.root_job_id
                   and m.status not in ${tx([...TERMINAL_STATUSES])}
+            )
+              and not exists (
+                select 1 from job d
+                where d.org_id = ${orgId} and d.root_job_id = parent.root_job_id
+                  and d.done_at is not null
             )
             returning id
         `;
@@ -231,10 +236,10 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
         await stampKey(tx, orgId, rows[0].id, idem);
         return { id: rows[0].id };
     }
-    // Nothing inserted — one of the four preconditions failed, and which one decides the answer
-    // the route turns into a status code. Forbidden is last. The parent cannot have moved to deleted since the pre-read above —
+    // Nothing inserted — one of the preconditions failed, and which one decides the answer
+    // the route turns into a status code. The parent cannot have moved to deleted since the pre-read above —
     // remove deletes under this same advisory lock — so missing was decided before the lock.
-    return followUpRefusalOf(tx, orgId, parentId);
+    return threadRefusalOf(tx, orgId, parentId);
 }
 
 /**
@@ -256,29 +261,38 @@ async function replayedFor(
 }
 
 /**
- * Names the precondition the conditional insert failed on, for the parent and its thread AS THEY
- * ARE NOW — a thread that moved on between the CTE and this read can make the refusal name the
- * newer state, and the retry then succeeds (the same honesty the original inline shape had,
- * extracted so the function above stays readable).
+ * Names the precondition a follow-up's or a retry's conditional insert failed on, for the thread
+ * AS IT IS NOW — a thread that moved on between the CTE and this read can make the refusal name
+ * the newer state, and the retry then succeeds. One read for both ops, so their refusals cannot
+ * drift apart. The priority: a thread with ANY unfinished member owns the turn (`not_finished`)
+ * even when a member carries done_at — retry later, or reopen the done first; a done on ANY member
+ * is the thread closed (`task_done`); the author predicate is decided last, so a thread that is
+ * over answers its over-ness to whoever asks before it answers `forbidden` — and forbidden is the
+ * catch-all for a row that moved between the CTE and this read. A row that moved all the way to
+ * deleted answers `missing` rather than dying on the read.
  */
-async function followUpRefusalOf(
+async function threadRefusalOf(
     tx: TransactionSql,
     orgId: string,
-    parentId: string
-): Promise<'task_done' | 'not_finished' | 'forbidden'> {
-    // Retry's priority (retryRefusalOf): a thread that is still moving answers not_finished
-    // before task_done, and the author is decided last.
-    const [parent] = await tx<{ busy: boolean; done_at: Date | null }[]>`
+    id: string
+): Promise<'missing' | 'task_done' | 'not_finished' | 'forbidden'> {
+    const [row] = await tx<{ busy: boolean; done: boolean }[]>`
         select exists (
             select 1 from job m
-            where m.org_id = ${orgId} and m.root_job_id = p.root_job_id
+            where m.org_id = ${orgId} and m.root_job_id = named.root_job_id
               and m.status not in ${tx([...TERMINAL_STATUSES])}
         ) as busy,
-        p.done_at
-        from job p where p.org_id = ${orgId} and p.id = ${parentId}
+        exists (
+            select 1 from job d
+            where d.org_id = ${orgId} and d.root_job_id = named.root_job_id
+              and d.done_at is not null
+        ) as done
+        from job named
+        where named.org_id = ${orgId} and named.id = ${id}
     `;
-    if (parent!.busy) return 'not_finished';
-    if (parent!.done_at !== null) return 'task_done';
+    if (!row) return 'missing';
+    if (row.busy) return 'not_finished';
+    if (row.done) return 'task_done';
     return 'forbidden';
 }
 
@@ -287,12 +301,11 @@ async function followUpRefusalOf(
  * thread, without resuming a session. One transaction and one conditional insert, shaped exactly
  * like the follow-up's: the checkout purge guard first, then the insert. Eligibility is the
  * THREAD's, not the named row's: the `named` CTE carries only the caller's own-row predicate
- * under its `for update` lock, and the INSERT..SELECT admits the retry only when the thread HEAD
- * (the newest member by created_at then id — the same chainHead rule the reads follow) is
- * terminal and NO member of the thread carries a done_at. A terminal root therefore cannot queue
- * a second attempt under a head that is still queued or running, and a terminal head whose
- * thread the user closed anywhere refuses task_done. The refusal below names the thread as it is
- * now, never a stale snapshot.
+ * under its `for update` lock, and the INSERT..SELECT admits the retry only when EVERY member of
+ * the thread is terminal and NO member carries a done_at — the follow-up's rule. A terminal root
+ * therefore cannot queue a second attempt under a head that is still queued or running, and a
+ * terminal head whose thread the user closed anywhere refuses task_done. The refusal below names
+ * the thread as it is now, never a stale snapshot.
  *
  * What is copied comes from the thread HEAD: its command, repo, executor, workflow_name and
  * root_job_id. What is deliberately ABSENT is the follow-up's other two columns: no
@@ -345,7 +358,7 @@ export async function retryInTx(
                 for update
             ),
             head as (
-                select command, repo, executor, executor_scope, root_job_id, workflow_name, mode, status
+                select command, repo, executor, executor_scope, root_job_id, workflow_name, mode
                 from job
                 where org_id = ${orgId} and root_job_id = (select root_job_id from named)
                 order by created_at desc, id desc
@@ -355,7 +368,13 @@ export async function retryInTx(
             select ${orgId}, head.command, ${createdBy}, head.repo, head.executor, head.executor_scope,
                    head.root_job_id, head.workflow_name, head.mode
             from named, head
-            where head.status in ('succeeded','failed','dead','stopped')
+            where not exists (
+                  select 1
+                  from job m
+                  where m.org_id = ${orgId}
+                    and m.root_job_id = head.root_job_id
+                    and m.status not in ${tx([...TERMINAL_STATUSES])}
+              )
               and not exists (
                   select 1
                   from job d
@@ -371,54 +390,7 @@ export async function retryInTx(
     }
     // Nothing inserted — one of the preconditions failed, and which one decides the answer
     // the route turns into a status code.
-    return retryRefusalOf(tx, orgId, id, createdBy);
-}
-
-/**
- * Names the precondition the conditional insert failed on, for the thread AS IT IS NOW — the
- * same honesty followUpRefusalOf states. The eligibility the insert decided is the thread's, so
- * the refusal reads all three facts in one go and answers in the priority they mean: a HEAD
- * that is still moving owns the turn (`not_finished`) even when an older member carries
- * done_at — retry later, or reopen the done first; a done on ANY member is the thread closed
- * (`task_done`); the author predicate is decided last, so a thread that is over answers its
- * over-ness to whoever asks before it answers `forbidden` — and forbidden is the catch-all for
- * a row that moved between the CTE and this read. A row that moved all the way to deleted
- * answers `missing` rather than dying on the read.
- */
-async function retryRefusalOf(
-    tx: TransactionSql,
-    orgId: string,
-    id: string,
-    createdBy: string | null
-): Promise<'missing' | 'task_done' | 'not_finished' | 'forbidden'> {
-    const [row] = await tx<{ head_status: JobStatus | null; thread_done: boolean; created_by: string | null }[]>`
-        select (
-            select status from job head
-            where head.org_id = ${orgId} and head.root_job_id = named.root_job_id
-            order by head.created_at desc, head.id desc
-            limit 1
-        ) as head_status,
-        exists (
-            select 1 from job d
-            where d.org_id = ${orgId} and d.root_job_id = named.root_job_id
-              and d.done_at is not null
-        ) as thread_done,
-        named.created_by
-        from job named
-        where named.org_id = ${orgId} and named.id = ${id}
-    `;
-    if (!row) return 'missing';
-    if (
-        row.head_status !== 'succeeded' &&
-        row.head_status !== 'failed' &&
-        row.head_status !== 'dead' &&
-        row.head_status !== 'stopped'
-    ) {
-        return 'not_finished';
-    }
-    if (row.thread_done) return 'task_done';
-    if (row.created_by !== createdBy) return 'forbidden';
-    return 'forbidden';
+    return threadRefusalOf(tx, orgId, id);
 }
 
 /**
@@ -841,7 +813,7 @@ export async function pokeThreadWait(
 /**
  * Done's inverse (issue #327): clear the done stamp on every member of the thread and withdraw a
  * task_reclaim row that has not run yet, so a task closed by mistake can be followed up again —
- * createFollowUpRow's `done_at is null` predicate is exactly what this reverses. The whole decision
+ * createFollowUpRow's thread-wide done predicate is exactly what this reverses. The whole decision
  * is one transaction under the SAME per-thread advisory lock the claim and remove take: the refusal
  * checks, the withdraw and the clear must see every earlier claim of this thread commit, or a
  * reclaim claim could take the row between the check and the withdraw — a tree removed for a task
