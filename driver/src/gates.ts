@@ -6,9 +6,9 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { BoardJob, DeclaredGate } from './board.js';
 import type { DriverConfig } from './config.js';
-import { gateEnvArgs, gateEnvContainerName, gateExecArgs } from './docker.js';
+import { gateEnvArgs, gateEnvContainerName } from './docker.js';
+import { execInContainer, type ExecDocker } from './gate-exec.js';
 import { startEnvContainer } from './docker-runner-support.js';
-import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateRunNote } from './timeout-note.js';
 import { networkName } from './services.js';
@@ -30,12 +30,6 @@ const HTTP_UNPROCESSABLE = 422;
 const HTTP_INTERNAL_SERVER_ERROR = 500;
 /** What a gate cancelled before it started answers — discarded by the loop that cancelled it. */
 const CANCELLED_EXIT_CODE = 130;
-/** execFile's own code when a child's output outgrew `maxBuffer` — the child is killed. */
-const STDIO_MAXBUFFER_CODE = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
-/** A passing suite can be verbose; execFile's 1 MiB default is far below what one prints. */
-const GATE_OUTPUT_MAX_BUFFER_BYTES = 268_435_456;
-/** What a gate whose output outgrew the buffer reports: a verdict, not a missing container. */
-const OUTPUT_OVERFLOW_EXIT_CODE = 1;
 
 /**
  * The gate environment: one long-lived container per task worktree, a `docker exec` per
@@ -59,11 +53,6 @@ export interface GateRun {
     /** True when the environment's `setup` command failed: the gate itself never ran. */
     setupFailed?: true;
 }
-
-type ExecDocker = (
-    args: string[],
-    options?: { timeout?: number; maxBuffer?: number; signal?: AbortSignal }
-) => Promise<{ stdout: string; stderr: string }>;
 
 const defaultExec: ExecDocker = (args, options) =>
     run('docker', args, options) as Promise<{ stdout: string; stderr: string }>;
@@ -114,8 +103,8 @@ export interface GateManager {
     /**
      * Ensures the environment for the checkout exists, cancelling any teardown already
      * scheduled for it. Idempotent: an existing environment is reused as-is, env included.
-     * The attempt's `gates.setup` is run once per environment, lazily before its first gate (a gate
-     * answers `setupFailed` when it fails), so an environment no gate ever uses pays nothing.
+     * The attempt's `gates.setup` runs before the agent starts (`runSetup`); a setup still pending
+     * after it — it failed — runs again before the next gate, which answers `setupFailed` when it fails.
      */
     acquire(key: string, image: string, envBody?: string, attempt?: GateAttempt): Promise<void>;
     /**
@@ -126,6 +115,14 @@ export interface GateManager {
      */
     runGate(key: string, name: string, command: string, options?: GateRunOptions): Promise<GateRun>;
     /**
+     * Runs the attempt's `gates.setup` now, before the agent starts (issue #733), under `timeoutMs`
+     * rather than the gate default; null when the checkout declares none. Always runs — a new
+     * attempt on a warm environment re-runs it, relying on its idempotency. A success clears the
+     * pending setup the first gate would run; a failure leaves it pending, so that gate retries it.
+     * It arms no cooldown: the attempt holds its environment until release, never reaped mid-turn.
+     */
+    runSetup(key: string, options?: GateRunOptions): Promise<GateRun | null>;
+    /**
      * Arms the cooldown teardown. Safe to call repeatedly; acquire cancels it. The job is the
      * releaser: a no-op unless it is the attempt the environment is currently filed under — a
      * reclaimed attempt's late release must not tear down the attempt that replaced it.
@@ -135,79 +132,80 @@ export interface GateManager {
     stop(): Promise<void>;
 }
 
-interface DockerExecError {
-    killed?: boolean;
-    code?: number | string;
-    stdout?: string;
-    stderr?: string;
-    message?: string;
+/** One script exec into the checkout's environment, bounded by `ms` (the gate default when absent). */
+type ContainerExec = (script: string, ms?: number) => Promise<GateRun>;
+
+/** Cancels the entry's pending cooldown teardown, if one is armed. */
+const cancelTeardown = (entry: Entry): void => {
+    if (entry.teardown) {
+        clearTimeout(entry.teardown);
+        entry.teardown = null;
+    }
+};
+
+/**
+ * A Stop while the gate still waits its turn answers at once — the run ahead can hold the queue
+ * for the whole gate timeout; the queued work itself bails when it starts.
+ */
+function answerOnAbort(queued: Promise<GateRun>, signal: AbortSignal, cancelled: GateRun): Promise<GateRun> {
+    let onAbort = (): void => {};
+    const stoppedWhileQueued = new Promise<GateRun>((resolve) => {
+        onAbort = () => resolve(cancelled);
+        signal.addEventListener('abort', onAbort, { once: true });
+    });
+    return Promise.race([queued, stoppedWhileQueued]).finally(() => signal.removeEventListener('abort', onAbort));
 }
 
 /**
- * Turns a failed `docker exec` into either a gate verdict (timeout, or the command's own exit
- * code) or a rejection carrying CONTAINER_GONE — the harness-vs-verdict split `runGate` and the
- * ad-hoc endpoint both key on.
+ * The attempt whose setup succeeded, per checkout: the install lives in the worktree, so an
+ * environment reaped by the cooldown and re-acquired by the same attempt does not run it again,
+ * while a new attempt does (the kubernetes manager's `carriedOver`).
  */
-function gateRunFromExecError(error: DockerExecError, gateTimeoutMs: number): GateRun {
-    const output = reportTail(`${error.stdout ?? ''}${error.stderr ?? ''}`.trim());
-    // The timeout kill: a genuine gate failure, reported as one — exit 124, the convention
-    // `timeout` itself uses — with the reason in the tail.
-    if (error.killed) {
-        return { exitCode: 124, output: output || `[driver] gate killed after ${gateTimeoutMs}ms` };
-    }
-    // The output outgrew the buffer and execFile killed the client: the gate's own verdict,
-    // never "the container is gone".
-    if (error.code === STDIO_MAXBUFFER_CODE) {
-        return {
-            exitCode: OUTPUT_OVERFLOW_EXIT_CODE,
-            output: output || `[driver] gate output exceeded ${GATE_OUTPUT_MAX_BUFFER_BYTES} bytes`,
-        };
-    }
-    // Docker itself failed — the container is not there. A harness state, not a verdict: it
-    // REJECTS with the code, which is what the ad-hoc endpoint's 409 and the loop's failed-gate
-    // path both key on.
-    if (error.code === CONTAINER_GONE) {
-        throw Object.assign(new Error(output || error.message || 'gate environment is gone'), {
-            code: CONTAINER_GONE,
-        });
-    }
-    // Not an exit status — docker never ran (ENOENT, EACCES). A harness state like the branch
-    // above: rejected with the code, never returned as an exit that did not happen.
-    if (typeof error.code !== 'number') {
-        throw Object.assign(new Error(output || error.message || 'docker could not be run'), {
-            code: CONTAINER_GONE,
-        });
-    }
-    return { exitCode: error.code, output: output || error.message || `exit ${error.code}` };
+function setupLedger() {
+    const done = new Map<string, string>();
+    const pendingFor = (key: string, job: BoardJob | undefined): string | null =>
+        job && done.get(key) === job.leaseToken ? null : (job?.gates?.setup ?? null);
+    return {
+        pendingFor,
+        /** A live environment filed under another attempt now: that attempt's setup is pending. */
+        handOver(key: string, entry: Entry, job: BoardJob): void {
+            if (entry.job?.leaseToken !== job.leaseToken) entry.pendingSetup = pendingFor(key, job);
+            entry.job = job;
+        },
+        /** After any run: a setup no longer pending is the attempt's. */
+        noteGate(key: string, entry: Entry): void {
+            if (entry.pendingSetup === null && entry.job) done.set(key, entry.job.leaseToken);
+        },
+        /** At the attempt's release its record goes, so the ledger holds only live attempts. */
+        forget(key: string, job: BoardJob | undefined): void {
+            if (job && done.get(key) === job.leaseToken) done.delete(key);
+        },
+        /** A `runSetup` queued for one attempt never settles another's (the kubernetes rule). */
+        settle(key: string, entry: Entry, owner: BoardJob | null | undefined, run: GateRun): GateRun {
+            if (!owner || entry.job?.leaseToken !== owner.leaseToken) return run;
+            const ok = run.exitCode === 0;
+            entry.pendingSetup = ok ? null : (owner.gates?.setup ?? null);
+            if (ok) done.set(key, owner.leaseToken);
+            return run;
+        },
+    };
 }
 
-/** One `docker exec` of a script, answered as a verdict (or a CONTAINER_GONE rejection). */
-async function execInContainer({
-    execDocker,
-    name,
-    script,
-    gateTimeoutMs,
-    onKilled,
-}: {
-    execDocker: ExecDocker;
-    name: string;
-    script: string;
-    gateTimeoutMs: number;
-    /** Called when the exec client was killed (timeout, output overflow) — the script lives on. */
-    onKilled: () => void;
-}): Promise<GateRun> {
+/**
+ * Joins the attempt's services network, so a gate reaches `.bellows.yaml`'s services by name
+ * the way the runner does. Once per attempt: the network is named after the lease. A job with
+ * no services has no network, and the refused connect is left for the next gate to retry —
+ * a gate with nothing to reach is not a harness failure.
+ */
+async function joinServices(config: DriverConfig, execDocker: ExecDocker, entry: Entry): Promise<void> {
+    if (!config.servicesEnabled || !entry.job) return;
+    const network = networkName(entry.job);
+    if (entry.network === network) return;
     try {
-        const read = await execDocker(gateExecArgs(name, script), {
-            timeout: gateTimeoutMs,
-            maxBuffer: GATE_OUTPUT_MAX_BUFFER_BYTES,
-        });
-        return { exitCode: 0, output: reportTail(read.stdout.trim()) };
-    } catch (e) {
-        const error = e as DockerExecError;
-        // The kill took the `docker exec` client only: the gate's process lives on in the warm
-        // container, so the environment goes, as it does for a cancel.
-        if (error.killed || error.code === STDIO_MAXBUFFER_CODE) onKilled();
-        return gateRunFromExecError(error, gateTimeoutMs);
+        await execDocker(['network', 'connect', network, entry.name]);
+        entry.network = network;
+    } catch {
+        // No services network for this attempt — nothing to join.
     }
 }
 
@@ -240,8 +238,9 @@ export const gateDeadlineMs = (config: { jobTimeoutMs: number }, defaultMs: numb
     timeoutMs === undefined ? defaultMs : Math.min(timeoutMs, config.jobTimeoutMs);
 
 /**
- * Runs the container's pending setup, then the gate. Setup is once per container: a failed one
- * stays pending, so the next gate retries it, and the failing gate never runs.
+ * Runs the container's pending setup, then the gate. Setup is pending only until it succeeds
+ * (`runSetup` usually already ran it): a failed one stays pending, so the next gate retries it,
+ * and the failing gate never runs.
  */
 async function setupThenGate(
     entry: Pick<Entry, 'pendingSetup'>,
@@ -310,6 +309,8 @@ export function createGateManager({
         removals.set(key, removal);
     };
 
+    const setups = setupLedger();
+
     /** An entry the job does not own is another attempt's: its release and cancel are no-ops. */
     const ownedBy = (entry: Entry, job: BoardJob | null): boolean =>
         !entry.job || !job || entry.job.leaseToken === job.leaseToken;
@@ -337,21 +338,50 @@ export function createGateManager({
     const serialize = keyQueue();
 
     /**
-     * Joins the attempt's services network, so a gate reaches `.bellows.yaml`'s services by name
-     * the way the runner does. Once per attempt: the network is named after the lease. A job with
-     * no services has no network, and the refused connect is left for the next gate to retry —
-     * a gate with nothing to reach is not a harness failure.
+     * The queue, cancel and cooldown discipline every run in an environment shares — a gate and
+     * the pre-agent setup alike: `work` runs in the checkout's turn with an exec bound to its
+     * container, an abort tears the environment down, and a Stop while still queued answers at once.
      */
-    const joinServices = async (entry: Entry): Promise<void> => {
-        if (!config.servicesEnabled || !entry.job) return;
-        const network = networkName(entry.job);
-        if (entry.network === network) return;
-        try {
-            await execDocker(['network', 'connect', network, entry.name]);
-            entry.network = network;
-        } catch {
-            // No services network for this attempt — nothing to join.
+    const inQueue = (
+        key: string,
+        signal: AbortSignal | undefined,
+        work: (entry: Entry, exec: ContainerExec) => Promise<GateRun>,
+        rearm = true
+    ): Promise<GateRun> => {
+        const entry = entries.get(key);
+        if (!entry) {
+            return Promise.reject(Object.assign(new Error(`no gate environment for ${key}`), { code: CONTAINER_GONE }));
         }
+        // A gate run is activity: it cancels any pending teardown, and re-arms the cooldown
+        // when it finishes — the same rule a coding turn obeys, applied to the ad-hoc runs
+        // that happen while the agent is still talking.
+        cancelTeardown(entry);
+        // A cancelled gate: killing the `docker exec` client leaves its process running in
+        // the container, so the environment itself goes — the next acquire recreates it.
+        // Unless the entry has since passed to another attempt, whose gates share it.
+        const owner = entry.job;
+        const cancel = (): void => {
+            if (entries.get(key) !== entry || !ownedBy(entry, owner)) return;
+            if (entry.teardown) clearTimeout(entry.teardown);
+            teardown(key, entry);
+        };
+        const cancelled: GateRun = { exitCode: CANCELLED_EXIT_CODE, output: '[driver] gate cancelled' };
+        if (signal?.aborted) return Promise.resolve(cancelled);
+        const queued = serialize(key, async (): Promise<GateRun> => {
+            if (signal?.aborted) return cancelled;
+            signal?.addEventListener('abort', cancel, { once: true });
+            const exec: ContainerExec = (script, ms = gateTimeoutMs) =>
+                execInContainer({ execDocker, name: entry.name, script, gateTimeoutMs: ms, onKilled: cancel });
+            try {
+                await joinServices(config, execDocker, entry);
+                return await work(entry, exec);
+            } finally {
+                signal?.removeEventListener('abort', cancel);
+                setups.noteGate(key, entry);
+                if (rearm) armCooldown(key, entry);
+            }
+        });
+        return signal ? answerOnAbort(queued, signal, cancelled) : queued;
     };
 
     return {
@@ -361,11 +391,8 @@ export function createGateManager({
             const job = attempt?.job;
             const existing = entries.get(key);
             if (existing) {
-                if (job) existing.job = job;
-                if (existing.teardown) {
-                    clearTimeout(existing.teardown);
-                    existing.teardown = null;
-                }
+                if (job) setups.handOver(key, existing, job);
+                cancelTeardown(existing);
                 return;
             }
             await serialize(key, async () => {
@@ -373,7 +400,7 @@ export function createGateManager({
                 // have created the entry this one was looking for.
                 const queued = entries.get(key);
                 if (queued) {
-                    if (job) queued.job = job;
+                    if (job) setups.handOver(key, queued, job);
                     return;
                 }
                 await removals.get(key);
@@ -385,7 +412,10 @@ export function createGateManager({
                 if (envBody) await writeFile(envFileFor(key), envBody, { mode: 0o600 });
                 const args = gateEnvArgs(config, key, image, { envFile: envBody ? envFileFor(key) : undefined, job });
                 await startEnvContainer(execDocker, name, args, attempt?.signal);
-                entries.set(key, newEntry(name, image, envBody, job ?? null));
+                entries.set(key, {
+                    ...newEntry(name, image, envBody, job ?? null),
+                    pendingSetup: setups.pendingFor(key, job),
+                });
             });
         },
 
@@ -394,57 +424,22 @@ export function createGateManager({
         // never reaches the transport here. The kubernetes manager does use it: a gate run is a
         // Job there, and the name becomes part of the Job's.
         runGate(key, _name, command, { signal, timeoutMs } = {}) {
-            const entry = entries.get(key);
-            if (!entry) {
-                return Promise.reject(
-                    Object.assign(new Error(`no gate environment for ${key}`), { code: CONTAINER_GONE })
-                );
-            }
-            // A gate run is activity: it cancels any pending teardown, and re-arms the cooldown
-            // when it finishes — the same rule a coding turn obeys, applied to the ad-hoc runs
-            // that happen while the agent is still talking.
-            if (entry.teardown) {
-                clearTimeout(entry.teardown);
-                entry.teardown = null;
-            }
-            // A cancelled gate: killing the `docker exec` client leaves its process running in
-            // the container, so the environment itself goes — the next acquire recreates it.
-            // Unless the entry has since passed to another attempt, whose gates share it.
-            const owner = entry.job;
-            const cancel = (): void => {
-                if (entries.get(key) !== entry || !ownedBy(entry, owner)) return;
-                if (entry.teardown) clearTimeout(entry.teardown);
-                teardown(key, entry);
-            };
-            const cancelled: GateRun = { exitCode: CANCELLED_EXIT_CODE, output: '[driver] gate cancelled' };
-            if (signal?.aborted) return Promise.resolve(cancelled);
-            const queued = serialize(key, async (): Promise<GateRun> => {
-                if (signal?.aborted) return cancelled;
-                signal?.addEventListener('abort', cancel, { once: true });
-                const exec = (script: string, ms = gateTimeoutMs): Promise<GateRun> =>
-                    execInContainer({ execDocker, name: entry.name, script, gateTimeoutMs: ms, onKilled: cancel });
-                try {
-                    await joinServices(entry);
-                    return await setupThenGate(entry, command, gateDeadlineMs(config, gateTimeoutMs, timeoutMs), exec);
-                } finally {
-                    signal?.removeEventListener('abort', cancel);
-                    armCooldown(key, entry);
-                }
-            });
-            if (!signal) return queued;
-            // A Stop while the gate still waits its turn answers at once — the run ahead can hold
-            // the queue for the whole gate timeout; the queued work itself bails when it starts.
-            let onAbort = (): void => {};
-            const stoppedWhileQueued = new Promise<GateRun>((resolve) => {
-                onAbort = () => resolve(cancelled);
-                signal.addEventListener('abort', onAbort, { once: true });
-            });
-            return Promise.race([queued, stoppedWhileQueued]).finally(() =>
-                signal.removeEventListener('abort', onAbort)
+            return inQueue(key, signal, (entry, exec) =>
+                setupThenGate(entry, command, gateDeadlineMs(config, gateTimeoutMs, timeoutMs), exec)
             );
         },
 
+        runSetup(key, { signal, timeoutMs } = {}) {
+            const owner = entries.get(key)?.job;
+            const setup = owner?.gates?.setup ?? '';
+            if (entries.has(key) && !setup) return Promise.resolve(null);
+            const work = async (entry: Entry, exec: ContainerExec): Promise<GateRun> =>
+                setups.settle(key, entry, owner, await exec(setup, timeoutMs));
+            return inQueue(key, signal, work, false);
+        },
+
         release(key, job) {
+            setups.forget(key, job);
             const entry = entries.get(key);
             if (!entry || !ownedBy(entry, job)) return;
             // Cooldown 0 means "tear down the moment the run's exits are walked" — the loop's

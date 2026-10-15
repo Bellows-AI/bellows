@@ -260,6 +260,7 @@ export async function completeJob(
         contextTokens,
         contextCostUsd,
         agentTurns,
+        setupMs = null,
         summary,
         failureKind,
         failureCause,
@@ -329,6 +330,8 @@ export async function completeJob(
                 -- finished, there is nothing left to park.
                 cancel_requested_at = null,
                 agent_turns = ${agentTurnsPatch},
+                -- Same overwrite rule (069, issue #733): no setup on this verdict stores null.
+                setup_ms = ${setupMs},
                 summary = ${summaryPatch},
                 failure_kind = ${failureKindPatch},
                 failure_cause = ${failureCausePatch},

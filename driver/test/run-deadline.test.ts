@@ -123,6 +123,38 @@ describe('the docker runner kill timer', () => {
         await expect(pending).resolves.toMatchObject({ timedOut: true, exitCode: 137 });
     });
 
+    // Issue #733: environment.setup ran before the agent, inside the same run budget.
+    it('kills the run at the budget left after environment.setup', async () => {
+        const calls: string[][] = [];
+        const exec = vi.fn(async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'ps' && args.some((a) => a.startsWith('label=factory.lease'))) {
+                return { stdout: 'runner-1\n' };
+            }
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const child = new EventEmitter() as ChildProcess;
+        child.stdout = new EventEmitter() as ChildProcess['stdout'];
+        child.stderr = new EventEmitter() as ChildProcess['stderr'];
+        const spawned = vi.fn(() => child);
+        const runner = createDockerRunner(
+            loadDriverConfig({ DRIVER_JOB_TIMEOUT_MS: String(10 * SECOND) }),
+            spawned as unknown as typeof spawn,
+            exec,
+            { writeFile: async () => undefined, rm: async () => undefined }
+        );
+        const killed = () => calls.some((args) => args[0] === 'kill');
+
+        const pending = runner.run({ ...job, setupMs: 3 * SECOND }, { id: SESSION, resume: false });
+        for (let i = 0; i < 200 && spawned.mock.calls.length === 0; i++) await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(7 * SECOND - 1);
+        expect(killed()).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(killed()).toBe(true);
+        child.emit('close', 137);
+        await expect(pending).resolves.toMatchObject({ timedOut: true });
+    });
+
     it('pausing a run that is not in flight does nothing', async () => {
         const runner = createDockerRunner(loadDriverConfig({}), vi.fn() as unknown as typeof spawn, vi.fn());
         await expect(runner.pauseDeadline?.(job, true)).resolves.toBeUndefined();

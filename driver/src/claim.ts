@@ -322,8 +322,26 @@ const MS_PER_MINUTE = 60_000;
  * docker kill timer, the kubernetes `activeDeadlineSeconds` and the timeout note all read it here,
  * so the two executors cannot disagree about a reviewer's budget.
  */
-export const runTimeoutMs = (config: { jobTimeoutMs: number }, job: BoardJob): number =>
+/** The run budget before setup took its share: the operator's, or a named reviewer's own. */
+export const runBudgetMs = (config: { jobTimeoutMs: number }, job: BoardJob): number =>
     job.reviewRun ? Math.min(config.jobTimeoutMs, job.reviewRun.timeoutMinutes * MS_PER_MINUTE) : config.jobTimeoutMs;
+
+/** The runner's deadline never reaches zero, even when setup used up its whole share. */
+const MIN_RUN_TIMEOUT_MS = 1_000;
+
+/**
+ * The run budget less what `environment.setup` already spent of it before the agent started
+ * (`job.setupMs`, issue #733): setup counts against the run deadline, not the gate budget.
+ */
+export const runTimeoutMs = (config: { jobTimeoutMs: number }, job: BoardJob): number =>
+    Math.max(MIN_RUN_TIMEOUT_MS, runBudgetMs(config, job) - (job.setupMs ?? 0));
+
+/**
+ * The pre-agent `environment.setup` timeout (issue #733): the gate budget, but never more than half
+ * the run budget, so a hung install always leaves the agent a reserve.
+ */
+export const setupTimeoutMs = (config: { jobTimeoutMs: number; gateTimeoutMs: number }, job: BoardJob): number =>
+    Math.min(config.gateTimeoutMs, Math.floor(runBudgetMs(config, job) / 2));
 
 /**
  * Whether the startup git work RESTORES (no fetch, no rebase) rather than syncs with the remote: a

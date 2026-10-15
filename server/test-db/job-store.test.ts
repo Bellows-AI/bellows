@@ -423,6 +423,29 @@ describe.skipIf(!enabled)('job store', () => {
         expect(rows2[0]?.agent_turns).toBeNull();
     });
 
+    // Issue #733: the time environment.setup ran before the agent, served apart from the wall clock.
+    it('stores the setup time on the verdict and serves it as setupMs, null when none ran', async () => {
+        const SETUP_MS = 4200;
+        const first = await queue('echo hi');
+        const one = await store.claim('w1', LEASE_SECONDS);
+        await store.complete(first.id, one!.leaseToken, {
+            status: 'succeeded',
+            exitCode: 0,
+            output: 'done',
+            setupMs: SETUP_MS,
+        });
+        expect(await store.get(first.id)).toMatchObject({ setupMs: SETUP_MS });
+        expect((await store.thread(first.id))?.find((row) => row.id === first.id)).toMatchObject({
+            setupMs: SETUP_MS,
+        });
+
+        // Same overwrite rule as the turns: a report without one stores null, never the last attempt's.
+        const second = await queue('echo hi');
+        const two = await store.claim('w2', LEASE_SECONDS);
+        await store.complete(second.id, two!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        expect(await store.get(second.id)).toMatchObject({ setupMs: null });
+    });
+
     it('stores the close-time summary, and unmeasured when the report carries none', async () => {
         const first = await queue('echo hi');
         const one = await store.claim('w1', LEASE_SECONDS);

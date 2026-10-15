@@ -240,6 +240,191 @@ describe('the gate environment manager: running gates', () => {
         await manager.stop();
     });
 
+    // Issue #733: the agent needs the install before its first turn, not before the first gate.
+    describe('runSetup: setup before the agent starts', () => {
+        const SETUP_EXIT_CODE = 7;
+        /** Records every exec'd script; `npm ci` fails while `setupFails()` says so. */
+        const scripted = (setupFails: () => boolean = () => false) => {
+            const scripts: string[] = [];
+            const timeouts: (number | undefined)[] = [];
+            const execDocker = exec((args, options) => {
+                if (args[0] !== 'exec') return { stdout: '', stderr: '' };
+                scripts.push(args[4] ?? '');
+                timeouts.push(options?.timeout);
+                if (args[4] === 'npm ci' && setupFails()) return fails(SETUP_EXIT_CODE, 'registry down\n');
+                return { stdout: 'installed\n', stderr: '' };
+            });
+            return { scripts, timeouts, execDocker };
+        };
+
+        it('runs setup now, and the first gate does not repeat it', async () => {
+            const docker = scripted();
+            const manager = createGateManager({ config, cooldownMs: 1000, execDocker: docker.execDocker });
+            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+
+            await expect(manager.runSetup(KEY)).resolves.toEqual({ exitCode: 0, output: 'installed' });
+            await manager.runGate(KEY, 'test', 'npm test');
+            expect(docker.scripts).toEqual(['npm ci', 'npm test']);
+            await manager.stop();
+        });
+
+        it('answers a failed setup and leaves it pending, so the first gate retries it', async () => {
+            let setupFails = true;
+            const docker = scripted(() => setupFails);
+            const manager = createGateManager({ config, cooldownMs: 1000, execDocker: docker.execDocker });
+            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+
+            await expect(manager.runSetup(KEY)).resolves.toEqual({
+                exitCode: SETUP_EXIT_CODE,
+                output: 'registry down',
+            });
+            setupFails = false;
+            await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toMatchObject({ exitCode: 0 });
+            expect(docker.scripts).toEqual(['npm ci', 'npm ci', 'npm test']);
+            await manager.stop();
+        });
+
+        it('re-runs setup for a new attempt on a warm environment', async () => {
+            const docker = scripted();
+            const manager = createGateManager({ config, cooldownMs: 1000, execDocker: docker.execDocker });
+            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+            await manager.runSetup(KEY);
+            const followUp: BoardJob = { ...WITH_SETUP, leaseToken: '33333333-3333-4333-8333-333333333333' };
+            await manager.acquire(KEY, 'node:24', '', { job: followUp });
+            await manager.runSetup(KEY);
+            await manager.runGate(KEY, 'test', 'npm test');
+
+            expect(docker.scripts).toEqual(['npm ci', 'npm ci', 'npm test']);
+            await manager.stop();
+        });
+
+        it('answers null and runs nothing when the checkout declares no setup', async () => {
+            const docker = scripted();
+            const manager = createGateManager({ config, cooldownMs: 1000, execDocker: docker.execDocker });
+            await manager.acquire(KEY, 'node:24', '', { job: JOB });
+
+            await expect(manager.runSetup(KEY)).resolves.toBeNull();
+            expect(docker.scripts).toEqual([]);
+            await manager.stop();
+        });
+
+        it('runs setup under the timeout it is given', async () => {
+            const docker = scripted();
+            const manager = createGateManager({
+                config,
+                cooldownMs: 1000,
+                gateTimeoutMs: 30_000,
+                execDocker: docker.execDocker,
+            });
+            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+
+            await manager.runSetup(KEY, { timeoutMs: 12_000 });
+            expect(docker.timeouts).toEqual([12_000]);
+            await manager.stop();
+        });
+
+        // Review round 1: the cooldown must not reap the environment out from under the attempt and
+        // make the end-of-run gate pass install a second time.
+        it('runs setup once per attempt, even when the environment is reaped and re-acquired', async () => {
+            vi.useFakeTimers();
+            try {
+                const docker = scripted();
+                const manager = createGateManager({ config, cooldownMs: 1000, execDocker: docker.execDocker });
+                await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+                await manager.runSetup(KEY);
+                await vi.advanceTimersByTimeAsync(5000);
+                // An ad-hoc gate arms the cooldown too; its reap must not forget the install either.
+                await manager.runGate(KEY, 'test', 'npm test');
+                await vi.advanceTimersByTimeAsync(5000);
+                await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+                await manager.runGate(KEY, 'test', 'npm test');
+
+                expect(docker.scripts).toEqual(['npm ci', 'npm test', 'npm test']);
+                await manager.stop();
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('a new attempt handed a warm environment runs its own setup before its first gate', async () => {
+            const docker = scripted();
+            const manager = createGateManager({ config, cooldownMs: 1000, execDocker: docker.execDocker });
+            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+            await manager.runSetup(KEY);
+            const followUp: BoardJob = { ...WITH_SETUP, leaseToken: '33333333-3333-4333-8333-333333333333' };
+            await manager.acquire(KEY, 'node:24', '', { job: followUp });
+            await manager.runGate(KEY, 'test', 'npm test');
+
+            expect(docker.scripts).toEqual(['npm ci', 'npm ci', 'npm test']);
+            await manager.stop();
+        });
+
+        // The kubernetes manager's rule: a setup queued for one attempt never clears another's.
+        it("a setup that finishes after the environment passed to a newer attempt leaves that attempt's setup pending", async () => {
+            const scripts: string[] = [];
+            let releaseHang!: () => void;
+            const hanging = exec((args) => {
+                if (args[0] !== 'exec') return { stdout: '', stderr: '' };
+                scripts.push(args[4] ?? '');
+                if (args[4] === 'hang') {
+                    return new Promise<ExecResult>((resolve) => {
+                        releaseHang = () => resolve({ stdout: '', stderr: '' });
+                    });
+                }
+                return { stdout: '', stderr: '' };
+            });
+            const manager = createGateManager({ config, cooldownMs: 1000, execDocker: hanging });
+            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+            const held = manager.runGate(KEY, 'hold', 'hang');
+            const staleSetup = manager.runSetup(KEY);
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            const followUp: BoardJob = { ...WITH_SETUP, leaseToken: '33333333-3333-4333-8333-333333333333' };
+            await manager.acquire(KEY, 'node:24', '', { job: followUp });
+            releaseHang();
+            await held;
+            await staleSetup;
+            await manager.runGate(KEY, 'test', 'npm test');
+
+            expect(scripts).toEqual(['npm ci', 'hang', 'npm ci', 'npm ci', 'npm test']);
+            await manager.stop();
+        });
+
+        // Review round 2: the per-checkout record of a succeeded setup ends with its attempt's release.
+        it("forgets the attempt's setup at its release", async () => {
+            const docker = scripted();
+            const manager = createGateManager({ config, cooldownMs: 0, execDocker: docker.execDocker });
+            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+            await manager.runSetup(KEY);
+            manager.release(KEY, WITH_SETUP);
+            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+            await manager.runGate(KEY, 'test', 'npm test');
+
+            expect(docker.scripts).toEqual(['npm ci', 'npm ci', 'npm test']);
+            await manager.stop();
+        });
+
+        it('tears the environment down when the attempt aborts mid-setup', async () => {
+            const removed: string[] = [];
+            const hanging = exec((args) => {
+                if (args[0] === 'rm') removed.push(args[2] ?? '');
+                if (args[0] === 'exec') return new Promise<ExecResult>(() => {});
+                return { stdout: '', stderr: '' };
+            });
+            const manager = createGateManager({ config, cooldownMs: 1000, execDocker: hanging });
+            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+            removed.length = 0;
+            const controller = new AbortController();
+
+            const running = manager.runSetup(KEY, { signal: controller.signal });
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            controller.abort();
+
+            await expect(running).resolves.toMatchObject({ exitCode: 130 });
+            expect(removed).toContain(NAME);
+            await manager.stop();
+        });
+    });
+
     it('serializes gate runs per checkout, so two turns cannot interleave installs', async () => {
         let releaseFirst!: () => void;
         const gate = new Promise<ExecResult>((resolve) => {

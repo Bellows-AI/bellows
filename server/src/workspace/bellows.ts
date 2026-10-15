@@ -18,8 +18,9 @@
  * GATE_TIMEOUT_MS (`readTimeoutMinutes`) — and `on_demand: true`: the agent may run it ad hoc, the
  * end-of-run gates pass skips it.
  *
- * `environment:` may also carry `setup: <command>` — run once per gate environment, before its
- * first gate, in the worktree (an install step); its failure is a setup failure, not a gate's.
+ * `environment:` may also carry `setup: <command>` — run in the worktree before the agent starts
+ * and retried before the first gate while it fails (an install step); its failure is a setup
+ * failure, not a gate's.
  *
  * `environment:` may also carry `cache:` — a list of `- NAME` env names, each set by the driver to
  * `<member>/.cache/<owner>/<repo>/<NAME>` in the runner and gate env, a directory that outlives the
@@ -82,7 +83,7 @@ const POLICY_KEYS = ['gates', 'review'] as const;
 
 export interface BellowsConfig {
     readonly image: string;
-    /** Runs once per gate environment before the first gate; absent when none is declared. */
+    /** Runs before the agent starts, retried before the first gate while it fails; absent when none is declared. */
     readonly setup?: string;
     /** Env names the driver points at the member's per-repo cache directory; absent when none. */
     readonly cache?: readonly string[];

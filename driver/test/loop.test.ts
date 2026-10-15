@@ -11,7 +11,9 @@ import type {
 } from '../src/board.js';
 import { loadDriverConfig, type DriverConfig } from '../src/config.js';
 import type { DeadService, RunOutcome, RunSession, Runner, RuntimeSample } from '../src/runner.js';
-import type { GateManager, GateServer } from '../src/gates.js';
+import type { GateManager, GateRun, GateRunOptions, GateServer } from '../src/gates.js';
+import { setupTimeoutMs } from '../src/claim.js';
+import { ServicesNotRunning } from '../src/service-restart.js';
 import {
     cancelPendingQuestions,
     hasPendingQuestion,
@@ -552,7 +554,10 @@ async function drive(
  * scripted exit codes; the server's listen answers a fixed port so the advertised URL is
  * predictable.
  */
-function stubGateStack(outcomes: Record<string, number> = {}, options: { control?: boolean; polled?: boolean } = {}) {
+function stubGateStack(
+    outcomes: Record<string, number> = {},
+    options: { control?: boolean; polled?: boolean; setup?: GateRun | null } = {}
+) {
     const stack = {
         controlOpened: [] as string[],
         stopsRaised: [] as string[],
@@ -567,9 +572,15 @@ function stubGateStack(outcomes: Record<string, number> = {}, options: { control
         cancelled: [] as string[],
         advertised: '',
         ran: { key: '', names: [] as string[] },
+        /** Every pre-agent `runSetup` call's options (issue #733), in order. */
+        setups: [] as GateRunOptions[],
         manager: {
             acquire: async (key: string) => {
                 stack.acquired.push(key);
+            },
+            runSetup: async (_key: string, setupOptions: GateRunOptions = {}) => {
+                stack.setups.push(setupOptions);
+                return options.setup ?? null;
             },
             runGate: async (key: string, name: string) => {
                 stack.ran = { key, names: [...stack.ran.names, name] };
@@ -1057,8 +1068,8 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(runs).toBe(0);
-        // run() is what starts the declared services, so the agent-less path starts them itself —
-        // and hands the checkout claim back exactly once.
+        // The setup phase starts the declared services for every attempt, agent or not, once —
+        // and the agent-less path hands the checkout claim back exactly once.
         expect(runner.startedServices).toEqual([job(1).id]);
         expect(released).toEqual([job(1).id]);
         expect(board.board.sessions).toEqual([]);
@@ -2915,6 +2926,344 @@ describe('an opencode runner', () => {
 
         expect(board.board.sessions).toEqual([{ id: job(1).id, sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9' }]);
         expect(board.board.completed).toHaveLength(1);
+    });
+});
+
+// Issue #733: environment.setup runs in the task worktree before the agent's first turn.
+describe('environment.setup before the agent starts', () => {
+    const setupJob = (n: number, gates = gatedJob(n).gates?.gates ?? []): BoardJob => ({
+        ...gatedJob(n),
+        turnContext: 'Factory turn context',
+        gates: { image: 'node:24', setup: 'npm ci', gates },
+    });
+
+    it('runs setup before the runner, under the capped setup timeout, and reports how long it took', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { stack, gates } = stubGateStack({}, { setup: { exitCode: 0, output: 'installed' } });
+        let setupsBeforeRun = -1;
+        let seenSetupMs: number | undefined;
+        const runner = stubRunner(async (j) => {
+            setupsBeforeRun = stack.setups.length;
+            seenSetupMs = j.setupMs;
+            return ok();
+        });
+
+        await drive({ ...board, runner, gates });
+
+        expect(setupsBeforeRun).toBe(1);
+        expect(stack.setups[0]?.timeoutMs).toBe(setupTimeoutMs(config(), setupJob(1)));
+        expect(stack.setups[0]?.signal).toBeInstanceOf(AbortSignal);
+        expect(seenSetupMs).toBeGreaterThanOrEqual(0);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', setupMs: seenSetupMs });
+    });
+
+    it('still launches the agent after a failed setup, with the exit code and tail in its turn context', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { gates } = stubGateStack({}, { setup: { exitCode: 7, output: 'npm ERR! registry down' } });
+        let seen: string | undefined;
+        const runner = stubRunner(async (j) => {
+            seen = j.turnContext;
+            return ok();
+        });
+
+        await drive({ ...board, runner, gates });
+
+        expect(seen).toContain('Factory turn context');
+        expect(seen).toContain('exit 7');
+        expect(seen).toContain('npm ERR! registry down');
+        expect(board.board.completed).toHaveLength(1);
+    });
+
+    it('treats a setup the harness could not run as a failed setup, and still launches', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { stack, gates } = stubGateStack();
+        stack.manager.runSetup = async () => {
+            throw new Error('gate environment is gone');
+        };
+        let seen: string | undefined;
+        const runner = stubRunner(async (j) => {
+            seen = j.turnContext;
+            return ok();
+        });
+
+        await drive({ ...board, runner, gates });
+
+        expect(seen).toContain('gate environment is gone');
+        expect(board.board.completed).toHaveLength(1);
+    });
+
+    it('spawns nothing when a Stop lands during setup', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([setupJob(1)], options);
+        const { stack, gates } = stubGateStack();
+        let seen: AbortSignal | undefined;
+        stack.manager.runSetup = async (_key, setupOptions) => {
+            seen = setupOptions?.signal;
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            return { exitCode: 0, output: '' };
+        };
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must not spawn');
+        });
+
+        await drive({ ...board, runner, gates });
+
+        expect(seen?.aborted).toBe(true);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+        expect(stack.released).toHaveLength(1);
+    });
+
+    it('runs setup for a checkout that declares setup and no gates', async () => {
+        const board = stubBoard([setupJob(1, [])]);
+        const { stack, gates } = stubGateStack({}, { setup: { exitCode: 0, output: '' } });
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates });
+
+        expect(stack.setups).toHaveLength(1);
+        expect(stack.ran.names).toEqual([]);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    // Review round 1: a failed setup must be visible on the task, gates declared or not.
+    /** A runSetup whose answers are popped in order: the pre-agent run, then the end-of-run retry. */
+    const scriptedSetups = (stack: ReturnType<typeof stubGateStack>['stack'], answers: GateRun[]) => {
+        stack.manager.runSetup = async (_key, setupOptions = {}) => {
+            stack.setups.push(setupOptions);
+            return answers.shift() ?? null;
+        };
+    };
+    const SETUP_FAILED: GateRun = { exitCode: 7, output: 'npm ERR! registry down' };
+
+    it('fails a setup-only task whose setup still fails after the agent, as a setup-failed gate', async () => {
+        const board = stubBoard([setupJob(1, [])]);
+        const { stack, gates } = stubGateStack();
+        scriptedSetups(stack, [SETUP_FAILED, SETUP_FAILED]);
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates });
+
+        expect(stack.setups).toHaveLength(2);
+        expect(stack.ran.names).toEqual([]);
+        const complete = board.board.completed[0]!;
+        expect(complete).toMatchObject({ status: 'failed', failureKind: 'gate', exitCode: 7 });
+        expect(complete.output).toContain('[setup failed — the gate did not run]');
+        expect(complete.output).toContain('npm ERR! registry down');
+    });
+
+    it('passes a setup-only task once the agent fixed the setup', async () => {
+        const board = stubBoard([setupJob(1, [])]);
+        const { stack, gates } = stubGateStack();
+        scriptedSetups(stack, [SETUP_FAILED, { exitCode: 0, output: 'installed' }]);
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates });
+
+        expect(stack.setups).toHaveLength(2);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+        expect(board.board.completed[0]?.output).not.toContain('environment.setup failed');
+    });
+
+    it('notes the failed setup on the verdict when the gate pass is skipped', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { stack, gates } = stubGateStack();
+        scriptedSetups(stack, [SETUP_FAILED]);
+        const runner = stubRunner(async () => ok({ exitCode: 2, output: 'agent gave up' }));
+
+        await drive({ ...board, runner, gates });
+
+        expect(stack.ran.names).toEqual([]);
+        const output = board.board.completed[0]?.output ?? '';
+        expect(output).toContain('environment.setup failed before the agent started (exit 7)');
+        expect(output).toContain('npm ERR! registry down');
+    });
+
+    it('adds no setup note once the declared gates passed (the agent fixed the setup)', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { stack, gates } = stubGateStack();
+        scriptedSetups(stack, [SETUP_FAILED]);
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates });
+
+        expect(stack.ran.names).toEqual(['test', 'lint']);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+        expect(board.board.completed[0]?.output).not.toContain('environment.setup failed');
+    });
+
+    it('says how much of the run budget setup took when the run timed out', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { gates } = stubGateStack({}, { setup: { exitCode: 0, output: '' } });
+        const runner = stubRunner(async () => ok({ exitCode: 137, timedOut: true, output: 'still working' }));
+
+        await drive({ ...board, runner, gates });
+
+        expect(board.board.completed[0]?.output).toMatch(/ms of the \d+ms run budget went to environment\.setup/);
+    });
+
+    // Review (PR 737): setup that migrates or seeds a declared service needs the fleet up first.
+    it('starts the services before the gate environment and setup, once, and never through the launch', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { stack, gates } = stubGateStack({}, { setup: { exitCode: 0, output: '' } });
+        const order: string[] = [];
+        const runner = stubRunner(async () => {
+            order.push('run');
+            return ok();
+        });
+        const rawStart = runner.startServices.bind(runner);
+        runner.startServices = async (started) => {
+            order.push('services');
+            return rawStart(started);
+        };
+        const rawAcquire = stack.manager.acquire.bind(stack.manager);
+        stack.manager.acquire = async (...args) => {
+            order.push('acquire');
+            return rawAcquire(...args);
+        };
+        const rawSetup = stack.manager.runSetup.bind(stack.manager);
+        stack.manager.runSetup = async (...args) => {
+            order.push('setup');
+            return rawSetup(...args);
+        };
+
+        await drive({ ...board, runner, gates });
+
+        expect(order.slice(0, 4)).toEqual(['services', 'acquire', 'setup', 'run']);
+        expect(runner.startedServices).toEqual([setupJob(1).id]);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    it('fails a refused service start as before, spawning no agent and running no setup', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { stack, gates } = stubGateStack({}, { setup: { exitCode: 0, output: '' } });
+        const refusal = '.bellows.yaml: unknown key "ports"';
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must not spawn');
+        });
+        runner.startServices = async () => ({
+            exitCode: null,
+            output: refusal,
+            timedOut: false,
+            started: true,
+            refused: true,
+        });
+
+        await drive({ ...board, runner, gates });
+
+        expect(stack.setups).toEqual([]);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', output: refusal });
+        expect(runner.servicesReleased).toEqual([setupJob(1).id]);
+    });
+
+    it('spawns nothing when a Stop lands while the services start, and releases what the start left', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([setupJob(1)], options);
+        const { stack, gates } = stubGateStack();
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must not spawn');
+        });
+        runner.startServices = async () => {
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            return null;
+        };
+
+        await drive({ ...board, runner, gates });
+        // The abandoned start settles on its own timer and its fleet is released then.
+        await new Promise((resolve) => setTimeout(resolve, 40));
+
+        expect(stack.acquired).toEqual([]);
+        expect(board.board.suspended).toEqual([setupJob(1).id]);
+        expect(board.board.completed).toEqual([]);
+        expect(runner.servicesReleased).toEqual([setupJob(1).id]);
+    });
+
+    // Review: setup must not race a fleet still being scheduled or pulled. The runners wait until
+    // every service runs; one that never does fails the run the way the pre-gate restart does.
+    it('fails the run as a services fault when a service never runs, before any setup or agent', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { stack, gates } = stubGateStack({}, { setup: { exitCode: 0, output: '' } });
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must not spawn');
+        });
+        let seen: AbortSignal | undefined;
+        runner.startServices = async (_started, signal) => {
+            seen = signal;
+            throw new ServicesNotRunning('service "db" exited after the start');
+        };
+
+        await drive({ ...board, runner, gates });
+
+        expect(seen).toBeInstanceOf(AbortSignal);
+        expect(stack.setups).toEqual([]);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'services' });
+        expect(board.board.completed[0]?.output).toContain('service "db" exited after the start');
+        expect(runner.servicesReleased).toEqual([setupJob(1).id]);
+    });
+
+    it('leaves a service start the daemon or cluster refused to the lease', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { stack, gates } = stubGateStack();
+        const logs: string[] = [];
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must not spawn');
+        });
+        runner.startServices = async () => {
+            throw new Error('could not create the services network: daemon refused');
+        };
+
+        await drive({ ...board, runner, gates, log: (line) => logs.push(line) });
+
+        expect(stack.acquired).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        expect(logs.some((line) => line.includes('could not start the services') && line.includes('lease'))).toBe(true);
+    });
+
+    it('releases the started services even when the setup conclusion itself throws', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { stack, gates } = stubGateStack();
+        stack.manager.acquire = async () => {
+            throw new Error('image pull refused');
+        };
+        const runner = stubRunner(async () => ok());
+        runner.releaseFence = async () => {
+            throw new Error('the claim could not be released');
+        };
+
+        await drive({ ...board, runner, gates });
+
+        expect(runner.servicesReleased).toEqual([setupJob(1).id]);
+    });
+
+    it('releases the started services when the gate environment cannot start', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { stack, gates } = stubGateStack();
+        stack.manager.acquire = async () => {
+            throw new Error('image pull refused');
+        };
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+        expect(runner.servicesReleased).toEqual([setupJob(1).id]);
+    });
+
+    it('runs no setup and reports no setup time for a gated checkout without setup', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const { gates } = stubGateStack();
+        let seenSetupMs: number | undefined = -1;
+        const runner = stubRunner(async (j) => {
+            seenSetupMs = j.setupMs;
+            return ok();
+        });
+
+        await drive({ ...board, runner, gates });
+
+        expect(seenSetupMs).toBeUndefined();
+        expect(board.board.completed[0]).not.toHaveProperty('setupMs');
     });
 });
 

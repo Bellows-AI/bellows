@@ -14,6 +14,7 @@ import {
     threadContextTokens,
     threadCostUsd,
     threadIssue,
+    threadSetupMs,
     threadPublish,
 } from '../src/task-outcome.js';
 import { job, question } from './tasks-fixtures.js';
@@ -333,6 +334,23 @@ describe('task outcome derivations', () => {
             expect(
                 threadCostUsd([{ ...base, runtime: { ...(base.runtime as RuntimeVitals), costUsd: 0 } }])
             ).toBeNull();
+        });
+    });
+
+    // Issue #733: environment.setup time, shown apart from the agent's.
+    describe('threadSetupMs', () => {
+        it("sums every run's setup time, skipping runs that ran none", () => {
+            expect(threadSetupMs([{ ...base, setupMs: 40_000 }, followUp(), followUp({ setupMs: 20_000 })])).toBe(
+                60_000
+            );
+        });
+
+        it('is null when no run ran setup', () => {
+            expect(threadSetupMs([base, followUp()])).toBeNull();
+        });
+
+        it('counts a measured zero', () => {
+            expect(threadSetupMs([{ ...base, setupMs: 0 }])).toBe(0);
         });
     });
 });

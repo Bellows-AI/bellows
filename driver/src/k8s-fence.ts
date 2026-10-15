@@ -301,10 +301,14 @@ async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[]): Promise<n
 }
 
 /**
- * The sweep — the janitor that enforces the takeover. Every object the `factory.job=<id>`
- * selector answers is a leftover of the attempts this claim was taken FROM: deleted BY NAME, per
- * object, with Foreground propagation, until the selector answers nothing and this attempt's Job
- * is the only possible writer on the checkout. No timestamps, no cutoffs, no clocks: an age filter
+ * The sweep — the janitor that enforces the takeover. Every object the
+ * `factory.job=<id>,factory.lease!=<token>` selector answers is a leftover of the attempts this
+ * claim was taken FROM: deleted BY NAME, per object, with Foreground propagation, until the
+ * selector answers nothing and no leftover runner remains to write the checkout once this
+ * attempt's Job starts. It runs at the runner's launch, AFTER the loop already started this
+ * attempt's services and ran its setup Job, so those briefly share the namespace with a dead
+ * attempt's leftovers; a service of this attempt they disturbed is put back by the pre-gate
+ * restart (issue #560). No timestamps, no cutoffs, no clocks: an age filter
  * was unsound in both directions, so the sweep classifies nothing. The claim is re-read before
  * every deleting round: a stale attempt whose claim was taken over mid-sweep STANDS DOWN having
  * deleted nothing.
@@ -351,10 +355,9 @@ async function standDownOwnJob(deps: K8sDeps, job: BoardJob, cleanup: RunCleanup
 }
 
 /**
- * The runner's arrival, split so the loop's auxiliary services can start BETWEEN the fence and
- * the runner: `prepare` takes the checkout claim, sweeps the label's leftovers, creates the env
- * Secret and runs the pre-create claim verify; `launch` POSTs the Job and runs the post-create
- * verify.
+ * The runner's arrival: `prepare` takes the checkout claim, sweeps the leftovers of the job's
+ * OTHER attempts (the loop already started this attempt's services), creates the env Secret and
+ * runs the pre-create claim verify; `launch` POSTs the Job and runs the post-create verify.
  */
 export async function prepare(deps: K8sDeps, job: BoardJob, _cleanup: RunCleanup): Promise<void> {
     const env = runnerEnv(deps.config, job);

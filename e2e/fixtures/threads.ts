@@ -110,6 +110,8 @@ export interface ThreadJob {
     finishedAt: string | null;
     wallClockMs: number | null;
     agentTurns: number | null;
+    /** How long `environment.setup` ran before the agent (issue #733); null when none ran. */
+    setupMs: number | null;
     taskWallClockMs: number | null;
     waitReason: string | null;
     waitingSince: string | null;
@@ -210,6 +212,7 @@ function run(fields: RunFields): ThreadJob {
         finishedAt: '2026-09-01T12:30:00.000Z',
         wallClockMs: 1_799_000,
         agentTurns: null,
+        setupMs: null,
         taskWallClockMs: null,
         publication: null,
         questions: [],
@@ -407,6 +410,9 @@ export const failedGateThread = thread([
             failedLintGate,
         ],
         runtime: finishedRuntime('2026-09-01T12:29:00.000Z'),
+        // The install ran before the agent (issue #733): shown beside the wall clock, apart from it.
+        setupMs: 240_000,
+        taskWallClockMs: 1_799_000,
     }),
 ]);
 

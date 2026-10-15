@@ -282,6 +282,22 @@ export function createKubernetesGateManager({
             });
         },
 
+        /** The setup Job now, before the agent starts (issue #733); a failure stays pending for the first gate. */
+        runSetup(key, { signal, timeoutMs } = {}) {
+            const entry = entries.get(key);
+            if (!entry) return Promise.reject(gateHarness(`no gate environment for ${key}`));
+            const setup = entry.job.gates?.setup;
+            if (!setup) return Promise.resolve(null);
+            return serialize(key, async () => {
+                const setupRun = await runGateJob(key, SETUP_JOB_NAME, setup, { signal, timeoutMs });
+                const current = entries.get(key);
+                if (current?.job.leaseToken === entry.job.leaseToken) {
+                    current.pendingSetup = setupRun.exitCode === 0 ? null : setup;
+                }
+                return setupRun;
+            });
+        },
+
         /**
          * The releasing attempt's own env Secret goes here — every gate run of it has read it by
          * now — and the key's entry only if the attempt still owns it: a late release of a

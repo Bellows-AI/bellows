@@ -43,6 +43,7 @@ import { masterPromptRefusalReason } from './master-prompt.js';
 import { uploadRunArtifacts } from './artifacts.js';
 import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
 import { awaitSyncTurn } from './sync-queue.js';
+import { releaseStartedServices, releasingOnThrow, restartDeadServices, startServicesStep } from './loop-services.js';
 
 function pickSession(job: BoardJob, executorType: BoardJob['executorType']): RunSession | null {
     // opencode mints its own session ids (`ses_…`) and cannot adopt one, so a fresh run gets
@@ -260,7 +261,13 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
 type SetupStep = (ctx: AttemptCtx) => Promise<SetupConclusion | null>;
 
 /** The steps of the setup phase, in order — the reclaim barrier and the sync before anything reads the tree. */
-const setupSteps: readonly SetupStep[] = [waitReclaimBarrier, syncCheckoutStep, rereadGatesStep, preHelperStep];
+const setupSteps: readonly SetupStep[] = [
+    waitReclaimBarrier,
+    syncCheckoutStep,
+    rereadGatesStep,
+    preHelperStep,
+    startServicesStep,
+];
 
 /** Whether a step's answer ends the attempt, rather than answering the gate session to run with. */
 const isConclusion = (answer: GateSession | null | SetupConclusion): answer is SetupConclusion =>
@@ -289,7 +296,7 @@ async function conclude(ctx: AttemptCtx, conclusion: SetupConclusion | null): Pr
  */
 async function runPhases(ctx: AttemptCtx): Promise<GateSession | null | typeof STOOD_DOWN> {
     for (const step of setupSteps) {
-        if (await conclude(ctx, await step(ctx))) return STOOD_DOWN;
+        if (await conclude(ctx, await step(ctx))) return releaseStartedServices(ctx);
     }
     const booted = await acquireGateSession(ctx);
     const session = isConclusion(booted) ? null : booted;
@@ -297,7 +304,7 @@ async function runPhases(ctx: AttemptCtx): Promise<GateSession | null | typeof S
         // A session the boot handed back is released HERE when the attempt ended meanwhile: the
         // caller never runs, so the cleanup that would have released it never comes.
         if (session) releaseGateSession(ctx.rt, session, ctx.job);
-        return STOOD_DOWN;
+        return releaseStartedServices(ctx);
     }
     return session;
 }
@@ -368,10 +375,9 @@ async function launchRun(
     // the stand-down fence releases a claim the runner never took.
     if (await standDown(ctx, 'setup')) return null;
     if (agentless) {
-        // The services the gates test against start under the checkout claim, as run() starts them.
-        const refused = await rt.runner.startServices(job);
+        // The services the gates test against were started by the setup phase.
         await handBackFence(ctx);
-        return refused ?? AGENTLESS_OUTCOME;
+        return AGENTLESS_OUTCOME;
     }
     // Reported here, not at attempt start: a setup that concludes the job starts no session, and a
     // session id reported for one would name a conversation that never existed.
@@ -437,8 +443,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
      * finish cleanly skips them: a gate over work that never happened fires gate-fix for nothing.
      * A session whose gates are all on demand has no pass: its evidence reads `none`, never `passed`.
      */
-    const gating =
-        gateSession && gateSession.declared.length > 0 && !outcome.refused && !state.lost ? gateSession : null;
+    const gating = gateSession?.endPass && !outcome.refused && !state.lost ? gateSession : null;
     // The tree is read BEFORE the gates: a gate that writes a non-ignored artifact (a timestamped
     // report) must not read as the agent's progress. Under an evidence policy it is read gated or
     // not: it is the revision the evidence is bound to.
@@ -453,7 +458,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     if (await standDown(ctx, 'its gates')) return { done: true };
 
     const evidence = evidencePolicyActive(job)
-        ? { treeBefore: ctx.treeBefore, treeAfter, gates: gatesOutcomeOf(gating !== null, gated) }
+        ? { treeBefore: ctx.treeBefore, treeAfter, gates: gatesOutcomeOf(Boolean(gating?.declared.length), gated) }
         : null;
     return { done: false, outcome, ...gated, endedAt, treeChanged, evidence };
 }
@@ -511,28 +516,6 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
     // A service OOM-killed by the suite fails the gate for a reason the agent cannot fix: re-probe.
     const deadAfter = failure ? await probeDeadServices(rt, job) : [];
     return { failure, deadServices: deadAfter, gatesSkipped: null, recoveredServices };
-}
-
-/**
- * Restarts the fleet `dead` was found in; null when it is back, else why it is not. Raced against
- * the attempt's stand-down, which also aborts the restart itself: a Stop or lost lease must not
- * wait out its budget, nor see services recreated after the kill took them.
- */
-async function restartDeadServices(
-    rt: LoopRuntime,
-    job: BoardJob,
-    signal: AbortSignal,
-    dead: readonly DeadService[]
-): Promise<string | null | typeof STOOD_DOWN> {
-    rt.log(
-        `job ${job.id}: ${dead.map(({ name }) => `service "${name}"`).join(', ')} dead before the gates, restarting`
-    );
-    try {
-        return (await raceStep(signal, rt.runner.restartServices(job, signal))) === null ? STOOD_DOWN : null;
-    } catch (e) {
-        rt.log(`job ${job.id}: the service restart failed: ${(e as Error).message}`);
-        return (e as Error).message;
-    }
 }
 
 /**
@@ -692,7 +675,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                     : 'starting (headless opencode run: no session id)')
         );
 
-        const gateSession = await runPhases(ctx);
+        const gateSession = await releasingOnThrow(ctx, runPhases);
         if (gateSession === STOOD_DOWN) return;
         state.gateToken = gateSession?.token ?? null;
         // A stand-down kills the runner, but not a gate its agent asked for: the token dies and

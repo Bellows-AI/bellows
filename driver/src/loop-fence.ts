@@ -126,9 +126,13 @@ export async function leaveToLease(
     leaveLog: string,
     exitCode: number | null
 ): Promise<void> {
-    const { job } = ctx;
-    if (job.attempts < job.maxAttempts) return concludeSetup(ctx, { halt: 'leave', log: leaveLog });
-    await concludeSetup(ctx, {
+    await concludeSetup(ctx, leaveConclusion(ctx.job, reason, leaveLog, exitCode));
+}
+
+/** `leaveToLease`'s conclusion, as data: left to the lease, or reported failed on the last attempt. */
+export function leaveConclusion(job: BoardJob, reason: string, leaveLog: string, exitCode: number | null): SetupHalt {
+    if (job.attempts < job.maxAttempts) return { halt: 'leave', log: leaveLog };
+    return {
         halt: 'fault',
         log: `${reason}, and no attempts are left: reporting it`,
         verdict: {
@@ -137,5 +141,5 @@ export async function leaveToLease(
             output: `[driver] ${reason} (attempt ${job.attempts} of ${job.maxAttempts})`,
             failureKind: 'runner_error',
         },
-    });
+    };
 }

@@ -133,6 +133,29 @@ export async function listByLabelOrThrow(execDocker: ExecDocker, args: string[],
     }
 }
 
+/** A `--format` listing each object with its lease label, tab-separated. */
+export const LEASE_FORMAT = (field: 'ID' | 'Name'): string => `{{.${field}}}\t{{.Label "${LEASE_LABEL}"}}`;
+
+/**
+ * A `LEASE_FORMAT` listing narrowed to the job's OTHER attempts: this attempt's own — the services
+ * and the gate environment the loop started before the runner — are never a leftover.
+ */
+export async function listOtherAttemptsOrThrow(
+    execDocker: ExecDocker,
+    args: string[],
+    what: string,
+    job: BoardJob
+): Promise<string[]> {
+    return (await listByLabelOrThrow(execDocker, args, what)).flatMap((line) => {
+        const [name = '', lease = ''] = line.split('\t');
+        return name && lease !== job.leaseToken ? [name] : [];
+    });
+}
+
+/** The services network the runner joins: the one the loop's service start created, if it did. */
+export const servicesNetworkOf = (job: BoardJob): string | null =>
+    declaredServiceSpecs(job).length > 0 ? networkName(job) : null;
+
 /**
  * Removes each name, tolerating one that is already gone — a container or network that exited
  * between the list and its removal is the fence succeeding, not failing.
@@ -255,7 +278,8 @@ export function syncCheckoutArgs(
  * cannot change would burn attempts on an error no retry fixes.
  *
  * `assertNotKilled` stops a dying attempt from creating more: a kill that lands mid-setup throws,
- * teardown-free by design (see run()'s own comment on the same rule).
+ * teardown-free by design — kill() ran the attempt-scoped teardown already, and anything created
+ * after it is a leftover for the next attempt's fence (the loop also releases an abandoned start).
  */
 export async function setupJobServices(
     job: BoardJob,
@@ -268,10 +292,9 @@ export async function setupJobServices(
 ): Promise<{ servicesNetwork: string | null; refusal: string | null }> {
     if (!config.servicesEnabled) return { servicesNetwork: null, refusal: null };
 
-    // The fence's service half. Everything job-scoped is already gone, and this attempt has
-    // created nothing yet, so this is a no-op by construction — kept because it makes "the
-    // fleet starts clean" hold by the same attempt-scoped code that enforces it at teardown,
-    // not by the fence's special-casing.
+    // The fleet starts clean: whatever this attempt's lease already has of a fleet goes first,
+    // by the same attempt-scoped code that enforces it at teardown. The sync's fence has swept the
+    // job's other attempts by then; their leftovers are never this teardown's business.
     await deps.serviceTeardown(job);
     let raw: string;
     try {
@@ -391,7 +414,7 @@ export async function dockerRunVerdict(
 /**
  * Throws when this attempt's lease has already been killed. Checked after every awaited setup
  * step so a dying attempt stops CREATING resources over a lease it no longer holds — see
- * setupJobServices and run() for why the abort is deliberately teardown-free.
+ * setupJobServices for why the abort is deliberately teardown-free.
  */
 export function assertJobNotKilled(killed: Set<BoardJob['leaseToken']>, job: BoardJob): void {
     if (!killed.has(job.leaseToken)) return;
@@ -455,18 +478,40 @@ export async function createRunnerContainer(
 }
 
 /**
- * The declared services alone, for an agent-less node (issue #503) whose gates test against them:
- * run()'s own setup, answering the author's refusal as a refused outcome and null otherwise.
+ * The declared services, started by the loop's setup phase before the gate environment and run()
+ * (`Runner.startServices`), answering only once every one runs — the pre-gate restart's bar — so
+ * `environment.setup` never races a container still starting. The author's refusal answers a
+ * refused outcome; a service that never runs throws `ServicesNotRunning`; null otherwise.
  */
 export async function startJobServices(
     job: BoardJob,
     config: DriverConfig,
-    deps: { execDocker: ExecDocker; killed: Set<BoardJob['leaseToken']> },
-    serviceTeardown: (job: BoardJob) => Promise<void>
+    deps: {
+        execDocker: ExecDocker;
+        killed: Set<BoardJob['leaseToken']>;
+        serviceTeardown: (job: BoardJob) => Promise<void>;
+        sleep?: (ms: number) => Promise<void>;
+    },
+    signal?: AbortSignal
 ): Promise<RunOutcome | null> {
-    const { refusal } = await setupJobServices(job, config, { ...deps, serviceTeardown });
-    return refusal === null ? null : { exitCode: null, output: refusal, timedOut: false, started: true, refused: true };
+    const { servicesNetwork, refusal } = await setupJobServices(job, config, deps);
+    if (refusal !== null) return { exitCode: null, output: refusal, timedOut: false, started: true, refused: true };
+    if (servicesNetwork === null) return null;
+    await awaitServicesRunning(
+        declaredServiceSpecs(job),
+        listJobServices(job, deps.execDocker),
+        deps.sleep ?? serviceWait,
+        {
+            signal,
+            after: 'the start',
+        }
+    );
+    return null;
 }
+
+/** The attempt's service fleet as the readiness wait reads it. */
+const listJobServices = (job: BoardJob, execDocker: ExecDocker) => async () =>
+    parseDockerServicePs((await execDocker(servicePsArgs(job))).stdout);
 
 /** The attempt's service fleet, exited ones included: the job and lease label pair, service key required. */
 export const servicePsArgs = (job: BoardJob): string[] => [
@@ -509,8 +554,7 @@ export async function restartJobServices(
                 throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
             }
         }
-        const list = async () => parseDockerServicePs((await execDocker(servicePsArgs(job))).stdout);
-        await awaitServicesRunning(specs, list, sleep, { signal });
+        await awaitServicesRunning(specs, listJobServices(job, execDocker), sleep, { signal });
     } catch (e) {
         if (signal.aborted) for (const spec of specs) await remove(spec.name);
         throw e;

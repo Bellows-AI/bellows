@@ -97,6 +97,7 @@ interface StoreStub extends JobStore {
         contextTokens: number | null;
         contextCostUsd: number | null;
         agentTurns: number | null;
+        setupMs: number | null;
         summary: string | null;
         failureKind: string | null;
         failureCause: string | null;
@@ -412,6 +413,7 @@ function stubStore(
                 contextTokens,
                 contextCostUsd,
                 agentTurns,
+                setupMs,
                 summary,
                 failureKind,
                 failureCause,
@@ -426,6 +428,7 @@ function stubStore(
                 contextTokens: contextTokens ?? null,
                 contextCostUsd: contextCostUsd ?? null,
                 agentTurns: agentTurns ?? null,
+                setupMs: setupMs ?? null,
                 summary: summary ?? null,
                 failureKind: failureKind ?? null,
                 failureCause: failureCause ?? null,
@@ -2401,6 +2404,7 @@ describe('POST /api/jobs/:id/complete', () => {
                 contextTokens: null,
                 contextCostUsd: null,
                 agentTurns: null,
+                setupMs: null,
                 summary: null,
                 failureKind: null,
                 failureCause: null,
@@ -2439,6 +2443,8 @@ describe('POST /api/jobs/:id/complete', () => {
         ],
         ['the agent-turn count when the driver measured one', { agentTurns: 11 }, { agentTurns: 11 }],
         ['null when the report carries no agent-turn count', {}, { agentTurns: null }],
+        ['the environment.setup time when the driver ran setup', { setupMs: 4200 }, { setupMs: 4200 }],
+        ['null when the report carries no setup time', {}, { setupMs: null }],
         ['the timeout failure kind', { status: 'failed', failureKind: 'timeout' }, { failureKind: 'timeout' }],
         ['the services failure kind', { status: 'failed', failureKind: 'services' }, { failureKind: 'services' }],
         ['the blocked failure kind', { status: 'failed', failureKind: 'blocked' }, { failureKind: 'blocked' }],
@@ -2490,6 +2496,10 @@ describe('POST /api/jobs/:id/complete', () => {
         // int4 is the column's type: an over-range value would fail the verdict's transaction
         // and leave a finished run unsettled, so the route is the boundary.
         ['a count above the int4 maximum', 'BAD_AGENT_TURNS', { agentTurns: 2_147_483_648 }],
+        ['a negative setup time', 'BAD_SETUP_MS', { setupMs: -1 }],
+        ['a fractional setup time', 'BAD_SETUP_MS', { setupMs: 1.5 }],
+        ['a string setup time', 'BAD_SETUP_MS', { setupMs: '4s' }],
+        ['a setup time past the safe integer range', 'BAD_SETUP_MS', { setupMs: 2 ** 53 }],
         ['a negative token count', 'BAD_CONTEXT', { contextTokens: -1 }],
         ['an absurd token count', 'BAD_CONTEXT', { contextTokens: 100_000_001 }],
         ['a string cost', 'BAD_CONTEXT', { contextCostUsd: 'free' }],

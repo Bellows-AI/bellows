@@ -15,6 +15,7 @@ import {
     prNumber,
     threadContextTokens,
     threadCostUsd,
+    threadSetupMs,
     threadIssue,
     threadPublish,
     type Closure,
@@ -203,6 +204,7 @@ export function TaskOutcome({ jobs, viewer }: { jobs: Job[]; viewer: FollowUpVie
     const issue = threadIssue(jobs);
     const context = threadContextTokens(jobs);
     const cost = threadCostUsd(jobs);
+    const setupMs = threadSetupMs(jobs);
     const exit = newestTerminalExit(jobs);
     const issueLink = issueUrl(latest.repo, issue);
     const waiting = isWaitingForReview(latest);
@@ -218,6 +220,8 @@ export function TaskOutcome({ jobs, viewer }: { jobs: Job[]; viewer: FollowUpVie
         ['Started by', startedByNode(root.author)],
         // The thread's whole banked clock, plus the newest run's live segment while it goes.
         ['Wall clock', wallClock(latest.taskWallClockMs, running ? latest.startedAt : null)],
+        // The part of that clock environment.setup took before the agent started (issue 733).
+        ['Environment setup', setupMs !== null ? wallClock(setupMs, null) : null],
     ]);
 
     const executionPairs = pairs([

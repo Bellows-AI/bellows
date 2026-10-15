@@ -121,6 +121,15 @@ export function threadCostUsd(jobs: Job[]): number | null {
     return sum > 0 ? sum : null;
 }
 
+/**
+ * The thread's `environment.setup` time (issue 733): every run's summed, null when none ran one —
+ * the time inside the wall clock the agent did not have.
+ */
+export function threadSetupMs(jobs: Job[]): number | null {
+    const measured = jobs.filter((job) => job.setupMs != null);
+    return measured.length === 0 ? null : measured.reduce((sum, job) => sum + (job.setupMs ?? 0), 0);
+}
+
 /** A gate status's pill tone: passed is the ok lamp, failed the bad one, a running gate grey. */
 export const GATE_PILL: Record<GateCheck['status'], string> = {
     passed: 'pill pill-ok',
