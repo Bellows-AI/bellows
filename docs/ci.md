@@ -17,7 +17,7 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
 ## Invariants
 
 - **`npm run build` precedes `npm test`**, so a broken `core/dist` reports as a build failure; `npm run typecheck`
-  follows, covering `server/tsconfig.test.json` and `e2e/tsconfig.json`.
+  follows, covering every `*/tsconfig.test.json` and `e2e/`. `core/test/typecheck-coverage.test.ts`.
 - **The `test-db` job runs `npm run test:db` on every pull request**, beside `validate`, against a `postgres:17`
   service whose database ends `_test` — the only coverage the SQL and the migrations have.
   `.github/workflows/ci.yml`, `core/test/ci-workflows.test.ts`.

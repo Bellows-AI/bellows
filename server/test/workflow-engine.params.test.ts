@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { checkWorkflowParams, interpolate, INTERP_TAIL_LIMIT, TRUNCATION_MARKER } from '../src/db/workflow-schema.js';
 import { validateDefinition } from '../src/db/workflow-schema-validate.js';
+import { compileDefinition } from '../src/db/workflow-blocks/index.js';
 
 describe('parameter guidance metadata', () => {
     const nodes = [{ name: 'a', kind: 'agent', session: 'resume', prompt: 'x', publish: true }];
@@ -78,10 +79,12 @@ describe('parameter guidance metadata', () => {
         const def = withParams([{ name: 'issue', pattern: '#\\d+', description: 'like #123', example: '#123' }]);
         expect(def).toMatchObject({ ok: true });
         if (!def.ok) throw new Error('fixture refused');
+        const compiled = compileDefinition(def.definition);
+        if (!compiled.ok) throw new Error('fixture did not compile');
         // The description names an accepted shape, but the value must still match the PATTERN:
         // guidance never substitutes for validation.
-        expect(checkWorkflowParams(def.definition, { issue: 'abc' }).ok).toBe(false);
-        expect(checkWorkflowParams(def.definition, { issue: '#9' }).ok).toBe(true);
+        expect(checkWorkflowParams(compiled.definition, { issue: 'abc' }).ok).toBe(false);
+        expect(checkWorkflowParams(compiled.definition, { issue: '#9' }).ok).toBe(true);
     });
 
     it('an example must be valid: one the declared pattern would refuse at launch is refused at create', () => {
@@ -173,7 +176,9 @@ describe('checkWorkflowParams', () => {
         edges: [],
     });
     if (!def.ok) throw new Error('fixture definition refused');
-    const definition = def.definition;
+    const compiled = compileDefinition(def.definition);
+    if (!compiled.ok) throw new Error('fixture definition did not compile');
+    const definition = compiled.definition;
 
     it('accepts full matches and trims the stored values', () => {
         expect(checkWorkflowParams(definition, { issue: ' #42 ', notes: 'login page' })).toEqual({

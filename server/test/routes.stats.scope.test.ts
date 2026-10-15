@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { UserRef } from '@factory-ai/core';
 import { TEST_REPO, githubAuth, harness, memoryAuthStore, signedIn, stubTelemetryClient } from './helpers.js';
 import { HTTP_BAD_REQUEST, trackApps } from './helpers-http.js';
 
@@ -62,9 +63,9 @@ describe('GET /api/stats scope: computed figures', () => {
     it('computes every figure over only the caller attributed sessions, naming the member', async () => {
         // The telemetry is built around the caller: two sessions attributed to them, one to
         // another member, one unattributed — so a leak in any direction shows in the counts.
-        const carol = { id: 'u-carol', login: 'carol', name: 'Carol', avatarUrl: null };
+        const carol: UserRef = { id: 'u-carol', login: 'carol', name: 'Carol', avatarUrl: null };
         const dave = { id: 'u-dave', login: 'dave', name: null, avatarUrl: null };
-        const sessionOf = (sessionId: string, user: typeof carol | null, taskKey: string | null) => ({
+        const sessionOf = (sessionId: string, user: UserRef | null, taskKey: string | null) => ({
             sessionId,
             agent: 'claude-code',
             repo: TEST_REPO,

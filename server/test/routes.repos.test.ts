@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { GitHubAppClient, InstallationListing } from '../src/github/app-client.js';
 import { createRepoSource } from '../src/github/repo-source.js';
-import { staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
+import { listingClient, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 import { HTTP_OK, trackApps } from './helpers-http.js';
 
 const track = trackApps();
@@ -20,7 +20,7 @@ function listing(overrides: Partial<InstallationListing> = {}): InstallationList
 
 /** An App client with no fetch behind it, so the suite stays offline. */
 function stubAppClient(behaviour: () => Promise<InstallationListing>): GitHubAppClient {
-    return { listRepositories: behaviour };
+    return listingClient(behaviour);
 }
 
 async function boot(client?: GitHubAppClient) {

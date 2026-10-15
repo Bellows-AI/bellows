@@ -29,6 +29,7 @@ const LANDED: PublishResult = {
     branch: 'fix/10',
     prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
     reason: null,
+    cause: null,
     repository: 'Bellows-AI/factory',
     baseBranch: 'main',
     prNumber: 42,

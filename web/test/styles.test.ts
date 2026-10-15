@@ -100,7 +100,8 @@ const lineAt = (text: string, index: number) => text.slice(0, index).split('\n')
 const rules = (css: string): Array<[string, string]> => {
     const parsed: Array<[string, string]> = [];
     for (const match of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-        const [, prelude, body] = match;
+        const prelude = match[1]!;
+        const body = match[2]!;
         if (/[a-zA-Z-]+\s*:/.test(body)) parsed.push([prelude.trim(), body]);
     }
     return parsed;
@@ -334,10 +335,11 @@ describe('the stylesheet', () => {
         // error — the light theme would silently render the dark value. Parity is the guard.
         const css = stripComments(shippedCss());
         const names = tokenSpans(css).map(
-            ([start, end]) => new Set([...css.slice(start, end).matchAll(/--([a-zA-Z][\w-]*)\s*:/g)].map((m) => m[1]))
+            ([start, end]) => new Set([...css.slice(start, end).matchAll(/--([a-zA-Z][\w-]*)\s*:/g)].map((m) => m[1]!))
         );
         expect(names.length, 'expected exactly two theme blocks').toBe(2);
-        const [dark, light] = names;
+        const dark = names[0]!;
+        const light = names[1]!;
         expect([...light].filter((token) => !dark.has(token))).toEqual([]);
         expect([...dark].filter((token) => !light.has(token))).toEqual([]);
     });

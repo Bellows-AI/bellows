@@ -34,7 +34,7 @@ let seen: {
     shellTasks: UseTasks | undefined;
     workspace: unknown;
     env: unknown;
-    guard: ReturnType<typeof useUnsavedChanges>;
+    guard: ReturnType<typeof useUnsavedChanges> | undefined;
 } = { shellTasks: undefined, workspace: undefined, env: undefined, guard: undefined };
 
 /** Reads both contexts the way the settings pages do. */

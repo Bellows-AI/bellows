@@ -516,7 +516,7 @@ describe('DELETE /api/workspace/repos/:owner/:name', () => {
         for (const [owner, name] of [
             ['acme', 'a/b'],
             ['..', 'web'],
-        ]) {
+        ] satisfies [string, string][]) {
             const response = await del(app, cookie, owner, name);
             expect(response.statusCode, `${owner}/${name}`).toBe(404);
         }

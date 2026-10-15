@@ -100,7 +100,7 @@ describe('ci workflows', () => {
         expect(commands).toContain('npm run lint');
         expect(commands).toContain('npm run build');
         expect(commands).toContain('npm test');
-        // Not redundant with the build: tsc -b also covers server/tsconfig.test.json.
+        // Not redundant with the build: tsc -b also covers each package's tsconfig.test.json.
         expect(commands).toContain('npm run typecheck');
     });
 

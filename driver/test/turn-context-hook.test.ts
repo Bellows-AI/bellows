@@ -32,7 +32,7 @@ describe('the turn-context hook', () => {
         const settings = JSON.parse(read('docker/claude-executor/claude-home/settings.json')) as {
             hooks: Record<string, { hooks: { command: string }[] }[]>;
         };
-        expect(settings.hooks.UserPromptSubmit.flatMap((entry) => entry.hooks.map((hook) => hook.command))).toEqual([
+        expect(settings.hooks.UserPromptSubmit!.flatMap((entry) => entry.hooks.map((hook) => hook.command))).toEqual([
             'node /usr/local/bin/turn-context-hook.cjs',
         ]);
     });

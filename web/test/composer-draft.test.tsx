@@ -27,6 +27,7 @@ const sessionFor = (orgId: string, userId: string) =>
 const next: ComposerDraftInput = {
     draft: 'Fix the flaky test',
     executor: 'main',
+    executorScope: 'user',
     repo: 'acme/app',
     repoTouched: true,
     workflowRepo: 'acme/app',

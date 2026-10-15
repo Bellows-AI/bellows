@@ -19,7 +19,9 @@ describe('the executors panel', () => {
     // a per-member preference naming a scope — the panel reads it off the poll's resolved
     // default, never off a row flag.
     const executor = (name: string, type: string, createdAt = '2026-09-01T00:00:00.000Z', gateFixRounds = 3) => ({
+        id: name,
         name,
+        suspended: false,
         type,
         createdAt,
         gateFixRounds,
@@ -33,13 +35,15 @@ describe('the executors panel', () => {
                 defaultExecutor={null}
                 onEdit={noop}
                 onMakeDefault={noop}
+                onSuspend={noop}
+                onRemove={noop}
                 saving={false}
                 {...overrides}
             />
         );
 
     it('scopes the list under "My workspace" and carries task-routing guidance', () => {
-        const html = renderPanel({ executors: [], defaultExecutor: undefined });
+        const html = renderPanel({ executors: [] });
         expect(html).toContain('<h2>My workspace</h2>');
         expect(html).toContain('Each task runs with its selected executor');
         expect(html).toContain('type chooses Claude Code or OpenCode');

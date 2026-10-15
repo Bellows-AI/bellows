@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createRepoSource, staticRepoSource } from '../src/github/repo-source.js';
 import type { GitHubAppClient, InstallationRepo } from '../src/github/app-client.js';
+import { listingClient } from './helpers-app-client.js';
 
 const repo = (name: string): InstallationRepo =>
     Object.freeze({
@@ -16,14 +17,10 @@ const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0
 
 /** A client whose listing is fixed — the App arm of the source, without the network. */
 function clientWith(...names: string[]): GitHubAppClient {
-    return {
-        async listRepositories() {
-            return {
-                repos: names.map(repo),
-                installation: { id: '123', account: 'acme', repositorySelection: 'all' as const },
-            };
-        },
-    };
+    return listingClient(async () => ({
+        repos: names.map(repo),
+        installation: { id: '123', account: 'acme', repositorySelection: 'all' },
+    }));
 }
 
 describe('the tracked-repo allowlist (#125)', () => {
@@ -67,14 +64,10 @@ describe('the tracked-repo allowlist (#125)', () => {
         let clock = 1_000;
         const names = ['acme/web', 'acme/other'];
         const source = createRepoSource({
-            client: {
-                async listRepositories() {
-                    return {
-                        repos: names.map(repo),
-                        installation: { id: '123', account: 'acme', repositorySelection: null },
-                    };
-                },
-            },
+            client: listingClient(async () => ({
+                repos: names.map(repo),
+                installation: { id: '123', account: 'acme', repositorySelection: null },
+            })),
             allowlist: async () => ['acme/web'],
             ttlMs: 1_000,
             now: () => clock,
@@ -106,14 +99,10 @@ describe('the tracked-repo allowlist (#125)', () => {
         let clock = 1_000;
         const names = ['acme/web', 'acme/other'];
         const source = createRepoSource({
-            client: {
-                async listRepositories() {
-                    return {
-                        repos: names.map(repo),
-                        installation: { id: '123', account: 'acme', repositorySelection: null },
-                    };
-                },
-            },
+            client: listingClient(async () => ({
+                repos: names.map(repo),
+                installation: { id: '123', account: 'acme', repositorySelection: null },
+            })),
             ttlMs: 10_000,
             now: () => clock,
         });

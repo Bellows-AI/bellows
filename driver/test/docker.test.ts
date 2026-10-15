@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
 import type { ChildProcess, spawn } from 'node:child_process';
+import type { Readable } from 'node:stream';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import {
@@ -18,7 +19,7 @@ import {
 } from '../src/docker.js';
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
 import { argvEnv, bellowsService, bellowsTree } from './fixtures/bellows-tree.js';
-import { currentActivity, reportTail, stripAnsi, tailBytes } from '../src/runner.js';
+import { currentActivity, reportTail, type RunSession, stripAnsi, tailBytes } from '../src/runner.js';
 import {
     claudeTurnsArgs,
     claudeTranscriptArgs,
@@ -80,11 +81,15 @@ const MASTER_PROMPT =
 const job: BoardJob = {
     id: '11111111-1111-4111-8111-111111111111',
     command: 'fix the failing build',
+    rootCommand: 'fix the failing build',
     attempts: 1,
+    maxAttempts: 3,
     claimSeq: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
+    executorRefusal: null,
+    skillRefusal: null,
     masterPrompt: MASTER_PROMPT,
     resumeSessionId: null,
     followUp: false,
@@ -93,6 +98,7 @@ const job: BoardJob = {
 };
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
+const PR_URL = 'https://github.com/Bellows-AI/factory/pull/42';
 const opencodeJob: BoardJob = { ...job, executorType: 'opencode' };
 
 /** One `docker ps --format '{{json .}}'` line for a service container, the fields the parse reads. */
@@ -1096,8 +1102,8 @@ describe('the cache watch', () => {
     // spawnFn; every daemon call goes through the exec seam below.
     const openChild = () => {
         const c = new EventEmitter() as ChildProcess;
-        c.stdout = new EventEmitter();
-        c.stderr = new EventEmitter();
+        c.stdout = new EventEmitter() as Readable;
+        c.stderr = new EventEmitter() as Readable;
         return {
             spawn: (() => c) as unknown as typeof spawn,
             close: (code: number | null) => {
@@ -1271,7 +1277,7 @@ describe('the gate environment container', () => {
     });
 
     it('leaves the npm notice to a claim that names it, in the gate env file', () => {
-        const envJob = { id: 'j', leaseToken: 'l', env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } };
+        const envJob = { id: 'j', leaseToken: 'l', workspacePath: null, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } };
         const line = gateEnvArgs(config, KEY, 'node:24', { envFile: '/tmp/gate.env', job: envJob });
         expect(line.filter((_, i) => line[i - 1] === '-e')).toEqual(['HOME=/tmp']);
     });
@@ -1431,7 +1437,7 @@ describe('the runner env for a gated job', () => {
         ).toEqual(
             dockerArgs(
                 loadDriverConfig({}),
-                { ...job, gates: undefined },
+                { ...job, gates: null },
                 { id: SESSION, resume: false },
                 { envFile: '/tmp/env-file' }
             )
@@ -1505,7 +1511,7 @@ describe('the report tail', () => {
 function fakeChild(stdout: string, stderr: string, code: number | null): ChildProcess {
     const child = new EventEmitter() as ChildProcess;
     const stream = (text: string) => {
-        const s = new EventEmitter();
+        const s = new EventEmitter() as Readable;
         if (text) process.nextTick(() => s.emit('data', Buffer.from(text)));
         return s;
     };
@@ -1894,7 +1900,7 @@ describe('the docker runner', () => {
         // The values reach the container through the --env-file, so the docker CLI's own
         // environment stays the operator's — a member-configured PATH or DOCKER_* can never steer
         // the CLI this driver executes.
-        const spawnFn = vitest.fn(() => fakeChild('', '', 0));
+        const spawnFn = vitest.fn((_cmd: string, _argv: string[], _options?: object) => fakeChild('', '', 0));
         let create: string[] = [];
         const exec = (args: string[]) => {
             if (args[0] === 'create') create = args;
@@ -2212,7 +2218,7 @@ describe('the docker runner', () => {
         });
 
         it('caps the line and takes null for a tail that says nothing', () => {
-            expect(currentActivity('x'.repeat(500)).length).toBe(200);
+            expect(currentActivity('x'.repeat(500))!.length).toBe(200);
             expect(currentActivity(null)).toBeNull();
             expect(currentActivity('\n\n')).toBeNull();
             expect(stripAnsi('\x1b]0;title\x07after')).toBe('after');
@@ -2267,8 +2273,8 @@ describe('the docker runner', () => {
             markWrite = resolve;
         });
         let writtenTo: string | null = null;
-        const files = {
-            writeFile: async (path: string, data: string, options?: { mode?: number }) => {
+        const files: RunnerFiles = {
+            writeFile: async (path, data, options) => {
                 writtenTo = String(path);
                 markWrite!();
                 await writeReleased;
@@ -2367,7 +2373,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             seen.push(argv);
             const c = new EventEmitter() as ChildProcess;
             const stream = (text: string) => {
-                const s = new EventEmitter();
+                const s = new EventEmitter() as Readable;
                 if (text) process.nextTick(() => s.emit('data', Buffer.from(text)));
                 return s;
             };
@@ -2429,7 +2435,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             track?.(argv);
             const c = new EventEmitter() as ChildProcess;
             const stream = () => {
-                const s = new EventEmitter();
+                const s = new EventEmitter() as Readable;
                 return s;
             };
             c.stdout = stream();
@@ -2976,7 +2982,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             const gatedSpawn = ((_command: string, _argv: string[]) => {
                 const c = new EventEmitter() as ChildProcess;
                 const stream = () => {
-                    const s = new EventEmitter();
+                    const s = new EventEmitter() as Readable;
                     return s;
                 };
                 c.stdout = stream();
@@ -3612,7 +3618,6 @@ describe('publishing the produced work', () => {
         env: { GITHUB_TOKEN: 't0k-3n' },
     };
     const NOW = new Date('2026-09-09T12:00:00Z');
-    const PR_URL = 'https://github.com/Bellows-AI/factory/pull/42';
 
     it('plans the branch, title and issue from the command', () => {
         expect(publishPlan(ISSUE_JOB, NOW)).toEqual({
@@ -3723,7 +3728,7 @@ describe('publishing the produced work', () => {
             { ...repoJob, rootJobId: 'not-a-uuid' },
             { ...repoJob, rootJobId: '../../etc' },
         ];
-        for (const job of broken) expect(worktreeRelDir(job), job.repo).toBeNull();
+        for (const job of broken) expect(worktreeRelDir(job), job.repo ?? undefined).toBeNull();
     });
 
     it('runs a repo job inside its worktree, and a repo-less job at the member root', () => {
@@ -3939,7 +3944,7 @@ describe('publishing the produced work', () => {
 
         const run = calls.find((call) => call.args[0] === 'run' && call.args.includes('--entrypoint'))!;
         expect(run.options?.timeout).toBe(SYNC_DEADLINE_MS);
-        const name = run.args[run.args.indexOf('--name') + 1];
+        const name = run.args[run.args.indexOf('--name') + 1]!;
         expect(name).toBe(`factory-sync-${repoJob.id}-${repoJob.leaseToken}`);
         expect(result).toMatchObject({
             ok: false,
@@ -4207,7 +4212,7 @@ describe('publishing the produced work', () => {
         const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
             fail: (a) => a.includes('switch') && !a.includes('-c'),
         });
-        await runner.publishGit(ISSUE_JOB);
+        await runner.publishGit!(ISSUE_JOB);
 
         const wt = `/workspaces/bellows/${USER}/.worktrees/${job.id}`;
         expect(calls.length).toBeGreaterThan(0);
@@ -4244,7 +4249,7 @@ describe('publishing the produced work', () => {
     // carry THAT credential, and the claim's must be gone from it.
     it("publishes with the board's fresh credential, not the claim's hour-old token", async () => {
         const { envBodies, runner } = publishRunner(DIRTY_ON_MAIN);
-        const result = await runner.publishGit(ISSUE_JOB, 'ghs_fresh');
+        const result = await runner.publishGit!(ISSUE_JOB, 'ghs_fresh');
 
         expect(result.ok).toBe(true);
         expect(envBodies.length).toBeGreaterThan(0);
@@ -4260,7 +4265,7 @@ describe('publishing the produced work', () => {
     // other half, that the docker transport grew no gate of its own to drift against.
     it('leaves the publish decision to the loop: publishGit ignores a publish:false claim', async () => {
         const { calls, runner } = publishRunner(DIRTY_ON_MAIN);
-        const result = await runner.publishGit({ ...ISSUE_JOB, publish: false });
+        const result = await runner.publishGit!({ ...ISSUE_JOB, publish: false });
 
         expect(result.ok).toBe(true);
         expect(calls.length).toBeGreaterThan(0);
@@ -4340,7 +4345,7 @@ describe('publishing the produced work', () => {
         state: Record<string, unknown>,
         opts: {
             prExists?: boolean;
-            fail?: (args: string[]) => boolean;
+            fail?: ((args: string[]) => boolean) | undefined;
             /** The step's stderr, carried the way execFile rejects: on `stderr`, beside the echoed command. */
             failStderr?: string;
             summary?: Record<string, unknown>;
@@ -4376,7 +4381,7 @@ describe('publishing the produced work', () => {
             if (args.includes('pr') && args.includes('create')) return { stdout: `${PR_URL}\n` };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = dockerRunner(exec, { spawn: spawnChild(''), files: opts.files });
+        const runner = dockerRunner(exec, { spawn: spawnChild(''), ...(opts.files ? { files: opts.files } : {}) });
         return { calls, envBodies, runner };
     };
 
@@ -4448,7 +4453,7 @@ describe('publishing the produced work', () => {
         const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
             fail: (a) => a.includes('switch') && !a.includes('-c'),
         });
-        const result = await runner.publishGit(ISSUE_JOB);
+        const result = await runner.publishGit!(ISSUE_JOB);
 
         expect(result).toEqual({
             ok: true,
@@ -4478,7 +4483,7 @@ describe('publishing the produced work', () => {
         const push = calls.find((a) => a.includes('push'));
         expect(push).toContain('--env-file');
         expect(push).toContain('--force-with-lease');
-        expect(push.join(' ')).not.toContain('t0k-3n');
+        expect(push!.join(' ')).not.toContain('t0k-3n');
         // A step's literal envs ride as `-e`, with no env file for a step that needs no credential.
         const summary = calls.find((a) => a.some((x) => typeof x === 'string' && x.includes('shortstat')));
         expect(summary).toEqual(
@@ -4503,7 +4508,7 @@ describe('publishing the produced work', () => {
         const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
             fail: (a) => a.includes('switch') && !a.includes('-c'),
         });
-        await runner.publishGit(ISSUE_JOB);
+        await runner.publishGit!(ISSUE_JOB);
 
         expect(calls.length).toBeGreaterThan(0);
         for (const args of calls) {
@@ -4527,7 +4532,7 @@ describe('publishing the produced work', () => {
             fail: (a) => a.includes('push'),
             failStderr: ' ! [rejected]        HEAD -> fix/10 (non-fast-forward)\nerror: failed to push some refs',
         });
-        const result = await runner.publishGit(ISSUE_JOB);
+        const result = await runner.publishGit!(ISSUE_JOB);
 
         expect(result).toMatchObject({ ok: false, published: false, cause: 'conflict' });
     });
@@ -4539,7 +4544,7 @@ describe('publishing the produced work', () => {
                 rm: () => Promise.resolve(),
             } as unknown as RunnerFiles,
         });
-        const result = await runner.publishGit(ISSUE_JOB);
+        const result = await runner.publishGit!(ISSUE_JOB);
 
         expect(result).toMatchObject({ ok: false, published: false, cause: 'transport' });
         expect(result.reason).toContain('could not write the publish env file');
@@ -4859,7 +4864,7 @@ describe('every container the driver runs is hardened (#382)', () => {
     // that stops the path after its probe this test would pass over a single argv while its name
     // claimed the step containers.
     it('hardens every container the publish path runs', async () => {
-        const runs = await runArgvFrom((r) => r.publishGit({ ...job, repo: 'Bellows-AI/factory' }));
+        const runs = await runArgvFrom((r) => r.publishGit!({ ...job, repo: 'Bellows-AI/factory' }));
         expect(runs.length).toBeGreaterThan(1);
         for (const argv of runs) {
             expect(hasPair(argv, '--cap-drop', 'ALL')).toBe(true);

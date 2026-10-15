@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
-import { createStatsService } from '../src/stats-service.js';
 import type { MetricRow } from '../src/telemetry/otlp.js';
 import type { SessionBranchReport, TelemetryStore } from '../src/telemetry/store.js';
-import { githubAuth, memoryAuthStore, stubTelemetryClient, testConfig } from './helpers.js';
+import { githubAuth, memoryAuthStore, staticRegistry, testConfig } from './helpers.js';
 import {
     HTTP_ACCEPTED,
     HTTP_BAD_REQUEST,
@@ -49,12 +48,7 @@ function stubStore(options: { fail?: boolean } = {}): StoreStub {
 
 async function harnessWith(store?: StoreStub) {
     const config = testConfig();
-    const service = createStatsService({
-        config,
-        telemetry: stubTelemetryClient(),
-        now: () => Date.parse('2026-08-21T12:00:00.000Z'),
-    });
-    const instance = await buildApp({ config, service, store });
+    const instance = await buildApp({ config, orgs: staticRegistry({ config }), store });
     track(instance);
     return instance;
 }
@@ -73,14 +67,9 @@ async function githubHarnessWith(
     orgOfLease?: (jobId: string, lease: string) => Promise<string | null>
 ) {
     const config = testConfig({ auth: githubAuth() });
-    const service = createStatsService({
-        config,
-        telemetry: stubTelemetryClient(),
-        now: () => Date.parse('2026-08-21T12:00:00.000Z'),
-    });
     const instance = await buildApp({
         config,
-        service,
+        orgs: staticRegistry({ config }),
         store,
         auth: memoryAuthStore(),
         orgOfLease:

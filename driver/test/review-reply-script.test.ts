@@ -16,7 +16,7 @@ const replyTarget = (over: Partial<ReviewPlan['targets'][number]>): ReviewPlan['
     ...over,
 });
 
-const replyPlan = (targets: ReviewPlan['targets'][]): string =>
+const replyPlan = (targets: ReviewPlan['targets']): string =>
     JSON.stringify({ version: 1, schema: 'review-reply/plan/v1', ref: collectRef, targets });
 
 const HTTP_UNAUTHORIZED = '401';

@@ -157,7 +157,13 @@ describe('nextTransition: blocked and no-progress rests', () => {
             command: '',
             snapshot,
             rows: [row({ id: 'r1', node: 'implement' })],
-            completed: done({ id: 'r1', status: 'failed', failureKind: 'gate', gates: failedGates, treeChanged }),
+            completed: done({
+                id: 'r1',
+                status: 'failed',
+                failureKind: 'gate',
+                gates: failedGates,
+                ...(treeChanged === undefined ? {} : { treeChanged }),
+            }),
         });
         expect(t).toMatchObject({ action: 'insert', node: { name: 'fix' } });
     });

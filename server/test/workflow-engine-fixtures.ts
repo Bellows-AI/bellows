@@ -1,5 +1,6 @@
 import type { GateReport } from '../src/db/job-store-types.js';
 import type { CompletedRun, EngineRow } from '../src/db/workflow-engine.js';
+import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 
 /**
  * Shared fixtures for the workflow-engine test suite, split across
@@ -7,8 +8,9 @@ import type { CompletedRun, EngineRow } from '../src/db/workflow-engine.js';
  * workflow-engine.validation.test.ts and workflow-engine.params.test.ts.
  */
 
-export const snapshot = {
+export const snapshot: WorkflowDefinition = {
     entry: 'implement',
+    params: [],
     nodes: [
         {
             name: 'implement',

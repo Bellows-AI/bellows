@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { CLAUDE_CODE, EXECUTOR_TYPES, OPENCODE, RUNNER_MANAGED_KEYS } from '@factory-ai/core';
+import { CLAUDE_CODE, EXECUTOR_TYPES, MAX_GATE_FIX_ROUNDS, OPENCODE, RUNNER_MANAGED_KEYS } from '@factory-ai/core';
 import {
     EXECUTOR_TYPE_META,
     GATE_FIX_ROUNDS_HELP,
     MAX_CONFIG_BYTES,
-    MAX_GATE_FIX_ROUNDS,
     NO_CHANGES_REASON,
     REQUIRED_FIELDS,
     SAVE_HINTS,
@@ -221,7 +220,6 @@ describe('initialExecutorDraft', () => {
             name: 'oc',
             type: OPENCODE,
             config: { model: 'anthropic/x', extra: 1 },
-            isDefault: true,
             gateFixRounds: 2,
         };
         const draft = initialExecutorDraft(row);

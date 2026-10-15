@@ -68,11 +68,15 @@ describe('the docker runner kill timer', () => {
     const job: BoardJob = {
         id: '11111111-1111-4111-8111-111111111111',
         command: 'ask a question',
+        rootCommand: 'ask a question',
         attempts: 1,
+        maxAttempts: 3,
         claimSeq: 1,
         leaseToken: '22222222-2222-4222-8222-222222222222',
         leaseExpiresAt: '2026-08-29T12:05:00.000Z',
         executorType: 'claude-code',
+        executorRefusal: null,
+        skillRefusal: null,
         masterPrompt:
             'Factory execution contract (factory-master-prompt/v1)\n\nFactory execution context\n- Mode: standalone',
         resumeSessionId: null,

@@ -1,5 +1,6 @@
 import type { GitHubIdentity } from '../src/auth/github.js';
-import type { AccessTokenKind, AccessTokenView, AuthStore, Caller, InstallationRef, Role } from '../src/auth/store.js';
+import type { Role } from '@factory-ai/core';
+import type { AccessTokenKind, AccessTokenView, AuthStore, Caller, InstallationRef } from '../src/auth/store.js';
 
 /**
  * An in-memory AuthStore: it keeps the offline suite a no-database suite while still exercising

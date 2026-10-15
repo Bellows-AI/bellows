@@ -348,7 +348,18 @@ describe('Settings workspace page', () => {
 
     it('keeps the way back to a task draft on the executor dialog’s credentials detour', () => {
         const html = render('/settings/workspace?return=/tasks/new', {
-            workspace: { loading: false, data: { root: '/workspaces', repos: [], orphaned: [], executors: [] } },
+            workspace: {
+                loading: false,
+                data: {
+                    root: '/workspaces',
+                    repos: [],
+                    orphaned: [],
+                    checkoutTotalBytes: 0,
+                    executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
+                },
+            },
         });
         expect(html).toContain('You have a task draft in progress.');
     });
@@ -392,11 +403,33 @@ describe('Settings executors page', () => {
                     root: '/workspaces',
                     repos: [],
                     orphaned: [],
+                    checkoutTotalBytes: 0,
                     executors: [
-                        { name: 'main', type: 'claude-code', createdAt: '2026-09-01T00:00:00.000Z', gateFixRounds: 3 },
-                        { name: 'oc', type: 'opencode', createdAt: '2026-09-02T00:00:00.000Z', gateFixRounds: 3 },
+                        {
+                            id: 'e-main',
+                            name: 'main',
+                            suspended: false,
+                            type: 'claude-code',
+                            createdAt: '2026-09-01T00:00:00.000Z',
+                            gateFixRounds: 3,
+                        },
+                        {
+                            id: 'e-oc',
+                            name: 'oc',
+                            suspended: false,
+                            type: 'opencode',
+                            createdAt: '2026-09-02T00:00:00.000Z',
+                            gateFixRounds: 3,
+                        },
                     ],
-                    orgExecutors: [{ name: 'team-runner', type: 'claude-code', createdAt: '2026-09-03T00:00:00.000Z' }],
+                    orgExecutors: [
+                        {
+                            name: 'team-runner',
+                            type: 'claude-code',
+                            createdAt: '2026-09-03T00:00:00.000Z',
+                            suspended: false,
+                        },
+                    ],
                     defaultExecutor: { scope: 'user', name: 'main' },
                 },
             },

@@ -50,7 +50,7 @@ describe('the scripted model endpoint', () => {
 
         expect(first.stop_reason).toBe('tool_use');
         expect(first.content[0]).toMatchObject({ name: 'Bash', input: { command: 'touch step-1' } });
-        expect(second.content[0].input?.command).toBe('touch step-2');
+        expect(second.content[0]!.input?.command).toBe('touch step-2');
         expect(third.stop_reason).toBe('end_turn');
         expect(endpoint.agentRequests).toBe(3);
     });
@@ -99,7 +99,7 @@ describe('the scripted model endpoint in ask mode (issue #226)', () => {
         const first = await askRequest(url, []);
         expect(first.stop_reason).toBe('tool_use');
         expect(first.content[0]).toMatchObject({ type: 'tool_use', name: 'AskUserQuestion' });
-        const [question] = first.content[0].input.questions;
+        const [question] = first.content[0]!.input.questions;
         expect(question.options.map((option: { label: string }) => option.label)).toEqual(['Red', 'Blue']);
 
         const answered = await askRequest(url, [
@@ -108,7 +108,7 @@ describe('the scripted model endpoint in ask mode (issue #226)', () => {
                 content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: 'User answered: "Blue"' }],
             },
         ]);
-        expect(answered.content[0].text).toBe('ANSWER=Blue');
+        expect(answered.content[0]!.text).toBe('ANSWER=Blue');
 
         const unanswered = await askRequest(url, [
             {
@@ -116,7 +116,7 @@ describe('the scripted model endpoint in ask mode (issue #226)', () => {
                 content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: 'denied', is_error: true }],
             },
         ]);
-        expect(unanswered.content[0].text).toBe('ANSWER=missing');
+        expect(unanswered.content[0]!.text).toBe('ANSWER=missing');
     });
 
     it('plays the board: pending on the first poll, then answered, with the POSTs counted', async () => {
@@ -166,10 +166,10 @@ describe('the scripted model endpoint in ask-prose mode (issue #226)', () => {
 
         const first = await agent(url);
         expect(first.stop_reason).toBe('end_turn');
-        expect(first.content[0].text).toBe('Which one should I use: Red or Blue?');
+        expect(first.content[0]!.text).toBe('Which one should I use: Red or Blue?');
 
         const verdict = await hook(url);
-        expect(JSON.parse(verdict.content[0].text)).toMatchObject({ ok: false });
+        expect(JSON.parse(verdict.content[0]!.text)).toMatchObject({ ok: false });
         expect(await hooks(url)).toBe(1);
 
         // The CLI's continuation quotes the hook prompt back as "Stop hook feedback", tools attached:
@@ -187,7 +187,7 @@ describe('the scripted model endpoint in ask-prose mode (issue #226)', () => {
         expect(await hooks(url)).toBe(1);
 
         // The evaluation after the answer is stop_hook_active territory: allowed, not an agent request.
-        expect(JSON.parse((await hook(url)).content[0].text)).toEqual({ ok: true });
+        expect(JSON.parse((await hook(url)).content[0]!.text)).toEqual({ ok: true });
         expect(endpoint.agentRequests).toBe(2);
     });
 });

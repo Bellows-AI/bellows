@@ -7,7 +7,29 @@ import {
     inboxQueryString,
     MAX_REFRESH_DEPTH,
     refreshLanding,
+    type TaskNavigation,
+    type TaskSummary,
 } from '../src/api/useTasks.js';
+
+/** One running task row, as the task-summary read model serves it. */
+const summary = (id: string): TaskSummary => ({
+    id,
+    command: `task ${id}`,
+    status: 'running',
+    cancelRequestedAt: null,
+    doneAt: null,
+    repo: null,
+    executor: null,
+    author: null,
+    activity: null,
+    summary: null,
+    waitReason: null,
+    waitingSince: null,
+    waitTerminalReason: null,
+    createdAt: '2026-09-02T12:00:00.000Z',
+    activityAt: '2026-09-02T12:10:00.000Z',
+    needsAnswer: false,
+});
 
 /**
  * The inbox's URL is the filter state — linkable, Back/Forward-navigable — so what the URL can
@@ -94,21 +116,7 @@ describe('fetchDepthPages', () => {
     // collapse the loaded rows back to page one. The fetch is injected, so the whole chain runs
     // offline: page one, then each next page via its cursor, deduped by id, stopping when the
     // list runs out.
-    const summary = (id: string) => ({
-        id,
-        command: `task ${id}`,
-        status: 'running',
-        cancelRequestedAt: null,
-        doneAt: null,
-        repo: null,
-        executor: null,
-        author: null,
-        activity: null,
-        summary: null,
-        createdAt: '2026-09-02T12:00:00.000Z',
-        activityAt: '2026-09-02T12:10:00.000Z',
-    });
-    const navigation = { counts: { running: 1, review: 0, past: 0 }, running: [], review: [] };
+    const navigation: TaskNavigation = { counts: { running: 1, review: 0, past: 0 }, running: [], review: [] };
     const page = (items: string[], cursor: string | null) => ({
         navigation,
         page: { items: items.map(summary), nextCursor: cursor },
@@ -176,21 +184,6 @@ describe('fetchDepthPages', () => {
  * tick and collapse the loaded depth back to the cap, so the capped landing keeps them.
  */
 describe('refreshLanding', () => {
-    const summary = (id: string) => ({
-        id,
-        command: `task ${id}`,
-        status: 'running',
-        cancelRequestedAt: null,
-        doneAt: null,
-        repo: null,
-        executor: null,
-        author: null,
-        activity: null,
-        summary: null,
-        createdAt: '2026-09-02T12:00:00.000Z',
-        activityAt: '2026-09-02T12:10:00.000Z',
-    });
-
     it('keeps the pages past the cap that the rebuild never read', () => {
         const prev = ['a', 'b', 'c', 'd'].map(summary);
         const landed = refreshLanding(prev, 4, {

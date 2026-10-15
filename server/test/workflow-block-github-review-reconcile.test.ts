@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { BLOCK_REGISTRY, compileDefinition } from '../src/db/workflow-blocks/index.js';
 import { REVIEW_MARKERS } from '../src/db/workflow-blocks/github-review-reconcile.js';
 import { nextTransition, type EngineRow } from '../src/db/workflow-engine.js';
-import type { AuthoredWorkflowDefinition, WorkflowDefinition } from '../src/db/workflow-schema.js';
+import type { AuthoredWorkflowDefinition, BlockConfigValue, WorkflowDefinition } from '../src/db/workflow-schema.js';
 
 /**
  * The `builtin/github-review-reconcile` block's own expansion (issue #133) — what
@@ -11,7 +11,7 @@ import type { AuthoredWorkflowDefinition, WorkflowDefinition } from '../src/db/w
  * a pure orchestration walk of the expanded graph through the real transition engine.
  */
 
-const graphUsing = (name: string, withConfig?: Record<string, unknown>): AuthoredWorkflowDefinition => ({
+const graphUsing = (name: string, withConfig?: Record<string, BlockConfigValue>): AuthoredWorkflowDefinition => ({
     entry: name,
     params: [],
     nodes: [
@@ -20,7 +20,7 @@ const graphUsing = (name: string, withConfig?: Record<string, unknown>): Authore
     edges: [],
 });
 
-function compiled(withConfig?: Record<string, unknown>): WorkflowDefinition {
+function compiled(withConfig?: Record<string, BlockConfigValue>): WorkflowDefinition {
     const result = compileDefinition(graphUsing('review', withConfig), BLOCK_REGISTRY);
     if (!result.ok) throw new Error(`expected compile to succeed, refused: ${JSON.stringify(result.refusal)}`);
     return result.definition;
@@ -347,7 +347,7 @@ describe('builtin/github-review-reconcile — pure orchestration walk (real next
                 node: 'review--repair',
                 status: 'failed',
                 output: null,
-                gates: [{ name: 'test', status: 'failed', output: 'boom' }],
+                gates: [{ name: 'test', status: 'failed', exitCode: 1, output: 'boom' }],
                 sessionId: null,
             },
         ];
@@ -361,7 +361,7 @@ describe('builtin/github-review-reconcile — pure orchestration walk (real next
                 node: 'review--repair',
                 status: 'failed',
                 output: null,
-                gates: [{ name: 'test', status: 'failed', output: 'boom' }],
+                gates: [{ name: 'test', status: 'failed', exitCode: 1, output: 'boom' }],
             },
         });
         expect(transition).toMatchObject({ action: 'insert', node: { name: 'review--repair' } });

@@ -116,7 +116,7 @@ function fakeTransport(
 }
 
 const CLUSTER_ENV = { KUBERNETES_SERVICE_HOST: '10.0.0.1' };
-const CREDENTIALS = (() => 'credential') as typeof readFileSync;
+const CREDENTIALS = (() => 'credential') as unknown as typeof readFileSync;
 
 describe('the malformed-request classifier', () => {
     it('names the API server pre-handler 400 Bad Request answer', () => {
@@ -204,10 +204,9 @@ describe('the in-cluster kubernetes transport', () => {
 
     it('destroys a timed-out request so a half-open API connection cannot hold a lease forever', async () => {
         const transport = fakeTransport([{ timeout: true }]);
-        const readFile = (() => 'credential') as typeof readFileSync;
         const request = inClusterRequest({
             env: { KUBERNETES_SERVICE_HOST: '10.0.0.1' },
-            readFile,
+            readFile: CREDENTIALS,
             request: transport.request,
         });
 
@@ -276,7 +275,7 @@ describe('the in-cluster kubernetes transport', () => {
         const agent = transport.calls[1]?.options.agent;
         expect(agent).toBeDefined();
         expect(agent).not.toBe(globalAgent);
-        expect((agent as Agent).keepAlive).toBe(false);
+        expect((agent as Agent & { keepAlive: boolean }).keepAlive).toBe(false);
         expect(transport.calls[2]?.options.agent).toBe(agent);
     });
 

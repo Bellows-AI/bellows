@@ -5,7 +5,7 @@ import { buildApp } from '../src/app.js';
 import { requirementFor } from '../src/auth/plugin.js';
 import { SESSION_COOKIE } from '../src/auth/session.js';
 import type { AuthConfig } from '../src/config.js';
-import type { Claim, Job } from '../src/db/job-store-types.js';
+import type { Job } from '../src/db/job-store-types.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import type { AppDeps } from '../src/app.js';
 import type { OrgRegistry } from '../src/orgs.js';
@@ -16,6 +16,7 @@ import type { MemoryAuthStore } from './helpers.js';
 import {
     buildWithAuth,
     githubAuth,
+    makeClaim,
     memoryAuthStore,
     signedIn,
     staticRegistry,
@@ -55,16 +56,7 @@ const jobStub = (overrides: Partial<JobStore> = {}): JobStore =>
             return { id: JOB_ID };
         },
         async claim() {
-            return {
-                id: JOB_ID,
-                command: 'echo hi',
-                attempts: 1,
-                leaseToken: LEASE,
-                leaseExpiresAt: '2026-08-21T12:05:00.000Z',
-                userId: null,
-                resumeSessionId: null,
-                followUp: false,
-            } satisfies Claim;
+            return makeClaim({ id: JOB_ID, command: 'echo hi', leaseToken: LEASE });
         },
         async heartbeat() {
             return { result: 'ok', leaseExpiresAt: '2026-08-21T12:05:00.000Z' };
@@ -107,7 +99,7 @@ async function build(
     const app = await buildWithAuth(
         auth,
         store,
-        { jobs: jobStub(), orgsFor },
+        { jobs: jobStub(), ...(orgsFor ? { orgsFor } : {}) },
         {
             // The attempt-scoped pair the runner's branch reporter presents. Default: the one live
             // attempt the constants below describe; a test passes its own to model a lost lease.
@@ -546,6 +538,8 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
                 },
                 list: async () => [...boards.keys()].map((id) => ({ id, name: id, installationId: null })),
                 warmAll: async () => {},
+                reconcileBatches: async () => {},
+                observeBatchPrs: async () => {},
             },
             store: telemetryStoreStub(),
             auth: store,
@@ -726,7 +720,7 @@ describe('the batch routes are a person’s', () => {
         const response = await server.inject({
             method: method as 'GET',
             url,
-            payload: method === 'GET' ? undefined : {},
+            ...(method === 'GET' ? {} : { payload: {} }),
             headers: { authorization: `Bearer ${WORKER_TOKEN}` },
         });
         expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
@@ -738,7 +732,7 @@ describe('the batch routes are a person’s', () => {
         const response = await server.inject({
             method: method as 'GET',
             url,
-            payload: method === 'GET' ? undefined : {},
+            ...(method === 'GET' ? {} : { payload: {} }),
             headers: { authorization: `Bearer ${store.seedAccessToken(ORG, 'org')}` },
         });
         expect(response.statusCode).toBe(HTTP_FORBIDDEN);
@@ -750,7 +744,7 @@ describe('the batch routes are a person’s', () => {
         const response = await server.inject({
             method: method as 'GET',
             url,
-            payload: method === 'GET' ? undefined : {},
+            ...(method === 'GET' ? {} : { payload: {} }),
         });
         expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });

@@ -1,4 +1,4 @@
-import { OBJECTIVE_MODE, WORKFLOW_MODE } from '@factory-ai/core';
+import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
 import { describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
@@ -43,10 +43,12 @@ import type {
     StoredArtifact,
 } from '../src/db/job-store-types.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
+import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import type { BatchStore } from '../src/db/batch-store.js';
 import { memoryBatchStore } from './helpers-batch-store.js';
 import {
     githubAuth,
+    makeClaim,
     memoryAuthStore,
     signedIn,
     staticRegistry,
@@ -90,7 +92,9 @@ interface StoreStub extends JobStore {
         snapshot: unknown;
         params?: unknown;
     }[];
-    listed: { status?: JobStatus | 'terminal'; repo?: string | undefined; limit: number }[];
+    listed: { status?: JobStatus | 'terminal' | undefined; repo?: string | undefined; limit: number }[];
+    /** Every command a create was handed, in call order. */
+    commands: string[];
     completed: {
         id: string;
         output: string | null;
@@ -481,6 +485,10 @@ function stubStore(
                 page: { items: [], nextCursor: null },
             };
         },
+        async closeMergedPr() {
+            boom();
+            return { outcome: 'applied', closedRoots: 0 };
+        },
     };
     return stub;
 }
@@ -525,6 +533,8 @@ async function harnessOfBoards(boards: readonly (readonly [string, StoreStub])[]
             for: async (orgId) => runtimes.get(orgId) ?? null,
             list: async () => boards.map(([orgId]) => ({ id: orgId, name: orgId, installationId: null })),
             warmAll: async () => {},
+            reconcileBatches: async () => {},
+            observeBatchPrs: async () => {},
         },
     });
     track(instance);
@@ -738,7 +748,7 @@ function stubWorkflows(options: { found?: WorkflowRecord | null; definition?: Wo
             calls.findByName.push(name);
             return options.found === undefined ? record : options.found;
         },
-    } as unknown as WorkflowStore & typeof calls;
+    } as unknown as WorkflowStore & { calls: typeof calls; record: WorkflowRecord | null };
 }
 
 describe('POST /api/jobs workflow resolution', () => {
@@ -752,7 +762,7 @@ describe('POST /api/jobs workflow resolution', () => {
         expect(response.statusCode).toBe(201);
         expect(workflows.calls.findByName).toEqual(['fix-issue']);
         expect(jobs.workflowTargets).toEqual([
-            { id: 'wf-1', name: 'fix-issue', node: 'implement', snapshot: workflows.record.definition, params: {} },
+            { id: 'wf-1', name: 'fix-issue', node: 'implement', snapshot: workflows.record!.definition, params: {} },
         ]);
         // The root command IS the interpolated entry prompt — a workflow task launches its entry
         // node, not the raw chat line.
@@ -966,15 +976,7 @@ describe('POST /api/jobs workflow parameters', () => {
 });
 
 describe('POST /api/jobs/claim', () => {
-    const claim: Claim = {
-        id: ID,
-        command: 'echo hi',
-        attempts: 1,
-        leaseToken: TOKEN,
-        leaseExpiresAt: '2026-08-21T12:05:00.000Z',
-        resumeSessionId: null,
-        followUp: false,
-    };
+    const claim = makeClaim({ id: ID, command: 'echo hi', leaseToken: TOKEN });
 
     it('hands out the job with its lease token', async () => {
         const instance = await harnessWith(stubStore({ claim }));
@@ -1247,6 +1249,8 @@ describe('POST /api/jobs/leases — the orphan reaper’s batched lookup (issue 
                     { id: 'org-dead', name: 'org-dead', installationId: null },
                 ],
                 warmAll: async () => {},
+                reconcileBatches: async () => {},
+                observeBatchPrs: async () => {},
             },
         });
         track(instance);
@@ -1291,6 +1295,8 @@ describe('POST /api/jobs/leases — the orphan reaper’s batched lookup (issue 
                     { id: 'org-foreign', name: 'org-foreign', installationId: null },
                 ],
                 warmAll: async () => {},
+                reconcileBatches: async () => {},
+                observeBatchPrs: async () => {},
             },
         });
         track(instance);
@@ -2600,6 +2606,17 @@ describe('GET /api/jobs', () => {
         wallClockMs: null,
         agentTurns: null,
         taskWallClockMs: null,
+        failureCause: null,
+        gates: null,
+        runtime: null,
+        executorScope: USER_SCOPE,
+        workflowNode: null,
+        setupMs: null,
+        waitReason: null,
+        waitingSince: null,
+        waitTerminalReason: null,
+        publication: null,
+        questions: [],
     };
 
     const author = {
@@ -2644,7 +2661,7 @@ describe('GET /api/jobs', () => {
     });
 
     it("serves the row's stored mode on the detail read and the thread read", async () => {
-        const objective = { ...job, workflowName: null, mode: OBJECTIVE_MODE };
+        const objective: Job = { ...job, workflowName: null, mode: OBJECTIVE_MODE };
         const instance = await harnessWith(stubStore({ job: objective, thread: [objective] }));
         const one = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}` });
         expect(one.json().mode).toBe(OBJECTIVE_MODE);
@@ -2767,6 +2784,11 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
         wallClockMs: null,
         agentTurns: null,
         taskWallClockMs: null,
+        failureCause: null,
+        executorScope: USER_SCOPE,
+        setupMs: null,
+        publication: null,
+        questions: [],
     };
 
     const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -2977,6 +2999,14 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         wallClockMs: null,
         agentTurns: null,
         taskWallClockMs: null,
+        failureCause: null,
+        executorScope: USER_SCOPE,
+        setupMs: null,
+        waitReason: null,
+        waitingSince: null,
+        waitTerminalReason: null,
+        publication: null,
+        questions: [],
     };
 
     it('answers the telemetry buckets over the run window', async () => {

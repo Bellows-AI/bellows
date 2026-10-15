@@ -66,7 +66,7 @@ const merge = (a: LedgerParts, b: LedgerParts): LedgerParts => ({
     deadServices: [...a.deadServices, ...b.deadServices],
     helperFailure: a.helperFailure ?? b.helperFailure,
     published: a.published ?? b.published,
-    policyRefusal: a.policyRefusal ?? b.policyRefusal,
+    policyRefusal: a.policyRefusal ?? b.policyRefusal ?? null,
 });
 
 describe('a dead service note (issue #487)', () => {

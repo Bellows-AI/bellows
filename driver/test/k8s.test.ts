@@ -75,15 +75,19 @@ const job: BoardJob = {
     id: '11111111-1111-4111-8111-111111111111',
     command: 'fix the failing build',
     attempts: 1,
+    maxAttempts: 1,
     claimSeq: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
+    executorRefusal: null,
+    skillRefusal: null,
     masterPrompt: MASTER_PROMPT,
     resumeSessionId: null,
     followUp: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
+    rootCommand: 'fix the failing build',
 };
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
@@ -107,7 +111,7 @@ describe('the runner job spec', () => {
     // The plan is pinned in runner-plan.test.ts; this is its kubernetes rendering: the CLI args as
     // the container's args (its env pairs are the literal values pinned below).
     it('runs the command as a prompt, with the same argv the docker runner passes after the image', () => {
-        expect(spec().spec.template.spec.containers[0].args).toEqual([
+        expect(spec().spec.template.spec.containers[0]!.args).toEqual([
             '--session-id',
             SESSION,
             '--append-system-prompt',
@@ -120,7 +124,7 @@ describe('the runner job spec', () => {
     });
 
     it("mounts the workspaces PVC and starts at the AUTHOR's workspace root", () => {
-        const container = spec().spec.template.spec.containers[0];
+        const container = spec().spec.template.spec.containers[0]!;
         expect(container.env).toContainEqual({ name: 'WORKDIR', value: `/workspaces/bellows/${USER}` });
         expect(spec().spec.template.spec.volumes).toContainEqual({
             name: 'workspaces',
@@ -185,7 +189,7 @@ describe('the runner job spec', () => {
                 resume: false,
             }
         );
-        expect(repoSpec.spec.template.spec.containers[0].env).toContainEqual({
+        expect(repoSpec.spec.template.spec.containers[0]!.env).toContainEqual({
             name: 'WORKDIR',
             value: `/workspaces/bellows/${USER}/.worktrees/${job.id}`,
         });
@@ -263,7 +267,7 @@ describe('the runner job spec', () => {
     // already holds. A literal `value:` would put the credential in the pod spec, which anyone who
     // can `get pods` can read — the same audience every `ps` on the host has.
     it('names credentials by secretKeyRef, never by value', () => {
-        const container = spec({ RUNNER_CREDENTIALS_SECRET: 'claude-credentials' }).spec.template.spec.containers[0];
+        const container = spec({ RUNNER_CREDENTIALS_SECRET: 'claude-credentials' }).spec.template.spec.containers[0]!;
         expect(container.env).toContainEqual({
             name: 'CLAUDE_CODE_OAUTH_TOKEN',
             valueFrom: {
@@ -295,7 +299,7 @@ describe('the runner job spec', () => {
     it('leaves the npm notice to a claim that names it', () => {
         const envJob: BoardJob = { ...job, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } };
         const env = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), envJob, { id: SESSION, resume: false })
-            .spec.template.spec.containers[0].env;
+            .spec.template.spec.containers[0]!.env;
         expect(env.filter((entry) => entry.name === 'NPM_CONFIG_UPDATE_NOTIFIER')).toEqual([
             {
                 name: 'NPM_CONFIG_UPDATE_NOTIFIER',
@@ -310,10 +314,10 @@ describe('the runner job spec', () => {
     // collector. RUNNER_OTEL_ENDPOINT overrides the compose-collector default; the pin is that it
     // lands as the runner's own `value`, readable in the pod spec like WORKDIR is.
     it('points the runner at a collector, overriding it when configured', () => {
-        const def = spec().spec.template.spec.containers[0];
+        const def = spec().spec.template.spec.containers[0]!;
         expect(def.env).toContainEqual({ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' });
         const configured = spec({ RUNNER_OTEL_ENDPOINT: 'http://telemetry.internal:4318' }).spec.template.spec
-            .containers[0];
+            .containers[0]!;
         expect(configured.env).toContainEqual({
             name: 'OTEL_EXPORTER_OTLP_ENDPOINT',
             value: 'http://telemetry.internal:4318',
@@ -324,7 +328,7 @@ describe('the runner job spec', () => {
     // spec DOES always carry is the runner's own attempt pair — the branch-ingest credential,
     // referenced into the per-attempt Secret below (its values ride the Secret, never the spec).
     it('forwards no user-configured credentials when no secret is configured', () => {
-        const container = spec().spec.template.spec.containers[0];
+        const container = spec().spec.template.spec.containers[0]!;
         expect(container.env).toEqual([
             { name: 'WORKDIR', value: `/workspaces/bellows/${USER}` },
             { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' },
@@ -357,7 +361,7 @@ describe('the runner job spec', () => {
         const container = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), envJob, {
             id: SESSION,
             resume: false,
-        }).spec.template.spec.containers[0];
+        }).spec.template.spec.containers[0]!;
         // NOT optional: the driver created this exact Secret moments before the Job, under this
         // attempt's own lease token — a missing key is a bug and must fail loud
         // (CreateContainerConfigError), not start the pod silently without its env.
@@ -382,7 +386,7 @@ describe('the runner job spec', () => {
         const container = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), controlled, {
             id: SESSION,
             resume: false,
-        }).spec.template.spec.containers[0];
+        }).spec.template.spec.containers[0]!;
         for (const name of ['BELLOWS_CONTROL_URL', 'BELLOWS_CONTROL_TOKEN', 'BELLOWS_CONTROL_POLL_MS']) {
             expect(container.env).toContainEqual({
                 name,
@@ -393,7 +397,7 @@ describe('the runner job spec', () => {
     });
 
     it('carries no claim env entries for an env-less claim', () => {
-        const container = spec().spec.template.spec.containers[0];
+        const container = spec().spec.template.spec.containers[0]!;
         // The attempt pair names the per-attempt Secret now, always — that is the runner's own
         // credential, not claim env. What must not appear is anything MEMBER-configured.
         expect(JSON.stringify(container.env)).not.toContain('CORE_TOKEN');
@@ -417,10 +421,10 @@ describe('the runner job spec', () => {
     // The branch reporter posts to the board's API; the same URL the docker runner forwards as
     // `-e FACTORY_STATS_URL`, defaulted from JOB_BOARD_URL and overridable for a split topology.
     it('names the board for the branch reporter, overridable', () => {
-        const container = spec().spec.template.spec.containers[0];
+        const container = spec().spec.template.spec.containers[0]!;
         expect(container.env).toContainEqual({ name: 'FACTORY_STATS_URL', value: 'http://127.0.0.1:8080' });
         expect(
-            spec({ RUNNER_STATS_URL: 'http://stats.internal:8080' }).spec.template.spec.containers[0].env
+            spec({ RUNNER_STATS_URL: 'http://stats.internal:8080' }).spec.template.spec.containers[0]!.env
         ).toContainEqual({ name: 'FACTORY_STATS_URL', value: 'http://stats.internal:8080' });
     });
 
@@ -429,7 +433,7 @@ describe('the runner job spec', () => {
     // as every claim env entry. There is no opt-out: the pair is how the runner's branch
     // reporter authenticates at all.
     it('delivers the attempt pair by secret reference, never as a value', () => {
-        const container = spec().spec.template.spec.containers[0];
+        const container = spec().spec.template.spec.containers[0]!;
         expect(container.env).toContainEqual({
             name: 'RUNNER_JOB_ID',
             valueFrom: { secretKeyRef: { name: secretName(job), key: 'RUNNER_JOB_ID' } },
@@ -504,8 +508,8 @@ describe('the runner job spec', () => {
      * docker runner's "use what the daemon has" behavior has to be stated, not assumed.
      */
     it('states the pull policy instead of letting kubernetes default to Always', () => {
-        expect(spec().spec.template.spec.containers[0].imagePullPolicy).toBe('IfNotPresent');
-        expect(spec({ RUNNER_IMAGE_PULL_POLICY: 'Always' }).spec.template.spec.containers[0].imagePullPolicy).toBe(
+        expect(spec().spec.template.spec.containers[0]!.imagePullPolicy).toBe('IfNotPresent');
+        expect(spec({ RUNNER_IMAGE_PULL_POLICY: 'Always' }).spec.template.spec.containers[0]!.imagePullPolicy).toBe(
             'Always'
         );
     });
@@ -522,7 +526,7 @@ describe('the runner job spec', () => {
                 RUNNER_MEMORY_REQUEST: '1Gi',
                 RUNNER_CPU_LIMIT: '2',
                 RUNNER_MEMORY_LIMIT: '4Gi',
-            }).spec.template.spec.containers[0].resources
+            }).spec.template.spec.containers[0]!.resources
         ).toEqual({
             requests: { cpu: '500m', memory: '1Gi' },
             limits: { cpu: '2', memory: '4Gi' },
@@ -533,13 +537,13 @@ describe('the runner job spec', () => {
     // memory limit on an agent run turns a big build into an OOM kill mid-work.
     it('renders requests only when limits are unset — the dashboard posture', () => {
         const container = spec({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' }).spec.template.spec
-            .containers[0];
+            .containers[0]!;
         expect(container.resources).toEqual({ requests: { cpu: '500m', memory: '1Gi' } });
         expect(container.resources?.limits).toBeUndefined();
     });
 
     it('renders no resources block at all when none are configured — the BestEffort pod this issue came from', () => {
-        expect(spec().spec.template.spec.containers[0].resources).toBeUndefined();
+        expect(spec().spec.template.spec.containers[0]!.resources).toBeUndefined();
     });
 });
 
@@ -679,11 +683,11 @@ describe('resources on every pod the driver specs', () => {
             GATE_MEMORY_REQUEST: '2Gi',
         });
         const gate = gateJobSpec(config, job, gateArgs());
-        expect(gate.spec.template.spec.containers[0].resources).toEqual({
+        expect(gate.spec.template.spec.containers[0]!.resources).toEqual({
             requests: { cpu: '2', memory: '2Gi' },
             limits: { cpu: '4' },
         });
-        expect(syncJobSpec(config, repoJob, null).spec.template.spec.containers[0].resources).toEqual({
+        expect(syncJobSpec(config, repoJob, null).spec.template.spec.containers[0]!.resources).toEqual({
             requests: { cpu: '500m', memory: '1Gi' },
             limits: { cpu: '4' },
         });
@@ -1046,11 +1050,11 @@ const boardLease =
  * fakeRequest (and so every routed fake) falls through to this before rejecting, so a test only scripts the
  * objects it is about. Lists answer empty — nothing to sweep, nothing to tear down.
  */
-const AUX: Record<string, K8sResponse> = {
+const AUX = {
     list: { status: 200, body: '{"items":[]}' },
     delete: { status: 200, body: '{}' },
     create: { status: 201, body: '{}' },
-};
+} satisfies Record<string, K8sResponse>;
 function auxRoutes(method: string, path: string): K8sResponse | null {
     const ns = `/api/v1/namespaces/${namespace}`;
     if (path === `${ns}/services`) {
@@ -1188,7 +1192,7 @@ describe('the worktree sync', () => {
         expect(s.kind).toBe('Job');
         expect(s.metadata.name).toBe(syncJobName(repoJob));
         expect(s.metadata.labels).toEqual({ 'factory.job': repoJob.id, 'factory.lease': repoJob.leaseToken });
-        const container = s.spec.template.spec.containers[0];
+        const container = s.spec.template.spec.containers[0]!;
         expect(container.command).toEqual(['node', '-e', gitWorktreeScript]);
         // The three paths the script needs, as literal values — paths, not credentials.
         expect(container.env).toContainEqual({ name: 'REPO', value: `/workspaces/bellows/${USER}/factory` });
@@ -1210,7 +1214,7 @@ describe('the worktree sync', () => {
 
     it('carries the claim env by reference, and a literal value only for the three paths', () => {
         const envJob: BoardJob = { ...repoJob, env: { CORE_TOKEN: 'shh' } };
-        const container = syncJobSpec(cfg(), envJob, syncEnvSecretName(envJob)).spec.template.spec.containers[0];
+        const container = syncJobSpec(cfg(), envJob, syncEnvSecretName(envJob)).spec.template.spec.containers[0]!;
         expect(container.envFrom).toEqual([{ secretRef: { name: syncEnvSecretName(envJob) } }]);
         for (const entry of container.env ?? []) {
             expect(entry.name === 'REPO' || entry.name === 'WORKTREE' || entry.name === 'BRANCH', entry.name).toBe(
@@ -1226,7 +1230,7 @@ describe('the worktree sync', () => {
     // three path literals), never the credential value — that stays in the Secret.
     it('passes the sync the credential-helper code only when the claim env carries GITHUB_TOKEN', () => {
         const tokenJob: BoardJob = { ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } };
-        const withToken = syncJobSpec(cfg(), tokenJob, syncEnvSecretName(tokenJob)).spec.template.spec.containers[0];
+        const withToken = syncJobSpec(cfg(), tokenJob, syncEnvSecretName(tokenJob)).spec.template.spec.containers[0]!;
         expect(withToken.env).toContainEqual({ name: 'CRED_HELPER', value: CREDENTIAL_HELPER });
         // The pin that must survive: no credential VALUE travels as a literal, and the claim
         // env still rides the Secret by reference.
@@ -1234,15 +1238,15 @@ describe('the worktree sync', () => {
         expect(withToken.envFrom).toEqual([{ secretRef: { name: syncEnvSecretName(tokenJob) } }]);
 
         const noToken = syncJobSpec(cfg(), { ...repoJob, env: { CORE_TOKEN: 'shh' } }, 'the-secret').spec.template.spec
-            .containers[0];
-        expect(noToken.env.some((entry) => entry.name === 'CRED_HELPER')).toBe(false);
+            .containers[0]!;
+        expect(noToken.env!.some((entry) => entry.name === 'CRED_HELPER')).toBe(false);
 
         // A PRESENT-BUT-EMPTY token is no token: the helper would answer an empty password and
         // break the public-repo plain fetch it exists to preserve — and a private repo with an
         // empty token fails auth either way. Property presence is not the test; the VALUE is.
         const emptyToken = syncJobSpec(cfg(), { ...repoJob, env: { GITHUB_TOKEN: '' } }, 'the-secret').spec.template
-            .spec.containers[0];
-        expect(emptyToken.env.some((entry) => entry.name === 'CRED_HELPER')).toBe(false);
+            .spec.containers[0]!;
+        expect(emptyToken.env!.some((entry) => entry.name === 'CRED_HELPER')).toBe(false);
     });
 
     // A claim that CONTINUES a session — a follow-up, or a parked job resumed — is mid-task,
@@ -1251,9 +1255,9 @@ describe('the worktree sync', () => {
     // is absent even with a token, and no claim env is referenced at all.
     it('carries RESTORE for a claim that continues a session, with no helper and no Secret', () => {
         const tokenJob: BoardJob = { ...repoJob, followUp: true, env: { GITHUB_TOKEN: 't0k-3n' } };
-        const container = syncJobSpec(cfg(), tokenJob, null).spec.template.spec.containers[0];
+        const container = syncJobSpec(cfg(), tokenJob, null).spec.template.spec.containers[0]!;
         expect(container.env).toContainEqual({ name: 'RESTORE', value: '1' });
-        expect(container.env.some((entry) => entry.name === 'CRED_HELPER')).toBe(false);
+        expect(container.env!.some((entry) => entry.name === 'CRED_HELPER')).toBe(false);
         // The pin that must survive: no credential VALUE travels as a literal.
         expect(JSON.stringify(container.env)).not.toContain('t0k-3n');
         // Nothing here talks to the remote — no claim env Secret to reference.
@@ -1264,13 +1268,13 @@ describe('the worktree sync', () => {
             cfg(),
             { ...repoJob, resumeSessionId: SESSION, env: { GITHUB_TOKEN: 't0k-3n' } },
             null
-        ).spec.template.spec.containers[0];
+        ).spec.template.spec.containers[0]!;
         expect(parked.env).toContainEqual({ name: 'RESTORE', value: '1' });
 
         // A starting claim — even with a token — carries no RESTORE.
         const fresh = syncJobSpec(cfg(), { ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } }, 'the-secret').spec.template
-            .spec.containers[0];
-        expect(fresh.env.some((entry) => entry.name === 'RESTORE')).toBe(false);
+            .spec.containers[0]!;
+        expect(fresh.env!.some((entry) => entry.name === 'RESTORE')).toBe(false);
     });
 
     // An env-less claim is a supported board configuration (docs/jobs.md: AUTH_MODE=none, no
@@ -1278,7 +1282,7 @@ describe('the worktree sync', () => {
     // exist — a pod that does sits in CreateContainerConfigError until the deadline kills the
     // Job, and every such repo job would stall ten minutes and fail.
     it('names no Secret at all when the claim resolved to no environment', () => {
-        const container = syncJobSpec(cfg(), repoJob, null).spec.template.spec.containers[0];
+        const container = syncJobSpec(cfg(), repoJob, null).spec.template.spec.containers[0]!;
         expect(container.envFrom).toBeUndefined();
     });
 
@@ -1968,7 +1972,7 @@ describe('the worktree reclaim', () => {
         expect(s.kind).toBe('Job');
         expect(s.metadata.name).toBe(reclaimJobName(repoJob));
         expect(s.metadata.labels).toEqual({ 'factory.job': repoJob.id, 'factory.lease': repoJob.leaseToken });
-        const container = s.spec.template.spec.containers[0];
+        const container = s.spec.template.spec.containers[0]!;
         expect(container.command).toEqual(['node', '-e', gitWorktreeRemoveScript]);
         expect(container.env).toEqual([
             { name: 'REPO', value: `/workspaces/bellows/${USER}/factory` },
@@ -2322,7 +2326,7 @@ describe('publishing the produced work', () => {
         expect(spec.metadata.name).toBe(publishStepJobName(ISSUE_JOB, 2));
         expect(spec.metadata.labels).toEqual({ 'factory.job': ISSUE_JOB.id, 'factory.lease': ISSUE_JOB.leaseToken });
         expect(spec.spec.template.metadata.labels).toEqual(spec.metadata.labels);
-        const container = spec.spec.template.spec.containers[0];
+        const container = spec.spec.template.spec.containers[0]!;
         // The argv is exactly what the docker runner passes after the image name.
         expect(container.command).toEqual([
             'git',
@@ -2360,7 +2364,7 @@ describe('publishing the produced work', () => {
             },
             envSecret: publishEnvSecretName(ISSUE_JOB),
             repo: WT,
-        }).spec.template.spec.containers[0];
+        }).spec.template.spec.containers[0]!;
         expect(probe.workingDir).toBeUndefined();
         expect(probe.envFrom).toBeUndefined();
         expect(probe.env).toEqual([{ name: 'REPO', value: WT }]);
@@ -2372,7 +2376,7 @@ describe('publishing the produced work', () => {
             publish: { label: 'git add', entrypoint: 'git', args: ['add', '-A'], env: false, inRepo: true },
             envSecret: publishEnvSecretName(ISSUE_JOB),
             repo: WT,
-        }).spec.template.spec.containers[0];
+        }).spec.template.spec.containers[0]!;
         expect(plain.envFrom).toBeUndefined();
         expect(plain.env).toBeUndefined();
     });
@@ -2435,7 +2439,7 @@ describe('publishing the produced work', () => {
             { exit: 0, log: JSON.stringify({ title: 'Fix the sync re-claim fence', body: '## Commits' }) }, // pr summary
             { exit: 0, log: `${PR_URL}\n` }, // pr create
         ]);
-        const result = await runner(request).publishGit(ISSUE_JOB);
+        const result = await runner(request).publishGit!(ISSUE_JOB);
 
         expect(result).toEqual({
             ok: true,
@@ -2469,14 +2473,12 @@ describe('publishing the produced work', () => {
                         spec?: {
                             template?: {
                                 spec?: {
-                                    containers?: Array<
-                                        {
-                                            command?: string[];
-                                            env?: { name: string; value: string }[];
-                                            envFrom?: unknown[];
-                                            workingDir?: string;
-                                        }[]
-                                    >;
+                                    containers?: Array<{
+                                        command?: string[];
+                                        env?: { name: string; value: string }[];
+                                        envFrom?: unknown[];
+                                        workingDir?: string;
+                                    }>;
                                 };
                             };
                         };
@@ -2488,7 +2490,7 @@ describe('publishing the produced work', () => {
         expect(commit).toContain('/fix https://github.com/Bellows-AI/factory/issues/10 (#10)');
         expect(commit).toContain('user.name=factory-ai');
         const push = commands.find((argv) => argv.includes('push'));
-        expect(push.join(' ')).toContain('credential.helper=');
+        expect(push!.join(' ')).toContain('credential.helper=');
         expect(push).toContain('--force-with-lease');
         // The summarizer is one Job like every step (issue #82): node over the worktree, the
         // BASE ref and the backstop commit's subject as literal envs, and no credential —
@@ -2526,7 +2528,7 @@ describe('publishing the produced work', () => {
         const { request, calls } = scripted([
             { exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) },
         ]);
-        await runner(request).publishGit(ISSUE_JOB);
+        await runner(request).publishGit!(ISSUE_JOB);
 
         const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
         expect(secretPost?.body).toMatchObject({
@@ -2552,7 +2554,7 @@ describe('publishing the produced work', () => {
                 ? Promise.reject(new Error('connect ECONNREFUSED 10.0.0.1:443'))
                 : base(method, path, body);
 
-        const result = await runner(request).publishGit(ISSUE_JOB, 'ghs_fresh');
+        const result = await runner(request).publishGit!(ISSUE_JOB, 'ghs_fresh');
 
         expect(result).toMatchObject({ ok: false, published: false, cause: 'transport' });
         expect(result.reason).toContain('ECONNREFUSED');
@@ -2570,7 +2572,7 @@ describe('publishing the produced work', () => {
                   })
                 : base(method, path, body);
 
-        const result = await runner(request).publishGit(ISSUE_JOB, 'ghs_fresh');
+        const result = await runner(request).publishGit!(ISSUE_JOB, 'ghs_fresh');
 
         expect(result).toMatchObject({ ok: false, published: false, cause: 'config' });
     });
@@ -2584,7 +2586,7 @@ describe('publishing the produced work', () => {
                     ? Promise.resolve({ status, body: JSON.stringify({ kind: 'Status', message: 'try again' }) })
                     : base(method, path, body);
 
-            const result = await runner(request).publishGit(ISSUE_JOB, 'ghs_fresh');
+            const result = await runner(request).publishGit!(ISSUE_JOB, 'ghs_fresh');
 
             expect(result).toMatchObject({ ok: false, published: false, cause: 'transport' });
         }
@@ -2600,7 +2602,7 @@ describe('publishing the produced work', () => {
                   })
                 : base(method, path, body);
 
-        const result = await runner(request).publishGit(ISSUE_JOB, 'ghs_fresh');
+        const result = await runner(request).publishGit!(ISSUE_JOB, 'ghs_fresh');
 
         expect(result).toMatchObject({ ok: false, published: false, cause: 'transport' });
     });
@@ -2614,7 +2616,7 @@ describe('publishing the produced work', () => {
         const { request, calls } = scripted([
             { exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) },
         ]);
-        await runner(request).publishGit(ISSUE_JOB, 'ghs_fresh');
+        await runner(request).publishGit!(ISSUE_JOB, 'ghs_fresh');
 
         const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
         expect(secretPost?.body).toMatchObject({
@@ -2666,7 +2668,8 @@ describe('publishing the produced work', () => {
 
     it('creates no Secret for an env-less claim', async () => {
         const { request, calls } = scripted([{ exit: 0, log: JSON.stringify({ cloned: false }) }]);
-        const result = await runner(request).publishGit({ ...ISSUE_JOB, env: undefined });
+        const { env: _env, ...envLess } = ISSUE_JOB;
+        const result = await runner(request).publishGit!(envLess);
 
         expect(result).toEqual({
             ok: true,
@@ -2691,7 +2694,7 @@ describe('publishing the produced work', () => {
         const { request, calls } = scripted([
             { exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) },
         ]);
-        const result = await runner(request).publishGit({ ...ISSUE_JOB, publish: false });
+        const result = await runner(request).publishGit!({ ...ISSUE_JOB, publish: false });
 
         expect(result.ok).toBe(true);
         expect(calls.some((call) => call.path === jobsPath(namespace))).toBe(true);
@@ -2711,7 +2714,7 @@ describe('publishing the produced work', () => {
                 log: 'remote: Permission to Bellows-AI/factory.git denied to bellows-ai[bot]\nfatal: Authentication failed\n',
             }, // push
         ]);
-        const result = await runner(request).publishGit(ISSUE_JOB);
+        const result = await runner(request).publishGit!(ISSUE_JOB);
 
         expect(result.ok).toBe(false);
         expect(result.published).toBe(false);
@@ -3013,7 +3016,7 @@ describe('the kubernetes runner', () => {
         expect(calls[0]?.method).toBe('POST');
         expect(calls[0]?.path).toBe(configmapsPath);
         expect(calls[1]).toEqual({ method: 'GET', path: expect.stringContaining(jobsPath(namespace)) });
-        expect(calls[1].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
+        expect(calls[1]!.path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
         expect(calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`)).toEqual([
             `POST ${configmapsPath}`,
             // The sweep lists every kind the job label can answer — runner and gate Jobs, then
@@ -3366,8 +3369,8 @@ describe('the kubernetes runner', () => {
             'GET',
             ...RUN_FROM_SECRET,
         ]);
-        expect(calls[1].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
-        expect(calls[5].path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
+        expect(calls[1]!.path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
+        expect(calls[5]!.path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
     });
 
     // A re-claim whose sweep never lands — an apiserver losing deletes, say — must not loop
@@ -4654,8 +4657,8 @@ describe('the kubernetes runner', () => {
         await runner(request).kill(job);
         await runner(request).kill(job);
 
-        expect(calls[0].method).toBe('DELETE');
-        expect(calls[0].path).toContain(`jobs/${runnerJobName(job)}`);
+        expect(calls[0]!.method).toBe('DELETE');
+        expect(calls[0]!.path).toContain(`jobs/${runnerJobName(job)}`);
         // Every further call is the job's own fleet teardown: the lease-scoped pod and service
         // lists (and 404 deletes for whatever they ever named). No Secrets — kill() deletes none.
         expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
@@ -4706,11 +4709,11 @@ describe('the gate job spec', () => {
     // The command travels as ONE argv element into `sh -c` — the same single element docker
     // exec's gate runs receive. It is never interpolated into a larger shell line.
     it('runs the declared command via sh -c as one argv element', () => {
-        expect(gateSpec().spec.template.spec.containers[0].command).toEqual(['sh', '-c', 'npm test']);
+        expect(gateSpec().spec.template.spec.containers[0]!.command).toEqual(['sh', '-c', 'npm test']);
     });
 
     it('works at the checkout the coding agent edits — the same tree, via the same PVC', () => {
-        const container = gateSpec().spec.template.spec.containers[0];
+        const container = gateSpec().spec.template.spec.containers[0]!;
         expect(container.workingDir).toBe(`/workspaces/bellows/${USER}/.worktrees/${ROOT_KEY}`);
         expect(container.image).toBe('node:24');
         expect(gateSpec().spec.template.spec.volumes).toEqual([
@@ -4722,7 +4725,7 @@ describe('the gate job spec', () => {
     // `<orgId>/<userId>` half — so the gate reads and writes one checkout and no sibling's or
     // foreign org's tree is reachable from it.
     it("mounts the checkout's own subtree only — the same scoping the runner gets", () => {
-        const container = gateSpec().spec.template.spec.containers[0];
+        const container = gateSpec().spec.template.spec.containers[0]!;
         expect(container.volumeMounts).toEqual([
             { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
@@ -4747,13 +4750,13 @@ describe('the gate job spec', () => {
     // values out of the runner pod spec keeps them out of a gate pod spec. The literals are the
     // driver's own: HOME for the non-root uid (below) and the npm notice switch.
     it('reads the env from a Secret by reference, and skips envFrom entirely when there is none', () => {
-        const container = gateSpec().spec.template.spec.containers[0];
+        const container = gateSpec().spec.template.spec.containers[0]!;
         expect(container.envFrom).toEqual([{ secretRef: { name: 'the-secret' } }]);
         expect(container.env).toEqual([
             { name: 'HOME', value: '/tmp' },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
         ]);
-        expect(gateSpec(1, null).spec.template.spec.containers[0].envFrom).toBeUndefined();
+        expect(gateSpec(1, null).spec.template.spec.containers[0]!.envFrom).toBeUndefined();
         // The two pinned just above are the only literal values anywhere in the spec.
         expect(JSON.stringify(gateSpec()).match(/"value":/g)).toHaveLength(2);
     });
@@ -4768,7 +4771,7 @@ describe('the gate job spec', () => {
         // The uid:gid half only — the same field also carries the #382 seccomp profile, whose
         // merge with these two is pinned in 'keeps the gate uid:gid beside the seccomp profile'.
         expect(s.spec.template.spec.securityContext).toMatchObject({ runAsUser: 1000, runAsGroup: 1000 });
-        const container = s.spec.template.spec.containers[0];
+        const container = s.spec.template.spec.containers[0]!;
         expect(container.env).toEqual([
             { name: 'HOME', value: '/tmp' },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
@@ -4778,7 +4781,7 @@ describe('the gate job spec', () => {
     // A gate's tail is what the job output shows; npm's update notice must not be its last word
     // (#511) — the docker gate env's twin.
     it('silences npm update notices for every gate run', () => {
-        expect(gateSpec().spec.template.spec.containers[0].env).toContainEqual({
+        expect(gateSpec().spec.template.spec.containers[0]!.env).toContainEqual({
             name: 'NPM_CONFIG_UPDATE_NOTIFIER',
             value: 'false',
         });
@@ -4802,17 +4805,17 @@ describe('the gate job spec', () => {
             run: 1,
             envSecretName: 'the-secret',
             gateTimeoutMs: 30_000,
-        }).spec.template.spec.containers[0];
+        }).spec.template.spec.containers[0]!;
         expect(gate.env).toContainEqual({ name: 'NPM_CONFIG_CACHE', value: path });
         expect(gate.volumeMounts).toEqual([
             { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
         const runner = runnerJobSpec(gatedConfig, cacheJob, { id: SESSION, resume: false }).spec.template.spec
-            .containers[0];
+            .containers[0]!;
         expect(runner.env).toContainEqual({ name: 'NPM_CONFIG_CACHE', value: path });
         const claimed: BoardJob = { ...cacheJob, env: { NPM_CONFIG_CACHE: '/elsewhere' } };
-        const env = runnerJobSpec(gatedConfig, claimed, { id: SESSION, resume: false }).spec.template.spec.containers[0]
-            .env;
+        const env = runnerJobSpec(gatedConfig, claimed, { id: SESSION, resume: false }).spec.template.spec
+            .containers[0]!.env;
         expect(env.filter((entry) => entry.name === 'NPM_CONFIG_CACHE')).toEqual([
             {
                 name: 'NPM_CONFIG_CACHE',
@@ -4833,7 +4836,7 @@ describe('the gate job spec', () => {
             envSecretName: 'the-secret',
             gateTimeoutMs: 30_000,
         });
-        expect(s.spec.template.spec.containers[0].env).toEqual([{ name: 'HOME', value: '/tmp' }]);
+        expect(s.spec.template.spec.containers[0]!.env).toEqual([{ name: 'HOME', value: '/tmp' }]);
     });
 
     it('sanitizes a hostile gate name into a legal k8s name without carrying it raw', () => {
@@ -5213,7 +5216,7 @@ describe('the .bellows.yaml readout job spec', () => {
     // sees: read-only, and scoped to the job's own subtree like every other mount.
     it("runs the read script over a read-only mount scoped to the job's own subtree", () => {
         const s = bellowsJobSpec(cfg(), job);
-        const container = s.spec.template.spec.containers[0];
+        const container = s.spec.template.spec.containers[0]!;
         expect(container.volumeMounts).toEqual([
             {
                 name: 'workspaces',
@@ -5255,8 +5258,8 @@ describe('the service pod and DNS specs', () => {
         expect(pod.spec.subdomain).toBe(serviceSubdomain(job));
         expect(pod.spec.restartPolicy).toBe('Never');
         expect(pod.spec.automountServiceAccountToken).toBe(false);
-        expect(pod.spec.containers[0].image).toBe('redis');
-        expect(pod.spec.containers[0].env).toEqual([{ name: 'ALLOW_EMPTY_PASSWORD', value: 'yes' }]);
+        expect(pod.spec.containers[0]!.image).toBe('redis');
+        expect(pod.spec.containers[0]!.env).toEqual([{ name: 'ALLOW_EMPTY_PASSWORD', value: 'yes' }]);
     });
 
     // Issue #363: VPC CNI network-policy enforcement is "optimized for" pods carrying
@@ -6081,7 +6084,7 @@ describe('the opencode session readout job', () => {
 
     it('runs the readout script by content, with the database path as an env value', () => {
         const spec = opencodeReadoutJobSpec(config, job, START);
-        const container = spec.spec.template.spec.containers[0];
+        const container = spec.spec.template.spec.containers[0]!;
         expect(spec.metadata.name).toBe(opencodeReadoutJobName(job));
         expect(spec.metadata.name).toMatch(/^factory-ocread-/);
         expect(container.command).toEqual(['node', '-e', expect.stringContaining('node:sqlite')]);
@@ -6103,7 +6106,7 @@ describe('the opencode session readout job', () => {
 
     it('scopes the readout to the task worktree when the job names a repo', () => {
         const spec = opencodeReadoutJobSpec(config, { ...job, repo: 'Bellows-AI/factory' }, START);
-        expect(spec.spec.template.spec.containers[0].env).toContainEqual({
+        expect(spec.spec.template.spec.containers[0]!.env).toContainEqual({
             name: 'OPENCODE_DIR',
             value: `/workspaces/bellows/${USER}/.worktrees/${job.id}`,
         });
@@ -6111,14 +6114,14 @@ describe('the opencode session readout job', () => {
 
     it('mounts the workspaces volume READ-WRITE: a WAL needing recovery has to write it', () => {
         const spec = opencodeReadoutJobSpec(config, job, START);
-        expect(spec.spec.template.spec.containers[0].volumeMounts).toEqual([
+        expect(spec.spec.template.spec.containers[0]!.volumeMounts).toEqual([
             { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
-        expect(spec.spec.template.spec.containers[0].volumeMounts[0].readOnly).toBeUndefined();
+        expect(spec.spec.template.spec.containers[0]!.volumeMounts[0]!.readOnly).toBeUndefined();
     });
 
     it('refuses a job whose workspace path it cannot assert', () => {
-        expect(() => opencodeReadoutJobSpec(config, { ...job, workspacePath: null })).toThrow(/workspace path/);
+        expect(() => opencodeReadoutJobSpec(config, { ...job, workspacePath: null }, START)).toThrow(/workspace path/);
     });
 });
 
@@ -6137,7 +6140,7 @@ describe('the close-time claude-code turn read under kubernetes', () => {
     );
 
     it('runs the static script as one aux Job, its inputs by env', () => {
-        const container = spec.spec.template.spec.containers[0];
+        const container = spec.spec.template.spec.containers[0]!;
         expect(spec.metadata.name).toBe(claudeTurnsJobName(job));
         expect(spec.metadata.name).toMatch(/^factory-cturns-/);
         expect(container.command).toEqual(['node', '-e', claudeTurnsScript]);
@@ -6178,7 +6181,7 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
 
     it('claude: exports the transcript as one aux Job, its inputs by env, the cap as a VALUE', () => {
         const spec = claudeTranscriptJobSpec(config, job, SESSION, START);
-        const container = spec.spec.template.spec.containers[0];
+        const container = spec.spec.template.spec.containers[0]!;
         expect(spec.metadata.name).toBe(claudeTranscriptJobName(job));
         expect(spec.metadata.name).toMatch(/^factory-ctrans-/);
         expect(container.command).toEqual(['node', '-e', claudeTranscriptScript]);
@@ -6195,7 +6198,7 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
 
     it('opencode: exports the transcript from the session database, scoped to the run directory', () => {
         const spec = opencodeTranscriptJobSpec(config, job, START);
-        const container = spec.spec.template.spec.containers[0];
+        const container = spec.spec.template.spec.containers[0]!;
         expect(spec.metadata.name).toBe(opencodeTranscriptJobName(job));
         expect(spec.metadata.name).toMatch(/^factory-otrans-/);
         expect(container.command).toEqual(['node', '-e', opencodeTranscriptScript]);
@@ -6421,7 +6424,7 @@ describe('the block-helper transport (issue #207)', () => {
         });
         expect(withRepo.metadata.name).toBe(helperJobName(repoJob, plan(), NONCE));
         expect(withRepo.metadata.labels).toEqual({ 'factory.job': repoJob.id, 'factory.lease': repoJob.leaseToken });
-        const container = withRepo.spec.template.spec.containers[0];
+        const container = withRepo.spec.template.spec.containers[0]!;
         expect(container.command).toEqual(['node', '-e', NOOP_DESCRIPTOR.scriptBody]);
         expect(container.env).toEqual([{ name: 'HELPER_INPUT', value: JSON.stringify({ a: 1 }) }]);
         expect(container.envFrom).toBeUndefined();
@@ -6433,7 +6436,7 @@ describe('the block-helper transport (issue #207)', () => {
             descriptor: NOOP_DESCRIPTOR,
             envSecret: null,
             nonce: NONCE,
-        }).spec.template.spec.containers[0];
+        }).spec.template.spec.containers[0]!;
         expect(noRepo.workingDir).toBeUndefined();
     });
 
@@ -6445,7 +6448,7 @@ describe('the block-helper transport (issue #207)', () => {
             envSecret: secret,
             nonce: NONCE,
         });
-        expect(withSecret.spec.template.spec.containers[0].envFrom).toEqual([{ secretRef: { name: secret } }]);
+        expect(withSecret.spec.template.spec.containers[0]!.envFrom).toEqual([{ secretRef: { name: secret } }]);
         expect(JSON.stringify(withSecret)).not.toContain('claim-token');
     });
 

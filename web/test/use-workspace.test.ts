@@ -146,6 +146,8 @@ describe('payloadSettled', () => {
         orphaned: orphaned as never,
         checkoutTotalBytes: null,
         executors: [],
+        orgExecutors: [],
+        defaultExecutor: null,
     });
 
     it('keeps polling while an orphan is being deleted — disappearance is the completion', () => {

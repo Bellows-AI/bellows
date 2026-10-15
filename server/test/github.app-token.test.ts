@@ -201,7 +201,12 @@ describe('the installation token', () => {
             new Promise<Response>((_resolve, reject) => {
                 init?.signal?.addEventListener('abort', () => reject(init?.signal?.reason));
             })) as typeof fetch;
-        const tokens = installationTokenProvider({ github: appConfig(), fetchFn, mintTimeoutMs: 10 });
+        const tokens = installationTokenProvider({
+            github: appConfig(),
+            installationId: '4242',
+            fetchFn,
+            mintTimeoutMs: 10,
+        });
 
         await expect(tokens.fresh()).rejects.toMatchObject({ name: 'TimeoutError' });
     });
@@ -354,8 +359,8 @@ describe('the app slug', () => {
             .find((call) => call.url.endsWith('/app'))!
             .authorization.replace(/^Bearer /, '')
             .split('.');
-        expect(JSON.parse(Buffer.from(header, 'base64url').toString())).toEqual({ alg: 'RS256', typ: 'JWT' });
-        expect(JSON.parse(Buffer.from(payload, 'base64url').toString()).iss).toBe('Iv23liEXAMPLE');
+        expect(JSON.parse(Buffer.from(header!, 'base64url').toString())).toEqual({ alg: 'RS256', typ: 'JWT' });
+        expect(JSON.parse(Buffer.from(payload!, 'base64url').toString()).iss).toBe('Iv23liEXAMPLE');
     });
 
     it('does not cache a failure', async () => {

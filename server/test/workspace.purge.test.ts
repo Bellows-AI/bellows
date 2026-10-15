@@ -56,7 +56,8 @@ function spyInvalidation(): { facts: FactsCache; invalidated: string[] } {
     const invalidated: string[] = [];
     return {
         facts: {
-            get: (dir) => facts.get(dir),
+            get: (dir, owner) => facts.get(dir, owner),
+            sizeOf: (dir, owner) => facts.sizeOf(dir, owner),
             invalidate: (dir) => {
                 invalidated.push(dir);
                 facts.invalidate(dir);
@@ -79,7 +80,7 @@ describe('removeTree', () => {
         // A child that ignores every kill until SIGKILL — the shape the issue calls out: the
         // timeout must terminate AND reap before the failure is reported.
         const fake = ((_command: string, _args: string | readonly string[], _options?: SpawnOptions) => {
-            const child = new EventEmitter() as EventEmitter & Pick<ChildProcess, 'kill' | 'pid'>;
+            const child = new EventEmitter() as EventEmitter & Pick<ChildProcess, 'kill'> & { pid: number | undefined };
             child.pid = process.pid;
             child.kill = (signal?: NodeJS.Signals) => {
                 signals.push(String(signal));
@@ -98,7 +99,7 @@ describe('removeTree', () => {
     it('reports a non-zero exit with the child\u2019s own words', async () => {
         const fake = ((_command: string, _args: string | readonly string[], _options?: SpawnOptions) => {
             const child = new EventEmitter() as EventEmitter &
-                Pick<ChildProcess, 'kill' | 'pid'> & {
+                Pick<ChildProcess, 'kill'> & { pid: number | undefined } & {
                     stderr: EventEmitter | null;
                 };
             child.pid = process.pid;
@@ -126,7 +127,7 @@ describe('the purger', () => {
         await seedDeselected(store);
         makeCheckout();
         const facts = createFactsCache();
-        facts.get(checkout); // warm the cache with the doomed tree
+        facts.get(checkout, userDir); // warm the cache with the doomed tree
         const purger = createPurger({ store, root, orgId: ORG, facts });
 
         const outcome = await purger.purge(ALICE, web);
@@ -136,7 +137,7 @@ describe('the purger', () => {
         expect(existsSync(checkout)).toBe(false);
         expect(await store.orphaned(ALICE)).toHaveLength(0);
         // The predecessor's facts must not survive its tree.
-        expect(facts.get(checkout)).toEqual({ branch: null, lastCommit: null, sizeBytes: null });
+        expect(facts.get(checkout, userDir)).toEqual({ branch: null, lastCommit: null, sizeBytes: null });
     });
 
     it('cleans a stale row whose directory is already gone, spawning no child', async () => {
@@ -222,8 +223,8 @@ describe('the purger', () => {
         await purger.settle();
 
         const [row] = await store.orphaned(ALICE);
-        expect(row.status).toBe('failed');
-        expect(row.error).toBe('rm: permission denied');
+        expect(row!.status).toBe('failed');
+        expect(row!.error).toBe('rm: permission denied');
         // The row outlives the partial directory — visible and retryable.
         expect(existsSync(checkout)).toBe(true);
     });
@@ -376,8 +377,8 @@ describe('the purger', () => {
         await purger.recoverInterrupted();
 
         const [row] = await store.orphaned(ALICE);
-        expect(row.status).toBe('failed');
-        expect(row.error).toBe('rm: device busy');
+        expect(row!.status).toBe('failed');
+        expect(row!.error).toBe('rm: device busy');
     });
 
     it('invalidates the facts when a recovery removal fails', async () => {

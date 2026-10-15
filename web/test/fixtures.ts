@@ -1,5 +1,6 @@
 import { expect } from 'vitest';
 import type { Session } from '../src/api/useSession.js';
+import { DEFAULT_FILTERS, type UseTasks } from '../src/api/useTasks.js';
 
 /** What a null metric leaks as when it reaches the markup as a value. */
 export const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
@@ -34,5 +35,32 @@ export function memberSession(
         workspacePath: null,
         mode: 'github',
         ...rest,
+    };
+}
+
+/** The shell's task poll before its first page lands: nothing loaded, every action a no-op. */
+export function idleTasks(): UseTasks {
+    return {
+        navigation: null,
+        items: null,
+        nextCursor: null,
+        initial: true,
+        loadingMore: false,
+        refreshing: false,
+        error: null,
+        refreshError: null,
+        loadMoreError: null,
+        filters: DEFAULT_FILTERS,
+        retry: () => {},
+        loadMore: () => {},
+        refresh: () => {},
+        actions: {
+            queue: async () => ({ id: null, error: null }),
+            followUp: async () => ({ id: null, error: null }),
+            markDone: async () => null,
+            stop: async () => null,
+            remove: async () => null,
+            answerQuestion: async () => ({ state: 'closed' }),
+        },
     };
 }

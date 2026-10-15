@@ -600,7 +600,7 @@ describe('readGatesFile against a real checkout', () => {
             root,
             workspacePath: `${ORG}/${USER}`,
             repo: 'Bellows-AI/factory',
-            worktreeId,
+            ...(worktreeId ? { worktreeId } : {}),
         });
         expect(JSON.stringify(result)).not.toContain('VICTIM-SECRET-COMMAND');
         expect(result.config).toBeNull();

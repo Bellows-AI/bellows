@@ -23,6 +23,7 @@ import {
     valuesForWorkflow,
 } from '../src/task-composer.js';
 import { queuedTask } from '../src/use-composer-draft.js';
+import type { ExecutorChoice } from '../src/workspace/executors.js';
 
 describe('composer params are scoped to the chosen workflow identity', () => {
     // The review's leak: `#12` typed for one workflow stays valid when a repo switch refetches
@@ -544,26 +545,31 @@ describe('restoredDraftNotices — what changed while the member was away (#280)
 
     it('names a deselected repository, and leaves the workflow to the reset it causes', () => {
         const others = [{ owner: 'acme', name: 'api' }];
-        expect(restoredDraftNotices(restored, { repos: others, executors, workflows: [] })).toEqual([
-            'Repository ‘acme/web’ is no longer selected — acme/api selected.',
-        ]);
-        expect(restoredDraftNotices(restored, { repos: [], executors, workflows: [] })).toEqual([
+        expect(
+            restoredDraftNotices(restored, { repos: others, executors, workflows: [], defaultExecutor: null })
+        ).toEqual(['Repository ‘acme/web’ is no longer selected — acme/api selected.']);
+        expect(restoredDraftNotices(restored, { repos: [], executors, workflows: [], defaultExecutor: null })).toEqual([
             'Repository ‘acme/web’ is no longer selected — the task will run without a repository.',
         ]);
     });
 
     it('names a workflow the repository no longer offers', () => {
-        expect(restoredDraftNotices(restored, { repos, executors, workflows: [{ name: 'triage' }] })).toEqual([
-            'Workflow ‘fix-issue’ is no longer offered — no workflow selected.',
-        ]);
+        expect(
+            restoredDraftNotices(restored, { repos, executors, workflows: [{ name: 'triage' }], defaultExecutor: null })
+        ).toEqual(['Workflow ‘fix-issue’ is no longer offered — no workflow selected.']);
     });
 
     it('holds every verdict (null) while the workflow it must judge has no answered list', () => {
-        expect(restoredDraftNotices(restored, { repos, executors, workflows: null })).toBeNull();
+        expect(restoredDraftNotices(restored, { repos, executors, workflows: null, defaultExecutor: null })).toBeNull();
         // Nothing to judge — no workflow was chosen, or its repository is gone — so no wait.
-        expect(restoredDraftNotices({ ...restored, workflow: '' }, { repos, executors, workflows: null })).toEqual([]);
-        expect(restoredDraftNotices(restored, { repos: [], executors, workflows: null })).toEqual([
-            'Repository ‘acme/web’ is no longer selected — the task will run without a repository.',
-        ]);
+        expect(
+            restoredDraftNotices(
+                { ...restored, workflow: '' },
+                { repos, executors, workflows: null, defaultExecutor: null }
+            )
+        ).toEqual([]);
+        expect(
+            restoredDraftNotices(restored, { repos: [], executors, workflows: null, defaultExecutor: null })
+        ).toEqual(['Repository ‘acme/web’ is no longer selected — the task will run without a repository.']);
     });
 });

@@ -113,7 +113,7 @@ async function startControl(opts: { post?: Reply; gets?: Reply[]; onGet?: (count
                 control.gets += 1;
                 opts.onGet?.(control.gets);
                 const sequence = opts.gets ?? [{ status: 200, body: { state: 'pending' } }];
-                return reply(sequence[Math.min(control.gets, sequence.length) - 1]);
+                return reply(sequence[Math.min(control.gets, sequence.length) - 1]!);
             }
             reply({ status: 404 });
         });

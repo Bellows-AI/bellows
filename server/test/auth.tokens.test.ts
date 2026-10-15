@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import type { InjectOptions } from 'fastify';
 import type { AuthConfig } from '../src/config.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
@@ -29,9 +30,9 @@ const track = trackApps();
 
 /** Records the author every created job carries — the audit property this whole feature guards.
  *  `waits`, when given, records the settle long-poll's holds the same way (issue #323). */
-const jobStub = (authors: string[], waits: { id: string; timeoutMs: number }[] = []): JobStore =>
-    ({
-        async create(_command: unknown, createdBy: unknown) {
+const jobStub = (authors: string[], waits: { id: string; timeoutMs: number }[] = []): JobStore => {
+    const stub: Partial<JobStore> = {
+        async create(_command, createdBy) {
             authors.push(String(createdBy));
             return { id: JOB_ID };
         },
@@ -48,7 +49,9 @@ const jobStub = (authors: string[], waits: { id: string; timeoutMs: number }[] =
         async list() {
             return [] as Awaited<ReturnType<JobStore['list']>>;
         },
-    }) as JobStore;
+    };
+    return stub as JobStore;
+};
 
 async function build(
     auth: AuthConfig,
@@ -59,6 +62,8 @@ async function build(
     const repos = staticRepoSource([{ owner: 'Bellows-AI', name: 'bellows.ai' }]);
     return track(await buildWithAuth(auth, store, { repos, jobs: jobStub(authors, waits) }));
 }
+
+type InjectMethod = NonNullable<InjectOptions['method']>;
 
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 
@@ -295,7 +300,7 @@ describe('organization access tokens: allowlist and reads', () => {
         // One case per ORG_TOKEN_ROUTES entry — the allowlist is the org token's entire authority,
         // and an entry that stops matching (a renamed route, a typo) must fail here, not silently
         // start refusing a legitimate read or admitting one that was never meant.
-        const allowed: [string, string, number][] = [
+        const allowed: [InjectMethod, string, number][] = [
             // The cold cache answers 202 — a fetch-pending poll, not an auth refusal.
             ['GET', '/api/stats?range=all', HTTP_ACCEPTED],
             ['GET', '/api/repos', HTTP_OK],
@@ -314,7 +319,7 @@ describe('organization access tokens: allowlist and reads', () => {
         // Off the list — a person route, a management route, the member roster (person data the
         // role routes gate on a human's role, issue 410), and the retired cache poke — is 403,
         // before the route runs (or, for /api/refresh, before there is a route to run at all).
-        const refused: [string, string][] = [
+        const refused: [InjectMethod, string][] = [
             ['POST', '/api/jobs'],
             ['GET', '/api/tokens'],
             ['GET', '/api/org/members'],

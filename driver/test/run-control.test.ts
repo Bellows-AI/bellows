@@ -45,7 +45,7 @@ async function controlStub(answers: { status: number; body: unknown }[]) {
     const seen: { url: string | undefined; authorization: string | undefined }[] = [];
     const server = createServer((request, reply) => {
         seen.push({ url: request.url, authorization: request.headers.authorization });
-        const answer = answers[Math.min(seen.length - 1, answers.length - 1)];
+        const answer = answers[Math.min(seen.length - 1, answers.length - 1)]!;
         reply.statusCode = answer.status;
         reply.setHeader('content-type', 'application/json');
         reply.end(JSON.stringify(answer.body));
@@ -154,7 +154,7 @@ describe("Claude Code's PostToolUse stop hook", () => {
             hooks: Record<string, { hooks: { command: string }[] }[]>;
         };
         expect(Object.keys(settings.hooks).sort()).toEqual(['PostToolUse', 'PreToolUse', 'Stop', 'UserPromptSubmit']);
-        expect(settings.hooks.PostToolUse.flatMap((entry) => entry.hooks.map((hook) => hook.command))).toEqual([
+        expect(settings.hooks.PostToolUse!.flatMap((entry) => entry.hooks.map((hook) => hook.command))).toEqual([
             'node /usr/local/bin/stop-hook.cjs',
         ]);
     });

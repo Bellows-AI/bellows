@@ -42,8 +42,8 @@ describe.skipIf(!hasNodeSqlite())('the opencode transcript export', () => {
 
         const { lines } = runScript(dbPath, MINE);
         expect(lines).toHaveLength(2);
-        expect(JSON.parse(lines[0])).toEqual({ role: 'user', time: 2001, text: null });
-        expect(JSON.parse(lines[1])).toEqual({ role: 'assistant', time: 2002, text: 'all green, pushed.' });
+        expect(JSON.parse(lines[0]!)).toEqual({ role: 'user', time: 2001, text: null });
+        expect(JSON.parse(lines[1]!)).toEqual({ role: 'assistant', time: 2002, text: 'all green, pushed.' });
     });
 
     it('exports only the messages this run wrote, when the driver passes the run start', () => {
@@ -55,7 +55,7 @@ describe.skipIf(!hasNodeSqlite())('the opencode transcript export', () => {
 
         const { lines } = runScript(dbPath, MINE, { RUN_STARTED_MS: '2000' });
         expect(lines).toHaveLength(2);
-        expect(JSON.parse(lines[0]).time).toBe(2500);
+        expect(JSON.parse(lines[0]!).time).toBe(2500);
         // Without the bound the whole conversation exports.
         expect(runScript(dbPath, MINE).lines).toHaveLength(3);
     });
@@ -67,7 +67,7 @@ describe.skipIf(!hasNodeSqlite())('the opencode transcript export', () => {
 
         const { lines } = runScript(dbPath, '/workspaces/org/member/.worktrees/nobody');
         expect(lines).toHaveLength(1);
-        expect(String(JSON.parse(lines[0]).error)).toContain('no session ran in');
+        expect(String(JSON.parse(lines[0]!).error)).toContain('no session ran in');
     });
 
     it('tail-keeps at the byte cap, and says what was dropped in a marker line first', () => {
@@ -80,11 +80,11 @@ describe.skipIf(!hasNodeSqlite())('the opencode transcript export', () => {
 
         const { lines } = runScript(dbPath, MINE, { TRANSCRIPT_LIMIT_BYTES: String(6 * KIB) });
         expect(lines.length).toBeGreaterThan(1);
-        const marker = JSON.parse(lines[0]) as { truncated?: unknown; droppedLines?: unknown };
+        const marker = JSON.parse(lines[0]!) as { truncated?: unknown; droppedLines?: unknown };
         expect(marker.truncated).toBe(true);
         expect(marker.droppedLines).toBeGreaterThan(0);
         // The kept lines are the LAST ones.
-        const last = JSON.parse(lines[lines.length - 1]);
+        const last = JSON.parse(lines[lines.length - 1]!);
         expect(last.text).toContain('message 29');
         for (const line of lines.slice(1)) expect(() => JSON.parse(line)).not.toThrow();
     });
@@ -99,16 +99,16 @@ describe.skipIf(!hasNodeSqlite())('the opencode transcript export', () => {
 
         const { lines } = runScript(dbPath, MINE);
         expect(lines).toHaveLength(1);
-        expect(JSON.parse(lines[0])).toEqual({ role: 'assistant', time: 2001, text: null });
+        expect(JSON.parse(lines[0]!)).toEqual({ role: 'assistant', time: 2001, text: null });
     });
 
     it('answers one error line when the env is wrong', () => {
         const noDir = runScript(dbPath, MINE, { OPENCODE_DIR: undefined });
         expect(noDir.lines).toHaveLength(1);
-        expect(String(JSON.parse(noDir.lines[0]).error)).toContain('OPENCODE_DIR');
+        expect(String(JSON.parse(noDir.lines[0]!).error)).toContain('OPENCODE_DIR');
 
         const noLimit = runScript(dbPath, MINE, { TRANSCRIPT_LIMIT_BYTES: undefined });
         expect(noLimit.lines).toHaveLength(1);
-        expect(String(JSON.parse(noLimit.lines[0]).error)).toContain('TRANSCRIPT_LIMIT_BYTES');
+        expect(String(JSON.parse(noLimit.lines[0]!).error)).toContain('TRANSCRIPT_LIMIT_BYTES');
     });
 });

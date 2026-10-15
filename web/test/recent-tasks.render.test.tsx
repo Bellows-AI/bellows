@@ -1,3 +1,4 @@
+import { OBJECTIVE_MODE } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
@@ -14,14 +15,11 @@ import { RecentTasksPanel } from '../src/panels/RecentTasksPanel.js';
 
 const NOW = new Date('2026-08-21T14:00:00.000Z');
 
-const job = (over: Partial<Job>): Job => ({
+const job = (over: Partial<Job> = {}): Job => ({
     id: '11111111-1111-4111-8111-111111111111',
     command: 'fix the failing gates',
     status: 'succeeded',
     attempts: 1,
-    maxAttempts: 3,
-    claimedBy: null,
-    createdBy: null,
     author: { id: 'u-alice', login: 'alice', name: 'Alice Doe', avatarUrl: 'https://example.com/alice.png' },
     stoppedBy: null,
     doneBy: null,
@@ -34,6 +32,9 @@ const job = (over: Partial<Job>): Job => ({
     runtime: null,
     repo: 'Bellows-AI/factory',
     executor: null,
+    workflowNode: null,
+    workflowName: null,
+    mode: OBJECTIVE_MODE,
     followUpTo: null,
     rootJobId: '11111111-1111-4111-8111-111111111111',
     doneAt: null,
@@ -43,10 +44,13 @@ const job = (over: Partial<Job>): Job => ({
     startedAt: '2026-08-21T12:00:01.000Z',
     finishedAt: '2026-08-21T13:40:00.000Z',
     wallClockMs: null,
+    agentTurns: null,
+    setupMs: null,
     taskWallClockMs: null,
     waitReason: null,
     waitingSince: null,
     waitTerminalReason: null,
+    questions: [],
     ...over,
 });
 
