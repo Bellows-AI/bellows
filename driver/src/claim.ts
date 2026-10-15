@@ -170,7 +170,7 @@ export type CacheJob = Pick<BoardJob, 'id' | 'env' | 'repo' | 'gates' | 'workspa
 
 /**
  * Names a cache path may not take: the driver's own and the ones a shell, loader or runtime reads as
- * code to run. Copied from server/src/workspace/bellows.ts, which refuses them at parse time.
+ * code to run. Copied from server/src/workspace/bellows-cache.ts, which refuses them at parse time.
  */
 const CACHE_REFUSED_NAMES: ReadonlySet<string> = new Set([
     'HOME',

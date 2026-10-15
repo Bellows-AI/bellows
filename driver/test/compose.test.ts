@@ -118,3 +118,19 @@ describe('the driver image stages', () => {
         expect(dashboardDockerfile).toMatch(/^FROM deps AS dev$/m);
     });
 });
+
+// The board kills a hostile checkout's stalled git read by process group (server/src/workspace/
+// facts.ts); a git orphaned by that kill is reparented to PID 1, and node as PID 1 never reaps it.
+// An init is PID 1 instead — and the chart's offline entry must keep it, so it overrides `args`.
+describe('the dashboard runtime reaps orphaned children', () => {
+    it('runs node under tini', () => {
+        expect(dashboardDockerfile).toMatch(/^RUN apk add --no-cache git tini$/m);
+        expect(dashboardDockerfile).toMatch(/^ENTRYPOINT \["\/sbin\/tini", "--"\]$/m);
+    });
+
+    it('keeps the entrypoint when the chart selects the offline entry', () => {
+        const deployment = read('charts/factory/templates/deployment.yaml');
+        expect(deployment).toContain("args: ['node', 'server/dist/offline.js']");
+        expect(deployment).not.toContain("command: ['node', 'server/dist/offline.js']");
+    });
+});

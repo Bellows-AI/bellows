@@ -162,7 +162,7 @@ function describeRepo(ctx: { facts: FactsCache; root: string; orgId: string; use
     // would walk a half-written tree and report a size that means nothing.
     const userDir = workspaceDir(ctx.root, ctx.orgId, ctx.userId);
     const dir = join(userDir, row.name);
-    const onDisk = row.status === 'ready' ? ctx.facts.get(dir) : null;
+    const onDisk = row.status === 'ready' ? ctx.facts.get(dir, userDir) : null;
     // The package cache the driver points `.bellows.yaml` `environment.cache` names at (issue #734,
     // driver/src/claim.ts `repoCacheEnv`) — measured, never counted in the checkout total.
     const cacheDir = join(userDir, '.cache', row.owner, row.name);
