@@ -9,6 +9,8 @@ on:
 
 permissions:
     contents: read
+    # The postgres service's pull from the GHCR mirror (mirror-images.yml).
+    packages: read
 
 concurrency:
     group: ui-nightly
@@ -20,8 +22,11 @@ jobs:
         timeout-minutes: 60
         services:
             postgres:
-                # The image docker-compose.yml pins, as ci.yml's e2e job does.
-                image: public.ecr.aws/docker/library/postgres:17
+                # The GHCR copy of the image docker-compose.yml pins, as ci.yml's e2e job pulls.
+                image: ghcr.io/bellows-ai/postgres:17
+                credentials:
+                    username: ${{ github.actor }}
+                    password: ${{ github.token }}
                 env:
                     POSTGRES_USER: factory
                     POSTGRES_PASSWORD: factory

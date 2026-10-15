@@ -13,6 +13,8 @@ on:
 
 permissions:
     contents: read
+    # The postgres service's pull from the GHCR mirror (mirror-images.yml).
+    packages: read
 
 concurrency:
     # A literal prefix, not ${{ github.workflow }}: inside a called workflow the github context is
@@ -60,7 +62,10 @@ jobs:
         timeout-minutes: 20
         services:
             postgres:
-                image: public.ecr.aws/docker/library/postgres:17
+                image: ghcr.io/bellows-ai/postgres:17
+                credentials:
+                    username: ${{ github.actor }}
+                    password: ${{ github.token }}
                 env:
                     POSTGRES_USER: factory
                     POSTGRES_PASSWORD: factory
@@ -93,9 +98,12 @@ jobs:
         timeout-minutes: 40
         services:
             postgres:
-                # The image docker-compose.yml pins. Plain postgres since #371: the schema names
+                # GHCR copy of the compose pin. Plain postgres since #371: the schema names
                 # no extension, so the service name is all that is left of TimescaleDB here.
-                image: public.ecr.aws/docker/library/postgres:17
+                image: ghcr.io/bellows-ai/postgres:17
+                credentials:
+                    username: ${{ github.actor }}
+                    password: ${{ github.token }}
                 env:
                     POSTGRES_USER: factory
                     POSTGRES_PASSWORD: factory
