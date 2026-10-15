@@ -14,6 +14,8 @@ export interface ConfigSummary {
     token: { set: boolean; kind: 'personal' | 'org' | 'unrecognized' | null };
     requestTimeoutSeconds: number;
     readRetries: number;
+    /** Where each value came from: `env`, the settings file's path, or `default`. */
+    sources: CliConfig['sources'];
 }
 
 const MS_PER_SECOND = 1000;
@@ -31,6 +33,7 @@ export function configSummary(config: CliConfig): ConfigSummary {
         token: { set: config.token !== '', kind: tokenKind(config.token) },
         requestTimeoutSeconds: config.requestTimeoutMs / MS_PER_SECOND,
         readRetries: config.readRetries,
+        sources: config.sources,
     };
 }
 

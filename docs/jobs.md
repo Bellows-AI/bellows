@@ -102,9 +102,9 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 
 - `npm run test:db` and `scripts/test-jobs.sh` reset every table and refuse a database not ending
   `_test` (`server/test-db/harness.ts`); `test-jobs.sh` also creates and drops stub images and a volume.
-- The CLI needs `FACTORY_URL` (no default) and optionally `FACTORY_TOKEN` (`cli/src/config.ts`). Run it
-  through one npm layer: `npm run dev -w cli -- job list`. Exit `0` means the verdict `succeeded`,
-  never that a PR is ready (`cli/src/outcome.ts`).
+- The CLI needs `FACTORY_URL` or `url` in `~/.bellows/settings.json` / `--config <path>` (no
+  default; `cli/src/config.ts`). Run it through one npm layer: `npm run dev -w cli -- job list`.
+  Exit `0` means the verdict `succeeded`, never that a PR is ready (`cli/src/outcome.ts`).
 
 ## Stated limits
 

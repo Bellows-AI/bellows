@@ -1,5 +1,8 @@
 import { spawn } from 'node:child_process';
 import { randomInt, randomUUID } from 'node:crypto';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
@@ -123,6 +126,8 @@ async function cli(argv: string[], options: CliOptions = {}): Promise<{ code: nu
     const stderr: string[] = [];
     const code = await run(argv, {
         env: { FACTORY_URL: boardUrl, FACTORY_TOKEN: token, FACTORY_READ_RETRIES: '2', ...options.env },
+        // A default path that never exists: the developer's own ~/.bellows/settings.json stays out.
+        settings: { path: join(tmpdir(), `bellows-absent-${randomUUID()}`, 'settings.json'), explicit: false },
         fetch: options.fetch,
         readStdin: async () => options.stdin ?? '',
         sleep: async () => {},
@@ -312,9 +317,28 @@ describe.skipIf(!enabled)('CLI scripting against the real board', () => {
     });
 
     it('runs through one npm layer, multiline stdin and all', async () => {
+        // An empty settings file named by --config keeps the developer's own ~/.bellows out, and
+        // proves the flag survives the npm layer.
+        const settings = join(mkdtempSync(join(tmpdir(), 'bellows-settings-')), 'settings.json');
+        writeFileSync(settings, '{}');
         const child = spawn(
             'npm',
-            ['run', '--silent', 'dev', '-w', 'cli', '--', 'job', 'create', '--repo', repo, '--stdin', '--json'],
+            [
+                'run',
+                '--silent',
+                'dev',
+                '-w',
+                'cli',
+                '--',
+                'job',
+                'create',
+                '--repo',
+                repo,
+                '--stdin',
+                '--json',
+                '--config',
+                settings,
+            ],
             {
                 cwd: REPO_ROOT,
                 // Only what npm needs to start: no FACTORY_* from the developer's shell reaches the CLI.

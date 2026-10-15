@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { run } from '../src/run.js';
 import { recordingBoard, json, routed } from './harness.js';
@@ -156,6 +158,7 @@ describe('bellows auth status: identity', () => {
             token: { set: true, kind: 'personal' },
             requestTimeoutSeconds: 30,
             readRetries: 3,
+            sources: { url: 'env', token: 'env', requestTimeoutS: 'default', readRetries: 'default' },
         });
         expect(data.board).toEqual({ version: '9.9.9' });
         expect(data.identity).toEqual({
@@ -177,6 +180,21 @@ describe('bellows auth status: identity', () => {
         expect(text).toContain('board    http://board (version 9.9.9)');
         expect(text).toContain('token    set (personal)');
         expect(text).toContain('identity octocat in Acme (member), board auth github');
+    });
+
+    it("names each value's source, a settings file by its path, and never prints a token read from it", async () => {
+        const path = join(mkdtempSync(join(tmpdir(), 'bellows-settings-')), 'settings.json');
+        writeFileSync(path, JSON.stringify({ token: SECRET, readRetries: 1 }), { mode: 0o600 });
+        const { out, err, io } = recordingBoard(routed(board()), {
+            env: { FACTORY_URL: 'http://board' },
+            settings: { path, explicit: true },
+        });
+        expect(await run(['auth', 'status'], io)).toBe(0);
+        const text = out.join('');
+        expect(text).toContain('board    http://board (version 9.9.9) [env]');
+        expect(text).toContain(`token    set (personal) [${path}]`);
+        expect(text).toContain(`requests 30s deadline [default], 1 read retries [${path}]`);
+        expect(text + err.join('')).not.toContain(SECRET);
     });
 
     it('says not signed in when the board answers authenticated:false', async () => {
