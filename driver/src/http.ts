@@ -8,6 +8,9 @@ export const JSON_CONTENT_TYPE = 'application/json';
 
 export const CONTENT_TYPE_HEADER = 'content-type';
 
+/** The raw-bytes media type an artifact chunk travels as. */
+export const OCTET_STREAM_CONTENT_TYPE = 'application/octet-stream';
+
 /**
  * The error codes the board's answer bodies carry that the driver branches on, where one status
  * means two things (a 409 is a lost lease or a refusal; a 404 a removed thread or an unknown key).

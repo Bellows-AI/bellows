@@ -35,7 +35,15 @@ import { closeMergedPr } from './job-store-merge.js';
 import { answerQuestionBy, askQuestionReport } from './job-store-questions.js';
 import { readReviewFor, requestReviewFor } from './job-store-reviews.js';
 import { claimJob, claimReclaimRow, ackReclaimRow } from './job-store-claim.js';
-import { threadOf, getJob, waitForSettleOf, listJobs, listTasksOf, leasesOf } from './job-store-reads.js';
+import {
+    threadOf,
+    getJob,
+    waitForSettleOf,
+    listJobs,
+    listTasksOf,
+    leasesOf,
+    artifactScopeOf,
+} from './job-store-reads.js';
 import {
     wallTickFragment,
     authorJoinFragment,
@@ -78,6 +86,7 @@ function workerMethods(
     | 'publishToken'
     | 'complete'
     | 'leases'
+    | 'artifactScope'
 > {
     return {
         async claim(worker, leaseSeconds) {
@@ -138,6 +147,11 @@ function workerMethods(
         async leases(ids) {
             await gate();
             return leasesOf(ctx, ids);
+        },
+
+        async artifactScope(id) {
+            await gate();
+            return artifactScopeOf(ctx, id);
         },
     };
 }

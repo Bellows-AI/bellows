@@ -5,6 +5,7 @@ import type {
     BoardLease,
     HeartbeatVerdict,
     LeaseState,
+    ArtifactManifest,
     QuestionVerdict,
     Reclaim,
     RuntimeReport,
@@ -75,6 +76,9 @@ interface BoardStub extends Board {
     leaseLookups: string[][];
     /** Every question report the loop sent (issue #226) — ids only, never text. */
     questionsReported: string[];
+    /** Every artifact chunk and manifest the loop sent, with the claim sequence each rode under. */
+    artifactChunks: { id: string; claimSeq: number; stream: string; offset: number; text: string }[];
+    artifactManifests: { id: string; claimSeq: number; stream: string; state: ArtifactManifest['state'] }[];
 }
 
 /**
@@ -107,6 +111,8 @@ function stubBoard(
         leaseRows?: BoardLease[] | null | undefined;
         /** The board's answer to a question report (issue #226); held when absent. */
         questionVerdict?: QuestionVerdict;
+        /** Every artifact call throws, as a board that is down does. */
+        artifactsDown?: boolean;
     } = {}
 ): { board: BoardStub; attach: (loop: Loop) => void } {
     let loop: Loop | null = null;
@@ -129,6 +135,24 @@ function stubBoard(
         reclaimAcks: [],
         leaseLookups: [],
         questionsReported: [],
+        artifactChunks: [],
+        artifactManifests: [],
+        async putArtifactChunk(claimed, ref, offset, bytes) {
+            if (options.artifactsDown) throw new Error('board unreachable');
+            const text = Buffer.from(bytes).toString('utf8');
+            board.artifactChunks.push({ id: claimed.id, claimSeq: claimed.claimSeq, stream: ref.stream, offset, text });
+            return { result: 'stored' };
+        },
+        async finalizeArtifact(claimed, ref, manifest) {
+            if (options.artifactsDown) throw new Error('board unreachable');
+            board.artifactManifests.push({
+                id: claimed.id,
+                claimSeq: claimed.claimSeq,
+                stream: ref.stream,
+                state: manifest.state,
+            });
+            return 'stored';
+        },
         async question(_claimed, questionId) {
             board.questionsReported.push(questionId);
             return options.questionVerdict ?? 'held';
@@ -3231,6 +3255,44 @@ describe('verification gates', () => {
         // The environment goes back to its cooldown either way — filed under the task's worktree.
         expect(stack.stack.released).toEqual([`bellows/${USER}/.worktrees/${gatedJob(1).id}`]);
         expect(stack.stack.unregistered).toBe(1);
+    });
+
+    it('uploads the run’s log under its claim sequence before the gates, and still succeeds', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok({ fullLog: 'line one\nline two\n', sessionId: 'sess-1' }));
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.artifactChunks).toEqual([
+            {
+                id: gatedJob(1).id,
+                claimSeq: gatedJob(1).claimSeq,
+                stream: 'log',
+                offset: 0,
+                text: 'line one\nline two\n',
+            },
+        ]);
+        expect(board.board.artifactManifests).toEqual([
+            { id: gatedJob(1).id, claimSeq: gatedJob(1).claimSeq, stream: 'log', state: 'complete' },
+        ]);
+        expect(board.board.completed[0]!.status).toBe('succeeded');
+    });
+
+    it('keeps a passing verdict when every artifact upload fails', async () => {
+        const board = stubBoard([gatedJob(1)], { artifactsDown: true });
+        const stack = stubGateStack();
+        const logs: string[] = [];
+        const runner = stubRunner(async () =>
+            ok({ fullLog: 'line one\n', transcript: '{"a":1}\n', sessionId: 'sess-1' })
+        );
+
+        await drive({ ...board, runner, gates: stack.gates, log: (m) => logs.push(m) });
+
+        expect(stack.stack.ran.names).toEqual(['test', 'lint']);
+        expect(board.board.completed[0]!.status).toBe('succeeded');
+        expect(board.board.artifactManifests).toEqual([]);
+        expect(logs.some((m) => m.includes('artifact') && m.includes('failed'))).toBe(true);
     });
 
     it('fails the job with the first failing gate, and relays its output', async () => {

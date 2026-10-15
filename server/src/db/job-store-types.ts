@@ -762,6 +762,15 @@ export interface JobLeaseInfo {
     leaseToken: string | null;
 }
 
+/** `JobStore.artifactScope`: where a job's artifacts are filed and how far its claim sequence has advanced. */
+export interface JobArtifactScope {
+    /** The author, or null for an unattributed job. */
+    member: string | null;
+    root: string;
+    /** The row's newest claim sequence; a claim above it has not happened. */
+    claimSeq: number;
+}
+
 export interface JobStore {
     /**
      * `createdBy` is a parameter rather than something read off the body, and the route passes the
@@ -1000,6 +1009,13 @@ export interface JobStore {
      * deliberately NOT lease-guarded: the reaper holding no lease is the whole point.
      */
     leases(ids: readonly string[]): Promise<JobLeaseInfo[]>;
+    /**
+     * What an artifact upload for this job is authorized against (the artifact routes): the
+     * member and root it is filed under and the newest claim sequence that exists. Deliberately
+     * NOT lease-guarded, and it writes nothing: a stale attempt may finish uploads to its own
+     * claim prefix, and that is all it may do. Null when the org has no such job.
+     */
+    artifactScope(id: string): Promise<JobArtifactScope | null>;
     /** The oldest claimable job, or null when there is none. Never blocks on a live lease. */
     claim(worker: string, leaseSeconds: number): Promise<Claim | null>;
     heartbeat(

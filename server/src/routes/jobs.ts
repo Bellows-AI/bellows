@@ -31,6 +31,9 @@ import {
     handleWaitCancel,
     handleWaitPoke,
 } from './job-handlers-actions.js';
+import { OCTET_STREAM_CONTENT_TYPE } from '@factory-ai/core';
+import { MAX_CHUNK_BYTES } from '../artifacts/artifact-store.js';
+import { handleArtifactChunk, handleArtifactManifest } from './job-handlers-artifacts.js';
 import { handleAnswer, handleQuestion } from './job-handlers-questions.js';
 import { handleReviewRead, handleReviewRequest } from './job-handlers-reviews.js';
 import { BODY_LIMIT, CONTROL_BODY_LIMIT, QUESTION_BODY_LIMIT } from './job-limits.js';
@@ -149,6 +152,19 @@ export const jobRoutes =
         app.post('/api/jobs/:id/review-read', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleReviewRead(orgs, request, reply)
         );
+        // Artifact uploads (070), authorized by claim sequence rather than the lease. A child scope,
+        // so the raw-bytes parser reaches only the chunk route.
+        void app.register(async (scope) => {
+            scope.addContentTypeParser(OCTET_STREAM_CONTENT_TYPE, { parseAs: 'buffer' }, (_request, raw, done) =>
+                done(null, raw)
+            );
+            scope.put('/api/jobs/:id/artifact/chunk', { bodyLimit: MAX_CHUNK_BYTES }, (request, reply) =>
+                handleArtifactChunk(orgs, request, reply)
+            );
+            scope.put('/api/jobs/:id/artifact/manifest', { bodyLimit: BODY_LIMIT }, (request, reply) =>
+                handleArtifactManifest(orgs, request, reply)
+            );
+        });
         app.get('/api/jobs/:id', (request, reply) => handleGetJob(orgs, request, reply));
         app.get('/api/jobs/:id/thread', (request, reply) => handleThread(orgs, request, reply));
         app.get('/api/jobs/:id/activity', (request, reply) => handleJobActivity(orgs, request, reply));

@@ -379,6 +379,10 @@ function stubStore(
             stub.leased.push({ ids: [...ids] });
             return options.leaseRows ?? [];
         },
+        async artifactScope() {
+            boom();
+            return null;
+        },
         async session(id, _token, sessionId) {
             boom();
             stub.sessions.push({ id, sessionId });

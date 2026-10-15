@@ -52,6 +52,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | GitHub review collect and reply | `driver/src/review.ts`, `review-helpers.ts`, `driver/src/scripts/review-*.cjs` | `driver/test/review.test.ts`, `review-collect-script.test.ts`, `review-reply-script.test.ts` |
 | Session id, close-time agent turns | `driver/src/close-read.ts`, `docker-close-read.ts`, `driver/src/scripts/claude-turns.cjs` | `driver/test/close-read.test.ts`, `scripts-claude-turns.test.ts`, `scripts-opencode-readout.test.ts` |
 | Run artifacts: object store plus immutable chunk and manifest index (migration 070; [persistence.md](persistence.md)) | `server/src/artifacts/artifact-store.ts`, `server/migrations/070_artifact_index.sql` | `server/test-db/artifact-store.test.ts` |
+| Artifact upload: chunk put and manifest finalize, authorized by claim sequence (a stale attempt files under its own claim and moves no job state); the driver retries with bounded backoff and a failed upload never changes a verdict | `driver/src/artifact-upload.ts`, `artifact-calls.ts`, `loop-run.ts`, `server/src/routes/job-handlers-artifacts.ts`, `server/src/db/job-store-reads.ts` | `driver/test/artifact-upload.test.ts`, `driver/test/loop.test.ts`, `server/test/routes.artifacts.test.ts`, `server/test-db/job-store.artifact-scope.test.ts` |
 | Container scripts | `driver/src/container-scripts.ts`, `driver/src/scripts/` | `driver/test/scripts.test.ts`, `scripts-*.test.ts` |
 | Orphan reaper; lease-owned Kubernetes Jobs and service resources | `driver/src/reaper.ts`, `docker-reaper.ts`, `k8s-reaper.ts` | `driver/test/reaper.test.ts`, `docker-reaper.test.ts`, `k8s-reaper.test.ts` |
 | Optional `backend-fix` playbook | `docker/skills/backend-fix/SKILL.md` | `driver/test/executor-images.test.ts` |
@@ -114,6 +115,6 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 - No priority or scheduling; no per-job authorization ([repos.md](repos.md)).
 - No service volumes, health checks, `depends_on` or restart policies in `.bellows.yaml`.
 - No abort for an in-flight publish; a lease lost after the push is re-run by the next holder.
-- Nothing writes artifacts yet (the driver upload and the reads follow), and no sweeper deletes a removed
-  task's objects: `ARTIFACTS_RETENTION_DAYS` is configuration only. `server/src/artifacts/`.
+- Only the tail-kept log and transcript upload (`ARTIFACT_LIMIT`, never `complete` when cut), and no sweeper
+  deletes a removed task's objects: `ARTIFACTS_RETENTION_DAYS` is configuration only. `driver/src/runner.ts`.
 - A custom `RUNNER_IMAGE` missing a skill's declared tool is not detected.
