@@ -179,6 +179,15 @@ describe('the publish workflow', () => {
         expect(flag(t.find('gh pr create').args, '--base')).toBe('batch-sandbox');
     });
 
+    it('opens the PR on the claim’s base even when the probe could not name it', async () => {
+        const t = transport({ ...DIRTY_ON_MAIN, branch: 'fix/10', defaultBranch: 'main' });
+        expect(await publish(t, undefined, { ...ISSUE_JOB, baseBranch: 'batch-sandbox' })).toMatchObject({
+            baseBranch: 'batch-sandbox',
+        });
+        expect(t.find('pr summary').envLiterals).toMatchObject({ BASE: 'origin/batch-sandbox' });
+        expect(flag(t.find('gh pr create').args, '--base')).toBe('batch-sandbox');
+    });
+
     // The agent may have opened the PR itself with gh's default base: a reused PR is retargeted
     // to the claim's base before the board records it, so automerge never lands on the default.
     it.each([

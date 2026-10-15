@@ -552,8 +552,8 @@ export const GIT_STAGE_STEPS: readonly (readonly string[])[] = [
 
 /**
  * The read-only probe step over one checkout — the publish's first step, and the post-gate tree
- * read. A claim's base branch rides as BASE_BRANCH, which the probe reports as the branch to
- * compare against, so the PR summary, the unpushed count and the PR's base all follow it.
+ * read. The claim's base rides as BASE_BRANCH, the branch the probe compares against; probeCheckout
+ * pins it as the state's base, so the PR summary, the PR and the recorded base all follow it.
  */
 const probeStep = (repo: string, base: string | null = null): PublishStep => ({
     label: 'probe',
@@ -570,7 +570,7 @@ const probeStep = (repo: string, base: string | null = null): PublishStep => ({
  */
 async function probeCheckout(runStep: RunPublishStep, repo: string, base: string | null): Promise<GitState> {
     const probe = await runStep(probeStep(repo, base)).catch(() => null);
-    return parseGitState(probe?.stdout ?? '');
+    return { ...parseGitState(probe?.stdout ?? ''), ...(base ? { defaultBranch: base } : {}) };
 }
 
 /**
