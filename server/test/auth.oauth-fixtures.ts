@@ -33,7 +33,7 @@ export async function setup({
         auth,
         identity,
         appSlug: async () => 'stub-app',
-        installationListing,
+        ...(installationListing ? { installationListing } : {}),
     });
     return { app, auth, identity, orgs, repos };
 }
@@ -81,7 +81,7 @@ export const pendingRoute = (app: FastifyInstance, cookie?: string) =>
         ...(cookie ? { cookies: { [PENDING_COOKIE]: cookie } } : {}),
     });
 
-export const completeRoute = (app: FastifyInstance, body: unknown, cookie?: string) =>
+export const completeRoute = (app: FastifyInstance, body: object, cookie?: string) =>
     app.inject({
         method: 'POST',
         url: '/api/auth/github/complete',

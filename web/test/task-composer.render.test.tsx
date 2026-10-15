@@ -1,7 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import type { UseJobs } from '../src/api/useJobs.js';
 import type { UseWorkspace } from '../src/api/useWorkspace.js';
 import { type ComposerDraftInput, ComposerDraftProvider } from '../src/composer-draft.js';
 import { WorkflowParameterFields } from '../src/components/WorkflowParameterFields.js';
@@ -9,7 +8,7 @@ import { TaskComposerPage } from '../src/pages/TaskComposerPage.js';
 import { TaskDetailPage } from '../src/pages/TaskDetailPage.js';
 import type { WorkflowParamChoice } from '../src/task-composer.js';
 import { renderComposer } from './tasks-fixtures.js';
-import { expectNoPlaceholder } from './fixtures.js';
+import { expectNoPlaceholder, idleTasks } from './fixtures.js';
 
 describe('the tasks pages', () => {
     /**
@@ -18,15 +17,7 @@ describe('the tasks pages', () => {
      * under renderToStaticMarkup, so the loading posture is what a static render can see. The
      * point here is the page headings: one h1 per page, no competing inner title.
      */
-    const fakeTasks = {
-        jobs: null,
-        error: null,
-        queue: async () => ({ id: null, error: null }),
-        followUp: async () => ({ error: null }),
-        stop: async () => null,
-        remove: async () => null,
-        markDone: async () => null,
-    } as unknown as UseJobs;
+    const fakeTasks = idleTasks();
     const idleWorkspace = {
         data: null,
         loading: true,
@@ -125,14 +116,14 @@ describe('TaskComposer', () => {
     it('preselects the first configured executor and blocks when there is none', () => {
         const trigger = (html: string) => html.slice(html.indexOf('Executor'), html.indexOf('>Start task<'));
 
-        const one = renderComposer({ repos: [], executors: [{ name: 'main', type: 'claude' }] });
+        const one = renderComposer({ repos: [], executors: [{ name: 'main', type: 'claude', scope: 'user' }] });
         expect(trigger(one)).toContain('>main</span></button>');
 
         const two = renderComposer({
             repos: [],
             executors: [
-                { name: 'main', type: 'claude' },
-                { name: 'heavy', type: 'claude' },
+                { name: 'main', type: 'claude', scope: 'user' },
+                { name: 'heavy', type: 'claude', scope: 'user' },
             ],
         });
         expect(trigger(two)).toContain('>main</span></button>');
@@ -172,7 +163,7 @@ describe('TaskComposer', () => {
         // (label in name, #571): a speech-input member can say what they see.
         const withWorkflows = renderComposer({
             repos: [],
-            executors: [{ name: 'main', type: 'claude' }],
+            executors: [{ name: 'main', type: 'claude', scope: 'user' }],
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
         });
         expect(withWorkflows).toContain('aria-label="Repository: Select a repository"');
@@ -221,7 +212,7 @@ describe('TaskComposer — the prompt and the launch', () => {
     it('never emits a placeholder value', () => {
         const html = renderComposer({
             repos: [{ owner: 'acme', name: 'web', status: 'ready' }],
-            executors: [{ name: 'main', type: 'claude' }],
+            executors: [{ name: 'main', type: 'claude', scope: 'user' }],
             actionError: null,
         });
         expectNoPlaceholder(html);
@@ -273,7 +264,7 @@ describe('TaskComposer — the prompt and the launch', () => {
     it('gathers repository, executor and workflow as one row of chips, with no section around them', () => {
         const html = renderComposer({
             repos: [{ owner: 'acme', name: 'web', status: 'ready' }],
-            executors: [{ name: 'main', type: 'claude' }],
+            executors: [{ name: 'main', type: 'claude', scope: 'user' }],
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
         });
         expect(html).toContain('class="composer-context"');
@@ -578,8 +569,8 @@ describe('the redesigned composer (#280)', () => {
                 { owner: 'acme', name: 'api', status: 'ready' },
             ],
             executors: [
-                { name: 'main', type: 'claude-code' },
-                { name: 'heavy', type: 'claude-code' },
+                { name: 'main', type: 'claude-code', scope: 'user' },
+                { name: 'heavy', type: 'claude-code', scope: 'user' },
             ],
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org', params: [{ name: 'issue', pattern: '#\\d+' }] }],
             restored: restoredDraft({
@@ -606,6 +597,7 @@ function restoredDraft(overrides: Partial<ComposerDraftInput>): ComposerDraftInp
     return {
         draft: '',
         executor: 'main',
+        executorScope: 'user',
         repo: 'acme/web',
         repoTouched: false,
         workflowRepo: 'acme/web',

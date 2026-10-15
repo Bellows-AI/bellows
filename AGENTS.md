@@ -110,7 +110,7 @@ npm run dev -w cli -- job list --limit 5
 
 npm test                        # offline: no token, no quota, no database, no docker
 npm run test:executors          # focused board/driver/runner/telemetry suites
-npm run typecheck               # tsc -b, plus server/tsconfig.test.json and e2e/tsconfig.json
+npm run typecheck               # tsc -b: src, every <pkg>/tsconfig.test.json and e2e/tsconfig.json
 npm run lint                    # biome check; npm run format / lint:fix are the fixers
 npm run lint:changed            # biome on the branch's files only (vs origin/main), niced
 npm run verify:ui               # real chromium; needs postgres + playwright install chromium

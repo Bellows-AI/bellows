@@ -9,6 +9,7 @@ describe('the organization executors panel', () => {
         name,
         type,
         createdAt,
+        suspended: false,
     });
     const noop = () => {};
     /** A member's view of one profile, nothing saving and no org default; overrides name the difference. */
@@ -23,6 +24,7 @@ describe('the organization executors panel', () => {
                 onEdit={undefined}
                 onDelete={undefined}
                 onDemote={undefined}
+                onSuspend={undefined}
                 onMakeDefault={noop}
                 {...overrides}
             />

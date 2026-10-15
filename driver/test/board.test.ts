@@ -66,7 +66,7 @@ describe('the worker token', () => {
         const job = boardJob();
 
         await board.heartbeat(job);
-        await board.session(job, 'session-1', null);
+        await board.session(job, 'session-1');
         await board.progress(job, 'a tail of the output');
         await board.suspend(job);
         await board.complete(job, { status: 'succeeded', exitCode: 0, output: '' });

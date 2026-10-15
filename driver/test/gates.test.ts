@@ -33,7 +33,7 @@ const { createdServers } = vi.hoisted(() => ({
 vi.mock('node:http', async (importOriginal) => {
     const actual = await importOriginal<typeof import('node:http')>();
     const realCreateServer = actual.createServer.bind(actual);
-    const wrapped = ((handler?: Parameters<typeof actual.createServer>[0]) => {
+    const wrapped = ((handler?: import('node:http').RequestListener) => {
         const created = realCreateServer(handler);
         createdServers.push(created);
         return created;
@@ -59,11 +59,15 @@ const config = loadDriverConfig({});
 const JOB: BoardJob = {
     id: '55555555-5555-4555-8555-555555555555',
     command: 'fix the failing build',
+    rootCommand: 'fix the failing build',
     attempts: 1,
+    maxAttempts: 3,
     claimSeq: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
+    executorRefusal: null,
+    skillRefusal: null,
     masterPrompt: 'You are running inside Factory.',
     resumeSessionId: null,
     followUp: false,
@@ -143,7 +147,7 @@ describe('the gate environment manager: lifecycle', () => {
         logs.length = 0;
         const manager = createGateManager({ config, cooldownMs: 5, execDocker: recording });
         await manager.acquire(KEY, 'node:24', '');
-        manager.release(KEY);
+        manager.release(KEY, JOB);
         // The acquire fence above is also an `rm -f`; only counts AFTER release are teardowns.
         const atRelease = logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME).length;
         await new Promise((resolve) => setTimeout(resolve, COOLDOWN_SETTLE_MS));
@@ -155,7 +159,7 @@ describe('the gate environment manager: lifecycle', () => {
         logs.length = 0;
         const manager = createGateManager({ config, cooldownMs: 5, execDocker: recording });
         await manager.acquire(KEY, 'node:24', '');
-        manager.release(KEY);
+        manager.release(KEY, JOB);
         const atRelease = logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME).length;
         await manager.acquire(KEY, 'node:24', '');
         await new Promise((resolve) => setTimeout(resolve, COOLDOWN_SETTLE_MS));
@@ -168,7 +172,7 @@ describe('the gate environment manager: lifecycle', () => {
         logs.length = 0;
         const manager = createGateManager({ config, cooldownMs: 5, execDocker: recording });
         await manager.acquire(KEY, 'node:24', '');
-        manager.release(KEY);
+        manager.release(KEY, JOB);
         await new Promise((resolve) => setTimeout(resolve, COOLDOWN_SETTLE_MS));
         await manager.acquire(KEY, 'node:24', '');
         expect(logs.filter((args) => args[0] === 'run')).toHaveLength(2);
@@ -567,7 +571,7 @@ describe('the gate environment manager: acquire serialization and timeouts', () 
         const timingOut = exec((args, options) => {
             if (args[0] !== 'exec') return { stdout: '', stderr: '' };
             seenOptions.push(options);
-            const error = new Error('killed') as Error & { killed?: boolean };
+            const error = new Error('killed') as ExecError & { killed?: boolean };
             error.killed = true;
             error.stderr = '';
             return Promise.reject(error);
@@ -691,7 +695,7 @@ describe('the gate environment manager: failure and edge cases', () => {
         await manager.runGate(KEY, 'lint', 'npm run lint');
         // Between gates, no `rm` but the acquire fence above.
         expect(logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME)).toHaveLength(1);
-        manager.release(KEY);
+        manager.release(KEY, JOB);
         await new Promise((resolve) => setTimeout(resolve, 0));
         expect(logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME)).toHaveLength(2);
     });
@@ -718,7 +722,7 @@ describe('the gate environment manager: failure and edge cases', () => {
 
         const gate = manager.runGate(KEY, 'test', 'npm test');
         // The environment is torn down (and re-created by nobody in this test) while the exec runs.
-        manager.release(KEY);
+        manager.release(KEY, JOB);
         await new Promise((resolve) => setTimeout(resolve, COOLDOWN_FIRE_WAIT_MS)); // the cooldown timer fires on the dead entry
         releaseExec();
         await expect(gate).resolves.toMatchObject({ exitCode: 0 });

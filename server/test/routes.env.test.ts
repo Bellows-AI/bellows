@@ -180,6 +180,7 @@ describe('PUT /api/env/org and /api/env/repo', () => {
             detail: async () => ({ repos: [], installation: null }),
             lastError: () => 'github is down',
             fetchedAt: () => null,
+            invalidate: () => {},
         };
         const config = testConfig({ auth: githubAuth() });
         const instance = await buildApp({

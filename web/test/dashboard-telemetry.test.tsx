@@ -4,11 +4,11 @@ import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { DashboardPage } from '../src/pages/DashboardPage.js';
 import { describeRepos } from '../src/format.js';
-import type { UseJobs } from '../src/api/useJobs.js';
 import { DEFAULT_RANGE, DEFAULT_SCOPE } from '../src/components/RangeSelector.js';
 import type { RangeSelection, ScopeSelection } from '../src/components/RangeSelector.js';
 import type { FetchState, StatsPayload } from '../src/api/useStats.js';
 import type { Session } from '../src/api/useSession.js';
+import { idleTasks } from './fixtures.js';
 
 /**
  * The page-level contract: the toolbar and its labeled groups, the rendered-data summary that
@@ -100,7 +100,7 @@ const EMPTY: StatsPayload = { telemetry: NO_TELEMETRY, tasks: UNMEASURED_TASKS, 
 const PARTIAL: StatsPayload = { telemetry: NO_TELEMETRY, tasks: MEASURED_TASKS, meta: META };
 const DISABLED: StatsPayload = { telemetry: null, tasks: null, meta: META };
 
-const fakeTasks = { jobs: null, error: null } as unknown as UseJobs;
+const fakeTasks = idleTasks();
 
 const GITHUB_SESSION = { mode: 'github', user: { login: 'alice' } } as unknown as Session;
 /** AUTH_MODE=none still answers /api/auth/me — with the local stand-in, whose mode is the tell. */

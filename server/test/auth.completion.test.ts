@@ -79,6 +79,8 @@ describe('completion and the org repo cache', () => {
             for: async () => runtime,
             list: async () => [{ id: ORG, name: 'acme', installationId: ORG }],
             warmAll: async () => {},
+            reconcileBatches: async () => {},
+            observeBatchPrs: async () => {},
         };
         const app = await buildApp({
             config,

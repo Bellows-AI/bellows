@@ -1,3 +1,4 @@
+import { OBJECTIVE_MODE } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import type { Job } from '../src/api/useJobs.js';
 import type { TaskNavigation, TaskSummary } from '../src/api/useTasks.js';
@@ -33,6 +34,7 @@ const summary = (over: Partial<TaskSummary> = {}): TaskSummary => ({
     waitTerminalReason: over.waitTerminalReason ?? null,
     createdAt: over.createdAt ?? '2026-09-01T12:00:00.000Z',
     activityAt: over.activityAt ?? '2026-09-01T12:10:00.000Z',
+    needsAnswer: over.needsAnswer ?? false,
 });
 
 describe('taskTitleFromCommand', () => {
@@ -198,6 +200,9 @@ describe('taskSummary', () => {
         output: null,
         repo: null,
         executor: null,
+        workflowNode: null,
+        workflowName: null,
+        mode: OBJECTIVE_MODE,
         followUpTo: null,
         rootJobId: id,
         doneAt: null,
@@ -207,6 +212,8 @@ describe('taskSummary', () => {
         startedAt: null,
         finishedAt: null,
         wallClockMs: null,
+        agentTurns: null,
+        setupMs: null,
         taskWallClockMs: null,
         summary: null,
         failureKind: null,
@@ -214,6 +221,7 @@ describe('taskSummary', () => {
         waitReason: null,
         waitingSince: null,
         waitTerminalReason: null,
+        questions: [],
         ...overrides,
     });
 

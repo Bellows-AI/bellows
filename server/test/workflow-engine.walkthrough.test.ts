@@ -68,6 +68,8 @@ describe('the fix-issue fixture walkthrough', () => {
         // fix succeeded → review (round two), then clean → publish
         rows[rows.length - 1] = row({ id: 'fix1', node: 'fix', output: 'fixed' });
         t = nextTransition({
+            params: {},
+            command: '',
             snapshot: FIX_ISSUE_WORKFLOW.definition,
             rows,
             completed: done({ id: 'fix1', node: 'fix' }),

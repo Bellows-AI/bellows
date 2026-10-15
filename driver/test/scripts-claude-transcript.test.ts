@@ -69,7 +69,7 @@ describe('the claude-code transcript export', () => {
         const { lines } = runScript(dir, { RUN_STARTED_AT: '2026-08-20T02:00:00Z' });
         // Entries at 00:00 and 01:00 predate the run; 02:00 and 03:00 are its own.
         expect(lines).toHaveLength(2);
-        expect(JSON.parse(lines[0]).message.content[0].text).toContain('entry 2');
+        expect(JSON.parse(lines[0]!).message.content[0].text).toContain('entry 2');
     });
 
     it('never exports a subagent conversation', () => {
@@ -88,11 +88,11 @@ describe('the claude-code transcript export', () => {
         writeTranscript(dir, 40, 700);
         const { lines } = runScript(dir, { TRANSCRIPT_LIMIT_BYTES: String(8 * KIB) });
         expect(lines.length).toBeGreaterThan(1);
-        const marker = JSON.parse(lines[0]) as { truncated?: unknown; droppedLines?: unknown };
+        const marker = JSON.parse(lines[0]!) as { truncated?: unknown; droppedLines?: unknown };
         expect(marker.truncated).toBe(true);
         expect(marker.droppedLines).toBeGreaterThan(0);
         // The kept lines are the LAST ones — the run's last words, not its preamble.
-        const last = JSON.parse(lines[lines.length - 1]);
+        const last = JSON.parse(lines[lines.length - 1]!);
         expect(last.message.content[0].text).toContain('entry 39');
         for (const line of lines.slice(1)) expect(() => JSON.parse(line)).not.toThrow();
     });
@@ -101,14 +101,14 @@ describe('the claude-code transcript export', () => {
         mkdirSync(join(dir, 'projects', '-workspaces-org-member-.worktrees-mine'), { recursive: true });
         const missing = runScript(dir);
         expect(missing.lines).toHaveLength(1);
-        expect(String(JSON.parse(missing.lines[0]).error)).toContain('no transcript');
+        expect(String(JSON.parse(missing.lines[0]!).error)).toContain('no transcript');
 
         const noLimit = runScript(dir, { TRANSCRIPT_LIMIT_BYTES: undefined });
         expect(noLimit.lines).toHaveLength(1);
-        expect(String(JSON.parse(noLimit.lines[0]).error)).toContain('TRANSCRIPT_LIMIT_BYTES');
+        expect(String(JSON.parse(noLimit.lines[0]!).error)).toContain('TRANSCRIPT_LIMIT_BYTES');
 
         const badSession = runScript(dir, { CLAUDE_SESSION_ID: '../../../etc/passwd' });
         expect(badSession.lines).toHaveLength(1);
-        expect(String(JSON.parse(badSession.lines[0]).error)).toContain('not a session id');
+        expect(String(JSON.parse(badSession.lines[0]!).error)).toContain('not a session id');
     });
 });

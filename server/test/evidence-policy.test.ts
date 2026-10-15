@@ -13,11 +13,8 @@ import {
     REFUSAL_STALE,
     reviewEvidenceOf,
 } from '../src/db/evidence-policy.js';
-import {
-    REVIEW_BLOCKERS_MARKER,
-    REVIEW_VERDICT_MARKER,
-    type WorkflowDefinition,
-} from '../src/db/workflow-templates.js';
+import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
+import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from '../src/db/workflow-templates.js';
 import * as driverPolicy from '../../driver/src/evidence-policy.js';
 
 const graph = (reviewer: boolean): WorkflowDefinition =>

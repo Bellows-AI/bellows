@@ -111,7 +111,7 @@ describe('telemetry panels render', () => {
                 tokens: { input: 1_000, output: null, cacheRead: null, cacheCreation: null },
             },
         ]);
-        const html = renderToStaticMarkup(<ByUserPanel telemetry={stats} meta={meta()} />);
+        const html = renderToStaticMarkup(<ByUserPanel telemetry={stats} meta={telemetryMeta()} />);
         // A partially measured group still has a New tokens total (core's null-aware sum),
         // never a null dragged to zero and never a null erasing a measured input.
         expect(html).toContain('4k');
@@ -142,7 +142,7 @@ describe('telemetry panels render', () => {
                 tokens: { input: null, output: null, cacheRead: null, cacheCreation: null },
             },
         ]);
-        const html = renderToStaticMarkup(<ByUserPanel telemetry={stats} meta={meta()} />);
+        const html = renderToStaticMarkup(<ByUserPanel telemetry={stats} meta={telemetryMeta()} />);
         expect(html.indexOf('big')).toBeLessThan(html.indexOf('small'));
         expect(html.indexOf('small')).toBeLessThan(html.indexOf('unmeasured'));
         expect(html).toMatch(/aria-sort="descending"/);
@@ -156,7 +156,7 @@ describe('telemetry panels render', () => {
                 tokens: { input: 500, output: 500, cacheRead: 4_500_000_000, cacheCreation: 1_000 },
             },
         ]);
-        const html = renderToStaticMarkup(<ByUserPanel telemetry={stats} meta={meta()} />);
+        const html = renderToStaticMarkup(<ByUserPanel telemetry={stats} meta={telemetryMeta()} />);
         // New tokens is 1k, not 4.5B: the bar is proportional to the measured NEW figure.
         expect(html).toContain('1k');
         expect(html).toContain('width:100%');
@@ -178,7 +178,7 @@ describe('telemetry panels render', () => {
             },
             { repos: [REPO], now: NOW }
         );
-        const html = renderToStaticMarkup(<ByUserPanel telemetry={unmeasured} meta={meta()} />);
+        const html = renderToStaticMarkup(<ByUserPanel telemetry={unmeasured} meta={telemetryMeta()} />);
         expect(html).toMatch(/<td[^>]*>—<\/td>/);
         expect(html).not.toContain('<td>0</td>');
     });
@@ -390,7 +390,7 @@ describe('per-task usage panel', () => {
     };
 
     it('renders the four distributions as one table with percentile headers', () => {
-        const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={meta()} />);
+        const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={telemetryMeta()} />);
         // Four rows, each named — the terminology rule: never a bare "turns".
         expect(html).toContain('Tokens per task');
         expect(html).toContain('Runs per task');
@@ -413,7 +413,9 @@ describe('per-task usage panel', () => {
     });
 
     it('renders an explicit empty state, never zero figures, when no task is in range', () => {
-        const html = renderToStaticMarkup(<TaskUsagePanel tasks={emptyStats} meta={meta({ status: 'empty' })} />);
+        const html = renderToStaticMarkup(
+            <TaskUsagePanel tasks={emptyStats} meta={telemetryMeta({ status: 'empty' })} />
+        );
         // ONE table-region empty state, not four zero/dash rows.
         expect(html).toContain('No attributed tasks in this range yet.');
         expect(html).not.toContain('<table');
@@ -442,7 +444,7 @@ describe('per-task usage panel', () => {
             ...populated,
             agentTurnsPerTask: dist(AGENT_TURNS_AVG, AGENT_TURNS_P50, AGENT_TURNS_P95, FEWER_MEASURED_TASKS),
         };
-        const html = renderToStaticMarkup(<TaskUsagePanel tasks={mixed} meta={meta()} />);
+        const html = renderToStaticMarkup(<TaskUsagePanel tasks={mixed} meta={telemetryMeta()} />);
         // Seven rows carry tokens, runs and wall clock; only five measured agent turns.
         const REMAINING_SEVEN_COUNT = 3;
         expect(html.match(/>7</g)?.length).toBe(REMAINING_SEVEN_COUNT);
@@ -519,7 +521,7 @@ describe('token usage series granularity', () => {
                 activeHours: null,
                 linesAdded: null,
                 linesRemoved: null,
-                acceptRatio: null,
+                editAcceptance: { accepted: null, rejected: null, decisions: null, ratio: null },
             },
             otherRepoSessions: 0,
             sessionsWithoutHook: 0,
@@ -555,7 +557,7 @@ describe('token usage series granularity', () => {
             .map((t) => Number(t.match(/\bwidth="([\d.]+)"/)?.[1]));
         expect(widths.length).toBeGreaterThan(0);
         const QUARTER_PLOT_DIVISOR = 4;
-        expect(Math.max(...widths)).toBeLessThanOrEqual((width - PAD.left - PAD.right) / QUARTER_PLOT_DIVISOR);
+        expect(Math.max(...widths)).toBeLessThanOrEqual((width! - PAD.left - PAD.right) / QUARTER_PLOT_DIVISOR);
         expect(html).toMatch(/aria-label="[^"]*Total input 12,345/);
         expect(html).toContain('The hatched bucket is a partial period.');
     });

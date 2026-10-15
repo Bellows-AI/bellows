@@ -25,7 +25,7 @@ type Reply = { status?: number; body?: unknown; headers?: Record<string, string>
 
 /** Routes by path prefix; an unrouted path is a 404, like GitHub for a repo the installation cannot see. */
 function fakeGitHub(routes: Record<string, Reply | (() => Reply)>, requests: string[] = []): typeof fetch {
-    return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    return (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
         const path = String(input).replace(API, '');
         requests.push(path);
         expect(new Headers(init?.headers).get('authorization')).toBe('Bearer installation-token');
@@ -37,7 +37,10 @@ function fakeGitHub(routes: Record<string, Reply | (() => Reply)>, requests: str
             status: 404,
             body: { message: 'Not Found' },
         };
-        return new Response(JSON.stringify(reply.body ?? {}), { status: reply.status ?? 200, headers: reply.headers });
+        return new Response(JSON.stringify(reply.body ?? {}), {
+            status: reply.status ?? 200,
+            ...(reply.headers ? { headers: reply.headers } : {}),
+        });
     }) as typeof fetch;
 }
 

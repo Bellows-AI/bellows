@@ -31,7 +31,7 @@ interface Seen {
 
 /** Answers by `METHOD path-prefix`, longest first; an unrouted request is a 404. */
 function fakeFetch(routes: Record<string, { status?: number; body?: unknown } | Error>, seen: Seen[] = []) {
-    return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    return (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
         const path = String(input).replace(API, '');
         const method = init?.method ?? 'GET';
         seen.push({ method, path, body: init?.body ? JSON.parse(String(init.body)) : undefined });

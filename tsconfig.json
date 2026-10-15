@@ -2,11 +2,15 @@
     "files": [],
     "references": [
         { "path": "./core" },
+        { "path": "./core/tsconfig.test.json" },
         { "path": "./server" },
         { "path": "./server/tsconfig.test.json" },
         { "path": "./web" },
+        { "path": "./web/tsconfig.test.json" },
         { "path": "./driver" },
+        { "path": "./driver/tsconfig.test.json" },
         { "path": "./cli" },
+        { "path": "./cli/tsconfig.test.json" },
         { "path": "./e2e" }
     ]
 }

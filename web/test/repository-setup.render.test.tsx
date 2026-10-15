@@ -385,19 +385,12 @@ describe('RepositorySetupList', () => {
 
 describe('RepositoryConfigDetail', () => {
     it('renders nothing before a repository is chosen — no empty panel', () => {
-        expect(
-            render(<RepositoryConfigDetail repo={null} checkout="Ready" headingRef={undefined} row={undefined} />)
-        ).toBe('');
+        expect(render(<RepositoryConfigDetail repo={null} checkout="Ready" row={undefined} />)).toBe('');
     });
 
     it('heads with the selected repository and states the shared scope truth (issue 180)', () => {
         const html = render(
-            <RepositoryConfigDetail
-                repo={{ owner: 'acme', name: 'web' }}
-                checkout="Ready"
-                headingRef={undefined}
-                row={undefined}
-            />
+            <RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} checkout="Ready" row={undefined} />
         );
         expect(html).toContain('Selected repository: acme/web');
         // The scope copy is ConfigurationScope's — the same table every editor states.
@@ -464,12 +457,7 @@ describe('RepositoryConfigDetail', () => {
         // The dirty detail guards its switch through the settings area's ONE discard confirmation;
         // a blocker line here would be a second dialog contract.
         const html = render(
-            <RepositoryConfigDetail
-                repo={{ owner: 'acme', name: 'web' }}
-                checkout="Ready"
-                headingRef={undefined}
-                row={undefined}
-            />
+            <RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} checkout="Ready" row={undefined} />
         );
         expect(html).not.toContain('unsaved');
         expect(html).not.toContain('Discard');

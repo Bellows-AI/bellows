@@ -38,11 +38,15 @@ const k8sConfig = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: 'fac
 const JOB = (lease: string): BoardJob => ({
     id: '55555555-5555-4555-8555-555555555555',
     command: 'fix the failing build',
+    rootCommand: 'fix the failing build',
     attempts: 1,
+    maxAttempts: 3,
     claimSeq: 1,
     leaseToken: lease,
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
+    executorRefusal: null,
+    skillRefusal: null,
     masterPrompt: 'You are running inside Factory.',
     resumeSessionId: null,
     followUp: false,
@@ -53,7 +57,7 @@ const LEASE_A = '22222222-2222-4222-8222-222222222222';
 const LEASE_B = '33333333-3333-4333-8333-333333333333';
 
 type ExecResult = { stdout: string; stderr: string };
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const OK: ExecResult = { stdout: '', stderr: '' };
 
 /**

@@ -215,9 +215,9 @@ describe('a started batch', () => {
             expect(batchVerdict(batch, null)).toBe('running');
             expect(morningReport(batch, null).needsYou).toBe(0);
         }
-        expect(batchVerdict({ ...failed, status: 'completed', completedAt: '2026-09-02T00:00:00.000Z' }, null)).toBe(
-            'completed'
-        );
+        expect(
+            batchVerdict(record({ ...failed, status: 'completed', completedAt: '2026-09-02T00:00:00.000Z' }), null)
+        ).toBe('completed');
     });
 
     it('reads an automerge PR the board is still merging as the board’s, not a person’s (#693)', () => {

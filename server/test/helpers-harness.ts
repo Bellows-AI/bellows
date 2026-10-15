@@ -9,7 +9,7 @@ import type { UserRepoStore } from '../src/db/user-repo-store.js';
 import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
 import { createFactsCache, type FactsCache } from '../src/workspace/facts.js';
 import type { Purger } from '../src/workspace/purge.js';
-import { staticRepoSource } from '../src/github/repo-source.js';
+import { type RepoSource, staticRepoSource } from '../src/github/repo-source.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { InstallationRepo } from '../src/github/app-client.js';
 import type { TelemetryStore } from '../src/telemetry/store.js';
@@ -24,7 +24,7 @@ import { stubTelemetryClient, type TelemetryStub } from './helpers-telemetry.js'
 export function staticRegistry(
     parts: {
         config?: AppConfig;
-        repos?: ReturnType<typeof staticRepoSource>;
+        repos?: RepoSource;
         telemetry?: TelemetryStub;
         service?: ReturnType<typeof createStatsService>;
         jobs?: OrgRuntime['jobs'];
@@ -83,6 +83,8 @@ export function staticRegistry(
         },
         list: async () => [{ id: LOCAL_ORG_ID, name: LOCAL_ORG_ID, installationId: null }],
         warmAll: async () => {},
+        reconcileBatches: async () => {},
+        observeBatchPrs: async () => {},
     };
 }
 

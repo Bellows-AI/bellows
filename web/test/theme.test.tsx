@@ -5,7 +5,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { AppBar } from '../src/components/AppBar.js';
 import { THEME_OPTIONS, ThemeSelector } from '../src/components/ThemeSelector.js';
-import { OnboardingPage, type PendingSignInPayload } from '../src/pages/OnboardingPage.js';
+import type { PendingSignInPayload } from '../src/onboarding.js';
+import { OnboardingPage } from '../src/pages/OnboardingPage.js';
 import {
     THEME_STORAGE_KEY,
     ThemeContext,

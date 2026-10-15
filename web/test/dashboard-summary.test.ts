@@ -124,7 +124,7 @@ describe('selectionMismatch', () => {
     });
 
     it('treats an empty custom draft as the all-time request it becomes on the wire', () => {
-        const all: StatsPayload['meta'] = META({ range: { preset: 'all', from: null, to: null } } as DateRange);
+        const all: StatsPayload['meta'] = META({ range: { preset: 'all', from: null, to: null } });
         expect(selectionMismatch({ preset: 'custom', from: '', to: '' }, 'org', all)).toBe(false);
         expect(selectionMismatch({ preset: 'all', from: '', to: '' }, 'org', META())).toBe(true);
     });
@@ -132,7 +132,7 @@ describe('selectionMismatch', () => {
     it('matches half-open requests bound by bound', () => {
         const halfOpen: StatsPayload['meta'] = META({
             range: { preset: 'custom', from: '2026-09-13T00:00:00.000Z', to: null },
-        } as DateRange);
+        });
         expect(selectionMismatch({ preset: 'custom', from: '2026-09-13', to: '' }, 'org', halfOpen)).toBe(false);
         expect(selectionMismatch({ preset: 'custom', from: '2026-09-14', to: '' }, 'org', halfOpen)).toBe(true);
     });
@@ -199,7 +199,7 @@ describe('requestedRange', () => {
 
 describe('emptyStateCopy', () => {
     it('sends the reader to broaden the range when the store holds data outside the window', () => {
-        const meta = META({ range: { preset: 'custom', from: '2026-09-13T00:00:00.000Z', to: null } } as DateRange);
+        const meta = META({ range: { preset: 'custom', from: '2026-09-13T00:00:00.000Z', to: null } });
         const copy = emptyStateCopy(
             { coverage: { from: '2026-04-15T12:00:00Z', to: '2026-09-21T00:00:00Z' } } as never,
             meta
@@ -209,7 +209,7 @@ describe('emptyStateCopy', () => {
     });
 
     it('says an empty store needs its first agent session', () => {
-        const meta = META({ range: { preset: 'all', from: null, to: null } } as DateRange);
+        const meta = META({ range: { preset: 'all', from: null, to: null } });
         const copy = emptyStateCopy({ coverage: { from: null, to: null } } as never, meta);
         expect(copy).toContain('All time');
         expect(copy).toContain('Run an agent session');
@@ -221,7 +221,7 @@ describe('emptyStateCopy', () => {
         // window's edge.
         const meta = META({
             range: { preset: 'custom', from: '2026-09-13T00:00:00.000Z', to: '2026-09-20T00:00:00.000Z' },
-        } as DateRange);
+        });
         const copy = emptyStateCopy(
             { coverage: { from: '2026-09-13T00:00:00Z', to: '2026-09-19T00:00:00Z' } } as never,
             meta

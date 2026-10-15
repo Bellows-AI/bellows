@@ -28,7 +28,7 @@ import type { HelperPlan, HelperResult } from '../src/helpers.js';
 import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
 import { BOARD_CALL_ATTEMPTS } from '../src/board-retry.js';
 import { createLoop, type Loop } from '../src/loop.js';
-import type { SyncQueue, SyncTurn } from '../src/sync-queue.js';
+import { type SyncQueue, type SyncTurn, syncQueue } from '../src/sync-queue.js';
 import { processReclaim, type ReclaimContext } from '../src/loop-reclaim.js';
 import type { GateStack, LoopRuntime } from '../src/loop-types.js';
 import { newJobState, RUN_CONTROL_POLL_MS, watchOutput } from '../src/loop-attempt.js';
@@ -43,12 +43,15 @@ const MASTER_PROMPT =
 const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
     id: `0000000${n}-1111-4111-8111-111111111111`,
     command: `job ${n}`,
+    rootCommand: `job ${n}`,
     attempts: 1,
     maxAttempts: 3,
     claimSeq: 1,
     leaseToken: `0000000${n}-2222-4222-8222-222222222222`,
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
+    executorRefusal: null,
+    skillRefusal: null,
     masterPrompt: MASTER_PROMPT,
     resumeSessionId,
     followUp: false,
@@ -57,29 +60,14 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
 });
 
 interface BoardStub extends Board {
-    completed: {
-        id: string;
-        status: string;
-        exitCode: number | null;
-        output: string;
-        publication?: {
-            repo: string;
-            prNumber: number;
-            prUrl: string;
-            headBranch: string;
-            baseBranch: string;
-        } | null;
-    }[];
+    completed: ({ id: string } & Parameters<Board['complete']>[1])[];
     sessions: { id: string; sessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeReport | null }[];
     suspended: string[];
     /** The pre-run claims the loop handed back for checkout contention (issue #559). */
     requeued: string[];
     beats: number;
-    gatesReported: {
-        id: string;
-        results: { name: string; status: string; exitCode: number | null; output: string | null }[];
-    }[];
+    gatesReported: { id: string; results: Parameters<Board['gates']>[1] }[];
     gatesReread: number;
     publishTokenAsks: string[];
     reclaimGrants: Reclaim[];
@@ -118,7 +106,7 @@ function stubBoard(
         failAckReclaim?: boolean;
         publishToken?: string | null;
         /** The board's answer to `leases` — null models a refused lookup (issue #344). */
-        leaseRows?: BoardLease[] | null;
+        leaseRows?: BoardLease[] | null | undefined;
         /** The board's answer to a question report (issue #226); held when absent. */
         questionVerdict?: QuestionVerdict;
     } = {}
@@ -221,6 +209,12 @@ function stubBoard(
             board.gatesReported.push({ id: claimed.id, results });
             return options.lease ?? 'held';
         },
+        async requestReview() {
+            throw new Error('requestReview is not stubbed');
+        },
+        async readReview() {
+            throw new Error('readReview is not stubbed');
+        },
     };
 
     return { board, attach: (l) => (loop = l) };
@@ -233,6 +227,7 @@ describe('the agent’s draft publication (issue #547)', () => {
         branch: 'fix/10',
         prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
         reason: null,
+        cause: null,
         repository: 'Bellows-AI/factory',
         baseBranch: 'main',
         prNumber: 42,
@@ -298,6 +293,7 @@ describe('an objective-mode task, ticket to draft publication (issue #550)', () 
         branch: 'factory/objective',
         prUrl: 'https://github.com/Bellows-AI/factory/pull/77',
         reason: null,
+        cause: null,
         repository: 'Bellows-AI/factory',
         baseBranch: 'main',
         prNumber: 77,
@@ -315,14 +311,14 @@ describe('an objective-mode task, ticket to draft publication (issue #550)', () 
         // Mutable on purpose: the agent "fixes the code" mid-run, which flips the gate's answer.
         const outcomes: Record<string, number> = { test: 1 };
         const { stack, gates } = stubGateStack(outcomes, { control: true });
-        const adHoc: number[] = [];
+        const adHoc: (number | null)[] = [];
         const answers: number[] = [];
         const runner: ReturnType<typeof stubRunner> = stubRunner(
             async (running) => {
                 const key = `bellows/${USER}/.worktrees/${objectiveJob(1).id}`;
                 const control = stack.controls.get(running.gateEnv?.BELLOWS_CONTROL_TOKEN ?? '');
                 if (!control?.publisher) throw new Error('no publisher on the control entry');
-                const gate = async () => adHoc.push((await stack.manager.runGate(key, 'test')).exitCode);
+                const gate = async () => adHoc.push((await stack.manager.runGate(key, 'test', 'npm test')).exitCode);
                 // 1. implement, run the gate: red.
                 await gate();
                 // 2. revise, rerun: green; publish the first draft.
@@ -384,7 +380,7 @@ function stubRunner(
         publish?: PublishResult | null;
         sync?: SyncResult | null;
         syncError?: Error;
-        reclaim?: { ok: boolean; removed: boolean; reason: string | null } | null;
+        reclaim?: { ok: boolean; removed: boolean; reason: string | null } | null | undefined;
         /** Answers popped per reclaimWorktree call, falling back to `reclaim` (issue #344). */
         reclaimSequence?: ReclaimResult[];
         /** The kubernetes orphan-claim reap; recorded in `reapAttempts` (issue #344). */
@@ -467,6 +463,7 @@ function stubRunner(
                     branch: null,
                     prUrl: null,
                     reason: null,
+                    cause: null,
                     repository: null,
                     baseBranch: null,
                     prNumber: null,
@@ -538,9 +535,9 @@ async function drive(
         board: deps.board,
         runner: deps.runner,
         config: config(env),
-        gates: deps.gates,
-        log: deps.log,
         sleep,
+        ...(deps.gates ? { gates: deps.gates } : {}),
+        ...(deps.log ? { log: deps.log } : {}),
         ...(deps.syncs ? { syncs: deps.syncs } : {}),
         ...(deps.syncWaitMs === undefined ? {} : { syncWaitMs: deps.syncWaitMs }),
     });
@@ -619,11 +616,11 @@ function stubGateStack(
                 stack.controlClosed.push(token);
                 stack.controls.delete(token);
             },
-            resolveQuestion: (token: string, id: string, resolution: QuestionResolution) => {
+            resolveQuestion: (token: string, id: string, resolution: QuestionResolution): boolean => {
                 const control = stack.controls.get(token);
                 return control ? resolveQuestion(control, id, resolution) : false;
             },
-            hasPendingQuestion: (token: string) => {
+            hasPendingQuestion: (token: string): boolean => {
                 const control = stack.controls.get(token);
                 return control ? hasPendingQuestion(control) : false;
             },
@@ -937,6 +934,7 @@ describe('the poll loop', () => {
                 branch: 'fix/10',
                 prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
                 reason: null,
+                cause: null,
                 repository: 'Bellows-AI/factory',
                 baseBranch: 'main',
                 prNumber: 42,
@@ -972,6 +970,7 @@ describe('the poll loop', () => {
                 branch: null,
                 prUrl: null,
                 reason: 'no uncommitted changes and nothing unpushed',
+                cause: null,
                 repository: null,
                 baseBranch: null,
                 prNumber: null,
@@ -994,6 +993,9 @@ describe('the poll loop', () => {
                 prUrl: null,
                 reason: 'git step failed: authentication refused',
                 cause: 'conflict',
+                repository: null,
+                baseBranch: null,
+                prNumber: null,
             },
         });
 
@@ -1023,6 +1025,7 @@ describe('the poll loop', () => {
                 branch: 'fix/10',
                 prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
                 reason: null,
+                cause: null,
                 repository: 'Bellows-AI/factory',
                 baseBranch: 'main',
                 prNumber: 42,
@@ -3901,6 +3904,7 @@ describe('block-helper steps (issue #207)', () => {
                 branch: 'fix/1',
                 prUrl: 'https://github.com/o/r/pull/1',
                 reason: null,
+                cause: null,
                 repository: 'o/r',
                 baseBranch: 'main',
                 prNumber: 1,
@@ -4122,6 +4126,7 @@ describe('block-helper steps (issue #207)', () => {
                     branch: 'fix/1',
                     prUrl: 'https://github.com/o/r/pull/1',
                     reason: null,
+                    cause: null,
                     repository: 'o/r',
                     baseBranch: 'main',
                     prNumber: 1,
@@ -4294,6 +4299,7 @@ describe('the output pump snapshot', () => {
             log: () => {},
             sleep,
             reclaims: new Map(),
+            syncs: syncQueue(),
             report: async () => 'held',
         };
         const state = newJobState();
@@ -4349,6 +4355,7 @@ describe('a dead declared service (issue #423)', () => {
         branch: 'factory/1',
         prUrl: 'https://github.com/Bellows-AI/factory/pull/7',
         reason: null,
+        cause: null,
         repository: 'Bellows-AI/factory',
         baseBranch: 'main',
         prNumber: 7,
@@ -4663,6 +4670,7 @@ describe('the agent reporting it is blocked', () => {
                     branch: 'b',
                     prUrl: null,
                     reason: null,
+                    cause: null,
                     repository: null,
                     baseBranch: null,
                     prNumber: null,
@@ -4854,6 +4862,7 @@ describe('a verdict the board refuses with a 5xx', () => {
         branch: 'fix/1',
         prUrl: 'https://github.com/o/r/pull/1',
         reason: null,
+        cause: null,
         repository: 'o/r',
         baseBranch: 'main',
         prNumber: 1,
@@ -4920,6 +4929,7 @@ describe('a stand-down after the gates (issue #427)', () => {
         branch: 'fix/1',
         prUrl: 'https://github.com/o/r/pull/1',
         reason: null,
+        cause: null,
         repository: 'o/r',
         baseBranch: 'main',
         prNumber: 1,
@@ -5043,7 +5053,7 @@ describe('a stand-down after the gates (issue #427)', () => {
         const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
         const fire = armHeartbeat(board.board, 'lost');
         const runner = stubRunner(async () => ok(), { publish: landed });
-        const rawPublish = runner.publishGit.bind(runner);
+        const rawPublish = runner.publishGit!.bind(runner);
         runner.publishGit = async (publishedJob, token) => {
             const answer = await rawPublish(publishedJob, token);
             fire();
@@ -5496,7 +5506,7 @@ describe('questions (issue #226)', () => {
             const pause = active.pauseDeadline;
             active.pauseDeadline = async (claimed, paused) => {
                 if (!paused && ++resumes === 1) throw new Error('temporary runner API failure');
-                await pause(claimed, paused);
+                await pause!(claimed, paused);
             };
             await recordQuestion(control, asked('toolu_1'));
             beat.verdict = { result: 'held', cancelRequested: true };
@@ -5572,6 +5582,7 @@ describe('revision-bound evidence', () => {
         branch: 'factory/1',
         prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
         reason: null,
+        cause: null,
         repository: 'Bellows-AI/factory',
         baseBranch: 'main',
         prNumber: 42,

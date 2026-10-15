@@ -3,7 +3,8 @@
  * ceiling — see helpers-config.ts, helpers-user-repo-store.ts, helpers-user-executor-store.ts,
  * helpers-env-var-store.ts, helpers-batch-store.ts, helpers-pr-lifecycle-store.ts, helpers-auth-store.ts (+
  * helpers-auth-store-credentials.ts), helpers-identity.ts, helpers-telemetry.ts,
- * helpers-harness.ts and helpers-http.ts. Every existing `from './helpers.js'` import keeps working unchanged.
+ * helpers-harness.ts, helpers-http.ts, helpers-claim.ts and helpers-app-client.ts. Every existing
+ * `from './helpers.js'` import keeps working unchanged.
  */
 export * from './helpers-config.js';
 export * from './helpers-user-repo-store.js';
@@ -17,3 +18,5 @@ export * from './helpers-identity.js';
 export * from './helpers-telemetry.js';
 export * from './helpers-harness.js';
 export * from './helpers-http.js';
+export * from './helpers-claim.js';
+export * from './helpers-app-client.js';

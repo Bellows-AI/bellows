@@ -198,7 +198,7 @@ describe('DataTable markup', () => {
                 rows={props.rows ?? ROWS}
                 columns={props.columns ?? COLUMNS}
                 rowKey={(r) => r.id}
-                initialSort={props.initialSort}
+                {...(props.initialSort ? { initialSort: props.initialSort } : {})}
                 empty={props.empty ?? 'nothing here'}
             />
         );

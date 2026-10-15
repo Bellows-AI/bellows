@@ -31,10 +31,10 @@ interface Call {
 /** A fetch that answers from a script, one call per entry, and records every request path. */
 function fetchScript(script: Call[], requests: string[]): typeof fetch {
     let n = 0;
-    return (async (input: RequestInfo | URL) => {
+    return (async (input: Parameters<typeof fetch>[0]) => {
         const path = String(input).replace('https://api.github.test', '');
         requests.push(path);
-        const next = script[Math.min(n, script.length - 1)];
+        const next = script[Math.min(n, script.length - 1)]!;
         n += 1;
         const headers = new Headers(next.headers);
         return new Response(next.body === null ? null : JSON.stringify(next.body), {

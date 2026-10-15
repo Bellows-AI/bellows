@@ -3,7 +3,7 @@ import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import type { EnvPayload, UseEnv } from '../src/api/useEnv.js';
 import type { Session } from '../src/api/useSession.js';
-import type { WorkspacePayload, UseWorkspace } from '../src/api/useWorkspace.js';
+import type { WorkspacePayload, UseWorkspace, WorkspaceRepo } from '../src/api/useWorkspace.js';
 import { SettingsOverviewPage } from '../src/pages/SettingsOverviewPage.js';
 import { deriveReadiness } from '../src/settings/readiness.js';
 import { expectNoPlaceholder, memberSession } from './fixtures.js';
@@ -35,7 +35,7 @@ const workspaceData = (over: Partial<WorkspacePayload> = {}): WorkspacePayload =
     ...over,
 });
 
-const repo = (over: { status?: 'queued' | 'cloning' | 'ready' | 'failed'; error?: string | null }) => ({
+const repo = (over: Partial<WorkspaceRepo>): WorkspaceRepo => ({
     owner: 'acme',
     name: 'web',
     status: 'ready' as const,
@@ -250,13 +250,17 @@ describe('deriveReadiness — executors', () => {
                         data: workspaceData({
                             executors: [
                                 {
+                                    id: 'e-fast',
                                     name: 'fast-box',
+                                    suspended: false,
                                     type: 'claude',
                                     createdAt: '2026-01-01T00:00:00Z',
                                     gateFixRounds: 3,
                                 },
                                 {
+                                    id: 'e-big',
                                     name: 'big-box',
+                                    suspended: false,
                                     type: 'claude',
                                     createdAt: '2026-01-02T00:00:00Z',
                                     gateFixRounds: 3,
@@ -283,7 +287,14 @@ describe('deriveReadiness — executors', () => {
                     workspace: {
                         data: workspaceData({
                             executors: [],
-                            orgExecutors: [{ name: 'team-runner', type: 'claude', createdAt: '2026-01-02T00:00:00Z' }],
+                            orgExecutors: [
+                                {
+                                    name: 'team-runner',
+                                    type: 'claude',
+                                    createdAt: '2026-01-02T00:00:00Z',
+                                    suspended: false,
+                                },
+                            ],
                             defaultExecutor: { scope: 'org', name: 'team-runner' },
                         }),
                     },
@@ -477,7 +488,14 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
                     orphaned: [],
                     checkoutTotalBytes: 0,
                     executors: [
-                        { name: 'fast-box', type: 'claude', createdAt: '2026-01-01T00:00:00Z', gateFixRounds: 3 },
+                        {
+                            id: 'e-fast',
+                            name: 'fast-box',
+                            suspended: false,
+                            type: 'claude',
+                            createdAt: '2026-01-01T00:00:00Z',
+                            gateFixRounds: 3,
+                        },
                     ],
                     orgExecutors: [],
                     defaultExecutor: { scope: 'user', name: 'fast-box' },

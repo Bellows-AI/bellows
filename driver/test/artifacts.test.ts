@@ -6,11 +6,15 @@ import type { RunOutcome } from '../src/runner.js';
 const job: BoardJob = {
     id: '11111111-1111-4111-8111-111111111111',
     command: 'fix it',
+    rootCommand: 'fix it',
     attempts: 3,
+    maxAttempts: 3,
     claimSeq: 3,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-09-30T12:05:00.000Z',
     executorType: 'claude-code',
+    executorRefusal: null,
+    skillRefusal: null,
     masterPrompt: null,
     resumeSessionId: null,
     followUp: false,
@@ -32,14 +36,13 @@ function artifactBoard(options: { fail?: boolean; lost?: boolean } = {}): {
     uploads: { kind: string; attempt: number; content: string; truncated: boolean }[];
 } {
     const uploads: { kind: string; attempt: number; content: string; truncated: boolean }[] = [];
-    const board = {
-        async artifact(_j, upload) {
-            if (options.fail) throw new Error('board unreachable');
-            if (options.lost) return 'lost';
-            uploads.push(upload);
-            return 'held';
-        },
-    } as unknown as Board;
+    const artifact: Board['artifact'] = async (_j, upload) => {
+        if (options.fail) throw new Error('board unreachable');
+        if (options.lost) return 'lost';
+        uploads.push(upload);
+        return 'held';
+    };
+    const board = { artifact } as unknown as Board;
     return { board, uploads };
 }
 
@@ -74,7 +77,7 @@ describe('uploading the run artifacts', () => {
     it('uploads nothing for absent or empty artifacts — no artifact, never an empty one', async () => {
         const { board, uploads } = artifactBoard();
 
-        await uploadRunArtifacts({ board, log: () => {} }, job, outcome({ fullLog: '', transcript: undefined }));
+        await uploadRunArtifacts({ board, log: () => {} }, job, outcome({ fullLog: '' }));
 
         expect(uploads).toEqual([]);
     });

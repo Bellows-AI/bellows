@@ -4,6 +4,6 @@
         "composite": false,
         "noEmit": true
     },
-    "include": ["test-db/**/*.ts", "test/test-db.harness.test.ts", "src/**/*.ts"],
+    "include": ["test-db/**/*.ts", "test/**/*.ts", "src/**/*.ts"],
     "references": [{ "path": "../core" }]
 }

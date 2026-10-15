@@ -48,8 +48,8 @@ jobs:
             - name: npm run build
               run: npm run build
             # After the build, which produces the core/dist the project references resolve against.
-            # It is not redundant with the build: `tsc -b` here also covers server/tsconfig.test.json,
-            # which the build does not, so the db-test harness cannot drift silently.
+            # It is not redundant with the build: `tsc -b` here also covers each package's tsconfig.test.json,
+            # which the build does not, so test fixtures cannot drift silently from the types they exercise.
             - name: npm run typecheck
               run: npm run typecheck
             - name: npm test

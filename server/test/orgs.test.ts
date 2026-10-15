@@ -20,7 +20,7 @@ function fakeSql(responses: { rows?: unknown[]; fail?: Error }[]) {
     const fn = ((strings: TemplateStringsArray | string): Promise<unknown> => {
         const text = typeof strings === 'string' ? strings : strings.join('?');
         calls.push(text);
-        const next = responses[Math.min(n, responses.length - 1)];
+        const next = responses[Math.min(n, responses.length - 1)]!;
         n += 1;
         if (next.fail) return Promise.reject(next.fail);
         return Promise.resolve(next.rows ?? []);

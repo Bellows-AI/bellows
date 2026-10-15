@@ -1,3 +1,4 @@
+import { OBJECTIVE_MODE } from '@factory-ai/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pollCompletedJobs } from '../src/api/useCompletedJobs.js';
 import type { Job } from '../src/api/useJobs.js';
@@ -10,41 +11,43 @@ import * as useSession from '../src/api/useSession.js';
  * status-line fallback.
  */
 
-const job = (id: string): Job =>
-    ({
-        id,
-        command: 'do the thing',
-        status: 'succeeded',
-        attempts: 1,
-        maxAttempts: 3,
-        claimedBy: null,
-        createdBy: null,
-        author: null,
-        stoppedBy: null,
-        doneBy: null,
-        sessionId: null,
-        exitCode: 0,
-        output: null,
-        summary: null,
-        failureKind: null,
-        gates: null,
-        runtime: null,
-        repo: null,
-        executor: null,
-        followUpTo: null,
-        rootJobId: id,
-        doneAt: null,
-        cancelRequestedAt: null,
-        workspacePath: null,
-        createdAt: '2026-08-21T12:00:00.000Z',
-        startedAt: null,
-        finishedAt: '2026-08-21T12:20:00.000Z',
-        wallClockMs: null,
-        taskWallClockMs: null,
-        waitReason: null,
-        waitingSince: null,
-        waitTerminalReason: null,
-    }) as Job;
+const job = (id: string): Job => ({
+    id,
+    command: 'do the thing',
+    status: 'succeeded',
+    attempts: 1,
+    author: null,
+    stoppedBy: null,
+    doneBy: null,
+    sessionId: null,
+    exitCode: 0,
+    output: null,
+    summary: null,
+    failureKind: null,
+    gates: null,
+    runtime: null,
+    repo: null,
+    executor: null,
+    workflowNode: null,
+    workflowName: null,
+    mode: OBJECTIVE_MODE,
+    followUpTo: null,
+    rootJobId: id,
+    doneAt: null,
+    cancelRequestedAt: null,
+    workspacePath: null,
+    createdAt: '2026-08-21T12:00:00.000Z',
+    startedAt: null,
+    finishedAt: '2026-08-21T12:20:00.000Z',
+    wallClockMs: null,
+    agentTurns: null,
+    setupMs: null,
+    taskWallClockMs: null,
+    waitReason: null,
+    waitingSince: null,
+    waitTerminalReason: null,
+    questions: [],
+});
 
 const json = (body: unknown, status = 200): Response =>
     new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });

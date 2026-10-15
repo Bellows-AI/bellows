@@ -27,6 +27,7 @@ const node = (name: string, overrides: Partial<WorkflowNode> = {}): WorkflowNode
  *  the runtime boundary — the exact shape github-review-reconcile.ts's expand() produces. */
 const SNAPSHOT: WorkflowDefinition = {
     entry: 'review--collect',
+    params: [],
     nodes: [
         node('review--collect', {
             helperPlans: [{ helperId: 'review-collect-probe', phase: 'pre', githubWriting: true }],
@@ -60,6 +61,9 @@ function fakePrs(): JobStorePrs & {
             return true;
         },
         async cancelWaitsForRoot() {
+            return 0;
+        },
+        async cancelForRepoPr() {
             return 0;
         },
         async enterWait() {
@@ -143,6 +147,7 @@ describe('settleBlockWaits', () => {
     it('only finishes waits belonging to the SAME scope as the halted node', async () => {
         const other: WorkflowDefinition = {
             entry: 'a--collect',
+            params: [],
             nodes: [
                 ...SNAPSHOT.nodes,
                 node('other--wait', {

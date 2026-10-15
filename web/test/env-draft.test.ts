@@ -49,14 +49,14 @@ describe('canonical dirty comparison', () => {
 
     it('stays clean when the draft is reordered — the store reads back ordered by name', () => {
         const rows = [storedVar('A', '1'), storedVar('B', '2')];
-        expect(isDirty(rows, [rows[1], rows[0]])).toBe(false);
+        expect(isDirty(rows, [rows[1]!, rows[0]!])).toBe(false);
     });
 
     it('goes dirty on an edited value, an addition, and a blank-name row nobody finished', () => {
         const rows = [storedVar('A', '1')];
         expect(isDirty(rows, [storedVar('A', '2')])).toBe(true);
-        expect(isDirty(rows, [rows[0], storedVar('NEW', '', 'r9')])).toBe(true);
-        expect(isDirty(rows, [rows[0], { ...storedVar('', '', 'r10'), isNew: true }])).toBe(true);
+        expect(isDirty(rows, [rows[0]!, storedVar('NEW', '', 'r9')])).toBe(true);
+        expect(isDirty(rows, [rows[0]!, { ...storedVar('', '', 'r10'), isNew: true }])).toBe(true);
     });
 
     it('reads a cleared secret input as keep — the wire has one blank form, null', () => {
@@ -64,22 +64,22 @@ describe('canonical dirty comparison', () => {
         // A typed-then-cleared input (value '') PUTs the same keep marker as an untouched one, so
         // undoing a replacement returns the editor to clean. The null/'' distinction the row
         // contract needs lives in secretState and the new-row validation, not on the wire.
-        expect(payloadEquals(envPayload(rows), envPayload([{ ...rows[0], value: '' }]))).toBe(true);
+        expect(payloadEquals(envPayload(rows), envPayload([{ ...rows[0]!, value: '' }]))).toBe(true);
         expect(envPayload(rows)).toEqual([{ name: 'TOKEN', value: null, isSecret: true }]);
         // A typed replacement is the one distinct payload.
-        expect(payloadEquals(envPayload(rows), envPayload([{ ...rows[0], value: 'next' }]))).toBe(false);
+        expect(payloadEquals(envPayload(rows), envPayload([{ ...rows[0]!, value: 'next' }]))).toBe(false);
     });
 
     it('excludes a pending-removed row from the payload, which makes the draft dirty', () => {
         const rows = [storedVar('A', '1'), storedVar('B', '2')];
-        const draft = [rows[0], { ...rows[1], pendingRemove: true }];
+        const draft = [rows[0]!, { ...rows[1]!, pendingRemove: true }];
         expect(envPayload(draft)).toEqual([{ name: 'A', value: '1', isSecret: false }]);
         expect(isDirty(rows, draft)).toBe(true);
     });
 
     it('trims names in the payload — a stray space is not a change', () => {
         const rows = [storedVar('A', '1')];
-        expect(payloadEquals(envPayload(rows), envPayload([{ ...rows[0], name: ' A ' }]))).toBe(true);
+        expect(payloadEquals(envPayload(rows), envPayload([{ ...rows[0]!, name: ' A ' }]))).toBe(true);
     });
 });
 
@@ -87,15 +87,15 @@ describe('row validation — the server rules, mirrored for early feedback', () 
     it('requires a non-empty legal name', () => {
         const errors = rowFieldErrors([{ ...storedVar('', '', 'r1'), isNew: true }]);
         expect(errors.get('r1')?.name).toContain('Name is required.');
-        const bad = rowFieldErrors([storedVar('has space')]);
+        const bad = rowFieldErrors([storedVar('has space', '')]);
         expect(bad.get('has space')?.name[0]).toMatch(/not a legal environment variable name/);
     });
 
     it('refuses over-limit and reserved names', () => {
         const OVER_NAME_LIMIT = 256;
-        const long = rowFieldErrors([storedVar('A'.repeat(OVER_NAME_LIMIT))]);
+        const long = rowFieldErrors([storedVar('A'.repeat(OVER_NAME_LIMIT), '')]);
         expect(long.get('A'.repeat(OVER_NAME_LIMIT))?.name[0]).toMatch(/255 characters/);
-        const reserved = rowFieldErrors([storedVar('WORKDIR')]);
+        const reserved = rowFieldErrors([storedVar('WORKDIR', '')]);
         expect(reserved.get('WORKDIR')?.name[0]).toMatch(/reserved by the runner/);
     });
 
@@ -175,7 +175,7 @@ describe('the advanced .env disclosure', () => {
         // A pending-removed variable is not in the seed text: applying the untouched text twice
         // must not resurrect it, and the untouched text counts as applied.
         const pending = [storedVar('A', '1'), { ...storedVar('B', '2', 'r2'), pendingRemove: true }];
-        expect(advancedUnapplied(serializeEnv([pending[0]]), pending)).toBe(false);
+        expect(advancedUnapplied(serializeEnv([pending[0]!]), pending)).toBe(false);
     });
 });
 

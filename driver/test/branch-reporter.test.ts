@@ -145,8 +145,8 @@ describe('the branch reporter: wire shape and redirects', () => {
             expect(stdout).toBe('');
             expect(stderr).toBe('');
             expect(requests).toHaveLength(1);
-            expect(requests[0].path).toBe('/api/sessions/branch');
-            expect(requests[0].body).toMatchObject({
+            expect(requests[0]!.path).toBe('/api/sessions/branch');
+            expect(requests[0]!.body).toMatchObject({
                 agent: 'claude-code',
                 sessionId: SESSION,
                 repo: 'acme/widgets',
@@ -154,8 +154,8 @@ describe('the branch reporter: wire shape and redirects', () => {
             });
             // One sample per report: the join intersects spans, so the SHA at report time is
             // what makes a moved branch attributable to the right commit.
-            expect(requests[0].body?.headSha).toMatch(/^[0-9a-f]{40}$/);
-            expect(Number.isNaN(Date.parse(String(requests[0].body?.at)))).toBe(false);
+            expect(requests[0]!.body?.headSha).toMatch(/^[0-9a-f]{40}$/);
+            expect(Number.isNaN(Date.parse(String(requests[0]!.body?.at)))).toBe(false);
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
@@ -218,8 +218,8 @@ describe('the branch reporter: wire shape and redirects', () => {
             expect(stderr).toBe('');
             // Exactly the one request, and no GET to /api/sessions/branch-target after it.
             expect(requests).toHaveLength(1);
-            expect(requests[0].path).toBe('/api/sessions/branch');
-            expect(requests[0].headers['x-factory-job-lease-token']).toBe('22222222-2222-4222-8222-222222222222');
+            expect(requests[0]!.path).toBe('/api/sessions/branch');
+            expect(requests[0]!.headers['x-factory-job-lease-token']).toBe('22222222-2222-4222-8222-222222222222');
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
@@ -256,7 +256,7 @@ describe('the branch reporter: timeout overrides', () => {
                 expect(stdout).toBe('');
                 expect(stderr).toBe('');
                 expect(requests).toHaveLength(1);
-                expect(requests[0].body).toMatchObject({ repo: 'acme/widgets', branch: 'main' });
+                expect(requests[0]!.body).toMatchObject({ repo: 'acme/widgets', branch: 'main' });
             } finally {
                 rmSync(dir, { recursive: true, force: true });
             }
@@ -383,7 +383,7 @@ describe('the branch reporter: opencode session discovery', () => {
             // Neither the child nor the foreign-directory root is the session, however much
             // newer they are — the query filters to roots of THIS directory, and these are the
             // assertions that catch either filter being lost.
-            expect(requests[0].body).toMatchObject({ agent: 'opencode', sessionId: 'ses_old' });
+            expect(requests[0]!.body).toMatchObject({ agent: 'opencode', sessionId: 'ses_old' });
         } finally {
             rmSync(dir, { recursive: true, force: true });
             rmSync(data, { recursive: true, force: true });
@@ -435,8 +435,8 @@ describe('the branch reporter: loop mode', () => {
             });
             let stdout = '';
             let stderr = '';
-            child.stdout.on('data', (chunk) => (stdout += chunk));
-            child.stderr.on('data', (chunk) => (stderr += chunk));
+            child.stdout!.on('data', (chunk) => (stdout += chunk));
+            child.stderr!.on('data', (chunk) => (stderr += chunk));
             const first = await waitForRequest();
             expect(first.body).toMatchObject({ agent: 'claude-code', sessionId: SESSION });
             // Still running, and having said nothing: the loop must outlive the report it came
@@ -498,7 +498,7 @@ describe('the branch reporter: loop mode', () => {
                 child.stderr.on('data', (chunk) => (stderr += chunk));
                 try {
                     await untilRequest(1);
-                    expect(requests[0].body?.sessionId).toBe('ses_first');
+                    expect(requests[0]!.body?.sessionId).toBe('ses_first');
                     // The row appears AFTER the first report — mid-loop, the state a live run is in
                     // when its conversation starts — and the change must be reported on the very
                     // next discovery, not a full sampling cycle later.
@@ -509,7 +509,7 @@ describe('the branch reporter: loop mode', () => {
                         dir
                     );
                     await untilRequest(2);
-                    expect(requests[1].body?.sessionId).toBe('ses_second');
+                    expect(requests[1]!.body?.sessionId).toBe('ses_second');
                     expect(stderr).toBe('');
                 } finally {
                     child.kill();
