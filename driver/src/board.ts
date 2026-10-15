@@ -1,3 +1,4 @@
+import { artifactCalls } from './artifact-calls.js';
 import type { EvidencePolicy, GatesOutcome, ReviewEvidence } from './evidence-policy.js';
 import { type ExecutorType, isExecutorType } from './executors.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, LEASE_LOST_CODE, NOT_FOUND_CODE } from './http.js';
@@ -397,7 +398,41 @@ export interface RuntimeReport {
     services?: ServiceStatus[];
 }
 
+/** The stream one artifact upload belongs to, below the job and the claim sequence the job carries. */
+export interface ArtifactStreamRef {
+    executor: string;
+    session: string;
+    stream: string;
+}
+
+/** What the board makes of one chunk. `rejected` is a 4xx that a retry cannot change. */
+export type ChunkAnswer =
+    | { result: 'stored' | 'duplicate' | 'conflict' | 'rejected' }
+    | { result: 'refused'; cause: string };
+
+/** A stream's closing record; copied from the board's manifest shape, times as ISO strings. */
+export interface ArtifactManifest {
+    producer: string;
+    schemaVersion: number;
+    startedAt: string;
+    finishedAt: string;
+    state: 'complete' | 'partial' | 'truncated';
+    terminalCause: string | null;
+}
+
 export interface Board {
+    /**
+     * Stores one chunk of an artifact stream at its source byte offset. Authorized by the job's
+     * claim sequence, not its lease, so a superseded attempt may still call it; a repeat of the
+     * same bytes answers `duplicate`. Throws on a transient failure (a 5xx, a dropped connection).
+     */
+    putArtifactChunk(job: BoardJob, ref: ArtifactStreamRef, offset: number, bytes: Uint8Array): Promise<ChunkAnswer>;
+    /** Closes the stream with its manifest; the same claim-sequence authorization and retry rules. */
+    finalizeArtifact(
+        job: BoardJob,
+        ref: ArtifactStreamRef,
+        manifest: ArtifactManifest
+    ): Promise<'stored' | 'duplicate' | 'conflict' | 'rejected'>;
     /** Null means the queue is empty, which is the ordinary case, not an error. */
     claim(worker: string): Promise<BoardJob | null>;
     heartbeat(job: BoardJob): Promise<HeartbeatVerdict>;
@@ -817,6 +852,8 @@ export function createBoard({
         },
 
         ...reviewCalls(post),
+
+        ...artifactCalls({ url, token, fetch }),
 
         async claimReclaim(worker) {
             const response = await post('/api/reclaims/claim', { worker, leaseSeconds });

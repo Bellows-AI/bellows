@@ -221,7 +221,7 @@ export {
     RUNNER_MANAGED_KEYS,
     USER_SCOPE,
 } from './executors.js';
-export { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, JSON_HEADERS } from './http.js';
+export { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, JSON_HEADERS, OCTET_STREAM_CONTENT_TYPE } from './http.js';
 export { COMMAND_LIMIT } from './limits.js';
 export type { Skill, SkillRequirements } from './skills.js';
 export {

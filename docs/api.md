@@ -35,9 +35,11 @@ and by the `lint/no-shared-literals.grit` plugin.
 
 ## Invariants
 
-- Artifacts have no HTTP surface yet: the index and object store are `server/src/artifacts/`, and the chunk
-  upload and read routes arrive with the upload protocol. `GET /api/jobs/:id/log` and `/transcript` and
-  `POST /api/jobs/:id/artifact` no longer exist. `server/test/auth.enforcement.test.ts`.
+- Artifact upload is `PUT /api/jobs/:id/artifact/chunk` (raw bytes) and `/manifest`: worker routes
+  authorized by the claim sequence the request names (1 through the row's current one, else
+  `400 BAD_CLAIM_SEQ`), never by the lease, and they write nothing on `job`. The artifact reads do not exist
+  yet. `server/src/routes/job-handlers-artifacts.ts`, `server/test/routes.artifacts.test.ts`,
+  `server/test/auth.enforcement.test.ts`.
 - A route is authenticated unless `requirementFor` (`server/src/auth/plugin.ts`) deliberately
   exempts it — new paths fall through to the walled default. `server/test/auth.enforcement.test.ts`.
 - `GET /api/auth/me` answers `200 { authenticated: false }` anonymously, never `401`: it is what

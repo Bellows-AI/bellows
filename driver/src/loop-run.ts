@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob, VerdictEvidence } from './board.js';
 import { withBoardRetry } from './board-retry.js';
+import { uploadRunArtifacts } from './artifact-upload.js';
 import { repoCacheProblem } from './claim.js';
 import { evidenceDecision, evidencePolicyActive, type GatesOutcome, gatesEvidenceOf } from './evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from './runner.js';
@@ -352,6 +353,9 @@ async function reportRunTail(
 ): Promise<void> {
     if (isAgentless(job)) return;
     await reportScrapedSession(rt, job, executorType, outcome);
+    // Never throws and never reaches the verdict: a failed upload only leaves a stream without a
+    // `complete` manifest.
+    await uploadRunArtifacts({ board: rt.board, job, executorType, outcome }, rt);
 }
 
 /**
@@ -420,10 +424,10 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
         return { done: true };
     }
 
-    // The artifacts upload HERE (issue #325): while the lease is still live — settle() has
-    // deliberately not been called — and before the gates, so a gate suite that runs minutes
-    // cannot push the upload past a reclaim. Best-effort throughout; a failed upload costs
-    // retention, never the run.
+    // The artifacts upload HERE, before the gates, so a gate suite that runs minutes cannot push
+    // the upload past the run's end. The board authorizes it by claim sequence, so even a reclaim
+    // would not refuse it. Best-effort throughout; a failed upload leaves the stream without a
+    // complete manifest, never a failed run.
     await reportRunTail(rt, job, executorType, outcome);
     // The session minted and reported before the spawn never ran — no transcript exists under it,
     // so a follow-up resuming it would find no conversation. A resumed session is the parent's

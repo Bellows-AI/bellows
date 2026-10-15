@@ -11,6 +11,7 @@ import type {
     JobStatus,
     JobStore,
     JobLeaseInfo,
+    JobArtifactScope,
     TaskListFilters,
     TaskSummary,
     SettleOutcome,
@@ -172,6 +173,19 @@ export async function leasesOf(ctx: JobStoreContext, ids: readonly string[]): Pr
         where org_id = ${orgId} and id = any(${[...ids]}::uuid[])
     `;
     return rows.map((row) => ({ id: row.id, status: row.status, leaseToken: row.lease_token }));
+}
+
+/**
+ * The coordinates an artifact upload is filed under and the newest claim that may be named: read
+ * from the row alone, never from a lease, so a superseded attempt still resolves its own claim.
+ */
+export async function artifactScopeOf(ctx: JobStoreContext, id: string): Promise<JobArtifactScope | null> {
+    const { sql, orgId } = ctx;
+    const rows = await sql<{ created_by: string | null; root_job_id: string; claim_seq: string }[]>`
+        select created_by, root_job_id, claim_seq from job where org_id = ${orgId} and id = ${id}
+    `;
+    const row = rows[0];
+    return row ? { member: row.created_by, root: row.root_job_id, claimSeq: Number(row.claim_seq) } : null;
 }
 
 export type ListFilter = Parameters<JobStore['list']>[0];

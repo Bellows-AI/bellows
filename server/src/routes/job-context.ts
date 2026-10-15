@@ -14,6 +14,12 @@ export async function storeFor(orgs: OrgRegistry, request: FastifyRequest): Prom
     return rt?.jobs ?? null;
 }
 
+/** The artifact index the caller's org writes through (070), absent when no object store was configured. */
+export async function artifactsFor(orgs: OrgRegistry, request: FastifyRequest) {
+    const rt = await orgs.for(orgOf(request));
+    return rt?.artifacts ?? null;
+}
+
 /** The telemetry client the caller's org reads through (#99), mirroring `storeFor`. */
 export async function telemetryFor(orgs: OrgRegistry, request: FastifyRequest) {
     const rt = await orgs.for(orgOf(request));

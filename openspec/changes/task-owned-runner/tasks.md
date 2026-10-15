@@ -24,7 +24,7 @@ halves in the same change. Unchecked items are not implemented. `→` names hard
   manifest + chunk tables keyed org/member/root/job/claim_seq/executor/session/stream; chunk
   sequence + sha256 make retries idempotent; artifact-finalization status separate from verdict.
   Store backend behind one interface. Scoped read/write; cross-tenant refusal test.
-- [ ] 2. (#765) Chunked upload protocol → 1. Replace `POST /api/jobs/:id/artifact` (single 512 KiB
+- [x] 2. (#765) Chunked upload protocol → 1. Replace `POST /api/jobs/:id/artifact` (single 512 KiB
   upsert, live-lease only) with chunk put + manifest finalize authorized by claim sequence, so a
   stale or reclaimed attempt may finish its own prefix but advances nothing authoritative.
 - [ ] 3. (#766) Claude continuous exporter → 2. Exporter process in the runner pod / docker group tails
