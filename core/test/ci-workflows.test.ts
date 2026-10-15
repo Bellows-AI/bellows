@@ -40,6 +40,7 @@ const workflow = (path: string) => load<Workflow>(path);
 const CI = '.github/workflows/ci.yml';
 const RELEASE = '.github/workflows/release-image.yml';
 const NIGHTLY = '.github/workflows/ui-nightly.yml';
+const MIRROR = '.github/workflows/mirror-images.yml';
 
 // yaml parses with the 1.2 core schema, so the `on:` key stays the string 'on' rather than
 // folding to the boolean true the way a 1.1 parser would.
@@ -49,6 +50,9 @@ const needs = (job: Job) => [job.needs ?? []].flat();
 const runSteps = (job: Job) =>
     (job.steps ?? []).filter((step): step is Step & { run: string } => step.run !== undefined);
 const runs = (job: Job) => runSteps(job).map((step) => step.run.trim());
+// The image docker-compose.yml pins.
+const composePostgres = () =>
+    load<{ services: Record<string, { image: string }> }>('docker-compose.yml').services.postgres!.image;
 
 describe('ci workflows', () => {
     it('validates every pull request to main and every push to main', () => {
@@ -178,6 +182,28 @@ describe('ci workflows', () => {
         expect(create).toContain('--bootstrap');
         expect(create).toContain('--driver-opt "image=$REGISTRY/buildkit:');
         for (const run of runs(jobs.build!)) expect(run).not.toContain('public.ecr.aws');
+    });
+
+    // A job service is pulled by the runner before any step, so nothing can log in or retry first,
+    // and ECR Public's per-IP data limit fails the pull on a shared runner IP however often it is
+    // re-run. The postgres every service runs is copied into GHCR by its own workflow instead.
+    it('mirrors the compose postgres from ECR Public into GHCR, retrying only on toomanyrequests', () => {
+        const mirror = workflow(MIRROR);
+        expect(Object.keys(triggers(mirror)).sort()).toEqual(['schedule', 'workflow_dispatch']);
+        expect(mirror.permissions).toEqual({});
+        const job = mirror.jobs.postgres!;
+        expect(job.permissions).toEqual({ contents: 'read', packages: 'write' });
+        expect(Object.keys(mirror.jobs)).toEqual(['postgres']);
+        expect(job.env!.SOURCE).toBe(composePostgres());
+        const commands = runs(job).join('\n');
+        expect(commands).toContain('docker login ghcr.io');
+        expect(commands).toContain('docker buildx imagetools create -t "$REGISTRY/postgres:17" "$SOURCE"');
+        expect(commands).toContain('grep -q toomanyrequests');
+        // Backoff inside the retry loop, before the next copy; GHCR paths are lowercase.
+        expect(commands).toMatch(/for attempt[\s\S]*sleep[\s\S]*imagetools create/);
+        expect(commands).toContain("tr 'A-Z' 'a-z'");
+        expect(job.steps!.every((step) => step.uses === undefined)).toBe(true);
+        expect(read(MIRROR)).not.toMatch(/secrets\./);
     });
 
     // The db suite is the only coverage the SQL and the migrations have; it gates every pull
