@@ -15,3 +15,9 @@ services:
           POSTGRES_USER: factory
           POSTGRES_PASSWORD: factory
           POSTGRES_DB: factory_test
+    - name: s3
+      image: rustfs/rustfs:1.0.1
+      user: "10001:10001"
+      environment:
+          RUSTFS_ACCESS_KEY: factory
+          RUSTFS_SECRET_KEY: factory-dev

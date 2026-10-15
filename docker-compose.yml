@@ -282,6 +282,27 @@ services:
             retries: 10
             start_period: 10s
 
+    # S3-compatible object store for task artifacts (#764). RustFS: Apache-2.0, enforces
+    # `If-None-Match: *` create-only writes, and runs as a non-root uid from env alone. MinIO
+    # publishes no community images any more. Buckets are created by their consumer, not here.
+    s3:
+        image: rustfs/rustfs:1.0.1
+        environment:
+            RUSTFS_ACCESS_KEY: factory
+            RUSTFS_SECRET_KEY: factory-dev
+        # Localhost-only, same posture as postgres: the bind is the access control.
+        ports:
+            - '127.0.0.1:9000:9000'
+        volumes:
+            - s3-data:/data
+        restart: unless-stopped
+        healthcheck:
+            test: ['CMD-SHELL', 'curl -fsS http://127.0.0.1:9000/health >/dev/null']
+            interval: 5s
+            timeout: 5s
+            retries: 10
+            start_period: 10s
+
     # Receives from Claude Code on the host and forwards to the dashboard's ingest route.
     # Localhost-only, no auth, no TLS — same posture as everything else here.
     collector:
@@ -298,6 +319,7 @@ services:
 
 volumes:
     postgres-data:
+    s3-data:
     # The organization's checkouts. Survives `docker compose down`; `down -v` discards them, and
     # they are re-cloned on the next boot.
     workspaces:
