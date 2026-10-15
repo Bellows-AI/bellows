@@ -25,8 +25,8 @@ bellows help                        # every command, flag and exit code
 
 ## Configuration
 
-Every command reads `~/.bellows/settings.json`. Pass `--config <path>` on any command to read
-another file instead.
+Every command that talks to the board reads `~/.bellows/settings.json`. `help` and `--version`
+read no configuration. Pass `--config <path>` on any command to read another file instead.
 
 ```json
 {
