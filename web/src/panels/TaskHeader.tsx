@@ -388,10 +388,7 @@ export function TaskHeader({
                     ticker. A task that has never run says so with a dash, not a zero. */}
                     <span className="task-clock">
                         Wall clock{' '}
-                        {wallClock(
-                            latestTask.taskWallClockMs,
-                            latestTask.status === 'running' ? latestTask.startedAt : null
-                        )}
+                        {wallClock(latestTask.taskWallClockMs, latestTask.status === 'running' ? latestTask : null)}
                     </span>
                     {summary !== null ? <p className="task-summary">{summary}</p> : null}
                 </>

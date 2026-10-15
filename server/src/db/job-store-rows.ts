@@ -392,9 +392,32 @@ export async function queueReclaimIfThreadDone(
  * segment is banked in the same statement that resets the stamp, which is the only moment it
  * can be. `greatest` ignores nulls, so a row that never started measures zero, and a clock never
  * runs backwards.
+ *
+ * The segment is banked less the time it spent waiting for an answer (issue 738): the segment's
+ * own questions (its `lease_token`), each clipped to `started_at → now()` — a question still
+ * pending waits up to the settle — and merged where they overlap, since the run waits while ANY
+ * question is pending (`driver/src/run-deadline.ts`).
  */
 export function wallTickFragment(sql: Sql): Fragment {
-    return sql`coalesce(wall_clock_ms, 0) + greatest(0, (extract(epoch from (now() - started_at)) * 1000)::bigint)`;
+    return sql`coalesce(wall_clock_ms, 0) + greatest(0,
+        (extract(epoch from (now() - started_at)) * 1000)::bigint - (
+            select coalesce((extract(epoch from sum(e - s)) * 1000)::bigint, 0) from (
+                select min(s) as s, max(e) as e from (
+                    select s, e, sum(fresh) over (order by s, e rows unbounded preceding) as island from (
+                        select s, e, case when s <= max(e) over (order by s, e rows between unbounded preceding
+                                                                 and 1 preceding) then 0 else 1 end as fresh
+                        from (
+                            select greatest(q.asked_at, job.started_at) as s,
+                                   least(coalesce(q.answered_at, now()), now()) as e
+                            from job_question q
+                            where q.org_id = job.org_id and q.job_id = job.id and q.lease_token = job.lease_token
+                        ) waits
+                        where e > s
+                    ) flagged
+                ) islands
+                group by island
+            ) merged
+        ))`;
 }
 
 // The authorship joins, shared by get/thread/list: created_by, stopped_by and done_by resolve to

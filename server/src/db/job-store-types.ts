@@ -263,7 +263,8 @@ export interface Job {
     finishedAt: string | null;
     /**
      * The wall clock THIS row's own attempts banked (024) — the executed segments accumulated
-     * at the settle points, never the time a queued row sat waiting. The thread's total is
+     * at the settle points, never the time a queued row sat waiting nor the time a run waited
+     * for an answer to its questions (`wallTickFragment`). The thread's total is
      * `taskWallClockMs` below; this is the run's own figure — the row's own on the per-run
      * reads, the chain head's own on the grouped terminal list. Null where nothing was ever
      * banked for the row — never zero, which would claim a measurement that was never made.

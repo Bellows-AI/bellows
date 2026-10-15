@@ -38,19 +38,30 @@ const DATABASE = {
  * One running task with one pending question. A running job's lease never expires inside the run,
  * so nothing claims it. Ids are fresh per seed.
  */
-async function seedQuestion(): Promise<string> {
+async function seedQuestion(
+    timing: { startedMinutesAgo: number; askedMinutesAgo: number; answeredMinutesAgo: number | null } = {
+        startedMinutesAgo: 0,
+        askedMinutesAgo: 0,
+        answeredMinutesAgo: null,
+    }
+): Promise<string> {
     const id = crypto.randomUUID();
     const lease = crypto.randomUUID();
+    const ago = (minutes: number) => sql`now() - (${minutes} * interval '1 minute')`;
+    const answered = timing.answeredMinutesAgo !== null;
     await sql`
         insert into job (org_id, id, root_job_id, command, status, attempts, lease_token, lease_expires_at,
                          started_at, finished_at, exit_code, summary)
         values (${orgId}, ${id}, ${id}, ${`pick a cache database ${id.slice(0, 8)}`}, 'running', 1,
-                ${lease}, now() + interval '1 day', now(), null, null, null)
+                ${lease}, now() + interval '1 day', ${ago(timing.startedMinutesAgo)}, null, null, null)
     `;
     await sql`
-        insert into job_question (org_id, job_id, question_id, attempt, lease_token, questions, state)
+        insert into job_question (org_id, job_id, question_id, attempt, lease_token, questions, state, answers,
+                                  asked_at, answered_at)
         values (${orgId}, ${id}, ${`toolu_${id.slice(0, 8)}`}, 1, ${lease}, ${sql.json([DATABASE] as never)},
-                'pending')
+                ${answered ? 'answered' : 'pending'},
+                ${answered ? sql.json({ [DATABASE.question]: 'Postgres' } as never) : null},
+                ${ago(timing.askedMinutesAgo)}, ${answered ? ago(timing.answeredMinutesAgo!) : null})
     `;
     return id;
 }
@@ -123,5 +134,21 @@ test.describe('answering an agent question', () => {
         await expect(status(late)).toContainText('Answered by Local');
         await expect(late.locator('dd')).toHaveText('SQLite');
         await other.close();
+    });
+});
+
+// Issue 738: the time a run waits for an answer is not wall clock — the live timer in the head and
+// the outcome panel both leave it out, answered or still pending.
+test.describe('the wall clock while a question waits', () => {
+    test('2m running, 10m waiting for the answer, 3m running reads 5m', async ({ page }) => {
+        await open(page, await seedQuestion({ startedMinutesAgo: 15, askedMinutesAgo: 13, answeredMinutesAgo: 3 }));
+        await expect(page.locator('.task-clock')).toHaveText('Wall clock 5m');
+        await expect(page.locator('.task-outcome')).toContainText('Wall clock5m');
+    });
+
+    test('a pending question stops the clock where it was asked', async ({ page }) => {
+        await open(page, await seedQuestion({ startedMinutesAgo: 12, askedMinutesAgo: 10, answeredMinutesAgo: null }));
+        await expect(page.locator('.task-clock')).toHaveText('Wall clock 2m');
+        await expect(page.locator('.task-outcome')).toContainText('Wall clock2m');
     });
 });

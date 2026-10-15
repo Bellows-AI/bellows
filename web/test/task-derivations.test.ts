@@ -116,17 +116,52 @@ describe('wallClock', () => {
         expect(wallClock(null, null)).toBe('—');
     });
 
+    /** A live run started at `startedAt`, with its questions' wait windows (`[asked, answered]`). */
+    const live = (startedAt: string, waits: [string, string | null][] = []) => ({
+        startedAt,
+        questions: waits.map(([askedAt, answeredAt]) => ({ askedAt, answeredAt })),
+    });
+    const at = (hhmm: string) => `2026-09-01T${hhmm}:00.000Z`;
+
     it('adds the live run to the banked total, and ticks a live run alone', () => {
         const TEN_MINUTES_MS = 600_000;
-        expect(wallClock(TEN_MINUTES_MS, '2026-09-01T12:00:00.000Z', new Date('2026-09-01T12:05:00.000Z'))).toBe('15m');
-        expect(wallClock(null, '2026-09-01T12:00:00.000Z', new Date('2026-09-01T12:30:00.000Z'))).toBe('30m');
+        expect(wallClock(TEN_MINUTES_MS, live(at('12:00')), new Date(at('12:05')))).toBe('15m');
+        expect(wallClock(null, live(at('12:00')), new Date(at('12:30')))).toBe('30m');
     });
 
     it('a finished run adds nothing, and a nonsense or future start is ignored rather than negative', () => {
         const TEN_MINUTES_MS = 600_000;
         expect(wallClock(TEN_MINUTES_MS, null)).toBe('10m');
-        expect(wallClock(TEN_MINUTES_MS, 'not a date')).toBe('10m');
-        expect(wallClock(null, '2026-09-01T12:00:00.000Z', new Date('2026-09-01T11:00:00.000Z'))).toBe('—');
+        expect(wallClock(TEN_MINUTES_MS, live('not a date'))).toBe('10m');
+        expect(wallClock(null, live(at('12:00')), new Date(at('11:00')))).toBe('—');
+    });
+
+    // Issue 738: time spent waiting for an answer is not wall clock.
+    it('excludes an answered wait: 2m run, 10m waiting, 3m run reads 5m', () => {
+        expect(wallClock(null, live(at('12:00'), [[at('12:02'), at('12:12')]]), new Date(at('12:15')))).toBe('5m');
+    });
+
+    it('a pending question stops the clock until it is answered', () => {
+        expect(wallClock(null, live(at('12:00'), [[at('12:02'), null]]), new Date(at('12:12')))).toBe('2m');
+    });
+
+    it('excludes every question cycle, and counts overlapping questions once', () => {
+        const cycles: [string, string | null][] = [
+            [at('12:02'), at('12:05')],
+            [at('12:07'), at('12:11')],
+        ];
+        expect(wallClock(null, live(at('12:00'), cycles), new Date(at('12:15')))).toBe('8m');
+        const overlapping: [string, string | null][] = [
+            [at('12:03'), at('12:09')],
+            [at('12:05'), at('12:11')],
+        ];
+        expect(wallClock(null, live(at('12:00'), overlapping), new Date(at('12:15')))).toBe('7m');
+    });
+
+    it("ignores an earlier attempt's questions", () => {
+        const TEN_MINUTES_MS = 600_000;
+        // Asked before this attempt started and never answered: a closed question, not a wait.
+        expect(wallClock(TEN_MINUTES_MS, live(at('12:00'), [[at('11:50'), null]]), new Date(at('12:05')))).toBe('15m');
     });
 });
 

@@ -53,6 +53,40 @@ const claimBackdated = async (minutes: number): Promise<{ id: string; token: str
     return { id, token: leaseToken };
 };
 
+const QUESTION_TEXT = 'Which database?';
+
+/**
+ * One agent question on the attempt holding `token`, its wait window placed `[from, to]` minutes
+ * ago (`to` null: still pending). Asked and answered through the store, then backdated — the
+ * window is what the banking subtracts, and a sleep is the only other way to make one.
+ */
+const waitFor = async (
+    id: string,
+    token: string,
+    questionId: string,
+    [fromMinutesAgo, toMinutesAgo]: [number, number | null]
+): Promise<void> => {
+    const questions = [
+        { question: QUESTION_TEXT, header: 'Pick', multiSelect: false, options: [{ label: 'Postgres' }] },
+    ];
+    expect(await store.askQuestion(id, token, { questionId, questions })).toMatchObject({ result: 'created' });
+    if (toMinutesAgo !== null) {
+        expect(await store.answerQuestion(id, questionId, { [QUESTION_TEXT]: 'Postgres' }, null)).toMatchObject({
+            result: 'ok',
+        });
+    }
+    await sql`update job_question set asked_at = now() - (${fromMinutesAgo} * interval '1 minute'),
+              answered_at = case when answered_at is null then null
+                                 else now() - (${toMinutesAgo ?? 0} * interval '1 minute') end
+              where job_id = ${id} and question_id = ${questionId}`;
+};
+
+const completeOk = async (id: string, token: string): Promise<void> => {
+    expect(await store.complete(id, token, { status: 'succeeded', exitCode: 0, output: null })).toMatchObject({
+        result: 'ok',
+    });
+};
+
 describe.skipIf(!enabled)('the task wall clock', () => {
     /*
      * Every way a single backdated attempt settles banks the segment it actually ran. The stop
@@ -122,6 +156,60 @@ describe.skipIf(!enabled)('the task wall clock', () => {
 
         expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
         expect((await store.get(id))?.status).toBe('dead');
+
+        expectMinutes(await wallOf(id), 6);
+    });
+
+    it('a wait for an answer is not wall clock: 2m run, 10m waiting, 3m run banks 5m', async () => {
+        const { id, token } = await claimBackdated(15);
+        await waitFor(id, token, 'toolu_1', [13, 3]);
+
+        await completeOk(id, token);
+
+        expectMinutes(await wallOf(id), 5);
+        for (const job of (await store.thread(id)) ?? []) expectMinutes(job.taskWallClockMs, 5);
+    });
+
+    it('every question cycle of the attempt is excluded', async () => {
+        const { id, token } = await claimBackdated(15);
+        await waitFor(id, token, 'toolu_1', [13, 10]);
+        await waitFor(id, token, 'toolu_2', [8, 4]);
+
+        await completeOk(id, token);
+
+        expectMinutes(await wallOf(id), 8);
+    });
+
+    it('overlapping questions are one wait, never counted twice', async () => {
+        const { id, token } = await claimBackdated(15);
+        await waitFor(id, token, 'toolu_1', [12, 6]);
+        await waitFor(id, token, 'toolu_2', [10, 4]);
+
+        await completeOk(id, token);
+
+        expectMinutes(await wallOf(id), 7);
+    });
+
+    it('a question still pending when the run is parked waits up to the park', async () => {
+        const { id, token } = await claimBackdated(10);
+        await waitFor(id, token, 'toolu_1', [4, null]);
+
+        expect(await store.suspend(id, token)).toEqual({ result: 'ok', status: 'stopped' });
+
+        expectMinutes(await wallOf(id), 6);
+    });
+
+    it("a re-claim excludes the superseded attempt's wait, and only from that attempt", async () => {
+        const id = await craft({ status: 'running' });
+        const first = (await store.claim('w1', LEASE_SECONDS))!;
+        await sql`update job set started_at = now() - interval '5 minutes' where id = ${id}`;
+        await waitFor(id, first.leaseToken, 'toolu_1', [4, 2]);
+        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
+        // The second claim banks 5m less the 2m wait, then the second attempt runs 3m.
+        const second = (await store.claim('w2', LEASE_SECONDS))!;
+        await sql`update job set started_at = now() - interval '3 minutes' where id = ${id}`;
+
+        await completeOk(id, second.leaseToken);
 
         expectMinutes(await wallOf(id), 6);
     });
