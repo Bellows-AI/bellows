@@ -1,6 +1,6 @@
 environment:
     image: node:24
-    setup: "npm ci"
+    setup: "apt-get update -qq && apt-get install -y -qq jq && npm ci"
     gates:
          - name: test
            command: "npm test"
