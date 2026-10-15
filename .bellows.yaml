@@ -1,6 +1,6 @@
 environment:
     image: node:24
-    setup: "apt-get update -qq && apt-get install -y -qq jq && npm ci"
+    setup: "npm ci && curl -fsSL -o node_modules/.bin/jq https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64 && chmod +x node_modules/.bin/jq"
     gates:
          - name: test
            command: "npm test"
