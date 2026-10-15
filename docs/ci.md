@@ -26,10 +26,13 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
 - **A push to `main` that changes only `VERSION` skips CI; its tag still validates** through the `workflow_call`
   `release-image.yml` makes. No release commit carries `[skip ci]`.
 - **Node is `24`, matching `docker/Dockerfile`'s runtime base**; there is no `.nvmrc`, so the test is the only pin.
-- **Every base image and the e2e `postgres` service pull from `public.ecr.aws/docker/library/`** (Docker Hub
-  rate-limits shared runner IPs). Buildkit comes from `public.ecr.aws/vend/moby/buildkit`, pulled once per release by
-  the `buildkit` job into `<registry>/buildkit`: every build cell boots from that mirror. That pull and the postgres
-  copy in `mirror-images.yml` are the only retries, and only on `toomanyrequests`.
+- **Every base image pulls from `public.ecr.aws/docker/library/`** (Docker Hub rate-limits shared runner IPs).
+  Buildkit comes from `public.ecr.aws/vend/moby/buildkit`, pulled once per release by the `buildkit` job into
+  `<registry>/buildkit`; every build cell boots from that mirror.
+- **No job service pulls from ECR Public**: a service is pulled before any step, so it can neither log in nor retry,
+  and ECR Public's per-IP data limit fails it on a shared runner IP. Every `postgres` service pulls the GHCR mirror
+  with `github.actor`/`github.token` credentials under `packages: read`. Only the two mirror pulls retry, and only
+  on `toomanyrequests`.
 - **Every `uses:` on a job holding `packages: write` is GitHub-owned**, pinned by major tag; Trivy runs as a pinned
   container and helm from a checksum-verified tarball.
 - **Each build job builds to a tarball, scans it, and only then runs `docker login`**; the one earlier login, for the
@@ -47,6 +50,8 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
 
 ## Stated limits
 
+- CI cannot pull `ghcr.io/bellows-ai/postgres:17` until `mirror-images.yml` has run once; a fork pull request
+  reads it only while the package grants this repository access.
 - `driver/test/executor-images.test.ts` and `driver/test/review-reply-script.test.ts` spawn real processes and can
   time out on a contended runner; re-run the job.
 - CI never runs `npm run test:jobs` or `npm run test:k8s`, and no lane runs a real cloud cluster
