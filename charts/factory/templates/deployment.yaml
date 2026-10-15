@@ -81,8 +81,9 @@ spec:
                   imagePullPolicy: {{ .Values.dashboard.imagePullPolicy }}
                   {{- if .Values.dashboard.offline }}
                   # The code-only no-fetch entry. Same image, same routes, same auth wall; nothing
-                  # is fetched or cloned, and the App credential is not needed.
-                  command: ['node', 'server/dist/offline.js']
+                  # is fetched or cloned, and the App credential is not needed. `args`, not
+                  # `command`, so the image's tini entrypoint stays PID 1.
+                  args: ['node', 'server/dist/offline.js']
                   {{- end }}
                   ports:
                       - name: http

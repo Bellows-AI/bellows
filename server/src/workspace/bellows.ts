@@ -42,7 +42,7 @@
  * number, and `readGatesFile` turns that into the job's `gateError`.
  */
 
-import { constants as fsConstants, open as fsOpen } from 'node:fs/promises';
+import { type FileHandle, constants as fsConstants, open as fsOpen, readlink, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BellowsError, fail, KEY_VALUE, MAX_COMMAND_LENGTH, readTimeoutMinutes, scalar } from './bellows-grammar.js';
 import {
@@ -522,8 +522,9 @@ export async function readGatesFile(options: {
     /** Test seam: lets the suite assert the path and simulate failures without a filesystem. */
     readFile?: (path: string) => Promise<string>;
 }): Promise<GatesRead> {
-    const { root, workspacePath, repo, worktreeId = null, readFile = defaultRead } = options;
+    const { root, workspacePath, repo, worktreeId = null } = options;
     if (!root || !repo) return { config: null, error: null, source: null };
+    const readFile = options.readFile ?? containedRead(join(root, workspacePath));
 
     const resolved = resolveGatesPaths({ root, workspacePath, repo, worktreeId });
     if (!resolved.ok) return { config: null, error: resolved.error, source: null };
@@ -577,30 +578,50 @@ const GATES_FILE_LIMIT_KIB = 64;
 const BYTES_PER_KIB = 1024;
 const GATES_FILE_LIMIT = GATES_FILE_LIMIT_KIB * BYTES_PER_KIB;
 
-const defaultRead = async (path: string): Promise<string> => {
-    // Only the final path component is checkout-controlled — the repository's content decides
-    // whether a `.bellows.yaml` exists and what it is, including whether it is a symlink. The
-    // segments above it are server-created: `root` is configuration, and readGatesFile
-    // re-asserts the uuid and segment-validates the repo name before joining, so there is
-    // nothing above the file for a checkout to point a parent directory at. O_NOFOLLOW refuses
-    // a symlinked final component at open instead of following it out of the tree; the flag is
-    // undefined on platforms without it, where the open simply proceeds without the guard.
-    const handle = await fsOpen(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-    try {
-        // Stat and read through the SAME handle. Separate path-based calls could be split by a
-        // concurrent replacement: the size check would bound one inode while the read returned
-        // another, and the limit below would hold a file that was never delivered. Refusing
-        // non-regular files serves the same posture — checkout-authored content on the claim
-        // path is bounded, never read unboundedly.
-        const stats = await handle.stat();
-        if (!stats.isFile()) {
-            throw new Error('.bellows.yaml is not a regular file');
+/**
+ * Where an open file really lies: the kernel's own record of the descriptor on Linux, which no
+ * rename or symlink swapped in after the open can change; elsewhere (a developer's macOS) the
+ * path's realpath, which can race such a swap — the deployed board runs on Linux.
+ */
+async function realPathOf(handle: FileHandle, path: string): Promise<string> {
+    // On Linux a missing /proc is a refusal, never a quiet fall back onto the racy path.
+    return process.platform === 'linux' ? await readlink(`/proc/self/fd/${handle.fd}`) : await realpath(path);
+}
+
+/**
+ * The read `readGatesFile` uses: the file must really lie inside `memberRoot`. Only the final path
+ * component was ever the checkout's to decide, so O_NOFOLLOW guards that one — but the checkout
+ * directory and `.worktrees/<id>` above it are the member's agent's to write too, and the board
+ * sees every org's tree: a symlinked directory there would read another member's file.
+ */
+const containedRead =
+    (memberRoot: string) =>
+    async (path: string): Promise<string> => {
+        const handle = await fsOpen(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+        try {
+            const inside = `${await realpath(memberRoot)}/`;
+            if (!(await realPathOf(handle, path)).startsWith(inside)) {
+                throw new Error(".bellows.yaml lies outside the member's workspace");
+            }
+            return await readOpened(handle);
+        } finally {
+            await handle.close();
         }
-        if (stats.size > GATES_FILE_LIMIT) {
-            throw new Error(`.bellows.yaml is larger than ${GATES_FILE_LIMIT} bytes`);
-        }
-        return await handle.readFile('utf8');
-    } finally {
-        await handle.close();
+    };
+
+/** Stat, bound and read one opened `.bellows.yaml`. */
+async function readOpened(handle: FileHandle): Promise<string> {
+    // Stat and read through the SAME handle. Separate path-based calls could be split by a
+    // concurrent replacement: the size check would bound one inode while the read returned
+    // another, and the limit below would hold a file that was never delivered. Refusing
+    // non-regular files serves the same posture — checkout-authored content on the claim
+    // path is bounded, never read unboundedly.
+    const stats = await handle.stat();
+    if (!stats.isFile()) {
+        throw new Error('.bellows.yaml is not a regular file');
     }
-};
+    if (stats.size > GATES_FILE_LIMIT) {
+        throw new Error(`.bellows.yaml is larger than ${GATES_FILE_LIMIT} bytes`);
+    }
+    return await handle.readFile('utf8');
+}

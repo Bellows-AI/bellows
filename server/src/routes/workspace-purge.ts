@@ -94,12 +94,14 @@ export function orphansAndTotal(
             name: row.name,
             status: row.status,
             error: row.error,
-            sizeBytes: facts.get(dir).sizeBytes,
+            sizeBytes: facts.get(dir, userDir).sizeBytes,
         });
     }
 
     const included: (number | null)[] = [
-        ...selected.filter((row) => row.status === 'ready').map((row) => facts.get(join(userDir, row.name)).sizeBytes),
+        ...selected
+            .filter((row) => row.status === 'ready')
+            .map((row) => facts.get(join(userDir, row.name), userDir).sizeBytes),
         ...orphaned.filter((row) => row.status !== 'purging').map((row) => row.sizeBytes),
     ];
     const checkoutTotalBytes = included.every((size) => size !== null)

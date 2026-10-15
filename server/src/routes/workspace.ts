@@ -161,7 +161,7 @@ function describeRepo(ctx: { facts: FactsCache; root: string; orgId: string; use
     // Only a `ready` checkout has anything on disk to read. Asking about one that is still cloning
     // would walk a half-written tree and report a size that means nothing.
     const dir = join(workspaceDir(ctx.root, ctx.orgId, ctx.userId), row.name);
-    const onDisk = row.status === 'ready' ? ctx.facts.get(dir) : null;
+    const onDisk = row.status === 'ready' ? ctx.facts.get(dir, workspaceDir(ctx.root, ctx.orgId, ctx.userId)) : null;
     return {
         owner: row.owner,
         name: row.name,

@@ -507,6 +507,30 @@ describe('readGatesFile against a real checkout', () => {
         expect(result.error).not.toMatch(/TOPSECRET/);
     });
 
+    // The checkout directory and `.worktrees/<id>` are the member's agent's to write: a symlinked
+    // directory above the file must not make the board read another member's `.bellows.yaml`.
+    it.each([
+        ['the checkout directory', undefined],
+        ['the task worktree', '5c8d2a1e-3b4f-4a6c-9d8e-7f6a5b4c3d2e'],
+    ])("never reads another member's gates through a symlinked %s", async (_where, worktreeId) => {
+        const victim = join(root, ORG, 'a1c2e3f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b', 'factory');
+        await mkdir(victim, { recursive: true });
+        await writeFile(join(victim, '.bellows.yaml'), EXAMPLE.replace('npm test', 'VICTIM-SECRET-COMMAND'));
+        const member = join(root, ORG, USER);
+        await mkdir(join(member, '.worktrees'), { recursive: true });
+        await symlink(victim, worktreeId ? join(member, '.worktrees', worktreeId) : join(member, 'factory'));
+
+        const result = await readGatesFile({
+            root,
+            workspacePath: `${ORG}/${USER}`,
+            repo: 'Bellows-AI/factory',
+            worktreeId,
+        });
+        expect(JSON.stringify(result)).not.toContain('VICTIM-SECRET-COMMAND');
+        expect(result.config).toBeNull();
+        expect(result.error).toBeTruthy();
+    });
+
     it('refuses an oversized .bellows.yaml with the size-limit error', async () => {
         const OVER_BELLOWS_LIMIT_BYTES = 65537;
         await checkoutWith(async (checkout) =>
