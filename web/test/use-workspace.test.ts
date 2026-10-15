@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listExecutorConfigs, payloadSettled, purgeOrphan } from '../src/api/useWorkspace.js';
-import * as useSession from '../src/api/useSession.js';
+import { subscribeUnauthenticated } from '../src/api/useSession.js';
 
 /**
  * The one on-demand executor read, pinned at the wire (#183): the dialog is its only caller, and
@@ -12,11 +12,8 @@ import * as useSession from '../src/api/useSession.js';
 const json = (body: unknown, status = 200): Response =>
     new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
-// The `reportUnauthenticated` spies patch the shared useSession module (`isolate: false`); each
-// dies with its test rather than waiting on vitest's end-of-file restore.
 afterEach(() => {
     vi.unstubAllGlobals();
-    vi.restoreAllMocks();
 });
 
 describe('listExecutorConfigs', () => {
@@ -75,12 +72,17 @@ describe('listExecutorConfigs', () => {
     });
 
     it('hands a 401 to the session gate instead of rendering an error', async () => {
-        const report = vi.spyOn(useSession, 'reportUnauthenticated').mockImplementation(() => {});
-        const HTTP_STATUS_UNAUTHORIZED = 401;
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({}, HTTP_STATUS_UNAUTHORIZED)));
-        const result = await listExecutorConfigs();
-        expect(report).toHaveBeenCalled();
-        expect(result).toEqual({ ok: false, error: 'Your session expired' });
+        const gate = vi.fn();
+        const off = subscribeUnauthenticated(gate);
+        try {
+            const HTTP_STATUS_UNAUTHORIZED = 401;
+            vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({}, HTTP_STATUS_UNAUTHORIZED)));
+            const result = await listExecutorConfigs();
+            expect(gate).toHaveBeenCalled();
+            expect(result).toEqual({ ok: false, error: 'Your session expired' });
+        } finally {
+            off();
+        }
     });
 
     it('prefers the server error message and falls back to the status line', async () => {
@@ -127,10 +129,15 @@ describe('purgeOrphan', () => {
         );
         expect(await purgeOrphan('acme', 'gone')).toEqual({ ok: false, error: '"acme/gone" has 2 unfinished tasks' });
 
-        const report = vi.spyOn(useSession, 'reportUnauthenticated').mockImplementation(() => {});
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
-        expect(await purgeOrphan('acme', 'gone')).toEqual({ ok: false, error: 'Your session expired' });
-        expect(report).toHaveBeenCalled();
+        const gate = vi.fn();
+        const off = subscribeUnauthenticated(gate);
+        try {
+            vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
+            expect(await purgeOrphan('acme', 'gone')).toEqual({ ok: false, error: 'Your session expired' });
+            expect(gate).toHaveBeenCalled();
+        } finally {
+            off();
+        }
     });
 
     it('survives a network failure with an error result, not a throw', async () => {

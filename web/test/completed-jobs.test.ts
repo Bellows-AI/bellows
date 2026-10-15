@@ -2,7 +2,7 @@ import { OBJECTIVE_MODE } from '@factory-ai/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pollCompletedJobs } from '../src/api/useCompletedJobs.js';
 import type { Job } from '../src/api/useJobs.js';
-import * as useSession from '../src/api/useSession.js';
+import { subscribeUnauthenticated } from '../src/api/useSession.js';
 
 /**
  * The board poll the dashboard's task section runs, pinned at the wire: the EIGHT-row bound
@@ -52,11 +52,8 @@ const job = (id: string): Job => ({
 const json = (body: unknown, status = 200): Response =>
     new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
-// The `reportUnauthenticated` spy patches the shared useSession module (`isolate: false`); it
-// dies with its test rather than waiting on vitest's end-of-file restore.
 afterEach(() => {
     vi.unstubAllGlobals();
-    vi.restoreAllMocks();
 });
 
 describe('pollCompletedJobs', () => {
@@ -131,12 +128,17 @@ describe('pollCompletedJobs', () => {
     it('hands a 401 to the session gate and stops polling', async () => {
         // An expired session is not a board failure: the gate takes over, and the poll must
         // NOT rearm — a dead session must not become an infinite re-auth loop.
-        const report = vi.spyOn(useSession, 'reportUnauthenticated').mockImplementation(() => {});
-        const HTTP_STATUS_UNAUTHORIZED = 401;
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({}, HTTP_STATUS_UNAUTHORIZED)));
-        const rearm = vi.fn();
-        await pollCompletedJobs(new AbortController().signal, vi.fn(), vi.fn(), rearm);
-        expect(report).toHaveBeenCalled();
-        expect(rearm).not.toHaveBeenCalled();
+        const gate = vi.fn();
+        const off = subscribeUnauthenticated(gate);
+        try {
+            const HTTP_STATUS_UNAUTHORIZED = 401;
+            vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({}, HTTP_STATUS_UNAUTHORIZED)));
+            const rearm = vi.fn();
+            await pollCompletedJobs(new AbortController().signal, vi.fn(), vi.fn(), rearm);
+            expect(gate).toHaveBeenCalled();
+            expect(rearm).not.toHaveBeenCalled();
+        } finally {
+            off();
+        }
     });
 });
