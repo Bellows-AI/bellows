@@ -78,6 +78,8 @@ export interface StoredChunk extends ChunkRecord {
 export class InvalidArtifactError extends Error {}
 /** The index and the store disagree about a chunk, or the stored bytes fail their recorded sha256. */
 export class ArtifactIntegrityError extends Error {}
+/** The index records a chunk whose object is gone from the store: deleted (retention, task removal), not corrupt. */
+export class ArtifactObjectMissingError extends ArtifactIntegrityError {}
 
 export interface ArtifactStore {
     putChunk(ref: StreamRef, offset: number, body: Uint8Array): Promise<PutChunkResult>;
@@ -91,6 +93,15 @@ export interface ArtifactStore {
     readManifest(ref: StreamRef): Promise<Manifest | null>;
     /** Every manifest of one job (all attempts, sessions, streams), oldest first — its artifact finalization, apart from its verdict. */
     manifestsOfJob(job: string): Promise<(StreamRef & { manifest: Manifest })[]>;
+    /** Every stream of one job with a chunk or a manifest, in attempt order — streams not yet finalized included. */
+    streamsOfJob(job: string): Promise<StreamSummary[]>;
+}
+
+/** One stream of a job as the index knows it: its coordinates, what was stored, and its manifest once finalized. */
+export interface StreamSummary extends StreamRef {
+    chunks: number;
+    bytes: number;
+    manifest: Manifest | null;
 }
 
 export interface ArtifactStoreOptions {
@@ -168,6 +179,12 @@ function checkManifest(input: ManifestInput): Manifest {
     }
     return { ...input, terminalCause: cause };
 }
+
+const streamIdentity = (r: StreamRef) => [r.member, r.root, r.claimSeq, r.executor, r.session, r.stream].join('/');
+
+/** Attempt order, then session, then stream name: the order a reader walks a job's streams. */
+const compareStreams = (a: StreamRef, b: StreamRef) =>
+    a.claimSeq - b.claimSeq || a.session.localeCompare(b.session) || a.stream.localeCompare(b.stream);
 
 /** The stream's coordinates as the columns the two tables share, validated once per call. */
 function columnsOf(orgId: string, ref: StreamRef) {
@@ -257,6 +274,7 @@ export function createArtifactStore(options: ArtifactStoreOptions): ArtifactStor
     const { sql, orgId, ready, objects, prefix } = options;
     const streamMax = options.streamMaxBytes ?? DEFAULT_STREAM_MAX_BYTES;
     const orgQuota = options.orgQuotaBytes ?? 0;
+    const manifestOps = createManifestOps({ sql, orgId, ready });
 
     async function recordedChunk(ref: StreamRef, offset: number): Promise<ChunkRecord | null> {
         const c = columnsOf(orgId, ref);
@@ -289,7 +307,7 @@ export function createArtifactStore(options: ArtifactStoreOptions): ArtifactStor
 
     async function readVerified(key: string, recorded: ChunkRecord): Promise<StoredChunk> {
         const body = await objects.get(key);
-        if (body === null) throw new ArtifactIntegrityError(`${key} is indexed but missing from the store`);
+        if (body === null) throw new ArtifactObjectMissingError(`${key} is indexed but missing from the store`);
         if (body.length !== recorded.length || sha256Hex(body) !== recorded.sha256) {
             throw new ArtifactIntegrityError(`${key} does not match its recorded sha256`);
         }
@@ -367,7 +385,49 @@ export function createArtifactStore(options: ArtifactStoreOptions): ArtifactStor
             return chunk ? { result: 'ok', chunk } : { result: 'missing' };
         },
 
-        ...createManifestOps({ sql, orgId, ready }),
+        ...manifestOps,
+
+        async streamsOfJob(job) {
+            await ready;
+            const rows = await sql<
+                {
+                    member_id: string;
+                    root_job_id: string;
+                    claim_seq: number;
+                    executor: string;
+                    session_id: string;
+                    stream: string;
+                    chunks: string;
+                    bytes: string;
+                }[]
+            >`
+                select member_id, root_job_id, claim_seq, executor, session_id, stream,
+                       count(*) as chunks, coalesce(sum(length), 0) as bytes
+                from artifact_chunk where org_id = ${orgId} and job_id = ${job}
+                group by member_id, root_job_id, claim_seq, executor, session_id, stream
+            `;
+            const streams = new Map<string, StreamSummary>();
+            for (const row of rows) {
+                const summary: StreamSummary = {
+                    member: row.member_id,
+                    root: row.root_job_id,
+                    job,
+                    claimSeq: row.claim_seq,
+                    executor: row.executor,
+                    session: row.session_id,
+                    stream: row.stream,
+                    chunks: Number(row.chunks),
+                    bytes: Number(row.bytes),
+                    manifest: null,
+                };
+                streams.set(streamIdentity(summary), summary);
+            }
+            for (const { manifest, ...ref } of await manifestOps.manifestsOfJob(job)) {
+                const id = streamIdentity(ref);
+                streams.set(id, { chunks: 0, bytes: 0, ...streams.get(id), ...ref, manifest });
+            }
+            return [...streams.values()].sort(compareStreams);
+        },
 
         async listChunks(ref) {
             await ready;

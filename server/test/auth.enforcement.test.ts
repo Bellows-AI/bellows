@@ -246,6 +246,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // The person-side read of a run: its activity. A worker token reading it would be the
     // thread-read hole again, one route over.
     [`/api/jobs/${JOB_ID}/activity`, 'user'],
+    [`/api/jobs/${JOB_ID}/artifacts`, 'user'],
+    [`/api/jobs/${JOB_ID}/artifacts/read`, 'user'],
     // The Jira connector proxy (issue #546): its own requirement — the attempt's pair in every
     // mode, never the worker secret, a cookie or a bearer. The runner is the only caller.
     [`/api/jobs/${JOB_ID}/connectors/jira/rest/api/3/myself`, 'connector'],

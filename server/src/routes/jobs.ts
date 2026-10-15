@@ -33,7 +33,12 @@ import {
 } from './job-handlers-actions.js';
 import { OCTET_STREAM_CONTENT_TYPE } from '@factory-ai/core';
 import { MAX_CHUNK_BYTES } from '../artifacts/artifact-store.js';
-import { handleArtifactChunk, handleArtifactManifest } from './job-handlers-artifacts.js';
+import {
+    handleArtifactChunk,
+    handleArtifactManifest,
+    handleListArtifacts,
+    handleReadArtifacts,
+} from './job-handlers-artifacts.js';
 import { handleAnswer, handleQuestion } from './job-handlers-questions.js';
 import { handleReviewRead, handleReviewRequest } from './job-handlers-reviews.js';
 import { BODY_LIMIT, CONTROL_BODY_LIMIT, QUESTION_BODY_LIMIT } from './job-limits.js';
@@ -168,5 +173,8 @@ export const jobRoutes =
         app.get('/api/jobs/:id', (request, reply) => handleGetJob(orgs, request, reply));
         app.get('/api/jobs/:id/thread', (request, reply) => handleThread(orgs, request, reply));
         app.get('/api/jobs/:id/activity', (request, reply) => handleJobActivity(orgs, request, reply));
+        // The analysis reads over the artifact index (#768): person routes, no worker or lease.
+        app.get('/api/jobs/:id/artifacts', (request, reply) => handleListArtifacts(orgs, request, reply));
+        app.get('/api/jobs/:id/artifacts/read', (request, reply) => handleReadArtifacts(orgs, request, reply));
         app.get('/api/jobs', (request, reply) => handleListJobs(orgs, request, reply));
     };

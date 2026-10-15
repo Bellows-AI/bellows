@@ -28,6 +28,7 @@ export function staticRegistry(
         telemetry?: TelemetryStub;
         service?: ReturnType<typeof createStatsService>;
         jobs?: OrgRuntime['jobs'];
+        artifacts?: OrgRuntime['artifacts'];
         workflows?: OrgRuntime['workflows'];
         prs?: OrgRuntime['prs'];
         envVars?: OrgRuntime['envVars'];
@@ -59,6 +60,7 @@ export function staticRegistry(
         telemetry,
         service: parts.service ?? createStatsService({ config, repos, telemetry }),
         jobs: parts.jobs,
+        artifacts: parts.artifacts,
         workflows: parts.workflows,
         prs: parts.prs,
         envVars: parts.envVars,

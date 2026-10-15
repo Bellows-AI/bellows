@@ -33,6 +33,101 @@ describe('bellows job activity', () => {
     });
 });
 
+const stream = (over: Record<string, unknown> = {}) => ({
+    attempt: 1,
+    executor: 'claude-code',
+    session: 'sess-a',
+    stream: 'transcript',
+    state: 'complete',
+    terminalCause: null,
+    chunks: 2,
+    bytes: 10,
+    producer: 'exporter',
+    startedAt: null,
+    finishedAt: null,
+    ...over,
+});
+const segment = (over: Record<string, unknown> = {}) => ({
+    attempt: 1,
+    executor: 'claude-code',
+    session: 'sess-a',
+    stream: 'transcript',
+    offset: 0,
+    length: 6,
+    gapBefore: 0,
+    state: 'ok',
+    text: 'line 1\n',
+    ...over,
+});
+
+describe('bellows job streams', () => {
+    it('lists each stream with its state and cause, and sends the selection as the query', async () => {
+        const streams = [stream(), stream({ session: 'sess-b', state: 'truncated', terminalCause: 'stream_cap' })];
+        const sentPaths: string[] = [];
+        const result = await cli(['job', 'streams', 'job-1', '--attempt', '2', '--stream', 'transcript'], (url) => {
+            sentPaths.push(url);
+            return json({ jobId: 'job-1', streams });
+        });
+        expect(sentPaths).toEqual(['http://board/api/jobs/job-1/artifacts?stream=transcript&attempt=2']);
+        expect(result.out).toContain('complete  attempt 1 claude-code session sess-a stream transcript  2 chunks');
+        expect(result.out).toContain('truncated (stream_cap)  attempt 1 claude-code session sess-b');
+    });
+
+    it('rejects a non-integer attempt as a usage error before any request', async () => {
+        const result = await cli(['job', 'streams', 'job-1', '--attempt', 'x'], () => json({}));
+        expect(result.code).toBe(2);
+    });
+});
+
+describe('bellows job read', () => {
+    const page = (segments: unknown[], nextCursor: string | null, streams = [stream()]) =>
+        json({ jobId: 'job-1', streams, segments, nextCursor });
+
+    it('prints a page, then the cursor that continues it', async () => {
+        const result = await cli(['job', 'read', 'job-1', '--limit', '6'], () =>
+            page([segment()], 'abc', [stream({ state: 'partial', terminalCause: 'not_finalized' })])
+        );
+        expect(result.out).toContain(
+            '# partial (not_finalized): attempt 1 claude-code session sess-a stream transcript'
+        );
+        expect(result.out).toContain('line 1');
+        expect(result.out).toContain('# more: --cursor abc');
+    });
+
+    it('follows every cursor under --all, so a transcript of any length reads in one command', async () => {
+        const cursors: (string | null)[] = [];
+        const result = await cli(['job', 'read', 'job-1', '--all', '--json'], (url) => {
+            const cursor = new URL(url).searchParams.get('cursor');
+            cursors.push(cursor);
+            if (cursor === null) return page([segment({ text: 'a\n' })], 'c1');
+            if (cursor === 'c1') return page([segment({ offset: 2, text: 'b\n' })], 'c2');
+            return page([segment({ attempt: 2, session: 'sess-b', text: 'c\n' })], null);
+        });
+        expect(cursors).toEqual([null, 'c1', 'c2']);
+        const data = JSON.parse(result.out).data;
+        expect(data.segments.map((s: { text: string }) => s.text)).toEqual(['a\n', 'b\n', 'c\n']);
+        expect(data.nextCursor).toBeNull();
+    });
+
+    it('says inline when bytes are missing or an object was deleted', async () => {
+        const result = await cli(['job', 'read', 'job-1'], () =>
+            page([segment({ offset: 8, gapBefore: 8 }), segment({ offset: 14, state: 'deleted', text: null })], null, [
+                stream({ state: 'deleted', terminalCause: 'object_missing' }),
+            ])
+        );
+        expect(result.out).toContain('# deleted (object_missing)');
+        expect(result.out).toContain('# 8 bytes missing before offset 8');
+        expect(result.out).toContain('# deleted: 6 bytes at offset 14 of attempt 1');
+    });
+
+    it('surfaces a refusal from the board', async () => {
+        const result = await cli(['job', 'read', 'job-1'], () =>
+            json({ error: 'No such job', code: 'NOT_FOUND' }, 404)
+        );
+        expect(result.code).not.toBe(0);
+    });
+});
+
 describe('bellows job investigate evidence', () => {
     const job = {
         id: 'job-1',

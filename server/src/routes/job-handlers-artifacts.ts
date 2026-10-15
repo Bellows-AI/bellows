@@ -1,10 +1,31 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { InvalidArtifactError, MANIFEST_STATES, type ManifestState } from '../artifacts/artifact-store.js';
+import { orgOf } from '../auth/plugin.js';
+import {
+    DEFAULT_PAGE_BYTES,
+    matchesFilter,
+    MAX_PAGE_BYTES,
+    readPage,
+    viewOf,
+    type StreamFilter,
+} from '../artifacts/artifact-read.js';
+import {
+    type ArtifactStore,
+    InvalidArtifactError,
+    MANIFEST_STATES,
+    type ManifestState,
+} from '../artifacts/artifact-store.js';
 import type { StreamRef } from '../artifacts/keys.js';
 import type { OrgRegistry } from '../orgs.js';
 import { artifactsFor } from './job-context.js';
-import { HTTP_CONFLICT, HTTP_OK, HTTP_PAYLOAD_TOO_LARGE, HTTP_UNAVAILABLE, notFoundJob } from './job-limits.js';
+import {
+    HTTP_CONFLICT,
+    HTTP_OK,
+    HTTP_PAYLOAD_TOO_LARGE,
+    HTTP_UNAVAILABLE,
+    noBoard,
+    notFoundJob,
+} from './job-limits.js';
 import { bad, body, guard } from './helpers.js';
 import { resolveJobRoute } from './route-guards.js';
 
@@ -175,4 +196,114 @@ export async function handleArtifactManifest(orgs: OrgRegistry, request: Fastify
         return bad(reply, ERROR_CODES.ARTIFACT_CONFLICT, 'a different manifest is already recorded', HTTP_CONFLICT);
     }
     return reply.code(HTTP_OK).send({ result: done.result });
+}
+
+interface ArtifactQuery {
+    stream?: string;
+    attempt?: string;
+    session?: string;
+    executor?: string;
+    cursor?: string;
+    limit?: string;
+}
+
+type Parsed =
+    | { ok: true; filter: StreamFilter; cursor?: string; maxBytes: number }
+    | { ok: false; reply: () => unknown };
+
+function parseQuery(query: ArtifactQuery, reply: FastifyReply): Parsed {
+    const { stream, session, executor, cursor } = query;
+    const filter: StreamFilter = {
+        ...(stream !== undefined && { stream }),
+        ...(session !== undefined && { session }),
+        ...(executor !== undefined && { executor }),
+    };
+    if (query.attempt !== undefined) {
+        const attempt = Number(query.attempt);
+        if (!/^\d+$/.test(query.attempt) || !Number.isSafeInteger(attempt)) {
+            return {
+                ok: false,
+                reply: () => bad(reply, ERROR_CODES.BAD_ATTEMPT, 'attempt must be a non-negative integer'),
+            };
+        }
+        filter.attempt = attempt;
+    }
+    let maxBytes = DEFAULT_PAGE_BYTES;
+    if (query.limit !== undefined) {
+        maxBytes = Number(query.limit);
+        if (!/^\d+$/.test(query.limit) || maxBytes < 1 || maxBytes > MAX_PAGE_BYTES) {
+            return {
+                ok: false,
+                reply: () =>
+                    bad(reply, ERROR_CODES.BAD_LIMIT, `limit must be an integer of bytes 1..${MAX_PAGE_BYTES}`),
+            };
+        }
+    }
+    return { ok: true, filter, ...(cursor !== undefined && { cursor }), maxBytes };
+}
+
+/**
+ * The job's streams as the artifact index knows them. The job is resolved through the caller's own
+ * org first, and the index is bound to that same org, so another org's job id answers exactly what
+ * an unknown one does. A job whose row is gone but whose streams the index still holds (removed, its
+ * objects awaiting deletion) answers its streams as `deleted` rather than as nothing.
+ */
+async function resolveStreams(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return null;
+    const artifacts: ArtifactStore | undefined = (await orgs.for(orgOf(request)))?.artifacts;
+    if (!artifacts) {
+        await noBoard(reply);
+        return null;
+    }
+    const found = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'artifact index read failed'),
+        async () => {
+            const [job, streams] = await Promise.all([route.store.get(route.id), artifacts.streamsOfJob(route.id)]);
+            return { jobRemoved: job === null, streams };
+        }
+    );
+    if (!found.ok) return null;
+    if (found.value.jobRemoved && found.value.streams.length === 0) {
+        await notFoundJob(reply);
+        return null;
+    }
+    return { artifacts, id: route.id, ...found.value };
+}
+
+/** `GET /api/jobs/:id/artifacts`: every stream of the job with its state, filterable like the read. */
+export async function handleListArtifacts(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const parsed = parseQuery(request.query as ArtifactQuery, reply);
+    if (!parsed.ok) return parsed.reply();
+    const resolved = await resolveStreams(orgs, request, reply);
+    if (!resolved) return reply;
+    const streams = resolved.streams
+        .filter((s) => matchesFilter(s, parsed.filter))
+        .map((s) => viewOf(s, resolved.jobRemoved));
+    return reply.code(HTTP_OK).send({ jobId: resolved.id, streams });
+}
+
+/** `GET /api/jobs/:id/artifacts/read`: a cursor-paged read of the selected streams' chunks, in order. */
+export async function handleReadArtifacts(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const parsed = parseQuery(request.query as ArtifactQuery, reply);
+    if (!parsed.ok) return parsed.reply();
+    const resolved = await resolveStreams(orgs, request, reply);
+    if (!resolved) return reply;
+    const selected = resolved.streams.filter((s) => matchesFilter(s, parsed.filter));
+    const page = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'artifact read failed'),
+        () =>
+            readPage(resolved.artifacts, selected, {
+                cursor: parsed.cursor,
+                maxBytes: parsed.maxBytes,
+                jobRemoved: resolved.jobRemoved,
+            })
+    );
+    if (!page.ok) return reply;
+    if (page.value === 'bad_cursor') {
+        return bad(reply, ERROR_CODES.BAD_CURSOR, 'cursor was not issued by this endpoint for this query');
+    }
+    return reply.code(HTTP_OK).send({ jobId: resolved.id, ...page.value });
 }
