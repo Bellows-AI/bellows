@@ -624,14 +624,18 @@ function analyze(segment, depth) {
             }
             if (operands.length > 0 && operands.every((t) => /^origin\/[A-Za-z0-9._/-]+$/.test(t))) return ALLOW;
             // The generic reason read as "merging is forbidden" and a thread asked to update from
-            // main gave up (job 72d9fa14) — name the shape that IS allowed.
+            // main gave up (job 72d9fa14) — name the shape that IS allowed. A batch task's run
+            // carries its base (BASE_BRANCH), which is the branch to bring in, not origin/HEAD.
+            const base = process.env.BASE_BRANCH;
             return {
                 deny: true,
                 reason:
                     "git guard: 'git merge' is allowed only from an origin remote-tracking ref. To bring " +
-                    'the default branch in, run `git fetch origin` then `git merge origin/<default>` ' +
-                    '(`git symbolic-ref --short refs/remotes/origin/HEAD` names it), resolve the ' +
-                    'conflicts, and commit. A local branch, a sha or FETCH_HEAD stays denied.',
+                    (base
+                        ? 'the base branch in, run `git fetch origin` then `git merge origin/' + base + '`, '
+                        : 'the default branch in, run `git fetch origin` then `git merge origin/<default>` ' +
+                          '(`git symbolic-ref --short refs/remotes/origin/HEAD` names it), ') +
+                    'resolve the conflicts, and commit. A local branch, a sha or FETCH_HEAD stays denied.',
             };
         }
         default:

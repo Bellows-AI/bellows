@@ -73,7 +73,13 @@ const nothing = (reason: string) => ({
  */
 const transport = (
     state: Record<string, unknown>,
-    opts: { prExists?: boolean; summary?: unknown; fail?: (step: PublishStep) => string | null } = {}
+    opts: {
+        prExists?: boolean;
+        /** What `gh pr base` answers: the reused PR's state and base. */
+        prBase?: string;
+        summary?: unknown;
+        fail?: (step: PublishStep) => string | null;
+    } = {}
 ) => {
     const steps: PublishStep[] = [];
     const run = async (step: PublishStep): Promise<{ stdout: string }> => {
@@ -86,6 +92,7 @@ const transport = (
             if (opts.prExists) return { stdout: `${PR_URL}\n` };
             throw new Error('no pull requests found');
         }
+        if (step.label === 'gh pr base') return { stdout: `${opts.prBase ?? ''}\n` };
         if (step.label === 'pr summary') return { stdout: JSON.stringify(opts.summary ?? SUMMARY) };
         if (step.label === 'gh pr create') return { stdout: `${PR_URL}\n` };
         return { stdout: '' };
@@ -152,9 +159,78 @@ describe('the publish workflow', () => {
         });
         const create = t.find('gh pr create').args;
         expect(flag(create, '--head')).toBe('fix/10');
+        // No base on the claim: gh picks the repository default, as it always has.
+        expect(create).not.toContain('--base');
         expect(flag(create, '--title')).toBe('Fix the sync re-claim fence (#10)');
         expect(flag(create, '--body')).toBe(`${SUMMARY.body}\n\nCloses #10.\n\n${GATES_LINE}`);
         expect(create).not.toContain('--draft');
+    });
+
+    it('bases the probe and the PR on a claim’s base branch, and reports it', async () => {
+        // The probe answers the base it was handed as the branch to compare against.
+        const t = transport({ ...DIRTY_ON_MAIN, branch: 'batch-sandbox', defaultBranch: 'batch-sandbox' });
+
+        expect(await publish(t, undefined, { ...ISSUE_JOB, baseBranch: 'batch-sandbox' })).toEqual({
+            ...LANDED,
+            baseBranch: 'batch-sandbox',
+        });
+        expect(t.find('probe').envLiterals).toEqual({ REPO: WT, BASE_BRANCH: 'batch-sandbox' });
+        expect(t.find('pr summary').envLiterals).toMatchObject({ BASE: 'origin/batch-sandbox' });
+        expect(flag(t.find('gh pr create').args, '--base')).toBe('batch-sandbox');
+    });
+
+    // The agent may have opened the PR itself with gh's default base: a reused PR is retargeted
+    // to the claim's base before the board records it, so automerge never lands on the default.
+    it.each([
+        [
+            'reused after a push',
+            { ...ON_TASK_BRANCH, unpushed: 1 },
+            ['probe', 'git push', 'gh pr view', 'gh pr base', 'gh pr edit'],
+        ],
+        [
+            'reconciled on a clean tree',
+            { ...ON_TASK_BRANCH, unpushed: 0 },
+            ['probe', 'gh pr view', 'gh pr base', 'gh pr edit'],
+        ],
+    ])('retargets an open PR %s to the claim’s base branch', async (_case, state, labels) => {
+        const t = transport({ ...state, defaultBranch: 'batch-sandbox' }, { prExists: true, prBase: 'OPEN main' });
+
+        expect(await publish(t, undefined, { ...ISSUE_JOB, baseBranch: 'batch-sandbox' })).toEqual({
+            ...LANDED,
+            baseBranch: 'batch-sandbox',
+        });
+        expect(t.labels()).toEqual(labels);
+        expect(t.find('gh pr edit')).toMatchObject({
+            args: ['pr', 'edit', 'fix/10', '--base', 'batch-sandbox'],
+            env: true,
+            inRepo: true,
+        });
+    });
+
+    it.each([
+        ['already on the base', 'OPEN batch-sandbox'],
+        ['merged', 'MERGED main'],
+        ['closed', 'CLOSED main'],
+    ])('leaves a reused PR %s as it is', async (_case, prBase) => {
+        const t = transport(
+            { ...ON_TASK_BRANCH, unpushed: 1, defaultBranch: 'batch-sandbox' },
+            { prExists: true, prBase }
+        );
+
+        expect(await publish(t, undefined, { ...ISSUE_JOB, baseBranch: 'batch-sandbox' })).toMatchObject({ ok: true });
+        expect(t.labels()).toEqual(['probe', 'git push', 'gh pr view', 'gh pr base']);
+    });
+
+    it.each(['gh pr base', 'gh pr edit'])('fails the publish when the retarget’s %s step fails', async (label) => {
+        const t = transport(
+            { ...ON_TASK_BRANCH, unpushed: 0, defaultBranch: 'batch-sandbox' },
+            { prExists: true, prBase: 'OPEN main', fail: (step) => (step.label === label ? 'HTTP 422' : null) }
+        );
+
+        expect(await publish(t, undefined, { ...ISSUE_JOB, baseBranch: 'batch-sandbox' })).toMatchObject({
+            ok: false,
+            reason: expect.stringContaining(`${label}: HTTP 422`),
+        });
     });
 
     it('keeps a member-configured committer identity', async () => {

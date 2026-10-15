@@ -45,9 +45,9 @@ Start from `plan.example.json` beside this file and keep its shape. The contract
   with margin: past the limit nothing new launches.
 
 **What `start` refuses today** — a plan that validates structurally can still be refused at start
-with `409 BATCH_UNSUPPORTED`: more than one target (`multi_target`), a target `branch` other than
-the repository's default (`non_default_branch`), or `automerge` on a board without a GitHub
-installation (`automerge`). Write one target, omit `branch`.
+with `409 BATCH_UNSUPPORTED`: more than one target (`multi_target`), or `automerge` on a board
+without a GitHub installation (`automerge`). A target `branch` the remote does not have is refused
+with `409 BATCH_UNKNOWN_BRANCH`. Write one target; omit `branch` to run on the repository's default.
 
 Show the user the stages and tasks, and confirm the repo, the split and the policy before import.
 Every task spends real money and opens a real PR.

@@ -44,7 +44,6 @@ export {
     MIN_BATCH_RETRY_BUDGET,
     MIN_BATCH_TIME_LIMIT_MINUTES,
     MULTI_TARGET,
-    NON_DEFAULT_BRANCH,
     resolveBatchPlan,
     validateBatchPlan,
 } from './batch-plan.js';

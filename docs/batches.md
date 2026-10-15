@@ -9,7 +9,7 @@ recorded acceptance.
 | Concern | Code | Test |
 | --- | --- | --- |
 | Plan contract v1: types, bounds, `validateBatchPlan`, `resolveBatchPlan`, `batchExecutionCapability` | `core/src/batch-plan.ts` | `core/test/batch-plan.test.ts` |
-| Error codes (`BAD_BATCH`, `BATCH_STALE`, `BATCH_STARTED`, `BATCH_UNSUPPORTED`, `BATCH_TASK_NOT_ACCEPTABLE`, `BATCH_NO_DEFAULT_BRANCH`, `BATCHES_UNAVAILABLE`) | `core/src/error-codes.ts` | `core/test/error-codes.test.ts` |
+| Error codes (`BAD_BATCH`, `BATCH_STALE`, `BATCH_STARTED`, `BATCH_UNSUPPORTED`, `BATCH_TASK_NOT_ACCEPTABLE`, `BATCH_NO_DEFAULT_BRANCH`, `BATCH_UNKNOWN_BRANCH`, `BATCHES_UNAVAILABLE`) | `core/src/error-codes.ts` | `core/test/error-codes.test.ts` |
 | Schema: `batch`, `batch_target`, `batch_stage`, `batch_task`, `batch_idempotency`, the immutability triggers, `executor_scope` | `server/migrations/059_batches.sql`, `066_batch_executor_scope.sql` | `server/test-db/batch-store.test.ts` |
 | Store bound to `orgId`: create, get, list, replace, start; the read `status` (`lifecycleOf`: the stored `draft`/`started` flag and the stamps, cancelled over expired over completed) | `server/src/db/batch-store.ts`, `batch-store-rows.ts`, `batch-store-types.ts` | `server/test-db/batch-store.test.ts`, `server/test-db/batch-dispatch.test.ts` |
 | Idempotency records for create and start | `server/src/db/batch-store-idempotency.ts` | `server/test-db/batch-store.test.ts` |
@@ -20,7 +20,7 @@ recorded acceptance.
 | Roots created in the scheduler's transaction; remove/reopen refuse a batch thread, done a live batch's (`batchThreadState`); `batch_task.closed_at`/`closed_by`; `job done --force` | `server/src/db/job-store-actions.ts`, `job-store-rows.ts`, `server/migrations/068_batch_task_closed.sql`, `server/src/routes/job-handlers-actions.ts`, `cli/src/run.ts` | `server/test-db/batch-dispatch.test.ts`, `server/test/routes.jobs.test.ts`, `cli/test/commands.test.ts` |
 | Human PR gate: `judgeTaskGate` (pure), `judgeGates` (reads `job_pr` + `pr_merge` per pass, and the observed outcome a person must act on) | `core/src/batch-schedule.ts`, `server/src/db/batch-store-gates.ts` | `core/test/batch-schedule.test.ts`, `server/test-db/batch-dispatch.test.ts` |
 | Gate evidence: `batch_acceptance` | `server/migrations/061_batch_acceptance.sql` | `server/test-db/batch-dispatch.test.ts` |
-| Recovery: classification by `job.failure_cause` under `gate`/`publish`/`helper` (`conflict`/`verification` repair, `transport` infra retry, `environment` — a gate that failed only on vitest worker timeouts with every test passed, or exited 124/125/137 (timeout, no runner, kill), classified by `driver/src/gate-cause.ts` for both executors — infra retry (parks as `budget` when they run out; the base-is-red rerun is not built), `denied`/`config` attention `configuration`, else `unclassified`; a startup sync refusal the script names — `missing_workspace`, `missing_clone`, `branch_unrestorable` — reports `config`, an unnamed one `runner_error`; a sync rebase conflict, or a tree a previous attempt left conflicted, is no failure: the sync leaves it in place and the run starts with the paths in its turn context, and a publish over a conflict still unresolved is `publish` cause `conflict`, a repair that spends `repairs` and parks naming the conflict when they run out), backoff, repair command (a run's failed `job.gates` — name, exit code, output tail — bounded by `MAX_EVIDENCE_ITEMS`/`MAX_EVIDENCE_OUTPUT_CHARS`), attention reasons, next action | `core/src/batch-recovery.ts`, `driver/src/loop-ledger.ts`, `driver/src/gate-cause.ts`, `driver/src/scripts/git-worktree.cjs`, `driver/src/publish.ts`, `server/src/db/batch-store-repair.ts` | `core/test/batch-recovery.test.ts`, `driver/test/loop-ledger.test.ts`, `driver/test/gate-cause.test.ts` |
+| Recovery: classification by `job.failure_cause` under `gate`/`publish`/`helper` (`conflict`/`verification` repair, `transport` infra retry, `environment` — a gate that failed only on vitest worker timeouts with every test passed, or exited 124/125/137 (timeout, no runner, kill), classified by `driver/src/gate-cause.ts` for both executors — infra retry (parks as `budget` when they run out; the base-is-red rerun is not built), `denied`/`config` attention `configuration`, else `unclassified`; a startup sync refusal the script names — `missing_workspace`, `missing_clone`, `branch_unrestorable`, `missing_base_branch` — reports `config`, an unnamed one `runner_error`; a sync rebase conflict, or a tree a previous attempt left conflicted, is no failure: the sync leaves it in place and the run starts with the paths in its turn context, and a publish over a conflict still unresolved is `publish` cause `conflict`, a repair that spends `repairs` and parks naming the conflict when they run out), backoff, repair command (a run's failed `job.gates` — name, exit code, output tail — bounded by `MAX_EVIDENCE_ITEMS`/`MAX_EVIDENCE_OUTPUT_CHARS`), attention reasons, next action | `core/src/batch-recovery.ts`, `driver/src/loop-ledger.ts`, `driver/src/gate-cause.ts`, `driver/src/scripts/git-worktree.cjs`, `driver/src/publish.ts`, `server/src/db/batch-store-repair.ts` | `core/test/batch-recovery.test.ts`, `driver/test/loop-ledger.test.ts`, `driver/test/gate-cause.test.ts` |
 | Recovery state: budgets, `deadline_at`/`expired_at`, `attention`, `recovery`, `not_before`, attempt kinds | `server/migrations/062_batch_recovery.sql`, `server/src/db/batch-store-repair.ts` | `server/test-db/batch-dispatch.test.ts` |
 | PR observation: assessment, fingerprint, backoff (pure); GitHub read and its typed errors | `core/src/batch-observation.ts`, `server/src/github/pr-read.ts` | `core/test/batch-observation.test.ts`, `server/test/github.pr-read.test.ts` |
 | Observation rows, leases, supersession, hints; observer loop and merge hand-off | `server/migrations/063_batch_pr_observation.sql`, `server/src/db/batch-store-observation.ts`, `server/src/batch-pr-observer.ts` | `server/test-db/batch-pr-observation.test.ts` |
@@ -43,8 +43,8 @@ recorded acceptance.
   refused at every level of the plan, never ignored. `core/test/batch-plan.test.ts`.
 - **Structural validity is independent of execution capability.** A two-repository plan is valid,
   persists and round-trips; only `start` and `validate` refuse it, with `409 BATCH_UNSUPPORTED` and
-  `reason` `multi_target`, `non_default_branch` (checkout and verification are default-branch only)
-  or `automerge` (only a board with no GitHub installation). `server/test/routes.batches.test.ts`.
+  `reason` `multi_target` or `automerge` (only a board with no GitHub installation).
+  `server/test/routes.batches.test.ts`.
 - **The schema encodes no runtime limit:** no uniqueness on `repo`, no single-target constraint.
   A task's target is a composite foreign key into its own batch's targets, and `(org_id,
   root_job_id)` is unique, so one thread backs at most one task and a task's thread is set once.
@@ -58,10 +58,10 @@ recorded acceptance.
   `gate`, `wait_reason`) stay writable. `server/migrations/059_batches.sql`,
   `066_batch_executor_scope.sql`, `server/test-db/batch-store.test.ts`, `batch-dispatch.test.ts`.
 - **Launch checks run in one order, for `validate` and `start` alike, and write nothing:** structure,
-  installation visibility per target (`checkReposVisible`), default-branch resolution, capability,
+  installation visibility per target (`checkReposVisible`), default-branch resolution, each used
+  non-default branch on the remote (`409 BATCH_UNKNOWN_BRANCH`; offline unchecked), capability,
   executors (each exists in its scope, `404 UNKNOWN_EXECUTOR`, and is not suspended). A replayed
-  `start` answers first.
-  `server/src/routes/batch-launch.ts`, `server/test/routes.batches.test.ts`.
+  `start` answers first. `server/src/routes/batch-launch.ts`, `server/test/routes.batches.test.ts`.
 - **Human credentials only.** No batch path is a worker route or on the organization-token
   allowlist, and the org comes from the credential: a body field naming `org` or `status` is
   refused. `server/test/auth.enforcement.test.ts`.
@@ -96,8 +96,11 @@ recorded acceptance.
   (`verification`) and re-read until it passes, a fenced batch is never verified.
   `core/test/batch-merge.test.ts`, `server/test-db/batch-merge.test.ts`.
 - **Limits of automerge:** merge queues are not proven (a queue answers 405 and the task parks), the
-  method is `squash`, a repository with no checks never verifies, stage progression is default-branch
-  only. `core/src/batch-merge.ts`, `core/src/batch-plan.ts` (`batchExecutionCapability`).
+  method is `squash`, a repository with no checks never verifies. `core/src/batch-merge.ts`.
+- **A task runs on its target's branch on both executors:** the claim's `baseBranch` (read through
+  the thread root, so retries, follow-ups and repairs inherit it) is `BASE_BRANCH` in the sync and the
+  run, and the PR's base (a reused PR is retargeted). `server/src/db/job-store-claim.ts`, `driver/src/publish.ts`,
+  `server/test-db/batch-dispatch.test.ts`, `driver/test/base-branch-executors.test.ts`.
 - **A task's PR is observed from GitHub, never inferred from `failure_kind`.** A row is bound to
   (repo, PR number, attempt) and names the head its checks ran on and the target a conflict was
   judged against; only a confirmed failing required check or conflict is `repairable`, and a new

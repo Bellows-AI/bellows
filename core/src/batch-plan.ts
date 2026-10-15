@@ -498,9 +498,8 @@ export function resolveBatchPlan(plan: BatchPlan, defaults: DefaultBranches): Re
 }
 
 export const MULTI_TARGET = 'multi_target';
-export const NON_DEFAULT_BRANCH = 'non_default_branch';
 export const AUTOMERGE = 'automerge';
-export const BATCH_UNSUPPORTED_REASONS = [MULTI_TARGET, NON_DEFAULT_BRANCH, AUTOMERGE] as const;
+export const BATCH_UNSUPPORTED_REASONS = [MULTI_TARGET, AUTOMERGE] as const;
 export type BatchUnsupportedReason = (typeof BATCH_UNSUPPORTED_REASONS)[number];
 
 export type BatchCapability = { ok: true } | { ok: false; reason: BatchUnsupportedReason; message: string };
@@ -513,16 +512,10 @@ export interface BoardCapabilities {
 
 /**
  * What the executors and the board can run today, separate from whether a plan is valid: one
- * (repo, branch) pair across the targets the tasks use, and that branch the repository's default
- * — executors base every job on `origin/HEAD`. Takes a resolved plan, so the branches are names;
- * `defaults` is what decides whether one of them is the default. An automerge stage needs a board
- * that can merge.
+ * (repo, branch) pair across the targets the tasks use. Takes a resolved plan, so the branches are
+ * names. An automerge stage needs a board that can merge.
  */
-export function batchExecutionCapability(
-    plan: ResolvedBatchPlan,
-    defaults: DefaultBranches,
-    board: BoardCapabilities
-): BatchCapability {
+export function batchExecutionCapability(plan: ResolvedBatchPlan, board: BoardCapabilities): BatchCapability {
     const used = new Set(plan.stages.flatMap((stage) => stage.tasks.map((task) => task.target)));
     const pairs = new Set(
         plan.targets.filter((target) => used.has(target.key)).map((target) => `${target.repo}\u0000${target.branch}`)
@@ -532,14 +525,6 @@ export function batchExecutionCapability(
             ok: false,
             reason: MULTI_TARGET,
             message: 'A batch runs against one repository and branch for now; this plan uses more than one',
-        };
-    }
-    const offDefault = plan.targets.find((target) => used.has(target.key) && defaults[target.repo] !== target.branch);
-    if (offDefault) {
-        return {
-            ok: false,
-            reason: NON_DEFAULT_BRANCH,
-            message: `Tasks run on the repository's default branch for now; "${offDefault.key}" names ${offDefault.branch}`,
         };
     }
     if (!board.canMerge && plan.stages.some((stage) => stage.policy === AUTOMERGE)) {

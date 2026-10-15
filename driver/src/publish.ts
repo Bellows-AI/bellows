@@ -84,7 +84,7 @@ export interface GitState {
     cloned: boolean;
     /** The current branch, or '' when HEAD is detached. */
     branch: string;
-    /** The origin default branch — the one a task branch must not commit to. */
+    /** The base: the claim's base branch, else the origin default — the one a task branch must not commit to. */
     defaultBranch: string;
     /** Uncommitted changes exist. */
     dirty: boolean;
@@ -161,7 +161,12 @@ export const prNumberFromUrl = (url: string): number | null => {
  * fix; the loop reports each as `config` (loop-run.ts, `syncCheckoutStep`). The literals live in
  * the script too, which docker.test.ts pins.
  */
-export const SYNC_FAILURE_KINDS = ['missing_workspace', 'missing_clone', 'branch_unrestorable'] as const;
+export const SYNC_FAILURE_KINDS = [
+    'missing_workspace',
+    'missing_clone',
+    'branch_unrestorable',
+    'missing_base_branch',
+] as const;
 export type SyncFailureKind = (typeof SYNC_FAILURE_KINDS)[number];
 
 /**
@@ -401,6 +406,14 @@ export function worktreeBranch(job: BoardJob): string {
     return `factory/${job.rootJobId ?? job.id}`;
 }
 
+/**
+ * The branch the claim bases its checkout and PR on, or null for the remote default: a value no
+ * git branch can have is dropped here, before it becomes a sync env literal or a `gh --base`.
+ */
+export function baseBranchOf(job: BoardJob): string | null {
+    return typeof job.baseBranch === 'string' && isBranchName(job.baseBranch) ? job.baseBranch : null;
+}
+
 /** Pulls the probe's answer out of its stdout, tolerating anything else. */
 export function parseGitState(stdout: string): GitState {
     const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
@@ -537,13 +550,17 @@ export const GIT_STAGE_STEPS: readonly (readonly string[])[] = [
     ['reset', '-q', '--', '.factory'],
 ];
 
-/** The read-only probe step over one checkout — the publish's first step, and the post-gate tree read. */
-const probeStep = (repo: string): PublishStep => ({
+/**
+ * The read-only probe step over one checkout — the publish's first step, and the post-gate tree
+ * read. A claim's base branch rides as BASE_BRANCH, which the probe reports as the branch to
+ * compare against, so the PR summary, the unpushed count and the PR's base all follow it.
+ */
+const probeStep = (repo: string, base: string | null = null): PublishStep => ({
     label: 'probe',
     entrypoint: 'node',
     args: ['-e', gitProbeScript],
     env: false,
-    envLiterals: { REPO: repo },
+    envLiterals: { REPO: repo, ...(base ? { BASE_BRANCH: base } : {}) },
     inRepo: false,
 });
 
@@ -551,8 +568,8 @@ const probeStep = (repo: string): PublishStep => ({
  * Probes the checkout. A probe that cannot run reads as no state at all — the caller's
  * no-op-with-reason path, never a crash.
  */
-async function probeCheckout(runStep: RunPublishStep, repo: string): Promise<GitState> {
-    const probe = await runStep(probeStep(repo)).catch(() => null);
+async function probeCheckout(runStep: RunPublishStep, repo: string, base: string | null): Promise<GitState> {
+    const probe = await runStep(probeStep(repo, base)).catch(() => null);
     return parseGitState(probe?.stdout ?? '');
 }
 
@@ -648,12 +665,40 @@ async function existingPrUrl(runStep: RunPublishStep, branch: string): Promise<s
 }
 
 /**
+ * Points a reused PR at the claim's base branch: the agent may have opened it with gh's default
+ * base, and the board must never record (or automerge) a PR into a branch the task does not target.
+ * Only an open PR on another base is edited — a merged or closed one cannot be, and one already on
+ * the base needs nothing. A no-op without a base; a failed read or edit fails the publish.
+ */
+async function retargetPr(step: RunPublishStep, job: BoardJob, branch: string): Promise<void> {
+    const base = baseBranchOf(job);
+    if (!base) return;
+    const read = await step({
+        label: 'gh pr base',
+        entrypoint: 'gh',
+        args: ['pr', 'view', branch, '--json', 'state,baseRefName', '-q', '.state + " " + .baseRefName'],
+        env: true,
+        inRepo: true,
+    });
+    const [state, current] = read.stdout.trim().split(' ');
+    if (state !== 'OPEN' || current === base) return;
+    await step({
+        label: 'gh pr edit',
+        entrypoint: 'gh',
+        args: ['pr', 'edit', branch, '--base', base],
+        env: true,
+        inRepo: true,
+    });
+}
+
+/**
  * A clean, fully-pushed checkout on its task branch may still carry a PR the agent opened itself
  * (issue #573): the publication record names it, so the board links the one PR and a retry or a
  * resume reuses it instead of opening a second.
  */
 async function reconcileAgentPr(
     runStep: RunPublishStep,
+    step: RunPublishStep,
     job: BoardJob,
     state: GitState
 ): Promise<PublishResult | null> {
@@ -661,6 +706,7 @@ async function reconcileAgentPr(
     if (!branch || branch === state.defaultBranch || !isBranchName(branch)) return null;
     const prUrl = await existingPrUrl(runStep, branch);
     if (!prUrl) return null;
+    await retargetPr(step, job, branch);
     return {
         ok: true,
         published: true,
@@ -681,11 +727,14 @@ async function reconcileAgentPr(
 async function resolveOrCreatePr(
     runStep: RunPublishStep,
     step: RunPublishStep,
-    context: { branch: string; plan: PublishPlan; state: GitState; draft: boolean }
+    context: { job: BoardJob; branch: string; plan: PublishPlan; state: GitState; draft: boolean }
 ): Promise<string | null> {
-    const { branch, plan, state, draft } = context;
+    const { job, branch, plan, state, draft } = context;
     const reused = await existingPrUrl(runStep, branch);
-    if (reused) return reused;
+    if (reused) {
+        await retargetPr(step, job, branch);
+        return reused;
+    }
 
     // The PR speaks for the work, not for the command that started it (issue #82): a
     // summarizer script reads the branch — its commits and the diff against the default
@@ -724,7 +773,18 @@ async function resolveOrCreatePr(
     const created = await step({
         label: 'gh pr create',
         entrypoint: 'gh',
-        args: ['pr', 'create', '--head', branch, '--title', title, '--body', body, ...(draft ? ['--draft'] : [])],
+        args: [
+            'pr',
+            'create',
+            '--head',
+            branch,
+            ...(baseBranchOf(job) ? ['--base', state.defaultBranch] : []),
+            '--title',
+            title,
+            '--body',
+            body,
+            ...(draft ? ['--draft'] : []),
+        ],
         env: true,
         inRepo: true,
     });
@@ -765,7 +825,7 @@ export async function publishCheckout(
 
         // What is there to publish? A checkout that was never cloned and a clean, fully-pushed
         // tree are the two ordinary no-ops; everything else flows.
-        const state = await probeCheckout(runStep, repo);
+        const state = await probeCheckout(runStep, repo, baseBranchOf(job));
         if (!state.cloned) return publishNothing('the checkout has not been cloned yet');
         if (state.conflicts.length > 0 || state.rebasing) {
             return publishFailed(unresolvedConflictReason(state), 'conflict');
@@ -775,7 +835,7 @@ export async function publishCheckout(
         }
         if (!state.dirty && state.unpushed === 0) {
             return (
-                (await reconcileAgentPr(runStep, job, state)) ??
+                (await reconcileAgentPr(runStep, step, job, state)) ??
                 publishNothing('no uncommitted changes and nothing unpushed')
             );
         }
@@ -803,7 +863,13 @@ export async function publishCheckout(
         });
 
         // Reuse the branch's PR when one exists, or open one — see resolveOrCreatePr.
-        const prUrl = await resolveOrCreatePr(runStep, step, { branch, plan, state, draft: options?.draft === true });
+        const prUrl = await resolveOrCreatePr(runStep, step, {
+            job,
+            branch,
+            plan,
+            state,
+            draft: options?.draft === true,
+        });
 
         return {
             ok: true,

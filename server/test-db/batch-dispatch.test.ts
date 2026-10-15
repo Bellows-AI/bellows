@@ -14,6 +14,7 @@ import {
     batchPlan,
     headOf as sharedHeadOf,
     jobCount as sharedJobCount,
+    BATCH_REPO,
     recordPr,
     startBatch,
 } from './batch-fixtures.js';
@@ -26,9 +27,11 @@ import {
 const enabled = Boolean(process.env.DATABASE_URL);
 
 const ORG = 'test-org';
+/** Its own org, so its claims see no queued row another test left behind. */
+const CLAIM_ORG = 'test-org-claim';
 const ALICE = '00000000-0000-4000-8000-00000000ba70';
 
-const db = useTestDb({ orgs: [ORG], users: [{ id: ALICE, githubUserId: 90078, login: 'alice' }], max: 10 });
+const db = useTestDb({ orgs: [ORG, CLAIM_ORG], users: [{ id: ALICE, githubUserId: 90078, login: 'alice' }], max: 10 });
 
 let sql: Sql;
 let jobs: JobStore;
@@ -1555,5 +1558,41 @@ describe.skipIf(!enabled)('batch lifecycle status', () => {
         expect(await statusOf(id, timed)).toBe('cancelled');
         expect((await timed.get(id))!.expiredAt).not.toBeNull();
         expect((await timed.report(id))!.state).toBe('cancelled');
+    });
+});
+
+describe.skipIf(!enabled)('the claim carries the batch target branch', () => {
+    it('on a task, its retry and its follow-up; never on a job outside a batch', async () => {
+        const claimJobs = createJobStore({ sql, orgId: CLAIM_ORG });
+        const claimBatches = createBatchStore({
+            sql,
+            orgId: CLAIM_ORG,
+            stop: (id, by) => claimJobs.stop(id, by),
+            close: (id, by) => claimJobs.markDone(id, by),
+        });
+        const sandbox = batchPlan('Sandbox', [{ key: 'one', tasks: [task('a')] }], {
+            targets: [{ key: 'web', repo: BATCH_REPO, branch: 'batch-sandbox' }],
+        });
+        const id = await startBatch(claimBatches, sandbox, ALICE);
+        await claimBatches.reconcile(id);
+        const root = (await claimBatches.get(id))!.tasks[0]!.rootJobId!;
+
+        const first = await claimJobs.claim('w1', 300);
+        expect(first).toMatchObject({ id: root, baseBranch: 'batch-sandbox' });
+
+        await sql`update job set status = 'failed', finished_at = now() where id = ${root}`;
+        const retry = (await claimJobs.createRetry(root, ALICE)) as { id: string };
+        expect(await claimJobs.claim('w1', 300)).toMatchObject({ id: retry.id, baseBranch: 'batch-sandbox' });
+
+        await sql`update job set status = 'succeeded', finished_at = now() where id = ${retry.id}`;
+        const followUp = (await claimJobs.createFollowUp(retry.id, 'adjust', ALICE)) as { id: string };
+        expect(await claimJobs.claim('w1', 300)).toMatchObject({ id: followUp.id, baseBranch: 'batch-sandbox' });
+
+        const loose = (await claimJobs.create('echo hi', ALICE, { repo: BATCH_REPO, executor: null })) as {
+            id: string;
+        };
+        const looseClaim = await claimJobs.claim('w1', 300);
+        expect(looseClaim).toMatchObject({ id: loose.id });
+        expect(looseClaim).not.toHaveProperty('baseBranch');
     });
 });
