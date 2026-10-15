@@ -1369,6 +1369,7 @@ describe('the poll loop', () => {
         ['missing_workspace', 'the member workspace /w/bellows/u does not exist — the board creates it', 'config'],
         ['missing_clone', 'the repository clone /w/bellows/u/r does not exist — the board clones it', 'config'],
         ['branch_unrestorable', 'the task branch factory/x could not be restored (re-queue the task)', 'config'],
+        ['missing_base_branch', 'the base branch origin/batch-sandbox does not exist on the remote', 'config'],
         [undefined, 'the task worktree could not be rebased onto origin/main: conflict', 'runner_error'],
     ] as const)('reports a sync refusal of kind %s as %s', async (kind, reason, failureKind) => {
         const board = stubBoard([job(1)]);

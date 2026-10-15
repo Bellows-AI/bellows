@@ -519,6 +519,11 @@ export interface Claim {
      */
     rootJobId: string;
     /**
+     * The branch the run bases its checkout and its PR on: the frozen target branch of the batch
+     * task the thread works. Absent outside a batch, where the remote default (`origin/HEAD`) is the base.
+     */
+    baseBranch?: string;
+    /**
      * The ROOT job's command — `command` itself unless this is a follow-up. The driver's publisher
      * closes the issue it names: the run that publishes is often a follow-up whose own command
      * ("both OK") names none.

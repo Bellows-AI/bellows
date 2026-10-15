@@ -29,7 +29,7 @@ describe('the batch-control skill', () => {
         if (!result.ok) return;
         const defaults = { 'owner/name': 'main' };
         const resolved = resolveBatchPlan(result.plan, defaults);
-        expect(batchExecutionCapability(resolved, defaults, { canMerge: false })).toEqual({ ok: true });
+        expect(batchExecutionCapability(resolved, { canMerge: false })).toEqual({ ok: true });
         // Two stages, the first with parallel tasks: the shape the skill tells a session to copy.
         expect(result.plan.stages.length).toBeGreaterThan(1);
         expect(result.plan.stages[0]!.tasks.length).toBeGreaterThan(1);

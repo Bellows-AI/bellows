@@ -8,7 +8,7 @@ import {
     opencodeAgentArgs,
     opencodeTurnPrompt,
 } from './master-prompt.js';
-import { worktreeDir } from './publish.js';
+import { baseBranchOf, worktreeDir } from './publish.js';
 import type { RunSession } from './runner.js';
 
 /**
@@ -56,6 +56,15 @@ function assertSessionId(job: BoardJob, session: RunSession): void {
 }
 
 /**
+ * The branch a batch task bases on, for the agent's side of the run: the claude git guard's merge
+ * hint and the opencode entrypoint's merge allow name it instead of origin/HEAD.
+ */
+const baseBranchEnv = (job: BoardJob): [string, string][] => {
+    const base = baseBranchOf(job);
+    return base ? [['BASE_BRANCH', base]] : [];
+};
+
+/**
  * opencode: headless only, and opencode mints its own session ids — a fresh run is `run <command>`
  * with no session at all, and a follow-up is `run --session <id> <command>` with the session
  * opencode ITSELF created on the earlier run, persisted via XDG_DATA_HOME. It cannot ADOPT an id
@@ -75,6 +84,7 @@ function opencodePlan(config: DriverConfig, job: BoardJob, session: RunSession |
         ['XDG_DATA_HOME', `${config.workspaceMount}/${workspacePath(job)}/.opencode`],
         ...npmQuietEnv(job),
         ...repoCacheEnv(config, job),
+        ...baseBranchEnv(job),
     ];
     const cliArgs = ['run', ...opencodeAgentArgs()];
     if (session) {
@@ -117,6 +127,7 @@ function claudePlan(config: DriverConfig, job: BoardJob, session: RunSession | n
         ...claudeTurnContextEnv(job),
         ...npmQuietEnv(job),
         ...repoCacheEnv(config, job),
+        ...baseBranchEnv(job),
     ];
     const cliArgs = [session.resume ? '--resume' : '--session-id', session.id];
     if (config.skipPermissions) cliArgs.push('--dangerously-skip-permissions');

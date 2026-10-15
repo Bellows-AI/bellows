@@ -56,6 +56,8 @@ export interface ClaimCandidateRow {
     skills: string[];
     /** Whether the thread ROOT selected a managed Jira connection (054), read in the same RETURNING. */
     has_jira_connection: boolean;
+    /** The frozen target branch of the batch task the thread works (059), read in the same RETURNING; null outside a batch. */
+    base_branch: string | null;
 }
 
 /**
@@ -214,6 +216,7 @@ async function claimNextCandidate(
                     review_ref: string | null;
                     skills: string[];
                     has_jira_connection: boolean;
+                    base_branch: string | null;
                 }[]
             >`
                 update job set
@@ -274,7 +277,13 @@ async function claimNextCandidate(
                           (select r.skills from job r
                            where r.org_id = job.org_id and r.id = job.root_job_id) as skills,
                           (select r.jira_connection_id is not null from job r
-                           where r.org_id = job.org_id and r.id = job.root_job_id) as has_jira_connection
+                           where r.org_id = job.org_id and r.id = job.root_job_id) as has_jira_connection,
+                          -- Joined through the root, so every retry, follow-up and repair of a
+                          -- batch task bases on the target's branch with no column to copy.
+                          (select tg.branch from batch_task t
+                           join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id
+                                               and tg.key = t.target_key
+                           where t.org_id = job.org_id and t.root_job_id = job.root_job_id) as base_branch
             `;
 
             const row = rows[0];
@@ -753,6 +762,7 @@ export function buildClaimResult(
         followUp: row.follow_up,
         ...(claimEnv ? { env: claimEnv } : {}),
         ...(row.repo !== null ? { repo: row.repo } : {}),
+        ...(row.base_branch ? { baseBranch: row.base_branch } : {}),
         ...(claimGates || gateError ? { gates: claimGates, gateError } : {}),
         ...(gatesSource ? { gatesSource } : {}),
         ...(policy ? { policy } : {}),

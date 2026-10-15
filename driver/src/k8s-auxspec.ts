@@ -26,6 +26,7 @@ import {
 import { JOB_ID, LOG_TAIL_LINES, MS_PER_SECOND } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
 import {
+    baseBranchOf,
     CREDENTIAL_HELPER,
     gitWorktreeRemoveScript,
     gitWorktreeScript,
@@ -96,6 +97,8 @@ export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: stri
                 // A named reviewer's tree starts at the snapshot ref its caller froze (issue #549):
                 // a ref name, never a credential — the same literal class as the paths above.
                 ...(job.reviewRun ? [{ name: 'REVIEW_REF', value: job.reviewRun.ref }] : []),
+                // The branch a batch task bases on: a validated branch name, the same literal class.
+                ...(baseBranchOf(job) ? [{ name: 'BASE_BRANCH', value: baseBranchOf(job)! }] : []),
                 // The fetch's credential helper CODE — a literal that is code, the same class as
                 // the three path literals above (the pin on literal credentials stays intact).
                 // Only when the claim env carries the token the helper reads; the token itself

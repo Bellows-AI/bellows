@@ -1,8 +1,9 @@
 name: Mirror images
 
-# The postgres every CI job service runs, copied from ECR Public into GHCR. A job service is pulled
-# by the runner before any step, so it can neither log in nor retry, and ECR Public's per-IP data
-# limit fails it on a shared runner IP however often it is re-run. Weekly picks up 17.x patches.
+# The postgres every CI job service runs, copied into GHCR. A job service is pulled by the runner
+# before any step, so it can neither log in nor retry, and ECR Public's per-IP data limit fails it on
+# a shared runner IP however often it is re-run. That limit refuses this copy too, so the source is
+# Google's Docker Hub cache, which serves the same official image. Weekly picks up 17.x patches.
 on:
     schedule:
         - cron: '41 4 * * 1'
@@ -22,8 +23,9 @@ jobs:
             contents: read
             packages: write
         env:
-            # docker-compose.yml's pin; core/test/ci-workflows.test.ts keeps the two equal.
-            SOURCE: public.ecr.aws/docker/library/postgres:17
+            # docker-compose.yml's pin, read through mirror.gcr.io; core/test/ci-workflows.test.ts
+            # keeps the two on the same image and tag.
+            SOURCE: mirror.gcr.io/library/postgres:17
         steps:
             - name: docker login ghcr.io
               env:

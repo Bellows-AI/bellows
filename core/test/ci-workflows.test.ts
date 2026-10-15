@@ -182,15 +182,19 @@ describe('ci workflows', () => {
 
     // A job service is pulled by the runner before any step, so nothing can log in or retry first,
     // and ECR Public's per-IP data limit fails the pull on a shared runner IP however often it is
-    // re-run. The postgres every service runs is copied into GHCR by its own workflow instead.
-    it('mirrors the compose postgres from ECR Public into GHCR, retrying only on toomanyrequests', () => {
+    // re-run. The postgres every service runs is copied into GHCR by its own workflow instead, read
+    // from Google's Docker Hub cache because ECR Public's data limit refuses the copy as well.
+    it('mirrors the compose postgres from mirror.gcr.io into GHCR, retrying only on toomanyrequests', () => {
         const mirror = workflow(MIRROR);
         expect(Object.keys(triggers(mirror)).sort()).toEqual(['schedule', 'workflow_dispatch']);
         expect(mirror.permissions).toEqual({});
         const job = mirror.jobs.postgres!;
         expect(job.permissions).toEqual({ contents: 'read', packages: 'write' });
         expect(Object.keys(mirror.jobs)).toEqual(['postgres']);
-        expect(job.env!.SOURCE).toBe(composePostgres());
+        expect(job.env!.SOURCE).toBe(
+            composePostgres().replace(/^public\.ecr\.aws\/docker\/library\//, 'mirror.gcr.io/library/')
+        );
+        expect(job.env!.SOURCE).not.toContain('public.ecr.aws');
         const commands = runs(job).join('\n');
         expect(commands).toContain('docker login ghcr.io');
         expect(commands).toContain('docker buildx imagetools create -t "$REGISTRY/postgres:17" "$SOURCE"');

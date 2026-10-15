@@ -77,8 +77,11 @@ try {
     git('rev-parse', '--is-inside-work-tree');
     out.cloned = true;
     out.branch = git('branch', '--show-current');
+    // A claim that names its base (BASE_BRANCH, a batch task's target) compares against it instead.
     try {
-        out.defaultBranch = git('symbolic-ref', 'refs/remotes/origin/HEAD').replace('refs/remotes/origin/', '');
+        out.defaultBranch =
+            process.env.BASE_BRANCH ||
+            git('symbolic-ref', 'refs/remotes/origin/HEAD').replace('refs/remotes/origin/', '');
     } catch {}
     // The `.factory/` state namespace is never publishable work — publish.ts's GIT_STAGE_STEPS
     // exclude it, so a tree dirty only there must read clean or the commit would find nothing.

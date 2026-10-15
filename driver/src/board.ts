@@ -121,6 +121,12 @@ export interface BoardJob {
      */
     rootJobId?: string | null;
     /**
+     * The branch the run bases its checkout and its PR on — a batch task's target branch. Absent
+     * outside a batch, where the remote default (`origin/HEAD`) is the base. Copied from the
+     * board's claim, never imported; read through `baseBranchOf`, which drops a malformed value.
+     */
+    baseBranch?: string | null;
+    /**
      * The thread ROOT job's command — the job's own, unless it is a follow-up. The publisher reads
      * the task's issue from it: the run that publishes is often a follow-up ("both OK") whose own
      * command names nothing.

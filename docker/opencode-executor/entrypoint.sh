@@ -48,8 +48,9 @@ fi
 #
 # The baked bash table allows merging only `origin/main`, by exact match — a glob allow would
 # bless compounds. A repo whose default is another name gets the same three exact allows for
-# its own default, read from origin/HEAD. No origin/HEAD, or a default of main: nothing to add.
-DEFAULT_BRANCH="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+# its own default, read from origin/HEAD — or, for a batch task, the base the driver hands it
+# (BASE_BRANCH). No origin/HEAD, or a default of main: nothing to add.
+DEFAULT_BRANCH="${BASE_BRANCH:-$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)}"
 DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
 if [ "$DEFAULT_BRANCH" = main ]; then DEFAULT_BRANCH=''; fi
 
