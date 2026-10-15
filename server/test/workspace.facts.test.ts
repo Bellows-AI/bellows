@@ -82,9 +82,26 @@ describe('the facts cache', () => {
         expect(measured.sizeBytes).toBeGreaterThan(0);
         expect(measured.branch).toBe('main');
         expect(measured.lastCommit?.headline).toBe('first');
-        // The same values `git log` prints, which is what the payload carried before.
+        // The commit and instant `git log` prints, which is what the payload carried before. The
+        // instant, not the string: newer git spells a UTC `%cI` as `Z`, older as `+00:00`.
         const [sha, at] = gitIn(dir, ['log', '-1', '--format=%H%x00%cI']).trim().split('\0');
-        expect(measured.lastCommit).toMatchObject({ sha, at });
+        expect(measured.lastCommit?.sha).toBe(sha);
+        expect(Date.parse(measured.lastCommit?.at ?? '')).toBe(Date.parse(at ?? ''));
+    });
+
+    it("keeps the committer's own offset, as `%cI` does", async () => {
+        const { member, checkout } = memberCheckout('factory-offset-');
+        execFileSync(
+            'git',
+            ['-c', 'user.email=t@f.io', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'later'],
+            {
+                cwd: checkout,
+                env: { ...process.env, GIT_COMMITTER_DATE: '2026-01-02T03:04:05-0730' },
+            }
+        );
+        const facts = await factsOf(checkout, member);
+        expect(facts.lastCommit?.at).toBe('2026-01-02T03:04:05-07:30');
+        expect(facts.lastCommit?.headline).toBe('later');
     });
 
     it('forgets a directory it is told to invalidate', async () => {
