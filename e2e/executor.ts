@@ -57,6 +57,7 @@ function pollRepo(repo: { owner: string; name: string; status?: string }) {
         branch: null,
         lastCommit: null,
         sizeBytes: null,
+        cacheSizeBytes: null,
         ...repo,
     };
 }

@@ -21,6 +21,11 @@
  * `environment:` may also carry `setup: <command>` — run once per gate environment, before its
  * first gate, in the worktree (an install step); its failure is a setup failure, not a gate's.
  *
+ * `environment:` may also carry `cache:` — a list of `- NAME` env names, each set by the driver to
+ * `<member>/.cache/<owner>/<repo>/<NAME>` in the runner and gate env, a directory that outlives the
+ * container (`readCacheItem`). Declared before `gates:`; names the driver owns or a runtime runs
+ * code from are refused (`bellows-cache.ts`).
+ *
  * One exception, and it is not leniency: a top-level `services:` block is the SERVICES half of
  * the file, read by the driver's own parser (driver/src/services.ts), and one file may carry both
  * halves. This parser skips the block wholesale — it does not judge the services grammar, and a
@@ -44,6 +49,7 @@
 
 import { type FileHandle, constants as fsConstants, open as fsOpen, readlink, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
+import { type CacheBlock, closeCache, newCacheBlock, openCache, readCacheItem } from './bellows-cache.js';
 import { BellowsError, fail, KEY_VALUE, MAX_COMMAND_LENGTH, readTimeoutMinutes, scalar } from './bellows-grammar.js';
 import {
     consumeReviewerLine,
@@ -78,6 +84,8 @@ export interface BellowsConfig {
     readonly image: string;
     /** Runs once per gate environment before the first gate; absent when none is declared. */
     readonly setup?: string;
+    /** Env names the driver points at the member's per-repo cache directory; absent when none. */
+    readonly cache?: readonly string[];
     readonly gates: readonly GateDef[];
 }
 
@@ -115,6 +123,8 @@ interface RawGate {
 interface BellowsState {
     image: string | null;
     setup: string | null;
+    /** The `cache:` list under `environment:` (`bellows-cache.ts`). */
+    cache: CacheBlock;
     inEnvironment: boolean;
     inGates: boolean;
     /** Inside a top-level `services:` block — the services half, not this parser's grammar. */
@@ -172,6 +182,7 @@ function openPolicyBlock(state: BellowsState, line: number, inlineValue: string 
  * skipped wholesale as the driver's own grammar; anything else is refused.
  */
 function handleTopLevelLine(state: BellowsState, line: number, trimmed: string): void {
+    closeCache(state.cache);
     finishGate(state);
     state.inGates = false;
     state.itemIndent = -1;
@@ -276,21 +287,33 @@ function readSetup(state: BellowsState, line: number, raw: string | undefined): 
     state.setup = command;
 }
 
-/** A direct child of `environment:` (`image:` / `setup:` / `gates:`). */
+/** A `- ` list item: a cache name while `cache:` is open, otherwise a gate. */
+function handleListItem(state: BellowsState, line: number, indent: number, trimmed: string): void {
+    if (state.cache.open) {
+        readCacheItem(state.cache, line, trimmed);
+    } else {
+        handleGateStart(state, line, indent, trimmed);
+    }
+}
+
+/** A direct child of `environment:` (`image:` / `setup:` / `cache:` / `gates:`). */
 function handleEnvironmentField(state: BellowsState, line: number, key: string, match: RegExpExecArray): void {
+    closeCache(state.cache);
     const hasValue = match[3] !== undefined;
     if (key === 'image') {
         if (!hasValue) fail(line, 'image takes a value');
         state.image = checkImage(line, scalar(line, match[3] ?? '', 'image'));
     } else if (key === 'setup') {
         readSetup(state, line, match[3]);
+    } else if (key === 'cache') {
+        openCache(state.cache, line, match[3]);
     } else if (key === 'gates') {
         // `gates:` with nothing after it — including a trailing space, the same courtesy
         // `environment:` gets — opens the list. A real inline value is outside the subset.
         if (hasValue && match[3] !== '') fail(line, 'gates takes a list, not a value');
         state.inGates = true;
     } else {
-        fail(line, `unknown key "${key}" inside environment — only image, setup and gates are read`);
+        fail(line, `unknown key "${key}" inside environment — only image, setup, cache and gates are read`);
     }
 }
 
@@ -345,7 +368,7 @@ function processLine(state: BellowsState, line: number, rawLine: string): void {
     }
 
     if (trimmed.startsWith('- ')) {
-        handleGateStart(state, line, indent, trimmed);
+        handleListItem(state, line, indent, trimmed);
         return;
     }
 
@@ -373,6 +396,7 @@ export function parseBellowsWithPolicy(text: string): {
     const state: BellowsState = {
         image: null,
         setup: null,
+        cache: newCacheBlock(),
         inEnvironment: false,
         inGates: false,
         inServices: false,
@@ -395,6 +419,7 @@ export function parseBellowsWithPolicy(text: string): {
         if (!trimmed || trimmed.startsWith('#')) continue;
         processLine(state, line, rawLine);
     }
+    closeCache(state.cache);
     finishGate(state);
     finishReviewer(state.reviewers);
 
@@ -408,6 +433,7 @@ export function parseBellowsWithPolicy(text: string): {
     const config = {
         image: state.image,
         ...(state.setup === null ? {} : { setup: state.setup }),
+        ...(state.cache.names === null ? {} : { cache: state.cache.names }),
         gates: state.gates,
     };
     return { config, policy: state.policy, reviewers };

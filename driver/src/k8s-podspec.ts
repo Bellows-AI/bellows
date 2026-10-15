@@ -617,7 +617,7 @@ export function gateJobSpec(config: DriverConfig, job: BoardJob, gate: GateJobSp
             imagePullPolicy: config.imagePullPolicy,
             command: ['sh', '-c', command],
             workingDir: `${config.workspaceMount}/${key}`,
-            env: gateEnv(job).map(([name, value]) => ({ name, value })),
+            env: gateEnv(config, job).map(([name, value]) => ({ name, value })),
             ...(envSecretName ? { envFrom: [{ secretRef: { name: envSecretName } }] } : {}),
             // The mount is scoped to the checkout key's own `<orgId>/<userId>` half — the same subtree
             // the job's runner mounts. Both segments are asserted by GATE_KEY before the split.

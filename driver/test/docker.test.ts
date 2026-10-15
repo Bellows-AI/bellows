@@ -1282,6 +1282,26 @@ describe('the gate environment container', () => {
         expect(line.filter((_, i) => line[i - 1] === '-e')).toEqual(['HOME=/tmp', 'NPM_CONFIG_UPDATE_NOTIFIER=false']);
     });
 
+    // Issue #734: the gate env (and so the setup step exec'd into it) gets the same repo cache
+    // path the runner does, inside the one member mount it already has.
+    it('points each declared cache name into the repo cache, with no extra mount', () => {
+        const cacheJob = {
+            ...job,
+            repo: 'acme/widgets',
+            gates: { image: 'node:24', cache: ['NPM_CONFIG_CACHE'], gates: [] },
+        };
+        const line = gateEnvArgs(config, KEY, 'node:24', { job: cacheJob });
+        expect(line.filter((_, i) => line[i - 1] === '-e')).toEqual([
+            'HOME=/tmp',
+            'NPM_CONFIG_UPDATE_NOTIFIER=false',
+            `NPM_CONFIG_CACHE=/workspaces/bellows/${USER}/.cache/acme/widgets/NPM_CONFIG_CACHE`,
+        ]);
+        expect(line.filter((arg) => arg === '--mount')).toHaveLength(1);
+        const claimed = { ...cacheJob, env: { NPM_CONFIG_CACHE: '/elsewhere' } };
+        const own = gateEnvArgs(config, KEY, 'node:24', { envFile: '/tmp/gate.env', job: claimed });
+        expect(own.some((arg) => arg.startsWith('NPM_CONFIG_CACHE='))).toBe(false);
+    });
+
     it('refuses an image that smuggles a flag, whitespace or expansion', () => {
         for (const image of ['-v /:/host', 'node:24 alpine', 'node:$TAG', '']) {
             expect(() => gateEnvArgs(config, KEY, image), image).toThrow(/image/);

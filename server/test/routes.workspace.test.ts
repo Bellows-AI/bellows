@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
@@ -134,6 +134,7 @@ describe('GET /api/workspace', () => {
                 branch: null,
                 lastCommit: null,
                 sizeBytes: null,
+                cacheSizeBytes: null,
             }),
         ]);
     });
@@ -264,6 +265,56 @@ describe('GET /api/workspace: orphan sizes and the checkout total', () => {
         expect(body.repos[0]).toMatchObject({ status: 'ready', sizeBytes: expect.any(Number) });
         expect(body.checkoutTotalBytes).toBe(body.repos[0].sizeBytes);
         expect(body.checkoutTotalBytes).toBeGreaterThan(0);
+    });
+
+    // Issue #734: the repo's package cache, `<member>/.cache/<owner>/<repo>`, is measured beside
+    // the checkout and kept out of the checkout total — it is not a checkout the purge reclaims.
+    it("reports a ready repo's package cache size apart from the checkout total", async () => {
+        const facts = createFactsCache();
+        const { app, caller, cookie } = await boot({ facts });
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [{ owner: 'acme', name: 'web' }] },
+        });
+        const memberDir = join(root, 'test-org', caller.user.id);
+        mkdirSync(join(memberDir, 'web'), { recursive: true });
+        const cacheDir = join(memberDir, '.cache', 'acme', 'web', 'NPM_CONFIG_CACHE');
+        mkdirSync(cacheDir, { recursive: true });
+        writeFileSync(join(cacheDir, 'tarball'), 'c'.repeat(8192));
+        await store.markReady(caller.user.id, { owner: 'acme', name: 'web' });
+
+        await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } });
+        await settle();
+        const body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(body.repos[0].cacheSizeBytes).toBeGreaterThanOrEqual(8192);
+        expect(body.checkoutTotalBytes).toBe(body.repos[0].sizeBytes);
+    });
+
+    // The board sees every org's tree; a symlink the member's agent plants in its own `.cache`
+    // must not turn the reading into another tenant's directory size.
+    it('never reports a package cache size measured through a symlink out of the member tree', async () => {
+        const facts = createFactsCache();
+        const { app, caller, cookie } = await boot({ facts });
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [{ owner: 'acme', name: 'web' }] },
+        });
+        const memberDir = join(root, 'test-org', caller.user.id);
+        mkdirSync(join(memberDir, 'web'), { recursive: true });
+        const victim = join(root, 'other-org', 'acme', 'web');
+        mkdirSync(victim, { recursive: true });
+        writeFileSync(join(victim, 'blob'), 'v'.repeat(65_536));
+        symlinkSync(join(root, 'other-org'), join(memberDir, '.cache'));
+        await store.markReady(caller.user.id, { owner: 'acme', name: 'web' });
+
+        await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } });
+        await settle();
+        const body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(body.repos[0].cacheSizeBytes).toBeNull();
     });
 
     it('excludes a purging orphan from the total while still listing it', async () => {

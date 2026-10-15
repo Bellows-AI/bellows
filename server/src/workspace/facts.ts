@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 
 /**
@@ -48,6 +49,8 @@ interface Entry {
     facts: CheckoutFacts;
     headAt: number;
     sizeAt: number;
+    /** The last size reading found no directory — `sizeOf` re-measures as soon as one appears. */
+    absent: boolean;
     /** Single-flight per key, so a burst of polls does not start a walk each. */
     pending: Promise<void> | null;
 }
@@ -58,6 +61,12 @@ export interface FactsCache {
      * member's own tree: a checkout that really lies anywhere else reads as unmeasured.
      */
     get(dir: string, root: string): CheckoutFacts;
+
+    /**
+     * `get`'s size alone, for a directory that is not a checkout (a repo's package cache), under
+     * the same rule: measured only where it really lies inside `root`, null otherwise.
+     */
+    sizeOf(dir: string, root: string): number | null;
 
     /**
      * Forgets one directory's facts, so a tree that is about to be deleted cannot lend them to
@@ -244,9 +253,10 @@ export function createFactsCache(
 ): FactsCache {
     const entries = new Map<string, Entry>();
 
-    const refresh = (dir: string, root: string, entry: Entry): void => {
+    /** `withHead` false: a size-only reading (`sizeOf`), with no git run at all. */
+    const refresh = (dir: string, root: string, entry: Entry, withHead: boolean): void => {
         if (entry.pending) return;
-        const wantHead = now() - entry.headAt >= HEAD_TTL_MS;
+        const wantHead = withHead && now() - entry.headAt >= HEAD_TTL_MS;
         const wantSize = now() - entry.sizeAt >= SIZE_TTL_MS;
         if (!wantHead && !wantSize) return;
 
@@ -264,6 +274,7 @@ export function createFactsCache(
             if (wantSize) {
                 entry.facts = { ...entry.facts, sizeBytes: size };
                 entry.sizeAt = now();
+                entry.absent = size === null && !existsSync(dir);
             }
         })()
             .catch(() => {
@@ -275,15 +286,28 @@ export function createFactsCache(
             });
     };
 
+    const entryOf = (dir: string): Entry => {
+        let entry = entries.get(dir);
+        if (!entry) {
+            entry = { facts: UNKNOWN, headAt: 0, sizeAt: 0, absent: false, pending: null };
+            entries.set(dir, entry);
+        }
+        return entry;
+    };
+
     return {
         get(dir, root) {
-            let entry = entries.get(dir);
-            if (!entry) {
-                entry = { facts: UNKNOWN, headAt: 0, sizeAt: 0, pending: null };
-                entries.set(dir, entry);
-            }
-            refresh(dir, root, entry);
+            const entry = entryOf(dir);
+            refresh(dir, root, entry, true);
             return entry.facts;
+        },
+
+        sizeOf(dir, root) {
+            const entry = entryOf(dir);
+            // A cache a run has just created must not wait out the TTL behind an absent reading.
+            if (entry.absent && existsSync(dir)) entry.sizeAt = 0;
+            refresh(dir, root, entry, false);
+            return entry.facts.sizeBytes;
         },
 
         invalidate(dir) {

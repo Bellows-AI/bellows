@@ -13,6 +13,7 @@ import {
     UUID,
     GATE_UID,
     GATE_GID,
+    type CacheJob,
     gateEnv,
     opencodeDbPath,
     workspacePath,
@@ -241,10 +242,7 @@ export function gateEnvArgs(
     config: DriverConfig,
     key: string,
     image: string,
-    {
-        envFile,
-        job,
-    }: { envFile?: string | undefined; job?: Pick<BoardJob, 'id' | 'leaseToken' | 'env'> | undefined } = {}
+    { envFile, job }: { envFile?: string | undefined; job?: (CacheJob & Pick<BoardJob, 'leaseToken'>) | undefined } = {}
 ): string[] {
     if (!GATE_KEY.test(key)) {
         throw new Error(
@@ -279,7 +277,7 @@ export function gateEnvArgs(
         // a non-root uid, and a gate that npm-installs needs a writable cache directory.
         '--user',
         `${GATE_UID}:${GATE_GID}`,
-        ...gateEnv(job).flatMap((pair) => ['-e', pair.join('=')]),
+        ...gateEnv(config, job).flatMap((pair) => ['-e', pair.join('=')]),
         // Scoped to the checkout key's own `<orgId>/<userId>` half — the same subtree the
         // runner mounts, asserted by GATE_KEY above before the split.
         ...workspacesMountArgs(config, key.split('/').slice(0, 2).join('/')),

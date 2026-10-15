@@ -64,6 +64,76 @@ describe('parseBellows: valid documents', () => {
         expect(() => parseBellows(text)).toThrow(message);
     });
 
+    it('reads an environment cache list, and omits cache when none is declared', () => {
+        const text = EXAMPLE.replace(
+            '    image: node:24',
+            '    image: node:24\n    cache:\n        - NPM_CONFIG_CACHE\n        - PIP_CACHE_DIR\n    setup: npm ci'
+        );
+        expect(parseBellows(text)).toEqual({
+            image: 'node:24',
+            setup: 'npm ci',
+            cache: ['NPM_CONFIG_CACHE', 'PIP_CACHE_DIR'],
+            gates: [{ name: 'test', command: 'npm test' }],
+        });
+        expect('cache' in (parseBellows(EXAMPLE) ?? {})).toBe(false);
+    });
+
+    it.each([
+        [
+            'a name that is not env-shaped',
+            '        - npm-cache',
+            /line 4: cache name "npm-cache" is not an environment variable name/,
+        ],
+        ['an inline comment after a name', '        - NPM_CONFIG_CACHE  # npm', /line 4: cache name/],
+        ['HOME, which the driver owns', '        - HOME', /line 4: cache name "HOME" is reserved/],
+        ['PATH, which the driver owns', '        - PATH', /line 4: cache name "PATH" is reserved/],
+        [
+            'XDG_DATA_HOME, which the driver owns',
+            '        - XDG_DATA_HOME',
+            /line 4: cache name "XDG_DATA_HOME" is reserved/,
+        ],
+        ['a RUNNER_ name', '        - RUNNER_CACHE', /line 4: cache name "RUNNER_CACHE" is reserved/],
+        ['a reserved env name', '        - WORKDIR', /line 4: cache name "WORKDIR" is reserved/],
+        ...[
+            'OTEL_EXPORTER_OTLP_ENDPOINT',
+            'NPM_CONFIG_UPDATE_NOTIFIER',
+            'LD_PRELOAD',
+            'DYLD_INSERT_LIBRARIES',
+            'NODE_OPTIONS',
+            'BASH_ENV',
+            'GIT_CONFIG_GLOBAL',
+            'CLAUDE_CONFIG_DIR',
+        ].map((name): [string, string, RegExp] => [
+            `${name}, a driver or code-loading name`,
+            `        - ${name}`,
+            new RegExp(`line 4: cache name "${name}" is reserved`),
+        ]),
+        [
+            'a duplicate name',
+            '        - GOMODCACHE\n        - GOMODCACHE',
+            /line 5: cache name "GOMODCACHE" is declared twice/,
+        ],
+        [
+            'more than 16 names',
+            Array.from({ length: 17 }, (_, i) => `        - CACHE_${i}`).join('\n'),
+            /line 20: more than 16 cache names/,
+        ],
+        ['an empty list', '', /line 3: cache lists no names/],
+    ])('refuses %s', (_label, items, message) => {
+        const block = items ? `    cache:\n${items}` : '    cache:';
+        const text = EXAMPLE.replace('    image: node:24', `    image: node:24\n${block}`);
+        expect(() => parseBellows(text)).toThrow(message);
+    });
+
+    it.each([
+        ['an inline value', '    cache: NPM_CONFIG_CACHE', /line 3: cache takes a list, not a value/],
+        ['a second cache block', '    cache:\n        - A\n    cache:\n        - B', /line 5: cache is declared twice/],
+        ['a cache block after gates', '    gates:\n    cache:\n        - A', /line 4: "cache"/],
+    ])('refuses %s', (_label, block, message) => {
+        const text = EXAMPLE.replace('    image: node:24', `    image: node:24\n${block}`);
+        expect(() => parseBellows(text)).toThrow(message);
+    });
+
     it('tolerates comments and blank lines', () => {
         const text = [
             '# CI gates for this repository',
