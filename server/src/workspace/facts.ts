@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
@@ -50,6 +51,8 @@ interface Entry {
     facts: CheckoutFacts;
     headAt: number;
     sizeAt: number;
+    /** The last size reading found no directory — `sizeOf` re-measures as soon as one appears. */
+    absent: boolean;
     /** Single-flight per key, so a burst of polls does not start a walk each. */
     pending: Promise<void> | null;
 }
@@ -142,6 +145,7 @@ export function createFactsCache(now: () => number = Date.now): FactsCache {
             if (wantSize) {
                 entry.facts = { ...entry.facts, sizeBytes: size };
                 entry.sizeAt = now();
+                entry.absent = size === null && !existsSync(dir);
             }
         })()
             .catch(() => {
@@ -156,7 +160,7 @@ export function createFactsCache(now: () => number = Date.now): FactsCache {
     const entryOf = (dir: string): Entry => {
         let entry = entries.get(dir);
         if (!entry) {
-            entry = { facts: UNKNOWN, headAt: 0, sizeAt: 0, pending: null };
+            entry = { facts: UNKNOWN, headAt: 0, sizeAt: 0, absent: false, pending: null };
             entries.set(dir, entry);
         }
         return entry;
@@ -171,6 +175,8 @@ export function createFactsCache(now: () => number = Date.now): FactsCache {
 
         sizeOf(dir) {
             const entry = entryOf(dir);
+            // A cache a run has just created must not wait out the TTL behind an absent reading.
+            if (entry.absent && existsSync(dir)) entry.sizeAt = 0;
             refresh(dir, entry, false);
             return entry.facts.sizeBytes;
         },

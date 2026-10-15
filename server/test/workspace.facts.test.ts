@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -72,5 +72,21 @@ describe('the facts cache', () => {
         sized.sizeOf(missing);
         for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 5));
         expect(sized.sizeOf(missing)).toBeNull();
+    });
+
+    it('measures a cache directory as soon as it appears, not a size TTL later', async () => {
+        const sized = createFactsCache();
+        const late = join(dir, 'late-cache');
+        sized.sizeOf(late);
+        for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 5));
+        expect(sized.sizeOf(late)).toBeNull();
+
+        // A run creates the cache: the absent reading must not be held for the five-minute TTL.
+        mkdirSync(late);
+        writeFileSync(join(late, 'pkg'), 'x'.repeat(4096));
+        for (let i = 0; i < 400 && sized.sizeOf(late) === null; i += 1) {
+            await new Promise((r) => setTimeout(r, 5));
+        }
+        expect(sized.sizeOf(late)).toBeGreaterThan(0);
     });
 });
