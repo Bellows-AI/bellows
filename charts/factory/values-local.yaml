@@ -37,6 +37,10 @@ database:
 workspaces:
     existingClaim: factory-state-workspaces
 
+# A single-node development stack keeps artifacts in the dashboard pod: no bucket to provision.
+artifacts:
+    backend: filesystem
+
 driver:
     image:
         repository: factory-driver

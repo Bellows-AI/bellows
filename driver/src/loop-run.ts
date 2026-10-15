@@ -40,7 +40,6 @@ import {
 } from './loop-verdict.js';
 import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
-import { uploadRunArtifacts } from './artifacts.js';
 import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
 import { awaitSyncTurn } from './sync-queue.js';
 import { releaseStartedServices, releasingOnThrow, restartDeadServices, startServicesStep } from './loop-services.js';
@@ -353,7 +352,6 @@ async function reportRunTail(
 ): Promise<void> {
     if (isAgentless(job)) return;
     await reportScrapedSession(rt, job, executorType, outcome);
-    await uploadRunArtifacts(rt, job, outcome);
 }
 
 /**

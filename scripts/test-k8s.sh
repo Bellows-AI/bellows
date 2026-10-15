@@ -392,6 +392,8 @@ GH_SETS=(
     "${AUTH_SETS[@]}"
     --set github.appId=1
     --set github.appPrivateKey=pem
+    --set artifacts.s3.bucket=factory-artifacts
+    --set artifacts.s3.region=us-east-1
 )
 gh_render() { helm template "$RELEASE" charts/factory "${GH_SETS[@]}" --namespace "$NAMESPACE" "$@" 2>&1; }
 gh="$(gh_render)"
@@ -449,7 +451,8 @@ expect_contains 'the chart-created claim is kept on uninstall' "$gh" 'helm.sh/re
 # is in the Secret while telemetry.ingestToken is empty, and a header gated on the value would
 # leave an authenticated board answering every export 401.
 byo="$(helm template "$RELEASE" charts/factory --set secret.create=false --set secret.existingSecret=mine \
-    --set auth.publicUrl=https://f.example --set auth.oauthClientId=c --set github.appId=1 2>&1)"
+    --set auth.publicUrl=https://f.example --set auth.oauthClientId=c --set github.appId=1 \
+    --set artifacts.s3.bucket=factory-artifacts --set artifacts.s3.region=us-east-1 2>&1)"
 expect_contains 'the collector sends the ingest header with a managed Secret' "$byo" \
     'X-Factory-Ingest-Token: ${env:INGEST_TOKEN}'
 # Every dashboard key but database-url is optional, so a missing one reads as the server's own boot
@@ -469,6 +472,23 @@ refuses() { # refuses <name> <needle> <helm args...>
     fi
 }
 refuses 'a missing publicUrl is refused' 'auth.publicUrl is required' "${GH_SETS[@]}" --set auth.publicUrl=
+# The artifact store (#764): the dashboard runs as its own ServiceAccount, which carries the IRSA
+# annotation, and the s3 backend refuses to render without a bucket.
+expect_contains 'the dashboard has its own ServiceAccount' "$gh" "serviceAccountName: $RELEASE-factory-dashboard"
+irsa="$(gh_render --set 'dashboard.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::1:role/factory')"
+expect_contains 'the IRSA role annotation lands on the dashboard ServiceAccount' "$irsa" \
+    'eks.amazonaws.com/role-arn: arn:aws:iam::1:role/factory'
+[ "$(grep -c '^kind: ServiceAccount' <<<"$(gh_render --set dashboard.serviceAccount.create=false)")" -lt \
+    "$(grep -c '^kind: ServiceAccount' <<<"$gh")" ] && ok 'serviceAccount.create=false renders no dashboard ServiceAccount' ||
+    bad 'serviceAccount.create=false renders no dashboard ServiceAccount' 'the ServiceAccount count did not drop'
+expect_contains 'the s3 backend reaches the dashboard as environment' "$gh" 'name: ARTIFACTS_S3_BUCKET'
+expect_contains 'a credentials Secret becomes the static keys' \
+    "$(gh_render --set artifacts.credentialsExistingSecret=store-keys)" 'key: secret-access-key'
+expect_not_contains 'no credentials Secret leaves Pod Identity and IRSA to the credential chain' "$gh" 'ARTIFACTS_ACCESS_KEY_ID'
+refuses 'an s3 backend with no bucket is refused' 'artifacts.s3.bucket is required' \
+    "${GH_SETS[@]}" --set artifacts.s3.bucket=
+refuses 'an unknown artifacts backend is refused' 'artifacts.backend must be' \
+    "${GH_SETS[@]}" --set artifacts.backend=gcs
 refuses 'a missing OAuth client id is refused' 'auth.oauthClientId is required' \
     "${GH_SETS[@]}" --set auth.oauthClientId=
 refuses 'a missing OAuth client secret is refused' 'secret.oauthClientSecret is required' \

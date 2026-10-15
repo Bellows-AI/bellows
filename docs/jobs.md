@@ -51,7 +51,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | Block-helper steps | `driver/src/helpers.ts`, `loop-helpers.ts`, `k8s-helper-runner.ts` | `driver/test/helpers.test.ts` |
 | GitHub review collect and reply | `driver/src/review.ts`, `review-helpers.ts`, `driver/src/scripts/review-*.cjs` | `driver/test/review.test.ts`, `review-collect-script.test.ts`, `review-reply-script.test.ts` |
 | Session id, close-time agent turns | `driver/src/close-read.ts`, `docker-close-read.ts`, `driver/src/scripts/claude-turns.cjs` | `driver/test/close-read.test.ts`, `scripts-claude-turns.test.ts`, `scripts-opencode-readout.test.ts` |
-| Run artifacts | `driver/src/artifacts.ts`, `server/migrations/046_job_artifacts.sql` | `driver/test/artifacts.test.ts` |
+| Run artifacts: object store plus immutable chunk and manifest index (migration 070; [persistence.md](persistence.md)) | `server/src/artifacts/artifact-store.ts`, `server/migrations/070_artifact_index.sql` | `server/test-db/artifact-store.test.ts` |
 | Container scripts | `driver/src/container-scripts.ts`, `driver/src/scripts/` | `driver/test/scripts.test.ts`, `scripts-*.test.ts` |
 | Orphan reaper; lease-owned Kubernetes Jobs and service resources | `driver/src/reaper.ts`, `docker-reaper.ts`, `k8s-reaper.ts` | `driver/test/reaper.test.ts`, `docker-reaper.test.ts`, `k8s-reaper.test.ts` |
 | Optional `backend-fix` playbook | `docker/skills/backend-fix/SKILL.md` | `driver/test/executor-images.test.ts` |
@@ -69,7 +69,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | `task list` and cursors | `cli/src/tasks.ts` | `cli/test/tasks.test.ts` |
 | Discovery (`repo`, `executor`, `skill`, `connection list`) | `cli/src/discovery.ts` | `cli/test/discovery.test.ts` |
 | Diagnostics (`auth status`, `job preflight`, help, `--version`) | `cli/src/diagnose.ts`, `diagnostics.ts`, `selection.ts`, `usage.ts`, `version.ts` | `cli/test/diagnostics.test.ts` |
-| Artifacts and `investigate` | `cli/src/artifacts.ts` | `cli/test/artifacts.test.ts` |
+| `job activity` | `cli/src/artifacts.ts` | `cli/test/artifacts.test.ts` |
 | `job retry`, `edit`, `reopen` | `cli/src/board.ts` | `cli/test/retry-edit.test.ts` |
 | `job questions`, `job answer` | `cli/src/run.ts` | `cli/test/questions.test.ts` |
 | `--idempotency-key` | `cli/src/board.ts` | `cli/test/idempotency.test.ts` |
@@ -114,5 +114,6 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 - No priority or scheduling; no per-job authorization ([repos.md](repos.md)).
 - No service volumes, health checks, `depends_on` or restart policies in `.bellows.yaml`.
 - No abort for an in-flight publish; a lease lost after the push is re-run by the next holder.
-- No artifact TTL sweeper: retention is the job row's lifetime.
+- Nothing writes artifacts yet (the driver upload and the reads follow), and no sweeper deletes a removed
+  task's objects: `ARTIFACTS_RETENTION_DAYS` is configuration only. `server/src/artifacts/`.
 - A custom `RUNNER_IMAGE` missing a skill's declared tool is not detected.

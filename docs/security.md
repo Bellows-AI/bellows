@@ -15,7 +15,7 @@ What each credential grants, what each boundary actually holds, and where the co
 | Container hardening, and the admission policy that requires it | `driver/src/k8s-podfields.ts`, `driver/src/services.ts`, `charts/factory/templates/driver-admission.yaml` | `driver/test/services.test.ts`, `driver/test/k8s-docs.test.ts`, `driver/test/k8s-admission.test.ts` |
 | A service's `user: "uid:gid"` (numeric, uid never 0) tightens, capabilities still dropped | `driver/src/k8s-auxspec.ts`, `driver/src/services.ts` | `driver/test/k8s.test.ts`, `driver/test/docker.test.ts` |
 | Runner telemetry config, claude's managed settings (incl. the `permissions` allow-list and `autoMode` rules) and opencode's policy (global and `/etc/opencode` copies): root-owned, never written by the uid-1000 entrypoints | `driver/src/telemetry-config.ts`, `docker/claude-executor/managed-settings.json`, `docker/opencode-executor/Dockerfile` | `driver/test/telemetry-shipping.test.ts`, `driver/test/docker.test.ts`, `driver/test/k8s.test.ts`, `docker/claude-executor/test.sh`, `docker/opencode-executor/test.sh` |
-| Run artifacts built from the runner's own stream, never a claim env value | `driver/src/artifacts.ts` | `driver/test/artifacts.test.ts`, `driver/test/docker.test.ts` |
+| Artifact store credentials live in the dashboard only; reads are scoped to the caller's org | `server/src/artifacts/artifact-store.ts`, `server/src/artifacts/s3-credentials.ts` | `server/test-db/artifact-store.test.ts`, `server/test/artifacts.unit.test.ts` |
 
 Credentials: [auth.md](auth.md) · cluster: [kubernetes.md](kubernetes.md) · mount: [workspace.md](workspace.md).
 

@@ -1,4 +1,6 @@
 import type { Sql } from 'postgres';
+import { createArtifactStore, type ArtifactStore } from './artifacts/artifact-store.js';
+import type { ArtifactBackend } from './artifacts/backend.js';
 import type { AppConfig } from './config.js';
 import { createBatchMerger, type BatchMerger } from './batch-merger.js';
 import { createBatchPrObserver, type BatchPrObserver } from './batch-pr-observer.js';
@@ -58,6 +60,8 @@ export interface OrgRuntime {
     batchMerger?: BatchMerger | undefined;
     /** A branch's tip through the org's installation, null when it cannot be read; absent offline. */
     branchHead?: ((repo: string, branch: string) => Promise<string | null>) | undefined;
+    /** The artifact index over the object store (070): the org's chunks and manifests; present with the other stores. */
+    artifacts?: ArtifactStore | undefined;
     /** The managed connector connections (054) a task may select; present with the other stores. */
     connections?: ConnectionStore | undefined;
     userRepos?: UserRepoStore | undefined;
@@ -97,6 +101,8 @@ export interface OrgRegistryDeps {
      * cache the routes read. Absent (route tests) each org builds its own.
      */
     facts?: FactsCache;
+    /** The object store behind each org's artifact index; absent (route tests), no org has one. */
+    artifacts?: ArtifactBackend;
 }
 
 /** The per-org write-side stores, built only under `withStores` (#99's route-test bypass). */
@@ -265,12 +271,38 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     void stores.cloneQueue?.start().catch((e: Error) => console.error(`[workspace] ${e.message}`));
 }
 
+/** The org's artifact index over the process's object store, or undefined when none was configured. */
+function artifactStoreOf({
+    sql,
+    orgId,
+    ready,
+    config,
+    backend,
+}: {
+    sql: Sql;
+    orgId: string;
+    ready: Promise<unknown>;
+    config: AppConfig;
+    backend: ArtifactBackend | undefined;
+}): ArtifactStore | undefined {
+    if (!backend) return undefined;
+    return createArtifactStore({
+        sql,
+        orgId,
+        ready,
+        objects: backend.objects,
+        prefix: backend.prefix,
+        orgQuotaBytes: config.artifacts.orgQuotaBytes,
+    });
+}
+
 export function createOrgRegistry({
     sql,
     ready,
     config,
     withStores,
     facts: sharedFacts,
+    artifacts,
 }: OrgRegistryDeps): OrgRegistry {
     const runtimes = new Map<string, Promise<OrgRuntime | null>>();
 
@@ -323,6 +355,7 @@ export function createOrgRegistry({
             const facts = sharedFacts ?? createFactsCache();
             const stores = buildOrgStores({ sql, orgId, ready, config, tokens, client, facts });
             await attachOrgStores(runtime, stores);
+            runtime.artifacts = artifactStoreOf({ sql, orgId, ready, config, backend: artifacts });
         }
 
         return runtime;

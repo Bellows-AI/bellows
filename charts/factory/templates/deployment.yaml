@@ -35,7 +35,9 @@ spec:
                 {{- toYaml . | nindent 16 }}
                 {{- end }}
         spec:
+            serviceAccountName: {{ include "factory.fullname" . }}-dashboard
             # The dashboard calls no Kubernetes API; a mounted token would only be something to steal.
+            # IRSA and Pod Identity inject their own projected credentials, which this does not touch.
             automountServiceAccountToken: false
             securityContext:
                 # The runtime image's `node` user, which owns /workspaces in the image.
@@ -118,6 +120,39 @@ spec:
                             secretKeyRef:
                                 name: {{ include "factory.secretName" . }}
                                 key: database-url
+                      # Where task artifacts go (server/src/artifacts/config.ts).
+                      - name: ARTIFACTS_BACKEND
+                        value: {{ .Values.artifacts.backend | quote }}
+                      - name: ARTIFACTS_RETENTION_DAYS
+                        value: {{ .Values.artifacts.retentionDays | quote }}
+                      - name: ARTIFACTS_ORG_QUOTA_BYTES
+                        value: {{ .Values.artifacts.orgQuotaBytes | quote }}
+                      {{- if eq .Values.artifacts.backend "s3" }}
+                      - name: ARTIFACTS_S3_BUCKET
+                        value: {{ .Values.artifacts.s3.bucket | quote }}
+                      - name: ARTIFACTS_S3_REGION
+                        value: {{ .Values.artifacts.s3.region | quote }}
+                      - name: ARTIFACTS_S3_ENDPOINT
+                        value: {{ .Values.artifacts.s3.endpoint | quote }}
+                      - name: ARTIFACTS_S3_FORCE_PATH_STYLE
+                        value: {{ .Values.artifacts.s3.forcePathStyle | quote }}
+                      - name: ARTIFACTS_S3_PREFIX
+                        value: {{ .Values.artifacts.s3.prefix | quote }}
+                      - name: ARTIFACTS_S3_KMS_KEY_ID
+                        value: {{ .Values.artifacts.s3.kmsKeyId | quote }}
+                      {{- with .Values.artifacts.credentialsExistingSecret }}
+                      - name: ARTIFACTS_ACCESS_KEY_ID
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ . | quote }}
+                                key: access-key-id
+                      - name: ARTIFACTS_SECRET_ACCESS_KEY
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ . | quote }}
+                                key: secret-access-key
+                      {{- end }}
+                      {{- end }}
                       # The wall, and not a value: this deployment holds checkouts and serves a
                       # route that runs shell commands, so the chart has no open mode to select.
                       - name: AUTH_MODE

@@ -73,9 +73,6 @@ const jobStub = (overrides: Partial<JobStore> = {}): JobStore =>
         async complete() {
             return 'ok';
         },
-        async artifact() {
-            return 'ok';
-        },
         async get() {
             return null as Job | null;
         },
@@ -230,11 +227,6 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // 2026-09-14): the silent null sent every long run to the push with its expired
     // claim-time token, and only runs under an hour published.
     [`/api/jobs/${JOB_ID}/publish-token`, 'worker'],
-    // The run-artifact upload (issue #325) is the driver's close-time POST of the full log and
-    // the transcript, lease-guarded like complete. Missing from this table is what made it answer
-    // the worker token 401 on every production job (#446): the upload is best-effort, so the
-    // runs completed and nothing was ever stored for the read routes below to serve.
-    [`/api/jobs/${JOB_ID}/artifact`, 'worker'],
     // The agent's questions (050, issue #531): the driver reports a question and expires it under
     // its lease; the member's answer is a person's act, so it falls through to `user` — and is
     // outside the org-token allowlist.
@@ -249,11 +241,9 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // The driver's one use for it (the worktree-reclaim terminality, issue #47) rides the
     // lease-guarded complete response as `threadDone` instead.
     [`/api/jobs/${JOB_ID}/thread`, 'user'],
-    // The person-side reads of a run: its activity and the two artifacts the driver uploads. A
-    // worker token reading them would be the thread-read hole again, one route over.
+    // The person-side read of a run: its activity. A worker token reading it would be the
+    // thread-read hole again, one route over.
     [`/api/jobs/${JOB_ID}/activity`, 'user'],
-    [`/api/jobs/${JOB_ID}/log`, 'user'],
-    [`/api/jobs/${JOB_ID}/transcript`, 'user'],
     // The Jira connector proxy (issue #546): its own requirement — the attempt's pair in every
     // mode, never the worker secret, a cookie or a bearer. The runner is the only caller.
     [`/api/jobs/${JOB_ID}/connectors/jira/rest/api/3/myself`, 'connector'],
@@ -415,36 +405,6 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
         // No org binding and no token row: the secret IS the driver credential, and the claim is
         // offered every org's queue.
         expect(response.statusCode).toBe(HTTP_OK);
-    });
-
-    it('accepts the shared board secret on the artifact upload', async () => {
-        const store = memoryAuthStore();
-        const server = await build(githubAuth(), store);
-
-        const response = await server.inject({
-            method: 'POST',
-            url: `/api/jobs/${JOB_ID}/artifact`,
-            payload: { leaseToken: LEASE, kind: 'log', attempt: 1, content: 'hello', truncated: false },
-            headers: { authorization: `Bearer ${WORKER_TOKEN}` },
-        });
-
-        expect(response.statusCode).toBe(HTTP_OK);
-    });
-
-    it('refuses a session cookie on the artifact upload', async () => {
-        const store = memoryAuthStore();
-        const server = await build(githubAuth(), store);
-        const caller = store.seedMember(ORG, 'octocat', 'admin');
-        const cookie = await signedIn(store, caller);
-
-        const response = await server.inject({
-            method: 'POST',
-            url: `/api/jobs/${JOB_ID}/artifact`,
-            payload: { leaseToken: LEASE, kind: 'log', attempt: 1, content: 'hello', truncated: false },
-            headers: { cookie },
-        });
-
-        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     const ASK = {

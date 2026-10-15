@@ -46,6 +46,11 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         auth: { mode: 'none', ingestToken: null },
         // No webhook secret, so no installation webhook route — the tests that want one set it.
         webhookSecret: null,
+        artifacts: {
+            backend: { kind: 'filesystem', root: '/tmp/factory-test-artifacts' },
+            retentionDays: 90,
+            orgQuotaBytes: 0,
+        },
         ...overrides,
     };
 }
