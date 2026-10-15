@@ -21,6 +21,11 @@
  * `environment:` may also carry `setup: <command>` — run once per gate environment, before its
  * first gate, in the worktree (an install step); its failure is a setup failure, not a gate's.
  *
+ * `environment:` may also carry `cache:` — a list of `- NAME` env names, each set by the driver to
+ * `<member>/.cache/<owner>/<repo>/<NAME>` in the runner and gate env, a directory that outlives the
+ * container (`readCacheItem`). Declared before `gates:`; names the driver owns or a runtime runs
+ * code from are refused (`CACHE_REFUSED_NAMES`).
+ *
  * One exception, and it is not leniency: a top-level `services:` block is the SERVICES half of
  * the file, read by the driver's own parser (driver/src/services.ts), and one file may carry both
  * halves. This parser skips the block wholesale — it does not judge the services grammar, and a
@@ -44,6 +49,7 @@
 
 import { constants as fsConstants, open as fsOpen } from 'node:fs/promises';
 import { join } from 'node:path';
+import { ENV_NAME, ENV_NAME_LIMIT, RESERVED_ENV_NAMES } from '@factory-ai/core';
 import { BellowsError, fail, KEY_VALUE, MAX_COMMAND_LENGTH, readTimeoutMinutes, scalar } from './bellows-grammar.js';
 import {
     consumeReviewerLine,
@@ -78,12 +84,48 @@ export interface BellowsConfig {
     readonly image: string;
     /** Runs once per gate environment before the first gate; absent when none is declared. */
     readonly setup?: string;
+    /** Env names the driver points at the member's per-repo cache directory; absent when none. */
+    readonly cache?: readonly string[];
     readonly gates: readonly GateDef[];
 }
 
 /** Same rules a checkout directory obeys (`badSegment`), plus a length a pill can render. */
 const MAX_NAME_LENGTH = 64;
 const MAX_GATES = 16;
+const MAX_CACHE_NAMES = 16;
+/**
+ * Names a cache path may not take: what the driver sets on runner and gate env itself, and what a
+ * shell, loader or runtime reads as code to run — a path there would plant code into later runs.
+ * Mirrored in driver/src/claim.ts (`CACHE_REFUSED_NAMES`), which re-asserts it.
+ */
+const CACHE_REFUSED_NAMES: ReadonlySet<string> = new Set([
+    'HOME',
+    'PATH',
+    'SHELL',
+    'ENV',
+    'BASH_ENV',
+    'XDG_DATA_HOME',
+    'NPM_CONFIG_UPDATE_NOTIFIER',
+    'NODE_OPTIONS',
+    'NODE_PATH',
+    'PYTHONPATH',
+    'PYTHONSTARTUP',
+    'PERL5OPT',
+    'RUBYOPT',
+    'JAVA_TOOL_OPTIONS',
+    ...RESERVED_ENV_NAMES,
+]);
+const CACHE_REFUSED_PREFIXES = [
+    'RUNNER_',
+    'OTEL_',
+    'FACTORY_',
+    'BELLOWS_',
+    'CLAUDE_',
+    'OPENCODE_',
+    'GIT_',
+    'LD_',
+    'DYLD_',
+];
 
 /** Docker ref shape: no whitespace, no `$` expansion, nothing a CLI would read as a flag. */
 const IMAGE_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_./:-]*$/;
@@ -115,6 +157,10 @@ interface RawGate {
 interface BellowsState {
     image: string | null;
     setup: string | null;
+    cache: string[] | null;
+    /** Inside `cache:`, and the line it opened on — the line an empty list's error names. */
+    inCache: boolean;
+    cacheLine: number;
     inEnvironment: boolean;
     inGates: boolean;
     /** Inside a top-level `services:` block — the services half, not this parser's grammar. */
@@ -172,6 +218,7 @@ function openPolicyBlock(state: BellowsState, line: number, inlineValue: string 
  * skipped wholesale as the driver's own grammar; anything else is refused.
  */
 function handleTopLevelLine(state: BellowsState, line: number, trimmed: string): void {
+    closeCache(state);
     finishGate(state);
     state.inGates = false;
     state.itemIndent = -1;
@@ -276,21 +323,64 @@ function readSetup(state: BellowsState, line: number, raw: string | undefined): 
     state.setup = command;
 }
 
-/** A direct child of `environment:` (`image:` / `setup:` / `gates:`). */
+/** `cache:` under `environment:` — opens the list `readCacheItem` fills; declared once, no value. */
+function openCache(state: BellowsState, line: number, raw: string | undefined): void {
+    if (raw !== undefined && raw !== '') fail(line, 'cache takes a list, not a value');
+    if (state.cache !== null) fail(line, 'cache is declared twice');
+    state.cache = [];
+    state.inCache = true;
+    state.cacheLine = line;
+}
+
+/** One `- NAME` under `cache:`: env-shaped, not driver-owned, not repeated, at most MAX_CACHE_NAMES. */
+function readCacheItem(state: BellowsState, line: number, trimmed: string): void {
+    const cache = state.cache ?? [];
+    const name = trimmed.slice(2).trim();
+    if (!ENV_NAME.test(name) || name.length > ENV_NAME_LIMIT) {
+        fail(line, `cache name "${name}" is not an environment variable name`);
+    }
+    if (CACHE_REFUSED_NAMES.has(name) || CACHE_REFUSED_PREFIXES.some((prefix) => name.startsWith(prefix))) {
+        fail(line, `cache name "${name}" is reserved for the driver or a runtime hook`);
+    }
+    if (cache.includes(name)) fail(line, `cache name "${name}" is declared twice`);
+    if (cache.length >= MAX_CACHE_NAMES) fail(line, `more than ${MAX_CACHE_NAMES} cache names`);
+    cache.push(name);
+}
+
+/** Leaving `cache:` — an open list with no item is a declaration of nothing, refused. */
+function closeCache(state: BellowsState): void {
+    if (!state.inCache) return;
+    state.inCache = false;
+    if (state.cache?.length === 0) fail(state.cacheLine, 'cache lists no names');
+}
+
+/** A `- ` list item: a cache name while `cache:` is open, otherwise a gate. */
+function handleListItem(state: BellowsState, line: number, indent: number, trimmed: string): void {
+    if (state.inCache) {
+        readCacheItem(state, line, trimmed);
+    } else {
+        handleGateStart(state, line, indent, trimmed);
+    }
+}
+
+/** A direct child of `environment:` (`image:` / `setup:` / `cache:` / `gates:`). */
 function handleEnvironmentField(state: BellowsState, line: number, key: string, match: RegExpExecArray): void {
+    closeCache(state);
     const hasValue = match[3] !== undefined;
     if (key === 'image') {
         if (!hasValue) fail(line, 'image takes a value');
         state.image = checkImage(line, scalar(line, match[3] ?? '', 'image'));
     } else if (key === 'setup') {
         readSetup(state, line, match[3]);
+    } else if (key === 'cache') {
+        openCache(state, line, match[3]);
     } else if (key === 'gates') {
         // `gates:` with nothing after it — including a trailing space, the same courtesy
         // `environment:` gets — opens the list. A real inline value is outside the subset.
         if (hasValue && match[3] !== '') fail(line, 'gates takes a list, not a value');
         state.inGates = true;
     } else {
-        fail(line, `unknown key "${key}" inside environment — only image, setup and gates are read`);
+        fail(line, `unknown key "${key}" inside environment — only image, setup, cache and gates are read`);
     }
 }
 
@@ -345,7 +435,7 @@ function processLine(state: BellowsState, line: number, rawLine: string): void {
     }
 
     if (trimmed.startsWith('- ')) {
-        handleGateStart(state, line, indent, trimmed);
+        handleListItem(state, line, indent, trimmed);
         return;
     }
 
@@ -373,6 +463,9 @@ export function parseBellowsWithPolicy(text: string): {
     const state: BellowsState = {
         image: null,
         setup: null,
+        cache: null,
+        inCache: false,
+        cacheLine: 0,
         inEnvironment: false,
         inGates: false,
         inServices: false,
@@ -395,6 +488,7 @@ export function parseBellowsWithPolicy(text: string): {
         if (!trimmed || trimmed.startsWith('#')) continue;
         processLine(state, line, rawLine);
     }
+    closeCache(state);
     finishGate(state);
     finishReviewer(state.reviewers);
 
@@ -408,6 +502,7 @@ export function parseBellowsWithPolicy(text: string): {
     const config = {
         image: state.image,
         ...(state.setup === null ? {} : { setup: state.setup }),
+        ...(state.cache === null ? {} : { cache: state.cache }),
         gates: state.gates,
     };
     return { config, policy: state.policy, reviewers };

@@ -71,7 +71,7 @@ describe('the repositories page', () => {
         within(detail).getByText(`Repository · ${REPO}`);
         // Nothing is checked out, so the checkout facts say so in words — never a zero or a bare dash.
         expect(detail.textContent).toContain('Not checked out');
-        expect(within(detail).getAllByText('Not available')).toHaveLength(3);
+        expect(within(detail).getAllByText('Not available')).toHaveLength(4);
         expect(document.querySelectorAll('tr.repo-row-configured')).toHaveLength(1);
         expect(screen.queryByText('Discard unsaved changes?')).toBeNull();
     });

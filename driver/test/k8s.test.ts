@@ -4776,6 +4776,43 @@ describe('the gate job spec', () => {
         });
     });
 
+    // Issue #734: the gate Job and the runner pod name the same cache path, inside the one
+    // member subPath mount both already carry — the docker gate env's twin.
+    it('points each declared cache name into the repo cache, the same path the runner pod gets', () => {
+        const cacheJob: BoardJob = {
+            ...job,
+            repo: 'acme/widgets',
+            rootJobId: ROOT_KEY,
+            gates: { image: 'node:24', cache: ['NPM_CONFIG_CACHE'], gates: [] },
+        };
+        const path = `/workspaces/bellows/${USER}/.cache/acme/widgets/NPM_CONFIG_CACHE`;
+        const gate = gateJobSpec(gatedConfig, cacheJob, {
+            key: `bellows/${USER}/.worktrees/${ROOT_KEY}`,
+            image: 'node:24',
+            gateName: 'test',
+            command: 'npm test',
+            run: 1,
+            envSecretName: 'the-secret',
+            gateTimeoutMs: 30_000,
+        }).spec.template.spec.containers[0];
+        expect(gate.env).toContainEqual({ name: 'NPM_CONFIG_CACHE', value: path });
+        expect(gate.volumeMounts).toEqual([
+            { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
+        ]);
+        const runner = runnerJobSpec(gatedConfig, cacheJob, { id: SESSION, resume: false }).spec.template.spec
+            .containers[0];
+        expect(runner.env).toContainEqual({ name: 'NPM_CONFIG_CACHE', value: path });
+        const claimed: BoardJob = { ...cacheJob, env: { NPM_CONFIG_CACHE: '/elsewhere' } };
+        const env = runnerJobSpec(gatedConfig, claimed, { id: SESSION, resume: false }).spec.template.spec.containers[0]
+            .env;
+        expect(env.filter((entry) => entry.name === 'NPM_CONFIG_CACHE')).toEqual([
+            {
+                name: 'NPM_CONFIG_CACHE',
+                valueFrom: { secretKeyRef: { name: secretName(claimed), key: 'NPM_CONFIG_CACHE' } },
+            },
+        ]);
+    });
+
     // The claim's value arrives by envFrom, which an explicit `env` entry would beat.
     it('leaves the npm notice to a claim that names it, in the gate env Secret', () => {
         const envJob: BoardJob = { ...job, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } };

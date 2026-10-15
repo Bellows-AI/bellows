@@ -40,6 +40,7 @@ const checkout = (overrides: Partial<WorkspaceRepo> = {}): WorkspaceRepo => ({
     branch: 'main',
     lastCommit: null,
     sizeBytes: null,
+    cacheSizeBytes: null,
     ...overrides,
 });
 

@@ -39,6 +39,7 @@ const checkout = (overrides: Partial<WorkspaceRepo> = {}): WorkspaceRepo => ({
     branch: 'main',
     lastCommit: null,
     sizeBytes: null,
+    cacheSizeBytes: null,
     ...overrides,
 });
 
@@ -406,16 +407,22 @@ describe('RepositoryConfigDetail', () => {
         expect(html).toContain('organization &lt; workspace &lt; repository');
     });
 
-    it('lists the checkout facts: status, branch, last commit, size', () => {
+    it('lists the checkout facts: status, branch, last commit, size, package cache', () => {
         const at = '2026-08-19T10:00:00.000Z';
-        const row = checkout({ branch: 'trunk', lastCommit: { sha: 'abc1234', at, headline: 'Fix' }, sizeBytes: 2048 });
+        const row = checkout({
+            branch: 'trunk',
+            lastCommit: { sha: 'abc1234', at, headline: 'Fix' },
+            sizeBytes: 2048,
+            cacheSizeBytes: 4096,
+        });
         const html = render(
             <RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} checkout="Cloning" row={row} />
         );
         expect(html).toContain('<h3>Checkout</h3>');
-        for (const label of ['Checkout status', 'Branch', 'Last commit', 'Size']) {
+        for (const label of ['Checkout status', 'Branch', 'Last commit', 'Size', 'Package cache']) {
             expect(html).toContain(`<dt>${label}</dt>`);
         }
+        expect(html).toContain(`<dd>${bytes(4096)}</dd>`);
         expect(html).toContain('<dd>Cloning</dd>');
         expect(html).toContain('<dd>trunk</dd>');
         expect(html).toContain(`<dd>${commitDate(at)}</dd>`);
@@ -427,7 +434,7 @@ describe('RepositoryConfigDetail', () => {
         const html = render(
             <RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} checkout="Not checked out" row={undefined} />
         );
-        expect(html.match(new RegExp(NOT_AVAILABLE, 'g'))).toHaveLength(3);
+        expect(html.match(new RegExp(NOT_AVAILABLE, 'g'))).toHaveLength(4);
         expect(html).not.toContain('—');
     });
 
@@ -441,7 +448,7 @@ describe('RepositoryConfigDetail', () => {
             />
         );
         expect(html).toContain('<dt>Branch</dt><dd>main</dd>');
-        expect(html.match(new RegExp(NOT_AVAILABLE, 'g'))).toHaveLength(2);
+        expect(html.match(new RegExp(NOT_AVAILABLE, 'g'))).toHaveLength(3);
     });
 
     it('renders the environment editor after the checkout facts', () => {

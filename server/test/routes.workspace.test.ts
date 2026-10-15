@@ -134,6 +134,7 @@ describe('GET /api/workspace', () => {
                 branch: null,
                 lastCommit: null,
                 sizeBytes: null,
+                cacheSizeBytes: null,
             }),
         ]);
     });
@@ -264,6 +265,31 @@ describe('GET /api/workspace: orphan sizes and the checkout total', () => {
         expect(body.repos[0]).toMatchObject({ status: 'ready', sizeBytes: expect.any(Number) });
         expect(body.checkoutTotalBytes).toBe(body.repos[0].sizeBytes);
         expect(body.checkoutTotalBytes).toBeGreaterThan(0);
+    });
+
+    // Issue #734: the repo's package cache, `<member>/.cache/<owner>/<repo>`, is measured beside
+    // the checkout and kept out of the checkout total — it is not a checkout the purge reclaims.
+    it("reports a ready repo's package cache size apart from the checkout total", async () => {
+        const facts = createFactsCache();
+        const { app, caller, cookie } = await boot({ facts });
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [{ owner: 'acme', name: 'web' }] },
+        });
+        const memberDir = join(root, 'test-org', caller.user.id);
+        mkdirSync(join(memberDir, 'web'), { recursive: true });
+        const cacheDir = join(memberDir, '.cache', 'acme', 'web', 'NPM_CONFIG_CACHE');
+        mkdirSync(cacheDir, { recursive: true });
+        writeFileSync(join(cacheDir, 'tarball'), 'c'.repeat(8192));
+        await store.markReady(caller.user.id, { owner: 'acme', name: 'web' });
+
+        await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } });
+        await settle();
+        const body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(body.repos[0].cacheSizeBytes).toBeGreaterThanOrEqual(8192);
+        expect(body.checkoutTotalBytes).toBe(body.repos[0].sizeBytes);
     });
 
     it('excludes a purging orphan from the total while still listing it', async () => {

@@ -60,6 +60,9 @@ export interface FactsCache {
      */
     get(dir: string): CheckoutFacts;
 
+    /** `get`'s size alone, for a directory that is not a checkout (a repo's package cache). */
+    sizeOf(dir: string): number | null;
+
     /**
      * Forgets one directory's facts, so a tree that is about to be deleted cannot lend them to
      * whatever is re-cloned into its path.
@@ -122,9 +125,9 @@ async function readSize(dir: string): Promise<number | null> {
 export function createFactsCache(now: () => number = Date.now): FactsCache {
     const entries = new Map<string, Entry>();
 
-    const refresh = (dir: string, entry: Entry): void => {
+    const refresh = (dir: string, entry: Entry, withHead: boolean): void => {
         if (entry.pending) return;
-        const wantHead = now() - entry.headAt >= HEAD_TTL_MS;
+        const wantHead = withHead && now() - entry.headAt >= HEAD_TTL_MS;
         const wantSize = now() - entry.sizeAt >= SIZE_TTL_MS;
         if (!wantHead && !wantSize) return;
 
@@ -150,15 +153,26 @@ export function createFactsCache(now: () => number = Date.now): FactsCache {
             });
     };
 
+    const entryOf = (dir: string): Entry => {
+        let entry = entries.get(dir);
+        if (!entry) {
+            entry = { facts: UNKNOWN, headAt: 0, sizeAt: 0, pending: null };
+            entries.set(dir, entry);
+        }
+        return entry;
+    };
+
     return {
         get(dir) {
-            let entry = entries.get(dir);
-            if (!entry) {
-                entry = { facts: UNKNOWN, headAt: 0, sizeAt: 0, pending: null };
-                entries.set(dir, entry);
-            }
-            refresh(dir, entry);
+            const entry = entryOf(dir);
+            refresh(dir, entry, true);
             return entry.facts;
+        },
+
+        sizeOf(dir) {
+            const entry = entryOf(dir);
+            refresh(dir, entry, false);
+            return entry.facts.sizeBytes;
         },
 
         invalidate(dir) {

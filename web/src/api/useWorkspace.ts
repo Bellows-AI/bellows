@@ -22,6 +22,8 @@ export interface WorkspaceRepo {
     branch: string | null;
     lastCommit: { sha: string; at: string; headline: string } | null;
     sizeBytes: number | null;
+    /** The repo's package cache (`.bellows.yaml` `environment.cache`); null when unmeasured. */
+    cacheSizeBytes: number | null;
 }
 
 /** A deselected checkout that is still on disk (issue #92): measurable, and manually deletable. */

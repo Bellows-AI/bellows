@@ -44,14 +44,6 @@ export function npmQuietEnv(job: Pick<BoardJob, 'env'> | undefined): [string, st
     return Object.hasOwn(job?.env ?? {}, NPM_UPDATE_NOTIFIER) ? [] : [[NPM_UPDATE_NOTIFIER, 'false']];
 }
 /**
- * The gate env's own literals, rendered as `-e` by docker and as container env by kubernetes. HOME
- * for the non-root uid — /tmp is world-writable where the image's own is not.
- */
-export function gateEnv(job: Pick<BoardJob, 'env'> | undefined): [string, string][] {
-    return [['HOME', '/tmp'], ...npmQuietEnv(job)];
-}
-
-/**
  * The session database opencode writes under XDG_DATA_HOME, as the runner sets it: one directory
  * per member, next to their checkouts, on the workspaces volume.
  */
@@ -105,11 +97,11 @@ export function transcriptDir(config: DriverConfig, job: BoardJob): string {
  * The job's workspace, or a refusal. Exported so `loop.ts` can fail a job cleanly rather than
  * letting `dockerArgs` throw halfway through building a command.
  */
-export function workspacePathOf(job: BoardJob): string | null {
+export function workspacePathOf(job: Pick<BoardJob, 'workspacePath'>): string | null {
     return job.workspacePath && WORKSPACE_PATH.test(job.workspacePath) ? job.workspacePath : null;
 }
 
-export function workspacePath(job: BoardJob): string {
+export function workspacePath(job: Pick<BoardJob, 'id' | 'workspacePath'>): string {
     const path = workspacePathOf(job);
     if (!path) {
         throw new Error(
@@ -172,6 +164,101 @@ export const RESERVED_ENV_NAMES = [
     'ATLASSIAN_EMAIL',
     'ATLASSIAN_API_TOKEN',
 ] as const;
+
+/** The job fields the repo cache path is composed from. */
+export type CacheJob = Pick<BoardJob, 'id' | 'env' | 'repo' | 'gates' | 'workspacePath'>;
+
+/**
+ * Names a cache path may not take: the driver's own and the ones a shell, loader or runtime reads as
+ * code to run. Copied from server/src/workspace/bellows.ts, which refuses them at parse time.
+ */
+const CACHE_REFUSED_NAMES: ReadonlySet<string> = new Set([
+    'HOME',
+    'PATH',
+    'SHELL',
+    'ENV',
+    'BASH_ENV',
+    'XDG_DATA_HOME',
+    'NPM_CONFIG_UPDATE_NOTIFIER',
+    'NODE_OPTIONS',
+    'NODE_PATH',
+    'PYTHONPATH',
+    'PYTHONSTARTUP',
+    'PERL5OPT',
+    'RUBYOPT',
+    'JAVA_TOOL_OPTIONS',
+    ...RESERVED_ENV_NAMES,
+]);
+const CACHE_REFUSED_PREFIXES = [
+    'RUNNER_',
+    'OTEL_',
+    'FACTORY_',
+    'BELLOWS_',
+    'CLAUDE_',
+    'OPENCODE_',
+    'GIT_',
+    'LD_',
+    'DYLD_',
+];
+const CACHE_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,254}$/;
+const REPO_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+const cacheNameAllowed = (name: string): boolean =>
+    CACHE_NAME.test(name) &&
+    !CACHE_REFUSED_NAMES.has(name) &&
+    !CACHE_REFUSED_PREFIXES.some((prefix) => name.startsWith(prefix));
+
+/** The `owner/repo` label as two path segments, or null when it cannot name a directory. */
+function cacheRepoSegments(label: string | null | undefined): [string, string] | null {
+    const [owner = '', repo = '', ...rest] = (label ?? '').split('/');
+    const bad = (s: string) => s === '.' || s === '..' || !REPO_SEGMENT.test(s);
+    return rest.length || bad(owner) || bad(repo) ? null : [owner, repo];
+}
+
+/**
+ * Why the job's declared package cache cannot be honoured, or null. The loop fails such a claim
+ * with this reason (`claimRefusal`, and again after the gates re-read) — a throw from the env
+ * builders would leave the job to its lease, reclaimed on every expiry.
+ */
+export function repoCacheProblem(job: CacheJob): string | null {
+    const names = job.gates?.cache ?? [];
+    if (names.length === 0) return null;
+    if (!cacheRepoSegments(job.repo)) {
+        return `its repo label cannot hold a package cache directory (${job.repo ?? 'none'})`;
+    }
+    const refused = names.find((name) => !cacheNameAllowed(name));
+    return refused === undefined
+        ? null
+        : `its .bellows.yaml declares a package cache name the driver will not set: ${refused}`;
+}
+
+/**
+ * Issue #734: each `environment.cache` name `.bellows.yaml` declares, pointed at
+ * `<member>/.cache/<owner>/<repo>/<NAME>` — inside the member mount every runner and gate already
+ * carries, so it outlives the container and needs no mount of its own. Runner and gate env, both
+ * executors, one path. A default only, like `npmQuietEnv`: a claim that names it wins.
+ */
+export function repoCacheEnv(
+    config: Pick<DriverConfig, 'workspaceMount'>,
+    job: CacheJob | undefined
+): [string, string][] {
+    const names = job?.gates?.cache ?? [];
+    if (!job || names.length === 0) return [];
+    // Unreachable past the loop's refusal; the assertion stands before any path is composed.
+    const problem = repoCacheProblem(job);
+    const segments = cacheRepoSegments(job.repo);
+    if (problem || !segments) throw new Error(`refusing to run job ${job.id}: ${problem}`);
+    const dir = `${config.workspaceMount}/${workspacePath(job)}/.cache/${segments[0]}/${segments[1]}`;
+    return names.filter((name) => !Object.hasOwn(job.env ?? {}, name)).map((name) => [name, `${dir}/${name}`]);
+}
+
+/**
+ * The gate env's own literals, rendered as `-e` by docker and as container env by kubernetes. HOME
+ * for the non-root uid — /tmp is world-writable where the image's own is not.
+ */
+export function gateEnv(config: Pick<DriverConfig, 'workspaceMount'>, job: CacheJob | undefined): [string, string][] {
+    return [['HOME', '/tmp'], ...npmQuietEnv(job), ...repoCacheEnv(config, job)];
+}
 
 /**
  * The environment the board resolved for this job, minus the reserved names. Pure and exported for

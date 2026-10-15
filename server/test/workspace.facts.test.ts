@@ -60,4 +60,17 @@ describe('the facts cache', () => {
         // re-cloned checkout can never briefly show its predecessor's size or commit.
         expect(cold).toEqual({ branch: null, lastCommit: null, sizeBytes: null });
     });
+
+    // Issue #734: the per-repo package cache is a size reading only — no git, and null until measured.
+    it('measures a size-only directory, null while cold or absent', async () => {
+        const sized = createFactsCache();
+        expect(sized.sizeOf(dir)).toBeNull();
+        while (sized.sizeOf(dir) === null) await new Promise((r) => setTimeout(r, 5));
+        expect(sized.sizeOf(dir)).toBeGreaterThan(0);
+
+        const missing = join(dir, 'no-such-cache');
+        sized.sizeOf(missing);
+        for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 5));
+        expect(sized.sizeOf(missing)).toBeNull();
+    });
 });

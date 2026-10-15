@@ -142,8 +142,9 @@ export interface BoardJob {
      * The gates the job's checkout declares in `.bellows.yaml`, read by the board at claim time:
      * the environment image they run in and the named commands. Null when the repository declares
      * none — the ordinary case. Absent on a board that predates gates, read as "no gates".
+     * `cache` lists the env names pointed at the repo's package cache (`repoCacheEnv`).
      */
-    gates?: { image: string; setup?: string; gates: readonly DeclaredGate[] } | null;
+    gates?: { image: string; setup?: string; cache?: readonly string[]; gates: readonly DeclaredGate[] } | null;
     /**
      * Why the gates file exists but could not be honoured. The loop fails such a job outright —
      * running the work while pretending its gates do not exist is the one outcome worse than the

@@ -45,6 +45,7 @@ const repo = (over: { status?: 'queued' | 'cloning' | 'ready' | 'failed'; error?
     branch: 'main',
     lastCommit: null,
     sizeBytes: 1024,
+    cacheSizeBytes: null,
     ...over,
 });
 
