@@ -259,6 +259,12 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
             { name: 'lint', command: 'npm run lint' },
         ]);
     });
+
+    // The gate image ships no jq and runs as a non-root user; the pr-land suite needs one.
+    it('installs jq after npm ci, which would empty node_modules/.bin again', async () => {
+        const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
+        expect(parseBellows(text)?.setup).toBe('npm ci && sh scripts/gate-jq.sh');
+    });
 });
 
 const MAX_GATES = 16;
