@@ -5,7 +5,7 @@ import { createConnectionStore } from '../src/db/connection-store.js';
 import { createJobStore } from '../src/db/job-store.js';
 import type { Claim, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { expireLease } from './fixtures.js';
+import { expireLease, testOrg } from './fixtures.js';
 
 /**
  * Issue 545: a task selects skills at creation; the selection lives on the root row, every claim of
@@ -14,7 +14,7 @@ import { expireLease } from './fixtures.js';
  * connection for Jira (docs/connections.md).
  */
 const enabled = Boolean(process.env.DATABASE_URL);
-const ORG = 'test-org';
+const ORG = testOrg();
 const WORKER = 'worker-1';
 const LEASE_SECONDS = 60;
 const db = useTestDb({ orgs: [ORG], max: 8 });

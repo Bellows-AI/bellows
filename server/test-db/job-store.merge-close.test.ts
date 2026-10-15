@@ -7,7 +7,7 @@ import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { sweepRuntimeWakes } from '../src/db/workflow-blocks/runtime.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
-import { mustCreate } from './fixtures.js';
+import { mustCreate, randomGithubId, testOrg } from './fixtures.js';
 
 /**
  * The merged-PR closure against a real database (issue #390): a verified merge delivery closes
@@ -23,15 +23,15 @@ let sql: Sql;
 let store: JobStore;
 let prs: ReturnType<typeof createPrLifecycleStore>;
 
-const ORG = 'test-org';
-const OTHER_ORG = 'other-org';
+const ORG = testOrg();
+const OTHER_ORG = testOrg();
 const WORKER = 'worker-1';
 const REPO = 'acme/widgets';
 const OTHER_REPO = 'acme/other';
 const LEASE_SECONDS = 300;
 const PULL = 7;
-const SESSION = '33333333-3333-4333-8333-333333333333';
-const ALICE = { id: randomUUID(), githubUserId: 424242, login: 'alice-merge' };
+const SESSION = randomUUID();
+const ALICE = { id: randomUUID(), githubUserId: randomGithubId(), login: 'alice-merge' };
 
 const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [ALICE] });
 

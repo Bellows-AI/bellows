@@ -1,9 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { account, mustCreate, randomGithubId } from './fixtures.js';
+import { account, mustCreate, randomGithubId, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -12,13 +13,13 @@ let store: JobStore;
 /** A second store on the same pool, bound to a different org. Only the org guard uses it. */
 let otherOrgStore: JobStore;
 
-const ORG = 'test-org';
-const OTHER_ORG = 'other-org';
+const ORG = testOrg();
+const OTHER_ORG = testOrg();
 /** A well-formed uuid, only ever used where the job or the lease is expected not to exist. */
-const ABSENT = '00000000-0000-4000-8000-000000000000';
-const SESSION = '33333333-3333-4333-8333-333333333333';
+const ABSENT = randomUUID();
+const SESSION = randomUUID();
 /** A second session, for proving the head is the member a retry re-runs. */
-const CHAIN = '55555555-5555-4555-8555-555555555555';
+const CHAIN = randomUUID();
 /** A lease long enough that nothing in this suite outlives it by accident. */
 const LEASE_SECONDS = 300;
 

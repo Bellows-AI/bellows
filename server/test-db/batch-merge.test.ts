@@ -11,6 +11,7 @@ import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-life
 import { GitHubMergeError } from '../src/github/pr-merge.js';
 import { GitHubReadError, type BranchState } from '../src/github/pr-read.js';
 import { useTestDb } from './harness.js';
+import { testOrg, testUser } from './fixtures.js';
 import { batchPlan, checks, facts, prTask, recordPr, rootOf, setSucceeded, startBatch } from './batch-fixtures.js';
 
 /**
@@ -23,11 +24,12 @@ import { batchPlan, checks, facts, prTask, recordPr, rootOf, setSucceeded, start
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
-const ORG = 'test-org';
-const ALICE = '00000000-0000-4000-8000-00000000ba71';
+const ORG = testOrg();
+const ALICE_USER = testUser('alice');
+const ALICE = ALICE_USER.id;
 const HOURS = 3_600_000;
 
-const db = useTestDb({ orgs: [ORG], users: [{ id: ALICE, githubUserId: 90079, login: 'alice' }], max: 10 });
+const db = useTestDb({ orgs: [ORG], users: [ALICE_USER], max: 10 });
 
 let sql: Sql;
 let jobs: JobStore;

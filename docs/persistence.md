@@ -21,7 +21,7 @@ the in-memory stores in `server/test/helpers*.ts`.
 | Batch merge intents (one request per target slot) and stage verification (migration 064; [batches.md](batches.md)) | `server/migrations/064_batch_merge.sql` | `server/test-db/batch-merge.test.ts` |
 | Batch recovery evidence: `job.failure_cause`, the `repair` decision kind, the `closed` attention (migration 065; [batches.md](batches.md)) | `server/migrations/065_batch_recovery_evidence.sql` | `server/test-db/job-store.test.ts`, `server/test-db/batch-dispatch.test.ts`, `server/test-db/batch-pr-observation.test.ts` |
 | Database-name guards | `server/src/config.ts`, `server/src/seed/cli.ts` | `server/test/config.persistence.test.ts` |
-| db-suite harness: name guard, migrate, truncate and reseed per test; shared fixtures | `server/test-db/harness.ts`, `server/test-db/fixtures.ts`, `server/test-db/batch-fixtures.ts` | `server/test/test-db.harness.test.ts` |
+| db-suite harness: name guard, migrate, truncate and reseed per test; shared fixtures and generated ids | `server/test-db/harness.ts`, `server/test-db/fixtures.ts`, `server/test-db/batch-fixtures.ts` | `server/test/test-db.harness.test.ts`, `server/test/test-db.fixtures.test.ts` |
 
 ## Invariants
 

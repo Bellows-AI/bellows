@@ -6,7 +6,7 @@ import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
-import { mustCreate } from './fixtures.js';
+import { mustCreate, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -15,7 +15,7 @@ let store: JobStore;
 let workflows: ReturnType<typeof createWorkflowStore>;
 let prs: ReturnType<typeof createPrLifecycleStore>;
 
-const ORG = 'test-org';
+const ORG = testOrg();
 const WORKER = 'worker-1';
 
 const db = useTestDb({ orgs: [ORG], max: 8 });

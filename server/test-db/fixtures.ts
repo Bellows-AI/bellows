@@ -15,10 +15,21 @@ export const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id
         return ref;
     });
 
-/** Turns a slice of a uuid into a plausible github id — hex digits, parsed as base 16. */
+/**
+ * Turns a slice of a uuid into a plausible github id — hex digits, parsed as base 16 — never one
+ * already handed out in this process: a 32-bit draw can repeat, and a repeat is a duplicate key.
+ */
 const HEX_RADIX = 16;
 const UUID_HEX_SLICE_LENGTH = 8;
-export const randomGithubId = (): number => Number.parseInt(randomUUID().slice(0, UUID_HEX_SLICE_LENGTH), HEX_RADIX);
+const issuedGithubIds = new Set<number>();
+export const randomGithubId = (): number => {
+    let id: number;
+    do {
+        id = Number.parseInt(randomUUID().slice(0, UUID_HEX_SLICE_LENGTH), HEX_RADIX);
+    } while (issuedGithubIds.has(id));
+    issuedGithubIds.add(id);
+    return id;
+};
 
 /**
  * A generated identity for `useTestDb({ users })`, never a literal: integration tests do not
@@ -26,6 +37,9 @@ export const randomGithubId = (): number => Number.parseInt(randomUUID().slice(0
  * constant eventually would.
  */
 export const testUser = (login: string): TestUser => ({ id: randomUUID(), githubUserId: randomGithubId(), login });
+
+/** A generated org id for `useTestDb({ orgs })` — numeric, because a real org id is an installation id. */
+export const testOrg = (): string => String(randomGithubId());
 
 /** Upserts an account by github id and answers its row id. */
 export const account = async (sql: Sql, githubUserId: number, login: string): Promise<string> => {

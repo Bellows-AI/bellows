@@ -4,14 +4,14 @@ import { createJobStore } from '../src/db/job-store.js';
 import { QUESTIONS_PER_ATTEMPT } from '../src/db/job-store-questions.js';
 import type { AskedQuestion, Claim, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { expireLease } from './fixtures.js';
+import { expireLease, testOrg, testUser } from './fixtures.js';
 
 /** The agent's questions (050, issue #531) against a real database. */
 const enabled = Boolean(process.env.DATABASE_URL);
-const ORG = 'test-org';
-const OTHER_ORG = 'other-org';
+const ORG = testOrg();
+const OTHER_ORG = testOrg();
 const LEASE_SECONDS = 300;
-const ANSWERER = { id: '99999999-9999-4999-8999-999999999999', githubUserId: 7001, login: 'answerer' };
+const ANSWERER = testUser('answerer');
 const CONCURRENT_ANSWERS = 10;
 const QUESTION_TEXT = 'Which database?';
 const ANSWERS = { [QUESTION_TEXT]: 'Postgres' };

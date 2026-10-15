@@ -1,10 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { useTestDb } from './harness.js';
-import { mustCreate } from './fixtures.js';
+import { mustCreate, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -12,10 +13,10 @@ let sql: Sql;
 let store: JobStore;
 let prs: ReturnType<typeof createPrLifecycleStore>;
 
-const ORG = 'test-org';
-const OTHER_ORG = 'other-org';
+const ORG = testOrg();
+const OTHER_ORG = testOrg();
 const WORKER = 'worker-1';
-const SESSION = '33333333-3333-4333-8333-333333333333';
+const SESSION = randomUUID();
 /** A lease long enough that nothing in this suite outlives it by accident. */
 const LEASE_SECONDS = 300;
 

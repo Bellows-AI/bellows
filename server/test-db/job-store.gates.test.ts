@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
@@ -6,13 +7,14 @@ import type { JobStore } from '../src/db/job-store-types.js';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
-import { account } from './fixtures.js';
+import { account, randomGithubId, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: JobStore;
-const ORG = 'test-org';
+const ORG = testOrg();
+const SESSION = randomUUID();
 
 const db = useTestDb({ max: 4 });
 
@@ -60,7 +62,7 @@ const gatedStore = (answer: {
 
 describe.runIf(enabled)('gates on the job store', () => {
     it('carries the parsed declaration and the repo label on a gated claim', async () => {
-        const GATE_CAT_GITHUB_ID = 6001;
+        const GATE_CAT_GITHUB_ID = randomGithubId();
         const userId = await account(sql, GATE_CAT_GITHUB_ID, 'gate-cat');
         const gated = gatedStore({
             config: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
@@ -76,7 +78,7 @@ describe.runIf(enabled)('gates on the job store', () => {
     });
 
     it('carries a gateError value — not a throw — when the file cannot be honoured', async () => {
-        const GATE_DOG_GITHUB_ID = 6002;
+        const GATE_DOG_GITHUB_ID = randomGithubId();
         const userId = await account(sql, GATE_DOG_GITHUB_ID, 'gate-dog');
         const broken = gatedStore({ config: null, error: '.bellows.yaml line 3: unknown key "timeout"' });
         await broken.create('fix the bug', userId, { repo: 'acme/web', executor: null });
@@ -91,7 +93,7 @@ describe.runIf(enabled)('gates on the job store', () => {
     // to gate on a base-clone answer its post-sync re-read could not replace. It rides even when
     // the answer is "no gates" — that answer is as stale as the tree it was read from.
     it('carries the tree the gates answer was read from, gated or not', async () => {
-        const SOURCE_CAT_GITHUB_ID = 6010;
+        const SOURCE_CAT_GITHUB_ID = randomGithubId();
         const userId = await account(sql, SOURCE_CAT_GITHUB_ID, 'source-cat');
         const fromClone = gatedStore({ config: null, error: null, source: 'clone' });
         await fromClone.create('fix the bug', userId, { repo: 'acme/web', executor: null });
@@ -109,7 +111,7 @@ describe.runIf(enabled)('gates on the job store', () => {
     });
 
     it('carries no gates at all for a repository that declares none', async () => {
-        const PLAIN_CAT_GITHUB_ID = 6003;
+        const PLAIN_CAT_GITHUB_ID = randomGithubId();
         const userId = await account(sql, PLAIN_CAT_GITHUB_ID, 'plain-cat');
         await store.create('echo hi', userId, { repo: 'acme/web', executor: null });
 
@@ -123,7 +125,7 @@ describe.runIf(enabled)('gates on the job store', () => {
     });
 
     it('replaces the gate state on every report, and answers the last one on read', async () => {
-        const GATE_OWL_GITHUB_ID = 6004;
+        const GATE_OWL_GITHUB_ID = randomGithubId();
         const userId = await account(sql, GATE_OWL_GITHUB_ID, 'gate-owl');
         await store.create('fix the bug', userId, { repo: 'acme/web', executor: null });
         const claim = await store.claim('driver-1', LEASE_SECONDS);
@@ -139,7 +141,7 @@ describe.runIf(enabled)('gates on the job store', () => {
     });
 
     it('omits gates from the list projection, like output', async () => {
-        const GATE_EMU_GITHUB_ID = 6006;
+        const GATE_EMU_GITHUB_ID = randomGithubId();
         const userId = await account(sql, GATE_EMU_GITHUB_ID, 'gate-emu');
         await store.create('fix the bug', userId, { repo: 'acme/web', executor: null });
         const claim = await store.claim('driver-1', LEASE_SECONDS);
@@ -158,7 +160,7 @@ describe.runIf(enabled)('gates on the job store: re-reads', () => {
     // tree the run will actually see. The re-read is the freshness channel, lease-guarded like
     // every worker route.
     it('re-reads the gates for the lease holder, from the same checkout the claim read', async () => {
-        const GATE_BAT_GITHUB_ID = 6007;
+        const GATE_BAT_GITHUB_ID = randomGithubId();
         const userId = await account(sql, GATE_BAT_GITHUB_ID, 'gate-bat');
         // First answer: the stale tree the claim saw. Second: what the synced tree holds.
         const answers = [
@@ -197,7 +199,7 @@ describe.runIf(enabled)('gates on the job store: re-reads', () => {
         { gates: false, expectError: false },
         { gates: true, expectError: true },
     ])('answers an unparseable .bellows.yaml per the node (gates: $gates)', async ({ gates, expectError }) => {
-        const userId = await account(sql, gates ? 6010 : 6011, gates ? 'gate-owl' : 'gate-fox');
+        const userId = await account(sql, randomGithubId(), gates ? 'gate-owl' : 'gate-fox');
         const PARSE_ERROR = '.bellows.yaml line 3: unknown key "setup" inside environment';
         const reader = createJobStore({
             sql,
@@ -230,7 +232,7 @@ describe.runIf(enabled)('gates on the job store: re-reads', () => {
     // the thread's ROOT job — so both the claim's read and the re-read must resolve the root
     // through the follow-up chain and hand THAT id to the reader.
     it('reads the gates of the thread root’s worktree, on the claim and on the re-read', async () => {
-        const GATE_WOLF_GITHUB_ID = 6009;
+        const GATE_WOLF_GITHUB_ID = randomGithubId();
         const userId = await account(sql, GATE_WOLF_GITHUB_ID, 'gate-wolf');
         const seen: { workspacePath: string; repo: string; worktreeId: string | null }[] = [];
         const reader = createJobStore({
@@ -248,11 +250,11 @@ describe.runIf(enabled)('gates on the job store: re-reads', () => {
         await reader.create('root task', userId, { repo: 'acme/web', executor: null });
         const rootClaim = await reader.claim('driver-1', LEASE_SECONDS);
         const root = rootClaim!.id;
-        await reader.session(root, rootClaim!.leaseToken, '33333333-3333-4333-8333-333333333333');
+        await reader.session(root, rootClaim!.leaseToken, SESSION);
         await reader.complete(root, rootClaim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
         const child = await followUp(reader, root, 'adjust', userId);
         const childClaim = await reader.claim('driver-1', LEASE_SECONDS);
-        await reader.session(child.id, childClaim!.leaseToken, '33333333-3333-4333-8333-333333333333');
+        await reader.session(child.id, childClaim!.leaseToken, SESSION);
         await reader.complete(child.id, childClaim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
         const grand = await followUp(reader, child.id, 'again', userId);
 

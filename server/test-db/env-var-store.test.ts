@@ -2,17 +2,19 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createEnvVarStore, stackEnv, type EnvVarStore } from '../src/db/env-var-store.js';
 import { useTestDb } from './harness.js';
+import { testOrg, testUser } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: EnvVarStore;
 
-const ORG = 'test-org';
-const ALICE = '00000000-0000-4000-8000-00000000e117';
+const ORG = testOrg();
+const ALICE_USER = testUser('alice');
+const ALICE = ALICE_USER.id;
 const REPO = { owner: 'Bellows-AI', name: 'bellows.ai' };
 
-const db = useTestDb({ orgs: [ORG], users: [{ id: ALICE, githubUserId: 90017, login: 'alice' }] });
+const db = useTestDb({ orgs: [ORG], users: [ALICE_USER] });
 
 beforeAll(async () => {
     if (!enabled) return;

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
@@ -5,7 +6,7 @@ import type { JobStore } from '../src/db/job-store-types.js';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
-import { account, mustCreate } from './fixtures.js';
+import { account, mustCreate, randomGithubId, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -15,10 +16,11 @@ let store: JobStore;
 let otherOrgStore: JobStore;
 let workflows: ReturnType<typeof createWorkflowStore>;
 
-const ORG = 'test-org';
-const OTHER_ORG = 'other-org';
+const ORG = testOrg();
+const OTHER_ORG = testOrg();
 /** A well-formed uuid, only ever used where the job is expected not to exist. */
-const ABSENT = '00000000-0000-4000-8000-000000000000';
+const ABSENT = randomUUID();
+const SESSION = randomUUID();
 const LEASE_SECONDS = 300;
 
 const db = useTestDb({ orgs: [ORG] });
@@ -109,8 +111,8 @@ describe.skipIf(!enabled)('editCommand — a queued task\u2019s command (issue #
     // authorless row (the state every pre-accounts task is in), and an authored row refuses a
     // caller with no account.
     it('scopes the edit to the author, null-safe in both directions', async () => {
-        const author = await account(sql, 6201, 'command-author');
-        const other = await account(sql, 6202, 'command-other');
+        const author = await account(sql, randomGithubId(), 'command-author');
+        const other = await account(sql, randomGithubId(), 'command-other');
 
         const authored = await queue('echo hi', author);
         expect(await store.editCommand(authored, 'echo mine', other)).toBe('forbidden');
@@ -160,7 +162,7 @@ describe.skipIf(!enabled)('editCommand — a queued task\u2019s command (issue #
     it('edits a queued follow-up, which is off-graph', async () => {
         const parent = await queue('echo hi');
         const claim = await store.claim('w1', LEASE_SECONDS);
-        await store.session(parent, claim!.leaseToken, '33333333-3333-4333-8333-333333333333');
+        await store.session(parent, claim!.leaseToken, SESSION);
         await store.complete(parent, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
         const followUp = await store.createFollowUp(parent, 'again, tighter', null);
         if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);

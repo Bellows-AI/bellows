@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { useTestDb } from './harness.js';
+import { testOrg } from './fixtures.js';
 
 /**
  * The long-poll settle read (issue #323): `waitForSettle` holds until the named job's THREAD
@@ -19,12 +21,12 @@ let sql: Sql;
 let store: JobStore;
 let prs: ReturnType<typeof createPrLifecycleStore>;
 
-const ORG = 'test-org';
+const ORG = testOrg();
 const WORKER = 'worker-1';
 const REPO = 'acme/widgets';
 /** A well-formed uuid, only ever used where the job is expected not to exist. */
-const ABSENT = '00000000-0000-4000-8000-000000000000';
-const SESSION = '33333333-3333-4333-8333-333333333333';
+const ABSENT = randomUUID();
+const SESSION = randomUUID();
 const LEASE_SECONDS = 300;
 
 const db = useTestDb({ orgs: [ORG] });
@@ -135,7 +137,7 @@ describe.skipIf(!enabled)('waitForSettle — the long-poll settle read (issue #3
 
     it('answers a foreign org\u2019s id as unknown', async () => {
         const { id } = await queue('work');
-        const foreign = createJobStore({ sql, orgId: 'other-org' });
+        const foreign = createJobStore({ sql, orgId: testOrg() });
         expect(await foreign.waitForSettle(id, 5_000)).toBeNull();
     });
 

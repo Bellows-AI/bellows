@@ -3,6 +3,7 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { Claim, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
+import { testOrg } from './fixtures.js';
 
 /**
  * Issue #559: a pre-run claim handed back after checkout contention — the attempt refunded, the
@@ -10,7 +11,7 @@ import { useTestDb } from './harness.js';
  * claim all winning their races with it.
  */
 const enabled = Boolean(process.env.DATABASE_URL);
-const ORG = 'test-org';
+const ORG = testOrg();
 const WORKER = 'worker-1';
 const db = useTestDb({ orgs: [ORG] });
 

@@ -5,7 +5,7 @@ import { createJobStore } from '../src/db/job-store.js';
 import { createOrgOfLease } from '../src/db/job-store-org-resolvers.js';
 import type { GateReport, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { expireLease, mustCreate } from './fixtures.js';
+import { expireLease, mustCreate, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -16,11 +16,13 @@ let otherOrgStore: JobStore;
 /** The org-less lease resolver the branch-ingest credential is verified against. */
 let orgOfLease: (jobId: string, leaseToken: string) => Promise<string | null>;
 
-const ORG = 'test-org';
-const OTHER_ORG = 'other-org';
+const ORG = testOrg();
+const OTHER_ORG = testOrg();
 /** A well-formed uuid, only ever used where the job or the lease is expected not to exist. */
-const ABSENT = '00000000-0000-4000-8000-000000000000';
-const SESSION = '33333333-3333-4333-8333-333333333333';
+const ABSENT = randomUUID();
+/** A well-formed lease token no claim holds. */
+const STALE_LEASE = randomUUID();
+const SESSION = randomUUID();
 /** Shaped like a real one: opaque, prefixed, and not a uuid. */
 /** A lease long enough that nothing in this suite outlives it by accident. */
 const LEASE_SECONDS = 300;
@@ -321,7 +323,7 @@ describe.skipIf(!enabled)('job store', () => {
             const claim = await store.claim('w1', LEASE_SECONDS);
 
             expect(await orgOfLease(claim!.id, claim!.leaseToken)).toBe(ORG);
-            expect(await orgOfLease(id, '99999999-9999-4999-8999-999999999999')).toBeNull();
+            expect(await orgOfLease(id, STALE_LEASE)).toBeNull();
             expect(await orgOfLease(ABSENT, claim!.leaseToken)).toBeNull();
         });
 

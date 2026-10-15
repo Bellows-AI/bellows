@@ -1,10 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
-import { mustCreate } from './fixtures.js';
+import { mustCreate, testOrg, testUser } from './fixtures.js';
 
 /**
  * Issue 391's board half: a task selection names a scope and a profile, and the claim resolves
@@ -19,17 +20,18 @@ const enabled = Boolean(process.env.DATABASE_URL);
 let sql: Sql;
 let store: JobStore;
 
-const ORG = 'test-org';
-const ALICE = '00000000-0000-4000-8000-00000000a11c';
-const BOB = '00000000-0000-4000-8000-00000000b0b0';
+const ORG = testOrg();
+const ALICE_USER = testUser('alice');
+const BOB_USER = testUser('bob');
+const ALICE = ALICE_USER.id;
+const BOB = BOB_USER.id;
+const SESSION = randomUUID();
+const FOLLOW_UP_SESSION = randomUUID();
 const LEASE_SECONDS = 300;
 
 const db = useTestDb({
     orgs: [ORG],
-    users: [
-        { id: ALICE, githubUserId: 90001, login: 'alice' },
-        { id: BOB, githubUserId: 90002, login: 'bob' },
-    ],
+    users: [ALICE_USER, BOB_USER],
 });
 
 beforeAll(async () => {
@@ -162,7 +164,7 @@ describe.skipIf(!enabled)('claim resolution against a suspended profile (issue 4
             store.create('drive me', ALICE, { repo: null, executor: 'team', executorScope: 'org' })
         );
         const first = await store.claim('w3', LEASE_SECONDS);
-        await store.session(parent.id, first!.leaseToken, '44444444-4444-4444-8444-444444444444');
+        await store.session(parent.id, first!.leaseToken, FOLLOW_UP_SESSION);
         await store.complete(parent.id, first!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
         await suspend('org', 'team', true);
 
@@ -196,7 +198,7 @@ describe.skipIf(!enabled)('the scope rides the thread (issue 391)', () => {
     const finishWithSession = async (target: { executor: string; executorScope: 'user' | 'org' }) => {
         const { id } = await mustCreate(store.create('drive me', ALICE, { repo: null, ...target }));
         const claim = await store.claim('w1', LEASE_SECONDS);
-        await store.session(id, claim!.leaseToken, '33333333-3333-4333-8333-333333333333');
+        await store.session(id, claim!.leaseToken, SESSION);
         await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
         return id;
     };

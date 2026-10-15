@@ -9,6 +9,7 @@ import {
     type IdempotentOperation,
 } from '../src/db/job-store-idempotency.js';
 import { useTestDb } from './harness.js';
+import { randomGithubId, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -16,8 +17,8 @@ let sql: Sql;
 let store: JobStore;
 let otherOrgStore: JobStore;
 
-const ORG = 'test-org';
-const OTHER_ORG = 'other-org';
+const ORG = testOrg();
+const OTHER_ORG = testOrg();
 /** A lease long enough that nothing in this suite outlives it by accident. */
 const LEASE_SECONDS = 300;
 const CONCURRENT_DUPLICATES = 8;
@@ -38,7 +39,7 @@ const account = async (): Promise<string> => {
     accounts += 1;
     const [row] = await sql<{ id: string }[]>`
         insert into app_user (github_user_id, github_login)
-        values (${9_000_000 + accounts}, ${`idem-user-${accounts}`})
+        values (${randomGithubId()}, ${`idem-user-${accounts}`})
         returning id
     `;
     return row!.id;

@@ -8,7 +8,7 @@ import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { sweepRuntimeWakes } from '../src/db/workflow-blocks/runtime.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
-import { expireLease, mustCreate, testUser } from './fixtures.js';
+import { expireLease, mustCreate, testOrg, testUser } from './fixtures.js';
 
 /**
  * Durable block waits against a real database (issue #231): a workflow transition into a node
@@ -27,7 +27,7 @@ let sql: Sql;
 let store: JobStore;
 let prs: ReturnType<typeof createPrLifecycleStore>;
 
-const ORG = 'test-org';
+const ORG = testOrg();
 const WORKER = 'worker-1';
 const REPO = 'acme/widgets';
 

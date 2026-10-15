@@ -4,6 +4,7 @@ import { nullAuthorThread, type ThreadJob } from '../../e2e/fixtures/threads.js'
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
+import { testOrg } from './fixtures.js';
 
 /**
  * The thread fixtures the e2e specs and the web DOM tests render through a mocked thread route
@@ -13,7 +14,7 @@ import { useTestDb } from './harness.js';
  */
 
 const enabled = Boolean(process.env.DATABASE_URL);
-const ORG = 'thread-fixture-org';
+const ORG = testOrg();
 const db = useTestDb({ orgs: [ORG] });
 
 let sql: Sql;

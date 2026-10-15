@@ -1,10 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql, TransactionSql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { useTestDb } from './harness.js';
-import { expectStillLocked, expireLease, holdLock, mustCreate } from './fixtures.js';
+import { expectStillLocked, expireLease, holdLock, mustCreate, randomGithubId, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -13,13 +14,13 @@ let store: JobStore;
 /** A second store on the same pool, bound to a different org. Only the org guard uses it. */
 let otherOrgStore: JobStore;
 
-const ORG = 'test-org';
-const OTHER_ORG = 'other-org';
+const ORG = testOrg();
+const OTHER_ORG = testOrg();
 /** A well-formed uuid, only ever used where the job or the lease is expected not to exist. */
-const ABSENT = '00000000-0000-4000-8000-000000000000';
-const SESSION = '33333333-3333-4333-8333-333333333333';
+const ABSENT = randomUUID();
+const SESSION = randomUUID();
 /** A second session, for proving a follow-up chains the NEWEST session and not the root's. */
-const CHAIN = '55555555-5555-4555-8555-555555555555';
+const CHAIN = randomUUID();
 /** Shaped like a real one: opaque, prefixed, and not a uuid. */
 /** A lease long enough that nothing in this suite outlives it by accident. */
 const LEASE_SECONDS = 300;
@@ -478,7 +479,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
         it('clears done_at and done_by on every member, and a second reopen answers not_done', async () => {
             const [closer] = await sql<{ id: string }[]>`
-                insert into app_user (github_user_id, github_login) values (6101, 'closer') returning id
+                insert into app_user (github_user_id, github_login) values (${randomGithubId()}, 'closer') returning id
             `;
             const root = await finishWithSession('drive me');
             const followUp = await mustFollowUp(root, 'first adjustment', null);

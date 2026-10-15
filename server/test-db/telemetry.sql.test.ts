@@ -5,14 +5,14 @@ import { telemetryStats } from '@factory-ai/core';
 import { migrate } from '../src/db/migrate.js';
 import { createPostgresTelemetryClient } from '../src/telemetry/postgres-client.js';
 import { useTestDb } from './harness.js';
-import { account, randomGithubId } from './fixtures.js';
+import { account, randomGithubId, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 
-const ORG = 'test-org';
-const OTHER_ORG = 'other-org';
+const ORG = testOrg();
+const OTHER_ORG = testOrg();
 
 const db = useTestDb({ max: 2 });
 

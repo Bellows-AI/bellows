@@ -6,6 +6,7 @@ import { LOCAL_ORG_ID } from '../src/config.js';
 import { trackedRepos } from '../src/db/tracked-repos.js';
 import { LOCAL_LOGIN, migrate, reapPendingSignIns, reapSessions } from '../src/db/migrate.js';
 import { useTestDb } from './harness.js';
+import { randomGithubId, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -14,12 +15,22 @@ let store: AuthStore;
 
 // Numeric strings: an org id IS an installation id now, and signIn casts it into
 // organization.installation_id (bigint). Names that are not numbers stopped being org ids.
-const ORG = '911001';
-const SECOND_ORG = '911002';
+// Sorted, because a planted org is named by its id and membershipsOf answers in name order.
+const [ORG, SECOND_ORG] = [testOrg(), testOrg()].sort() as [string, string];
 /** An org planted with no installation id — a shape that can exist (the none-mode local row). */
-const UNREPORTED_ORG = '911003';
-/** Every account this file creates is numbered from here, so the cleanup can be precise. */
-const ID_BASE = 90000;
+const UNREPORTED_ORG = testOrg();
+/** An installation sign-in materializes, never planted. */
+const INSTALLATION_ORG = testOrg();
+/** An org nothing ever writes. */
+const ABSENT_ORG = testOrg();
+
+/** Each account sequence number keeps one generated GitHub id, so a test can re-query it. */
+const githubIds = new Map<number, number>();
+const githubId = (n: number): number => {
+    const id = githubIds.get(n) ?? randomGithubId();
+    githubIds.set(n, id);
+    return id;
+};
 
 // The two orgs are re-planted before every test, because the token tests write rows that need an
 // org to point at without signing in first. signIn materializes every other org itself (#99).
@@ -32,7 +43,7 @@ beforeAll(async () => {
 });
 
 const identity = (n: number, login: string) => ({
-    githubUserId: ID_BASE + n,
+    githubUserId: githubId(n),
     login,
     displayName: login,
     avatarUrl: null,
@@ -57,12 +68,12 @@ const sessionCount = async (userId: string): Promise<number> => {
 
 describe.skipIf(!enabled)('sign-in materializes the installations (#99)', () => {
     it('creates the organization row from the installation: id = installation id, name = account login', async () => {
-        await member(0, 'octocat', [{ id: '424242', name: 'acme' }]);
+        await member(0, 'octocat', [{ id: INSTALLATION_ORG, name: 'acme' }]);
 
         const [org] = await sql<{ id: string; name: string; installation_id: string | null }[]>`
-            select id, name, installation_id::text as installation_id from organization where id = '424242'
+            select id, name, installation_id::text as installation_id from organization where id = ${INSTALLATION_ORG}
         `;
-        expect(org).toMatchObject({ id: '424242', name: 'acme', installation_id: '424242' });
+        expect(org).toMatchObject({ id: INSTALLATION_ORG, name: 'acme', installation_id: INSTALLATION_ORG });
     });
 
     it('creates a membership for EVERY reported installation, bound to the account', async () => {
@@ -87,7 +98,7 @@ describe.skipIf(!enabled)('sign-in materializes the installations (#99)', () => 
         expect(memberships).toEqual([{ id: ORG, name: 'acme-renamed' }]);
         // Still one account: the numeric id is the identity.
         const [count] = await sql<{ count: number }[]>`
-            select count(*)::int as count from app_user where github_user_id = ${ID_BASE + 2}
+            select count(*)::int as count from app_user where github_user_id = ${githubId(2)}
         `;
         expect(count?.count).toBe(1);
     });
@@ -336,14 +347,14 @@ describe.skipIf(!enabled)('the pending sign-in row (issue 125)', () => {
         });
 
         const [row] = await sql<{ token_hash: Buffer }[]>`
-            select token_hash from pending_sign_in where github_user_id = ${ID_BASE + ACCOUNT_SEQ}
+            select token_hash from pending_sign_in where github_user_id = ${githubId(ACCOUNT_SEQ)}
         `;
         expect(row!.token_hash.equals(hashToken(token))).toBe(true);
         expect(row!.token_hash.toString('utf8')).not.toContain(token);
 
         expect(await store.findPendingSignIn(hashToken(token))).toEqual({
             identity: {
-                githubUserId: ID_BASE + ACCOUNT_SEQ,
+                githubUserId: githubId(ACCOUNT_SEQ),
                 login: 'pending-user',
                 displayName: 'pending-user',
                 avatarUrl: null,
@@ -370,7 +381,7 @@ describe.skipIf(!enabled)('the pending sign-in row (issue 125)', () => {
         expect(await store.findPendingSignIn(hashToken(expired))).toBeNull();
         // The read is also the reaping: nothing stale survives behind it.
         const [left] = await sql<{ count: number }[]>`
-            select count(*)::int as count from pending_sign_in where github_user_id = ${ID_BASE + ACCOUNT_SEQ}
+            select count(*)::int as count from pending_sign_in where github_user_id = ${githubId(ACCOUNT_SEQ)}
         `;
         expect(left?.count).toBe(0);
     });
@@ -418,7 +429,7 @@ describe.skipIf(!enabled)('the pending sign-in row (issue 125)', () => {
 describe.skipIf(!enabled)('the stored selection (issue 125)', () => {
     it('answers empty for an account that never signed in', async () => {
         const NEVER_SIGNED_IN_ACCOUNT_SEQ = 30;
-        expect(await store.storedSelection(ID_BASE + NEVER_SIGNED_IN_ACCOUNT_SEQ)).toEqual([]);
+        expect(await store.storedSelection(githubId(NEVER_SIGNED_IN_ACCOUNT_SEQ))).toEqual([]);
     });
 
     it('answers the membership orgs — the membership rows ARE the stored choice', async () => {
@@ -456,7 +467,7 @@ describe.skipIf(!enabled)('the tracked-repo allowlist (issue 125)', () => {
 
         expect(await trackedRepos({ sql, orgId: ORG })).toEqual(['acme/web']);
         expect(await trackedRepos({ sql, orgId: SECOND_ORG })).toEqual(['other/one']);
-        expect(await trackedRepos({ sql, orgId: '911999' })).toEqual([]);
+        expect(await trackedRepos({ sql, orgId: ABSENT_ORG })).toEqual([]);
     });
 
     it('takes the rows with the organization, whose repo scope they are', async () => {
@@ -481,7 +492,7 @@ describe.skipIf(!enabled)('removeMember (the webhook)', () => {
         expect(await store.removeMember(ORG, caller.user.githubUserId)).toBe(true);
         expect(await store.removeMember(ORG, caller.user.githubUserId)).toBe(false);
         const NOBODY_HERE_ACCOUNT_SEQ = 777;
-        expect(await store.removeMember(ORG, ID_BASE + NOBODY_HERE_ACCOUNT_SEQ)).toBe(false);
+        expect(await store.removeMember(ORG, githubId(NOBODY_HERE_ACCOUNT_SEQ))).toBe(false);
     });
 });
 
