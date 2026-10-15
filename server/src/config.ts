@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
+import { loadArtifactsConfig, type ArtifactsConfig } from './artifacts/config.js';
 import type { TelemetrySource } from './telemetry/client.js';
 
 export interface Repo {
@@ -166,6 +167,8 @@ export interface AppConfig {
      * verifies, not the session machinery, so this does not live inside `[auth]`.
      */
     readonly webhookSecret: string | null;
+    /** Where task artifacts are stored (070); see `artifacts/config.ts`. */
+    readonly artifacts: ArtifactsConfig;
 }
 
 // A telemetry read is a local query with no quota to protect, so this floor exists only to stop a
@@ -638,6 +641,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         workspaceRoot,
         auth: loadAuth(env, host, port),
         webhookSecret,
+        artifacts: loadArtifactsConfig(env),
     });
 }
 

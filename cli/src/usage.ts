@@ -5,7 +5,6 @@ export const USAGE = `usage: bellows job create (<command...> | --file <path> | 
        bellows task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
                          [--sort newest|oldest] [--limit <n>] [--cursor <cursor>] [--json]
        bellows job investigate <id> [--json]
-       bellows job log|transcript <id> [--attempt <n>] [--offset <n>] [--limit <n>] [--all] [--json]
        bellows job activity <id> [--json]
        bellows job wait <id> [--timeout <seconds>] [--json]
        bellows job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
@@ -76,10 +75,6 @@ exit codes: 0 ok (a wait: the run succeeded), 1 the board refused, 2 usage or co
 
 --json prints one envelope on stdout and nothing on stderr, whatever the outcome:
   { ok, command, outcome, exitCode, data, error }
-
-log and transcript read the STORED artifact (not investigate's tail), newest attempt unless --attempt
-names one: one page from --offset per call (stderr names the next), or with --all every page, failing
-naming the page that could not be read rather than printing a partial artifact. --all takes no --offset.
 
 retry queues a fresh attempt of the task's existing command; follow-up queues NEW instructions.
 edit replaces the command of a queued run you created, in place; the board refuses it once the run

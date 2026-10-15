@@ -35,6 +35,9 @@ and by the `lint/no-shared-literals.grit` plugin.
 
 ## Invariants
 
+- Artifacts have no HTTP surface yet: the index and object store are `server/src/artifacts/`, and the chunk
+  upload and read routes arrive with the upload protocol. `GET /api/jobs/:id/log` and `/transcript` and
+  `POST /api/jobs/:id/artifact` no longer exist. `server/test/auth.enforcement.test.ts`.
 - A route is authenticated unless `requirementFor` (`server/src/auth/plugin.ts`) deliberately
   exempts it — new paths fall through to the walled default. `server/test/auth.enforcement.test.ts`.
 - `GET /api/auth/me` answers `200 { authenticated: false }` anonymously, never `401`: it is what

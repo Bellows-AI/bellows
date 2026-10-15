@@ -1,5 +1,4 @@
 import type {
-    ArtifactPage,
     BatchThreadClosed,
     BoardJobRecord,
     BoardTaskPage,
@@ -97,7 +96,7 @@ function outputBlock(output: string | null): string[] {
     const tail = outputTail(output);
     if (tail.length === 0) return [field('output:', DASH)];
     // A tail is the end of the stream, never the artifact: say so, and where the whole one is.
-    return ['output: (tail only — `bellows job log <id>` reads the full log)', ...tail.map((line) => `  ${line}`)];
+    return ['output: (tail only)', ...tail.map((line) => `  ${line}`)];
 }
 
 /** The gate rows: name, verdict and exit code, and a failed gate's own tail beneath it. */
@@ -190,14 +189,6 @@ export function renderActivity(activity: JobActivity): string {
         return `${b.start}  input ${input}  output ${output}  cache-read ${cacheRead}  cache-creation ${cacheCreation}  edits ${b.edits}`;
     });
     return [header, ...rows].join('\n');
-}
-
-/** What a paged artifact read says on stderr: where the page sits, and the exact next offset. */
-export function renderPageNote(page: ArtifactPage): string {
-    const end = page.offset + page.content.length;
-    const more = end < page.totalCharacters ? `; next page: --offset ${end}` : '; end of artifact';
-    const cut = page.truncated ? '; the stored artifact was itself truncated at upload' : '';
-    return `${page.kind} attempt ${page.attempt}: characters ${page.offset}..${end} of ${page.totalCharacters}${more}${cut}\n`;
 }
 
 /**

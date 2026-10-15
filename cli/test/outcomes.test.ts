@@ -79,13 +79,6 @@ const REFUSALS: {
         message: 'Task is not done',
     },
     {
-        label: 'job transcript of a missing attempt',
-        argv: ['job', 'transcript', 'job-1', '--attempt', '9'],
-        status: 404,
-        code: 'NOT_FOUND',
-        message: 'No such artifact',
-    },
-    {
         label: 'job create with an inaccessible Jira connection',
         argv: ['job', 'create', '--jira-connection', CONNECTION, '--', 'npm test'],
         status: 403,
@@ -165,12 +158,6 @@ const USAGE: { label: string; argv: string[]; stderr: string | null }[] = [
     { label: 'job edit with no id', argv: ['job', 'edit'], stderr: 'usage:' },
     { label: 'job edit with no command', argv: ['job', 'edit', 'run-1'], stderr: 'usage:' },
     { label: 'job reopen with no id', argv: ['job', 'reopen'], stderr: 'usage:' },
-    {
-        label: 'job log --all with --offset',
-        argv: ['job', 'log', 'job-1', '--all', '--offset', '3'],
-        stderr: '--offset',
-    },
-    { label: 'job log with a zero --limit', argv: ['job', 'log', 'job-1', '--limit', '0'], stderr: '--limit' },
     {
         label: 'job preflight with a command positional',
         argv: ['job', 'preflight', '--repo', 'acme/api', 'npm', 'test', '--json'],

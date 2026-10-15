@@ -25,6 +25,17 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- fail (printf "auth.publicUrl host %q is not among ingress.hosts: GitHub redirects to auth.publicUrl and the Ingress answers ingress.hosts" $publicHost) }}
 {{- end }}
 {{- end }}
+{{- if not (has .Values.artifacts.backend (list "s3" "filesystem")) }}
+{{- fail "artifacts.backend must be s3 or filesystem" }}
+{{- end }}
+{{- if eq .Values.artifacts.backend "s3" }}
+{{- if not .Values.artifacts.s3.bucket }}
+{{- fail "artifacts.s3.bucket is required when artifacts.backend is s3 (set artifacts.backend=filesystem for a single-replica development install)" }}
+{{- end }}
+{{- if and (not .Values.artifacts.s3.region) (not .Values.artifacts.s3.endpoint) }}
+{{- fail "artifacts.s3.region is required when artifacts.backend is s3 and artifacts.s3.endpoint is empty" }}
+{{- end }}
+{{- end }}
 {{- if not .Values.auth.oauthClientId }}
 {{- fail "auth.oauthClientId is required" }}
 {{- end }}

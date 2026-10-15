@@ -13,8 +13,6 @@ import type {
     JobLeaseInfo,
     TaskListFilters,
     TaskSummary,
-    ArtifactKind,
-    StoredArtifact,
     SettleOutcome,
 } from './job-store-types.js';
 import { questionsOfJobs } from './job-store-questions.js';
@@ -79,36 +77,6 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
     if (!row) return null;
     const questions = await questionsOfJobs(ctx, [row.id]);
     return { ...toJobRow(ctx, row), questions: questions.get(row.id) ?? [] };
-}
-
-/**
- * One stored run artifact (issue #325): the full-run log or the agent transcript of an attempt,
- * for the read routes. The job row's org scope IS the read's authorization — this store is bound
- * to one org, and the query keys on it, exactly like every other read here. A null `attempt`
- * reads the newest stored one (`order by attempt desc`), what an investigating reader wants by
- * default; an explicit one answers only that attempt.
- */
-export async function readArtifactOf(
-    ctx: JobStoreContext,
-    id: string,
-    kind: ArtifactKind,
-    attempt: number | null
-): Promise<StoredArtifact | null> {
-    const { sql, orgId } = ctx;
-    const rows =
-        attempt === null
-            ? await sql<{ attempt: number; truncated: boolean; content: string }[]>`
-                  select attempt, truncated, content from job_artifact
-                  where org_id = ${orgId} and job_id = ${id} and kind = ${kind}
-                  order by attempt desc
-                  limit 1
-              `
-            : await sql<{ attempt: number; truncated: boolean; content: string }[]>`
-                  select attempt, truncated, content from job_artifact
-                  where org_id = ${orgId} and job_id = ${id} and kind = ${kind} and attempt = ${attempt}
-              `;
-    const row = rows[0];
-    return row ? { attempt: row.attempt, truncated: row.truncated, content: row.content } : null;
 }
 
 /**

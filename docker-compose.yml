@@ -88,6 +88,15 @@ services:
             # this stack (the board refuses to boot in github mode without it); ignored against
             # an open board, where the worker routes are open anyway.
             JOB_BOARD_TOKEN: ${JOB_BOARD_TOKEN:?set JOB_BOARD_TOKEN in .env (openssl rand -hex 32)}
+            # Task artifacts go to the `s3` service below (RustFS). The dashboard creates the bucket
+            # on boot; the keys are that service's own dev credentials, literal for the same reason
+            # the database URL is: nothing in .env can name this stack's store.
+            ARTIFACTS_BACKEND: s3
+            ARTIFACTS_S3_BUCKET: factory-artifacts
+            ARTIFACTS_S3_ENDPOINT: http://s3:9000
+            ARTIFACTS_S3_FORCE_PATH_STYLE: 'true'
+            ARTIFACTS_ACCESS_KEY_ID: factory
+            ARTIFACTS_SECRET_ACCESS_KEY: factory-dev
             # No AUTH_ALLOW_PUBLIC_BIND. It used to be required here: the Dockerfile sets
             # HOST=0.0.0.0, and loadConfig refuses `none` on a non-loopback host, so an open stack
             # needed the hatch to boot at all. With AUTH_MODE pinned to github above there is
@@ -128,6 +137,8 @@ services:
             - workspaces:/workspaces
         depends_on:
             postgres:
+                condition: service_healthy
+            s3:
                 condition: service_healthy
         # Not `unless-stopped`. A dev process that exits on a syntax error should stay exited and
         # show you the error, not loop.
