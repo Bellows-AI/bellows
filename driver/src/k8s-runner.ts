@@ -336,13 +336,9 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
         throw new Error(`refusing to run job ${job.id}: the kubernetes runner runs every job as a session`);
     }
     clearKilled(runnerName(job));
+    // The loop started this attempt's services before its gate environment and setup
+    // (`startServices`); the fence's sweep spares them, and the runner pod finds them by DNS.
     await prepare(deps, job, cleanup);
-
-    // Services sit between the fence and the runner's own launch: after the fence, so a
-    // stood-down attempt starts no fleet; before the Job, so every refusal they can produce is
-    // answered while nothing of this attempt's runs.
-    const refused = await startServiceFleet(deps, job);
-    if (refused) return refused;
 
     const startedAt = new Date().toISOString();
     await launch(deps, job, runnerJobSpec(deps.config, job, session), cleanup);
@@ -625,7 +621,7 @@ export function createKubernetesRunner(
         releaseServices: (job: BoardJob) => teardownServices(deps, job),
         deadServices: (job: BoardJob) => deadServices(deps, job),
         restartServices: (job: BoardJob, signal: AbortSignal) => restartServiceFleet(deps, job, signal),
-        startServices: (job: BoardJob) => startServiceFleet(deps, job),
+        startServices: (job: BoardJob, signal?: AbortSignal) => startServiceFleet(deps, job, signal),
         run: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) =>
             run(deps, job, session, onOutput),
         publishGit: (job: BoardJob, publishToken?: string, options?: PublishOptions) =>

@@ -485,13 +485,15 @@ export const eventsForPath = (namespace: string, name: string): string =>
 export const secretsPath = (namespace: string): string => `/api/v1/namespaces/${namespace}/secrets`;
 
 /**
- * Label-scoped collection paths: by JOB for the re-claim fence, by LEASE for this attempt's own
- * teardown. The teardown selectors additionally require the `factory.service` key to exist —
+ * Label-scoped collection paths: by JOB for the re-claim fence — every OTHER attempt's, so the
+ * fleet the loop started for this one before the runner survives it — by LEASE for this attempt's
+ * own teardown. The teardown selectors additionally require the `factory.service` key to exist —
  * the set-based `,factory.service` at the end — because the runner pod and every gate pod carry
  * the same lease label, and only the service fleet may die at teardown.
  */
-const byJob = (path: string, job: BoardJob): string =>
-    `${path}?labelSelector=${encodeURIComponent(`${JOB_LABEL}=${job.id}`)}`;
+const otherAttempts = (job: BoardJob): string =>
+    encodeURIComponent(`${JOB_LABEL}=${job.id},${LEASE_LABEL}!=${job.leaseToken}`);
+const byJob = (path: string, job: BoardJob): string => `${path}?labelSelector=${otherAttempts(job)}`;
 const byLease = (path: string, job: BoardJob): string =>
     `${path}?labelSelector=${encodeURIComponent(`${LEASE_LABEL}=${job.leaseToken}`)},${SERVICE_LABEL}`;
 
@@ -534,10 +536,9 @@ export function deleteSecret(deps: K8sDeps, name: string): Promise<void> {
 /**
  * The label-scoped collection path every attempt of a job shares. The lease token never repeats,
  * so attempt-scoped names cannot find a previous attempt's leftovers — the `factory.job` label is
- * the one identifier they all carry, and it is what the fence selects on.
+ * the one identifier they all carry, and it is what the fence selects on, sparing this attempt's own.
  */
-export const jobsSelectorPath = (namespace: string, job: BoardJob): string =>
-    `${jobsPath(namespace)}?labelSelector=${encodeURIComponent(`${JOB_LABEL}=${job.id}`)}`;
+export const jobsSelectorPath = (namespace: string, job: BoardJob): string => byJob(jobsPath(namespace), job);
 
 /**
  * The checkout claim: one ConfigMap per JOB id, the one job-scoped name this runner ever writes,

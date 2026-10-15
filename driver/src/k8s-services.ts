@@ -228,10 +228,17 @@ async function readServiceSpecs(
 /**
  * The k8s form of docker.ts's setup: read the checkouts' `.bellows.yaml` through a throwaway
  * readout Job, then start each declared service as a Pod with a headless Service as its DNS name.
- * Answers a terminal `RunOutcome` for an author's parse refusal, or `null` to continue toward
- * the runner.
+ * Answers a terminal `RunOutcome` for an author's parse refusal, or `null` once every pod runs —
+ * the pre-gate restart's bar, so `environment.setup` never races scheduling or an image pull (a
+ * headless Service resolves to nothing until then); a pod that never runs throws
+ * `ServicesNotRunning`. The loop calls it (`Runner.startServices`) before the gate environment and
+ * the runner; `signal` is the stand-down, which ends the wait.
  */
-export async function startServiceFleet(deps: K8sDeps, job: BoardJob): Promise<RunOutcome | null> {
+export async function startServiceFleet(
+    deps: K8sDeps,
+    job: BoardJob,
+    signal?: AbortSignal
+): Promise<RunOutcome | null> {
     if (!deps.config.servicesEnabled) return null;
     const { specs, refusal } = await readServiceSpecs(deps, job);
     if (refusal !== null) {
@@ -240,6 +247,7 @@ export async function startServiceFleet(deps: K8sDeps, job: BoardJob): Promise<R
     if (specs.length > 0) {
         await startFleet(deps, job, specs);
         recordDeclaredServices(job, specs);
+        await awaitServicesRunning(specs, () => listFleetPods(deps, job), deps.sleep, { signal, after: 'the start' });
     }
     return null;
 }
@@ -309,7 +317,7 @@ export async function restartServiceFleet(deps: K8sDeps, job: BoardJob, signal: 
         recordDeclaredServices(job, specs);
         // The budget the teardown wait spent, by the poll count or the clock, whichever is more.
         const spent = Math.max(polls * SERVICE_READY_POLL_MS, Date.now() - started);
-        await awaitServicesRunning(specs, () => listRestartedPods(deps, job), deps.sleep, {
+        await awaitServicesRunning(specs, () => listFleetPods(deps, job), deps.sleep, {
             timeoutMs: SERVICE_RESTART_TIMEOUT_MS - spent,
             signal,
         });
@@ -319,8 +327,8 @@ export async function restartServiceFleet(deps: K8sDeps, job: BoardJob, signal: 
     }
 }
 
-/** The restarted fleet's pods; one Pending on an unpullable image never runs, so it lists as the dead one it is. */
-async function listRestartedPods(deps: K8sDeps, job: BoardJob): Promise<ServiceStatus[]> {
+/** The fleet's pods; one Pending on an unpullable image never runs, so it lists as the dead one it is. */
+async function listFleetPods(deps: K8sDeps, job: BoardJob): Promise<ServiceStatus[]> {
     const found = await deps.request('GET', podsByLeasePath(deps.config.k8sNamespace, job));
     expectOk(found, 'listing the service pods');
     const dead = new Set(parseDeadServicePods(found.body).map(({ name }) => name));

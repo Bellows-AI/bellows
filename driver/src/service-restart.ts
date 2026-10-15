@@ -8,6 +8,13 @@ import {
 import type { ServiceSpec } from './services.js';
 
 /**
+ * A fleet that was started but never ran — a service listed dead, or one still not running when
+ * the budget ran out. A verdict on the declared services (the loop reports it as `services`), never
+ * an infrastructure refusal, which is any other error.
+ */
+export class ServicesNotRunning extends Error {}
+
+/**
  * Waits until every service in `specs` is listed `running` (issue #560), re-listing every
  * SERVICE_READY_POLL_MS. Throws naming a service listed dead at once; once `timeoutMs` — the part
  * of the SERVICE_RESTART_TIMEOUT_MS budget the caller has left — has passed by the poll count or
@@ -19,7 +26,11 @@ export async function awaitServicesRunning(
     specs: readonly ServiceSpec[],
     list: () => Promise<readonly ServiceStatus[]>,
     sleep: (ms: number) => Promise<void>,
-    { timeoutMs = SERVICE_RESTART_TIMEOUT_MS, signal }: { timeoutMs?: number; signal?: AbortSignal } = {}
+    {
+        timeoutMs = SERVICE_RESTART_TIMEOUT_MS,
+        signal,
+        after = 'the restart',
+    }: { timeoutMs?: number; signal?: AbortSignal | undefined; after?: 'the restart' | 'the start' } = {}
 ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     let pending = specs.map(({ name }) => name);
@@ -35,16 +46,21 @@ export async function awaitServicesRunning(
             const dead = listed.find(
                 ({ name, state }) => DEAD_SERVICE_STATES.has(state) && specs.some((s) => s.name === name)
             );
-            if (dead) throw new Error(`service "${dead.name}" ${dead.state} after the restart`);
+            if (dead) throw new ServicesNotRunning(`service "${dead.name}" ${dead.state} after ${after}`);
             const running = new Set(listed.filter(({ state }) => state === 'running').map(({ name }) => name));
             pending = specs.map(({ name }) => name).filter((name) => !running.has(name));
             if (pending.length === 0) return;
         }
         if (waited >= timeoutMs || Date.now() >= deadline) {
-            const after = `${SERVICE_RESTART_TIMEOUT_S}s after the restart`;
-            if (readError)
-                throw new Error(`the services could not be listed ${after}: ${(readError as Error).message}`);
-            throw new Error(`service ${pending.map((name) => `"${name}"`).join(', ')} not running ${after}`);
+            const since = `${SERVICE_RESTART_TIMEOUT_S}s after ${after}`;
+            if (readError) {
+                throw new ServicesNotRunning(
+                    `the services could not be listed ${since}: ${(readError as Error).message}`
+                );
+            }
+            throw new ServicesNotRunning(
+                `service ${pending.map((name) => `"${name}"`).join(', ')} not running ${since}`
+            );
         }
         await sleep(SERVICE_READY_POLL_MS);
     }

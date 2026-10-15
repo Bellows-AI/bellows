@@ -60,6 +60,8 @@ export interface AttemptCtx {
     fenced: boolean;
     /** The task tree's fingerprint the startup sync answered; null when unknown. */
     treeBefore: string | null;
+    /** Set once the services step started the attempt's declared services (`loop-services.ts`). */
+    servicesStarted?: true;
 }
 
 /** The completion body the board's `complete` takes: what a conclusion reports. */

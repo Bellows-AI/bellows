@@ -50,7 +50,8 @@ import {
     serviceContainerName,
     serviceRunArgs,
 } from '../src/services.js';
-import { type RunnerFiles, syncCheckoutArgs } from '../src/docker-runner-support.js';
+import { type RunnerFiles, startJobServices, syncCheckoutArgs } from '../src/docker-runner-support.js';
+import { ServicesNotRunning } from '../src/service-restart.js';
 import { telemetryConfig, telemetryConfigTar } from '../src/telemetry-config.js';
 import {
     CREDENTIAL_HELPER,
@@ -1508,6 +1509,19 @@ function spawnChild(stdout: string, stderr?: string, code?: number | null): type
  * verdict). `fail`, when given, turns the matching call into an execFile-shaped rejection —
  * stderr on the error, the way the promisified execFile carries a daemon refusal.
  */
+/**
+ * The readiness wait's `docker ps --format '{{json .}}'` answer: every service container the
+ * daemon was asked to run (`--network-alias`, labelled `factory.service`), running.
+ */
+function runningServicesPs(calls: readonly string[][]): { stdout: string } {
+    const names = calls
+        .filter((a) => a[0] === 'run' && a.includes('--network-alias'))
+        .flatMap((a) => a.filter((arg) => arg.startsWith('factory.service=')));
+    return {
+        stdout: names.map((label) => JSON.stringify({ Labels: label, Image: 'svc:1', State: 'running' })).join('\n'),
+    };
+}
+
 function labelDaemon({
     readout = '{"ok":true,"reason":null}',
     fail,
@@ -1540,10 +1554,29 @@ function labelDaemon({
     };
     const listed = (entries: Map<string, Record<string, string>>, args: string[]) => {
         const filters = filtersOf(args);
+        if (args.includes('{{json .}}')) {
+            // The readiness wait's listing: every matching service container, running.
+            const services = [...entries.values()].filter(
+                (labels) => labels['factory.service'] && filters.every(([key, value]) => labels[key] === value)
+            );
+            return {
+                stdout: services
+                    .map((labels) =>
+                        JSON.stringify({
+                            Labels: `factory.service=${labels['factory.service']}`,
+                            Image: 'svc:1',
+                            State: 'running',
+                        })
+                    )
+                    .join('\n'),
+            };
+        }
+        // The fence's `--format` asks for each object's lease label beside its name, as docker renders it.
+        const withLease = (args[args.indexOf('--format') + 1] ?? '').includes('factory.lease');
         return {
             stdout: [...entries.entries()]
                 .filter(([, labels]) => filters.every(([key, value]) => labels[key] === value))
-                .map(([name]) => name)
+                .map(([name, labels]) => (withLease ? `${name}\t${labels['factory.lease'] ?? ''}` : name))
                 .join('\n'),
         };
     };
@@ -2296,7 +2329,15 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 if (opts.serviceFails) throw new Error('daemon refused the service');
                 return { stdout: '' };
             }
-            if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
+            // The readiness wait's listing: the declared stub, running.
+            if (args[0] === 'ps' && args.includes('{{json .}}')) {
+                return {
+                    stdout: JSON.stringify({ Labels: 'factory.service=stub', Image: 'stub-svc:1', State: 'running' }),
+                };
+            }
+            // The attempt's own service: what the fence's lease-labelled listing shows for it.
+            if (args[0] === 'ps')
+                return { stdout: args.includes('--format') ? `svc-id-1\t${job.leaseToken}\n` : 'svc-id-1\n' };
             return { stdout: '' };
         });
 
@@ -2318,11 +2359,44 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         return { fn, seen };
     };
 
-    const servicesRunner = (exec: ReturnType<typeof daemon>, fn: typeof spawn) =>
-        dockerRunner(exec as unknown as (args: string[]) => Promise<{ stdout: string }>, {
+    /**
+     * The loop's order (PR 737): its setup phase starts the services — before the gate
+     * environment's setup — and run() spawns the runner. A refused start ends there.
+     */
+    let startingServices = 0;
+    const asLoop = (runner: ReturnType<typeof createDockerRunner>): ReturnType<typeof createDockerRunner> => ({
+        ...runner,
+        run: async (j, session, onOutput) => {
+            startingServices += 1;
+            let refused: Awaited<ReturnType<typeof runner.startServices>>;
+            try {
+                refused = await runner.startServices(j);
+            } finally {
+                startingServices -= 1;
+            }
+            return refused ?? runner.run(j, session, onOutput);
+        },
+    });
+    /**
+     * The fakes below script `docker ps` for the fence, teardown and probes; while a start waits for
+     * its fleet, the readiness listing answers every service the daemon was asked to run, running —
+     * what docker would say once they are up. Outside a start the fake's own answer stands.
+     */
+    const readyWhileStarting = (exec: unknown): Parameters<typeof createDockerRunner>[2] => {
+        const seen: string[][] = [];
+        const inner = exec as (args: string[]) => Promise<{ stdout: string }>;
+        return (async (args: string[]) => {
+            seen.push(args);
+            if (startingServices > 0 && args[0] === 'ps' && args.includes('{{json .}}')) return runningServicesPs(seen);
+            return inner(args);
+        }) as Parameters<typeof createDockerRunner>[2];
+    };
+    const bareServicesRunner = (exec: ReturnType<typeof daemon>, fn: typeof spawn) =>
+        dockerRunner(readyWhileStarting(exec), {
             env: { RUNNER_SERVICES: '1' },
             spawn: fn,
         });
+    const servicesRunner = (exec: ReturnType<typeof daemon>, fn: typeof spawn) => asLoop(bareServicesRunner(exec, fn));
 
     // A spawn stub whose children never emit on their own: each spawn hands the test a fire
     // function, so the interleaving — one attempt's error or close landing after another
@@ -2414,18 +2488,25 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     describe('reading the task worktree (issue #444)', () => {
         const ROOT = '55555555-5555-4555-8555-555555555555';
         const repoJob: BoardJob = { ...job, repo: 'acme/app', rootJobId: ROOT };
-        const treeDaemon = (tree: ReturnType<typeof bellowsTree>) =>
-            vitest.fn(async (args: string[]) => {
+        const treeDaemon = (tree: ReturnType<typeof bellowsTree>) => {
+            const fn = vitest.fn(async (args: string[]) => {
                 if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: tree.read(argvEnv(args)) };
+                if (args[0] === 'ps' && args.includes('{{json .}}')) {
+                    return runningServicesPs(fn.mock.calls.map((c) => c[0]));
+                }
                 if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
                 return { stdout: '' };
             });
+            return fn;
+        };
         const run = async (tree: ReturnType<typeof bellowsTree>) => {
             const exec = treeDaemon(tree);
-            const runner = dockerRunner(exec as unknown as (args: string[]) => Promise<{ stdout: string }>, {
-                env: { RUNNER_SERVICES: '1', WORKSPACE_MOUNT: tree.mount },
-                spawn: spawnRecording('ran\n', 0).fn,
-            });
+            const runner = asLoop(
+                dockerRunner(readyWhileStarting(exec as unknown as (args: string[]) => Promise<{ stdout: string }>), {
+                    env: { RUNNER_SERVICES: '1', WORKSPACE_MOUNT: tree.mount },
+                    spawn: spawnRecording('ran\n', 0).fn,
+                })
+            );
             const outcome = await runner.run(repoJob, { id: SESSION, resume: false });
             const services = exec.mock.calls
                 .map((c) => c[0])
@@ -2544,6 +2625,75 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const removeAt = calls.findIndex((a) => a.join(' ') === ['network', 'rm', networkName(job)].join(' '));
         expect(disconnectAt).toBeGreaterThanOrEqual(0);
         expect(removeAt).toBeGreaterThan(disconnectAt);
+    });
+
+    // Review: setup must not race a fleet still starting — the start answers only once every
+    // service runs, and one that never does is a ServicesNotRunning, as in the restart.
+    const readinessDaemon = (states: string[]) => {
+        const base = daemon(READOUT);
+        let polls = 0;
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'ps' && args.includes('{{json .}}')) {
+                const State = states[Math.min(polls++, states.length - 1)];
+                return { stdout: JSON.stringify({ Labels: 'factory.service=stub', Image: 'stub-svc:1', State }) };
+            }
+            return base(args);
+        });
+        return { exec, polls: () => polls };
+    };
+    const startWith = (exec: ReturnType<typeof readinessDaemon>['exec']) =>
+        startJobServices(job, loadDriverConfig({ RUNNER_SERVICES: '1' }), {
+            execDocker: exec as unknown as (args: string[]) => Promise<{ stdout: string; stderr: string }>,
+            killed: new Set(),
+            serviceTeardown: async () => {},
+            sleep: async () => {},
+        });
+
+    it('startServices answers only once every service runs', async () => {
+        const d = readinessDaemon(['created', 'running']);
+        await expect(startWith(d.exec)).resolves.toBeNull();
+        expect(d.polls()).toBe(2);
+    });
+
+    it('startServices rejects with ServicesNotRunning when a service exits', async () => {
+        const d = readinessDaemon(['exited']);
+        await expect(startWith(d.exec)).rejects.toBeInstanceOf(ServicesNotRunning);
+    });
+
+    // Review (PR 737): the loop starts the services before the gate environment's setup, so run()
+    // must neither start them again nor fence them away; the runner still joins their network.
+    it('run() starts no services after the loop started them, and the runner joins their network', async () => {
+        const exec = daemon(READOUT);
+        const runner = bareServicesRunner(exec, spawnRecording('', 0).fn);
+        await expect(runner.startServices(job)).resolves.toBeNull();
+        const startedAt = exec.mock.calls.length;
+        await runner.run(job, { id: SESSION, resume: false });
+
+        const during = exec.mock.calls.slice(startedAt).map((call) => call[0]);
+        expect(during.some((a) => a[0] === 'network' && a[1] === 'create')).toBe(false);
+        const readsBellows = (a: string[]) => a.some((arg) => arg.startsWith('BELLOWS_ROOT='));
+        expect(during.some((a) => a[0] === 'run' && (a.includes('--network-alias') || readsBellows(a)))).toBe(false);
+        const created = during.find((a) => a[0] === 'create');
+        expect(created?.[created.indexOf('--network') + 1]).toBe(networkName(job));
+    });
+
+    it("run()'s fence spares this attempt's own containers and networks", async () => {
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'ps' && args.includes('--format')) {
+                return { stdout: `own-1\t${job.leaseToken}\nold-1\tolder-lease\n` };
+            }
+            if (args[0] === 'network' && args[1] === 'ls') {
+                return { stdout: `own-net\t${job.leaseToken}\nold-net\tolder-lease\n` };
+            }
+            return { stdout: '' };
+        });
+        await bareServicesRunner(exec, spawnRecording('', 0).fn).run(job, { id: SESSION, resume: false });
+
+        const calls = exec.mock.calls.map((call) => call[0]);
+        expect(calls).toContainEqual(['rm', '-f', 'old-1']);
+        expect(calls).not.toContainEqual(['rm', '-f', 'own-1']);
+        expect(calls).toContainEqual(['network', 'rm', 'old-net']);
+        expect(calls).not.toContainEqual(['network', 'rm', 'own-net']);
     });
 
     it('fences leftover services before anything is created', async () => {
@@ -3171,14 +3321,18 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const d = labelDaemon({ readout: READOUT });
         const spawnA = gatedSpawns();
         const spawnB = gatedSpawns();
-        const runner1 = dockerRunner(d.exec, {
-            env: { RUNNER_SERVICES: '1' },
-            spawn: spawnA.fn,
-        });
-        const runner2 = dockerRunner(d.exec, {
-            env: { RUNNER_SERVICES: '1' },
-            spawn: spawnB.fn,
-        });
+        const runner1 = asLoop(
+            dockerRunner(readyWhileStarting(d.exec), {
+                env: { RUNNER_SERVICES: '1' },
+                spawn: spawnA.fn,
+            })
+        );
+        const runner2 = asLoop(
+            dockerRunner(readyWhileStarting(d.exec), {
+                env: { RUNNER_SERVICES: '1' },
+                spawn: spawnB.fn,
+            })
+        );
 
         const runA = runner1.run(attemptA, { id: SESSION, resume: false });
         await spawnA.childAt(0); // A's fleet and runner stand on the daemon
@@ -3241,10 +3395,12 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         });
 
         const { fn, seen } = spawnRecording('ran\n', 0);
-        const runner = dockerRunner(d.exec, {
-            env: { RUNNER_SERVICES: '1' },
-            spawn: fn,
-        });
+        const runner = asLoop(
+            dockerRunner(readyWhileStarting(d.exec), {
+                env: { RUNNER_SERVICES: '1' },
+                spawn: fn,
+            })
+        );
         await runner.run(attemptB, { id: SESSION, resume: false });
 
         // The fence removed both of A's leftovers by label.
@@ -3275,26 +3431,30 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // The legacy name: created before the token joined the name, carrying no labels at all.
         d.networks.set(`factory-job-${job.id}-services`, {});
 
-        // The fence runs before anything is created; the readout is the first call after it,
-        // so snapshotting there is snapshotting the fence's outcome.
+        // The loop started B's services first; run()'s fence then sweeps, and the runner's create is
+        // the first call after it, so snapshotting there is snapshotting the fence's outcome.
         let afterFence: { containers: string[]; networks: string[] } | null = null;
         const exec = async (args: string[]) => {
-            const answer = await d.exec(args);
-            if (!afterFence && args[0] === 'run' && args.includes('--entrypoint')) {
+            if (!afterFence && args[0] === 'create') {
                 afterFence = { containers: [...d.containers.keys()], networks: [...d.networks.keys()] };
             }
-            return answer;
+            return d.exec(args);
         };
         const { fn } = spawnRecording('ran\n', 0);
-        const runner = dockerRunner(exec as unknown as (args: string[]) => Promise<{ stdout: string }>, {
-            env: { RUNNER_SERVICES: '1' },
-            spawn: fn,
-        });
+        const runner = asLoop(
+            dockerRunner(readyWhileStarting(exec as unknown as (args: string[]) => Promise<{ stdout: string }>), {
+                env: { RUNNER_SERVICES: '1' },
+                spawn: fn,
+            })
+        );
         await runner.run(attemptB, { id: SESSION, resume: false });
 
-        // All four leftovers are gone; the other job's container is not this fence's business.
-        expect(afterFence!.containers.sort()).toEqual(['someone-elses-runner']);
-        expect(afterFence!.networks).toEqual([]);
+        // All four leftovers are gone; the other job's container is not this fence's business, and
+        // this attempt's own fleet and network — started before run() — are spared.
+        expect(afterFence!.containers.sort()).toEqual(
+            [serviceContainerName(attemptB, 'stub'), 'someone-elses-runner'].sort()
+        );
+        expect(afterFence!.networks).toEqual([networkName(attemptB)]);
     });
 
     it('leaves the daemon alone when the switch is off', async () => {

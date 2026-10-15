@@ -208,12 +208,15 @@ export interface Runner {
      */
     deadServices(job: BoardJob): Promise<DeadService[]>;
     /**
-     * Starts the attempt's `.bellows.yaml` services without any agent run (issue #503): what an
-     * agent-less node's gates test against, since run() is what normally starts them. Answers a
-     * refused outcome for an author's refusal (a bad `.bellows.yaml`), null otherwise; torn down
-     * by `releaseServices` like run()'s fleet.
+     * Starts the attempt's `.bellows.yaml` services. The loop's setup phase calls it for every
+     * attempt, agent-less ones included, before the gate environment's `environment.setup` (which
+     * may migrate or seed one) and before run(), which starts none. Answers a refused outcome for
+     * an author's refusal (a bad `.bellows.yaml`), null once every service runs; throws
+     * `ServicesNotRunning` for one that never does, and any other error for an infrastructure
+     * refusal, its partial fleet torn down. `signal` (the stand-down) ends the readiness wait.
+     * Torn down by `releaseServices`.
      */
-    startServices(job: BoardJob): Promise<RunOutcome | null>;
+    startServices(job: BoardJob, signal?: AbortSignal): Promise<RunOutcome | null>;
     /**
      * Recreates the attempt's declared fleet from the recorded specs and waits until every
      * service runs, up to SERVICE_RESTART_TIMEOUT_MS (issue #560). The loop calls it when a

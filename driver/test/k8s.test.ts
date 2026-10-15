@@ -53,6 +53,7 @@ import {
 } from '../src/k8s-auxspec.js';
 import { createKubernetesGateManager } from '../src/k8s-gates.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
+import { ServicesNotRunning } from '../src/service-restart.js';
 import {
     CREDENTIAL_HELPER,
     gitProbeScript,
@@ -5321,6 +5322,8 @@ describe('the kubernetes services flow', () => {
     ) => {
         const calls: Call[] = [];
         let bellowsEnv: Record<string, string> = {};
+        const createdPods: { metadata: { labels: Record<string, string> }; spec: unknown }[] = [];
+        const runningPod = (pod: (typeof createdPods)[number]) => ({ ...pod, status: { phase: 'Running' } });
         const serve = claimServer();
         const request: K8sRequest = (method, path, body) => {
             calls.push({ method, path, body });
@@ -5377,22 +5380,38 @@ describe('the kubernetes services flow', () => {
             if (path === `/api/v1/namespaces/${namespace}/pods/runner-pod/log`) {
                 return respond({ status: 200, body: 'did the work\n' });
             }
+            // The lease-scoped list the readiness wait polls: every pod this fake created, Running.
+            if (method === 'GET' && path.includes('pods?') && decodeURIComponent(path).includes('factory.lease=')) {
+                return respond({ status: 200, body: JSON.stringify({ items: createdPods.map(runningPod) }) });
+            }
             if (path.includes('pods?') || path.includes('services?')) return respond(empty);
-            if (path === `/api/v1/namespaces/${namespace}/pods`) return respond({ status: 201, body: '{}' });
+            if (path === `/api/v1/namespaces/${namespace}/pods`) {
+                if (method === 'POST') createdPods.push(body as (typeof createdPods)[number]);
+                return respond({ status: 201, body: '{}' });
+            }
             if (path.includes('/secrets')) return respond({ status: 200, body: '{}' });
             if (path.startsWith('/api/v1/namespaces/factory/pods/')) return respond({ status: 200, body: '{}' });
             if (path.startsWith('/api/v1/namespaces/factory/services/')) return respond({ status: 200, body: '{}' });
             return Promise.reject(new Error(`services fake has no answer for ${method} ${path}`));
         };
-        return { request, calls };
+        return { request, calls, pods: createdPods };
     };
 
-    const servicesRunner = (request: K8sRequest) =>
+    /**
+     * The loop's order (PR 737): its setup phase starts the fleet — before the gate environment's
+     * setup — and run() spawns the runner. A refused start ends there.
+     */
+    const asLoop = (runner: ReturnType<typeof createKubernetesRunner>): ReturnType<typeof createKubernetesRunner> => ({
+        ...runner,
+        run: async (j, session, onOutput) => (await runner.startServices(j)) ?? runner.run(j, session, onOutput),
+    });
+    const bareServicesRunner = (request: K8sRequest) =>
         createKubernetesRunner(
             loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' }),
             request,
             async () => {}
         );
+    const servicesRunner = (request: K8sRequest) => asLoop(bareServicesRunner(request));
 
     it('starts the declared fleet before the runner and keeps it up until the loop releases it', async () => {
         const { request, calls } = servicesFake();
@@ -5433,6 +5452,77 @@ describe('the kubernetes services flow', () => {
         const releasedAt = calls.length;
         await runner.releaseServices(job);
         expect(calls.slice(releasedAt).filter(leaseList)).toHaveLength(2);
+    });
+
+    // Review: setup must not race a fleet still scheduling or pulling — the start answers only once
+    // every service pod runs, and one that never does is a ServicesNotRunning, as in the restart.
+    it('startServices answers only once every service pod runs', async () => {
+        const { request } = servicesFake();
+        let leaseLists = 0;
+        const pending: K8sRequest = (method, path, body) => {
+            const leaseList =
+                method === 'GET' && path.includes('pods?') && decodeURIComponent(path).includes('factory.lease=');
+            if (leaseList && leaseLists++ === 0) {
+                return Promise.resolve({
+                    status: 200,
+                    body: JSON.stringify({
+                        items: [
+                            {
+                                metadata: { name: 'p', labels: { 'factory.service': 'cache' } },
+                                spec: { containers: [{ image: 'redis' }] },
+                                status: { phase: 'Pending' },
+                            },
+                        ],
+                    }),
+                });
+            }
+            return request(method, path, body);
+        };
+        await expect(bareServicesRunner(pending).startServices(job)).resolves.toBeNull();
+        expect(leaseLists).toBeGreaterThanOrEqual(2);
+    });
+
+    it('startServices rejects with ServicesNotRunning when a service pod fails', async () => {
+        const { request } = servicesFake();
+        const failing: K8sRequest = (method, path, body) =>
+            method === 'GET' && path.includes('pods?') && decodeURIComponent(path).includes('factory.lease=')
+                ? Promise.resolve({
+                      status: 200,
+                      body: JSON.stringify({
+                          items: [
+                              {
+                                  metadata: { name: 'p', labels: { 'factory.service': 'cache' } },
+                                  spec: { containers: [{ image: 'redis' }] },
+                                  status: { phase: 'Failed' },
+                              },
+                          ],
+                      }),
+                  })
+                : request(method, path, body);
+        await expect(bareServicesRunner(failing).startServices(job)).rejects.toBeInstanceOf(ServicesNotRunning);
+    });
+
+    // Review (PR 737): the loop starts the fleet before the gate environment's setup, so run()
+    // must neither start it again nor sweep it away.
+    it("run() starts no fleet after the loop started it, and its sweep spares the attempt's own lease", async () => {
+        const { request, calls } = servicesFake();
+        const runner = bareServicesRunner(request);
+        await expect(runner.startServices(job)).resolves.toBeNull();
+        const startedAt = calls.length;
+        await runner.run(job, { id: SESSION, resume: false });
+
+        const during = calls.slice(startedAt);
+        const named = (c: Call) => (c.body as { metadata?: { name?: string } } | undefined)?.metadata?.name ?? '';
+        expect(during.some((c) => c.method === 'POST' && c.path?.endsWith('/pods'))).toBe(false);
+        expect(during.some((c) => c.method === 'POST' && c.path?.endsWith('/services'))).toBe(false);
+        expect(during.some((c) => c.method === 'POST' && named(c).startsWith('factory-bellows-'))).toBe(false);
+        const sweeps = during.filter(
+            (c) => c.method === 'GET' && decodeURIComponent(c.path ?? '').includes(`factory.job=${job.id}`)
+        );
+        expect(sweeps.length).toBeGreaterThan(0);
+        for (const sweep of sweeps) {
+            expect(decodeURIComponent(sweep.path ?? '')).toContain(`factory.lease!=${job.leaseToken}`);
+        }
     });
 
     // Issue #363: every service pod carries the attempt DNS Service as its ownerReference —
@@ -5542,10 +5632,11 @@ describe('the kubernetes services flow', () => {
     });
 
     it('reports a declared service whose pod is gone from the lease list as dead (issue #471)', async () => {
-        const { request } = servicesFake(); // the lease-scoped pod list answers empty: the pod is gone
+        const { request, pods } = servicesFake();
         const runner = servicesRunner(request);
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
+        pods.length = 0; // the lease-scoped pod list answers empty from here: the pod is gone
 
         const dead = await runner.deadServices(job);
         expect(dead).toMatchObject([{ name: 'cache', state: 'missing', exitCode: null, logTail: '' }]);
@@ -5557,9 +5648,18 @@ describe('the kubernetes services flow', () => {
 
     /** The fake with the lease-scoped service pod list answered by `servicePods`, everything else as before. */
     const withServicePods = (request: K8sRequest, servicePods: () => unknown[]): K8sRequest => {
+        // Scripted once the runner Job exists: until then the fleet the start waits on is running.
+        let launched = false;
         return (method, path, body) => {
             const scoped = decodeURIComponent(path ?? '');
-            if (method === 'GET' && scoped.includes('/pods?') && scoped.includes(`factory.lease=${job.leaseToken}`)) {
+            const named = (body as { metadata?: { name?: string } } | undefined)?.metadata?.name;
+            if (method === 'POST' && path === jobsPath(namespace) && named === runnerJobName(job)) launched = true;
+            if (
+                launched &&
+                method === 'GET' &&
+                scoped.includes('/pods?') &&
+                scoped.includes(`factory.lease=${job.leaseToken}`)
+            ) {
                 return Promise.resolve({ status: 200, body: JSON.stringify({ items: servicePods() }) });
             }
             return request(method, path, body);
@@ -5572,7 +5672,7 @@ describe('the kubernetes services flow', () => {
     });
 
     it('names why a vanished service pod went, from its newest event (issue #560)', async () => {
-        const { request } = servicesFake();
+        const { request, pods } = servicesFake();
         const events: K8sRequest = (method, path, body) =>
             path?.includes('/events?')
                 ? Promise.resolve({
@@ -5593,6 +5693,7 @@ describe('the kubernetes services flow', () => {
                 : request(method, path, body);
         const runner = servicesRunner(events);
         await runner.run(job, { id: SESSION, resume: false });
+        pods.length = 0; // the pod vanishes from the lease list
 
         expect(await runner.deadServices(job)).toMatchObject([
             { name: 'cache', state: 'missing', reason: 'Evicted: The node was low on resource: memory.' },
@@ -5602,9 +5703,10 @@ describe('the kubernetes services flow', () => {
     });
 
     it('names a vanished service pod as deleted when its events cannot be read (issue #560)', async () => {
-        const { request } = servicesFake(); // no events route: the read throws
+        const { request, pods } = servicesFake(); // no events route: the read throws
         const runner = servicesRunner(request);
         await runner.run(job, { id: SESSION, resume: false });
+        pods.length = 0; // the pod vanishes from the lease list
 
         expect(await runner.deadServices(job)).toMatchObject([
             { name: 'cache', state: 'missing', reason: 'pod deleted — evicted, drained or its node removed' },
@@ -5688,15 +5790,17 @@ describe('the kubernetes services flow', () => {
             return oldLists > 3 ? [] : [cachePod('Failed')];
         });
         let slept = 0;
-        const runner = createKubernetesRunner(
-            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' }),
-            (method, path, body) => {
-                if (method === 'POST' && path === `/api/v1/namespaces/${namespace}/pods`) posted = true;
-                return fleet(method, path, body);
-            },
-            async (ms) => {
-                slept += ms;
-            }
+        const runner = asLoop(
+            createKubernetesRunner(
+                loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' }),
+                (method, path, body) => {
+                    if (method === 'POST' && path === `/api/v1/namespaces/${namespace}/pods`) posted = true;
+                    return fleet(method, path, body);
+                },
+                async (ms) => {
+                    slept += ms;
+                }
+            )
         );
         await runner.run(job, { id: SESSION, resume: false });
         posted = false;
@@ -5824,15 +5928,17 @@ describe('the kubernetes services flow', () => {
         const repoJob: BoardJob = { ...job, repo: 'acme/app', rootJobId: ROOT };
         const run = async (tree: ReturnType<typeof bellowsTree>) => {
             const { request, calls } = servicesFake({ bellowsLog: (env) => tree.read(env) });
-            const runner = createKubernetesRunner(
-                loadDriverConfig({
-                    EXECUTOR: 'kubernetes',
-                    K8S_NAMESPACE: namespace,
-                    RUNNER_SERVICES: '1',
-                    WORKSPACE_MOUNT: tree.mount,
-                }),
-                request,
-                async () => {}
+            const runner = asLoop(
+                createKubernetesRunner(
+                    loadDriverConfig({
+                        EXECUTOR: 'kubernetes',
+                        K8S_NAMESPACE: namespace,
+                        RUNNER_SERVICES: '1',
+                        WORKSPACE_MOUNT: tree.mount,
+                    }),
+                    request,
+                    async () => {}
+                )
             );
             const outcome = await runner.run(repoJob, { id: SESSION, resume: false });
             const pods = calls

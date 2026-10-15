@@ -55,10 +55,11 @@ import {
     dockerErrorDetail,
     dockerRunVerdict,
     linesOf,
-    listByLabelOrThrow,
+    LEASE_FORMAT,
+    listOtherAttemptsOrThrow,
+    servicesNetworkOf,
     removeEachTolerantly,
     run,
-    setupJobServices,
     restartJobServices,
     servicePsArgs,
     startJobServices,
@@ -195,8 +196,10 @@ async function dockerKill(deps: RunnerDeps, job: BoardJob): Promise<void> {
 
 /*
  * The re-claim fence — the only JOB-scoped sweep this runner performs, and the one component
- * allowed to be job-scoped: it runs BEFORE this attempt creates anything, so whatever it finds is
- * by construction a previous attempt's leftover. Names are attempt-scoped now, so no name can
+ * allowed to be job-scoped: whatever it finds under ANOTHER lease is treated as a previous
+ * attempt's leftover, and this attempt's own objects — the services the loop started before run(),
+ * a gate environment this attempt created — are spared by the lease label. A warm gate environment
+ * an EARLIER attempt created carries that attempt's lease, so it is still swept here. Names are attempt-scoped now, so no name can
  * find a previous attempt's leftovers — the `factory.job` label is the one identifier every
  * attempt of the job shares, and the sweep is by label: every leftover container (runners and
  * services alike), then every leftover network. This claim exists only because those attempts'
@@ -220,10 +223,11 @@ async function dockerKill(deps: RunnerDeps, job: BoardJob): Promise<void> {
  * never have existed.
  */
 async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob): Promise<void> {
-    const containerIds = await listByLabelOrThrow(
+    const containerIds = await listOtherAttemptsOrThrow(
         deps.execDocker,
-        ['ps', '-aq', '--filter', `label=${JOB_LABEL}=${job.id}`],
-        `the re-claim fence could not list the leftover containers of job ${job.id}`
+        ['ps', '-a', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', LEASE_FORMAT('ID')],
+        `the re-claim fence could not list the leftover containers of job ${job.id}`,
+        job
     );
     await removeEachTolerantly(
         deps.execDocker,
@@ -232,10 +236,11 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob): Promise<void
         (id) => `the re-claim fence could not remove the leftover container ${id} of job ${job.id}`
     );
 
-    const staleNetworks = await listByLabelOrThrow(
+    const staleNetworks = await listOtherAttemptsOrThrow(
         deps.execDocker,
-        ['network', 'ls', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', '{{.Name}}'],
-        `the re-claim fence could not list the leftover networks of job ${job.id}`
+        ['network', 'ls', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', LEASE_FORMAT('Name')],
+        `the re-claim fence could not list the leftover networks of job ${job.id}`,
+        job
     );
     await removeEachTolerantly(
         deps.execDocker,
@@ -578,28 +583,13 @@ async function dockerRun(
     await dockerReclaimFence(deps, job);
 
     /*
-     * Auxiliary services (issue #6) — see setupJobServices. A refusal there is the
-     * AUTHOR's (a bad .bellows.yaml), so it comes back as a failed run rather than
-     * thrown — retrying a file that cannot change would burn attempts on an error no
-     * retry fixes. (`started: true` there means "this verdict is final", not "a
-     * container ran"; the loop reads it only to decide between reporting and leaving
-     * the job to its lease.) Every other refusal there is INFRASTRUCTURE and propagates.
-     *
-     * A kill that lands while this setup is awaiting the daemon must stop the attempt —
-     * setupJobServices checks after every awaited step, teardown-free by design: kill()
-     * ran the attempt-scoped teardown already, and anything created after that point is
-     * a leftover for the NEXT attempt's fence, not this dying one's business. The same
-     * check runs again after the claim-env file write below and after the create/copy — the
+     * Auxiliary services (issue #6) were started by the loop (`startServices`) before the gate
+     * environment and its setup; the fence above spares them as this attempt's own, and the
+     * runner joins their network. A kill that lands while an await below is pending must stop
+     * the attempt: the check runs after the claim-env file write and after the create/copy — the
      * last awaits before the spawn — so the gap between that final check and spawnFn is synchronous.
      */
-    const { servicesNetwork, refusal } = await setupJobServices(job, config, {
-        execDocker,
-        killed,
-        serviceTeardown: (j) => dockerServiceTeardown(deps, j),
-    });
-    if (refusal !== null) {
-        return { exitCode: null, output: refusal, timedOut: false, started: true, refused: true };
-    }
+    const servicesNetwork = servicesNetworkOf(job);
 
     // The runner container is the last resource this attempt creates, and the spawn is
     // what a killed setup must never reach — see assertJobNotKilled for why a throw is
@@ -796,7 +786,8 @@ export function createDockerRunner(
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
         restartServices: (job, signal) => restartJobServices(job, execDocker, signal),
-        startServices: (job) => startJobServices(job, config, deps, (j) => dockerServiceTeardown(deps, j)),
+        startServices: (job, signal) =>
+            startJobServices(job, config, { ...deps, serviceTeardown: (j) => dockerServiceTeardown(deps, j) }, signal),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
     };
 }
