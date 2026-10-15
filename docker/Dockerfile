@@ -71,8 +71,10 @@ RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force \
         /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
         /usr/local/bin/yarn /usr/local/bin/yarnpkg
 # node:24-alpine ships no git, and the workspace reconcile shells out to it. Absent, the failure is
-# an ENOENT per repo that only ever appears in the container, never in dev.
-RUN apk add --no-cache git
+# an ENOENT per repo that only ever appears in the container, never in dev. tini is PID 1: the
+# facts read of a hostile checkout is killed by process group, and the git it orphans is reaped by
+# PID 1 — which node never does.
+RUN apk add --no-cache git tini
 COPY --from=build /app/core/dist core/dist
 COPY --from=build /app/server/dist server/dist
 COPY --from=build /app/web/dist web/dist
@@ -99,4 +101,5 @@ ENV HOST=0.0.0.0
 RUN mkdir -p /workspaces && chown node:node /workspaces
 USER node
 EXPOSE 8080
+ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "server/dist/index.js"]

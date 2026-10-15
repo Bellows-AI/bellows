@@ -39,6 +39,11 @@ Mount shape and its boundary: [security.md](security.md). Task worktrees: [jobs.
   stamp is released only by an observed child exit. `server/test-db/user-repo-store.test.ts`.
 - **`null` size means "not measured", never zero**; only the purge invalidates the facts cache.
   `server/src/workspace/facts.ts`.
+- **The board reads member trees as hostile**: facts run only `rev-parse`/`cat-file` (no repo
+  config execs), and facts and `.bellows.yaml` refuse anything that really lies outside the member's
+  own tree. `server/test/workspace.facts.test.ts`, `server/test/bellows.test.ts`.
+- **Stated limit:** a symlink raced into `.git/refs` between the facts check and git's read can point
+  one read at a tree whose absolute path the agent knows (`CONTAINED_HEAD`).
 - **A pasted executor config reaches the runner stripped of `RUNNER_MANAGED_KEYS`**
   (`core/src/executors.ts`, the constant the dialog warns by) and of `permission`.
   `server/src/db/job-store-claim-executor.ts`, `server/test-db/job-store.attribution.test.ts`.
