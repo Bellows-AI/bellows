@@ -859,12 +859,25 @@ describe('the claude-executor managed settings', () => {
     // /workspaces is only ever the member's own mounted subtree (docker.ts, k8s-podspec.ts).
     // Interpreters and env dumps (`python3 *`, `env`, `printenv`) stay with the auto-mode
     // classifier. Limit: sed's own `e`/`w` commands can run and write, and the git guard reads no
-    // sed script — like any interpreter, sed is outside what the guardrail sees.
+    // sed script — like any interpreter, sed is outside what the guardrail sees. npm installs are
+    // allowed outright because the classifier denied a task's own dependency bump despite the
+    // "Task Dependency Changes" autoMode rule; that includes registry flags and install scripts.
     it('allow the routine commands a headless run cannot be asked about', () => {
         const settings = JSON.parse(read('docker/claude-executor/managed-settings.json'));
         expect(settings.permissions).toEqual({
             additionalDirectories: ['/workspaces', '/tmp'],
-            allow: ['Bash(sed -i *)', 'Bash(grep *)', 'Edit(//tmp/**)', 'Write(//tmp/**)'],
+            allow: [
+                'Bash(sed -i *)',
+                'Bash(grep *)',
+                'Bash(npm install)',
+                'Bash(npm install *)',
+                'Bash(npm i)',
+                'Bash(npm i *)',
+                'Bash(npm ci)',
+                'Bash(npm ci *)',
+                'Edit(//tmp/**)',
+                'Write(//tmp/**)',
+            ],
         });
         expect(settings.autoMode.allow).toContain(
             'Project Subagents: Launching a subagent the task worktree or the runner defines (its .claude/agents) with the Agent tool, to do part of the task.'
