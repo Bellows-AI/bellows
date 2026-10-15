@@ -41,6 +41,7 @@ export function job(overrides: Partial<Job> = {}): Job {
         finishedAt: '2026-09-01T12:04:00.000Z',
         wallClockMs: null,
         agentTurns: null,
+        setupMs: null,
         taskWallClockMs: null,
         summary: null,
         failureKind: null,

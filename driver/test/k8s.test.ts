@@ -462,6 +462,13 @@ describe('the runner job spec', () => {
         expect(spec({ DRIVER_JOB_TIMEOUT_MS: '45000' }).spec.activeDeadlineSeconds).toBe(45);
     });
 
+    // Issue #733: environment.setup ran before the agent, inside the same run budget.
+    it('takes the time environment.setup spent off the active deadline', () => {
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', DRIVER_JOB_TIMEOUT_MS: '45000' });
+        const setUp = runnerJobSpec(config, { ...job, setupMs: 15_000 }, { id: SESSION, resume: false });
+        expect(setUp.spec.activeDeadlineSeconds).toBe(30);
+    });
+
     it('runs exactly one pod, and reaps the object when it is done', () => {
         expect(spec().spec.completions).toBe(1);
         expect(spec().spec.parallelism).toBe(1);

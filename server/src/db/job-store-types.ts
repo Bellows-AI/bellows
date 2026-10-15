@@ -276,6 +276,12 @@ export interface Job {
      */
     agentTurns: number | null;
     /**
+     * How long this run's `environment.setup` ran before the agent started (069, issue #733), as the
+     * driver reported it on the verdict — part of `wallClockMs`, shown apart from the agent's time.
+     * Null when no setup ran or the read does not select it (the per-run lists).
+     */
+    setupMs: number | null;
+    /**
      * The wall clock the task's WHOLE thread has banked — every executed segment of every run,
      * accumulated by the board at the settle points (claim, the dead retirement, the verdict,
      * the suspend park) into `wall_clock_ms` and summed over the thread by the read. Served by
@@ -1172,6 +1178,8 @@ export interface JobStore {
              * reported as 0. The task statistics treat an unmeasured run as excluded, not empty.
              */
             agentTurns?: number | null;
+            /** How long `environment.setup` ran before the agent (issue #733); null when none ran. */
+            setupMs?: number | null;
             /**
              * What the run did, in the agent's own last words — lifted by the same close-time
              * read that counts the turns. Null is UNMEASURED, never empty; a string is the

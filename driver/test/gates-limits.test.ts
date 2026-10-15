@@ -85,12 +85,14 @@ describe('Stop during the declared gates', () => {
         image: 'node:24',
         envBody: '',
         declared: [{ name: 'test', command: 'npm test' }],
+        endPass: true,
     };
 
     it('honours a Stop while the per-gate re-acquire hangs', async () => {
         const manager: GateManager = {
             acquire: () => new Promise(() => {}),
             runGate: async () => ({ exitCode: 0, output: '' }),
+            runSetup: async () => null,
             release: () => {},
             stop: async () => {},
         };

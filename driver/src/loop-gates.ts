@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob, DeclaredGate } from './board.js';
-import { CONTROL_POLL_MS_ENV, CONTROL_TOKEN_ENV, CONTROL_URL_ENV, envFileBody } from './claim.js';
+import { CONTROL_POLL_MS_ENV, CONTROL_TOKEN_ENV, CONTROL_URL_ENV, envFileBody, setupTimeoutMs } from './claim.js';
 import { tailBytes, type DeadService } from './runner.js';
 import { declaredTimeoutMs, type GateRun } from './gates.js';
 import { clearPendingQuestions, down, raceStep, RUN_CONTROL_POLL_MS } from './loop-attempt.js';
@@ -33,6 +33,8 @@ export interface GateSession {
     image: string;
     envBody: string;
     declared: readonly DeclaredGate[];
+    /** Whether the end-of-run pass runs: gates are declared, or setup failed and must be retried. */
+    endPass: boolean;
 }
 
 export interface GateFailure {
@@ -50,14 +52,22 @@ type GateReport = {
 };
 
 /**
- * Ensures the job's gate environment and registers its ad-hoc token, or answers null for a
- * job that has no gates. The token and URL ride the claim's env into the runner's env file —
- * appended after the claim's own lines, where docker's last-wins rule keeps a member-scoped
- * `BELLOWS_GATE_TOKEN` from minting itself a gate credential.
+ * Ensures the job's gate environment, registers its ad-hoc token and runs `environment.setup` in
+ * it (issue #733), or answers null for a job that declares neither gates nor setup. The token and
+ * URL ride the claim's env into the runner's env file — appended after the claim's own lines,
+ * where docker's last-wins rule keeps a member-scoped `BELLOWS_GATE_TOKEN` from minting itself a
+ * gate credential.
  */
 export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<GateSession | null> {
     const { gates } = rt;
-    if (!gates || !job.gates || !job.gates.gates.length || job.gateError) return null;
+    // A checkout that declares only `setup` still gets the environment: setup runs in it before
+    // the agent starts (issue #733).
+    if (!job.gates || (!job.gates.gates.length && !job.gates.setup) || job.gateError) return null;
+    if (!gates) {
+        // Declared gates with no gate environment were refused by the re-read; only setup is left.
+        rt.log(`job ${job.id}: environment.setup skipped — this driver has no gate environment configured`);
+        return null;
+    }
     // The gates run in the task worktree (issue #35) — the tree the run edits — so the
     // environment is keyed by the worktree path, `<org>/<uuid>/.worktrees/<root id>`. A job
     // that names no repository has no worktree and no gates either.
@@ -86,6 +96,7 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
             BELLOWS_GATE_URL: gates.advertiseUrl(port),
             BELLOWS_GATE_TOKEN: token,
         };
+        await runEnvironmentSetup(rt, job, key, state);
         // The same check at the far edge — listen can take its time, and nothing registered
         // or live may survive a stand-down detected inside this function.
         if (down(state)) {
@@ -94,7 +105,14 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
             return null;
         }
         const declared = job.gates.gates.filter((gate) => !gate.onDemand);
-        return { key, token, image: job.gates.image, envBody, declared };
+        return {
+            key,
+            token,
+            image: job.gates.image,
+            envBody,
+            declared,
+            endPass: declared.length > 0 || Boolean(job.setupFailure),
+        };
     } catch (e) {
         // The container came up but registration did not. Released — not stopped — so the
         // cooldown owns it and the next turn reuses it, instead of leaking one live
@@ -102,6 +120,58 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
         gates.manager.release(key, job);
         throw e;
     }
+}
+
+/** How much of a failed setup's output the agent's turn context quotes. */
+const SETUP_FAILURE_TAIL_BYTES = 2048;
+
+/**
+ * The turn context a failed `environment.setup` adds (issue #733): the agent still starts, told
+ * the exit code and the output's tail so it can fix the install. Appended to the board's own
+ * context, which it never replaces.
+ */
+export const withSetupFailureContext = (
+    turnContext: string | undefined,
+    failure: NonNullable<BoardJob['setupFailure']>
+): string =>
+    [
+        ...(turnContext ? [turnContext] : []),
+        'Environment setup failed',
+        'The `environment.setup` command in .bellows.yaml ran before this turn and failed ' +
+            `(exit ${failure.exitCode ?? 'unknown'}). ` +
+            'Dependencies it installs may be missing. Fix the cause if it is in the repository; ' +
+            'the end-of-run gate pass retries setup first, and fails as a setup failure while it still fails.',
+        `Setup output (tail):\n${failure.output}`,
+    ].join('\n\n');
+
+/** The verdict line for a pre-agent setup failure no gate pass reported. */
+export const setupFailureNote = (failure: NonNullable<BoardJob['setupFailure']>): string =>
+    `[driver] environment.setup failed before the agent started (exit ${failure.exitCode ?? 'unknown'}):\n` +
+    failure.output;
+
+/**
+ * Runs the attempt's `environment.setup` in its gate environment before the agent starts (issue
+ * #733), under `setupTimeoutMs` and raced against the stand-down. Records the time it took on the
+ * job — the runner's deadline is what is left of the run budget — and, on a failure, tells the
+ * agent through the turn context. Never refuses the run: the end-of-run gates retry setup and
+ * fail as `[setup failed — the gate did not run]` while it still fails. The last step of
+ * `beginGates`, so a stand-down during it releases the environment and spawns nothing.
+ */
+async function runEnvironmentSetup(rt: LoopRuntime, job: BoardJob, key: string, state: JobState): Promise<void> {
+    const manager = rt.gates?.manager;
+    if (!manager || !job.gates?.setup) return;
+    const started = Date.now();
+    const running = manager
+        .runSetup(key, { signal: state.signal, timeoutMs: setupTimeoutMs(rt.config, job) })
+        .catch((e: Error): GateRun => ({ exitCode: REFUSED_TO_RUN_EXIT_CODE, output: e.message }));
+    const raced = await raceStep(state.signal, running);
+    const run = raced?.value;
+    if (!run || down(state)) return;
+    job.setupMs = Date.now() - started;
+    rt.log(`job ${job.id}: environment.setup exit ${run.exitCode} in ${job.setupMs}ms`);
+    if (run.exitCode === 0) return;
+    job.setupFailure = { exitCode: run.exitCode, output: tailBytes(run.output, SETUP_FAILURE_TAIL_BYTES) };
+    job.turnContext = withSetupFailureContext(job.turnContext, job.setupFailure);
 }
 
 /**
@@ -210,6 +280,8 @@ export async function runDeclaredGates(
     // flight, not only the ones after it, and no second controller exists to keep in step
     // (issue #472).
     const runCtx: GatesRunCtx = { rt, job, gateSession, state, signal: state.signal };
+    // No declared gate to retry a failed setup before: the pass is that retry alone.
+    if (gateSession.declared.length === 0) return retryFailedSetup(runCtx);
     const results: GateReport[] = [];
     const report = async (): Promise<void> => {
         try {
@@ -261,7 +333,31 @@ export async function runDeclaredGates(
             return { name: gate.name, exitCode: outcome.exitCode ?? REFUSED_TO_RUN_EXIT_CODE, output: text };
         }
     }
+    // Every gate ran after its setup succeeded: a failed pre-agent setup was fixed.
+    job.setupFailure = null;
     return null;
+}
+
+/**
+ * The end-of-run pass of a checkout with no gate to run but a failed setup: setup again, through
+ * the gate transport, so a failure lands as the same setup-failed gate failure a gate would report.
+ */
+async function retryFailedSetup(ctx: GatesRunCtx): Promise<GateFailure | null> {
+    const { rt, job, gateSession, state, signal } = ctx;
+    const manager = rt.gates?.manager;
+    if (!manager) return null;
+    const retried = manager
+        .acquire(gateSession.key, gateSession.image, gateSession.envBody, { job })
+        .then(() => (down(state) ? null : manager.runSetup(gateSession.key, { signal })))
+        .catch((e: Error): GateRun => ({ exitCode: REFUSED_TO_RUN_EXIT_CODE, output: e.message }));
+    const outcome = (await raceStep(state.signal, retried))?.value;
+    if (!outcome || down(state)) return null;
+    if (outcome.exitCode === 0) {
+        job.setupFailure = null;
+        return null;
+    }
+    const exitCode = outcome.exitCode ?? REFUSED_TO_RUN_EXIT_CODE;
+    return { name: 'environment.setup', exitCode, output: `${SETUP_FAILED_PREFIX}${outcome.output}` };
 }
 
 /**

@@ -227,6 +227,7 @@ export interface CompleteFields {
     contextTokens: number | null;
     contextCostUsd: number | null;
     agentTurns: number | null;
+    setupMs: number | null;
     summary: string | null;
     failureKind: FailureKind | null;
     failureCause: FailureCause | null;
@@ -324,6 +325,12 @@ function badAgentTurns(agentTurns: unknown): boolean {
     );
 }
 
+// How long `environment.setup` ran before the agent (issue #733): optional, absent means none ran.
+// A non-negative safe integer of milliseconds, so the bigint column always takes it.
+function badSetupMs(setupMs: unknown): boolean {
+    return setupMs !== undefined && setupMs !== null && (!Number.isSafeInteger(setupMs) || (setupMs as number) < 0);
+}
+
 function badSummaryField(summary: unknown): boolean {
     return summary !== undefined && summary !== null && typeof summary !== 'string';
 }
@@ -375,7 +382,7 @@ function badEvidence(evidence: unknown): boolean {
 
 /** The measured fields of a complete body, before the close-time pair — every bounded number. */
 function measuredFieldRefusal(fields: Record<string, unknown>): { code: string; message: string } | null {
-    const { status, exitCode, output, contextTokens, contextCostUsd, agentTurns } = fields;
+    const { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, setupMs } = fields;
     if (status !== 'succeeded' && status !== 'failed') {
         return { code: ERROR_CODES.BAD_STATUS, message: "status must be 'succeeded' or 'failed'" };
     }
@@ -402,6 +409,9 @@ function measuredFieldRefusal(fields: Record<string, unknown>): { code: string; 
             code: ERROR_CODES.BAD_AGENT_TURNS,
             message: `agentTurns must be an integer 0..${AGENT_TURNS_MAX}`,
         };
+    }
+    if (badSetupMs(setupMs)) {
+        return { code: ERROR_CODES.BAD_SETUP_MS, message: 'setupMs must be a non-negative integer of milliseconds' };
     }
     return null;
 }
@@ -434,6 +444,7 @@ export function validateCompleteFields(
             contextTokens: (contextTokens as number | undefined) ?? null,
             contextCostUsd: (contextCostUsd as number | undefined) ?? null,
             agentTurns: (agentTurns as number | undefined) ?? null,
+            setupMs: (fields.setupMs as number | undefined) ?? null,
             summary: summaryValue(summary),
             failureKind: (failureKind as FailureKind | undefined) ?? null,
             failureCause: (fields.failureCause as FailureCause | undefined) ?? null,

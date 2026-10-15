@@ -7,9 +7,9 @@
  */
 
 import type { Board, BoardJob, LeaseState, VerdictEvidence } from './board.js';
-import { runTimeoutMs } from './claim.js';
+import { runBudgetMs, runTimeoutMs } from './claim.js';
 import type { HelperFailureReport } from './helpers.js';
-import type { GateFailure } from './loop-gates.js';
+import { type GateFailure, setupFailureNote } from './loop-gates.js';
 import {
     causeOf,
     deadServiceNote,
@@ -157,8 +157,28 @@ function buildOutput(rt: LoopRuntime, finish: FinishCtx, ledger: Ledger): string
         log(`job ${job.id}: nothing to publish: ${published.reason}`);
     }
     const recovered = finish.recoveredServices.map((dead) => `\n[driver] ${deadServiceNote(dead, false, true)}`);
-    return output + recovered.join('') + outputOf(ledger, finish.gatesSkipped);
+    return output + setupNotes(rt, finish) + recovered.join('') + outputOf(ledger, finish.gatesSkipped);
 }
+
+/**
+ * What the verdict says about `environment.setup` (issue #733): on a timeout, how much of the run
+ * budget it took — the kill note's budget is what was left; and a failure no gate pass reported.
+ */
+function setupNotes(rt: LoopRuntime, finish: FinishCtx): string {
+    const { job, outcome, failure } = finish;
+    const spent = outcome.timedOut && typeof job.setupMs === 'number' ? `\n${setupSpentNote(rt.config, job)}` : '';
+    return spent + (job.setupFailure && !failure ? `\n${setupFailureNote(job.setupFailure)}` : '');
+}
+
+/** How much of the whole (unclamped) run budget `environment.setup` took; empty when none ran. */
+export const setupSpentNote = (config: { jobTimeoutMs: number }, job: BoardJob): string =>
+    typeof job.setupMs === 'number'
+        ? `[driver] ${job.setupMs}ms of the ${runBudgetMs(config, job)}ms run budget went to environment.setup`
+        : '';
+
+/** How long `environment.setup` ran before the agent (issue #733); absent when none ran. */
+const setupMsOf = (job: BoardJob): { setupMs?: number } =>
+    typeof job.setupMs === 'number' ? { setupMs: job.setupMs } : {};
 
 /** Reports the run's final verdict to the board, after settle() and any publish attempt. */
 export async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<void> {
@@ -180,6 +200,7 @@ export async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<
         contextCostUsd: outcome.costUsd ?? null,
         // A number only: an unmeasured read stays off the report and the board stores null.
         ...(typeof outcome.agentTurns === 'number' ? { agentTurns: outcome.agentTurns } : {}),
+        ...setupMsOf(job),
         // The run's last words, when the close-time read lifted them; absent stays absent.
         ...(outcome.summary ? { summary: outcome.summary } : {}),
         // The structured failure reason (issue #339); a success reports no kind at all.

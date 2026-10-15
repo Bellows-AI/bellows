@@ -381,6 +381,50 @@ describe('gate setup: kubernetes runs it as its own Job once per attempt', () =>
         });
         expect(cluster.commands).toEqual(['npm ci']);
     });
+
+    // Issue #733: the setup Job runs before the agent starts, and the first gate does not repeat it.
+    it('runSetup runs the setup Job now, and the first gate does not repeat it', async () => {
+        const cluster = fakeCluster(() => 0);
+        const m = createKubernetesGateManager({ config: k8sConfig, request: cluster.request, sleep: async () => {} });
+        await m.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+
+        await expect(m.runSetup(KEY)).resolves.toMatchObject({ exitCode: 0 });
+        await m.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+        await m.runGate(KEY, 'test', 'npm test');
+        expect(cluster.commands).toEqual(['npm ci', 'npm test']);
+    });
+
+    it('a failed runSetup leaves setup pending, so the first gate retries it', async () => {
+        const SETUP_EXIT_CODE = 9;
+        let exit = SETUP_EXIT_CODE;
+        const cluster = fakeCluster(() => exit);
+        const m = createKubernetesGateManager({ config: k8sConfig, request: cluster.request, sleep: async () => {} });
+        await m.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+
+        await expect(m.runSetup(KEY)).resolves.toMatchObject({ exitCode: SETUP_EXIT_CODE });
+        exit = 0;
+        await expect(m.runGate(KEY, 'test', 'npm test')).resolves.toMatchObject({ exitCode: 0 });
+        expect(cluster.commands).toEqual(['npm ci', 'npm ci', 'npm test']);
+    });
+
+    it('runSetup answers null when the checkout declares no setup, and bounds the Job by its timeout', async () => {
+        const cluster = fakeCluster(() => 0);
+        const deadlines: number[] = [];
+        const request: K8sRequest = (method, path, body) => {
+            if (method === 'POST' && path === jobsPath('factory')) {
+                deadlines.push((body as { spec: { activeDeadlineSeconds: number } }).spec.activeDeadlineSeconds);
+            }
+            return cluster.request(method, path, body);
+        };
+        const m = createKubernetesGateManager({ config: k8sConfig, request, sleep: async () => {} });
+        await m.acquire(KEY, 'node:24', '', { job: JOB(LEASE_A) });
+        await expect(m.runSetup(KEY)).resolves.toBeNull();
+
+        await m.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+        await m.runSetup(KEY, { timeoutMs: 12_000 });
+        expect(cluster.commands).toEqual(['npm ci']);
+        expect(deadlines).toEqual([12]);
+    });
 });
 
 describe('gate ownership: docker/kubernetes parity of concurrent runs', () => {

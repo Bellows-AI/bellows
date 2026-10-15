@@ -208,6 +208,11 @@ export interface Job {
      */
     agentTurns: number | null;
     /**
+     * How long this run's `environment.setup` ran before the agent started (issue 733) — part of
+     * `wallClockMs`, shown apart from it. Null when no setup ran, or on the per-run lists.
+     */
+    setupMs: number | null;
+    /**
      * The wall clock the task's whole thread has banked — every executed segment of every run,
      * accumulated by the board and served on the thread read and on the grouped terminal rows
      * of the recently-completed view. Null where nothing has accumulated; the head's clock

@@ -121,6 +121,14 @@ describe('TaskOutcome', () => {
         expect(unbanked).toContain('Wall clock');
     });
 
+    // Issue #733: environment.setup time is its own row beside the wall clock, absent when none ran.
+    it('shows the setup time apart from the wall clock, and no row when no setup ran', () => {
+        const setUp = renderDetail({ jobs: [job({ taskWallClockMs: 7_200_000, setupMs: 1_800_000 })] });
+        expect(setUp).toContain('Environment setup');
+        expect(setUp).toContain('30m');
+        expect(renderDetail({ jobs: [job({ taskWallClockMs: 7_200_000 })] })).not.toContain('Environment setup');
+    });
+
     it('renders repository, worktree, executor — omitting the absent rows', () => {
         const html = renderDetail({
             jobs: [

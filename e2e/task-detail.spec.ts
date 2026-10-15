@@ -372,6 +372,8 @@ test.describe('the task detail page', () => {
         const well = verification.getByLabel('Output of lint').locator('pre');
         expect(await well.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
         await expect(verification.getByRole('button', { name: 'Copy output of lint' })).toBeVisible();
+        // Issue #733: environment.setup time is its own row, apart from the wall clock.
+        await expect(page.locator('.task-outcome')).toContainText('Environment setup4m');
         await page.screenshot({ path: `${SHOTS}/task-detail-gate-failed.png`, fullPage: true });
 
         // Mark done and Remove both wait in the overflow.

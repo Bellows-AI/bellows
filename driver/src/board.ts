@@ -177,6 +177,16 @@ export interface BoardJob {
      */
     gateEnv?: Record<string, string>;
     /**
+     * How long this attempt's `environment.setup` ran before the agent started (issue #733) — set
+     * by the LOOP, never by the board; the runner's deadline is the run budget less it.
+     */
+    setupMs?: number;
+    /**
+     * The attempt's `environment.setup` failure (exit code and output tail), set by the LOOP when
+     * the pre-agent setup failed and cleared once a later run of it — or every declared gate — passed.
+     */
+    setupFailure?: { exitCode: number | null; output: string } | null;
+    /**
      * Whether the driver may publish after this run's succeeded gated run. The BOARD's decision —
      * on a workflow task only the graph's publish node may push (docs/workflows.md), so a mid-loop
      * review success never does. Read defensively like every board field: ABSENT means a board
@@ -499,6 +509,8 @@ export interface Board {
             contextTokens?: number | null;
             contextCostUsd?: number | null;
             agentTurns?: number | null;
+            /** How long `environment.setup` ran before the agent (issue #733); absent when none ran. */
+            setupMs?: number;
             summary?: string | null;
             /**
              * The structured terminal reason (issue #339): why a failed run failed — the timeout
@@ -589,6 +601,7 @@ function completeBody({
     contextTokens,
     contextCostUsd,
     agentTurns,
+    setupMs,
     summary,
     failureKind,
     failureCause,
@@ -605,6 +618,7 @@ function completeBody({
         // A number only: null and absent both stay off the wire, and the board stores
         // unmeasured — the never-zero contract is the driver's to keep too.
         ...(typeof agentTurns === 'number' ? { agentTurns } : {}),
+        ...(typeof setupMs === 'number' ? { setupMs } : {}),
         ...(summary ? { summary } : {}),
         // The structured failure reason, when there is one (issue #339); absent stays null.
         ...(failureKind ? { failureKind } : {}),

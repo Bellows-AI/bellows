@@ -18,8 +18,9 @@
  * GATE_TIMEOUT_MS (`readTimeoutMinutes`) — and `on_demand: true`: the agent may run it ad hoc, the
  * end-of-run gates pass skips it.
  *
- * `environment:` may also carry `setup: <command>` — run once per gate environment, before its
- * first gate, in the worktree (an install step); its failure is a setup failure, not a gate's.
+ * `environment:` may also carry `setup: <command>` — run in the worktree before the agent starts
+ * and retried before the first gate while it fails (an install step); its failure is a setup
+ * failure, not a gate's.
  *
  * One exception, and it is not leniency: a top-level `services:` block is the SERVICES half of
  * the file, read by the driver's own parser (driver/src/services.ts), and one file may carry both
@@ -76,7 +77,7 @@ const POLICY_KEYS = ['gates', 'review'] as const;
 
 export interface BellowsConfig {
     readonly image: string;
-    /** Runs once per gate environment before the first gate; absent when none is declared. */
+    /** Runs before the agent starts, retried before the first gate while it fails; absent when none is declared. */
     readonly setup?: string;
     readonly gates: readonly GateDef[];
 }

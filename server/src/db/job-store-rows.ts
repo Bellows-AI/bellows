@@ -70,6 +70,8 @@ export interface JobRow {
     wall_clock_ms?: string | null;
     /** Selected by the per-run reads; null is unmeasured (026). */
     agent_turns?: number | null;
+    /** Only the detail reads (get/thread) select it (069); bigint reads back as a string. */
+    setup_ms?: string | null;
     /** Only thread() and the grouped terminal list select it; bigint (and the sum over it) read
      * back as a string. */
     task_wall_clock_ms?: string | null;
@@ -197,6 +199,7 @@ export function toJob(orgId: string, hasWorkspaces: boolean, row: JobRow): Job {
         finishedAt: iso(row.finished_at),
         wallClockMs: row.wall_clock_ms == null ? null : Number(row.wall_clock_ms),
         agentTurns: row.agent_turns ?? null,
+        setupMs: row.setup_ms == null ? null : Number(row.setup_ms),
         taskWallClockMs: row.task_wall_clock_ms == null ? null : Number(row.task_wall_clock_ms),
         waitReason: row.wait_reason ?? null,
         waitingSince: row.waiting_since ? row.waiting_since.toISOString() : null,
