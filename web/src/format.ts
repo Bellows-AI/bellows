@@ -91,27 +91,57 @@ export function runDuration(
     return duration((to.getTime() - from.getTime()) / MS_PER_HOUR);
 }
 
+/** One agent question's wait window, as a `JobQuestion` carries it. */
+interface QuestionWait {
+    askedAt: string;
+    answeredAt: string | null;
+}
+
 /**
  * A task's overall wall clock: what the board has banked for the thread so far, plus the head
- * run's live in-flight segment while it is still going (`runningSince` is passed only then — a
- * finished run's stale start stamp would double-count a segment the board already banked). A
- * dash where nothing has been banked and nothing is going: null means "no clock", which is not
- * zero. Pure, like `runDuration` — the caller decides what "now" is, and the detail page's 2s
- * poll is the ticker.
+ * run's live in-flight segment while it is still going (`running` is passed only then — a
+ * finished run's stale start stamp would double-count a segment the board already banked). The
+ * live segment excludes the time the run waited for an answer, as the board's banking does
+ * (`server/src/db/job-store-rows.ts`, `wallTickFragment`). A dash where nothing has been banked
+ * and nothing is going: null means "no clock", which is not zero. Pure, like `runDuration` — the
+ * caller decides what "now" is, and the detail page's 2s poll is the ticker.
  */
 export function wallClock(
     totalMs: number | null | undefined,
-    runningSince: string | null | undefined,
+    running: { startedAt: string | null; questions: readonly QuestionWait[] } | null,
     now: Date = new Date()
 ): string {
     const banked = totalMs ?? 0; // feeds the sum only — the null contract is the dash branch below
     let live = 0;
-    if (runningSince) {
-        const from = new Date(runningSince);
-        if (!Number.isNaN(from.getTime())) live = Math.max(0, now.getTime() - from.getTime());
+    if (running?.startedAt) {
+        const from = new Date(running.startedAt).getTime();
+        if (!Number.isNaN(from)) {
+            live = Math.max(0, now.getTime() - from - questionWaitMs(running.questions, from, now.getTime()));
+        }
     }
     if (totalMs == null && live === 0) return '—';
     return duration((banked + live) / MS_PER_HOUR);
+}
+
+/**
+ * The time a run started at `since` spent waiting for an answer up to `now`: its questions'
+ * `askedAt → answeredAt` windows (a pending one waits up to `now`), merged where they overlap. A
+ * question asked before `since` belongs to an earlier attempt and is not this run's wait.
+ */
+function questionWaitMs(questions: readonly QuestionWait[], since: number, now: number): number {
+    const windows = questions
+        .map((q) => [Date.parse(q.askedAt), q.answeredAt === null ? now : Date.parse(q.answeredAt)] as const)
+        .filter(([asked, answered]) => asked >= since && answered > asked)
+        .map(([asked, answered]) => [asked, Math.min(answered, now)] as const)
+        .sort((a, b) => a[0] - b[0]);
+    let waited = 0;
+    let reach = since;
+    for (const [asked, answered] of windows) {
+        const from = Math.max(asked, reach);
+        if (answered > from) waited += answered - from;
+        reach = Math.max(reach, answered);
+    }
+    return waited;
 }
 
 /**

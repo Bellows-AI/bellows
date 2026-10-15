@@ -219,7 +219,7 @@ export function TaskOutcome({ jobs, viewer }: { jobs: Job[]; viewer: FollowUpVie
     const resultPairs = pairs([
         ['Started by', startedByNode(root.author)],
         // The thread's whole banked clock, plus the newest run's live segment while it goes.
-        ['Wall clock', wallClock(latest.taskWallClockMs, running ? latest.startedAt : null)],
+        ['Wall clock', wallClock(latest.taskWallClockMs, running ? latest : null)],
         // The part of that clock environment.setup took before the agent started (issue 733).
         ['Environment setup', setupMs !== null ? wallClock(setupMs, null) : null],
     ]);
