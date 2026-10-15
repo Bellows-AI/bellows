@@ -192,24 +192,6 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         expect(own?.rootCommand).toBe('echo hi');
     });
 
-    // Eligibility is the THREAD's (#698): a finished head whose thread still holds an unfinished
-    // older member refuses. Retry reads only the head, so this rule is the follow-up's alone.
-    it('refuses a follow-up on a finished head while an older member is unfinished', async () => {
-        const root = await finishWithSession('drive me');
-        const head = await mustFollowUp(root, 'adjust', null);
-        const claim = await store.claim('w1', LEASE_SECONDS);
-        expect(claim?.id).toBe(head.id);
-        await store.complete(head.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
-        // A state no write path reaches today; crafted so the rule is "any member", not "the head".
-        await sql`update job set status = 'running' where id = ${root}`;
-
-        expect(await store.createFollowUp(head.id, 'again', null)).toBe('not_finished');
-        const [row] = await sql<{ n: number }[]>`
-            select count(*)::int as n from job where org_id = ${ORG} and root_job_id = ${root}
-        `;
-        expect(row!.n).toBe(2);
-    });
-
     // Only done or removed closes a task. Without a session on the parent — an opencode run, or a
     // claude-code run that died before its driver could report — the follow-up starts a fresh
     // session, and its claim carries a recap of the earlier turns ahead of the new command.

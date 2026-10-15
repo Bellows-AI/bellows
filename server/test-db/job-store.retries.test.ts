@@ -161,23 +161,6 @@ describe.skipIf(!enabled)('retries', () => {
         expect(claim).toMatchObject({ id: retry.id, resumeSessionId: null, followUp: false });
     });
 
-    // The done is the THREAD's: one member carrying done_at closes the whole conversation to
-    // retries, even when the asked member itself was never marked. (A follow-up on that member
-    // is accepted today — only retry reads the done thread-wide.)
-    it('refuses a retry on a thread whose done landed on another member', async () => {
-        const root = await finishWithSession('drive me');
-        const followUp = await mustFollowUp(root, 'again', null);
-        const claim = await store.claim('w1', LEASE_SECONDS);
-        expect(claim?.id).toBe(followUp.id);
-        // The follow-up's run dies sessionless — retry's own acceptance shape.
-        await store.session(followUp.id, claim!.leaseToken, null);
-        await store.complete(followUp.id, claim!.leaseToken, { status: 'failed', exitCode: null, output: 'died' });
-
-        await store.markDone(root, null);
-
-        expect(await store.createRetry(followUp.id, null)).toBe('task_done');
-    });
-
     // The head's frozen workflow_name (033) is one of the copied labels: a retried workflow
     // thread's turn carries the name the member chose at create. Stamped straight onto the row
     // here — the copy is the behavior under test, not the workflow machinery that normally
@@ -197,8 +180,7 @@ describe.skipIf(!enabled)('retries', () => {
  * Every op finishes its task its own way — follow-up from a run that reported a session, retry from
  * one that never did (its own acceptance shape) — except where a rule needs a thread of two.
  * The per-thread advisory lock both take is pinned with the other lock waits, in
- * job-store.follow-ups.test.ts. Two rules are one op's alone and stay beside it: a done on another
- * member refuses only a retry (above), an unfinished older member only a follow-up.
+ * job-store.follow-ups.test.ts.
  */
 describe.skipIf(!enabled).each([
     {
@@ -219,6 +201,15 @@ describe.skipIf(!enabled).each([
             select count(*)::int as n from job where org_id = ${ORG} and root_job_id = ${root}
         `;
         return row!.n;
+    };
+    /** A root and a finished follow-up head: a thread of two, both terminal, neither done. */
+    const finishedThread = async () => {
+        const root = await finishWithSession('drive me');
+        const head = await mustFollowUp(root, 'adjust', null);
+        const claim = await store.claim('w1', LEASE_SECONDS);
+        expect(claim?.id).toBe(head.id);
+        await store.complete(head.id, claim!.leaseToken, { status: 'failed', exitCode: null, output: 'died' });
+        return { root, head: head.id };
     };
 
     // A moving run is not over: its own attempt still owns the turn. Two rows, one claim: the
@@ -252,6 +243,16 @@ describe.skipIf(!enabled).each([
         expect(await run(root, null)).toBe('not_finished');
     });
 
+    // The rule is "any member unfinished", not "the head unfinished".
+    it('refuses a finished head while an older member is unfinished', async () => {
+        const { root, head } = await finishedThread();
+        // Crafted: no write path reaches it, since every insert into a thread needs a terminal head.
+        await sql`update job set status = 'running' where id = ${root}`;
+
+        expect(await run(head, null)).toBe('not_finished');
+        expect(await threadSize(root)).toBe(2);
+    });
+
     // A moving thread means it is not over: not_finished (try later) outranks the older
     // member's task_done, which a reopen can still clear.
     it('answers not_finished before task_done for a done thread that is still moving', async () => {
@@ -267,6 +268,21 @@ describe.skipIf(!enabled).each([
         await store.markDone(id, null);
 
         expect(await run(id, null)).toBe('task_done');
+    });
+
+    // The done is the THREAD's: one member carrying done_at closes the whole conversation, even
+    // when the asked member itself was never marked — and a reopen, which clears every member,
+    // opens it again.
+    it('refuses a member of a thread whose done landed on another member, until a reopen', async () => {
+        const { root, head } = await finishedThread();
+        await store.markDone(root, null);
+
+        expect(await run(head, null)).toBe('task_done');
+        expect(await threadSize(root)).toBe(2);
+
+        expect(await store.reopen(root)).toEqual({ result: 'ok' });
+        expect(await run(head, null)).toMatchObject({ id: expect.any(String) });
+        expect(await threadSize(root)).toBe(3);
     });
 
     // Author-scoped: the thread's worktree and session live in the author's checkout tree, so a
