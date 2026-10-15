@@ -269,7 +269,7 @@ echo '# board'
 # a job left by a failed run, would otherwise hand the claim a different job than the one under
 # test — which reads as a broken lease rather than a dirty fixture. workflow is truncated with it,
 # so the definitions the workflow phase creates below start from an empty table.
-# cascade, because every table that references a job (job_artifact, job_question, the batch tables)
+# cascade, because every table that references a job (job_question, the batch tables)
 # must empty with it, and a named list rots the day a migration adds another.
 compose exec -T postgres psql -U factory -d "$DB" -c 'truncate job, workflow cascade' >/dev/null 2>&1 || {
     echo 'test-jobs: could not truncate job, workflow'

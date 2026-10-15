@@ -89,41 +89,6 @@ describe('the worker token', () => {
         expect(calls[0]!.body).toEqual({ leaseToken: 'token-1', output: 'partial output' });
     });
 
-    // The run artifacts (issue #325): the close-time upload of the full log and the transcript,
-    // one kind per POST, lease token beside the payload like every worker write.
-    it('uploads a run artifact to its route with kind, attempt and the truncation flag', async () => {
-        const { calls, fetch } = recorder(() => new Response('{}', { status: 200 }));
-        const board = boardOn(fetch);
-        const job = boardJob({ attempts: 2, claimSeq: 2 });
-
-        const state = await board.artifact(job, {
-            kind: 'log',
-            attempt: 2,
-            content: 'the whole log\n',
-            truncated: true,
-        });
-
-        expect(state).toBe('held');
-        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/artifact');
-        expect(calls[0]!.body).toEqual({
-            leaseToken: 'token-1',
-            kind: 'log',
-            attempt: 2,
-            content: 'the whole log\n',
-            truncated: true,
-        });
-    });
-
-    it('reads a 409 from the artifact upload as lost, not a kill order', async () => {
-        const { fetch } = recorder(() => new Response('{}', { status: 409 }));
-        const board = boardOn(fetch);
-        const job = boardJob();
-
-        expect(await board.artifact(job, { kind: 'transcript', attempt: 1, content: '[]', truncated: false })).toBe(
-            'lost'
-        );
-    });
-
     /**
      * The runtime sample travels inside the progress body, verbatim. A vitals-only sample
      * carries no `services` key at all — the byte-identical pin (issue #60): a job whose

@@ -47,6 +47,12 @@ dashboard:
     # GitHub App credential is not needed. The auth wall stays up, and with no App nobody can sign
     # in — it exists for scripts/test-k8s.sh --cluster, which mints its own access token.
     offline: false
+    # The dashboard's own ServiceAccount (it ran as `default`). It carries the cloud role binding the
+    # artifact store's credentials come from: annotate it with the IRSA role ARN, or bind it to a role
+    # with an EKS Pod Identity association. The pod still mounts no API token (templates/deployment.yaml).
+    serviceAccount:
+        create: true
+        annotations: {}
     # Requests only: a limit on the process that clones every member's checkouts would turn a big
     # repository into an OOM kill mid-clone.
     resources:
@@ -144,6 +150,29 @@ limitRange:
         cpu: 100m
         memory: 128Mi
 
+# Task artifacts (transcripts and the other streams a runner uploads): the dashboard writes them to
+# an object store and indexes them in the database. Only the dashboard holds the store's credentials.
+# docs/configuration.md lists the environment each key renders to.
+artifacts:
+    # s3 | filesystem. filesystem keeps the objects in the dashboard pod's /tmp: single replica only,
+    # lost with the pod. It is for kind and development, not for a deployment that keeps its history.
+    backend: s3
+    s3:
+        bucket: ''
+        region: ''
+        # Empty is AWS. Set it for an S3-compatible store; the store must honor `If-None-Match: *`.
+        endpoint: ''
+        forcePathStyle: false
+        prefix: factory/
+        # Empty is SSE-S3; set a key id for SSE-KMS.
+        kmsKeyId: ''
+    # A Secret holding `access-key-id` and `secret-access-key`. Empty: EKS Pod Identity, then IRSA.
+    credentialsExistingSecret: ''
+    # A board sweep deletes the artifacts of a removed task after this many days.
+    retentionDays: 90
+    # Per-org byte quota; 0 is off.
+    orgQuotaBytes: 0
+
 secret:
     # Creates the dashboard Secret from the values below. With existingSecret set, the chart
     # creates nothing and references that one — for a Secret managed by external-secrets or
@@ -198,6 +227,13 @@ driver:
     # the grace cannot be usefully zero below the default teardown span, but the knob exists.
     reapIntervalMs: '300000'
     reapGraceMs: '600000'
+    # What the runner-side exporters flush and cap (consumed by the exporters that follow the
+    # artifact store; the board enforces the same caps).
+    artifactFlush:
+        bytes: 256Ki
+        seconds: 15
+        spoolMax: 1Gi
+        streamMax: 1Gi
     # On SIGTERM the driver stops claiming and drains: in-flight jobs finish, then it exits. This is
     # how long the kubelet waits before SIGKILL. A killed drain loses nothing durable — each runner
     # Job keeps running under its own deadline and the job's lease expires and is re-offered — but

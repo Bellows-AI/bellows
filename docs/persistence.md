@@ -20,11 +20,16 @@ the in-memory stores in `server/test/helpers*.ts`.
 | Batch PR observation: one leased row per task, bound to PR and attempt (migration 063; [batches.md](batches.md)) | `server/migrations/063_batch_pr_observation.sql` | `server/test-db/batch-pr-observation.test.ts` |
 | Batch merge intents (one request per target slot) and stage verification (migration 064; [batches.md](batches.md)) | `server/migrations/064_batch_merge.sql` | `server/test-db/batch-merge.test.ts` |
 | Batch recovery evidence: `job.failure_cause`, the `repair` decision kind, the `closed` attention (migration 065; [batches.md](batches.md)) | `server/migrations/065_batch_recovery_evidence.sql` | `server/test-db/job-store.test.ts`, `server/test-db/batch-dispatch.test.ts`, `server/test-db/batch-pr-observation.test.ts` |
+| Artifact index: insert-only chunk rows unique on `(stream, offset)` with length and sha256, write-once manifests with state and terminal cause; `job_artifact` is dropped (migration 070; [configuration.md](configuration.md)) | `server/migrations/070_artifact_index.sql`, `server/src/artifacts/artifact-store.ts` | `server/test-db/artifact-store.test.ts` |
 | Database-name guards | `server/src/config.ts`, `server/src/seed/cli.ts` | `server/test/config.persistence.test.ts` |
 | db-suite harness: name guard, migrate, truncate and reseed per test; shared fixtures and generated ids | `server/test-db/harness.ts`, `server/test-db/fixtures.ts`, `server/test-db/batch-fixtures.ts` | `server/test/test-db.harness.test.ts`, `server/test/test-db.fixtures.test.ts` |
 
 ## Invariants
 
+- **The artifact index arbitrates the object store.** The chunk row is inserted before the write; a store 412 is
+  success only when the stored body is the recorded sha256; a different body at one stream and offset is refused;
+  every read is scoped to the caller's org. Finalization state lives on the manifest, never on `job`.
+  `server/test-db/artifact-store.test.ts`.
 - **Applied migrations are never edited.** They are skipped by filename, so an edit changes nothing
   for an existing database. Every schema change is a new file; a feature's schema is removed by a
   new `drop` migration (`023_drop_pull_requests.sql`), children listed before parents.

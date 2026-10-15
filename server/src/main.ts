@@ -8,6 +8,7 @@ import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/job-s
 import { createAppSlugProvider } from './github/app-token.js';
 import { startBatchPrObserver } from './batch-pr-observer.js';
 import { startBatchReconciler } from './batch-reconciler.js';
+import { createArtifactBackend, prepareArtifactBackend } from './artifacts/backend.js';
 import { createOrgRegistry } from './orgs.js';
 import { createFactsCache } from './workspace/facts.js';
 import { createPostgresStore } from './telemetry/store.js';
@@ -69,7 +70,9 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
     //
     // One facts cache per process, handed to every org runtime: a purge invalidates exactly the
     // cache the workspace routes read, which is only true if there is one cache.
-    const orgs = createOrgRegistry({ sql, ready, config, withStores: true, facts: createFactsCache() });
+    const artifacts = createArtifactBackend(config.artifacts);
+    void prepareArtifactBackend(artifacts, (m) => console.log(`[artifacts] ${m}`));
+    const orgs = createOrgRegistry({ sql, ready, config, withStores: true, facts: createFactsCache(), artifacts });
 
     // Unconditional, for the same reason the job store is: the database is mandatory, so there is
     // always somewhere for accounts to live. buildApp's optional `auth` is for the route tests.

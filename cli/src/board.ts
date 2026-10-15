@@ -84,26 +84,6 @@ export interface BoardJobRecord {
     questions?: readonly QuestionRecord[];
 }
 
-/** The two stored artifacts a run leaves: the full-run log and the agent transcript. */
-export const ARTIFACT_KINDS = ['log', 'transcript'] as const;
-export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
-
-/**
- * One page of a stored artifact, as `GET /api/jobs/:id/{log,transcript}` answers it. Paging is by
- * character: `totalCharacters` is the whole stored artifact, `content` the slice at `offset`.
- * `truncated` is the DRIVER's own cap at upload — the stored artifact is itself incomplete.
- */
-export interface ArtifactPage {
-    jobId: string;
-    kind: ArtifactKind;
-    attempt: number;
-    truncated: boolean;
-    offset: number;
-    limit: number;
-    totalCharacters: number;
-    content: string;
-}
-
 /** The token types a run reports, kept apart. */
 export interface ActivityTokens {
     input: number;
@@ -304,12 +284,6 @@ export interface BoardClient extends BatchRoutes {
      */
     waitForJob(id: string, timeoutSeconds: number): Promise<JobWait>;
     thread(id: string): Promise<BoardJobRecord[]>;
-    /** One page of a stored artifact; an absent artifact is the board's 404. */
-    artifactPage(
-        id: string,
-        kind: ArtifactKind,
-        page: { attempt?: number | undefined; offset?: number | undefined; limit?: number | undefined }
-    ): Promise<ArtifactPage>;
     activity(id: string): Promise<JobActivity>;
     followUp(id: string, command: string, idempotencyKey?: string): Promise<JobCreated>;
     /** Re-runs the thread head's own command as a fresh attempt; the board takes nothing from a body. */
@@ -428,25 +402,7 @@ function isWait(value: unknown): value is JobWait {
     );
 }
 
-/** An artifact read's route, with only the paging parameters that were given. */
-function artifactPath(id: string, kind: ArtifactKind, page: Record<string, number | undefined>): string {
-    const query = new URLSearchParams(
-        Object.entries(page).flatMap(([key, value]): [string, string][] =>
-            value === undefined ? [] : [[key, String(value)]]
-        )
-    ).toString();
-    return `${jobPath(id)}/${kind}${query ? `?${query}` : ''}`;
-}
-
-type ReadRoutes =
-    | 'artifactPage'
-    | 'activity'
-    | 'listRepos'
-    | 'workspace'
-    | 'listSkills'
-    | 'listConnections'
-    | 'version'
-    | 'me';
+type ReadRoutes = 'activity' | 'listRepos' | 'workspace' | 'listSkills' | 'listConnections' | 'version' | 'me';
 
 /** The plain GET reads, over whatever `get` does to fetch one authenticated path. */
 function readRoutes(get: (path: string) => Promise<unknown>): Pick<BoardClient, ReadRoutes> {
@@ -469,33 +425,10 @@ function readRoutes(get: (path: string) => Promise<unknown>): Pick<BoardClient, 
         async me() {
             return (await get('/api/auth/me')) as AuthMe;
         },
-        async artifactPage(id, kind, page) {
-            const path = artifactPath(id, kind, page);
-            return checkedArtifactPage(path, await get(path));
-        },
         async activity(id) {
             return (await get(`${jobPath(id)}/activity`)) as JobActivity;
         },
     };
-}
-
-function checkedArtifactPage(path: string, payload: unknown): ArtifactPage {
-    if (!isArtifactPage(payload)) {
-        throw new BoardError(`${path} answered with no artifact page`, HTTP_OK, MALFORMED_RESPONSE_CODE);
-    }
-    return payload;
-}
-
-function isArtifactPage(value: unknown): value is ArtifactPage {
-    if (typeof value !== 'object' || value === null) return false;
-    const page = value as Partial<Record<keyof ArtifactPage, unknown>>;
-    return (
-        typeof page.content === 'string' &&
-        typeof page.attempt === 'number' &&
-        typeof page.offset === 'number' &&
-        typeof page.totalCharacters === 'number' &&
-        typeof page.truncated === 'boolean'
-    );
 }
 
 export function createBoardClient({

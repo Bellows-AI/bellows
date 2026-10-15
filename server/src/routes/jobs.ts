@@ -1,7 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { boardScan } from './job-context.js';
 import {
-    handleArtifact,
     handleClaimJob,
     handleCreateJob,
     handleGates,
@@ -15,7 +14,6 @@ import {
     handleRequeue,
 } from './job-handlers-worker.js';
 import {
-    handleArtifactRead,
     handleCompleteJob,
     handleDone,
     handleEditJob,
@@ -35,7 +33,7 @@ import {
 } from './job-handlers-actions.js';
 import { handleAnswer, handleQuestion } from './job-handlers-questions.js';
 import { handleReviewRead, handleReviewRequest } from './job-handlers-reviews.js';
-import { ARTIFACT_BODY_LIMIT, BODY_LIMIT, CONTROL_BODY_LIMIT, QUESTION_BODY_LIMIT } from './job-limits.js';
+import { BODY_LIMIT, CONTROL_BODY_LIMIT, QUESTION_BODY_LIMIT } from './job-limits.js';
 import type { OrgRegistry } from '../orgs.js';
 
 export interface JobRouteDeps {
@@ -135,13 +133,6 @@ export const jobRoutes =
         app.post('/api/jobs/:id/complete', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handleCompleteJob(orgs, request, reply)
         );
-        // The run-artifact upload (issue #325): the driver's close-time POST of the full-run log
-        // and the agent transcript, one kind per call. The body limit sits above the artifact cap
-        // plus JSON overhead, so an honest upload never dies on its envelope; the handler slices
-        // to the cap regardless.
-        app.post('/api/jobs/:id/artifact', { bodyLimit: ARTIFACT_BODY_LIMIT }, (request, reply) =>
-            handleArtifact(orgs, request, reply)
-        );
         // The agent's questions (050, issue #531): the driver's reports are worker
         // routes; the answer is a person's, and no organization token reaches it.
         app.post('/api/jobs/:id/question', { bodyLimit: QUESTION_BODY_LIMIT }, (request, reply) =>
@@ -161,8 +152,5 @@ export const jobRoutes =
         app.get('/api/jobs/:id', (request, reply) => handleGetJob(orgs, request, reply));
         app.get('/api/jobs/:id/thread', (request, reply) => handleThread(orgs, request, reply));
         app.get('/api/jobs/:id/activity', (request, reply) => handleJobActivity(orgs, request, reply));
-        // The artifacts' person reads (issue #325), beside the job read they extend.
-        app.get('/api/jobs/:id/log', (request, reply) => handleArtifactRead(orgs, request, reply, 'log'));
-        app.get('/api/jobs/:id/transcript', (request, reply) => handleArtifactRead(orgs, request, reply, 'transcript'));
         app.get('/api/jobs', (request, reply) => handleListJobs(orgs, request, reply));
     };

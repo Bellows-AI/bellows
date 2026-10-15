@@ -35,15 +35,7 @@ import { closeMergedPr } from './job-store-merge.js';
 import { answerQuestionBy, askQuestionReport } from './job-store-questions.js';
 import { readReviewFor, requestReviewFor } from './job-store-reviews.js';
 import { claimJob, claimReclaimRow, ackReclaimRow } from './job-store-claim.js';
-import {
-    threadOf,
-    getJob,
-    waitForSettleOf,
-    listJobs,
-    listTasksOf,
-    leasesOf,
-    readArtifactOf,
-} from './job-store-reads.js';
+import { threadOf, getJob, waitForSettleOf, listJobs, listTasksOf, leasesOf } from './job-store-reads.js';
 import {
     wallTickFragment,
     authorJoinFragment,
@@ -62,14 +54,12 @@ import {
     rereadGatesJob,
     publishTokenJob,
     completeJob,
-    artifactReport,
 } from './job-store-worker.js';
 
 /**
  * The worker-report method bindings — the claim-to-verdict half of the store. Split out of
  * `createJobStore` purely so that factory stays under its line budget; the gate (the migrations
- * wait) closes over the same way. `readArtifact` rides this group only because it shares the
- * context and the gate — it is a person read with no lease guard, unlike every write here.
+ * wait) closes over the same way.
  */
 function workerMethods(
     ctx: JobStoreContext,
@@ -82,8 +72,6 @@ function workerMethods(
     | 'progress'
     | 'gates'
     | 'rereadGates'
-    | 'artifact'
-    | 'readArtifact'
     | 'askQuestion'
     | 'requestReview'
     | 'readReview'
@@ -120,16 +108,6 @@ function workerMethods(
         async rereadGates(id, leaseToken) {
             await gate();
             return rereadGatesJob(ctx, id, leaseToken);
-        },
-
-        async artifact(id, leaseToken, upload) {
-            await gate();
-            return artifactReport(ctx, id, leaseToken, upload);
-        },
-
-        async readArtifact(id, kind, attempt) {
-            await gate();
-            return readArtifactOf(ctx, id, kind, attempt);
         },
 
         async askQuestion(id, leaseToken, ask) {

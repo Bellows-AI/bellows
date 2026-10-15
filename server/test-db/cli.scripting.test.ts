@@ -28,8 +28,6 @@ const db = useTestDb();
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const ENVELOPE_KEYS = ['command', 'data', 'error', 'exitCode', 'ok', 'outcome'];
-const ARTIFACT_LENGTH = 25;
-const PAGE = 10;
 const TASK_COUNT = 3;
 const WAIT_S = '5';
 const LEASE_S = 300;
@@ -272,23 +270,6 @@ describe.skipIf(!enabled)('CLI scripting against the real board', () => {
         expect(reused.code).toBe(1);
         expect(reused.env.error).toMatchObject({ code: 'IDEMPOTENCY_KEY_REUSED', status: 409 });
         expect(await jobRows()).toBe(1);
-    });
-
-    it('walks a stored artifact page by page and whole', async () => {
-        const { id } = created((await cli(['job', 'create', '--repo', repo, 'echo log', '--json'])).env);
-        const lease = await claim(id);
-        const content = 'abcdefghijklmnopqrstuvwxy';
-        expect(content).toHaveLength(ARTIFACT_LENGTH);
-        await worker(`/api/jobs/${id}/artifact`, { leaseToken: lease, kind: 'log', attempt: 1, content });
-
-        const first = await cli(['job', 'log', id, '--limit', String(PAGE), '--json']);
-        expect(first.code).toBe(0);
-        expect(first.env.data).toMatchObject({ nextOffset: PAGE });
-        const last = await cli(['job', 'log', id, '--offset', String(2 * PAGE), '--limit', String(PAGE), '--json']);
-        expect(last.env.data).toMatchObject({ nextOffset: null });
-        const whole = await cli(['job', 'log', id, '--all', '--limit', String(PAGE), '--json']);
-        expect(whole.code).toBe(0);
-        expect(JSON.stringify(whole.env.data)).toContain(content);
     });
 
     it('traverses the task list by cursor, and refuses a cursor under other filters', async () => {

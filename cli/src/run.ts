@@ -3,7 +3,7 @@ import { batchCommands } from './batch-commands.js';
 import { createBoardClient, HTTP_OK, QUESTION_ANSWERED_CODE } from './board.js';
 import { TASK_LIST_OPTIONS, taskListFilters } from './tasks.js';
 import type { BoardClient, JobCreated, JobWait, QuestionRecord } from './board.js';
-import { activityCommand, artifactCommand } from './artifacts.js';
+import { activityCommand } from './artifacts.js';
 import { CliConfigError, loadCliConfig, type SettingsFile, takeConfigFlag } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
 import type { CommandResult, ErrorDetail } from './outcome.js';
@@ -493,8 +493,6 @@ const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<C
     'job list': runList,
     'task list': runTaskList,
     'job investigate': runInvestigate,
-    'job log': (args, io) => artifactCommand('log', args, boardFor(io), USAGE),
-    'job transcript': (args, io) => artifactCommand('transcript', args, boardFor(io), USAGE),
     'job activity': (args, io) => activityCommand(args, boardFor(io), USAGE),
     'job wait': runWait,
     'job follow-up': runFollowUp,
