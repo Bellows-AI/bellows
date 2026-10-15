@@ -472,6 +472,10 @@ export function RepositoryConfigDetail({
                             ['Branch', row?.branch ?? defaultBranch ?? <NotAvailable />],
                             ['Last commit', row?.lastCommit ? commitDate(row.lastCommit.at) : <NotAvailable />],
                             ['Size', typeof row?.sizeBytes === 'number' ? bytes(row.sizeBytes) : <NotAvailable />],
+                            [
+                                'Package cache',
+                                typeof row?.cacheSizeBytes === 'number' ? bytes(row.cacheSizeBytes) : <NotAvailable />,
+                            ],
                         ]}
                     />
                 </div>

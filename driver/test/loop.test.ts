@@ -1276,6 +1276,32 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.output).toContain('could not be read as a gate declaration');
     });
 
+    // Issue #734: a cache name the driver will not set is a deterministic refusal — failed with a
+    // reason, never thrown into the lease path where it would be reclaimed on every expiry.
+    it('fails a run whose re-read declares a package cache name the driver refuses', async () => {
+        const board = stubBoard([job(1)], {
+            rereadGates: { gates: { image: 'node:24', cache: ['LD_PRELOAD'], gates: [] }, gateError: null },
+        });
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(runner.published).toHaveLength(0);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
+        expect(board.board.completed[0]?.output).toContain('package cache');
+    });
+
+    it('fails a claim declaring a refused package cache name before any sync', async () => {
+        const board = stubBoard([{ ...job(1), gates: { image: 'node:24', cache: ['NODE_OPTIONS'], gates: [] } }]);
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(runner.synced).toHaveLength(0);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
+        expect(board.board.completed[0]?.output).toContain('package cache');
+    });
+
     it('keeps the claim’s gates when the re-read is refused', async () => {
         const board = stubBoard([job(1)], { rereadGates: null });
         const runner = stubRunner(async () => ok());

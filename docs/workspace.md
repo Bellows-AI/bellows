@@ -9,6 +9,7 @@ A per-member tree at `<root>/<orgId>/<userId>/`, one clone per repository that m
 | Path construction (`workspaceDir`), cloning, git argv and credentials | `server/src/workspace/reconcile.ts` | `server/test/workspace.reconcile.test.ts` |
 | The clone queue, claim, restart recovery | `server/src/workspace/queue.ts` | `server/test/workspace.queue.test.ts` |
 | Branch / commit / size facts and their cache | `server/src/workspace/facts.ts` | `server/test/workspace.facts.test.ts` |
+| Per-repo package cache: `environment.cache` names pointed at `<member>/.cache/<owner>/<repo>/<NAME>` (`repoCacheEnv`), and its size on the payload | `driver/src/claim.ts`, `server/src/workspace/bellows-cache.ts`, `server/src/routes/workspace.ts` | `driver/test/runner-plan.test.ts`, `server/test/bellows.test.ts`, `server/test/routes.workspace.test.ts` |
 | Manual purge of one orphaned checkout | `server/src/workspace/purge.ts`, `server/src/routes/workspace-purge.ts` | `server/test/workspace.purge.test.ts`, `server/test-db/user-repo-store.test.ts` |
 | Routes and the payload the page polls | `server/src/routes/workspace.ts` | `server/test/routes.workspace.test.ts` |
 | Repo selection rows and their constraints | `server/src/db/user-repo-store.ts`, `server/migrations/011_user_workspace.sql`, `044_user_repo_purge.sql` | `server/test-db/user-repo-store.test.ts` |
@@ -39,6 +40,11 @@ Mount shape and its boundary: [security.md](security.md). Task worktrees: [jobs.
   stamp is released only by an observed child exit. `server/test-db/user-repo-store.test.ts`.
 - **`null` size means "not measured", never zero**; only the purge invalidates the facts cache.
   `server/src/workspace/facts.ts`.
+- **The board reads member trees as hostile**: facts run only `rev-parse`/`cat-file` (no repo
+  config execs), and facts and `.bellows.yaml` refuse anything that really lies outside the member's
+  own tree. `server/test/workspace.facts.test.ts`, `server/test/bellows.test.ts`.
+- **Stated limit:** a symlink raced into `.git/refs` between the facts check and git's read can point
+  one read at a tree whose absolute path the agent knows (`CONTAINED_HEAD`).
 - **A pasted executor config reaches the runner stripped of `RUNNER_MANAGED_KEYS`**
   (`core/src/executors.ts`, the constant the dialog warns by) and of `permission`.
   `server/src/db/job-store-claim-executor.ts`, `server/test-db/job-store.attribution.test.ts`.
@@ -57,3 +63,8 @@ Mount shape and its boundary: [security.md](security.md). Task worktrees: [jobs.
 - **Stated limit:** the reconcile never fetches; the starting sync fast-forwards a clean, checked-out default branch
   only (`driver/src/scripts/git-worktree.cjs`).
 - **Stated limit:** 20 repositories and 10 executor profiles per member; two clones at a time.
+- **Stated limit:** the package cache is per member and repo, never shared across members, and never
+  evicted; its size is the repo's `Package cache` reading, measured only where the path really
+  lies inside the member tree (`sizeOf`, `server/test/workspace.facts.test.ts`), and the purge
+  is deleting `<member>/.cache/<owner>/<repo>`. Concurrent tasks share it: npm's cache is safe for
+  that, a tool whose cache is not (yarn classic) is the repo's risk. `driver/src/claim.ts`.

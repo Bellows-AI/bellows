@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob, VerdictEvidence } from './board.js';
 import { withBoardRetry } from './board-retry.js';
+import { repoCacheProblem } from './claim.js';
 import { evidenceDecision, evidencePolicyActive, type GatesOutcome, gatesEvidenceOf } from './evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from './runner.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
@@ -202,14 +203,15 @@ async function rereadGatesStep(ctx: AttemptCtx): Promise<SetupConclusion | null>
         log(`job ${job.id}: gates re-read refused, keeping the claim's decision`);
     }
 
-    if (job.gateError) {
+    // A re-read may also declare a package cache the driver will not set (issue #734).
+    if (job.gateError || repoCacheProblem(job)) {
         return {
             halt: 'fault',
             log: 'its gates file could not be read, failing',
             verdict: {
                 status: 'failed',
                 exitCode: null,
-                output: `This job's .bellows.yaml could not be read as a gate declaration: ${job.gateError}`,
+                output: `This job's .bellows.yaml could not be read as a gate declaration: ${job.gateError ?? repoCacheProblem(job)}`,
                 failureKind: 'config',
             },
         };

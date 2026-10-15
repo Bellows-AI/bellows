@@ -129,3 +129,57 @@ describe('the opencode runner plan', () => {
         expect(() => plan({ ...opencodeJob, followUp: true }, session)).toThrow(error);
     });
 });
+
+// Issue #734: `.bellows.yaml` `environment.cache` names env vars the driver points at one
+// directory per member and repository, on the workspaces volume — the same literal path in the
+// runner, the gate env and the setup step, on both executors.
+describe('the per-repo package cache', () => {
+    const CACHE = `/workspaces/bellows/${USER}/.cache/acme/widgets`;
+    const cached = (j: BoardJob, cache: string[] = ['NPM_CONFIG_CACHE', 'PIP_CACHE_DIR']): BoardJob => ({
+        ...j,
+        repo: 'acme/widgets',
+        gates: { image: 'node:24', cache, gates: [] },
+    });
+
+    it.each([
+        ['claude-code', job, { id: SESSION, resume: false }],
+        ['opencode', opencodeJob, null],
+    ])('points each declared name into the repo cache on the %s plan', (_name, j, session) => {
+        const { envPairs } = plan(cached(j), session);
+        expect(envPairs).toContainEqual(['NPM_CONFIG_CACHE', `${CACHE}/NPM_CONFIG_CACHE`]);
+        expect(envPairs).toContainEqual(['PIP_CACHE_DIR', `${CACHE}/PIP_CACHE_DIR`]);
+    });
+
+    it('adds nothing when the repository declares no cache', () => {
+        const { envPairs } = plan(
+            { ...job, repo: 'acme/widgets', gates: { image: 'node:24', gates: [] } },
+            {
+                id: SESSION,
+                resume: false,
+            }
+        );
+        expect(envPairs.some(([name]) => name.includes('CACHE'))).toBe(false);
+    });
+
+    // A default only, like the npm notice: the claim's value rides the env file or Secret, and
+    // the driver never states the name beside it.
+    it('leaves a name the claim env sets to the claim', () => {
+        const j = { ...cached(job), env: { NPM_CONFIG_CACHE: '/elsewhere' } };
+        const { envPairs } = plan(j, { id: SESSION, resume: false });
+        expect(envPairs.filter(([name]) => name === 'NPM_CONFIG_CACHE')).toEqual([]);
+        expect(envPairs).toContainEqual(['PIP_CACHE_DIR', `${CACHE}/PIP_CACHE_DIR`]);
+    });
+
+    // The board's parser refuses these first; the driver re-asserts before a name reaches env.
+    it.each([
+        ['a driver-owned name', cached(job, ['HOME'])],
+        ['a RUNNER_ name', cached(job, ['RUNNER_X'])],
+        ['the telemetry endpoint', cached(job, ['OTEL_EXPORTER_OTLP_ENDPOINT'])],
+        ['a loader hook', cached(job, ['LD_PRELOAD'])],
+        ['a runtime hook', cached(job, ['NODE_OPTIONS'])],
+        ['a name that is not env-shaped', cached(job, ['a b'])],
+        ['a repo label that escapes the cache root', { ...cached(job), repo: 'acme/..' }],
+    ])('refuses %s', (_name, j) => {
+        expect(() => plan(j, { id: SESSION, resume: false })).toThrow(/refusing to run job .*cache/);
+    });
+});

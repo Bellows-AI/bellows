@@ -22,6 +22,11 @@
  * and retried before the first gate while it fails (an install step); its failure is a setup
  * failure, not a gate's.
  *
+ * `environment:` may also carry `cache:` — a list of `- NAME` env names, each set by the driver to
+ * `<member>/.cache/<owner>/<repo>/<NAME>` in the runner and gate env, a directory that outlives the
+ * container (`readCacheItem`). Declared before `gates:`; names the driver owns or a runtime runs
+ * code from are refused (`bellows-cache.ts`).
+ *
  * One exception, and it is not leniency: a top-level `services:` block is the SERVICES half of
  * the file, read by the driver's own parser (driver/src/services.ts), and one file may carry both
  * halves. This parser skips the block wholesale — it does not judge the services grammar, and a
@@ -43,8 +48,9 @@
  * number, and `readGatesFile` turns that into the job's `gateError`.
  */
 
-import { constants as fsConstants, open as fsOpen } from 'node:fs/promises';
+import { type FileHandle, constants as fsConstants, open as fsOpen, readlink, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
+import { type CacheBlock, closeCache, newCacheBlock, openCache, readCacheItem } from './bellows-cache.js';
 import { BellowsError, fail, KEY_VALUE, MAX_COMMAND_LENGTH, readTimeoutMinutes, scalar } from './bellows-grammar.js';
 import {
     consumeReviewerLine,
@@ -79,6 +85,8 @@ export interface BellowsConfig {
     readonly image: string;
     /** Runs before the agent starts, retried before the first gate while it fails; absent when none is declared. */
     readonly setup?: string;
+    /** Env names the driver points at the member's per-repo cache directory; absent when none. */
+    readonly cache?: readonly string[];
     readonly gates: readonly GateDef[];
 }
 
@@ -116,6 +124,8 @@ interface RawGate {
 interface BellowsState {
     image: string | null;
     setup: string | null;
+    /** The `cache:` list under `environment:` (`bellows-cache.ts`). */
+    cache: CacheBlock;
     inEnvironment: boolean;
     inGates: boolean;
     /** Inside a top-level `services:` block — the services half, not this parser's grammar. */
@@ -173,6 +183,7 @@ function openPolicyBlock(state: BellowsState, line: number, inlineValue: string 
  * skipped wholesale as the driver's own grammar; anything else is refused.
  */
 function handleTopLevelLine(state: BellowsState, line: number, trimmed: string): void {
+    closeCache(state.cache);
     finishGate(state);
     state.inGates = false;
     state.itemIndent = -1;
@@ -277,21 +288,33 @@ function readSetup(state: BellowsState, line: number, raw: string | undefined): 
     state.setup = command;
 }
 
-/** A direct child of `environment:` (`image:` / `setup:` / `gates:`). */
+/** A `- ` list item: a cache name while `cache:` is open, otherwise a gate. */
+function handleListItem(state: BellowsState, line: number, indent: number, trimmed: string): void {
+    if (state.cache.open) {
+        readCacheItem(state.cache, line, trimmed);
+    } else {
+        handleGateStart(state, line, indent, trimmed);
+    }
+}
+
+/** A direct child of `environment:` (`image:` / `setup:` / `cache:` / `gates:`). */
 function handleEnvironmentField(state: BellowsState, line: number, key: string, match: RegExpExecArray): void {
+    closeCache(state.cache);
     const hasValue = match[3] !== undefined;
     if (key === 'image') {
         if (!hasValue) fail(line, 'image takes a value');
         state.image = checkImage(line, scalar(line, match[3] ?? '', 'image'));
     } else if (key === 'setup') {
         readSetup(state, line, match[3]);
+    } else if (key === 'cache') {
+        openCache(state.cache, line, match[3]);
     } else if (key === 'gates') {
         // `gates:` with nothing after it — including a trailing space, the same courtesy
         // `environment:` gets — opens the list. A real inline value is outside the subset.
         if (hasValue && match[3] !== '') fail(line, 'gates takes a list, not a value');
         state.inGates = true;
     } else {
-        fail(line, `unknown key "${key}" inside environment — only image, setup and gates are read`);
+        fail(line, `unknown key "${key}" inside environment — only image, setup, cache and gates are read`);
     }
 }
 
@@ -346,7 +369,7 @@ function processLine(state: BellowsState, line: number, rawLine: string): void {
     }
 
     if (trimmed.startsWith('- ')) {
-        handleGateStart(state, line, indent, trimmed);
+        handleListItem(state, line, indent, trimmed);
         return;
     }
 
@@ -374,6 +397,7 @@ export function parseBellowsWithPolicy(text: string): {
     const state: BellowsState = {
         image: null,
         setup: null,
+        cache: newCacheBlock(),
         inEnvironment: false,
         inGates: false,
         inServices: false,
@@ -396,6 +420,7 @@ export function parseBellowsWithPolicy(text: string): {
         if (!trimmed || trimmed.startsWith('#')) continue;
         processLine(state, line, rawLine);
     }
+    closeCache(state.cache);
     finishGate(state);
     finishReviewer(state.reviewers);
 
@@ -409,6 +434,7 @@ export function parseBellowsWithPolicy(text: string): {
     const config = {
         image: state.image,
         ...(state.setup === null ? {} : { setup: state.setup }),
+        ...(state.cache.names === null ? {} : { cache: state.cache.names }),
         gates: state.gates,
     };
     return { config, policy: state.policy, reviewers };
@@ -523,8 +549,9 @@ export async function readGatesFile(options: {
     /** Test seam: lets the suite assert the path and simulate failures without a filesystem. */
     readFile?: (path: string) => Promise<string>;
 }): Promise<GatesRead> {
-    const { root, workspacePath, repo, worktreeId = null, readFile = defaultRead } = options;
+    const { root, workspacePath, repo, worktreeId = null } = options;
     if (!root || !repo) return { config: null, error: null, source: null };
+    const readFile = options.readFile ?? containedRead(join(root, workspacePath));
 
     const resolved = resolveGatesPaths({ root, workspacePath, repo, worktreeId });
     if (!resolved.ok) return { config: null, error: resolved.error, source: null };
@@ -578,30 +605,50 @@ const GATES_FILE_LIMIT_KIB = 64;
 const BYTES_PER_KIB = 1024;
 const GATES_FILE_LIMIT = GATES_FILE_LIMIT_KIB * BYTES_PER_KIB;
 
-const defaultRead = async (path: string): Promise<string> => {
-    // Only the final path component is checkout-controlled — the repository's content decides
-    // whether a `.bellows.yaml` exists and what it is, including whether it is a symlink. The
-    // segments above it are server-created: `root` is configuration, and readGatesFile
-    // re-asserts the uuid and segment-validates the repo name before joining, so there is
-    // nothing above the file for a checkout to point a parent directory at. O_NOFOLLOW refuses
-    // a symlinked final component at open instead of following it out of the tree; the flag is
-    // undefined on platforms without it, where the open simply proceeds without the guard.
-    const handle = await fsOpen(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-    try {
-        // Stat and read through the SAME handle. Separate path-based calls could be split by a
-        // concurrent replacement: the size check would bound one inode while the read returned
-        // another, and the limit below would hold a file that was never delivered. Refusing
-        // non-regular files serves the same posture — checkout-authored content on the claim
-        // path is bounded, never read unboundedly.
-        const stats = await handle.stat();
-        if (!stats.isFile()) {
-            throw new Error('.bellows.yaml is not a regular file');
+/**
+ * Where an open file really lies: the kernel's own record of the descriptor on Linux, which no
+ * rename or symlink swapped in after the open can change; elsewhere (a developer's macOS) the
+ * path's realpath, which can race such a swap — the deployed board runs on Linux.
+ */
+async function realPathOf(handle: FileHandle, path: string): Promise<string> {
+    // On Linux a missing /proc is a refusal, never a quiet fall back onto the racy path.
+    return process.platform === 'linux' ? await readlink(`/proc/self/fd/${handle.fd}`) : await realpath(path);
+}
+
+/**
+ * The read `readGatesFile` uses: the file must really lie inside `memberRoot`. Only the final path
+ * component was ever the checkout's to decide, so O_NOFOLLOW guards that one — but the checkout
+ * directory and `.worktrees/<id>` above it are the member's agent's to write too, and the board
+ * sees every org's tree: a symlinked directory there would read another member's file.
+ */
+const containedRead =
+    (memberRoot: string) =>
+    async (path: string): Promise<string> => {
+        const handle = await fsOpen(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+        try {
+            const inside = `${await realpath(memberRoot)}/`;
+            if (!(await realPathOf(handle, path)).startsWith(inside)) {
+                throw new Error(".bellows.yaml lies outside the member's workspace");
+            }
+            return await readOpened(handle);
+        } finally {
+            await handle.close();
         }
-        if (stats.size > GATES_FILE_LIMIT) {
-            throw new Error(`.bellows.yaml is larger than ${GATES_FILE_LIMIT} bytes`);
-        }
-        return await handle.readFile('utf8');
-    } finally {
-        await handle.close();
+    };
+
+/** Stat, bound and read one opened `.bellows.yaml`. */
+async function readOpened(handle: FileHandle): Promise<string> {
+    // Stat and read through the SAME handle. Separate path-based calls could be split by a
+    // concurrent replacement: the size check would bound one inode while the read returned
+    // another, and the limit below would hold a file that was never delivered. Refusing
+    // non-regular files serves the same posture — checkout-authored content on the claim
+    // path is bounded, never read unboundedly.
+    const stats = await handle.stat();
+    if (!stats.isFile()) {
+        throw new Error('.bellows.yaml is not a regular file');
     }
-};
+    if (stats.size > GATES_FILE_LIMIT) {
+        throw new Error(`.bellows.yaml is larger than ${GATES_FILE_LIMIT} bytes`);
+    }
+    return await handle.readFile('utf8');
+}

@@ -1,6 +1,6 @@
 import type { Board, BoardJob, LeaseState, Reclaim } from './board.js';
 import type { DriverConfig } from './config.js';
-import { workspacePathOf } from './claim.js';
+import { repoCacheProblem, workspacePathOf } from './claim.js';
 import type { Runner } from './runner.js';
 import { worktreeRelDir } from './publish.js';
 import type { GateStack, LoopRuntime } from './loop-types.js';
@@ -39,7 +39,7 @@ const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, 
  * than dropped, so the job reaches a terminal state somebody can see instead of being reclaimed
  * on every lease expiry forever. Null when the claim is runnable.
  */
-function claimRefusal(job: BoardJob): { log: string; output: string } | null {
+function claimRefusal(job: BoardJob): { log: string; output: string; config?: true } | null {
     /*
      * A job whose author has no workspace is FAILED, never run in a fallback location.
      *
@@ -67,6 +67,12 @@ function claimRefusal(job: BoardJob): { log: string; output: string } | null {
             log: 'no resolvable task worktree for its repo label, failing',
             output: `This job names repository ${job.repo}, but its workspace and thread do not resolve to a task worktree directory this driver can run it in.`,
         };
+    }
+
+    // Issue #734: a declared package cache the driver will not set, failed before any sync.
+    const cacheProblem = repoCacheProblem(job);
+    if (cacheProblem) {
+        return { log: `${cacheProblem}, failing`, output: `This job cannot run: ${cacheProblem}.`, config: true };
     }
 
     return null;
@@ -272,7 +278,7 @@ export function createLoop({
                 status: 'failed',
                 exitCode: null,
                 output: refusal.output,
-                failureKind: 'runner_error',
+                failureKind: refusal.config ? 'config' : 'runner_error',
             }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
             return;
         }

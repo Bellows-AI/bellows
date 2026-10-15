@@ -23,6 +23,7 @@ const repo = (status: WorkspaceRepo['status'], name = 'web'): WorkspaceRepo => (
     branch: null,
     lastCommit: null,
     sizeBytes: null,
+    cacheSizeBytes: null,
 });
 
 const workspace = (repos: WorkspaceRepo[]): WorkspacePayload => ({
