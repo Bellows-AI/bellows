@@ -192,10 +192,9 @@ describe('the installation token', () => {
 
     it('abandons a mint that hangs rather than holding the caller forever', async () => {
         /*
-         * The claim runs this request inside its transaction, holding a job-row lock and one of the
-         * pool's connections across it, so a GitHub that never answers would stall every other
-         * claim, heartbeat and completion behind it. The mint has to abort, and the claim's
-         * 503/retry path takes over from there. This stub only settles when its signal does.
+         * A runner's credential request waits on this mint, so a GitHub that never answers would
+         * hold that request open. The mint has to abort, and the caller answers the failure. This
+         * stub only settles when its signal does.
          */
         const fetchFn = (async (_input: string | URL | Request, init?: RequestInit) =>
             new Promise<Response>((_resolve, reject) => {
@@ -211,19 +210,27 @@ describe('the installation token', () => {
         await expect(tokens.fresh()).rejects.toMatchObject({ name: 'TimeoutError' });
     });
 
-    it('mints once when two callers race a fresh mint', async () => {
+    it('gives two attempts asking at once two distinct tokens', async () => {
         /*
-         * Overlapping claims each ask for fresh, and the loser of a double mint is not invalidated —
-         * it stays live for an hour counting against the App. The fresh path must join the same
-         * single-flight as get, sharing one request, each caller still getting a full-hour token.
+         * A scoped mint is one attempt's credential (docs/connections.md): joining another
+         * caller's in-flight mint would hand two attempts the same token, so neither shares.
          */
         let serial = 0;
         const { calls, fetchFn } = stubFetch({ token: () => `ghs_${++serial}` });
         const tokens = provider({ fetchFn });
 
-        const [a, b] = await Promise.all([tokens.fresh(), tokens.fresh()]);
-        expect(a).toBe(b);
-        expect(calls.filter((call) => call.url.includes('/access_tokens'))).toHaveLength(1);
+        const [a, b] = await Promise.all([tokens.fresh('acme/widgets'), tokens.fresh('acme/widgets')]);
+        expect(a.token).not.toBe(b.token);
+        expect(calls.filter((call) => call.url.includes('/access_tokens'))).toHaveLength(2);
+    });
+
+    it("reports GitHub's own expires_at on a fresh mint", async () => {
+        const expiry = '2026-08-21T12:10:00.000Z';
+        const { fetchFn } = stubFetch({ expiresAt: () => expiry });
+        await expect(provider({ fetchFn }).fresh('acme/widgets')).resolves.toEqual({
+            token: 'ghs_installation_token',
+            expiresAt: expiry,
+        });
     });
 
     it("trusts GitHub's expires_at rather than assuming an hour", async () => {
@@ -245,9 +252,8 @@ describe('the installation token', () => {
 
     it('mints fresh on demand, never serving the cache', async () => {
         /*
-         * A claim hands the token to a runner whose job outlives the claim, so that credential has
-         * to start from full life: served from the cache it can carry the five-minute refresh
-         * margin into a run capped at thirty minutes, and the runner has no refresh path.
+         * A runner's credential has to start from full life: served from the cache it can carry
+         * the five-minute refresh margin, which is the runner helper's own renewal skew.
          */
         let now = Date.parse('2026-08-21T12:00:00.000Z');
         let serial = 0;
@@ -264,11 +270,11 @@ describe('the installation token', () => {
         expect(cached).toBe('ghs_1');
         expect(mints()).toBe(SINGLE_MINT);
 
-        // Minutes into the cached token's hour, a claim still mints, and gets a different token.
+        // Minutes into the cached token's hour, a runner's ask still mints, and gets a different token.
         const WITHIN_HOUR_ADVANCE_MINUTES = 50;
         now += WITHIN_HOUR_ADVANCE_MINUTES * MINUTE_MS;
         const fresh = await tokens.fresh();
-        expect(fresh).toBe('ghs_2');
+        expect(fresh.token).toBe('ghs_2');
         expect(mints()).toBe(DOUBLE_MINT);
 
         // The fresh mint is repo-scoped, so it is not what the cache holds: ordinary reads need
@@ -304,18 +310,18 @@ describe('the installation token', () => {
         expect(calls).toHaveLength(0);
     });
 
-    it("never hands one repo's in-flight mint to another repo", async () => {
+    it("never hands one attempt's in-flight mint to another", async () => {
         let serial = 0;
         const { calls, fetchFn } = stubFetch({ token: () => `ghs_${++serial}` });
         const tokens = provider({ fetchFn });
 
         const [a, b, a2] = await Promise.all([tokens.fresh('acme/a'), tokens.fresh('acme/b'), tokens.fresh('acme/a')]);
-        expect(a).toBe(a2);
-        expect(a).not.toBe(b);
+        expect(new Set([a.token, b.token, a2.token]).size).toBe(3);
         const bodies = calls.filter((call) => call.url.includes('/access_tokens')).map((call) => call.body);
         expect(bodies).toEqual([
             { repositories: ['a'], permissions: RUNNER_TOKEN_PERMISSIONS },
             { repositories: ['b'], permissions: RUNNER_TOKEN_PERMISSIONS },
+            { repositories: ['a'], permissions: RUNNER_TOKEN_PERMISSIONS },
         ]);
     });
 });

@@ -1,28 +1,9 @@
 /**
- * The org resolvers the auth layer asks before a worker write (which org a lease, a job or a reclaim
- * belongs to), and `withMintedToken`, the claim env's base layer.
+ * The org resolvers the auth layer asks before a worker write: which org a lease, a job or a
+ * reclaim belongs to.
  */
 
 import type { Sql } from 'postgres';
-
-/**
- * Lays the minted installation token under the claim's stacked environment, in one place and pure
- * — the `stackEnv` precedent: a rule this load-bearing is pinned by the offline suite, which cannot
- * reach the claim that runs it.
- *
- * The mint is the BASE layer. A `GITHUB_TOKEN` configured in any env scope (org, workspace, repo)
- * wins over it, because that value is something an operator deliberately chose and silently
- * replacing a credential with a different one is a failure nobody notices; the mint fills only the
- * gap. No mint (the offline tooling builds no provider) changes nothing at all, so a board that
- * cannot fetch still reads exactly as it did.
- */
-export function withMintedToken(
-    minted: string | undefined,
-    resolved: Record<string, string> | undefined
-): Record<string, string> | undefined {
-    if (minted === undefined) return resolved;
-    return { GITHUB_TOKEN: minted, ...resolved };
-}
 
 /**
  * The branch-ingest credential's verifier, and the ONE job query in this module that is org-less —

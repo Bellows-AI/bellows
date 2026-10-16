@@ -45,15 +45,15 @@ describe('readSkillCatalog', () => {
 });
 
 describe('resolveClaimSkills', () => {
-    it('is null for no selection, and for a met connection', () => {
+    it('is null for no selection, and for a held connection', () => {
         expect(resolveClaimSkills([], undefined)).toBeNull();
-        expect(resolveClaimSkills(['github'], { GITHUB_TOKEN: 'x' })).toBeNull();
+        expect(resolveClaimSkills(['github'], undefined, ['github'])).toBeNull();
     });
 
-    it('treats an absent env as holding nothing, and names env names only', () => {
-        const sentence = resolveClaimSkills(['github'], undefined);
+    it('asks for the App, never a member token, when the org holds no installation', () => {
+        const sentence = resolveClaimSkills(['github'], { GITHUB_TOKEN: 'x' });
         expect(sentence).toBe(
-            '[skills unavailable] skill "github" needs the github connection: set GITHUB_TOKEN in the task\'s environment settings. Fix this, then retry the task.'
+            '[skills unavailable] skill "github" needs the github connection: install the GitHub App on this organization. Fix this, then retry the task.'
         );
     });
 });
@@ -70,6 +70,11 @@ describe('GET /api/skills', () => {
         expect(jira?.requires).toEqual({
             tools: ['curl'],
             connections: [{ name: 'jira', env: [], selectedBy: 'jiraConnection' }],
+        });
+        // github is the App's: no env names and no body field selects it.
+        expect(skills.find((skill) => skill.name === 'github')?.requires).toEqual({
+            tools: ['gh'],
+            connections: [{ name: 'github', env: [], selectedBy: null }],
         });
         const body = readFileSync(join(root, 'docker/skills/jira/SKILL.md'), 'utf8').split('\n---\n')[1] ?? '';
         expect(body.length).toBeGreaterThan(100);

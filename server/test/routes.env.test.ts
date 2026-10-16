@@ -310,6 +310,27 @@ describe('env var validation', () => {
         expect(response.json().code).toBe(code);
     });
 
+    it.each([
+        ['org', '/api/env/org', {}],
+        ['workspace', '/api/env/workspace', {}],
+        ['repo', '/api/env/repo', { repo: { owner: 'acme', name: 'web' } }],
+    ] as const)(
+        'refuses GITHUB_TOKEN and GH_TOKEN in the %s scope: GitHub is the App’s alone',
+        async (_scope, url, extra) => {
+            const { app, memberCookie } = await boot();
+            for (const name of ['GITHUB_TOKEN', 'GH_TOKEN']) {
+                const response = await app.inject({
+                    method: 'PUT',
+                    url,
+                    headers: { cookie: memberCookie },
+                    payload: { ...extra, vars: [{ name, value: 'ghp_member_token', isSecret: true }] },
+                });
+                expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+                expect(response.json().code).toBe('RESERVED_ENV_NAME');
+            }
+        }
+    );
+
     it('refuses a list past the ceiling', async () => {
         const { app, memberCookie } = await boot();
         const vars = Array.from({ length: 101 }, (_, i) => ({ name: `V_${i}`, value: '1', isSecret: false }));

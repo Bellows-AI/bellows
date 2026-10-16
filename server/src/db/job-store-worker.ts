@@ -1,6 +1,6 @@
 /**
  * What a leased worker reports after the claim: heartbeat, session/progress/gates reports, the gate
- * re-read, the publish token, and `complete` — whose verdict transaction also records the
+ * re-read, and `complete` — whose verdict transaction also records the
  * publication and walks the workflow to its next node (docs/workflows.md).
  */
 
@@ -128,31 +128,6 @@ export async function gatesReport(
     `;
     if (rows[0]) return 'ok';
     return (await exists(sql, orgId, id)) ? 'lost' : 'missing';
-}
-
-export async function publishTokenJob(
-    ctx: JobStoreContext,
-    id: string,
-    leaseToken: string
-): ReturnType<JobStore['publishToken']> {
-    const { sql, orgId, env, githubToken } = ctx;
-    // Lease-guarded like every worker route: a fresh credential goes only to the worker
-    // that holds the run, and only while it still does (the gates-reread precedent).
-    const rows = await sql<{ created_by: string | null; repo: string | null }[]>`
-        select created_by, repo
-        from job
-        where org_id = ${orgId} and id = ${id}
-          and status = 'running' and lease_token = ${leaseToken}
-    `;
-    const row = rows[0];
-    if (!row) return { result: (await exists(sql, orgId, id)) ? 'lost' : 'missing' };
-    // The claim's own assembly, answered NOW: a configured value wins over the mint —
-    // the claim-time rule, unchanged — and the mint is FRESH, because the point of this
-    // route is that the claim's token does not have to survive the whole run.
-    const resolved = env ? await env.resolveFor({ userId: row.created_by, repo: row.repo }, sql) : undefined;
-    if (resolved?.GITHUB_TOKEN !== undefined) return { result: 'ok', token: resolved.GITHUB_TOKEN };
-    if (!githubToken) return { result: 'ok', token: null };
-    return { result: 'ok', token: await githubToken.fresh(row.repo) };
 }
 
 export type CompleteResult = Parameters<JobStore['complete']>[2];

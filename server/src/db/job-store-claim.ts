@@ -183,7 +183,7 @@ async function claimNextCandidate(
             // keyed on that root. Deliberately not `for update` on the root ROW:
             // that row is the one a running thread heartbeats and completes against, and
             // a claim parked on it would stall those writes for as long as its env
-            // resolution and token mint take. An advisory xact lock queues claims
+            // resolution and plan read take. An advisory xact lock queues claims
             // against each other and nothing else, is keyed per root so different
             // threads never block each other, and one lock per transaction means no
             // lock-ordering deadlock. Claims of one thread therefore fully serialize,
@@ -303,13 +303,12 @@ async function claimNextCandidate(
  * route, because the org is bound here and the author and repo label are in hand — and ON THE
  * TRANSACTION, so a claim holds one connection. A resolver failure propagates: the claim route's
  * guard answers 503, the driver retries the claim, and a job is never handed out with half an
- * environment. The minted installation token goes under it as the base layer, and its failure
- * rolls back exactly the same way. A Remote Control claim never sees claimEnv at all
+ * environment. A Remote Control claim never sees claimEnv at all
  * (driver/src/claim.ts) — like every other claim env value, a claude-code row's config does not
  * reach a Remote Control runner, which gets only the baked settings.json and the mounted auth volume.
  *
  * A named-profile review (issue #549) is claimed on its own, narrower terms: the profile's env
- * grant, no minted token, no gates, no publish — see `claimReview`.
+ * grant, no gates, no publish — see `claimReview`.
  */
 async function assembleClaim(
     ctx: JobStoreContext,
@@ -326,17 +325,18 @@ async function assembleClaim(
     },
     rootJobId: string
 ): Promise<Claim> {
-    const { orgId, env, githubToken, planReader, executorConfig, hasWorkspaces, prs } = ctx;
+    const { orgId, env, githubApp, planReader, executorConfig, hasWorkspaces, prs } = ctx;
     const reviewRow = reviewRowOf(row);
     if (reviewRow) return claimReview(tx, { env, executorConfig, orgId, hasWorkspaces, rootJobId }, reviewRow);
-    const executor = await resolveClaimExecutor(tx, { env, githubToken, executorConfig }, row);
+    const executor = await resolveClaimExecutor(tx, { env, executorConfig }, row);
     const gates = await resolveClaimGates(planReader, { orgId, hasWorkspaces, rootJobId }, row);
     const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
     const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates);
     const command = await claimCommand(tx, orgId, rootJobId, row);
     // The thread root's selection checked against what this claim's env authorizes: names
     // only, so selecting a skill never adds to the env and the sentence never carries a value.
-    const skillRefusal = resolveClaimSkills(row.skills, executor.claimEnv, row.has_jira_connection ? ['jira'] : []);
+    const managed = [...(row.has_jira_connection ? ['jira'] : []), ...(githubApp ? ['github'] : [])];
+    const skillRefusal = resolveClaimSkills(row.skills, executor.claimEnv, managed);
     return buildClaimResult({ ...row, command }, rootJobId, {
         ...executor,
         ...gates,
@@ -374,7 +374,7 @@ export async function claimJob(
      *
      * Committed as its own statement, deliberately OUTSIDE the claim transaction below
      * (review of PR #153): that transaction also carries the claim's preparation — the
-     * env resolution and the token mint, awaited calls that throw — and a throw there
+     * env resolution and the plan read, awaited calls that throw — and a throw there
      * rolls the whole transaction back, settlement included. Inside it, a board whose
      * preparation keeps failing would keep the stamped zombie `running` across every
      * retried poll, and the follow-up the member queued would keep answering
@@ -405,12 +405,12 @@ export async function claimJob(
 
     /*
      * One transaction, not two autocommit statements. The UPDATE makes the job running
-     * with a fresh lease before the env resolver and the token mint answer; if either
+     * with a fresh lease before the env resolver and the plan read answer; if either
      * then throws, a half-claim must not survive — a row that is `running` with a lease
      * nobody holds is stranded until that lease expires on every retry, walking the job
      * to dead on an infrastructure blip. The rollback puts it back: queued, attempt
      * unburned, claimable by the very next poll. (The resolver reads env_var, not job,
-     * and the mint reads GitHub, so neither needs a share of this transaction — only
+     * and the plan reader reads GitHub, so neither needs a share of this transaction — only
      * their failures do.)
      *
      * The selection is a select-lock-claim loop, because the exclusion reads OTHER rows
@@ -552,11 +552,7 @@ async function claimReview(
 ): Promise<Claim> {
     const { env, executorConfig, orgId, hasWorkspaces, rootJobId } = deps;
     const spec = row.review_spec;
-    const executor = await resolveClaimExecutor(
-        tx,
-        { env, githubToken: undefined, executorConfig, grant: spec.connections },
-        row
-    );
+    const executor = await resolveClaimExecutor(tx, { env, executorConfig, grant: spec.connections }, row);
     const claim = buildClaimResult(row, rootJobId, {
         ...executor,
         claimPath: workspacePathFor(orgId, hasWorkspaces, row.created_by),

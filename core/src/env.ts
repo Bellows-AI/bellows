@@ -30,8 +30,13 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
  * but the BOARD's: the claim synthesizes each from the author's own executor row
  * (docs/workspace.md), and a member env var of the same name would be silently shadowed by the
  * synthesized value — refusing the PUT says so instead. Reserved at the route; the driver's list deliberately does NOT carry either, because
- * the synthesized value must flow `claimEnv` to reach the runner.
+ * the synthesized value must flow `claimEnv` to reach the runner. `GITHUB_TOKEN` and `GH_TOKEN`:
+ * GitHub is the App's alone — the runner obtains a renewing installation token from the board
+ * (docs/connections.md), and a member token would outrank it in `gh` and never renew.
  */
+/** GitHub's credential names: the App's alone, never a member's (docs/connections.md). */
+export const GITHUB_ENV_NAMES: readonly string[] = ['GITHUB_TOKEN', 'GH_TOKEN'];
+
 export const RESERVED_ENV_NAMES: readonly string[] = [
     'WORKDIR',
     'BELLOWS_GATE_URL',
@@ -58,6 +63,7 @@ export const RESERVED_ENV_NAMES: readonly string[] = [
     'ATLASSIAN_SITE',
     'ATLASSIAN_EMAIL',
     'ATLASSIAN_API_TOKEN',
+    ...GITHUB_ENV_NAMES,
 ];
 
 /**

@@ -235,17 +235,6 @@ describe.skipIf(!enabled)('job store', () => {
                 },
             },
             {
-                name: 'publishToken',
-                stale: 'foreign',
-                write: (id, token) =>
-                    createJobStore({ sql, orgId: ORG, githubToken: { fresh: async () => 'ghs_x' } }).publishToken(
-                        id,
-                        token
-                    ),
-                lost: { result: 'lost' },
-                missing: { result: 'missing' },
-            },
-            {
                 name: 'gates (the report)',
                 stale: 'foreign',
                 write: (id, token) => store.gates(id, token, GATE_REPORT),

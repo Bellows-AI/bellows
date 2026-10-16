@@ -1,5 +1,5 @@
 import Fastify from 'fastify';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyServerOptions } from 'fastify';
 import type { GitHubIdentityClient } from './auth/github.js';
 import { registerAuth } from './auth/plugin.js';
 import type { AuthStore } from './auth/store.js';
@@ -7,9 +7,11 @@ import type { AppConfig } from './config.js';
 import type { InstallationRepo } from './github/app-client.js';
 import type { OrgRegistry } from './orgs.js';
 import type { ConnectionOfLease } from './db/connection-store.js';
+import type { GithubCredentialOfLease } from './db/github-credential.js';
 import { batchRoutes } from './routes/batches.js';
 import { connectionRoutes, type CloudIdLookup } from './routes/connections.js';
 import { connectorJiraRoutes } from './routes/connector-jira.js';
+import { githubCredentialRoutes, type GithubMint } from './routes/github-credential.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import { orgExecutorRoutes } from './routes/org-executors.js';
 import { orgMemberRoutes } from './routes/org-members.js';
@@ -72,6 +74,13 @@ export interface AppDeps {
      * exactly when it does. `fetchFn` and `cloudIdLookup` are the test seams for Atlassian.
      */
     connectionOfLease?: ConnectionOfLease | undefined;
+    /**
+     * The runner GitHub credential's per-call check (`createGithubCredentialOfLease`); the route
+     * exists exactly when it does. `githubMint` replaces the org's installation mint — the lanes'
+     * stand-in (`offline-mint.ts`) and the tests' seam; absent, each org's App installation mints.
+     */
+    githubCredentialOfLease?: GithubCredentialOfLease | undefined;
+    githubMint?: GithubMint | undefined;
     fetchFn?: typeof fetch | undefined;
     cloudIdLookup?: CloudIdLookup | undefined;
     /** The OAuth exchange. Absent under AUTH_MODE=none, where there is nothing to exchange with. */
@@ -89,7 +98,8 @@ export interface AppDeps {
     version?: string;
     /** Preset ranges are a lookback from now, so the routes need the same injection point. */
     now?: () => number;
-    logger?: boolean;
+    /** `true` for the server's own log; a destination object is the tests' capture of every line. */
+    logger?: FastifyServerOptions['logger'];
 }
 
 // Set as a response header rather than a <meta> tag so dev can allow the Vite HMR
@@ -110,6 +120,33 @@ function csp(dev: boolean): string {
     ].join('; ');
 }
 
+/** Each org's own installation mints its runners' tokens; an org without one has none to give. */
+const orgMint =
+    (orgs: OrgRegistry): GithubMint =>
+    async (orgId, repo) => {
+        const tokens = (await orgs.for(orgId))?.githubToken;
+        return tokens ? tokens.fresh(repo) : null;
+    };
+
+/**
+ * The routes a runner spends through with its attempt pair: the Jira proxy and the GitHub
+ * credential, each existing exactly when its per-call check does.
+ */
+async function registerRunnerCredentialRoutes(
+    app: FastifyInstance,
+    deps: Pick<AppDeps, 'orgs' | 'connectionOfLease' | 'githubCredentialOfLease' | 'githubMint' | 'fetchFn'>
+): Promise<void> {
+    const { orgs, connectionOfLease, githubCredentialOfLease, githubMint, fetchFn } = deps;
+    if (connectionOfLease) {
+        await app.register(connectorJiraRoutes({ connectionOfLease, ...(fetchFn ? { fetchFn } : {}) }));
+    }
+    if (githubCredentialOfLease) {
+        await app.register(
+            githubCredentialRoutes({ credentialOfLease: githubCredentialOfLease, mint: githubMint ?? orgMint(orgs) })
+        );
+    }
+}
+
 /** No `listen` here — that split is what lets the route tests drive the app in-process. */
 export async function buildApp({
     config,
@@ -120,6 +157,8 @@ export async function buildApp({
     orgOfJob,
     orgOfReclaim,
     connectionOfLease,
+    githubCredentialOfLease,
+    githubMint,
     fetchFn,
     cloudIdLookup,
     identity,
@@ -176,9 +215,13 @@ export async function buildApp({
     await app.register(envRoutes({ config, orgs }));
     // Managed connector connections (#546) and the runner-facing proxy that spends them.
     await app.register(connectionRoutes({ orgs, ...(cloudIdLookup ? { lookupCloudId: cloudIdLookup } : {}) }));
-    if (connectionOfLease) {
-        await app.register(connectorJiraRoutes({ connectionOfLease, ...(fetchFn ? { fetchFn } : {}) }));
-    }
+    await registerRunnerCredentialRoutes(app, {
+        orgs,
+        connectionOfLease,
+        githubCredentialOfLease,
+        githubMint,
+        fetchFn,
+    });
     await app.register(workspaceRoutes({ config, orgs }));
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.

@@ -104,16 +104,15 @@ describe('skillSelectionProblems', () => {
         expect(skillSelectionProblems(catalog, ['jira'], reserved)).toHaveLength(1);
     });
 
-    it('names the missing env names of an env connection, never a value', () => {
+    it('asks for the GitHub App when the org holds no installation, never a value', () => {
         const [problem] = skillSelectionProblems([githubSkill], ['github'], { OTHER: 'secret-other-value' });
-        expect(problem).toContain('github connection');
-        expect(problem).toContain('GITHUB_TOKEN');
+        expect(problem).toBe('skill "github" needs the github connection: install the GitHub App on this organization');
         expect(problem).not.toContain('secret-other-value');
     });
 
-    it('counts an empty value as missing', () => {
-        expect(skillSelectionProblems([githubSkill], ['github'], { GITHUB_TOKEN: '' })).toHaveLength(1);
-        expect(skillSelectionProblems([githubSkill], ['github'], { GITHUB_TOKEN: 't' })).toEqual([]);
+    it('never lets a member GitHub token stand in for the App', () => {
+        expect(skillSelectionProblems([githubSkill], ['github'], { GITHUB_TOKEN: 't', GH_TOKEN: 't' })).toHaveLength(1);
+        expect(skillSelectionProblems([githubSkill], ['github'], {}, ['github'])).toEqual([]);
     });
 
     it('lets a skill without connections run on an empty env', () => {

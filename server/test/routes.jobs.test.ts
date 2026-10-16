@@ -117,7 +117,6 @@ interface StoreStub extends JobStore {
     edited: { id: string; command: string; caller: string | null }[];
     markedDone: { id: string; doneBy: string | null }[];
     gatesReported: { id: string; results: GateReport[] }[];
-    publishTokens: { id: string }[];
     stopped: { id: string; stoppedBy: string | null }[];
     removed: { id: string; removedBy: string | null }[];
     cancelledWaits: { id: string; cancelledBy: string | null }[];
@@ -188,7 +187,6 @@ function stubStore(
         /** The store finds the request's key already used for a different request (#589). */
         keyReused?: boolean;
         done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict' | 'batch';
-        publish?: { result: 'ok'; token: string | null } | 'lost' | 'missing';
         /** Where the board says the suspend landed, on the 'ok' path. */
         suspendStatus?: JobStatus;
         stop?: StopResult;
@@ -232,7 +230,6 @@ function stubStore(
         suspended: [],
         requeued: [],
         interrupted: [],
-        publishTokens: [],
         followUps: [],
         retries: [],
         idempotencies: [],
@@ -436,12 +433,6 @@ function stubStore(
             boom();
             stub.gatesReported.push({ id, results });
             return options.verdict ?? 'ok';
-        },
-        async publishToken(id, _token) {
-            boom();
-            stub.publishTokens.push({ id });
-            const answer = options.publish ?? { result: 'ok' as const, token: 'ghs_publish' };
-            return typeof answer === 'string' ? { result: answer } : answer;
         },
         async get() {
             boom();
@@ -3026,42 +3017,6 @@ it('answers 503 when the org runtime has no job store', async () => {
     expect(response.json().code).toBe('JOBS_UNAVAILABLE');
 });
 
-describe('POST /api/jobs/:id/publish-token', () => {
-    it('answers the publish credential to the lease holder', async () => {
-        const store = stubStore({ publish: { result: 'ok', token: 'ghs_fresh' } });
-        const instance = await harnessWith(store);
-
-        const response = await post(instance, `/api/jobs/${ID}/publish-token`, { leaseToken: TOKEN });
-
-        expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ GITHUB_TOKEN: 'ghs_fresh' });
-        expect(store.publishTokens).toEqual([{ id: ID }]);
-    });
-
-    it('answers null as a credential — nothing fresher than the claim env — not as an error', async () => {
-        const store = stubStore({ publish: { result: 'ok', token: null } });
-        const instance = await harnessWith(store);
-
-        const response = await post(instance, `/api/jobs/${ID}/publish-token`, { leaseToken: TOKEN });
-
-        expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ GITHUB_TOKEN: null });
-    });
-
-    it.each([
-        ['a lost lease', 'lost', 409, 'LEASE_LOST'],
-        ['a missing job', 'missing', 404, 'NOT_FOUND'],
-    ])('maps %s', async (_label, result, status, code) => {
-        const store = stubStore({ publish: result as 'lost' | 'missing' });
-        const instance = await harnessWith(store);
-
-        const response = await post(instance, `/api/jobs/${ID}/publish-token`, { leaseToken: TOKEN });
-
-        expect(response.statusCode).toBe(status);
-        expect(response.json().code).toBe(code);
-    });
-});
-
 const ASK = {
     leaseToken: TOKEN,
     questionId: 'toolu_01AbC-9_z',
@@ -3609,7 +3564,6 @@ describe('error-path mapping', () => {
             'BAD_TOKEN',
             'interrupted',
         ],
-        ['lease token on publish-token', POST(`${JOB}/publish-token`, { leaseToken: 'not-a-uuid' }), 'BAD_TOKEN', null],
         ['lease token on question', POST(`${JOB}/question`, { ...ASK, leaseToken: 'nope' }), 'BAD_TOKEN', null],
         [
             'lease token on review',

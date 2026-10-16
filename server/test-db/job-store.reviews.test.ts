@@ -64,7 +64,7 @@ const storeWith = (declared: { policy?: EvidencePolicy; reviewers?: ReviewerSpec
             }),
         },
         env: { resolveFor: async () => MEMBER_ENV },
-        githubToken: { fresh: async () => 'minted-token' },
+        githubApp: true,
     });
 
 const rowOf = async (id: string) => {
@@ -178,7 +178,8 @@ describe.runIf(enabled)('named reviewer invocation on the job store', () => {
     it('is claimable while its caller is still running, and carries only what the profile grants', async () => {
         const store = storeWith({ reviewers: [SECURITY] });
         const caller = await claimed(store);
-        expect(caller.env).toMatchObject({ GITHUB_TOKEN: 'member-pat', AWS_SECRET: 'aws', JIRA_TOKEN: 'jira' });
+        // No GitHub token either way: the App's is the runner's to obtain (docs/connections.md).
+        expect(caller.env).toEqual({ AWS_SECRET: 'aws', JIRA_TOKEN: 'jira' });
         const asked = await ask(caller);
         if (!('review' in asked)) throw new Error('no review');
 

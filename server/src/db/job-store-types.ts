@@ -553,9 +553,8 @@ export interface Claim {
      * repo label: org < workspace < repo, the more specific scope winning. Optional — absent on a
      * board built without an env store, which the driver reads as "no environment".
      *
-     * Under an app-mode board the environment also carries the minted installation token as its
-     * BASE layer (`withMintedToken`): a `GITHUB_TOKEN` configured in any scope wins, and the mint
-     * fills only the gap.
+     * It never carries `GITHUB_TOKEN` or `GH_TOKEN` (`withoutGithubToken`): the runner obtains the
+     * App's installation token from the board's credential endpoint (docs/connections.md).
      *
      * Deliberately NOT persisted on the job row: `GET /api/jobs/:id` serves output and metadata to
      * every member, and storing the merged values there would publish the very secrets this
@@ -587,7 +586,7 @@ export interface Claim {
     review?: ReviewEvidence;
     /**
      * Present only on a named-profile review's claim (issue #549): the git ref its worktree starts
-     * from, and the wall-clock budget its profile grants. Such a claim carries no GITHUB_TOKEN and
+     * from, and the wall-clock budget its profile grants. Such a claim gets no GitHub credential and
      * no member env beyond the profile's `connections`, never publishes, runs no gates and opens
      * no publish or question relay — the board decides all of that, never the caller.
      */
@@ -1106,22 +1105,6 @@ export interface JobStore {
         answeredBy: string | null
     ): Promise<AnswerQuestionResult>;
     /**
-     * A publish credential for the run's final push. The claim mints a full-hour installation
-     * token and a run can outlive it — observed 2026-09-13 (job 43379d3a): a 1h33m run published
-     * with its claim-time token, dead for 34 minutes, and the push died on 401 with the work done
-     * and the gates green. The driver asks here, right before the push, and gets the claim's
-     * environment resolved NOW: an operator-configured `GITHUB_TOKEN` wins exactly as it does at
-     * claim time (a deliberate credential is never silently replaced), and the mint — when there
-     * is one — is fresh, not the claim's. Lease-guarded like every worker route: the credential
-     * goes only to the worker that holds the run, and only while it still does. A null token —
-     * no provider and no configured value — is an answer, not an error: there is nothing fresher
-     * than the claim env, so the driver publishes with what it holds.
-     */
-    publishToken(
-        id: string,
-        leaseToken: string
-    ): Promise<{ result: 'ok'; token: string | null } | { result: 'lost' | 'missing' }>;
-    /**
      * Ends a running job's attempt. Lease-guarded, like every other worker write. The parking IS
      * the user's stop landing — the row settles `stopped` (terminal, session kept for the follow-up
      * that continues the conversation).
@@ -1388,19 +1371,11 @@ export interface CreateJobStoreDeps {
         ): Promise<Record<string, string>>;
     };
     /**
-     * The GitHub App's installation-token provider, laid under the resolved env as the base layer
-     * (`withMintedToken`). Present in main.ts under the App — which is every env-booted process —
-     * and absent in the offline tooling and the tests that predate it: a board that cannot fetch
-     * mints nothing. Declared inline, like
-     * `env`, because `db/` must not import from `github/`. Each claim mints FRESH rather than
-     * reading the provider's cache, because the credential has to outlive the claim: a runner's
-     * env is written once and a run is capped at two hours, so a cached token's remaining
-     * five minutes would die mid-run. A mint failure throws, and the same rollback that guards
-     * the resolver leaves the job queued with its attempt unburned.
+     * Whether the org holds a GitHub App installation — the `github` skill connection, which the
+     * runner spends through the board's credential endpoint (docs/connections.md). Absent offline
+     * and in the tests that predate it: a skill needing GitHub is then refused at claim.
      */
-    githubToken?: {
-        fresh(repo?: string | null): Promise<string>;
-    };
+    githubApp?: boolean;
     /**
      * The execution-plan reader, when the deployment has a GitHub App installation to read through.
      * Declared inline like `env`, because `db/` imports nothing from `workspace/` at runtime — a
@@ -1520,7 +1495,7 @@ export interface JobStoreContext {
     orgId: string;
     hasWorkspaces: boolean;
     env: CreateJobStoreDeps['env'];
-    githubToken: CreateJobStoreDeps['githubToken'];
+    githubApp: boolean;
     planReader: CreateJobStoreDeps['plan'];
     executorConfig: CreateJobStoreDeps['executorConfig'];
     prs: JobStorePrs | undefined;

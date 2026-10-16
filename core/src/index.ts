@@ -202,7 +202,14 @@ export {
     TASK_SUCCEEDED,
 } from './batch-schedule.js';
 export { HOUR } from './config.js';
-export { ENV_NAME, ENV_NAME_LIMIT, ENV_VALUE_LIMIT, MAX_ENV_VARS_PER_SCOPE, RESERVED_ENV_NAMES } from './env.js';
+export {
+    ENV_NAME,
+    ENV_NAME_LIMIT,
+    ENV_VALUE_LIMIT,
+    GITHUB_ENV_NAMES,
+    MAX_ENV_VARS_PER_SCOPE,
+    RESERVED_ENV_NAMES,
+} from './env.js';
 export type { ErrorCode } from './error-codes.js';
 export { ERROR_CODES } from './error-codes.js';
 export type { JobMode } from './job-mode.js';
