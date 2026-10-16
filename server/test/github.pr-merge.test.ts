@@ -17,7 +17,7 @@ const github = { mode: 'app', appId: '1', apiUrl: API, privateKey: 'k' } as unkn
 >;
 const tokens: InstallationTokenProvider = {
     get: async () => 'installation-token',
-    fresh: async () => 'installation-token',
+    fresh: async () => ({ token: 'installation-token', expiresAt: '2026-01-01T01:00:00.000Z' }),
     installationId: async () => '4242',
 };
 
