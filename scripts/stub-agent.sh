@@ -1,0 +1,50 @@
+#!/bin/sh
+# stub-agent.sh <command> [args...] — the task supervisor's agent contract for the lane stub
+# executor images (scripts/test-jobs.sh, scripts/test-k8s.sh), the part
+# docker/claude-executor/entrypoint.sh honors for the real CLI: ctl-agent.cjs (copied beside this
+# file) beats agent.alive and turns a kill order into TERM to this shell, TERM/INT is forwarded to
+# the command, and the command's exit status is written to $FACTORY_CTL_OUT/agent.exit, atomically
+# and last, then re-raised. Without agent.exit the supervisor waits out its agent-start window and
+# reads the run as lost. The command's stdout and stderr are the run's, unchanged.
+# Pinned by driver/test/lane-stubs.test.ts.
+CHILD_PID=''
+CTL_PID=''
+TERM_PENDING=''
+on_term() {
+    TERM_PENDING=1
+    # shellcheck disable=SC2086 # deliberately unquoted: an unset pid must vanish, not empty-arg
+    kill -TERM $CHILD_PID $CTL_PID 2>/dev/null || true
+}
+# Up before the first child, as in the real entrypoint: a TERM before it would kill this shell
+# and leave the command running.
+trap on_term TERM INT
+
+node "$(dirname "$0")/ctl-agent.cjs" >/dev/null 2>&1 &
+CTL_PID=$!
+# The subshell clears the inherited trap before it execs, so a TERM landing in that sliver kills
+# the command instead of running on_term in the child.
+(
+    trap - TERM INT
+    exec "$@"
+) &
+CHILD_PID=$!
+
+if [ -n "$TERM_PENDING" ]; then
+    # shellcheck disable=SC2086 # same reason as on_term
+    kill -TERM $CHILD_PID $CTL_PID 2>/dev/null || true
+fi
+
+# A trap-interrupted `wait` returns 128+signal too: loop until the command is really gone.
+while :; do
+    wait "$CHILD_PID"
+    STATUS=$?
+    kill -0 "$CHILD_PID" 2>/dev/null || break
+done
+
+kill -TERM "$CTL_PID" 2>/dev/null || true
+wait "$CTL_PID" 2>/dev/null || true
+if [ -n "${FACTORY_CTL_OUT:-}" ]; then
+    printf '%s\n' "$STATUS" > "$FACTORY_CTL_OUT/agent.exit.tmp" 2>/dev/null \
+        && mv "$FACTORY_CTL_OUT/agent.exit.tmp" "$FACTORY_CTL_OUT/agent.exit" 2>/dev/null || true
+fi
+exit "$STATUS"

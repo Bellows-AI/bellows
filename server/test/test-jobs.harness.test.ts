@@ -123,7 +123,9 @@ describe('the test-jobs harness', () => {
     // The driver runs the startup sync in the job's executor image with `--entrypoint node`, so a
     // bare alpine stub cannot sync the checkout every task now has.
     it("the stub runners stand on node and git as the executor images' uid-1000 user", () => {
-        expect(SCRIPT).toContain('RUN apk add --no-cache git\\nUSER node\\n\' >"$work/Dockerfile.base"');
+        const base = SCRIPT.split('\n').find((l) => l.includes('>"$work/Dockerfile.base"')) ?? '';
+        expect(base).toContain('RUN apk add --no-cache git\\n');
+        expect(base).toMatch(/\\nUSER node\\n' >"\$work\/Dockerfile\.base"$/);
         for (const file of ['"$work/Dockerfile.ok"', '"$work/Dockerfile.fail"', '"$work/run/Dockerfile"']) {
             const line = SCRIPT.split('\n').find((l) => l.includes(`>${file}`)) ?? '';
             expect(line).toMatch(/^printf 'FROM %s\\n/);
