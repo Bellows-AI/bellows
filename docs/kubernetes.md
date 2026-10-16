@@ -41,8 +41,9 @@ What a run does — sync, gates, services, publish, helpers, reclaim — is one 
 - **Every driver-owned object carries `factory.job`**, every Secret follows `factory-{job,gate}-…-env`, every
   workspaces mount uses `workspaceMount()`'s `<org>/<user id>` subPath — or admission refuses it.
   `driver/test/k8s-admission.test.ts`.
-- **The agent container's env holds no publish token and no route to the step channel**; the claim env and the
-  publish-fresh token are a step's own `env`. `driver/test/supervised-steps.test.ts`.
+- **The agent container's env holds no GitHub token and no route to the step channel**; the claim env and the
+  board's GitHub token are a step's own `env`, and the agent's helper caches its own in a Memory `emptyDir`.
+  `driver/test/supervised-steps.test.ts`, `driver/test/github-credential.test.ts`.
 - **The fence orders contenders by `claim_seq`, never by a clock or the refundable attempt counter.**
   `driver/test/k8s.test.ts` (`after its attempt was refunded`, `no claim sequence`).
 - **The driver never reads a Secret back** — the Role grants no `get`/`list`; attempt Secrets are reaped by

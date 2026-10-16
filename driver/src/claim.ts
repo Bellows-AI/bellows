@@ -433,7 +433,7 @@ export function envFileBody(job: BoardJob, config?: DriverConfig): string {
 /**
  * A gate environment's env-file body: the claim env's lines, then the board's GitHub token the loop
  * fetched at gate start (docs/connections.md). Fetched once and never renewed — a gate environment
- * that outlives the token's hour runs its later gates on an expired one (docs/kubernetes.md). Never
+ * that outlives the token's hour runs its later gates on an expired one (docs/connections.md). Never
  * the runner's file: the agent's own git and gh renew through the image's helper instead.
  */
 export function gateEnvBody(job: BoardJob, githubToken: string | null): string {

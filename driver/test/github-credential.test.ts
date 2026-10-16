@@ -334,3 +334,10 @@ describe('the token cache and the runner env, on both executors', () => {
         expect(runnerClaimEnv(runnerJob)).toEqual({ MEMBER_VAR: 'member' });
     });
 });
+
+describe('the stated limit of a gate environment’s token', () => {
+    it('is in docs/connections.md: fetched once at gate start, never renewed', () => {
+        const docs = readFileSync(join(ROOT, 'docs/connections.md'), 'utf8').replace(/\s+/g, ' ');
+        expect(docs).toContain("A gate environment's GitHub token is fetched once at gate start and never renewed");
+    });
+});
