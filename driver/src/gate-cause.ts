@@ -17,6 +17,17 @@ const PASSED = /\b\d+ passed\b/;
 const FAILED = /\b\d+ failed\b/;
 const ERRORS = /^\s*Errors\s+(\d+) errors?\b/;
 const WORKER_TIMEOUT = /\[vitest-worker\]: Timeout calling/g;
+/**
+ * A stale NFS file handle (ESTALE, issue #789): npm's `errno -116`, or the strerror the kernel and
+ * node print after a colon (`cp: x: Stale file handle`, `ESTALE: stale file handle`). Neither a
+ * bare `ESTALE` nor the phrase alone is matched — a failing test's name can carry either.
+ */
+const STALE_HANDLE = [/\berrno:?\s+-116\b/, /:\s*stale file handle\b/i];
+
+function staleFileHandle(output: string): boolean {
+    const plain = output.replace(ANSI, '');
+    return STALE_HANDLE.some((pattern) => pattern.test(plain));
+}
 
 /**
  * Whether vitest's summary says every test and file passed, and every error it counted is its own
@@ -36,11 +47,12 @@ function onlyWorkerTimeouts(output: string): boolean {
 
 /**
  * The `failure_cause` of a failed declared gate (issue #653). `environment` when the exit or the
- * output shows the environment, not the diff, failed the gate; `verification` otherwise, so a
+ * output shows the environment, not the diff, failed the gate — a stale file handle wins over any
+ * exit, since a broken filesystem fails assertions too; `verification` otherwise, so a
  * genuine failing assertion is still repaired. Core's `batch-recovery.ts` decides what each
  * cause means; this package depends on nothing, so the signals live here.
  */
 export function gateCauseOf(failure: { exitCode: number; output: string }): FailureCause {
-    if (ENVIRONMENT_EXITS.includes(failure.exitCode)) return 'environment';
+    if (ENVIRONMENT_EXITS.includes(failure.exitCode) || staleFileHandle(failure.output)) return 'environment';
     return onlyWorkerTimeouts(failure.output) ? 'environment' : 'verification';
 }
