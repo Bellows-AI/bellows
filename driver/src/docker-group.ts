@@ -68,7 +68,7 @@ const reachDriverArgs = (config: DriverConfig): string[] => [
 export function supervisorCreateArgs(
     config: DriverConfig,
     job: BoardJob,
-    exporting: boolean,
+    group: { exporting: boolean; agentless: boolean },
     envFile: string | null
 ): string[] {
     return [
@@ -79,7 +79,10 @@ export function supervisorCreateArgs(
         ...labelArgs(job, SUPERVISOR_CONTAINER),
         ...reachDriverArgs(config),
         ...(envFile ? ['--env-file', envFile] : []),
-        ...supervisorLiterals(config, job, exporting).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
+        ...supervisorLiterals(config, job, group).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
+        // The member's workspace subtree: the steps the supervisor runs (the sync, the probe, the
+        // publish, the helpers, the reclaim) work on the task worktree.
+        ...workspacesMountArgs(config, workspacePath(job)),
         ...Object.values(MAILBOXES).flatMap((box) => mailboxMountArgs(job, box, 'rw')),
         '--entrypoint',
         'node',
@@ -141,6 +144,16 @@ async function createWithEnvFile(
 }
 
 /**
+ * What the group holds beyond its supervisor: an exporter for a run that exports its transcript,
+ * and no agent at all for a node that launches none (issue #503) — whose group still serves the
+ * sync, the probe and the publish.
+ */
+export function groupShape(job: BoardJob, session: RunSession | null): { exporting: boolean; agentless: boolean } {
+    const agentless = job.agent === false;
+    return { exporting: !agentless && exportsTranscript(job, session), agentless };
+}
+
+/**
  * Creates the group's mailboxes and its supervisor and exporter containers (not started). A
  * failure removes what was created and throws: a run whose supervisor cannot exist is an
  * infrastructure refusal the loop leaves to its lease, never a run that silently loses its record.
@@ -151,7 +164,8 @@ export async function createGroup(
     session: RunSession | null,
     startedAt: string
 ): Promise<void> {
-    const exporting = exportsTranscript(job, session);
+    const shape = groupShape(job, session);
+    const { exporting } = shape;
     try {
         for (const args of ctlVolumeArgs(job)) await deps.execDocker(args);
         const supervisorPair = [SUPERVISOR_ENV.controlUrl, SUPERVISOR_ENV.controlToken].map((name) => ({
@@ -162,7 +176,7 @@ export async function createGroup(
             deps,
             controlEnvFilePath(job, 'supervisor'),
             supervisorEnvFileBody(job, supervisorPair),
-            (file) => supervisorCreateArgs(deps.config, job, exporting, file)
+            (file) => supervisorCreateArgs(deps.config, job, shape, file)
         );
         if (exporting) {
             await createWithEnvFile(
@@ -181,7 +195,7 @@ export async function createGroup(
 /** Starts the supervisor and the exporter, detached; the agent is started by the caller, attached, after them. */
 export async function startGroup(execDocker: ExecDocker, job: BoardJob, session: RunSession | null): Promise<void> {
     await execDocker(['start', supervisorName(job)]);
-    if (exportsTranscript(job, session)) await execDocker(['start', exporterName(job)]);
+    if (groupShape(job, session).exporting) await execDocker(['start', exporterName(job)]);
 }
 
 /**

@@ -11,9 +11,20 @@
 //   <root>/export  supervisor <-> exporter: `drain.json`, `status.json`, `supervisor.alive`
 //   <root>/supervisor  the supervisor's own state: `state.json`; no other container mounts it
 //
-// Stages the driver still performs today (environment setup, the declared gates, the publish) are
-// DELEGATED: this machine never records them as done, so a failure or a cancellation that enters
-// `finalize` cannot imply a verification or a publication that did not happen.
+// The group lives for the whole attempt, not just the agent's run. The driver submits STEPS to it —
+// the startup sync, the tree probe, the review snapshot, the publish steps, the allowlisted helpers
+// and the terminal reclaim — and the supervisor pulls them (`GET /step`, a long poll), runs each as
+// a child process of its own container over the task volume it mounts, and answers (`POST /step/:id`).
+// Two steps are the group's own orders: `go` releases the agent (the supervisor writes `in/go`, the
+// agent's entrypoint waits on it) and `finish` ends the group. A step's id is its operation identity,
+// kept in a ledger under the supervisor's own directory: the same id asked twice answers the first
+// result and never runs twice. The step environment (the claim env, a publish token) reaches only
+// these child processes; the agent container has no route to the endpoint and no copy of it.
+//
+// Stages the driver still performs today (environment setup, the declared gates) and the publish
+// ledger are DELEGATED: this machine never records them as done, so a failure or a cancellation
+// that enters `finalize` cannot imply a verification or a publication that did not happen — and a
+// `publish` step is refused outright once the attempt ended any way but completed.
 //
 // Environment (the driver sets these; paths, budgets and the attempt's control pair):
 //   FACTORY_CTL_ROOT          — the mailbox root (default /factory).
@@ -26,12 +37,16 @@
 //   SUPERVISOR_AGENT_LOST_MS  — a seen agent heartbeat older than this is a lost agent (default 30000).
 //   SUPERVISOR_AGENT_START_MS — how long the agent may take to show a first heartbeat (default 600000).
 //   SUPERVISOR_EXPORTS        — `1` when an exporter container waits for the drain order.
+//   SUPERVISOR_AGENTLESS      — `1` for an attempt with no agent container: no `go` is awaited.
+//   SUPERVISOR_ORPHAN_MS      — how long an unanswering driver is served before finalizing (default 90000).
+//   SUPERVISOR_STEP_WAIT_MS   — one `GET /step` long poll (default 15000).
 //
 // Exit status: 0 finalized, 124 finalized after the run budget ended the agent, 70 the supervisor
 // itself failed. The agent's own exit code is the kubelet's (or docker's) to report, never ours.
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 
 const STAGES = ['prepare', 'setup', 'execute', 'verify', 'publish', 'finalize', 'report'];
 /** Stages the driver performs until the supervisor takes them over: never recorded as performed here. */
@@ -59,7 +74,16 @@ const FILES = {
     drain: 'drain.json',
     exportStatus: 'status.json',
     state: 'state.json',
+    go: 'go',
+    steps: 'steps',
 };
+/** The supervised steps, by kind; the two last are the group's own orders (`STEP_KINDS` of supervisor-contract.ts). */
+const STEP_KINDS = ['sync', 'reclaim', 'probe', 'snapshot', 'publish', 'helper', 'go', 'finish'];
+const STEP_ID = /^[A-Za-z0-9_.:-]{1,160}$/;
+const STEP_OUTPUT_LIMIT = 1_048_576;
+/** The exit a step the supervisor refused (or could not start) answers with: `sh`'s "cannot execute". */
+const STEP_REFUSED_EXIT = 126;
+const STEP_RESULT_ATTEMPTS = 5;
 const EXIT_DEADLINE = 124;
 const EXIT_SUPERVISOR_FAILED = 70;
 const EXIT = { finalized: 0, deadline: EXIT_DEADLINE, failed: EXIT_SUPERVISOR_FAILED };
@@ -69,6 +93,7 @@ const CAUSE = {
     spoolFull: 'artifact_spool_full',
     closed: 'control_closed',
     lost: 'agent_lost',
+    orphaned: 'driver_lost',
 };
 /** Exit statuses that say the agent was killed rather than finishing: SIGKILL and SIGTERM. */
 const EXIT_SIGKILL = 137;
@@ -84,12 +109,16 @@ const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_SERVER_ERROR = 500;
 const REQUEST_TIMEOUT_MS = 10_000;
 const REPORT_PREFIX = 'FACTORY_SUPERVISOR_REPORT ';
+const STEP_PATH = '/step';
+const REPORT_PATH = '/report';
 
 const DEFAULT_CONTROL_MS = 5000;
 const DEFAULT_TICK_MS = 500;
 const DEFAULT_DRAIN_MS = 300_000;
 const DEFAULT_AGENT_LOST_MS = 30_000;
 const DEFAULT_AGENT_START_MS = 600_000;
+const DEFAULT_ORPHAN_MS = 90_000;
+const DEFAULT_STEP_WAIT_MS = 15_000;
 
 /** The lifecycle machine: legal transitions only, and a record of what really ran. */
 function createMachine(initial = 'prepare') {
@@ -172,6 +201,13 @@ function settingsOf(env) {
         agentLostMs: positive(env, 'SUPERVISOR_AGENT_LOST_MS', DEFAULT_AGENT_LOST_MS),
         agentStartMs: positive(env, 'SUPERVISOR_AGENT_START_MS', DEFAULT_AGENT_START_MS),
         exports: env.SUPERVISOR_EXPORTS === '1',
+        agentless: env.SUPERVISOR_AGENTLESS === '1',
+        orphanMs: positive(env, 'SUPERVISOR_ORPHAN_MS', DEFAULT_ORPHAN_MS),
+        stepWaitMs: positive(env, 'SUPERVISOR_STEP_WAIT_MS', DEFAULT_STEP_WAIT_MS),
+        // A step's children get the image's environment and the step's own: never the supervisor's credential.
+        childEnv: Object.fromEntries(
+            Object.entries({ ...process.env, ...env }).filter(([name]) => !name.startsWith('SUPERVISOR_'))
+        ),
     };
 }
 
@@ -188,18 +224,26 @@ function filesOf({ dirs }) {
         drain: path.join(dirs.export, FILES.drain),
         exportStatus: path.join(dirs.export, FILES.exportStatus),
         state: path.join(dirs.own, FILES.state),
+        go: path.join(dirs.in, FILES.go),
+        ledger: path.join(dirs.own, FILES.steps),
     };
 }
 
-/** One call to the driver's control endpoint; null is "unreachable", never an answer. */
-async function call(settings, method, route, body) {
+/**
+ * One call to the driver's control endpoint; null is "unreachable", never an answer. A call that
+ * returns at all — whatever the status — is the driver being there (`run.contactedAt`), which the
+ * orphan bound reads. `holdMs` is the long poll's own wait on top of the usual timeout.
+ */
+async function call(settings, method, route, { body, holdMs = 0, abort = null, onContact = null } = {}) {
     try {
+        const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS + holdMs);
         const response = await fetch(`${settings.url}${route}`, {
             method,
             headers: { authorization: `Bearer ${settings.token}` },
             body: body ? JSON.stringify(body) : undefined,
-            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+            signal: abort ? AbortSignal.any([timeout, abort]) : timeout,
         });
+        if (onContact) onContact();
         let json = null;
         try {
             json = await response.json();
@@ -237,7 +281,156 @@ function newRun(settings, now, log) {
         budget: settings.deadlineMs,
         budgetStartedAt: startedAt,
         budgetPaused: false,
+        // The steps: when the agent was released, whether the driver ordered the end, and the last
+        // time the driver answered anything (the orphan bound reads it).
+        goAt: null,
+        finishRequested: false,
+        contactedAt: startedAt,
+        abort: new AbortController(),
     };
+}
+
+/** A call to the driver on this run's behalf: it ends with the run, and an answer counts as contact. */
+const ask = (run, method, route, options = {}) =>
+    call(run.settings, method, route, {
+        abort: run.abort.signal,
+        onContact: () => {
+            run.contactedAt = run.now();
+        },
+        ...options,
+    });
+
+/** The driver stopped answering for longer than the orphan bound: nobody is left to give this group orders. */
+const orphaned = (run) => Boolean(run.settings.url) && run.now() - run.contactedAt > run.settings.orphanMs;
+
+const ledgerFile = (run, id) => path.join(run.file.ledger, `${encodeURIComponent(id)}.json`);
+
+const stepResult = (exitCode, stdout = '', stderr = '', timedOut = false) => ({ exitCode, stdout, stderr, timedOut });
+
+/** Keeps the tail of a stream at the step output cap, byte-true enough: the cap is a bound, not a format. */
+const keepTail = (text) => (text.length <= STEP_OUTPUT_LIMIT ? text : text.slice(text.length - STEP_OUTPUT_LIMIT));
+
+/** Runs one command step as a child process group of this container; its streams and exit are the answer. */
+function spawnStep(run, step) {
+    return new Promise((resolve) => {
+        const [exe, ...args] = step.argv;
+        let child;
+        try {
+            child = spawn(exe, args, {
+                cwd: step.cwd || undefined,
+                env: { ...run.settings.childEnv, ...step.env },
+                stdio: ['ignore', 'pipe', 'pipe'],
+                detached: true,
+            });
+        } catch (error) {
+            resolve(stepResult(STEP_REFUSED_EXIT, '', String(error?.message ?? error)));
+            return;
+        }
+        let stdout = '';
+        let stderr = '';
+        let timedOut = false;
+        let settled = false;
+        const settle = (result) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(result);
+        };
+        const timer = setTimeout(() => {
+            timedOut = true;
+            try {
+                process.kill(-child.pid, 'SIGKILL');
+            } catch {
+                // The group is already gone.
+            }
+        }, step.timeoutMs);
+        child.stdout.on('data', (chunk) => {
+            stdout = keepTail(stdout + chunk);
+        });
+        child.stderr.on('data', (chunk) => {
+            stderr = keepTail(stderr + chunk);
+        });
+        child.on('error', (error) => settle(stepResult(STEP_REFUSED_EXIT, stdout, `${stderr}${error.message}`)));
+        child.on('close', (code) => settle(stepResult(code, stdout, stderr, timedOut)));
+    });
+}
+
+/** The `go` order: releases the agent once, unless the attempt is already being ended. */
+function orderGo(run, step) {
+    if (run.goAt !== null) return stepResult(0);
+    if (run.stopRaised || run.killRaised || run.intent) {
+        return stepResult(STEP_REFUSED_EXIT, '', 'the attempt is being ended: the agent is not released');
+    }
+    run.goAt = run.now();
+    run.budgetStartedAt = run.goAt;
+    // The budget the driver knew only after the sync and the environment setup: what is left of the run's.
+    const budget = Number(step.env?.BUDGET_MS);
+    if (Number.isFinite(budget) && budget > 0) run.budget = budget;
+    writeAtomic(run.file.go, `${run.goAt}\n`);
+    return stepResult(0);
+}
+
+/** What one step answers with; a refused step never starts. */
+async function performStep(run, step) {
+    const kind = STEP_KINDS.includes(step?.kind) ? step.kind : null;
+    if (!kind || !STEP_ID.test(String(step.id)) || !Array.isArray(step.argv) || !(step.timeoutMs > 0)) {
+        return stepResult(STEP_REFUSED_EXIT, '', 'malformed step');
+    }
+    // Only a step that SUCCEEDED is replayed: its effect landed, and running it again is the harm the
+    // ledger exists to prevent. A failed or killed one is run afresh — the publish reconciles those
+    // against the remote itself, and a refusal worth retrying (a fixed permission) must not be echoed.
+    const prior = readJson(ledgerFile(run, step.id));
+    if (prior?.state === 'done' && prior.result?.exitCode === 0 && !prior.result.timedOut) {
+        return { ...prior.result, replayed: true };
+    }
+    if (kind === 'go') return orderGo(run, step);
+    if (kind === 'finish') {
+        run.finishRequested = true;
+        return stepResult(0);
+    }
+    // An attempt that ended any way but completed publishes nothing: the machine already went to finalize.
+    if (kind === 'publish' && run.machine.outcome !== null && run.machine.outcome !== 'completed') {
+        return stepResult(STEP_REFUSED_EXIT, '', `refusing to publish: the attempt ended ${run.machine.outcome}`);
+    }
+    if (step.argv.length === 0) return stepResult(STEP_REFUSED_EXIT, '', 'a command step needs a command');
+    writeAtomic(ledgerFile(run, step.id), JSON.stringify({ id: step.id, kind, state: 'running' }));
+    const result = await spawnStep(run, step);
+    writeAtomic(ledgerFile(run, step.id), JSON.stringify({ id: step.id, kind, state: 'done', result }));
+    return result;
+}
+
+/** Posts a step's answer until the driver acknowledges it (or says the attempt is over). */
+async function postStepResult(run, id, result) {
+    for (let attempt = 1; attempt <= STEP_RESULT_ATTEMPTS && !run.abort.signal.aborted; attempt += 1) {
+        const answer = await ask(run, 'POST', `${STEP_PATH}/${encodeURIComponent(id)}`, { body: result });
+        if (answer && answer.status < HTTP_SERVER_ERROR) {
+            if (answer.status === HTTP_UNAUTHORIZED) run.closed = true;
+            return;
+        }
+        await sleep(run.settings.tickMs * attempt);
+    }
+}
+
+/** Pulls steps from the driver, one at a time, until the run is over. */
+async function serveSteps(run) {
+    const { settings } = run;
+    if (!settings.url) return;
+    while (!run.abort.signal.aborted) {
+        const wait = settings.stepWaitMs;
+        const answer = await ask(run, 'GET', `${STEP_PATH}?wait=${wait}`, { holdMs: wait });
+        if (run.abort.signal.aborted) return;
+        if (!answer || answer.status >= HTTP_SERVER_ERROR) {
+            await sleep(settings.tickMs);
+            continue;
+        }
+        if (answer.status === HTTP_UNAUTHORIZED) {
+            run.closed = true;
+            return;
+        }
+        const step = answer.json?.step;
+        if (!step) continue;
+        await postStepResult(run, step.id, await performStep(run, step));
+    }
 }
 
 const intend = (run, outcome, cause) => {
@@ -323,7 +516,7 @@ function refusalOf(status) {
 /** POSTs a question once; true when it is posted and may be polled. */
 async function postQuestion(run, id, known) {
     const parsed = readJson(path.join(run.file.questions, `${id}.json`));
-    const answer = await call(run.settings, 'POST', '/question', parsed);
+    const answer = await ask(run, 'POST', '/question', { body: parsed });
     if (!answer) return false;
     if (answer.status === HTTP_UNAUTHORIZED) {
         run.closed = true;
@@ -342,7 +535,7 @@ async function postQuestion(run, id, known) {
 
 /** Polls a posted question until a person (or a Stop) settles it. */
 async function pollQuestion(run, id, known) {
-    const polled = await call(run.settings, 'GET', `/question/${encodeURIComponent(id)}`);
+    const polled = await ask(run, 'GET', `/question/${encodeURIComponent(id)}`);
     if (!polled) return;
     if (polled.status === HTTP_UNAUTHORIZED) {
         run.closed = true;
@@ -370,7 +563,7 @@ async function pollControl(run) {
     const { settings } = run;
     if (!settings.url || run.now() - run.lastControlAt < settings.controlMs) return;
     run.lastControlAt = run.now();
-    const answer = await call(settings, 'GET', '/control');
+    const answer = await ask(run, 'GET', '/control');
     if (!answer) return;
     if (answer.status === HTTP_UNAUTHORIZED) {
         run.closed = true;
@@ -405,13 +598,13 @@ function watchAgent(run) {
     const { settings } = run;
     if (beatMs !== null) run.agentSeenAt = beatMs;
     const stale = beatMs !== null && run.now() - beatMs > settings.agentLostMs;
-    const neverStarted = run.agentSeenAt === null && run.now() - run.startedAt > settings.agentStartMs;
+    const neverStarted = run.agentSeenAt === null && run.now() - (run.goAt ?? run.startedAt) > settings.agentStartMs;
     if (stale || neverStarted) run.agentEnd = { exitCode: null, how: 'lost' };
 }
 
 /** The run budget, paused while a question waits for a person. */
 function tickBudget(run) {
-    if (!run.settings.deadlineMs || run.killRaised || run.agentEnd) return;
+    if (!run.budget || run.killRaised || run.agentEnd) return;
     const paused = pendingQuestions(run);
     if (paused !== run.budgetPaused) {
         if (paused) run.budget -= run.now() - run.budgetStartedAt;
@@ -463,14 +656,68 @@ function concludeAgentEnd(run) {
     else if (run.stopRaised) machine.abort('cancelled', killed);
     else if (agentEnd.exitCode !== 0) machine.abort('failed', killed);
     else machine.complete();
-    // A completed run leaves verification and publication to the driver (delegated); anything else
-    // is already in finalize and never claims either.
+    // A completed run leaves verification and publication to the driver (delegated): the machine
+    // waits in `publish` while the driver's steps run, and enters finalize on its `finish` order.
+    // Anything else is already in finalize and never claims either.
     if (machine.outcome === 'completed') {
         machine.enter('verify');
         machine.enter('publish');
-        machine.enter('finalize');
     }
     persist(run);
+}
+
+/** One tick of the supervisor's own duties outside the agent's run: the heartbeat and the driver's orders. */
+async function tickDuties(run) {
+    beat(run);
+    await pollControl(run);
+    if (run.closed && !run.killRaised) {
+        intend(run, 'cancelled', CAUSE.closed);
+        raiseKill(run, CAUSE.closed);
+    }
+}
+
+/**
+ * prepare: until the driver releases the agent (`go`). A Stop, a kill, a closed endpoint or a
+ * driver that stopped answering ends the attempt here with the agent never launched: the stop and
+ * kill markers are what a waiting agent entrypoint exits on.
+ */
+async function awaitGo(run) {
+    while (run.goAt === null) {
+        await tickDuties(run);
+        if (run.stopRaised || run.killRaised) {
+            intend(run, 'cancelled', run.killRaised ?? CAUSE.killed);
+            raiseKill(run, run.killRaised ?? CAUSE.killed);
+        } else if (orphaned(run)) {
+            intend(run, 'lost', CAUSE.orphaned);
+            raiseKill(run, CAUSE.orphaned);
+        }
+        if (run.intent) {
+            run.agentEnd = { exitCode: null, how: 'unlaunched' };
+            return;
+        }
+        await sleep(run.settings.tickMs);
+    }
+}
+
+/** The driver's report: the agent is over and the exporter drained. Best effort; the driver also reads the pod. */
+async function reportToDriver(run, drained) {
+    const { machine, agentEnd } = run;
+    const body = {
+        outcome: machine.outcome,
+        cause: machine.cause,
+        agentExit: agentEnd.exitCode,
+        agentEnd: agentEnd.how,
+        drained,
+    };
+    await ask(run, 'POST', REPORT_PATH, { body });
+}
+
+/** publish/finalize: serve the driver's steps until it orders the end, closes the endpoint or stops answering. */
+async function serveUntilFinish(run) {
+    while (!run.finishRequested && !run.closed && !orphaned(run)) {
+        await tickDuties(run);
+        if (!run.finishRequested && !run.closed) await sleep(run.settings.tickMs);
+    }
 }
 
 /** finalize: the exporter closes every session's manifest, partial when the agent did not end by itself. */
@@ -502,14 +749,33 @@ async function supervise(env = process.env, log = (line) => process.stdout.write
         fs.mkdirSync(dir, { recursive: true });
     }
     beat(run);
-    run.machine.enter('setup'); // delegated: the driver ran environment.setup before this pod existed
-    run.machine.enter('execute');
+    run.machine.enter('setup'); // delegated: the gate environment's setup is the driver's
     persist(run);
+    const stepping = serveSteps(run);
 
-    await executeUntilAgentEnds(run);
+    // The group exists from the attempt's first step: the agent is released by `go`, after the sync.
+    if (run.settings.agentless) {
+        run.goAt = run.now();
+        run.agentEnd = { exitCode: 0, how: 'none' };
+    } else {
+        await awaitGo(run);
+    }
+    if (!run.agentEnd) {
+        run.machine.enter('execute');
+        persist(run);
+        await executeUntilAgentEnds(run);
+    }
+    if (run.settings.agentless && !run.intent) run.machine.enter('execute');
     concludeAgentEnd(run);
+    // The exporter drains as the agent ends — the driver reads the transcript before it verifies.
     const drained = await drainExporter(run);
     persist(run);
+    await reportToDriver(run, drained);
+    // An attempt the driver ordered ended (a kill, the budget, a full spool) has nothing more to ask of its group.
+    if (!run.intent) await serveUntilFinish(run);
+    if (run.machine.stage === 'publish') run.machine.enter('finalize');
+    run.abort.abort();
+    await stepping;
     run.machine.enter('report');
     persist(run);
     const { machine, agentEnd } = run;
@@ -535,6 +801,7 @@ module.exports = {
     EXIT,
     CAUSE,
     REPORT_PREFIX,
+    STEP_KINDS,
     createMachine,
     supervise,
 };

@@ -2,6 +2,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readBody, respondJson } from './http.js';
 import { PUBLISH_BODY_LIMIT, type PublishRelay, servePublish } from './publish-control.js';
 import { type ExportRelay, EXPORT_PATH, serveExport } from './export-control.js';
+import { createStepBroker, serveReport, serveStepPoll, serveStepResult, type StepBroker } from './step-control.js';
+import { REPORT_PATH, STEP_PATH } from './supervisor-contract.js';
 import { REVIEW_BODY_LIMIT, type ReviewRelay, serveReviewRead, serveReviewRequest } from './review-control.js';
 import {
     cancelPendingQuestions,
@@ -75,13 +77,22 @@ export interface ControlChannel {
     serve(request: IncomingMessage, reply: ServerResponse, auth: string): Promise<boolean>;
 }
 
-type Route = 'control' | 'export' | 'publish' | 'question' | 'review';
+type Route = 'control' | 'export' | 'publish' | 'question' | 'report' | 'review' | 'step';
 
 /** A path that is a POST of its own, or a GET of `<path>/<id>`: the shape the question and review routes share. */
 const isPostOrGetOf = (request: IncomingMessage, path: string): boolean => {
     const url = request.url ?? '';
     return url === path ? request.method === 'POST' : request.method === 'GET' && url.startsWith(`${path}/`);
 };
+
+/** The supervised steps' routes (`GET /step`, `POST /step/:id`, `POST /report`), or null for any other request. */
+function stepRouteOf(request: IncomingMessage, url: string): 'step' | 'report' | null {
+    if (request.method === 'POST') {
+        if (url === REPORT_PATH) return 'report';
+        return url.startsWith(`${STEP_PATH}/`) ? 'step' : null;
+    }
+    return request.method === 'GET' && (url === STEP_PATH || url.startsWith(`${STEP_PATH}?`)) ? 'step' : null;
+}
 
 /** Which control route a request is, or null when it is none of them. */
 function routeOf(request: IncomingMessage): Route | null {
@@ -90,14 +101,55 @@ function routeOf(request: IncomingMessage): Route | null {
     if (url === EXPORT_PATH || url.startsWith(`${EXPORT_PATH}/`)) return 'export';
     if (request.method === 'POST' && url === PUBLISH_PATH) return 'publish';
     if (isPostOrGetOf(request, QUESTION_PATH)) return 'question';
+    const stepRoute = stepRouteOf(request, url);
+    if (stepRoute) return stepRoute;
     return isPostOrGetOf(request, REVIEW_PATH) ? 'review' : null;
 }
 
 /** The routes each token opens: the supervisor's, and the agent's two. */
-const SUPERVISOR_ROUTES: readonly Route[] = ['control', 'export', 'question'];
+const SUPERVISOR_ROUTES: readonly Route[] = ['control', 'export', 'question', 'report', 'step'];
 const AGENT_ROUTES: readonly Route[] = ['publish', 'review'];
 
-export function createControlChannel(): ControlChannel {
+/** `GET /step`, `POST /step/:id` and `POST /report`: the supervised steps' routes, under the supervisor token. */
+function serveSupervisorStep(
+    route: 'step' | 'report',
+    channel: { steps: StepBroker; token: string },
+    request: IncomingMessage,
+    reply: ServerResponse
+) {
+    const { steps, token } = channel;
+    if (route === 'report') return serveReport(steps, token, request);
+    if (request.method === 'POST') return serveStepResult(steps, token, request);
+    // A long poll the supervisor may hang up on (its own timeout, its container ending): the wait ends with it.
+    const hangup = new AbortController();
+    reply.on('close', () => {
+        if (!reply.writableFinished) hangup.abort();
+    });
+    return serveStepPoll(steps, token, request, hangup.signal);
+}
+
+/**
+ * A token with no control entry: refused, unless it is a supervisor-only token (a reclaim's group,
+ * no attempt) open on the step broker alone — it polls its orders and answers its steps, and has
+ * no stop to read.
+ */
+async function serveWithoutEntry(
+    route: Route,
+    channel: { steps: StepBroker; token: string },
+    request: IncomingMessage,
+    reply: ServerResponse
+): Promise<void> {
+    if (!channel.steps.has(channel.token) || !(route === 'step' || route === 'report' || route === 'control')) {
+        respondJson(reply, HTTP_UNAUTHORIZED, { error: 'unknown token' });
+    } else if (route === 'control') {
+        respondJson(reply, HTTP_OK, { stop: false, kill: false });
+    } else {
+        const answer = await serveSupervisorStep(route, channel, request, reply);
+        respondJson(reply, answer.status, answer.body);
+    }
+}
+
+export function createControlChannel(steps: StepBroker = createStepBroker()): ControlChannel {
     /** Every attempt, under its supervisor token. */
     const controls = new Map<string, ControlEntry>();
     /** An agent token, to the supervisor token of the attempt it belongs to. */
@@ -143,6 +195,7 @@ export function createControlChannel(): ControlChannel {
         open(token, relay, publisher, reviewer) {
             if (!controls.has(token)) {
                 controls.set(token, newControl(relay ?? null, publisher ?? null, reviewer ?? null));
+                steps.open(token);
             }
         },
         grantAgent(token, agentToken) {
@@ -165,9 +218,11 @@ export function createControlChannel(): ControlChannel {
         },
         close(token) {
             controls.delete(token);
+            steps.close(token);
             for (const [agent, owner] of agents) if (owner === token) agents.delete(agent);
         },
         clear() {
+            for (const token of controls.keys()) steps.close(token);
             controls.clear();
             agents.clear();
         },
@@ -188,7 +243,7 @@ export function createControlChannel(): ControlChannel {
             if (route === null) return false;
             const control = entryOf(auth);
             if (!control) {
-                respondJson(reply, HTTP_UNAUTHORIZED, { error: 'unknown token' });
+                await serveWithoutEntry(route, { steps, token: auth }, request, reply);
                 return true;
             }
             const doors = controls.get(auth) === control ? SUPERVISOR_ROUTES : AGENT_ROUTES;
@@ -209,7 +264,15 @@ export function createControlChannel(): ControlChannel {
                 respondJson(reply, HTTP_OK, { stop: control.stop, kill: control.kill });
                 return true;
             }
-            const serveRoute = { publish: serveDraftPublish, review: serveReview, question: serveQuestion }[route];
+            const serveStep = async () =>
+                serveSupervisorStep(route === 'report' ? 'report' : 'step', { steps, token: auth }, request, reply);
+            const serveRoute = {
+                publish: serveDraftPublish,
+                review: serveReview,
+                question: serveQuestion,
+                step: serveStep,
+                report: serveStep,
+            }[route];
             const answer = await serveRoute(control, request, auth);
             respondJson(reply, answer.status, answer.body);
             return true;

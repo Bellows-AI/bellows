@@ -660,7 +660,7 @@ admission="$(awk '/^# Source: factory\/templates\/driver-admission.yaml/,/^---/'
 expect_contains 'the admission policy binds the driver identity' "$admission" \
     "system:serviceaccount:$NAMESPACE:$RELEASE-factory-driver"
 expect_contains 'the admission policy names the per-attempt Secret pattern' "$admission" \
-    '^factory-(job|sync|publish|helper|gate)-[a-z0-9-]+-env$'
+    '^factory-(job|gate)-[a-z0-9-]+-env$'
 expect_contains 'the admission policy fences deletes by label' "$admission" "'factory.job' in variables.target.metadata.labels"
 expect_contains 'the admission policy denies' "$admission" 'validationActions: [Deny]'
 expect_not_contains 'the admission policy never admits the dashboard Secret' "$admission" "$RELEASE-factory-dashboard"
@@ -1170,8 +1170,8 @@ echo 'building the images on the host daemon'
 # carries `factory-stub-sleep-<n>`: then it sleeps n seconds and names its pod, which is what lets
 # the node-disruption section lose a driver or a pod while a runner is still running. It stands on
 # node + git as the uid-1000 `node` user, like the executor images: the startup sync and the other
-# aux Jobs run IN the job's executor image (`driver/src/k8s-auxspec.ts`), and every task has a
-# checkout to sync (issue #263).
+# supervised steps run IN the job's executor image (the task supervisor's container,
+# `driver/src/scripts/supervisor.cjs`), and every task has a checkout to sync (issue #263).
 printf '%s\n' \
     'echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}' \
     'echo "$@"' \

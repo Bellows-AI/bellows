@@ -18,6 +18,8 @@ export interface TeardownDeps {
     config: DriverConfig;
     execDocker: ExecDocker;
     killed: Set<BoardJob['leaseToken']>;
+    /** The attempt groups the runner remembers (`docker-runner.ts`): a killed group is gone from it. */
+    groups?: Map<BoardJob['leaseToken'], unknown>;
 }
 
 /**
@@ -78,6 +80,7 @@ export async function dockerKill(deps: TeardownDeps, job: BoardJob): Promise<voi
     // is recorded — a sibling attempt of the same job carries a different token and must
     // not read this one's cancellation.
     deps.killed.add(job.leaseToken);
+    deps.groups?.delete(job.leaseToken);
     // Killing the attached `docker start` process would only detach the CLI; the container keeps running
     // and the workspace keeps being written to. The daemon has to be told — by ID, resolved
     // through this attempt's own lease label, never by name: a kill that resolved a

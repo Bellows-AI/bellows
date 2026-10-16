@@ -116,7 +116,7 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     if (ctx.adopted) return null;
     const turn = await awaitSyncTurn(ctx);
     if (turn === STOOD_DOWN || 'halt' in turn) return turn;
-    const syncing = runner.syncCheckout(job, state.signal);
+    const syncing = runner.syncCheckout(job, state.signal, ctx.session);
     // The turn is held until the sync's writes are over (`settled`), however the sync answered.
     turn.release(syncing.then((synced) => synced.settled).catch(() => {}));
     let syncedOut: { value: SyncResult } | null;
@@ -270,6 +270,10 @@ async function conclude(ctx: AttemptCtx, conclusion: SetupConclusion | null): Pr
  * fall through to the run.
  */
 async function runPhases(ctx: AttemptCtx): Promise<GateSession | null | typeof STOOD_DOWN> {
+    // Every attempt gets a control endpoint (issue #442), minted before anything is created so the
+    // env the task group is specced with already names it — and so the supervisor has its channel
+    // for the sync, the first step it serves (issue #771): agent-less and adopted attempts included.
+    await openRunControl(ctx.rt, ctx.job, ctx.state);
     for (const step of setupSteps) {
         if (await conclude(ctx, await step(ctx))) return releaseStartedServices(ctx);
     }
@@ -347,9 +351,6 @@ async function launchRun(
 ): Promise<RunOutcome | null> {
     const { rt, job, state } = ctx;
     const agentless = isAgentless(job);
-    // Every launched attempt gets a control endpoint (issue #442), minted before the stand-down
-    // check so the env the runner is launched with already names it.
-    if (!agentless && !ctx.adopted) await openRunControl(rt, job, state);
     // A Stop, lost lease or Remove that landed during setup, before the spawn: nothing runs, and
     // the stand-down fence releases a claim the runner never took.
     if (await standDown(ctx, 'setup')) return null;
@@ -648,6 +649,12 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         if (state.graceTimer) clearTimeout(state.graceTimer);
         state.wake();
         await beating;
+        // The attempt's task group (issue #771) lives from its sync to here, not to the agent's
+        // exit: its supervisor serves the probe, the helpers and the publish. It ends while the
+        // control channel its order travels is still open — and never for an attempt handed over by
+        // a drain, whose runner is left for the next claim to adopt.
+        if (!state.handedOver) await rt.runner.finish?.(job).catch(() => undefined);
+        closeRunControl(rt, state);
     };
 
     /*
@@ -656,7 +663,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
      * its gate environment (issue #126). `standDown` (`loop-fence.ts`) is the only thing that
      * acts on one: it releases a claim the runner never took, settles and parks the attempt.
      */
-    const ctx: AttemptCtx = { rt, job, state, settle, fenced: false, treeBefore: null };
+    const ctx: AttemptCtx = { rt, job, state, settle, fenced: false, treeBefore: null, session };
     try {
         log(
             `job ${job.id}: attempt ${job.attempts} ` +

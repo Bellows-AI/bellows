@@ -1,6 +1,6 @@
 import type { Board, BoardJob, LeaseState } from './board.js';
 import type { DriverConfig } from './config.js';
-import type { AdoptedRun, Runner } from './runner.js';
+import type { AdoptedRun, RunSession, Runner } from './runner.js';
 import type { GateManager, GateServer } from './gates.js';
 import type { JobState } from './loop-attempt.js';
 import type { SyncQueue } from './sync-queue.js';
@@ -62,6 +62,11 @@ export interface AttemptCtx {
     fenced: boolean;
     /** The task tree's fingerprint the startup sync answered; null when unknown. */
     treeBefore: string | null;
+    /**
+     * The session the attempt runs: the task group (issue #771) is created by the sync, before the
+     * agent, and its agent container is specced for this session.
+     */
+    session: RunSession | null;
     /** Set once the services step started the attempt's declared services (`loop-services.ts`). */
     servicesStarted?: true;
     /**

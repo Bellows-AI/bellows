@@ -1,6 +1,5 @@
 import type { Board, BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { envFileBody } from './claim.js';
 import { composeRuntimeSample } from './runner.js';
 import {
     mergeOpencodeOutcome,
@@ -15,9 +14,8 @@ import {
 import type { RunOutcome, RunSession, Runner } from './runner.js';
 import { adoptFinishedRunner } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from './close-read.js';
-import type { HelperPlan } from './helpers.js';
-import { runHelper } from './k8s-helper-runner.js';
-import { clearKilled, helperJobsOf, KILLED_EXIT_CODE, markKilled, RunnerKilled } from './k8s-kill.js';
+import { type HelperCall, type HelperPlan, type HelperResult, lookupHelper } from './helpers.js';
+import { KILLED_EXIT_CODE, markKilled, RunnerKilled } from './k8s-kill.js';
 import {
     claimName,
     claimPath,
@@ -27,22 +25,18 @@ import {
     jobPodsPath,
     podLogPath,
     podsByLeasePath,
-    publishEnvSecretName,
-    reclaimJobName,
-    secretsPath,
-    syncJobName,
 } from './k8s-auxspec.js';
-import { acquireClaim, prepare, launch, releaseClaim, type RunCleanup } from './k8s-fence.js';
+import { acquireClaim, releaseClaim, type RunCleanup } from './k8s-fence.js';
 import {
-    claudeTurnsJobSpec,
-    envBodyToData,
-    jobsPath,
-    opencodeReadoutJobSpec,
-    runnerJobSpec,
-    runnerName,
-    secretBody,
-    secretName,
-} from './k8s-podspec.js';
+    ensureGroup,
+    finishGroup,
+    groupsOf,
+    reclaimInGroup,
+    stepHostFor,
+    stepHostOf,
+    takeGroupDown,
+} from './k8s-group.js';
+import { claudeTurnsJobSpec, jobsPath, opencodeReadoutJobSpec, runnerName, secretName } from './k8s-podspec.js';
 import {
     auxVerdict,
     pollJobToTerminal,
@@ -50,19 +44,14 @@ import {
     readJobStatus,
     readRunnerVerdict,
     readVerdict,
-    runReclaimJob,
-    runSyncJob,
 } from './k8s-poll.js';
 import { deadServices, restartServiceFleet, startServiceFleet, teardownServices } from './k8s-services.js';
 import {
     answerPreview,
     expectOk,
-    HTTP_CONFLICT,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
     HTTP_OK_STATUS,
-    HTTP_SERVER_ERROR_STATUS,
-    HTTP_TOO_MANY_REQUESTS,
     livePod,
     MS_PER_SECOND,
     parse,
@@ -73,18 +62,14 @@ import {
     wait,
 } from './k8s-transport.js';
 import type { K8sClaim, K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
-import { probeTree, runPublishStepJob, snapshotReviewTree } from './k8s-steps.js';
-import {
-    publishCheckout,
-    type PublishOptions,
-    publishFailed,
-    repoPath,
-    withPublishToken,
-    worktreeDir,
-} from './publish.js';
+import { publishCheckout, type PublishOptions, repoPath, worktreeDir } from './publish.js';
 import type { PublishResult, ReclaimResult, SyncResult } from './publish.js';
+import { probeTreeFingerprint } from './publish.js';
+import { snapshotTree, type SnapshotResult } from './review-snapshot.js';
+import type { StepSink, SupervisorEndpoint } from './step-control.js';
+import { controlTokenOf, orderGo, runHelperStep, runSyncStep, supervisedStepRunner } from './supervised-steps.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
-import { KILL_WINDDOWN_MS } from './supervisor-contract.js';
+import { KILL_WINDDOWN_MS, type SupervisorReport } from './supervisor-contract.js';
 
 /**
  * The kubernetes `Runner`: assembles the fence (`k8s-fence.ts`), the pollers (`k8s-poll.ts`) and
@@ -236,9 +221,14 @@ async function sampleRuntime(deps: K8sDeps, job: BoardJob) {
 // function's work. No Secret delete here: run()'s finally owns the Secret's whole lifetime.
 async function killRunner(deps: K8sDeps, job: BoardJob): Promise<void> {
     markKilled(runnerName(job));
-    // A helper's aux Job is no pod of the runner's: a pre-helper still writing to GitHub stops now.
-    await Promise.all(helperJobsOf(job.id).map((name) => deleteJob(deps, name)));
+    // The group is gone with its pod: a step still running in its supervisor (a pre-helper writing
+    // to GitHub, a publish) dies with it, and its waiters see the channel close.
+    groupsOf(deps).delete(job.leaseToken);
     await deleteJob(deps, runnerName(job));
+    // The attempt's Secret outlives `run` now (the group's steps are its supervisor's), so a kill —
+    // the one path that takes the group away without `finish` — takes it too. By its own name:
+    // this attempt's token cannot reach a replacement's.
+    await forgetSecret(deps, job);
     await teardownServices(deps, job);
 }
 
@@ -319,6 +309,11 @@ interface RunRequest {
     cleanup: RunCleanup;
 }
 
+/** Whether the supervisor has reported this attempt's agent over: set by the report wait `run0` starts. */
+interface ReportWatch {
+    report: SupervisorReport | null;
+}
+
 // The body of run() below, split out only so its cleanup can wrap the throw paths too.
 async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunOutcome> {
     const { session, onOutput, cleanup } = req;
@@ -327,22 +322,31 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     if (!session && job.executorType !== OPENCODE) {
         throw new Error(`refusing to run job ${job.id}: the kubernetes runner runs every job as a session`);
     }
-    clearKilled(runnerName(job));
-    // The loop started this attempt's services before its gate environment and setup
-    // (`startServices`); the fence's sweep spares them, and the runner pod finds them by DNS.
-    await prepare(deps, job, cleanup);
-
-    const startedAt = new Date().toISOString();
     // One Job, one pod: the agent, the task supervisor that owns its lifecycle and — for a run that
-    // exports its transcript — the exporter, all created together (a pod the cluster refuses is
-    // infrastructure, thrown like any refused runner Job, never a run that silently loses its
-    // record). The agent's end does not end the pod: the supervisor has the exporter drain and
-    // finalizes first, which is what lets a kill of the agent still leave its transcript whole.
-    await launch(deps, job, runnerJobSpec(deps.config, job, session, startedAt), cleanup);
+    // exports its transcript — the exporter, created together by the attempt's first step (the
+    // sync) or, for an attempt that never synced, here. A pod the cluster refuses is infrastructure,
+    // thrown like any refused runner Job, never a run that silently loses its record. The loop
+    // started this attempt's services before its gate environment and setup (`startServices`); the
+    // fence's sweep spares them, and the pod finds them by DNS.
+    const { startedAt } = await ensureGroup(deps, job, session, cleanup);
+
+    // The agent waits on the supervisor's release; the order hands the supervisor what is left of
+    // the run budget. The agent's end does not end the pod: the supervisor has the exporter drain,
+    // reports, and serves the attempt's steps until the loop finishes the group — which is what
+    // lets a kill of the agent still leave its transcript whole, and the publish run beside it.
+    const watch: ReportWatch = { report: null };
+    const host = stepHostOf(deps);
+    void host.sink.awaitReport(controlTokenOf(job)).then(
+        (report) => {
+            watch.report = report;
+        },
+        () => undefined
+    );
+    await orderGo(host, job);
 
     let polled: { timedOut: boolean; jobSucceeded: boolean };
     try {
-        polled = await pollRunnerJobUntilTerminal(deps, job, onOutput);
+        polled = await pollRunnerJobUntilTerminal(deps, job, { onOutput, over: () => watch.report !== null });
     } catch (e) {
         if (!(e instanceof RunnerKilled)) throw e;
         // A Stop deleted the Job: the loop parks a resolved outcome (docker's killed container
@@ -353,10 +357,11 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     const { exitCode, output, fullLog, logTruncated, infraLoss, supervisorDeadline } = await readRunnerVerdict(
         deps,
         job,
-        jobSucceeded
+        jobSucceeded,
+        watch.report
     );
-    // The run budget ends the agent through the supervisor (its exit 124), the kubelet's deadline
-    // only a supervisor that stopped doing so: either is the timeout's verdict.
+    // The run budget ends the agent through the supervisor (its report, then its exit 124), the
+    // kubelet's deadline only a supervisor that stopped doing so: either is the timeout's verdict.
     const timedOut = polled.timedOut || supervisorDeadline;
     // A deadline kill deletes the pod too: that is the timeout's verdict, never a loss.
     if (infraLoss && !timedOut) return { exitCode, output, timedOut, started: true, infraLoss };
@@ -376,9 +381,10 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
 }
 
 // Every throw after create() succeeded — poll exhaustion, a vanished Job, a failed verdict read —
-// must still reap the env Secret AND release the checkout claim: the loop's catch never calls
-// kill(), and when the job retires dead there is no next attempt to do either. The service fleet
-// is NOT torn down here: the declared gates run after run() and test against it, so the loop's
+// must still release the checkout claim: the loop's catch never calls kill(), and when the job
+// retires dead there is no next attempt to do it. The group itself outlives run(): the gates, the
+// publish and the helpers are its steps, and the loop's `finish` ends it. The service fleet is NOT
+// torn down here either: the declared gates run after run() and test against it, so the loop's
 // releaseServices takes it down once they are done — on every exit path, a throw included.
 async function run(
     deps: K8sDeps,
@@ -391,103 +397,101 @@ async function run(
         return await run0(deps, job, { session, onOutput, cleanup });
     } finally {
         if (!cleanup.holdClaim) await releaseClaim(deps, job);
-        await forgetSecret(deps, job);
     }
 }
 
-// The publish, ported: the same publishCheckout workflow the docker runner runs (publish.ts), with
-// this executor's transport underneath: one aux Job per step over the workspaces PVC, the claim
-// env by a per-attempt Secret read through envFrom, and the verdict off the pod's exit code and
-// log.
 /**
- * A refused publish Secret: a 4xx is the cluster refusing it (RBAC, quota, admission) —
- * configuration — except a conflict or a throttle, which, like a 5xx from the API server, a retry
- * can outlast.
+ * The publish: the same publishCheckout workflow the docker runner runs (publish.ts), with the task
+ * supervisor as its transport — every step a supervised step whose environment (the claim env and
+ * the publish-fresh token) rides the step itself, never a Secret or a spec.
  */
-const publishSecretCause = (status: number): 'config' | 'transport' =>
-    status >= HTTP_SERVER_ERROR_STATUS || status === HTTP_CONFLICT || status === HTTP_TOO_MANY_REQUESTS
-        ? 'transport'
-        : 'config';
-
 async function publishGit(
     deps: K8sDeps,
     job: BoardJob,
     publishToken?: string,
     options?: PublishOptions
 ): Promise<PublishResult> {
-    const repo = worktreeDir(deps.config, job);
-    const env = envBodyToData(envFileBody(withPublishToken(job, publishToken)));
-    const secret = Object.keys(env).length ? publishEnvSecretName(job) : null;
-    if (secret) {
-        try {
-            const response = await deps.request(
-                'POST',
-                secretsPath(deps.config.k8sNamespace),
-                secretBody(job, secret, env)
-            );
-            const refused = refusal(response, 'creating the publish secret');
-            const cause = publishSecretCause(response.status);
-            if (refused) return publishFailed(refused, cause);
-        } catch (e) {
-            return publishFailed(`creating the publish secret: ${(e as Error).message}`, 'transport');
-        }
-    }
-    let stepNumber = 0;
+    const host = await stepHostFor(deps, job);
+    return publishCheckout(
+        deps.config,
+        job,
+        options,
+        supervisedStepRunner(host, job, { kind: 'publish', publishToken })
+    );
+}
+
+/** The post-gate tree probe: the publish's probe step, over the supervisor. Null is unknown. */
+async function probeTree(deps: K8sDeps, job: BoardJob, signal?: AbortSignal): Promise<string | null> {
+    const host = await stepHostFor(deps, job);
+    return probeTreeFingerprint(deps.config, job, supervisedStepRunner(host, job, { kind: 'probe', signal }));
+}
+
+/** The review snapshot: one supervised step that reads the task worktree and writes one ref. */
+async function snapshotReviewTree(
+    deps: K8sDeps,
+    job: BoardJob,
+    key: string,
+    signal?: AbortSignal
+): Promise<SnapshotResult> {
+    const host = await stepHostFor(deps, job);
+    return snapshotTree(deps.config, job, key, supervisedStepRunner(host, job, { kind: 'snapshot', signal }));
+}
+
+/** One allowlisted helper step, in the attempt's supervisor. */
+async function runHelper(deps: K8sDeps, job: BoardJob, plan: HelperPlan, call: HelperCall): Promise<HelperResult> {
+    // An unknown helper id creates nothing (`runHelperStep` refuses it first), and a group the
+    // cluster refuses is a failed helper, never a throw.
+    if (!lookupHelper(plan.helperId)) return runHelperStep(stepHostOf(deps), job, plan, call);
     try {
-        return await publishCheckout(deps.config, job, options, (publish) => {
-            stepNumber += 1;
-            // Unreachable: the workflow answers a null-repo job with publishNothing before any
-            // step runs. The assertion keeps the transport honest if the workflow's contract
-            // ever changes under it.
-            if (!repo) throw new Error('the publish workflow ran a step for a job with no checkout');
-            return runPublishStepJob(deps, job, { step: stepNumber, publish, envSecret: secret, repo });
-        });
-    } finally {
-        if (secret) void deleteSecret(deps, secret);
+        return await runHelperStep(await stepHostFor(deps, job), job, plan, call);
+    } catch (e) {
+        return { ok: false, reason: 'runner_error', message: (e as Error).message };
     }
 }
 
 /**
- * The startup sync, as ever (see `syncJobSpec`): the loop calls it on every claim, the task
- * worktree does not exist until something creates it, and a refusal would fail every claimed job.
- * The fence BEFORE the sync: the sync is the first writer on the task worktree, so the checkout
- * claim is taken here rather than waiting for `prepare`'s own acquire, which recognizes its own
+ * The startup sync: the loop calls it on every claim, the task worktree does not exist until
+ * something creates it, and a refusal would fail every claimed job. It is the attempt's first
+ * step, so it is what creates the attempt's group — the supervisor runs it, then runs the agent
+ * the loop releases next. The fence comes BEFORE the group: the sync is the first writer on the
+ * task worktree, so the checkout claim is taken here, and the group's own `prepare` recognizes its
  * holder and proceeds.
  */
-async function syncCheckout(deps: K8sDeps, job: BoardJob): Promise<SyncResult> {
+async function syncCheckout(deps: K8sDeps, job: BoardJob, session: RunSession | null = null): Promise<SyncResult> {
     const clone = repoPath(deps.config, job);
     const worktree = worktreeDir(deps.config, job);
     if (!clone || !worktree) return { ok: true, reason: null }; // nothing synced, nothing to fail either
 
     await acquireClaim(deps, job);
-
-    // The deletion the FAILURE arms use, awaited, with Foreground propagation: the delete returns
-    // only after the Job's dependents are gone, so the releaseClaim that follows can never hand
-    // the checkout to a replacement while the sync's pod is still writing the worktree.
-    const takeSyncJobDown = (): Promise<void> => deleteJob(deps, syncJobName(job), 'Foreground');
-
-    const secretRef: { current: string | null } = { current: null };
+    const cleanup: RunCleanup = { holdClaim: false };
+    // A group that could not come up (an image the node cannot pull) answers as a failed sync: the
+    // checkout could not be prepared, and the attempt fails with the cluster's reason.
+    const failed = async (): Promise<void> => {
+        // The deletion is awaited, with Foreground propagation: the claim goes back only once
+        // nothing of this group can still write the worktree.
+        await takeGroupDown(deps, job);
+        if (!cleanup.holdClaim) await releaseClaim(deps, job);
+    };
     try {
-        const result = await runSyncJob(deps, job, secretRef);
-        // A failed sync means no runner follows — nobody else would give the checkout back, so
-        // the claim goes here. The sync Job goes down Foreground FIRST, awaited: handing the
-        // checkout back is only clean once nothing of this sync can still write the tree.
-        if (!result.ok) {
-            await takeSyncJobDown();
-            await releaseClaim(deps, job);
-        }
+        await ensureGroup(deps, job, session, cleanup);
+    } catch (e) {
+        await failed();
+        const reason = (e as Error).message;
+        // Infrastructure (a refused Job, a fenced claim) is thrown for the lease; only a group that
+        // never came up is the sync's own refusal.
+        if (/never came up|cannot be pulled/.test(reason)) return { ok: false, reason };
+        throw e;
+    }
+    try {
+        const result = await runSyncStep(stepHostOf(deps), job);
+        // A failed sync means no runner follows — nobody else would give the checkout back.
+        if (!result.ok) await failed();
         return result;
     } catch (e) {
-        // A thrown sync — a transport failure, a malformed env line — releases the claim the same
-        // way: holding it would only leave the next claimant to take it over.
-        await takeSyncJobDown();
-        await releaseClaim(deps, job);
+        // A thrown sync — the channel closed under it, the answer never came — releases the claim
+        // the same way: holding it would only leave the next claimant to take it over.
+        await failed();
         throw e;
-    } finally {
-        // The sync Job goes on EVERY exit path, fire-and-forget: the name carries the lease
-        // token, so this delete can never reach a replacement's Job.
-        void deleteJob(deps, syncJobName(job));
-        if (secretRef.current) void deleteSecret(deps, secretRef.current);
     }
 }
 
@@ -548,8 +552,9 @@ async function reapOrphanedClaim(deps: K8sDeps, job: BoardJob): Promise<boolean>
 }
 
 /**
- * The terminal reclaim (issue #47), the kubernetes shape: the remove script as a Job over the
- * PVC, UNDER the checkout claim — the same `acquireClaim` protocol the sync and the runner use.
+ * The terminal reclaim (issue #47), the kubernetes shape: the remove script as a supervised step
+ * (in a supervisor-only group — the thread has no attempt to ask), UNDER the checkout claim — the
+ * same `acquireClaim` protocol the sync and the runner use.
  * An acquire that answers 409 means a LIVE attempt holds the checkout, and the reclaim SKIPS:
  * costing the reclaim is fine by contract, costing a live run is not. The refusal carries the
  * claim's identity (`heldClaim`) so the loop can name it, and reap it when the board proves the
@@ -573,20 +578,10 @@ async function reclaimWorktree(deps: K8sDeps, job: BoardJob): Promise<ReclaimRes
         if (claim) refused.heldClaim = claim;
         return refused;
     }
-    const takeReclaimJobDown = (): Promise<void> => deleteJob(deps, reclaimJobName(job), 'Foreground');
     try {
-        const result = await runReclaimJob(deps, job);
-        if (!result.ok) await takeReclaimJobDown();
-        return result;
-    } catch (e) {
-        // A thrown read between create and verdict leaves the same live-pod risk as a failed
-        // verdict: take the Job down before the finally hands the checkout back.
-        await takeReclaimJobDown();
-        throw e;
+        // The group is taken down Foreground inside, awaited — THEN the claim goes.
+        return await reclaimInGroup(deps, job);
     } finally {
-        // The failure arms' Foreground delete above has already taken it down; on the success
-        // path this Background delete IS the delete. THEN the claim goes.
-        void deleteJob(deps, reclaimJobName(job));
         await releaseClaim(deps, job);
     }
 }
@@ -600,9 +595,17 @@ export function createKubernetesRunner(
     config: DriverConfig,
     request: K8sRequest,
     sleep: (ms: number) => Promise<void> = wait,
-    leases?: Board['leases']
+    wiring: { leases?: Board['leases']; steps?: StepSink; endpoint?: SupervisorEndpoint } = {}
 ): Runner {
-    const deps: K8sDeps = { config, request, sleep, ...(leases ? { leases } : {}) };
+    const { leases, steps, endpoint } = wiring;
+    const deps: K8sDeps = {
+        config,
+        request,
+        sleep,
+        ...(leases ? { leases } : {}),
+        ...(steps ? { steps } : {}),
+        ...(endpoint ? { endpoint } : {}),
+    };
     return {
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
         kill: (job: BoardJob) => killRunner(deps, job),
@@ -621,7 +624,9 @@ export function createKubernetesRunner(
         snapshotTree: (job: BoardJob, key: string, signal?: AbortSignal) => snapshotReviewTree(deps, job, key, signal),
         runHelper: (job: BoardJob, plan: HelperPlan, token?: string, signal?: AbortSignal) =>
             runHelper(deps, job, plan, { token, signal }),
-        syncCheckout: (job: BoardJob) => syncCheckout(deps, job),
+        syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null) =>
+            syncCheckout(deps, job, session ?? null),
+        finish: (job: BoardJob) => finishGroup(deps, job),
         reclaimWorktree: (job: BoardJob) => reclaimWorktree(deps, job),
         // The loop's one hand-back of the checkout claim (`loop-fence.ts`): a terminal setup
         // refusal, a stand-down and a throw all finish without runner.run, whose finally never

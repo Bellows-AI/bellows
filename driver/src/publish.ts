@@ -1,7 +1,20 @@
 import type { BoardJob, FailureCause } from './board.js';
 import type { DriverConfig } from './config.js';
 import { containerScript as script } from './container-scripts.js';
-import { pushWithLease } from './publish-stale.js';
+import { baseBranchOf, isBranchName } from './publish-base.js';
+import { headSha, publicationOp, recordOperation } from './publish-reconcile.js';
+import { publishedResult, pushRecorded, reconcileAgentPr, resolveOrCreatePr, resumePublication } from './publish-pr.js';
+
+// The values that stand alone live below this file and are named here, where every caller finds them.
+export {
+    baseBranchOf,
+    CREDENTIAL_HELPER,
+    isBranchName,
+    type PrSummary,
+    parsePrSummary,
+    prNumberFromUrl,
+    prSummaryScript,
+} from './publish-base.js';
 
 /**
  * Publishing the work a run produced. The policy lives in the loop — a successful run, gates
@@ -25,9 +38,6 @@ export const gitWorktreeScript = script('git-worktree.cjs');
 
 /** The terminal reclaim's node script: see scripts/git-worktree-remove.cjs. */
 export const gitWorktreeRemoveScript = script('git-worktree-remove.cjs');
-
-/** The PR summary's node script: see scripts/pr-summary.cjs. */
-export const prSummaryScript = script('pr-summary.cjs');
 
 /** What the board intends to publish for one job. */
 export interface PublishPlan {
@@ -147,14 +157,6 @@ export interface PublishOptions {
     /** Open a NEW pull request as a draft — the agent's mid-run publish. An existing PR is reused as it is. */
     draft?: boolean;
 }
-
-/** The PR number a url names, or null when it does not point at a pull request. */
-export const prNumberFromUrl = (url: string): number | null => {
-    const match = /\/pull\/(\d+)\/?$/.exec(url.trim());
-    if (!match) return null;
-    const number = Number(match[1]);
-    return Number.isSafeInteger(number) && number > 0 ? number : null;
-};
 
 /**
  * The failure kinds the sync script (scripts/git-worktree.cjs) names for a refusal no retry can
@@ -308,6 +310,8 @@ export const publishFailed = (reason: string, cause: FailureCause | null): Publi
 const PUBLISH_CAUSES: readonly [FailureCause, RegExp][] = [
     // GitHub answers a rate limit with a 403 too; it passes, so it is transport, read before `denied`.
     ['transport', /rate limit exceeded|secondary rate limit|HTTP 429|returned error: 429/i],
+    // The task supervisor's channel (issue #771): a step whose answer never came, or an attempt gone.
+    ['transport', /supervisor channel closed|was not answered in time/],
     [
         'denied',
         /Permission to .* denied|returned error: 403|HTTP 403|Authentication failed|could not read Username|Resource not accessible by integration|protected branch hook declined/,
@@ -406,14 +410,6 @@ export function worktreeBranch(job: BoardJob): string {
     return `factory/${job.rootJobId ?? job.id}`;
 }
 
-/**
- * The branch the claim bases its checkout and PR on, or null for the remote default: a value no
- * git branch can have is dropped here, before it becomes a sync env literal or a `gh --base`.
- */
-export function baseBranchOf(job: BoardJob): string | null {
-    return typeof job.baseBranch === 'string' && isBranchName(job.baseBranch) ? job.baseBranch : null;
-}
-
 /** Pulls the probe's answer out of its stdout, tolerating anything else. */
 export function parseGitState(stdout: string): GitState {
     const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
@@ -444,53 +440,6 @@ export function parseGitState(stdout: string): GitState {
         };
     }
 }
-
-/** What the PR summary script answered — either half is optional; nulls mean "fall back". */
-export interface PrSummary {
-    title: string | null;
-    body: string | null;
-}
-
-/** Pulls the PR summary's answer out of its stdout, tolerating anything else. */
-export function parsePrSummary(stdout: string): PrSummary {
-    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-    try {
-        const p = JSON.parse(line) as Partial<PrSummary>;
-        return {
-            title: typeof p.title === 'string' && p.title ? p.title : null,
-            body: typeof p.body === 'string' && p.body ? p.body : null,
-        };
-    } catch {
-        return { title: null, body: null };
-    }
-}
-
-/**
- * A branch name is about to become a `-w` path-adjacent argv value and a `gh --head` value. The
- * probe's names come from the checkout itself; the plan's are built here. Either way, assert the
- * shape a git branch can have before anything interpolates it.
- */
-export const isBranchName = (name: string): boolean =>
-    /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(name) && !name.includes('..');
-
-/**
- * The push credential travels as an env-file value and is read by a git credential helper that
- * git itself spawns through a shell — the same `-e NAME`, never `-e NAME=value` rule the runner
- * obeys, so the token is in no argv anywhere. Pinned because it is the one place this feature
- * touches a secret.
- *
- * The helper is a FILE (scripts/credential-helper.sh) whose content becomes the value of
- * `-c credential.helper=`, so that one file carries no comments — its documentation lives here.
- * The leading `!` is git's own marker (gitcredentials(7)): a bang-prefixed helper value is a
- * shell SNIPPET — git strips the bang and spawns `sh -c '<snippet> <op>'`; without it git
- * prefixes `git credential-` to the whole string and the code never runs. Git appends the
- * operation to the value VERBATIM, so the constant is the file TRIMMED: the file keeps its
- * POSIX trailing newline, but in the value that newline strands ` get` on a second line and
- * the helper exits 127 after answering — git only happens to keep a dead helper's stdout
- * (observed 2026-09-13, job 43379d3a: `get: 2: get: not found` in the publish container).
- * The scripts suite pins the exact spawn shape and its exit status.
- */
-export const CREDENTIAL_HELPER = script('credential-helper.sh').trim();
 
 /**
  * Lays a publish-fresh credential over the claim env, in one place: the claim's
@@ -524,6 +473,12 @@ export interface PublishStep {
     envLiterals?: Record<string, string>;
     /** Whether the step runs inside the task worktree (a working directory). */
     inRepo: boolean;
+    /**
+     * The publication operation (`<branch>@<commit sha>`) a step with a remote effect belongs to.
+     * The transport derives the step's identity from it, so the same step asked twice — a retry
+     * after a lost answer — is answered from the supervisor's ledger and never runs twice.
+     */
+    op?: string;
 }
 
 /**
@@ -650,148 +605,6 @@ async function commitDirtyTree(step: RunPublishStep, state: GitState, title: str
 }
 
 /**
- * The branch's open PR, whoever opened it — the agent with `gh pr create` or an earlier publish.
- * A `pr view` that fails is the ordinary "no PR yet", not a step failure.
- */
-async function existingPrUrl(runStep: RunPublishStep, branch: string): Promise<string | null> {
-    const existing = await runStep({
-        label: 'gh pr view',
-        entrypoint: 'gh',
-        args: ['pr', 'view', branch, '--json', 'url', '-q', '.url'],
-        env: true,
-        inRepo: true,
-    }).catch(() => null);
-    return existing ? (existing.stdout.trim().split('\n').filter(Boolean).pop() ?? null) : null;
-}
-
-/**
- * Points a reused PR at the claim's base branch: the agent may have opened it with gh's default
- * base, and the board must never record (or automerge) a PR into a branch the task does not target.
- * Only an open PR on another base is edited — a merged or closed one cannot be, and one already on
- * the base needs nothing. A no-op without a base; a failed read or edit fails the publish.
- */
-async function retargetPr(step: RunPublishStep, job: BoardJob, branch: string): Promise<void> {
-    const base = baseBranchOf(job);
-    if (!base) return;
-    const read = await step({
-        label: 'gh pr base',
-        entrypoint: 'gh',
-        args: ['pr', 'view', branch, '--json', 'state,baseRefName', '-q', '.state + " " + .baseRefName'],
-        env: true,
-        inRepo: true,
-    });
-    const [state, current] = read.stdout.trim().split(' ');
-    if (state !== 'OPEN' || current === base) return;
-    await step({
-        label: 'gh pr edit',
-        entrypoint: 'gh',
-        args: ['pr', 'edit', branch, '--base', base],
-        env: true,
-        inRepo: true,
-    });
-}
-
-/**
- * A clean, fully-pushed checkout on its task branch may still carry a PR the agent opened itself
- * (issue #573): the publication record names it, so the board links the one PR and a retry or a
- * resume reuses it instead of opening a second.
- */
-async function reconcileAgentPr(
-    runStep: RunPublishStep,
-    step: RunPublishStep,
-    job: BoardJob,
-    state: GitState
-): Promise<PublishResult | null> {
-    const { branch } = state;
-    if (!branch || branch === state.defaultBranch || !isBranchName(branch)) return null;
-    const prUrl = await existingPrUrl(runStep, branch);
-    if (!prUrl) return null;
-    await retargetPr(step, job, branch);
-    return {
-        ok: true,
-        published: true,
-        branch,
-        prUrl,
-        reason: null,
-        repository: job.repo ?? null,
-        baseBranch: state.defaultBranch ?? null,
-        prNumber: prNumberFromUrl(prUrl),
-        cause: null,
-    };
-}
-
-/**
- * Reuses the branch's PR when one exists — a task that already shipped its PR gets idempotent
- * publishes, not duplicates — or opens one summarized from the branch's own commits and diff.
- */
-async function resolveOrCreatePr(
-    runStep: RunPublishStep,
-    step: RunPublishStep,
-    context: { job: BoardJob; branch: string; plan: PublishPlan; state: GitState; draft: boolean }
-): Promise<string | null> {
-    const { job, branch, plan, state, draft } = context;
-    const reused = await existingPrUrl(runStep, branch);
-    if (reused) {
-        await retargetPr(step, job, branch);
-        return reused;
-    }
-
-    // The PR speaks for the work, not for the command that started it (issue #82): a
-    // summarizer script reads the branch — its commits and the diff against the default
-    // — in the same throwaway-container shape as every other step. It needs no
-    // credential (local git reads only) and its failure is decoration: the
-    // command-derived plan title and the plain body stay the fallback. BACKSTOP_TITLE names
-    // this publish's own just-created commit (its subject IS plan.title) so the script never
-    // selects the command text as the title (issue #389) — the commit's work stays in the
-    // diff and its subject in the body, but it cannot win the title.
-    const summarized = await runStep({
-        label: 'pr summary',
-        entrypoint: 'node',
-        args: ['-e', prSummaryScript],
-        env: false,
-        envLiterals: { BASE: `origin/${state.defaultBranch}`, BACKSTOP_TITLE: plan.title },
-        inRepo: true,
-    })
-        .then((r) => parsePrSummary(r.stdout))
-        .catch(() => null);
-    let title = summarized?.title ?? plan.title;
-    // The ref is appended only when the branch's own title does not already END with it
-    // — the driver's own backstop commit and the repo's commit convention both close
-    // with `(#N)`, and a subject that merely MENTIONS the issue must not suppress it.
-    if (summarized?.title && plan.issueNumber && !summarized.title.endsWith(`(#${plan.issueNumber})`)) {
-        title = `${summarized.title} (#${plan.issueNumber})`;
-    }
-    const body = [
-        summarized?.body,
-        plan.issueNumber ? `Closes #${plan.issueNumber}.` : null,
-        draft
-            ? 'Draft published by the agent while the task runs; the gates may not have passed yet.'
-            : 'Published by the factory board after the declared gates passed.',
-    ]
-        .filter(Boolean)
-        .join('\n\n');
-    const created = await step({
-        label: 'gh pr create',
-        entrypoint: 'gh',
-        args: [
-            'pr',
-            'create',
-            '--head',
-            branch,
-            ...(baseBranchOf(job) ? ['--base', state.defaultBranch] : []),
-            '--title',
-            title,
-            '--body',
-            body,
-            ...(draft ? ['--draft'] : []),
-        ],
-        env: true,
-        inRepo: true,
-    });
-    return created.stdout.trim().split('\n').filter(Boolean).pop() ?? null;
-}
-
-/**
  * The publish workflow both executors run: probe the checkout, branch, commit, push, open (or
  * reuse) the PR — every decision that must not drift between platforms, over an injected
  * transport. The docker runner's transport is one `docker run` per step; the kubernetes
@@ -833,9 +646,11 @@ export async function publishCheckout(
         if (options?.revision !== undefined && state.fingerprint !== options.revision) {
             return { ...publishFailed(STALE_REVISION_REASON, null), stale: true };
         }
+        const draft = options?.draft === true;
         if (!state.dirty && state.unpushed === 0) {
             return (
                 (await reconcileAgentPr(runStep, step, job, state)) ??
+                (await resumePublication(runStep, step, { job, repo, state, plan, draft })) ??
                 publishNothing('no uncommitted changes and nothing unpushed')
             );
         }
@@ -846,42 +661,18 @@ export async function publishCheckout(
             await commitDirtyTree(step, state, plan.title);
         }
 
-        await pushWithLease(step, branch, CREDENTIAL_HELPER, {
-            label: 'git push',
-            entrypoint: 'git',
-            args: [
-                '-c',
-                `credential.helper=${CREDENTIAL_HELPER}`,
-                'push',
-                '-u',
-                '--force-with-lease',
-                'origin',
-                'HEAD',
-            ],
-            env: true,
-            inRepo: true,
-        });
+        // The operation is the branch at the exact commit it pushes: recorded before the push and
+        // after each effect, so a retry reads what a lost attempt did instead of repeating it.
+        const sha = await headSha(runStep);
+        if (sha === null) throw new Error('git rev-parse HEAD: the checkout has no readable HEAD');
+        const op = publicationOp(branch, sha);
+        await pushRecorded(runStep, step, { repo, branch, op, sha });
 
         // Reuse the branch's PR when one exists, or open one — see resolveOrCreatePr.
-        const prUrl = await resolveOrCreatePr(runStep, step, {
-            job,
-            branch,
-            plan,
-            state,
-            draft: options?.draft === true,
-        });
+        const prUrl = await resolveOrCreatePr(runStep, step, { job, branch, plan, state, draft, op });
+        await recordOperation(step, repo, op, { state: 'opened', ...(prUrl ? { prUrl } : {}) });
 
-        return {
-            ok: true,
-            published: true,
-            branch,
-            prUrl,
-            reason: null,
-            repository: job.repo ?? null,
-            baseBranch: state.defaultBranch ?? null,
-            prNumber: prNumberFromUrl(prUrl ?? ''),
-            cause: null,
-        };
+        return publishedResult(job, branch, state.defaultBranch, prUrl);
     } catch (e) {
         const message = `${(e as Error).message}`;
         return publishFailed(message.slice(0, PUBLISH_FAILURE_MAX_CHARS), publishCauseOf(message));

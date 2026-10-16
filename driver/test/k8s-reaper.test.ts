@@ -2,14 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { JOB_LABEL, LEASE_LABEL } from '../src/labels.js';
-import {
-    configmapsPath,
-    podsPath,
-    publishEnvSecretName,
-    secretsPath,
-    servicesPath,
-    syncEnvSecretName,
-} from '../src/k8s-auxspec.js';
+import { configmapsPath, podsPath, secretsPath, servicesPath } from '../src/k8s-auxspec.js';
 import { gateEnvSecretName, jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
@@ -280,11 +273,9 @@ describe('the kubernetes reaper arm: reap', () => {
         const secrets = deleteCalls(calls).filter((path) => path.startsWith(secretsPath(NAMESPACE)));
         expect(secrets).toEqual([
             runnerSecret,
-            `${secretsPath(NAMESPACE)}/${syncEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob)}`,
             `${secretsPath(NAMESPACE)}/${gateEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob)}`,
-            `${secretsPath(NAMESPACE)}/${publishEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob)}`,
         ]);
-        // A 2xx Secret delete is a removal like any other; the three 404s are not.
+        // A 2xx Secret delete is a removal like any other; the gate Secret’s 404 is not.
         expect(removed).toContain(`secret ${runnerSecret.split('/').pop()}`);
     });
 
@@ -337,9 +328,7 @@ describe('the kubernetes reaper arm: reap', () => {
         // that one Secret may be deleted all round.
         const names = [
             secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
-            syncEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
             gateEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
-            publishEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
         ].map((name) => `${secretsPath(NAMESPACE)}/${name}`);
         const { request, calls } = router([['DELETE', names[0]!, { status: 500, body: '' }]]);
         const arm = createKubernetesReaper({ config, request });
@@ -353,9 +342,7 @@ describe('the kubernetes reaper arm: reap', () => {
     it('deletes Secrets ahead of the fleet, and 404 Secrets do not block teardown', async () => {
         const names = [
             secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
-            syncEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
             gateEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
-            publishEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
         ].map((name) => `${secretsPath(NAMESPACE)}/${name}`);
         const { request, calls } = router([
             ...names.map((path): readonly [K8sMethod, string, K8sResponse] => [
@@ -372,7 +359,7 @@ describe('the kubernetes reaper arm: reap', () => {
 
         const removed = await arm.reap(group(), 'gone');
 
-        // Ordering is the point: the four Secret deletes are the FIRST four calls, before any
+        // Ordering is the point: the two Secret deletes are the FIRST two calls, before any
         // fleet object — and already-gone Secrets never hold the round back.
         expect(deleteCalls(calls).slice(0, names.length)).toEqual(names);
         expect(removed).toEqual([`pod ${JOB}-${LEASE}-svc-postgres`, 'service factory-svc-abc']);
