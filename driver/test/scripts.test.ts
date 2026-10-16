@@ -8,7 +8,6 @@ import {
     gitWorktreeScript,
     prSummaryScript,
 } from '../src/publish.js';
-import { bellowsReadScript } from '../src/services.js';
 import {
     BODY_MAX,
     DIFF_HUNK_MAX,
@@ -51,7 +50,6 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['git-worktree-remove.cjs', 'node'],
     ['git-review-snapshot.cjs', 'node'],
     ['pr-summary.cjs', 'node'],
-    ['bellows-read.sh', 'sh'],
     ['opencode-readout.cjs', 'node'],
     ['claude-turns.cjs', 'node'],
     ['claude-export.cjs', 'node'],
@@ -72,6 +70,11 @@ describe('the container scripts', () => {
         // The build copies this directory wholesale (driver/package.json), so the directory IS
         // the contract: a file here is a file in the image, and a stray one would ship too.
         expect(readdirSync(SCRIPTS_DIR).sort()).toEqual(FILES.map(([name]) => name).sort());
+    });
+
+    // Issue #769: the board resolves `.bellows.yaml` at claim time, so no container reads it out.
+    it('ships no .bellows.yaml readout script', () => {
+        expect(readdirSync(SCRIPTS_DIR).filter((name) => /bellows/.test(name))).toEqual([]);
     });
 
     it.each(FILES)('%s parses', (name, runtime) => {
@@ -103,7 +106,6 @@ describe('the container scripts', () => {
         expect(gitWorktreeScript).toBe(readFileSync(pathOf('git-worktree.cjs'), 'utf8'));
         expect(gitWorktreeRemoveScript).toBe(readFileSync(pathOf('git-worktree-remove.cjs'), 'utf8'));
         expect(prSummaryScript).toBe(readFileSync(pathOf('pr-summary.cjs'), 'utf8'));
-        expect(bellowsReadScript).toBe(readFileSync(pathOf('bellows-read.sh'), 'utf8'));
         expect(opencodeReadoutScript).toBe(readFileSync(pathOf('opencode-readout.cjs'), 'utf8'));
         expect(claudeTurnsScript).toBe(readFileSync(pathOf('claude-turns.cjs'), 'utf8'));
         expect(opencodeCacheProbeScript).toBe(readFileSync(pathOf('opencode-cache-probe.cjs'), 'utf8'));

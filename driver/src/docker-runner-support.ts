@@ -34,11 +34,8 @@ import type { RunOutcome, RunSession } from './runner.js';
 import {
     declaredServiceSpecs,
     serviceContainerName,
-    readBellowsArgs,
-    type ServiceSpec,
-    collectServices,
+    plannedServices,
     recordDeclaredServices,
-    splitBellowsSections,
     networkName,
     serviceRunArgs,
 } from './services.js';
@@ -276,15 +273,14 @@ export function syncCheckoutArgs(
 }
 
 /**
- * Auxiliary services (issue #6) for one attempt: reads the checkout's `.bellows.yaml`, then
- * creates the network and starts each declared container, each step with its own verdict.
+ * Auxiliary services (issue #6) for one attempt: creates the network and starts each service of
+ * the claim's plan (`BoardJob.services`, resolved and validated by the board), each step with its
+ * own verdict. The driver reads no file — an author's refusal never reaches here, it failed the
+ * task at the claim (`BoardJob.planRefusal`).
  *
- * A refused read and a refused service start are INFRASTRUCTURE — the daemon said no to a
- * container this process spawned, the same class as a refused runner spawn — so they throw, and
- * the caller leaves the job to its lease instead of blaming the command. A partial fleet is torn
- * down on the way out. A parse refusal, by contrast, is the AUTHOR's: deterministic and fully
- * said by the message, so it comes back as `refusal` rather than thrown — retrying a file that
- * cannot change would burn attempts on an error no retry fixes.
+ * A refused service start is INFRASTRUCTURE — the daemon said no to a container this process
+ * spawned, the same class as a refused runner spawn — so it throws, and the caller leaves the job
+ * to its lease instead of blaming the command. A partial fleet is torn down on the way out.
  *
  * `assertNotKilled` stops a dying attempt from creating more: a kill that lands mid-setup throws,
  * teardown-free by design — kill() ran the attempt-scoped teardown already, and anything created
@@ -298,32 +294,17 @@ export async function setupJobServices(
         killed: Set<BoardJob['leaseToken']>;
         serviceTeardown: (job: BoardJob) => Promise<void>;
     }
-): Promise<{ servicesNetwork: string | null; refusal: string | null }> {
-    if (!config.servicesEnabled) return { servicesNetwork: null, refusal: null };
+): Promise<{ servicesNetwork: string | null }> {
+    if (!config.servicesEnabled) return { servicesNetwork: null };
 
     // The fleet starts clean: whatever this attempt's lease already has of a fleet goes first,
     // by the same attempt-scoped code that enforces it at teardown. The sync's fence has swept the
     // job's other attempts by then; their leftovers are never this teardown's business.
     await deps.serviceTeardown(job);
-    let raw: string;
-    try {
-        raw = (await deps.execDocker(readBellowsArgs(config, job))).stdout;
-    } catch (e) {
-        throw new Error(`could not read .bellows.yaml: ${(e as Error).message}`);
-    }
     assertJobNotKilled(deps.killed, job);
 
-    let specs: ServiceSpec[];
-    let refusal: string | null = null;
-    try {
-        specs = collectServices(splitBellowsSections(raw));
-    } catch (e) {
-        refusal = (e as Error).message;
-        specs = [];
-    }
-    if (refusal !== null || specs.length === 0) {
-        return { servicesNetwork: null, refusal };
-    }
+    const specs = plannedServices(job);
+    if (specs.length === 0) return { servicesNetwork: null };
 
     const servicesNetwork = networkName(job);
     // The fence already swept the job's stale networks, and this name carries this attempt's
@@ -355,7 +336,7 @@ export async function setupJobServices(
         assertJobNotKilled(deps.killed, job);
     }
     recordDeclaredServices(job, specs);
-    return { servicesNetwork, refusal: null };
+    return { servicesNetwork };
 }
 
 /**
@@ -489,8 +470,8 @@ export async function createRunnerContainer(
 /**
  * The declared services, started by the loop's setup phase before the gate environment and run()
  * (`Runner.startServices`), answering only once every one runs — the pre-gate restart's bar — so
- * `environment.setup` never races a container still starting. The author's refusal answers a
- * refused outcome; a service that never runs throws `ServicesNotRunning`; null otherwise.
+ * `environment.setup` never races a container still starting. A service that never runs throws
+ * `ServicesNotRunning`; null otherwise (an author's refusal never gets this far: the claim carried it).
  */
 export async function startJobServices(
     job: BoardJob,
@@ -503,8 +484,7 @@ export async function startJobServices(
     },
     signal?: AbortSignal
 ): Promise<RunOutcome | null> {
-    const { servicesNetwork, refusal } = await setupJobServices(job, config, deps);
-    if (refusal !== null) return { exitCode: null, output: refusal, timedOut: false, started: true, refused: true };
+    const { servicesNetwork } = await setupJobServices(job, config, deps);
     if (servicesNetwork === null) return null;
     await awaitServicesRunning(
         declaredServiceSpecs(job),

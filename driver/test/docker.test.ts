@@ -18,7 +18,6 @@ import {
     parseDockerStats,
 } from '../src/docker.js';
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
-import { argvEnv, bellowsService, bellowsTree } from './fixtures/bellows-tree.js';
 import { currentActivity, reportTail, type RunSession, stripAnsi, tailBytes } from '../src/runner.js';
 import { claudeTurnsArgs, opencodeCacheProbeArgs } from '../src/docker-close-read.js';
 import {
@@ -38,7 +37,7 @@ import { lookupHelper, type HelperPlan } from '../src/helpers.js';
 import {
     forgetDeclaredServices,
     networkName,
-    readBellowsArgs,
+    type ServiceSpec,
     serviceContainerName,
     serviceRunArgs,
 } from '../src/services.js';
@@ -80,6 +79,7 @@ const job: BoardJob = {
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
     executorRefusal: null,
+    planRefusal: null,
     skillRefusal: null,
     masterPrompt: MASTER_PROMPT,
     resumeSessionId: null,
@@ -2402,30 +2402,27 @@ describe('the docker runner', () => {
     });
 });
 
+/** The suite's job with no services on the claim, for the block below that shadows `job`. */
+const baseJob = job;
+
 /*
- * Auxiliary services (issue #6). The switch is on in this whole block, and the daemon is
- * scripted on argv shape: the readout run (it carries --entrypoint sh) answers with the checkouts'
- * `.bellows.yaml` files, the service runs (they carry --network-alias) answer created, the label
- * `ps` answers one container id, and everything else succeeds empty. The spawn stands in for the
- * runner container itself and records the argv it was given.
+ * Auxiliary services (issue #6, resolved at claim time by issue #769). The switch is on in this
+ * whole block, and the daemon is scripted on argv shape: the service runs (they carry
+ * --network-alias) answer created, the label `ps` answers one container id, and everything else
+ * succeeds empty. The spawn stands in for the runner container itself and records the argv it was
+ * given. The services ride on the claim: this block's `job` declares the one `stub` service.
  */
 describe('auxiliary services (RUNNER_SERVICES)', () => {
-    const READOUT = '###__bellows:demo\nservices:\n  - name: stub\n    image: stub-svc:1\n';
+    const STUB: ServiceSpec = { name: 'stub', image: 'stub-svc:1', environment: [] };
+    const job: BoardJob = { ...baseJob, services: [STUB] };
     // The declared fleet is process-wide and the suite runs isolate: false — a failed test must not leak it.
     afterEach(() => forgetDeclaredServices(job));
     /** A restart's stand-down signal that never fires. */
     const live = new AbortController().signal;
 
-    const daemon = (
-        readout: string,
-        opts: { readoutFails?: boolean; serviceFails?: boolean; attached?: string } = {}
-    ) =>
+    const daemon = (opts: { serviceFails?: boolean; attached?: string } = {}) =>
         vitest.fn(async (args: string[]) => {
             if (args[0] === 'network' && args[1] === 'inspect') return { stdout: opts.attached ?? '' };
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
-                if (opts.readoutFails) throw new Error('daemon refused the readout');
-                return { stdout: readout };
-            }
             if (args[0] === 'run' && args.includes('--network-alias')) {
                 if (opts.serviceFails) throw new Error('daemon refused the service');
                 return { stdout: '' };
@@ -2552,20 +2549,18 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         return lease ? `${idFor(lease)}\n` : 'stale-leftover\n';
     };
 
-    it('reads .bellows.yaml, creates the job network, starts the service, and joins the runner to it', async () => {
-        const exec = daemon(READOUT);
+    it('creates the job network, starts the claim’s service, and joins the runner to it', async () => {
+        const exec = daemon();
         const { fn, seen } = spawnRecording('ran\n', 0);
         const outcome = await servicesRunner(exec, fn).run(job, { id: SESSION, resume: false });
 
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
         const calls = exec.mock.calls.map((call) => call[0]);
-        const readAt = calls.findIndex((a) => a[0] === 'run' && a.includes('--entrypoint'));
         const createAt = calls.findIndex((a) => a[0] === 'network' && a[1] === 'create');
         const serviceAt = calls.findIndex((a) => a[0] === 'run' && a.includes('--network-alias'));
-        // Read before create, create before the service — the fence's rounds sit between, which
-        // is why these are comparisons and not exact positions.
-        expect(readAt).toBeGreaterThanOrEqual(0);
-        expect(createAt).toBeGreaterThan(readAt);
+        // Create before the service — the fence's rounds sit between, which is why these are
+        // comparisons and not exact positions.
+        expect(createAt).toBeGreaterThanOrEqual(0);
         expect(serviceAt).toBeGreaterThan(createAt);
         expect(calls[serviceAt]).toEqual(serviceRunArgs(job, { name: 'stub', image: 'stub-svc:1', environment: [] }));
         // The runner shares the network — that is the whole feature: inside the job, `stub`
@@ -2581,113 +2576,72 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         );
     });
 
-    /*
-     * Issue #444: the task's own repo is read from its worktree — the tree the gates read — so a
-     * service or a `user:` its base clone has not checked out yet still reaches the container.
-     * The readout here is the shipped script, run on a real member tree with the argv's own env.
-     */
-    describe('reading the task worktree (issue #444)', () => {
-        const ROOT = '55555555-5555-4555-8555-555555555555';
-        const repoJob: BoardJob = { ...job, repo: 'acme/app', rootJobId: ROOT };
-        const treeDaemon = (tree: ReturnType<typeof bellowsTree>) => {
-            const fn = vitest.fn(async (args: string[]) => {
-                if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: tree.read(argvEnv(args)) };
-                if (args[0] === 'ps' && args.includes('{{json .}}')) {
-                    return runningServicesPs(fn.mock.calls.map((c) => c[0]));
-                }
-                if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
-                return { stdout: '' };
-            });
-            return fn;
+    it('starts every service the claim carries, a declared port changing no argv', async () => {
+        const planned: BoardJob = {
+            ...baseJob,
+            services: [
+                { name: 'postgres', image: 'postgres:1', environment: [], ports: [5432] },
+                { name: 'redis', image: 'redis:1', environment: [], user: { uid: 999, gid: 999 } },
+            ],
         };
-        const run = async (tree: ReturnType<typeof bellowsTree>) => {
-            const exec = treeDaemon(tree);
-            const runner = asLoop(
-                dockerRunner(readyWhileStarting(exec as unknown as (args: string[]) => Promise<{ stdout: string }>), {
-                    env: { RUNNER_SERVICES: '1', WORKSPACE_MOUNT: tree.mount },
-                    spawn: spawnRecording('ran\n', 0).fn,
-                })
-            );
-            const outcome = await runner.run(repoJob, { id: SESSION, resume: false });
-            const services = exec.mock.calls
-                .map((c) => c[0])
-                .filter((a) => a[0] === 'run' && a.includes('--network-alias'));
-            return { outcome, services };
-        };
-
-        it("starts the worktree's services, with a user only the worktree declares, beside another checkout's", async () => {
-            const tree = bellowsTree(repoJob.workspacePath!);
-            tree.write('app/.bellows.yaml', bellowsService('postgres'));
-            tree.write(`.worktrees/${ROOT}/.bellows.yaml`, bellowsService('postgres', '\n    user: "999:999"'));
-            tree.write('api/.bellows.yaml', bellowsService('redis'));
-            const { outcome, services } = await run(tree);
-
-            expect(outcome).toMatchObject({ exitCode: 0, started: true });
-            expect(services).toEqual(
-                expect.arrayContaining([
-                    serviceRunArgs(repoJob, {
-                        name: 'postgres',
-                        image: 'postgres:1',
-                        environment: [],
-                        user: { uid: 999, gid: 999 },
-                    }),
-                    serviceRunArgs(repoJob, { name: 'redis', image: 'redis:1', environment: [] }),
-                ])
-            );
-            expect(services).toHaveLength(2);
+        const exec = daemon();
+        const outcome = await servicesRunner(exec, spawnRecording('ran\n', 0).fn).run(planned, {
+            id: SESSION,
+            resume: false,
         });
 
-        it('refuses a name the worktree and another checkout both declare, naming both', async () => {
-            const tree = bellowsTree(repoJob.workspacePath!);
-            tree.write(`.worktrees/${ROOT}/.bellows.yaml`, bellowsService('postgres'));
-            tree.write('api/.bellows.yaml', bellowsService('postgres'));
-            const { outcome, services } = await run(tree);
-
-            expect(outcome.exitCode).toBeNull();
-            expect(outcome.output).toMatch(/"postgres" is defined in both (app\/ and api\/|api\/ and app\/)/);
-            expect(services).toHaveLength(0);
-        });
+        expect(outcome).toMatchObject({ exitCode: 0, started: true });
+        const started = exec.mock.calls
+            .map((call) => call[0])
+            .filter((a) => a[0] === 'run' && a.includes('--network-alias'));
+        expect(started).toEqual([
+            serviceRunArgs(planned, { name: 'postgres', image: 'postgres:1', environment: [] }),
+            serviceRunArgs(planned, { name: 'redis', image: 'redis:1', environment: [], user: { uid: 999, gid: 999 } }),
+        ]);
+        expect(started.every((a) => !a.includes('5432'))).toBe(true);
     });
 
-    it('starts nothing and changes no argv when the flag is on but no file declares services', async () => {
-        // The path every existing repo takes the moment an operator turns the flag on: empty
-        // readout, no network, byte-identical runner argv — the compatibility promise, exercised
-        // end to end rather than only at the dockerArgs parameter.
-        const exec = daemon('');
+    it('starts only the network and the service runs: no readout container is ever run', async () => {
+        const exec = daemon();
+        const runner = bareServicesRunner(exec, spawnRecording('', 0).fn);
+        await expect(runner.startServices(job)).resolves.toBeNull();
+
+        const runs = exec.mock.calls.map((call) => call[0]).filter((a) => a[0] === 'run');
+        expect(runs).toEqual([serviceRunArgs(job, STUB)]);
+        expect(runs.some((a) => a.includes('--entrypoint') || a.includes('sh'))).toBe(false);
+        expect(exec.mock.calls.map((call) => call[0]).filter((a) => a[0] === 'network' && a[1] === 'create')).toEqual([
+            [
+                'network',
+                'create',
+                '--label',
+                `factory.job=${job.id}`,
+                '--label',
+                `factory.lease=${job.leaseToken}`,
+                networkName(job),
+            ],
+        ]);
+    });
+
+    it('starts nothing and changes no argv when the claim carries no services', async () => {
+        // The path every existing repo takes: no services on the claim, no network, byte-identical
+        // runner argv, exercised end to end rather than only at the dockerArgs parameter.
+        const exec = daemon();
         const { fn, seen } = spawnRecording('ran\n', 0);
-        const outcome = await servicesRunner(exec, fn).run(job, { id: SESSION, resume: false });
+        const outcome = await servicesRunner(exec, fn).run(baseJob, { id: SESSION, resume: false });
 
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
         const calls = exec.mock.calls.map((call) => call[0]);
-        expect(seen[0]).toEqual(['start', '-a', containerName(job)]);
+        expect(seen[0]).toEqual(['start', '-a', containerName(baseJob)]);
         expect(calls.find((a) => a[0] === 'create')).toEqual(
             dockerArgs(
                 loadDriverConfig({ RUNNER_SERVICES: '1' }),
-                job,
+                baseJob,
                 { id: SESSION, resume: false },
-                { envFile: envFilePath(job) }
+                { envFile: envFilePath(baseJob) }
             )
         );
         expect(calls).not.toContainEqual(['network', 'create', networkName(job)]);
         expect(calls.every((a) => !a.includes('--network-alias'))).toBe(true);
-    });
-
-    it('fails the job with the readout’s oversize refusal, rather than throwing it at the lease', async () => {
-        // The size bound exists because unbounded author content would otherwise die inside
-        // execFile's maxBuffer and classify as infrastructure. The marker path must therefore
-        // land on the terminal-refusal side of the taxonomy: failed with the reason, zero spawns.
-        const exec = daemon(
-            '###__bellows:demo\n###__bellows_error:/workspaces/b/x/demo/.bellows.yaml is larger than 65536 bytes\n'
-        );
-        const { fn, seen } = spawnRecording('', 0);
-        const outcome = await servicesRunner(exec, fn).run(job, { id: SESSION, resume: false });
-
-        expect(outcome.started).toBe(true);
-        expect(outcome.exitCode).toBeNull();
-        expect(outcome.output).toContain('.bellows.yaml');
-        expect(outcome.output).toContain('larger than 65536 bytes');
-        expect(seen).toHaveLength(0);
-        expect(exec.mock.calls.map((call) => call[0])).not.toContainEqual(['network', 'create', networkName(job)]);
     });
 
     /*
@@ -2696,7 +2650,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
      * releaseServices takes the fleet down once the gates are done.
      */
     it('keeps the services up past the run, and tears them down on release', async () => {
-        const exec = daemon(READOUT);
+        const exec = daemon();
         const runner = servicesRunner(exec, spawnRecording('', 1).fn);
         await runner.run(job, { id: SESSION, resume: false });
 
@@ -2716,7 +2670,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // remove a network with an endpoint still attached — so the release detaches whatever is
     // left on it first, or the network would outlive the attempt.
     it('detaches the gate environment from the network before removing it', async () => {
-        const exec = daemon(READOUT, { attached: 'factory-gateenv-x\n' });
+        const exec = daemon({ attached: 'factory-gateenv-x\n' });
         await servicesRunner(exec, spawnRecording('', 0).fn).releaseServices(job);
 
         const calls = exec.mock.calls.map((call) => call[0]);
@@ -2731,7 +2685,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // Review: setup must not race a fleet still starting — the start answers only once every
     // service runs, and one that never does is a ServicesNotRunning, as in the restart.
     const readinessDaemon = (states: string[]) => {
-        const base = daemon(READOUT);
+        const base = daemon();
         let polls = 0;
         const exec = vitest.fn(async (args: string[]) => {
             if (args[0] === 'ps' && args.includes('{{json .}}')) {
@@ -2764,7 +2718,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // Review (PR 737): the loop starts the services before the gate environment's setup, so run()
     // must neither start them again nor fence them away; the runner still joins their network.
     it('run() starts no services after the loop started them, and the runner joins their network', async () => {
-        const exec = daemon(READOUT);
+        const exec = daemon();
         const runner = bareServicesRunner(exec, spawnRecording('', 0).fn);
         await expect(runner.startServices(job)).resolves.toBeNull();
         const startedAt = exec.mock.calls.length;
@@ -2798,7 +2752,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     });
 
     it('fences leftover services before anything is created', async () => {
-        const exec = daemon(READOUT);
+        const exec = daemon();
         await servicesRunner(exec, spawnRecording('', 0).fn).run(job, { id: SESSION, resume: false });
 
         const calls = exec.mock.calls.map((call) => call[0]);
@@ -2811,34 +2765,8 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(calls.slice(0, createAt).some((a) => a[0] === 'rm' && a[1] === '-f' && a[2] === 'svc-id-1')).toBe(true);
     });
 
-    it('fails the job with the parse reason, and starts nothing, when a file is malformed', async () => {
-        // `ports:` is exactly the key the parser refuses — a host publish can never be parsed
-        // into existence by writing YAML.
-        const exec = daemon('###__bellows:demo\nservices:\n  - name: db\n    ports: ["5432:5432"]\n');
-        const { fn, seen } = spawnRecording('', 0);
-        const outcome = await servicesRunner(exec, fn).run(job, { id: SESSION, resume: false });
-
-        // A deterministic author error: terminal failed with the reason in the output, not a
-        // retry — burning attempts on a file that cannot change would be the verdict that lies.
-        expect(outcome.started).toBe(true);
-        expect(outcome.exitCode).toBeNull();
-        expect(outcome.output).toContain('.bellows.yaml');
-        expect(outcome.output).toContain('ports');
-        expect(seen).toHaveLength(0);
-        expect(exec.mock.calls.map((call) => call[0])).not.toContainEqual(['network', 'create', networkName(job)]);
-    });
-
-    it('sends a refused readout to the lease instead of blaming the command', async () => {
-        const exec = daemon('', { readoutFails: true });
-        const { fn, seen } = spawnRecording('', 0);
-        await expect(servicesRunner(exec, fn).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /could not read \.bellows\.yaml/
-        );
-        expect(seen).toHaveLength(0);
-    });
-
     it('sends a refused service to the lease, after tearing down what did start', async () => {
-        const exec = daemon(READOUT, { serviceFails: true });
+        const exec = daemon({ serviceFails: true });
         const { fn, seen } = spawnRecording('', 0);
         await expect(servicesRunner(exec, fn).run(job, { id: SESSION, resume: false })).rejects.toThrow(
             /could not start service "stub"/
@@ -2850,7 +2778,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     });
 
     it('kill() takes the services and the network down with the runner', async () => {
-        const exec = daemon(READOUT);
+        const exec = daemon();
         await servicesRunner(exec, spawnRecording('', 0).fn).kill(job);
         const calls = exec.mock.calls.map((call) => call[0]);
         // The runner is resolved through this attempt's own labels and killed by ID — never by
@@ -2878,11 +2806,11 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     it('aborts the setup, creating nothing more and spawning nothing, when the job is killed mid-setup', async () => {
         const handle: { kill: ((j: BoardJob) => Promise<void>) | null } = { kill: null };
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
-                // The lease is lost while the readout is in flight; kill() is what the loop
-                // calls, and it must be recorded before the read resolves.
+            if (args[0] === 'network' && args[1] === 'create') {
+                // The lease is lost while the network create is in flight; kill() is what the loop
+                // calls, and it must be recorded before the create resolves.
                 await handle.kill!(job);
-                return { stdout: READOUT };
+                return { stdout: '' };
             }
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
             if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
@@ -2896,7 +2824,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             /killed while setting up services/
         );
         const calls = exec.mock.calls.map((call) => call[0]);
-        expect(calls).not.toContainEqual(['network', 'create', networkName(job)]);
         expect(calls.every((a) => !a.includes('--network-alias'))).toBe(true);
         expect(seen).toHaveLength(0);
     });
@@ -2914,15 +2841,15 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             releaseA = resolve;
         });
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
+            if (args[0] === 'network' && args[1] === 'create') {
                 if (!killedA) {
-                    // A's lease is lost while its readout is in flight; the loop's kill()
-                    // must be on record before the read resolves.
+                    // A's lease is lost while its network create is in flight; the loop's kill()
+                    // must be on record before the create resolves.
                     killedA = true;
                     await handle.kill!(attemptA);
                     releaseA!();
                 }
-                return { stdout: READOUT };
+                return { stdout: '' };
             }
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
             if (args[0] === 'ps') return { stdout: psAnswer(args) };
@@ -2953,19 +2880,21 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // B was never killed, whatever happened to A: network, service, spawn all happen —
         // under B's OWN names, since every name carries B's token.
         await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
-        // Exactly one attempt got as far as creating the network, and it is B's network —
-        // created labeled, like everything the attempt stands up.
+        // A's create was in flight when its kill landed; it went no further. Only B started a
+        // service — and the last network created is B's, labeled like everything the attempt
+        // stands up.
         const creates = exec.mock.calls.map((call) => call[0]).filter((a) => a[0] === 'network' && a[1] === 'create');
-        expect(creates).toEqual([
-            [
-                'network',
-                'create',
-                '--label',
-                `factory.job=${job.id}`,
-                '--label',
-                `factory.lease=${ATTEMPT_B}`,
-                networkName(attemptB),
-            ],
+        expect(creates).toHaveLength(2);
+        const services = exec.mock.calls.map((call) => call[0]).filter((a) => a.includes('--network-alias'));
+        expect(services).toEqual([serviceRunArgs(attemptB, STUB)]);
+        expect(creates.at(-1)).toEqual([
+            'network',
+            'create',
+            '--label',
+            `factory.job=${job.id}`,
+            '--label',
+            `factory.lease=${ATTEMPT_B}`,
+            networkName(attemptB),
         ]);
         expect(seen).toHaveLength(1);
     });
@@ -2983,15 +2912,15 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             releaseKill = resolve;
         });
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
+            if (args[0] === 'network' && args[1] === 'create') {
                 if (!killedA) {
-                    // A's lease is lost while its readout is in flight; kill() — its own
-                    // teardown included — must be fully settled before the read resolves.
+                    // A's lease is lost while its network create is in flight; kill() — its own
+                    // teardown included — must be fully settled before the create resolves.
                     killedA = true;
                     await handle.kill!(attemptA);
                     releaseKill!();
                 }
-                return { stdout: READOUT };
+                return { stdout: '' };
             }
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
             if (args[0] === 'ps') return { stdout: psAnswer(args) };
@@ -3075,7 +3004,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             };
 
             const exec = vitest.fn(async (args: string[]) => {
-                if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
                 if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
                 if (args[0] === 'ps') return { stdout: psAnswer(args) };
                 return { stdout: '' };
@@ -3123,7 +3051,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     it("scopes a kill that lands after the replacement stood its fleet up to the killed attempt's own lease", async () => {
         const { fn, fires, childAt } = gatedSpawns();
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
             if (args[0] === 'ps') return { stdout: psAnswer(args) };
             return { stdout: '' };
@@ -3170,9 +3097,9 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         });
         let armed = false;
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) {
+            if (args[0] === 'network' && args[1] === 'create') {
                 armed = true;
-                return { stdout: READOUT };
+                return { stdout: '' };
             }
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
             if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
@@ -3215,7 +3142,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         });
         let psCount = 0;
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
             if (args[0] === 'ps') {
                 psCount++;
@@ -3251,7 +3177,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     it("scopes a superseded spawn error's teardown to the failing attempt's own lease", async () => {
         const { fn, fires, childAt } = gatedSpawns();
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
             if (args[0] === 'ps') return { stdout: psAnswer(args) };
             return { stdout: '' };
@@ -3302,7 +3227,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         });
         let psCount = 0;
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
             if (args[0] === 'ps') {
                 psCount++;
@@ -3367,7 +3291,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 await killGate;
                 return { stdout: '' };
             }
-            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
             if (args[0] === 'ps') return { stdout: psAnswer(args) };
             return { stdout: '' };
@@ -3421,7 +3344,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // kill: fired from A's own runner after B stands its fleet up, every call it issues
     // carries A's lease, B's names appear in no argv, and B finishes its run untouched.
     it("keeps a replacement attempt unaddressable to a stale attempt's late kill across two runner instances", async () => {
-        const d = labelDaemon({ readout: READOUT });
+        const d = labelDaemon({});
         const spawnA = gatedSpawns();
         const spawnB = gatedSpawns();
         const runner1 = asLoop(
@@ -3489,7 +3412,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(serviceContainerName(attemptB, 'stub')).not.toBe(serviceContainerName(attemptA, 'stub'));
 
         // A's leftovers still exist on the daemon when B's run starts.
-        const d = labelDaemon({ readout: READOUT });
+        const d = labelDaemon({});
         d.containers.set(containerName(attemptA), { 'factory.job': job.id, 'factory.lease': ATTEMPT_A });
         d.containers.set(serviceContainerName(attemptA, 'stub'), {
             'factory.job': job.id,
@@ -3522,7 +3445,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     it('fences every leftover of the job by label — containers, networks, and the legacy network — and nothing else', async () => {
         const oldA = { ...job, leaseToken: 'aaaaaaaa-1111-4111-8111-111111111111' };
         const oldB = { ...job, leaseToken: 'bbbbbbbb-2222-4222-8222-222222222222' };
-        const d = labelDaemon({ readout: READOUT });
+        const d = labelDaemon({});
         d.containers.set(containerName(oldA), { 'factory.job': job.id, 'factory.lease': oldA.leaseToken });
         d.containers.set(serviceContainerName(oldB, 'stub'), {
             'factory.job': job.id,
@@ -3564,7 +3487,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // RUNNER_SERVICES=0 explicitly: the default is on (services.test.ts pins that), and this
         // test is about the opt-out posture.
         const cfg = loadDriverConfig({ RUNNER_SERVICES: '0' });
-        const exec = daemon(READOUT);
+        const exec = daemon();
         const { fn, seen } = spawnRecording('ran\n', 0);
         const outcome = await createDockerRunner(
             cfg,
@@ -3594,7 +3517,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     });
 
     it('reports a declared service that vanished from docker ps as dead (issue #471)', async () => {
-        const base = daemon(READOUT);
+        const base = daemon();
         let removedByHand = false;
         const exec = vitest.fn(async (args: string[]) =>
             removedByHand && args[0] === 'ps' ? { stdout: '' } : base(args)
@@ -3618,7 +3541,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     const runningStub = JSON.stringify({ Labels: 'factory.service=stub', Image: 'stub-svc:1', State: 'running' });
 
     it("restartServices re-runs a removed service on the attempt's existing network (issue #560)", async () => {
-        const base = daemon(READOUT);
+        const base = daemon();
         let removedByHand = false;
         const exec = vitest.fn(async (args: string[]) => {
             if (args[0] === 'run' && args.includes('--network-alias')) removedByHand = false;
@@ -3644,7 +3567,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     });
 
     it('restartServices stops on a stand-down and removes the service it started again (issue #560)', async () => {
-        const base = daemon(READOUT);
+        const base = daemon();
         const stand = new AbortController();
         const exec = vitest.fn(async (args: string[]) => {
             if (args[0] === 'run' && args.includes('--network-alias') && stand.signal.aborted === false) {
@@ -3669,7 +3592,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     });
 
     it('restartServices throws when the daemon refuses the service again (issue #560)', async () => {
-        const base = daemon(READOUT);
+        const base = daemon();
         let refuse = false;
         const exec = vitest.fn(async (args: string[]) => {
             if (refuse && args[0] === 'run' && args.includes('--network-alias')) throw new Error('no such network');
@@ -4838,7 +4761,6 @@ describe('every container the driver runs is hardened (#382)', () => {
         ['the opencode cache probe', () => opencodeCacheProbeArgs(config(), opencodeJob)],
         ['the claude turns readout', () => claudeTurnsArgs(config(), job, SESSION, START)],
         ['the claude transcript exporter', () => claudeExportArgs(config(), job, START, '/tmp/export.env')],
-        ['the .bellows.yaml readout', () => readBellowsArgs(config(), job)],
         [
             'the startup sync',
             () =>

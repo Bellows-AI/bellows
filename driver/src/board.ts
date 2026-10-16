@@ -3,6 +3,7 @@ import type { EvidencePolicy, GatesOutcome, ReviewEvidence } from './evidence-po
 import { type ExecutorType, isExecutorType } from './executors.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, LEASE_LOST_CODE, NOT_FOUND_CODE } from './http.js';
 import type { HelperPlan } from './helpers.js';
+import type { ServiceSpec } from './services.js';
 
 /**
  * One declared service of the attempt's `.bellows.yaml`, as the platform reports it right now:
@@ -67,6 +68,13 @@ export interface BoardJob {
      * kubernetes alike.
      */
     skillRefusal: string | null;
+    /**
+     * Why the task's execution plan cannot launch: its `.bellows.yaml` at the claimed revision is
+     * unreadable or invalid, or its services cannot share one network namespace (a port collision,
+     * an unsupported image). An actionable sentence the loop fails the task `config` with before
+     * any runner, gate or service starts, on docker and kubernetes alike.
+     */
+    planRefusal: string | null;
     /**
      * The board-owned Factory execution context (issue #244) — the master-prompt.ts renderer's
      * text, delivered through the executor's own system-instruction channel, never concatenated
@@ -146,24 +154,20 @@ export interface BoardJob {
      */
     repo?: string | null;
     /**
-     * The gates the job's checkout declares in `.bellows.yaml`, read by the board at claim time:
-     * the environment image they run in and the named commands. Null when the repository declares
-     * none — the ordinary case. Absent on a board that predates gates, read as "no gates".
-     * `cache` lists the env names pointed at the repo's package cache (`repoCacheEnv`).
+     * The gates the repository declares in `.bellows.yaml` at `planRevision`, resolved by the board
+     * at claim time: the environment image they run in and the named commands. Null when the
+     * repository declares none — the ordinary case. Absent when the board resolved no plan, read
+     * as "no gates". `cache` lists the env names pointed at the repo's package cache
+     * (`repoCacheEnv`).
      */
     gates?: { image: string; setup?: string; cache?: readonly string[]; gates: readonly DeclaredGate[] } | null;
     /**
-     * Why the gates file exists but could not be honoured. The loop fails such a job outright —
-     * running the work while pretending its gates do not exist is the one outcome worse than the
-     * failure.
+     * The services the same file declares, already validated as one plan (`planRefusal` carries a
+     * refusal). Both executors start exactly this list; the driver reads no file. Absent: none.
      */
-    gateError?: string | null;
-    /**
-     * Which tree the claim's gates answer was read from (issue #444): the task worktree, or the
-     * base clone — every first claim's, whose checked-out files may lag. The loop refuses to gate
-     * on a 'clone' answer its post-sync re-read could not replace. Absent reads as "no refusal".
-     */
-    gatesSource?: 'worktree' | 'clone';
+    services?: readonly ServiceSpec[];
+    /** The commit the claim's plan was read at — the tip of the base branch when the board resolved it. */
+    planRevision?: string;
     /**
      * The evidence the repository requires before this work may publish (`policy`), and the
      * thread's review evidence as of the claim (`review`). Absent means nothing is required —
@@ -492,18 +496,6 @@ export interface Board {
     /** Tells the board which agent session this attempt runs as; null clears one that never ran. */
     session(job: BoardJob, sessionId: string | null): Promise<LeaseState>;
     /**
-     * Re-reads the gates the job's checkout declares NOW. The claim read the file before the
-     * driver's startup sync freshened the checkout, so a repository whose gates file just arrived
-     * would run ungated for its whole first task if the stale answer stood. Null is the board's
-     * refusal — the lease lost (409) or the job gone (404). A board that could not answer (a
-     * dropped connection, a 5xx) throws, so the caller can retry it through a restart. An aborted
-     * `signal` (the attempt's stand-down) cancels the request.
-     */
-    rereadGates(
-        job: BoardJob,
-        signal?: AbortSignal
-    ): Promise<{ gates: BoardJob['gates']; gateError: string | null } | null>;
-    /**
      * A credential to publish this job's work with, fresh enough for the push. The claim env's
      * GITHUB_TOKEN was minted at claim time and a long run can outlive it — observed 2026-09-13:
      * a 1h33m run's publish died on its expired claim token with the work done and the gates
@@ -694,13 +686,33 @@ const completeWireBody = (job: BoardJob, result: Parameters<Board['complete']>[1
 /** A claim text field read defensively: the string the board sent, else null. */
 const textOrNull = (value: unknown): string | null => (typeof value === 'string' ? value : null);
 
-/** The claim's `gatesSource` when it is one of the two known trees, else absent. */
-const knownGatesSource = (value: unknown): Pick<BoardJob, 'gatesSource'> =>
-    value === 'worktree' || value === 'clone' ? { gatesSource: value } : {};
-
 /** The claim's `turnContext` when it is a non-empty string, else absent. */
 const knownTurnContext = (value: unknown): Pick<BoardJob, 'turnContext'> =>
     typeof value === 'string' && value.length > 0 ? { turnContext: value } : {};
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+
+/** A service entry of the claim's plan, as far as the driver's argv and pod specs rely on it. */
+const isServiceSpec = (value: unknown): value is ServiceSpec =>
+    isRecord(value) &&
+    typeof value.name === 'string' &&
+    typeof value.image === 'string' &&
+    Array.isArray(value.environment) &&
+    value.environment.every(
+        (entry) => isRecord(entry) && typeof entry.key === 'string' && typeof entry.value === 'string'
+    );
+
+/**
+ * The claim's resolved services, read defensively. A malformed list is the board breaking its own
+ * contract, never something to start a container from: it refuses the plan like any other.
+ */
+const servicePlanOf = (value: unknown): Pick<BoardJob, 'services'> & { refusal: string | null } => {
+    if (value === undefined || value === null) return { refusal: null };
+    if (!Array.isArray(value) || !value.every(isServiceSpec)) {
+        return { refusal: 'The board delivered a malformed service list in the execution plan.' };
+    }
+    return { refusal: null, services: value };
+};
 
 /** A heartbeat the board held: the stop flag, and every question of the lease the board has an answer for. */
 async function heldBeat(response: Response): Promise<HeartbeatVerdict> {
@@ -826,12 +838,13 @@ export function createBoard({
             // must not survive under exactOptionalPropertyTypes, which refuses assigning
             // `undefined` to this optional property directly — the conditional spread below is
             // the only way to represent "absent".
-            const { helperPlans, gatesSource, turnContext, ...rest } = (await response.json()) as Partial<BoardJob>;
+            const { helperPlans, turnContext, services, ...rest } = (await response.json()) as Partial<BoardJob>;
             const claimed = rest;
+            const plan = servicePlanOf(services);
             return {
                 ...(claimed as BoardJob),
                 ...(Array.isArray(helperPlans) ? { helperPlans } : {}),
-                ...knownGatesSource(gatesSource),
+                ...(plan.services ? { services: plan.services } : {}),
                 ...knownTurnContext(turnContext),
                 masterPrompt: textOrNull(claimed.masterPrompt),
                 resumeSessionId: claimed.resumeSessionId ?? null,
@@ -842,6 +855,7 @@ export function createBoard({
                 executorType: isExecutorType(claimed.executorType) ? claimed.executorType : null,
                 executorRefusal: textOrNull(claimed.executorRefusal),
                 skillRefusal: textOrNull(claimed.skillRefusal),
+                planRefusal: plan.refusal ?? textOrNull(claimed.planRefusal),
                 env: claimed.env ?? {},
             };
         },
@@ -913,14 +927,6 @@ export function createBoard({
                 sessionId,
             });
             return response.status === HTTP_CONFLICT ? 'lost' : 'held';
-        },
-
-        async rereadGates(job, signal) {
-            const lease = { leaseToken: job.leaseToken };
-            const response = await post(`/api/jobs/${job.id}/gates-reread`, lease, true, { signal });
-            if (!response.ok) return null;
-            const body = (await response.json()) as { gates?: BoardJob['gates']; gateError?: string | null };
-            return { gates: body.gates ?? null, gateError: body.gateError ?? null };
         },
 
         async publishToken(job) {

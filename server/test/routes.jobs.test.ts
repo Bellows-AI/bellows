@@ -8,7 +8,6 @@ import type { OrgRuntime } from '../src/orgs.js';
 import { createStatsService } from '../src/stats-service.js';
 import { validateWaitQuery } from '../src/routes/job-field-validation.js';
 import { IdempotencyKeyReusedError, type IdempotencyInput } from '../src/db/job-store-idempotency.js';
-import type { BellowsConfig } from '../src/workspace/bellows.js';
 import type {
     Claim,
     GateReport,
@@ -118,7 +117,6 @@ interface StoreStub extends JobStore {
     edited: { id: string; command: string; caller: string | null }[];
     markedDone: { id: string; doneBy: string | null }[];
     gatesReported: { id: string; results: GateReport[] }[];
-    gatesReread: { id: string }[];
     publishTokens: { id: string }[];
     stopped: { id: string; stoppedBy: string | null }[];
     removed: { id: string; removedBy: string | null }[];
@@ -190,7 +188,6 @@ function stubStore(
         /** The store finds the request's key already used for a different request (#589). */
         keyReused?: boolean;
         done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict' | 'batch';
-        reread?: { result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | 'lost' | 'missing';
         publish?: { result: 'ok'; token: string | null } | 'lost' | 'missing';
         /** Where the board says the suspend landed, on the 'ok' path. */
         suspendStatus?: JobStatus;
@@ -235,7 +232,6 @@ function stubStore(
         suspended: [],
         requeued: [],
         interrupted: [],
-        gatesReread: [],
         publishTokens: [],
         followUps: [],
         retries: [],
@@ -440,12 +436,6 @@ function stubStore(
             boom();
             stub.gatesReported.push({ id, results });
             return options.verdict ?? 'ok';
-        },
-        async rereadGates(id, _token) {
-            boom();
-            stub.gatesReread.push({ id });
-            const answer = options.reread ?? { result: 'ok' as const, gates: null, gateError: null };
-            return typeof answer === 'string' ? { result: answer } : answer;
         },
         async publishToken(id, _token) {
             boom();
@@ -990,7 +980,7 @@ describe('POST /api/jobs/claim', () => {
     });
 
     // Same rule for the gate declaration: read in the store, relayed untouched. The driver
-    // decides what a null `gates` or a `gateError` means; the route is a pipe.
+    // decides what a null `gates` or a `planRefusal` means; the route is a pipe.
     it('passes the repo label and the gate declaration through verbatim', async () => {
         const withGates: Claim = {
             ...claim,
@@ -1002,7 +992,7 @@ describe('POST /api/jobs/claim', () => {
         expect(response.statusCode).toBe(200);
         expect(response.json()).toEqual(withGates);
 
-        const withError: Claim = { ...claim, repo: 'Bellows-AI/factory', gateError: '.bellows.yaml line 2: nope' };
+        const withError: Claim = { ...claim, repo: 'Bellows-AI/factory', planRefusal: '.bellows.yaml line 2: nope' };
         const instance2 = await harnessWith(stubStore({ claim: withError }));
         const response2 = await post(instance2, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
         expect(response2.json()).toEqual(withError);
@@ -3035,45 +3025,6 @@ it('answers 503 when the org runtime has no job store', async () => {
     expect(response.json().code).toBe('JOBS_UNAVAILABLE');
 });
 
-describe('POST /api/jobs/:id/gates-reread', () => {
-    it('re-reads the gates for the lease holder and answers what the tree holds now', async () => {
-        const gates = { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] };
-        const store = stubStore({ reread: { result: 'ok', gates, gateError: null } });
-        const instance = await harnessWith(store);
-
-        const response = await post(instance, `/api/jobs/${ID}/gates-reread`, { leaseToken: TOKEN });
-
-        expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ gates, gateError: null });
-        expect(store.gatesReread).toEqual([{ id: ID }]);
-    });
-
-    it('carries a broken gates file as gateError, not as an error status', async () => {
-        const store = stubStore({
-            reread: { result: 'ok', gates: null, gateError: '.bellows.yaml line 3: unknown key' },
-        });
-        const instance = await harnessWith(store);
-
-        const response = await post(instance, `/api/jobs/${ID}/gates-reread`, { leaseToken: TOKEN });
-
-        expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ gates: null, gateError: '.bellows.yaml line 3: unknown key' });
-    });
-
-    it.each([
-        ['a lost lease', 'lost', 409, 'LEASE_LOST'],
-        ['a missing job', 'missing', 404, 'NOT_FOUND'],
-    ])('maps %s', async (_label, result, status, code) => {
-        const store = stubStore({ reread: result as 'lost' | 'missing' });
-        const instance = await harnessWith(store);
-
-        const response = await post(instance, `/api/jobs/${ID}/gates-reread`, { leaseToken: TOKEN });
-
-        expect(response.statusCode).toBe(status);
-        expect(response.json().code).toBe(code);
-    });
-});
-
 describe('POST /api/jobs/:id/publish-token', () => {
     it('answers the publish credential to the lease holder', async () => {
         const store = stubStore({ publish: { result: 'ok', token: 'ghs_fresh' } });
@@ -3657,7 +3608,6 @@ describe('error-path mapping', () => {
             'BAD_TOKEN',
             'interrupted',
         ],
-        ['lease token on gates-reread', POST(`${JOB}/gates-reread`, { leaseToken: 'not-a-uuid' }), 'BAD_TOKEN', null],
         ['lease token on publish-token', POST(`${JOB}/publish-token`, { leaseToken: 'not-a-uuid' }), 'BAD_TOKEN', null],
         ['lease token on question', POST(`${JOB}/question`, { ...ASK, leaseToken: 'nope' }), 'BAD_TOKEN', null],
         [

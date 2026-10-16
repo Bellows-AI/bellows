@@ -4,7 +4,6 @@ import {
     handleClaimJob,
     handleCreateJob,
     handleGates,
-    handleGatesReread,
     handleHeartbeat,
     handleLeases,
     handleOutput,
@@ -86,9 +85,6 @@ export const jobRoutes =
         );
         app.post('/api/jobs/:id/gates', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handleGates(orgs, request, reply)
-        );
-        app.post('/api/jobs/:id/gates-reread', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleGatesReread(orgs, request, reply)
         );
         app.post('/api/jobs/:id/publish-token', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handlePublishToken(orgs, request, reply)

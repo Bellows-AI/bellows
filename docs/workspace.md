@@ -41,8 +41,9 @@ Mount shape and its boundary: [security.md](security.md). Task worktrees: [jobs.
 - **`null` size means "not measured", never zero**; only the purge invalidates the facts cache.
   `server/src/workspace/facts.ts`.
 - **The board reads member trees as hostile**: facts run only `rev-parse`/`cat-file` (no repo
-  config execs), and facts and `.bellows.yaml` refuse anything that really lies outside the member's
-  own tree. `server/test/workspace.facts.test.ts`, `server/test/bellows.test.ts`.
+  config execs), and facts refuse anything that really lies outside the member's own tree. The board
+  never opens a `.bellows.yaml` from a tree: the plan comes through the GitHub API
+  (`server/src/workspace/bellows-plan.ts`). `server/test/workspace.facts.test.ts`, `server/test/bellows.plan.test.ts`.
 - **Stated limit:** a symlink raced into `.git/refs` between the facts check and git's read can point
   one read at a tree whose absolute path the agent knows (`CONTAINED_HEAD`).
 - **A pasted executor config reaches the runner stripped of `RUNNER_MANAGED_KEYS`**

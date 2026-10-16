@@ -24,6 +24,7 @@ const baseJob = (masterPrompt: BoardJob['masterPrompt']): BoardJob => ({
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
     executorRefusal: null,
+    planRefusal: null,
     skillRefusal: null,
     masterPrompt,
     resumeSessionId: null,

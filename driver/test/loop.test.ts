@@ -30,7 +30,6 @@ import type { ExportDrain, ExportRelay } from '../src/export-control.js';
 import type { ReviewRelay } from '../src/review-control.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
 import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
-import { BOARD_CALL_ATTEMPTS } from '../src/board-retry.js';
 import { createLoop, type Loop } from '../src/loop.js';
 import { type SyncQueue, type SyncTurn, syncQueue } from '../src/sync-queue.js';
 import { processReclaim, type ReclaimContext } from '../src/loop-reclaim.js';
@@ -55,6 +54,7 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
     executorRefusal: null,
+    planRefusal: null,
     skillRefusal: null,
     masterPrompt: MASTER_PROMPT,
     resumeSessionId,
@@ -74,7 +74,6 @@ interface BoardStub extends Board {
     interrupted: ({ id: string } & Interruption)[];
     beats: number;
     gatesReported: { id: string; results: Parameters<Board['gates']>[1] }[];
-    gatesReread: number;
     publishTokenAsks: string[];
     reclaimGrants: Reclaim[];
     reclaimAcks: string[];
@@ -100,9 +99,6 @@ function stubBoard(
         idleBeforeStop?: number;
         failClaims?: number;
         failSession?: boolean;
-        rereadGates?: { gates: BoardJob['gates']; gateError: string | null } | null;
-        /** The re-read throws (an unreachable board) this many times before it answers. */
-        rereadGatesThrows?: number;
         threadDone?: boolean;
         completeLease?: LeaseState;
         completeFor?: (claimed: BoardJob) => { state: LeaseState; threadDone: boolean };
@@ -137,7 +133,6 @@ function stubBoard(
         interrupted: [],
         beats: 0,
         gatesReported: [],
-        gatesReread: 0,
         publishTokenAsks: [],
         reclaimGrants: [],
         reclaimAcks: [],
@@ -219,11 +214,6 @@ function stubBoard(
             if (options.failAckReclaim) throw new Error('board unreachable');
             board.reclaimAcks.push(id);
             return options.ackReclaimLease ?? 'ok';
-        },
-        async rereadGates(_claimed) {
-            board.gatesReread += 1;
-            if (board.gatesReread <= (options.rereadGatesThrows ?? 0)) throw new Error('board unreachable');
-            return options.rereadGates ?? null;
         },
         async publishToken(claimed) {
             board.publishTokenAsks.push(claimed.id);
@@ -1144,6 +1134,7 @@ describe('the poll loop', () => {
     const suspendedReason = 'The personal executor "main" is suspended. Resume it or choose another executor.';
     const skillsReason =
         '[skills unavailable] skill "jira" needs the jira connection: set ATLASSIAN_SITE. Fix this, then retry the task.';
+    const planReason = '.bellows.yaml line 3: unknown key "timeout". Fix the file, then retry the task.';
     it.each<[string, BoardJob, unknown, 'config' | 'runner_error']>([
         [
             'fails a task whose selected executor profile no longer resolves, before anything runs',
@@ -1165,6 +1156,14 @@ describe('the poll loop', () => {
             'fails a task whose selected skills are unavailable as config with the board’s reason, before anything runs',
             { ...job(1), skillRefusal: skillsReason },
             skillsReason,
+            'config',
+        ],
+        // Issue #769: the execution plan the board resolved at claim time is refused the same way,
+        // as config with the board's sentence — never a retry of a file that cannot change.
+        [
+            'fails a task whose execution plan does not resolve as config with the board’s reason, before anything runs',
+            { ...job(1), planRefusal: planReason },
+            planReason,
             'config',
         ],
         // Issue #244: the board always renders a master prompt for every agent claim, so a missing
@@ -1195,6 +1194,34 @@ describe('the poll loop', () => {
 
         expect(runner.synced).toHaveLength(0);
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind, output });
+    });
+
+    it('launches nothing for a plan refusal: no sync, no services, no gate environment, no agent', async () => {
+        const board = stubBoard([
+            {
+                ...job(1),
+                repo: 'Bellows-AI/factory',
+                services: [{ name: 'db', image: 'postgres:16', environment: [] }],
+                planRefusal: planReason,
+            },
+        ]);
+        const stack = stubGateStack();
+        let ran = 0;
+        const runner = stubRunner(async () => {
+            ran += 1;
+            return ok();
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(ran).toBe(0);
+        expect(runner.synced).toHaveLength(0);
+        expect(runner.startedServices).toEqual([]);
+        expect(stack.stack.acquired).toEqual([]);
+        expect(board.board.gatesReported).toEqual([]);
+        expect(board.board.completed).toHaveLength(1);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
+        expect(board.board.completed[0]?.output).toContain(planReason);
     });
 
     it('fails the attempt with the reason when the checkout sync fails', async () => {
@@ -1233,44 +1260,6 @@ describe('the poll loop', () => {
         expect(logs.some((message) => message.includes('checkout sync threw, leaving it to the lease'))).toBe(true);
     });
 
-    // The claim read the gates file before the sync freshened the checkout — the re-read is what
-    // makes a gates file that just arrived gate THIS run instead of the next one.
-    it('gates the run on the re-read answer when the sync surfaced a gates file', async () => {
-        const board = stubBoard([job(1)], {
-            rereadGates: {
-                gates: null,
-                gateError: '.bellows.yaml line 3: unknown key "ports"',
-            },
-        });
-        const runner = stubRunner(async () => ok());
-
-        await drive({ ...board, runner });
-
-        expect(board.board.gatesReread).toBe(1);
-        // The run never started: a broken gates file is a failed job, now and not next task. A
-        // refused .bellows.yaml is deterministic — its own kind, config, so the board rests the
-        // thread rather than retrying it as a transient runner error (issue #339).
-        expect(runner.synced).toHaveLength(1);
-        expect(runner.published).toHaveLength(0);
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
-        expect(board.board.completed[0]?.output).toContain('could not be read as a gate declaration');
-    });
-
-    // Issue #734: a cache name the driver will not set is a deterministic refusal — failed with a
-    // reason, never thrown into the lease path where it would be reclaimed on every expiry.
-    it('fails a run whose re-read declares a package cache name the driver refuses', async () => {
-        const board = stubBoard([job(1)], {
-            rereadGates: { gates: { image: 'node:24', cache: ['LD_PRELOAD'], gates: [] }, gateError: null },
-        });
-        const runner = stubRunner(async () => ok());
-
-        await drive({ ...board, runner });
-
-        expect(runner.published).toHaveLength(0);
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
-        expect(board.board.completed[0]?.output).toContain('package cache');
-    });
-
     it('fails a claim declaring a refused package cache name before any sync', async () => {
         const board = stubBoard([{ ...job(1), gates: { image: 'node:24', cache: ['NODE_OPTIONS'], gates: [] } }]);
         const runner = stubRunner(async () => ok());
@@ -1280,25 +1269,6 @@ describe('the poll loop', () => {
         expect(runner.synced).toHaveLength(0);
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
         expect(board.board.completed[0]?.output).toContain('package cache');
-    });
-
-    it('keeps the claim’s gates when the re-read is refused', async () => {
-        const board = stubBoard([job(1)], { rereadGates: null });
-        const runner = stubRunner(async () => ok());
-
-        await drive({ ...board, runner });
-
-        expect(board.board.gatesReread).toBe(1);
-        expect(board.board.completed[0]?.status).toBe('succeeded');
-    });
-
-    it('keeps the claim’s gates when the re-read is refused and the claim read the worktree', async () => {
-        const board = stubBoard([{ ...job(1), gatesSource: 'worktree' }], { rereadGates: null });
-        const runner = stubRunner(async () => ok());
-
-        await drive({ ...board, runner });
-
-        expect(board.board.completed[0]?.status).toBe('succeeded');
     });
 
     // The terminal reclaim (issue #47, revised): after the thread is DONE — every member terminal
@@ -1790,20 +1760,20 @@ describe('the poll loop', () => {
         runner.releaseFence = async (fencedJob) => {
             fenced.push(fencedJob.id);
         };
-        const rawReread = board.board.rereadGates.bind(board.board);
+        const rawStart = runner.startServices.bind(runner);
         let seen: AbortSignal | undefined;
-        board.board.rereadGates = async (claimed, signal) => {
-            // The stop lands after the sync, during the gates re-read — the re-read is slow
-            // enough for the setup poll to carry the verdict in.
+        runner.startServices = async (started, signal) => {
+            // The stop lands after the sync, while the services start — slow enough for the
+            // setup poll to carry the verdict in.
             seen = signal;
             options.cancelRequested = true;
             await new Promise((resolve) => setTimeout(resolve, 30));
-            return rawReread(claimed);
+            return rawStart(started, signal);
         };
 
         await drive({ ...board, runner });
 
-        // The re-read was handed the stand-down's signal and it fired (issue #488).
+        // The start was handed the stand-down's signal and it fired (issue #488).
         expect(seen?.aborted).toBe(true);
         expect(fenced).toEqual([job(1).id]);
         expect(board.board.suspended).toEqual([job(1).id]);
@@ -1969,6 +1939,7 @@ describe('the poll loop', () => {
                 repo: 'Bellows-AI/factory',
                 executorType: 'claude-code',
                 executorRefusal: null,
+                planRefusal: null,
                 skillRefusal: null,
                 masterPrompt: null,
             },
@@ -2340,8 +2311,8 @@ describe('the poll loop', () => {
         return { events };
     };
 
-    it('releases the checkout fence before failing a job whose gates file cannot be read', async () => {
-        const board = stubBoard([job(1)], { rereadGates: { gates: null, gateError: 'unknown key "ports"' } });
+    it('fails a job with a plan refusal before the checkout fence is ever taken', async () => {
+        const board = stubBoard([{ ...job(1), planRefusal: '.bellows.yaml line 3: unknown key "ports"' }]);
         const runner = stubRunner(async () => {
             throw new Error('the runner must never be reached');
         });
@@ -2349,53 +2320,10 @@ describe('the poll loop', () => {
 
         await drive({ ...board, runner });
 
-        // Released BEFORE the verdict — a replacement claimant may start the moment the job is failed.
-        expect(events).toEqual([`release:${job(1).id}`, `complete:${job(1).id}`]);
+        // Nothing was synced, so nothing is fenced and there is nothing to release.
+        expect(runner.synced).toHaveLength(0);
+        expect(events).toEqual([`complete:${job(1).id}`]);
         expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
-    });
-
-    // Issue #444: a claim's gates read from the BASE CLONE — every first claim's, the worktree not
-    // existing yet — is only as current as the clone's checked-out files. With the re-read refused
-    // nothing replaces it, so the attempt fails rather than gate against a stale declaration.
-    it('fails the attempt when the re-read is refused and the claim read the base clone', async () => {
-        const board = stubBoard([{ ...job(1), gatesSource: 'clone' }], { rereadGates: null });
-        const runner = stubRunner(async () => {
-            throw new Error('the runner must never be reached');
-        });
-        const { events } = releaseEvents(board.board, runner);
-
-        await drive({ ...board, runner });
-
-        expect(events).toEqual([`release:${job(1).id}`, `complete:${job(1).id}`]);
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
-        expect(board.board.completed[0]?.output).toContain('read from the base clone');
-    });
-
-    // A board restart is seconds of refused connections, not a refusal: the re-read is retried
-    // through it, and only a board that stays unreachable fails a base-clone claim.
-    it('retries a re-read the board could not answer, and runs once it does', async () => {
-        const board = stubBoard([{ ...job(1), gatesSource: 'clone' }], {
-            rereadGates: { gates: null, gateError: null },
-            rereadGatesThrows: 2,
-        });
-        const runner = stubRunner(async () => ok());
-
-        await drive({ ...board, runner });
-
-        expect(board.board.gatesReread).toBe(3);
-        expect(board.board.completed[0]?.status).toBe('succeeded');
-    });
-
-    it('fails a base-clone claim when the board stays unreachable through every re-read', async () => {
-        const board = stubBoard([{ ...job(1), gatesSource: 'clone' }], { rereadGatesThrows: Infinity });
-        const runner = stubRunner(async () => {
-            throw new Error('the runner must never be reached');
-        });
-
-        await drive({ ...board, runner });
-
-        expect(board.board.gatesReread).toBe(BOARD_CALL_ATTEMPTS);
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
     });
 
     it('releases the checkout fence before failing a job that declares gates this driver cannot run', async () => {
@@ -3803,28 +3731,6 @@ describe('verification gates', () => {
         for (const gate of last) {
             expect((gate.output ?? '').length).toBeLessThanOrEqual((16 * 1024) / 2);
         }
-    });
-
-    it('fails a job whose gates file was broken, without running anything', async () => {
-        const broken: BoardJob = {
-            ...job(1),
-            repo: 'Bellows-AI/factory',
-            gateError: '.bellows.yaml line 3: unknown key "timeout"',
-        };
-        const board = stubBoard([broken]);
-        const stack = stubGateStack();
-        let ran = 0;
-        const runner = stubRunner(async () => {
-            ran += 1;
-            return ok();
-        });
-
-        await drive({ ...board, runner, gates: stack.gates });
-
-        expect(ran).toBe(0);
-        expect(stack.stack.acquired).toEqual([]);
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: null });
-        expect(board.board.completed[0]?.output).toContain('unknown key');
     });
 
     // The kubernetes executor has its own gate manager (a Job per gate run), so a gated job

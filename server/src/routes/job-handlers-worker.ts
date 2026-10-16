@@ -369,34 +369,6 @@ export async function handleGates(orgs: OrgRegistry, request: FastifyRequest, re
     return reply.code(HTTP_OK).send({ id });
 }
 
-// Re-reads what the job's checkout declares in .bellows.yaml. The claim read the file before the
-// driver's startup sync brought the checkout up to the remote default, so the claim's answer can
-// be stale by the time the run starts — the driver calls this right after the sync, and gates the
-// run on what the tree holds NOW. Lease-guarded like every worker route: the fresh answer goes
-// only to the worker that holds the run.
-export async function handleGatesReread(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
-    if (!route) return reply;
-    const { store, id } = route;
-
-    const { leaseToken } = body(request.body);
-    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
-    }
-
-    const reread = await guard(
-        reply,
-        (e) => request.log.error({ err: e }, 'job gates re-read failed'),
-        () => store.rereadGates(id, leaseToken)
-    );
-    if (!reread.ok) return reply;
-    if (reread.value.result !== 'ok') {
-        if (reread.value.result === 'missing') return notFoundJob(reply);
-        return leaseLost(reply);
-    }
-    return reply.code(HTTP_OK).send({ gates: reread.value.gates, gateError: reread.value.gateError });
-}
-
 // A publish credential for the run's final push. The claim mints a full-hour installation token,
 // and a run can outlive it — the driver asks HERE, right before the push, and gets the claim's
 // environment resolved now: an operator-configured GITHUB_TOKEN wins exactly as at claim time,

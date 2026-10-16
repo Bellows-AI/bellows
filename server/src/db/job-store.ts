@@ -60,7 +60,6 @@ import {
     sessionReport,
     progressReport,
     gatesReport,
-    rereadGatesJob,
     publishTokenJob,
     completeJob,
 } from './job-store-worker.js';
@@ -80,7 +79,6 @@ function workerMethods(
     | 'session'
     | 'progress'
     | 'gates'
-    | 'rereadGates'
     | 'askQuestion'
     | 'requestReview'
     | 'readReview'
@@ -113,11 +111,6 @@ function workerMethods(
         async gates(id, leaseToken, results) {
             await gate();
             return gatesReport(ctx, id, leaseToken, results);
-        },
-
-        async rereadGates(id, leaseToken) {
-            await gate();
-            return rereadGatesJob(ctx, id, leaseToken);
         },
 
         async askQuestion(id, leaseToken, ask) {
@@ -171,7 +164,7 @@ function workerMethods(
 export { INTERRUPTION_BUDGET } from './job-store-actions.js';
 
 export function createJobStore(deps: CreateJobStoreDeps): JobStore {
-    const { sql, orgId, hasWorkspaces = true, ready, env, githubToken, gates: gatesReader, executorConfig, prs } = deps;
+    const { sql, orgId, hasWorkspaces = true, ready, env, githubToken, plan: planReader, executorConfig, prs } = deps;
     const gate = async () => {
         if (ready) await ready;
     };
@@ -182,7 +175,7 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         hasWorkspaces,
         env,
         githubToken,
-        gatesReader,
+        planReader,
         executorConfig,
         prs,
         wallTick: wallTickFragment(sql),

@@ -9,7 +9,7 @@ import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@fa
 import type { EvidencePolicy } from './evidence-policy.js';
 import { enforceCompletionPolicy } from './job-store-evidence.js';
 import { answeredQuestionsOf } from './job-store-questions.js';
-import { exists, insertWorkflowSuccessor, runtimePatch, workspacePathFor } from './job-store-rows.js';
+import { exists, insertWorkflowSuccessor, runtimePatch } from './job-store-rows.js';
 import { stopReviewsOf } from './job-store-reviews.js';
 import type {
     JobStore,
@@ -24,7 +24,7 @@ import { type CompletedRun, nextTransition, primarySessionId } from './workflow-
 import { enterRuntimeBoundary } from './workflow-blocks/runtime.js';
 import { entersBlockHelperNode, settleBlockWaits } from './workflow-blocks/runtime-settle.js';
 import { applyMergeClosureIfMerged, mergeClosureMarkerSet, prLockKey, settleIfMergeClosed } from './job-store-merge.js';
-import { nodeSkipsGates, type WorkflowDefinition, type ParamValues } from './workflow-schema.js';
+import type { WorkflowDefinition, ParamValues } from './workflow-schema.js';
 
 export type HeartbeatResult = Awaited<ReturnType<JobStore['heartbeat']>>;
 
@@ -128,48 +128,6 @@ export async function gatesReport(
     `;
     if (rows[0]) return 'ok';
     return (await exists(sql, orgId, id)) ? 'lost' : 'missing';
-}
-
-export async function rereadGatesJob(
-    ctx: JobStoreContext,
-    id: string,
-    leaseToken: string
-): ReturnType<JobStore['rereadGates']> {
-    const { sql, orgId, hasWorkspaces, gatesReader } = ctx;
-    // Lease-guarded like every worker route: the freshness answer goes only to the worker
-    // that holds the run, and only while it still does.
-    const rows = await sql<
-        {
-            created_by: string | null;
-            repo: string | null;
-            root_job_id: string;
-            workflow_node: string | null;
-            workflow_snapshot: WorkflowDefinition | null;
-        }[]
-    >`
-        select j.created_by, j.repo, j.root_job_id, j.workflow_node, r.workflow_snapshot
-        from job j
-        left join job r on r.org_id = j.org_id and r.id = j.root_job_id
-        where j.org_id = ${orgId} and j.id = ${id}
-          and j.status = 'running' and j.lease_token = ${leaseToken}
-    `;
-    const row = rows[0];
-    if (!row) return { result: (await exists(sql, orgId, id)) ? 'lost' : 'missing' };
-    // The claim's own rule (`resolveClaimPublish`): a node that opted out of the gates must not
-    // fail on a .bellows.yaml it never reads.
-    const { workflow_node: node, workflow_snapshot: snapshot } = row;
-    if (node !== null && snapshot && nodeSkipsGates(snapshot, node)) {
-        return { result: 'ok', gates: null, gateError: null };
-    }
-    // The claim's own derivation: `<orgId>/<author>`, gated on having somewhere to read.
-    const workspacePath = workspacePathFor(orgId, hasWorkspaces, row.created_by);
-    if (!gatesReader || !row.repo || !workspacePath) {
-        return { result: 'ok', gates: null, gateError: null };
-    }
-    // The worktree the run edits is keyed by the thread's root, not by this row — the
-    // column read (022) answers for it directly.
-    const read = await gatesReader.readFor(workspacePath, row.repo, row.root_job_id);
-    return { result: 'ok', gates: read.config, gateError: read.error };
 }
 
 export async function publishTokenJob(

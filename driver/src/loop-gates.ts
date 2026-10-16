@@ -63,7 +63,7 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
     const { gates } = rt;
     // A checkout that declares only `setup` still gets the environment: setup runs in it before
     // the agent starts (issue #733).
-    if (!job.gates || (!job.gates.gates.length && !job.gates.setup) || job.gateError) return null;
+    if (!job.gates || (!job.gates.gates.length && !job.gates.setup)) return null;
     if (!gates) {
         // Declared gates with no gate environment were refused by the re-read; only setup is left.
         rt.log(`job ${job.id}: environment.setup skipped — this driver has no gate environment configured`);
