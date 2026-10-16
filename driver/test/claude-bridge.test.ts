@@ -483,6 +483,34 @@ describe('claude-bridge exit and signals', () => {
         expect(result.code).toBe(7);
     });
 
+    // Issue #798: the bridge's stdout is the progress sidecar's FIFO. A reader that died is lost
+    // live progress, never a failed run: the CLI runs on and its own status is the verdict.
+    it('keeps the CLI running and exits with its status when the progress reader is gone', async () => {
+        const { dir, bin } = sandbox();
+        const lines = [{ type: 'system', subtype: 'init' }, askRequest('Write')];
+        const { child, exited, output } = launch(
+            ['-p', 'p'],
+            { FAKE_LINES: JSON.stringify(lines), FAKE_EXIT: '7' },
+            dir,
+            bin
+        );
+        child.stdout.destroy();
+
+        const { code } = await exited;
+
+        expect(code).toBe(7);
+        expect(existsSync(join(dir, 'stdin-closed'))).toBe(true);
+        const replies = readFileSync(join(dir, 'stdin.jsonl'), 'utf8')
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line))
+            .filter((message) => message.type === 'control_response' && message.response.request_id === 'req-1');
+        expect(replies.map((message) => message.response.response.behavior)).toEqual(['deny']);
+        const { stderr } = output();
+        expect(stderr).not.toContain('EPIPE');
+        expect(stderr.split('the progress reader is gone').length - 1).toBe(1);
+    });
+
     it('exits 128 plus the signal number when the CLI died to a signal', async () => {
         const result = await run({ env: { FAKE_SIGNAL: 'SIGKILL' } });
 

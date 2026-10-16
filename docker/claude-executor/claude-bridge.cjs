@@ -8,8 +8,8 @@
 // headless `-p` run did before.
 //
 // It receives the entrypoint's `"$@"`, which ends `-p <prompt>`, and passes the CLI's stdout
-// through unchanged — the progress FIFO contract is the entrypoint's. The question text is never
-// written to stderr or stdout by the bridge itself.
+// through unchanged while the progress reader lives — the FIFO contract is the entrypoint's. The
+// question text is never written to stderr or stdout by the bridge itself.
 const fs = require('node:fs');
 const os = require('node:os');
 const readline = require('node:readline');
@@ -132,6 +132,14 @@ function main() {
     });
     // The CLI can exit before a late write lands; that is the exit handler's to report, not a crash.
     cli.stdin.on('error', () => {});
+    // Our stdout is the progress sidecar's FIFO (issue #798): a reader that died costs the live
+    // progress, never the run — stop relaying, say so once, and let the CLI's status stand.
+    let relaying = true;
+    process.stdout.on('error', () => {
+        if (!relaying) return;
+        relaying = false;
+        process.stderr.write('claude-bridge: the progress reader is gone; live progress stops, the run continues\n');
+    });
 
     // A `result` ends a turn, and closing stdin ends the run — but the CLI still runs the turn a
     // background subagent's completion queues, and past end of input that turn's permission
@@ -150,7 +158,7 @@ function main() {
 
     const reader = readline.createInterface({ input: cli.stdout, crlfDelay: Infinity });
     reader.on('line', (line) => {
-        process.stdout.write(`${line}\n`);
+        if (relaying) process.stdout.write(`${line}\n`);
         let event;
         try {
             event = JSON.parse(line);
