@@ -14,6 +14,14 @@ lands its kubernetes counterpart in the same change. A capability that genuinely
 is stated as a limit in `docs/kubernetes.md` and pinned by `driver/test/k8s-docs.test.ts`, never
 left as a refusal message. Touching `driver/`? Ask what it does to `EXECUTOR=kubernetes`.
 
+**Infrastructure loss interrupts a task; it never loses one.** Nodes are reclaimed (spot
+interruptions, drains, consolidation, rebalancing), and the driver, a runner or a service pod can
+vanish at any step. Every runtime change answers how the task recovers from that: the next claim
+adopts what survived under a new claim sequence instead of sweeping it, a lost runner resumes its
+session and checkout rather than restarting, a lost service is recreated, and an infrastructure
+loss is recorded apart from a run failure, never ending a task `dead` while recoverable state
+exists. Avoiding disruption (node pinning, do-not-disrupt) is a mitigation, not the recovery.
+
 **Touching the frontend means running the e2e suite.** A change under `web/src` — a component,
 panel, page, style, label or `aria-*` name — or to a payload a panel renders runs
 `npm run verify:ui` before it ships, and every failure is fixed in the same change: the app if it
