@@ -283,9 +283,11 @@ expect_not_contains 'empty cpu requests forward nothing'           "$emptied_res
 expect_not_contains 'empty memory requests forward nothing'        "$emptied_resources" 'RUNNER_MEMORY_REQUEST'
 # Gate pod resources (issue #507): a gate runs the whole suite, so it requests more than a runner.
 expect_contains 'the driver forwards the gate cpu request'         "$runner_resources" 'name: GATE_CPU_REQUEST'
-expect_contains 'the gate cpu request renders from the chart value' "$(grep -A1 'name: GATE_CPU_REQUEST' <<<"$runner_resources")" 'value: "2"'
+# values-local.yaml lowers the gate request to fit one node; the chart default is pinned on the
+# EKS shape below, which renders without it.
+expect_contains 'the local gate cpu request renders from values-local' "$(grep -A1 'name: GATE_CPU_REQUEST' <<<"$runner_resources")" 'value: "1"'
 expect_contains 'the driver forwards the gate memory request'      "$runner_resources" 'name: GATE_MEMORY_REQUEST'
-expect_contains 'the gate memory request renders from the chart value' "$(grep -A1 'name: GATE_MEMORY_REQUEST' <<<"$runner_resources")" 'value: "2Gi"'
+expect_contains 'the local gate memory request renders from values-local' "$(grep -A1 'name: GATE_MEMORY_REQUEST' <<<"$runner_resources")" 'value: "1Gi"'
 expect_not_contains 'gate limits default to the runner limits'     "$runner_resources" 'GATE_CPU_LIMIT'
 gate_limited="$(render --set runner.gateResources.limits.memory=6Gi)"
 gate_limited_resources="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$gate_limited")"
@@ -778,6 +780,9 @@ fi
 # the cloud install back onto a default class that cannot serve ReadWriteMany.
 expect_contains 'the EKS shape names the EFS storage class on the claim' "$eks" 'storageClassName: "efs-ap"'
 expect_contains 'the EFS claim stays ReadWriteMany' "$eks" '- ReadWriteMany'
+# The chart's gate request (issue #507): a gate runs the whole suite, so it requests more than a runner.
+expect_contains 'the gate cpu request renders from the chart value' "$(grep -A1 'name: GATE_CPU_REQUEST' <<<"$eks")" 'value: "2"'
+expect_contains 'the gate memory request renders from the chart value' "$(grep -A1 'name: GATE_MEMORY_REQUEST' <<<"$eks")" 'value: "2Gi"'
 # The registry prefix composes with every image, and the wait image stays whole — the two rules
 # the prefix's own block pins separately, pinned together here because the runbook sets both.
 expect_contains 'the EKS shape prefixes the dashboard image' "$eks" "image: ghcr.io/example/factory-ai:$app_version"
