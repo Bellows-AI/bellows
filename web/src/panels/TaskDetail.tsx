@@ -19,12 +19,20 @@ interface HistoryItem {
     at: string;
 }
 
+/** Each attempt of one run the infrastructure interrupted (issue 796), as recorded facts. */
+const interruptionItems = (job: Job, run: string): HistoryItem[] =>
+    job.interruptions.map((interruption) => ({
+        key: `${job.id}-interrupted-${interruption.claimSeq}-${interruption.at}`,
+        title: `${run} interrupted: ${interruption.reason}`,
+        at: interruption.at,
+    }));
+
 /**
- * The run history: only facts the board recorded — each run's queued/started/finished stamps, a
- * stop request, the review wait's start and the Done verdict — oldest first. Nothing inferred:
- * no "Implemented changes", no "Published PR", because no stamp says when either happened. The
- * wait and the verdict are the thread's (every member carries the same wait, and only the newest
- * run can be closed), so they are read off the newest run once.
+ * The run history: only facts the board recorded — each run's queued/started/finished stamps, its
+ * interruptions, a stop request, the review wait's start and the Done verdict — oldest first.
+ * Nothing inferred: no "Implemented changes", no "Published PR", because no stamp says when
+ * either happened. The wait and the verdict are the thread's (every member carries the same wait,
+ * and only the newest run can be closed), so they are read off the newest run once.
  */
 function runHistory(jobs: Job[]): HistoryItem[] {
     const items: HistoryItem[] = [];
@@ -37,6 +45,7 @@ function runHistory(jobs: Job[]): HistoryItem[] {
         });
         if (job.startedAt !== null)
             items.push({ key: `${job.id}-started`, title: `${run} started`, at: job.startedAt });
+        items.push(...interruptionItems(job, run));
         if (job.cancelRequestedAt !== null) {
             const by = job.stoppedBy !== null ? ` by ${job.stoppedBy.login}` : '';
             items.push({ key: `${job.id}-stop`, title: `Stop requested${by}`, at: job.cancelRequestedAt });

@@ -7,11 +7,11 @@ Which lane proves what for the board/driver/runner/telemetry control plane, list
 | `npm run test:executors` | nothing | Board routes, orchestration, both runners, image/config artifacts, OTLP parsing — offline. Config in `vitest.executors.config.ts`. |
 | `npm run test:coverage:executors` | nothing | The same surface against the thresholds in that config. |
 | `DATABASE_URL=…/factory_test npm run test:db` | postgres | Real lease, fencing, attribution, deduplication and rollup SQL (`vitest.db.config.ts`), and the CLI scripting flow over real board HTTP and SQL with no driver or runner (`server/test-db/cli.scripting.test.ts`). |
-| `npm run test:jobs` | docker, port 8129 | Real board HTTP, a real driver, real containers, a disposable database (`scripts/test-jobs.sh`); every task runs against a ready fixture repository whose origin is a bare repo in the driver volume (`server/test/test-jobs.harness.test.ts`). Required before changing docker runner behavior. |
+| `npm run test:jobs` | docker, port 8129 | Real board HTTP, a real driver, real containers, a disposable database (`scripts/test-jobs.sh`); every task runs against a ready fixture repository whose origin is a bare repo in the driver volume (`server/test/test-jobs.harness.test.ts`). Its node-disruption phase kills (`kill -9`) and drains (`DRIVER_HANDOVER_MS`) a driver mid-run: the next claim adopts the finished runner, one attempt and one interruption. Required before changing docker runner behavior. |
 | the cooperative-Stop phase of `npm run test:jobs` | docker, `make runners` | The real `claude` and `opencode` in the executor images against `scripts/fake-model-endpoint.mjs` (offline, no credential): a Stop raised inside the first model step ends the run after that step's tool call and before a second model request. The endpoint's own protocol is pinned in `driver/test/fake-model-endpoint.test.ts`. |
 | the question round-trip phase of `npm run test:jobs` | docker, `make runners` | Board + driver + the real `claude-executor` against the endpoint's `--ask` mode: the job shows a pending question, a member's answer settles it `succeeded` with `ANSWER=Blue`, a second answer is 409 `QUESTION_ANSWERED`; a Stop while pending settles `stopped` and the question reads `closed`. Kubernetes has no such lane — a stated limit in [kubernetes.md](kubernetes.md). |
 | `npm run test:k8s` | helm | `helm lint`/`helm template` assertions in both the local and the EKS value shapes, including the rendered CEL and the port-scoped egress rules. Required before changing Kubernetes runner behavior. |
-| `npm run test:k8s -- --cluster` | kind, kubectl, docker | A real apiserver compiles the admission policy and refuses a pod missing each field in turn; a queued job comes back succeeded; the workspace boundary is probed from inside a pod. |
+| `npm run test:k8s -- --cluster` | kind, kubectl, docker | A real apiserver compiles the admission policy and refuses a pod missing each field in turn; a queued job comes back succeeded; the workspace boundary is probed from inside a pod; a driver pod force-deleted or drained mid-run and a runner pod deleted mid-run each end succeeded with one attempt and one interruption — the finished runner Job adopted, never reaped unread. |
 | `npm run test:k8s -- --netpol` | kind, kubectl, docker, network | The network denials, on a cluster this lane creates with kindnet disabled and Calico installed. |
 | `npx vitest run driver/test/k8s-admission.test.ts` | nothing | The policy requires the hardening **and** the driver's own output satisfies what it requires — the half that keeps a tightened policy from becoming a cluster-wide outage. |
 
@@ -42,8 +42,8 @@ Which lane proves what for the board/driver/runner/telemetry control plane, list
 - **A cloud cluster.** `--cluster` refuses every non-kind context deliberately (it deletes runner
   Jobs), so the EKS value shape is only rendered offline and walked by hand
   ([eks-runbook.md](eks-runbook.md)).
-- **Fault injection in the kind phase** — it proves successful execution, not API outage,
-  stop-during-sync, a superseded claim or a failed cleanup.
+- **Fault injection in the kind phase** beyond the node-disruption section of `scripts/test-k8s.sh`
+  — not API outage, stop-during-sync or a failed cleanup.
 - **A real agent CLI honouring the master prompt's flags.** Both transports' argv is pinned
   offline; nothing proves the vendor binaries accept them. That needs a model credential. (The
   scripted endpoint above proves the Stop boundary only — not model quality or the prompt's flags.)

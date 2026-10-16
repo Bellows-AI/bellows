@@ -214,6 +214,7 @@ describe('taskSummary', () => {
         wallClockMs: null,
         agentTurns: null,
         setupMs: null,
+        interruptions: [],
         taskWallClockMs: null,
         summary: null,
         failureKind: null,

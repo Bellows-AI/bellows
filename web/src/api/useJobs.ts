@@ -126,6 +126,13 @@ export interface JobQuestion {
     answeredAt: string | null;
 }
 
+/** One attempt the infrastructure interrupted — copied from the server's `JobInterruption`. */
+export interface JobInterruption {
+    at: string;
+    reason: string;
+    claimSeq: number;
+}
+
 export interface Job {
     id: string;
     command: string;
@@ -212,6 +219,11 @@ export interface Job {
      * `wallClockMs`, shown apart from it. Null when no setup ran, or on the per-run lists.
      */
     setupMs: number | null;
+    /**
+     * The attempts the infrastructure interrupted, oldest first — refunded, never a failed try.
+     * Empty on the per-run lists and on a run nothing interrupted.
+     */
+    interruptions: JobInterruption[];
     /**
      * The wall clock the task's whole thread has banked — every executed segment of every run,
      * accumulated by the board and served on the thread read and on the grouped terminal rows

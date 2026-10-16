@@ -8,6 +8,7 @@ import {
     failedGateThread,
     followUpOverWaitThread,
     followUpThread,
+    interruptedThread,
     missingSummaryThread,
     multiFollowUpThread,
     nullAuthorThread,
@@ -72,6 +73,7 @@ const THREADS: [state: string, fixture: string, jobs: readonly ThreadJob[]][] = 
     ['sessionless', 'sessionlessThread', sessionlessThread],
     ['other-author', 'otherAuthorThread', otherAuthorThread],
     ['null-author', 'nullAuthorThread', nullAuthorThread],
+    ['interrupted', 'interruptedThread', interruptedThread],
 ];
 
 /** A started batch's detail page, served by the fake board: the open board runs no scheduler. */

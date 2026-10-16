@@ -14,6 +14,7 @@ import {
     threadContextTokens,
     threadCostUsd,
     threadIssue,
+    threadInterruptions,
     threadSetupMs,
     threadPublish,
 } from '../src/task-outcome.js';
@@ -386,6 +387,25 @@ describe('task outcome derivations', () => {
 
         it('counts a measured zero', () => {
             expect(threadSetupMs([{ ...base, setupMs: 0 }])).toBe(0);
+        });
+    });
+
+    // Issue #796: an attempt the infrastructure interrupted, told apart from a failed retry.
+    describe('threadInterruptions', () => {
+        const drained = { at: '2026-09-01T12:05:00.000Z', reason: 'the driver was drained', claimSeq: 1 };
+        const evicted = { at: '2026-09-01T12:02:00.000Z', reason: 'the runner pod was deleted', claimSeq: 1 };
+
+        it("lists every run's interruptions oldest first, numbered by run", () => {
+            expect(
+                threadInterruptions([{ ...base, interruptions: [drained] }, followUp({ interruptions: [evicted] })])
+            ).toEqual([
+                { ...evicted, run: 2 },
+                { ...drained, run: 1 },
+            ]);
+        });
+
+        it('is empty when nothing was interrupted', () => {
+            expect(threadInterruptions([base, followUp()])).toEqual([]);
         });
     });
 });

@@ -792,6 +792,126 @@ docker ps -aq --filter "label=factory.job=$orphan" |
 
 stop_driver
 
+# --- Node disruption (issue #796) -------------------------------------------------------------
+#
+# Infrastructure loss interrupts a task, it never loses one: a driver lost mid-run leaves its
+# runner container running to the end, and the next claim adopts that finished runner's verdict
+# instead of redoing the work. Two ways to lose the driver — kill -9 (the lease expires on its
+# own), and SIGTERM past DRIVER_HANDOVER_MS (the drain hands the lease back as an interruption,
+# claimable at once). Either way the job succeeds with the first runner's output, its attempt
+# refunded, and exactly one interruption recorded for claim 1. The prompt-executing stub prints
+# its own hostname — the container id — so the output names the container that ran it.
+
+echo
+echo '# node disruption'
+
+disruption_driver() { # disruption_driver [VAR=value ...] — a services-off driver on the prompt-executing stub
+    env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$IMAGE_RUN" OPENCODE_EXECUTOR_IMAGE="$IMAGE_RUN" \
+        RUNNER_SERVICES=0 WORKSPACE_VOLUME="$VOLUME" \
+        DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=10 "$@" \
+        node driver/dist/index.js >>"$work/driver.log" 2>&1 &
+    driver_pid=$!
+}
+
+first_runner() { # first_runner <job-id> [docker ps filter] -> the claim-1 runner container's id
+    docker ps -aq --filter "label=factory.job=$1" --filter "label=factory.claim-seq=1" ${2:+--filter "$2"}
+}
+
+await_first_runner() { # await_first_runner <job-id> <status> [seconds] -> the container id, empty on timeout
+    local i=0 c=""
+    while [ "$i" -lt "${3:-60}" ]; do
+        c="$(first_runner "$1" "status=$2")"
+        [ -n "$c" ] && break
+        sleep 1
+        i=$((i + 1))
+    done
+    printf '%s' "$c"
+}
+
+interruptions_of() { # interruptions_of <job json> -> "<count>|<claimSeq of the first>|<reason of the first>"
+    node -e 'try { const l = JSON.parse(process.argv[1] || "{}").interruptions ?? []; process.stdout.write(`${l.length}|${l[0]?.claimSeq ?? ""}|${l[0]?.reason ?? ""}`); } catch { process.stdout.write("?||"); }' \
+        "$1"
+}
+
+ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
+DRAINED='the driver was drained'
+
+# a. The hard kill: no drain, no handover, the lease left to expire. The runner runs to its end
+#    while no driver watches it; the next driver's claim (2) adopts it.
+disruption_driver
+killed="$(create_job 'sleep 8; echo "ran in $HOSTNAME"')"
+killed_runner="$(await_first_runner "$killed" running)"
+[ -n "$killed_runner" ] && ok 'the hard-kill runner is running' ||
+    bad 'the hard-kill runner is running' "job: $(body "$(api GET "/api/jobs/$killed")")"
+kill -9 "$driver_pid" 2>/dev/null
+wait "$driver_pid" 2>/dev/null
+driver_pid=""
+[ -n "$(await_first_runner "$killed" exited 30)" ] &&
+    [ "$(docker inspect -f '{{.State.ExitCode}}' "$killed_runner" 2>/dev/null)" = '0' ] &&
+    ok 'the runner of a killed driver runs to its end' ||
+    bad 'the runner of a killed driver runs to its end' "$(docker ps -a --filter "label=factory.job=$killed" --format '{{.Names}} {{.Status}}')"
+disruption_driver
+expect_contains 'the next claim settles the killed run' "$(await_settled "$killed" 60)" succeeded
+killed_body="$(body "$(api GET "/api/jobs/$killed")")"
+expect_contains 'the adopted output is the first runner output' "$(field "$killed_body" output)" "ran in $killed_runner"
+expect_field 'the killed attempt is refunded' "$killed_body" attempts 1
+killed_int="$(interruptions_of "$killed_body")"
+[ "$killed_int" = "1|1|$ADOPTED" ] && ok 'one interruption records the adoption of claim 1' ||
+    bad 'one interruption records the adoption of claim 1' "count|claimSeq|reason: $killed_int"
+grep -qF "job $killed: $ADOPTED" "$work/driver.log" && ok 'the driver logs the adoption' ||
+    bad 'the driver logs the adoption' "$(grep -F "job $killed:" "$work/driver.log" | tail -5)"
+[ -z "$(first_runner "$killed")" ] && ok 'the adoption removes the adopted runner' ||
+    bad 'the adoption removes the adopted runner' "$(first_runner "$killed")"
+stop_driver
+
+# b. The handover: SIGTERM, and a drain that outlasts DRIVER_HANDOVER_MS hands the run back as an
+#    interruption — queued at once — and leaves its runner alive. The next driver is started only
+#    once that runner exited: a claim of a STILL-running runner sweeps it (docs/kubernetes.md).
+disruption_driver DRIVER_HANDOVER_MS=2000
+drained="$(create_job 'sleep 12; echo "ran in $HOSTNAME"')"
+drained_runner="$(await_first_runner "$drained" running)"
+[ -n "$drained_runner" ] && ok 'the handover runner is running' ||
+    bad 'the handover runner is running' "job: $(body "$(api GET "/api/jobs/$drained")")"
+kill -TERM "$driver_pid" 2>/dev/null
+handed=""
+for _ in $(seq 1 8); do
+    sleep 1
+    drained_body="$(body "$(api GET "/api/jobs/$drained")")"
+    [ "$(field "$drained_body" status)|$(interruptions_of "$drained_body")" = "queued|1|1|$DRAINED" ] && {
+        handed=1
+        break
+    }
+done
+[ -n "$handed" ] && ok 'a drained driver hands its run back as an interruption' ||
+    bad 'a drained driver hands its run back as an interruption' "status: $(field "$drained_body" status), count|claimSeq|reason: $(interruptions_of "$drained_body")"
+wait "$driver_pid" 2>/dev/null
+driver_pid=""
+[ -n "$(first_runner "$drained" status=running)" ] && ok 'the handed-over runner is left running' ||
+    bad 'the handed-over runner is left running' "$(docker ps -a --filter "label=factory.job=$drained" --format '{{.Names}} {{.Status}}')"
+[ -n "$(await_first_runner "$drained" exited 30)" ] &&
+    [ "$(docker inspect -f '{{.State.ExitCode}}' "$drained_runner" 2>/dev/null)" = '0' ] &&
+    ok 'the handed-over runner exits 0 on its own' ||
+    bad 'the handed-over runner exits 0 on its own' "$(docker ps -a --filter "label=factory.job=$drained" --format '{{.Names}} {{.Status}}')"
+disruption_driver
+expect_contains 'the next claim adopts the handed-over run' "$(await_settled "$drained" 60)" succeeded
+drained_body="$(body "$(api GET "/api/jobs/$drained")")"
+expect_contains 'the handed-over output is the first runner output' "$(field "$drained_body" output)" "ran in $drained_runner"
+expect_field 'the handed-over attempt is refunded' "$drained_body" attempts 1
+drained_int="$(interruptions_of "$drained_body")"
+[ "$drained_int" = "1|1|$DRAINED" ] && ok 'the handover and its adoption are one interruption' ||
+    bad 'the handover and its adoption are one interruption' "count|claimSeq|reason: $drained_int"
+grep -qF "job $drained: $ADOPTED" "$work/driver.log" && ok 'the driver logs the handed-over adoption' ||
+    bad 'the driver logs the handed-over adoption' "$(grep -F "job $drained:" "$work/driver.log" | tail -5)"
+stop_driver
+
+# Whatever either case left, by label, one id per rm — as the reaper phase does.
+for job in "$killed" "$drained"; do
+    docker ps -aq --filter "label=factory.job=$job" |
+        while IFS= read -r container_id; do
+            [ -n "$container_id" ] && docker rm -f "$container_id" >/dev/null 2>&1
+        done
+done
+
 # --- Workflows -------------------------------------------------------------------------------
 #
 # Issue #94, end to end. A workflow definition lives on the board (created through the API, the

@@ -2572,19 +2572,21 @@ describe('the poll loop', () => {
         expect(board.board.interrupted).toEqual([]);
     });
 
-    // A failed adoption read is no verdict: the attempt goes on to run the job itself.
-    it('runs the job when the adoption read throws', async () => {
+    // A failed adoption is no verdict — a read that threw, or a run read but never swept (issue
+    // 796; the runners' own tests pin that a failed sweep rejects): the attempt syncs and runs the
+    // job itself, recording no interruption for a run it never took.
+    it('runs the job when the adoption throws', async () => {
         const board = stubBoard([job(1)]);
         let launched = 0;
         const logs: string[] = [];
         const runner = stubRunner(
             async () => {
                 launched += 1;
-                return ok();
+                return ok({ output: 'the fresh run' });
             },
             {
                 adopt: async () => {
-                    throw new Error('listing the runner jobs answered 503');
+                    throw new Error('sweeping the earlier claim answered 503');
                 },
             }
         );
@@ -2592,6 +2594,9 @@ describe('the poll loop', () => {
         await drive({ ...board, runner, log: (m) => logs.push(m) });
 
         expect(launched).toBe(1);
+        expect(runner.synced).toHaveLength(1);
+        expect(board.board.interrupted).toEqual([]);
+        expect(board.board.completed[0]?.output).toContain('the fresh run');
         expect(logs.some((m) => m.includes('could not adopt an earlier runner'))).toBe(true);
     });
 

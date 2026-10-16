@@ -558,6 +558,18 @@ describe('TaskDetail — main column', () => {
         expect(html).not.toMatch(/Implemented|Published PR|Published pull request/);
     });
 
+    // Issue #796: an interruption is a recorded fact of the run, not a failed attempt.
+    it('records each interruption in the run history', () => {
+        const html = renderDetail({
+            jobs: [
+                job({
+                    interruptions: [{ at: '2026-09-01T12:00:30.000Z', reason: 'the driver was drained', claimSeq: 1 }],
+                }),
+            ],
+        });
+        expect(titlesOf(html)).toContain('Run 1 interrupted: the driver was drained');
+    });
+
     it('collapses the run history behind a disclosure counting the runs', () => {
         const html = renderDetail({ jobs: [job()] });
         expect(html).toMatch(/<details class="run-history"><summary><h2>Run history<\/h2>.*?1 run</);

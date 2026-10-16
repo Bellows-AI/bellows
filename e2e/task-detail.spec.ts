@@ -8,6 +8,7 @@ import {
     failedGateFollowUpThread,
     failedGateThread,
     followUpThread,
+    interruptedThread,
     publishedThread,
     routeThread,
     runningThread,
@@ -278,6 +279,31 @@ test.describe('the task detail page', () => {
         await expect(page.locator('.task-published')).toContainText('Pull request #1');
         await expect(page.getByRole('link', { name: 'View checks' })).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/task-detail-thread.png`, fullPage: true });
+    });
+
+    // Issue #796: an attempt the infrastructure took reads apart from a failed retry.
+    test('an interrupted run lists each interruption apart from its attempts', async ({ page }) => {
+        await routeThread(page, interruptedThread);
+        const problems = watchConsole(page);
+        await page.goto(`/tasks/${interruptedThread[0]!.id}`);
+
+        const interruptions = page.locator('.task-outcome section', {
+            has: page.getByRole('heading', { name: 'Interruptions' }),
+        });
+        await expect(interruptions).toContainText('not counted as failed attempts');
+        await expect(interruptions.locator('.task-history-item')).toHaveText([
+            /Claim 1: the driver was drained/,
+            /Claim 2: infrastructure loss: the runner pod was deleted before it exited \(Evicted\)/,
+        ]);
+        await expect(interruptions.locator('time')).toHaveCount(2);
+        await page.screenshot({ path: `${SHOTS}/task-detail-interrupted.png`, fullPage: true });
+
+        await page.getByRole('heading', { name: 'Run history' }).click();
+        await expect(page.locator('.run-history')).toContainText('Run 1 interrupted: the driver was drained');
+        await page.setViewportSize({ width: 390, height: 1000 });
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.screenshot({ path: `${SHOTS}/task-detail-interrupted-390.png`, fullPage: true });
+        expect(problems).toEqual([]);
     });
 
     test('a running run shows its activity and a bounded live output', async ({ page }) => {

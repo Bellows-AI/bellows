@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { nullAuthorThread, type ThreadJob } from '../../e2e/fixtures/threads.js';
+import { authoredBy, interruptedThread, nullAuthorThread, type ThreadJob } from '../../e2e/fixtures/threads.js';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
@@ -32,14 +32,14 @@ async function seedThread(jobs: readonly ThreadJob[]): Promise<void> {
         await sql`
             insert into job (org_id, id, root_job_id, parent_job_id, command, status, attempts, max_attempts,
                              claimed_by, session_id, repo, executor, workflow_name, workflow_node, mode, exit_code,
-                             output, summary, gates, runtime, wall_clock_ms, agent_turns, done_at,
-                             cancel_requested_at, created_at, started_at, finished_at)
+                             output, summary, gates, runtime, wall_clock_ms, agent_turns, interruptions,
+                             done_at, cancel_requested_at, created_at, started_at, finished_at)
             values (${ORG}, ${job.id}, ${job.rootJobId}, ${job.followUpTo}, ${job.command}, ${job.status},
                     ${job.attempts}, ${job.maxAttempts}, ${job.claimedBy}, ${job.sessionId}, ${job.repo},
                     ${job.executor}, ${job.workflowName}, ${job.workflowNode}, ${job.mode}, ${job.exitCode},
                     ${job.output}, ${job.summary}, ${job.gates ? sql.json(job.gates as never) : null},
                     ${job.runtime ? sql.json(job.runtime as never) : null}, ${job.wallClockMs},
-                    ${job.agentTurns}, ${job.doneAt}, ${job.cancelRequestedAt}, ${job.createdAt}, ${job.startedAt},
+                    ${job.agentTurns}, ${sql.json(job.interruptions as never)}, ${job.doneAt}, ${job.cancelRequestedAt}, ${job.createdAt}, ${job.startedAt},
                     ${job.finishedAt})
         `;
     }
@@ -50,5 +50,12 @@ describe.skipIf(!enabled)('the shared thread fixtures', () => {
         await seedThread(nullAuthorThread);
         const served = JSON.parse(JSON.stringify(await store.thread(nullAuthorThread[0]!.id)));
         expect(served).toEqual(nullAuthorThread);
+    });
+
+    it('carry an interrupted run’s interruptions the way the board serves them (issue #796)', async () => {
+        const fixture = authoredBy(interruptedThread, null);
+        await seedThread(fixture);
+        const served = JSON.parse(JSON.stringify(await store.thread(fixture[0]!.id)));
+        expect(served).toEqual(fixture);
     });
 });

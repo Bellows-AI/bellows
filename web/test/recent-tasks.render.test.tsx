@@ -46,6 +46,7 @@ const job = (over: Partial<Job> = {}): Job => ({
     wallClockMs: null,
     agentTurns: null,
     setupMs: null,
+    interruptions: [],
     taskWallClockMs: null,
     waitReason: null,
     waitingSince: null,

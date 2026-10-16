@@ -4951,6 +4951,22 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         expect(swept).toBeGreaterThan(read);
     });
 
+    // Issue #796: a run read but never swept is no adoption — the attempt runs the job itself.
+    it('rejects when the read run cannot be swept', async () => {
+        const { exec: base, calls } = daemon(listing());
+        const exec = (args: string[]) => {
+            if (args[0] !== 'rm') return base(args);
+            calls.push(args);
+            return Promise.reject(new Error('the daemon answered 503'));
+        };
+
+        await expect(dockerRunner(exec).adopt!(adopter)).rejects.toThrow('the daemon answered 503');
+
+        const read = calls.findIndex((args) => args[0] === 'logs');
+        expect(read).toBeGreaterThanOrEqual(0);
+        expect(calls.findIndex((args) => args[0] === 'rm')).toBeGreaterThan(read);
+    });
+
     // A queued task's command can be edited after a handover: a run of the old command is not its run.
     it('never adopts a run of a command since edited', async () => {
         const { exec, calls } = daemon(
