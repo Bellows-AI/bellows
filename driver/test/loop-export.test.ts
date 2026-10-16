@@ -1,20 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { agentFaults } from '../src/loop-ledger.js';
-import {
-    attachTranscriptExport,
-    createExportRelay,
-    drainOf,
-    drainTranscriptExport,
-    newExportRun,
-} from '../src/loop-export.js';
+import { attachTranscriptExport, createExportRelay, drainTranscriptExport, newExportRun } from '../src/loop-export.js';
 import { newJobState } from '../src/loop-attempt.js';
 import type { AttemptCtx, LoopRuntime } from '../src/loop-types.js';
 import type { RunOutcome } from '../src/runner.js';
 
 /**
  * The loop's half of the continuous transcript export: the relay's board calls, the spool-cap
- * stop, and the drain after the agent's end (normal exit, kill, timeout).
+ * stop, and the check after the run. The drain itself belongs to the supervisor in the run's pod
+ * (`supervisor.test.ts`), so the loop has nothing to order or to end.
  */
 
 const job = {
@@ -32,27 +27,26 @@ const outcome = (over: Partial<RunOutcome> = {}): RunOutcome => ({
     ...over,
 });
 
-function setup(options: { stoppable?: boolean; drainMs?: number } = {}) {
+function setup(options: { supervised?: boolean } = {}) {
     const run = newExportRun();
     const board = {
         putArtifactChunk: vi.fn(async () => ({ result: 'stored' as const })),
         finalizeArtifact: vi.fn(async () => 'stored' as const),
     };
     const kill = vi.fn(async () => {});
-    const stop = vi.fn(async () => {});
-    const drains: unknown[] = [];
+    const stopAgent = vi.fn(async () => {});
+    const raiseKill = vi.fn();
     const rt = {
         board,
-        runner: { kill, ...(options.stoppable === false ? {} : { stopTranscriptExport: stop }) },
-        gates: { server: { drainExport: (_token: string, drain: unknown) => drains.push(drain) } },
+        runner: { kill, ...(options.supervised === false ? {} : { stopAgent }) },
+        gates: { server: { raiseKill } },
         log: vi.fn(),
-        exportDrainMs: options.drainMs ?? 5000,
     } as unknown as LoopRuntime;
     const state = newJobState();
     state.control = 'token';
     state.transcriptExport = run;
     const ctx = { rt, job, state } as unknown as AttemptCtx;
-    return { run, board, kill, stop, drains, rt, ctx, relay: createExportRelay(rt, job, run) };
+    return { run, board, kill, stopAgent, raiseKill, rt, ctx, relay: createExportRelay(rt, job, run, 'token') };
 }
 
 describe('attaching the export to a control token', () => {
@@ -108,79 +102,63 @@ describe('the export relay', () => {
         );
     });
 
-    it('keeps the exporter vitals and kills the run once, when the spool is full', () => {
-        const { relay, run, kill } = setup();
+    it('keeps the exporter vitals and ends the agent once, under its supervisor, when the spool is full', () => {
+        const { relay, run, kill, stopAgent, raiseKill } = setup();
         relay.report({ pendingBytes: 10, oldestUnackedMs: 5, spoolFull: false, done: false });
         expect(run.vitals).toEqual({ pendingBytes: 10, oldestUnackedMs: 5 });
-        expect(kill).not.toHaveBeenCalled();
+        expect(stopAgent).not.toHaveBeenCalled();
         relay.report({ pendingBytes: 2_000_000_000, oldestUnackedMs: 9, spoolFull: true, done: false });
         relay.report({ pendingBytes: 2_000_000_001, oldestUnackedMs: 10, spoolFull: true, done: false });
         expect(run.spoolFull).toBe(true);
+        // The kill order for the supervisor, then the bounded wait for the pod to wind down: the
+        // exporter drains what the agent wrote before anything is deleted.
+        expect(raiseKill).toHaveBeenCalledExactlyOnceWith('token');
+        expect(stopAgent).toHaveBeenCalledTimes(1);
+        expect(kill).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the hard kill on a runner that supervises nothing', () => {
+        const { relay, kill, raiseKill } = setup({ supervised: false });
+        relay.report({ pendingBytes: 2_000_000_000, oldestUnackedMs: 9, spoolFull: true, done: false });
         expect(kill).toHaveBeenCalledTimes(1);
-    });
-});
-
-describe('what the agent’s end means for its transcript', () => {
-    it('is complete after a normal exit, even a failing one', () => {
-        const run = newExportRun();
-        expect(drainOf(outcome(), run)).toEqual({ state: 'complete', cause: null });
-        expect(drainOf(outcome({ exitCode: 1 }), run)).toEqual({ state: 'complete', cause: null });
+        expect(raiseKill).not.toHaveBeenCalled();
     });
 
-    it('is partial after a kill, a timeout or a spool-cap stop, each with its own cause', () => {
-        const run = newExportRun();
-        expect(drainOf(outcome({ exitCode: 137 }), run)).toEqual({ state: 'partial', cause: 'agent_killed' });
-        expect(drainOf(outcome({ exitCode: 137, timedOut: true }), run)).toEqual({
-            state: 'partial',
-            cause: 'timeout',
-        });
-        run.spoolFull = true;
-        expect(drainOf(outcome({ exitCode: 137 }), run)).toEqual({ state: 'partial', cause: 'artifact_spool_full' });
-    });
-});
-
-describe('the drain after the agent', () => {
-    it('orders the drain, waits for done, then ends the exporter', async () => {
-        const { ctx, run, drains, stop, relay } = setup();
-        const draining = drainTranscriptExport(ctx, outcome({ exitCode: 137 }));
-        expect(drains).toEqual([{ state: 'partial', cause: 'agent_killed' }]);
-        expect(stop).not.toHaveBeenCalled();
+    it('remembers the exporter reported done', () => {
+        const { relay, run } = setup();
         relay.report({ pendingBytes: 0, oldestUnackedMs: 0, spoolFull: false, done: true });
-        await draining;
         expect(run.done).toBe(true);
-        expect(stop).toHaveBeenCalledTimes(1);
     });
+});
 
-    it('gives up after its deadline, says so, and still ends the exporter', async () => {
-        const { ctx, rt, stop } = setup({ drainMs: 30 });
-        await drainTranscriptExport(ctx, outcome());
-        expect(rt.log).toHaveBeenCalledWith(expect.stringContaining('did not finish draining'));
-        expect(stop).toHaveBeenCalledTimes(1);
-    });
-
-    it('stamps a spool-cap stop on the outcome so the attempt fails with its cause', async () => {
-        const { ctx, relay, run } = setup();
-        relay.report({ pendingBytes: 4096, oldestUnackedMs: 1, spoolFull: true, done: false });
+describe('the check after the run', () => {
+    it('stamps a spool-cap stop on the outcome so the attempt fails with its cause', () => {
+        const { ctx, relay } = setup();
+        relay.report({ pendingBytes: 4096, oldestUnackedMs: 1, spoolFull: true, done: true });
         const finished = outcome({ exitCode: 137 });
-        const draining = drainTranscriptExport(ctx, finished);
-        run.markDone();
-        await draining;
+        drainTranscriptExport(ctx, finished);
         expect(finished.artifactSpoolFull).toBe('4096 bytes');
         const [fault] = agentFaults(finished).filter((f) => f.note?.includes('artifact_spool_full'));
         expect(fault).toMatchObject({ kind: 'runner_error', gatesStillRun: false });
     });
 
-    it('does not wait on a runner that has no exporter to end', async () => {
-        const { ctx, drains } = setup({ stoppable: false });
-        await drainTranscriptExport(ctx, outcome());
-        expect(drains).toEqual([]);
+    it('waits for nothing: the pod ended only after the supervisor had the exporter drain', () => {
+        const { ctx, rt, relay } = setup();
+        relay.report({ pendingBytes: 0, oldestUnackedMs: 0, spoolFull: false, done: true });
+        drainTranscriptExport(ctx, outcome());
+        expect(rt.log).not.toHaveBeenCalled();
     });
 
-    it('drains once', async () => {
-        const { ctx, run, stop } = setup();
-        run.markDone();
-        await drainTranscriptExport(ctx, outcome());
-        await drainTranscriptExport(ctx, outcome());
-        expect(stop).toHaveBeenCalledTimes(1);
+    it('says so when the exporter never reported done, and leaves the bytes on the volume', () => {
+        const { ctx, rt } = setup();
+        drainTranscriptExport(ctx, outcome());
+        expect(rt.log).toHaveBeenCalledWith(expect.stringContaining('did not report done'));
+    });
+
+    it('checks once', () => {
+        const { ctx, rt } = setup();
+        drainTranscriptExport(ctx, outcome());
+        drainTranscriptExport(ctx, outcome());
+        expect(rt.log).toHaveBeenCalledTimes(1);
     });
 });

@@ -35,8 +35,6 @@ export interface LoopDeps {
     sleep?: (ms: number) => Promise<void>;
     /** Test seam for the draining grace (`STOP_GRACE_MS`); production never sets it. */
     stopGraceMs?: number;
-    /** Test seam for the transcript exporter's drain wait (`EXPORT_DRAIN_MS`); production never sets it. */
-    exportDrainMs?: number;
     /** Orders startup syncs of one clone; the in-process `syncQueue()` when absent (issue #559). */
     syncs?: SyncQueue;
     /** Test seam for the sync-queue wait (`SYNC_QUEUE_WAIT_MS`); production never sets it. */
@@ -135,7 +133,6 @@ export function createLoop({
     log = () => {},
     sleep = wait,
     stopGraceMs,
-    exportDrainMs,
     syncs = syncQueue(),
     syncWaitMs,
 }: LoopDeps): Loop {
@@ -187,7 +184,6 @@ export function createLoop({
         report,
         ...(gates ? { gates } : {}),
         ...(stopGraceMs === undefined ? {} : { stopGraceMs }),
-        ...(exportDrainMs === undefined ? {} : { exportDrainMs }),
         ...(syncWaitMs === undefined ? {} : { syncWaitMs }),
     };
     const handoff = handoverOf(rt);

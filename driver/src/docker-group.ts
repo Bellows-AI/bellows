@@ -1,0 +1,228 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { BoardJob } from './board.js';
+import { executorImage, type DriverConfig } from './config.js';
+import { supervisorEnvFileBody, workspacePath } from './claim.js';
+import { claudeExportScript, supervisorScript } from './container-scripts.js';
+import { containerHardeningArgs, workspacesMountArgs } from './docker.js';
+import { ctlVolumeName, idsOf, mailboxMountArgs } from './docker-mailbox.js';
+import type { ExecDocker, RunnerFiles } from './docker-runner-support.js';
+import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL } from './labels.js';
+import type { RunSession } from './runner.js';
+import {
+    EXPORTER_CONTAINER,
+    MAILBOXES,
+    SUPERVISOR_CONTAINER,
+    SUPERVISOR_ENV,
+    SUPERVISOR_EXIT,
+    SUPERVISOR_WINDDOWN_MS,
+} from './supervisor-contract.js';
+import { supervisorLiterals } from './supervisor-plan.js';
+import { exportEnv, exportsTranscript } from './transcript-export.js';
+
+/**
+ * The docker half of a run's container group: the task supervisor and, for a run that exports its
+ * transcript, the exporter, created and started beside the agent, with the four mailboxes as
+ * named volumes (`supervisor-contract.ts`) mounted exactly as the pod mounts them — the agent gets
+ * `in` read-only and `out`, the exporter the workspace and `export`, the supervisor all four, and no
+ * container but the supervisor and the exporter holds the control pair. The agent's end does not end
+ * the group: the supervisor drains the exporter and finalizes first, and the runner waits for it
+ * (`awaitSupervisor`). The group is the pod's twin, and `k8s-podspec.ts` its other half.
+ */
+
+export const supervisorName = (job: BoardJob): string => `factory-supervisor-${idsOf(job)}`;
+export const exporterName = (job: BoardJob): string => `factory-export-${idsOf(job)}`;
+
+const labelArgs = (job: BoardJob, role: string): string[] => [
+    '--label',
+    `${JOB_LABEL}=${job.id}`,
+    '--label',
+    `${LEASE_LABEL}=${job.leaseToken}`,
+    '--label',
+    `${ROLE_LABEL}=${role}`,
+];
+
+/** The `docker volume create` argv of each mailbox: labelled with the job and lease, so a fence can find them. */
+export const ctlVolumeArgs = (job: BoardJob): string[][] =>
+    Object.values(MAILBOXES).map((box) => [
+        'volume',
+        'create',
+        '--label',
+        `${JOB_LABEL}=${job.id}`,
+        '--label',
+        `${LEASE_LABEL}=${job.leaseToken}`,
+        ctlVolumeName(job, box),
+    ]);
+
+const reachDriverArgs = (config: DriverConfig): string[] => [
+    // The control URL names the driver as the agent's does; Linux needs the name mapped.
+    '--add-host',
+    'host.docker.internal:host-gateway',
+    ...(config.network ? ['--network', config.network] : []),
+];
+
+/**
+ * The supervisor's `docker create` argv — pure and exported, the part worth pinning. All four
+ * mailboxes, no workspace and no claim env; the control pair rides an env file, never argv.
+ */
+export function supervisorCreateArgs(
+    config: DriverConfig,
+    job: BoardJob,
+    exporting: boolean,
+    envFile: string | null
+): string[] {
+    return [
+        'create',
+        ...containerHardeningArgs(),
+        '--name',
+        supervisorName(job),
+        ...labelArgs(job, SUPERVISOR_CONTAINER),
+        ...reachDriverArgs(config),
+        ...(envFile ? ['--env-file', envFile] : []),
+        ...supervisorLiterals(config, job, exporting).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
+        ...Object.values(MAILBOXES).flatMap((box) => mailboxMountArgs(job, box, 'rw')),
+        '--entrypoint',
+        'node',
+        executorImage(config, job.executorType),
+        '-e',
+        supervisorScript,
+    ];
+}
+
+/** The exporter's `docker create` argv: the member's workspace and the one mailbox it shares with the supervisor. */
+export function exporterCreateArgs(config: DriverConfig, job: BoardJob, startedAt: string, envFile: string): string[] {
+    const env = exportEnv(config, job, startedAt);
+    return [
+        'create',
+        ...containerHardeningArgs(),
+        '--name',
+        exporterName(job),
+        ...labelArgs(job, EXPORTER_CONTAINER),
+        ...workspacesMountArgs(config, workspacePath(job)),
+        ...mailboxMountArgs(job, MAILBOXES.export, 'rw'),
+        ...reachDriverArgs(config),
+        '--env-file',
+        envFile,
+        ...env.literals.flatMap(([name, value]) => ['-e', `${name}=${value}`]),
+        '--entrypoint',
+        'node',
+        executorImage(config, job.executorType),
+        '-e',
+        claudeExportScript,
+    ];
+}
+
+const controlEnvFilePath = (job: BoardJob, role: string): string =>
+    join(tmpdir(), `factory-${role}-env-${idsOf(job)}.env`);
+
+interface GroupDeps {
+    config: DriverConfig;
+    execDocker: ExecDocker;
+    files: RunnerFiles;
+}
+
+/** Writes a 0600 env file of the control pair, runs `create` against it and removes it — the daemon reads it at create. */
+async function createWithEnvFile(
+    deps: GroupDeps,
+    file: string,
+    body: string,
+    argv: (envFile: string | null) => string[]
+): Promise<void> {
+    if (!body) {
+        await deps.execDocker(argv(null));
+        return;
+    }
+    await deps.files.writeFile(file, body, { mode: 0o600 });
+    try {
+        await deps.execDocker(argv(file));
+    } finally {
+        await deps.files.rm(file).catch(() => undefined);
+    }
+}
+
+/**
+ * Creates the group's mailboxes and its supervisor and exporter containers (not started). A
+ * failure removes what was created and throws: a run whose supervisor cannot exist is an
+ * infrastructure refusal the loop leaves to its lease, never a run that silently loses its record.
+ */
+export async function createGroup(
+    deps: GroupDeps,
+    job: BoardJob,
+    session: RunSession | null,
+    startedAt: string
+): Promise<void> {
+    const exporting = exportsTranscript(job, session);
+    try {
+        for (const args of ctlVolumeArgs(job)) await deps.execDocker(args);
+        const supervisorPair = [SUPERVISOR_ENV.controlUrl, SUPERVISOR_ENV.controlToken].map((name) => ({
+            name,
+            source: name,
+        }));
+        await createWithEnvFile(
+            deps,
+            controlEnvFilePath(job, 'supervisor'),
+            supervisorEnvFileBody(job, supervisorPair),
+            (file) => supervisorCreateArgs(deps.config, job, exporting, file)
+        );
+        if (exporting) {
+            await createWithEnvFile(
+                deps,
+                controlEnvFilePath(job, 'export'),
+                supervisorEnvFileBody(job, exportEnv(deps.config, job, startedAt).control),
+                (file) => exporterCreateArgs(deps.config, job, startedAt, file ?? '')
+            );
+        }
+    } catch (e) {
+        await removeGroup(deps.execDocker, job);
+        throw e;
+    }
+}
+
+/** Starts the supervisor and the exporter, detached; the agent is started by the caller, attached, after them. */
+export async function startGroup(execDocker: ExecDocker, job: BoardJob, session: RunSession | null): Promise<void> {
+    await execDocker(['start', supervisorName(job)]);
+    if (exportsTranscript(job, session)) await execDocker(['start', exporterName(job)]);
+}
+
+/**
+ * Waits for the supervisor to finalize and exit — the drain, the manifests, the report — and
+ * answers its exit status; null when it did not end in `ms` or the daemon could not say. The group
+ * is the agent's to outlive, so this is read after the agent's close, never before.
+ */
+export async function awaitSupervisor(
+    execDocker: ExecDocker,
+    job: BoardJob,
+    ms: number = SUPERVISOR_WINDDOWN_MS
+): Promise<number | null> {
+    try {
+        const waited = await execDocker(['wait', supervisorName(job)], { timeout: ms });
+        const code = Number.parseInt(waited.stdout.trim(), 10);
+        return Number.isFinite(code) ? code : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Why a group whose agent ended was still lost, or null: its supervisor ended any way but
+ * finalizing — an exit other than 0 and its deadline's 124, or no exit within the wind-down — so
+ * nothing finalized the attempt and the agent's exit code is no verdict on the work. The attempt is
+ * interrupted for the next claim to adopt, never failed. The backstop's own timeout is a verdict,
+ * never a loss.
+ */
+export function supervisorLossOf(exit: number | null, timedOut: boolean): string | null {
+    if (timedOut || exit === SUPERVISOR_EXIT.finalized || exit === SUPERVISOR_EXIT.deadline) return null;
+    return exit === null
+        ? 'the task supervisor did not finalize the run in time'
+        : `the task supervisor ended before it finalized the run (exit ${exit})`;
+}
+
+/** Removes the supervisor, the exporter and the mailboxes of the attempt; tolerant of any of them being gone already. */
+export async function removeGroup(execDocker: ExecDocker, job: BoardJob): Promise<void> {
+    for (const name of [exporterName(job), supervisorName(job)]) {
+        await execDocker(['rm', '-f', name]).catch(() => undefined);
+    }
+    for (const box of Object.values(MAILBOXES)) {
+        await execDocker(['volume', 'rm', '-f', ctlVolumeName(job, box)]).catch(() => undefined);
+    }
+}

@@ -5,6 +5,7 @@ import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { createDockerRunner } from '../src/docker-runner.js';
 import { startDeadline } from '../src/run-deadline.js';
+import { SUPERVISOR_WINDDOWN_MS } from '../src/supervisor-contract.js';
 
 /**
  * The paused runtime budget while an agent waits for an answer. The kubernetes counterpart is pinned in `k8s.test.ts`.
@@ -120,9 +121,12 @@ describe('the docker runner kill timer', () => {
         await vi.advanceTimersByTimeAsync(48 * HOUR);
         expect(killed()).toBe(false);
 
-        // Only six seconds of active runtime remain.
+        // Only six seconds of active runtime remain, and then the wind-down the supervisor is given
+        // to end the agent and finalize before this backstop kills the whole group.
         await runner.pauseDeadline?.(job, false);
-        await vi.advanceTimersByTimeAsync(6 * SECOND);
+        await vi.advanceTimersByTimeAsync(6 * SECOND + SUPERVISOR_WINDDOWN_MS - 1);
+        expect(killed()).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
         expect(killed()).toBe(true);
         child.emit('close', 137);
         await expect(pending).resolves.toMatchObject({ timedOut: true, exitCode: 137 });
@@ -152,7 +156,8 @@ describe('the docker runner kill timer', () => {
 
         const pending = runner.run({ ...job, setupMs: 3 * SECOND }, { id: SESSION, resume: false });
         for (let i = 0; i < 200 && spawned.mock.calls.length === 0; i++) await vi.advanceTimersByTimeAsync(0);
-        await vi.advanceTimersByTimeAsync(7 * SECOND - 1);
+        // The budget the supervisor enforces, plus its wind-down: the backstop's own.
+        await vi.advanceTimersByTimeAsync(7 * SECOND + SUPERVISOR_WINDDOWN_MS - 1);
         expect(killed()).toBe(false);
         await vi.advanceTimersByTimeAsync(1);
         expect(killed()).toBe(true);

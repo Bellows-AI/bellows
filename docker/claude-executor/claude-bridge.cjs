@@ -3,27 +3,24 @@
 // The runner's end of AskUserQuestion (issue #226). Plain `claude -p` has no AskUserQuestion tool;
 // under `--input-format stream-json --permission-prompt-tool stdio` the CLI asks this process for
 // every permission decision as a `control_request`. The bridge answers them: AskUserQuestion goes
-// to the driver's control endpoint (BELLOWS_CONTROL_URL, scoped by BELLOWS_CONTROL_TOKEN) and the
-// person's answer goes back into the SAME CLI process; every other tool is denied, which is what a
-// headless `-p` run did before.
+// to the task supervisor through the mailbox (a file in FACTORY_CTL_OUT; the answer comes back as a
+// file in the read-only FACTORY_CTL_IN) and the person's answer goes back into the SAME CLI
+// process; every other tool is denied, which is what a headless `-p` run did before. The bridge
+// holds no control credential: the supervisor relays the question to the driver.
 //
 // It receives the entrypoint's `"$@"`, which ends `-p <prompt>`, and passes the CLI's stdout
 // through unchanged while the progress reader lives — the FIFO contract is the entrypoint's. The
 // question text is never written to stderr or stdout by the bridge itself.
 const fs = require('node:fs');
 const os = require('node:os');
+const path = require('node:path');
 const readline = require('node:readline');
 const { spawn } = require('node:child_process');
 
 const EXIT_USAGE = 64;
 const EXIT_NOT_FOUND = 127;
 const SIGNAL_EXIT_BASE = 128;
-const DEFAULT_POLL_MS = 5000;
-const REQUEST_TIMEOUT_MS = 10_000;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_TOO_MANY_REQUESTS = 429;
-const HTTP_SERVER_ERROR = 500;
+const DEFAULT_POLL_MS = 1000;
 const ASK_TOOL = 'AskUserQuestion';
 
 const MSG_TOOL_DENIED = "Not pre-approved by the runner's allowlist, and nobody can approve it in this run.";
@@ -36,66 +33,49 @@ const MSG_NOBODY = 'Nobody can answer questions in this run. Continue with your 
 const MSG_STOPPED = 'The task was stopped.';
 const MSG_NO_MORE = 'This run cannot ask more questions. Continue with your best judgment and state the assumption you made.';
 
-const url = process.env.BELLOWS_CONTROL_URL;
-const token = process.env.BELLOWS_CONTROL_TOKEN;
+const inDir = process.env.FACTORY_CTL_IN;
+const outDir = process.env.FACTORY_CTL_OUT;
 const marker = process.env.FACTORY_STOP_MARKER;
-const configuredPoll = Number(process.env.BELLOWS_CONTROL_POLL_MS);
+const configuredPoll = Number(process.env.FACTORY_CTL_TICK_MS);
 const pollMs = Number.isFinite(configuredPoll) && configuredPoll > 0 ? configuredPoll : DEFAULT_POLL_MS;
 
 const deny = (message, interrupt) => ({ behavior: 'deny', message, interrupt });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const stopped = () => Boolean(marker) && fs.existsSync(marker);
 
-async function http(method, path, body) {
+/** The supervisor's settled answer to one question, or null while it has none. */
+function readAnswer(id) {
     try {
-        const response = await fetch(`${url}${path}`, {
-            method,
-            headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) },
-            body: body ? JSON.stringify(body) : undefined,
-            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        });
-        let json = null;
-        try {
-            json = await response.json();
-        } catch {
-            // An empty or non-JSON body carries no state; the status alone decides.
-        }
-        return { status: response.status, ok: response.ok, json };
+        return JSON.parse(fs.readFileSync(path.join(inDir, 'answers', `${id}.json`), 'utf8'));
     } catch {
-        // A network error is not an answer: the caller keeps polling.
+        // Not written yet, or caught half way: the supervisor writes it atomically, so the next poll has it whole.
         return null;
     }
 }
 
-/** The decision for one AskUserQuestion: ask the board, then poll until a person settles it. */
+/** The decision for one AskUserQuestion: hand it to the supervisor, then poll until a person settles it. */
 async function ask(request) {
-    if (!url || !token) return deny(MSG_NOBODY, false);
+    if (!inDir || !outDir) return deny(MSG_NOBODY, false);
     const id = request.tool_use_id;
     const input = request.input ?? {};
-    let posted = false;
+    const questions = path.join(outDir, 'questions');
+    try {
+        fs.mkdirSync(questions, { recursive: true });
+        const target = path.join(questions, `${id}.json`);
+        fs.writeFileSync(`${target}.tmp`, JSON.stringify({ questionId: id, questions: input.questions }));
+        fs.renameSync(`${target}.tmp`, target);
+    } catch {
+        return deny(MSG_NOBODY, false);
+    }
     for (;;) {
         if (stopped()) return deny(MSG_STOPPED, true);
-        if (!posted) {
-            const created = await http('POST', '/question', { questionId: id, questions: input.questions });
-            if (created) {
-                if (created.status === HTTP_UNAUTHORIZED) return deny(MSG_STOPPED, true);
-                if (created.status === HTTP_BAD_REQUEST || created.status === HTTP_TOO_MANY_REQUESTS) {
-                    return deny(MSG_NO_MORE, false);
-                }
-                posted = created.ok;
-            }
+        const answer = readAnswer(id);
+        if (answer?.state === 'answered') {
+            return { behavior: 'allow', updatedInput: { ...input, answers: answer.answers } };
         }
-        if (posted) {
-            const polled = await http('GET', `/question/${encodeURIComponent(id)}`);
-            if (polled) {
-                if (polled.status === HTTP_UNAUTHORIZED) return deny(MSG_STOPPED, true);
-                const state = polled.status < HTTP_SERVER_ERROR && polled.json ? polled.json.state : undefined;
-                if (state === 'answered') {
-                    return { behavior: 'allow', updatedInput: { ...input, answers: polled.json.answers } };
-                }
-                if (state === 'cancelled') return deny(MSG_STOPPED, true);
-            }
-        }
+        // A cancelled question is a Stop; `gone` is a supervisor whose attempt is already over.
+        if (answer?.state === 'cancelled' || answer?.state === 'gone') return deny(MSG_STOPPED, true);
+        if (answer?.state === 'refused' || answer?.state === 'invalid') return deny(MSG_NO_MORE, false);
         await sleep(pollMs);
     }
 }

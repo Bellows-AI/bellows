@@ -15,8 +15,12 @@ export const CLAIM_SEQ_MARK = 'factory.claim-seq';
 export const SESSION_MARK = 'factory.session';
 /** The run's command, hashed (`commandMark`): a queued task's command edited since is not adopted. */
 export const COMMAND_MARK = 'factory.command';
-/** Docker only: the transcript exporter's container, which a kill of the agent must not reach. */
-export const EXPORT_LABEL = 'factory.export';
+/**
+ * Docker only: which container of a run's group this is — `agent`, `supervisor` or `exporter`
+ * (`supervisor-contract.ts`). The group's containers share the job and lease labels; this one tells
+ * a kill of the agent from the teardown of the whole group.
+ */
+export const ROLE_LABEL = 'factory.role';
 
 /**
  * Kubernetes only: the attempt's service subdomain on each of its service pods — what the

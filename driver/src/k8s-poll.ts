@@ -18,6 +18,7 @@ import { envBodyToData, jobsPath, runnerName, secretBody } from './k8s-podspec.j
 import {
     answerPreview,
     containerFailure,
+    containerStatusOf,
     ERROR_PREVIEW_CHARS,
     expectOk,
     HTTP_ERROR_STATUS,
@@ -34,6 +35,7 @@ import {
     refusal,
 } from './k8s-transport.js';
 import type { K8sDeps, K8sJobStatus, K8sPod, K8sPodList, K8sResponse } from './k8s-transport.js';
+import { AGENT_CONTAINER, SUPERVISOR_CONTAINER, SUPERVISOR_EXIT } from './supervisor-contract.js';
 import { parseLastJsonLine, reclaimUnreadable, syncUnreadable } from './publish.js';
 import type { ReclaimResult, SyncResult } from './publish.js';
 
@@ -127,15 +129,22 @@ export async function readImagePullStatus(
     const pods = await deps
         .request('GET', jobPodsPath(deps.config.k8sNamespace, jobName))
         .catch(() => ({ status: 0, body: '' }));
-    const container = livePod(pods.body)?.status?.containerStatuses?.[0];
-    const waiting = container?.state?.waiting;
-    if (waiting?.reason === 'ImagePullBackOff' || waiting?.reason === 'ErrImagePull') {
-        return {
-            blocked: waiting.reason + (waiting.message ? ` — ${waiting.message.slice(0, ERROR_PREVIEW_CHARS)}` : ''),
-            containerSeen: true,
-        };
+    // Every container of the pod, not the first: the runner pod holds the agent, the supervisor and
+    // the exporter, and any one of them blocked on its image holds the whole run.
+    const containers = livePod(pods.body)?.status?.containerStatuses ?? [];
+    for (const container of containers) {
+        const waiting = container.state?.waiting;
+        if (waiting?.reason === 'ImagePullBackOff' || waiting?.reason === 'ErrImagePull') {
+            return {
+                blocked:
+                    waiting.reason + (waiting.message ? ` — ${waiting.message.slice(0, ERROR_PREVIEW_CHARS)}` : ''),
+                containerSeen: true,
+            };
+        }
     }
-    const containerSeen = container?.state?.terminated !== undefined || container?.state?.running !== undefined;
+    const containerSeen =
+        containers.length > 0 &&
+        containers.every((c) => c.state?.terminated !== undefined || c.state?.running !== undefined);
     return { blocked: null, containerSeen };
 }
 
@@ -246,19 +255,24 @@ export async function pollJobToTerminal(
 export async function readJobPodVerdict(
     deps: K8sDeps,
     jobName: string,
-    succeeded: boolean,
+    { succeeded, container }: { succeeded: boolean; container?: string },
     what: string
 ): Promise<{ exitCode: number | null; output: string; pods: K8sPod[] }> {
     const podsResponse = await readVerdict(deps, jobPodsPath(deps.config.k8sNamespace, jobName), what);
     expectOk(podsResponse, what);
     const pods = parse<K8sPodList>(podsResponse.body).items ?? [];
     const pod = livePodOfItems(pods);
-    const exitCode = pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ?? (succeeded ? 0 : null);
+    // `container` names the one whose verdict this is when the pod holds several (the runner pod's
+    // agent); an aux pod's only container is read by position, as ever.
+    const exitCode = containerStatusOf(pod, container)?.state?.terminated?.exitCode ?? (succeeded ? 0 : null);
     let output = '';
     if (pod?.metadata?.name) {
         let log: K8sResponse;
         try {
-            log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name));
+            log = await deps.request(
+                'GET',
+                podLogPath(deps.config.k8sNamespace, pod.metadata.name, undefined, container)
+            );
         } catch {
             log = { status: 0, body: '' };
         }
@@ -312,7 +326,12 @@ export async function auxVerdict(
         await deps.sleep(POLL_MS);
         return auxVerdict(deps, jobName, signal);
     }
-    return readJobPodVerdict(deps, jobName, result.outcome === 'succeeded', `listing the pods of ${jobName}`);
+    return readJobPodVerdict(
+        deps,
+        jobName,
+        { succeeded: result.outcome === 'succeeded' },
+        `listing the pods of ${jobName}`
+    );
 }
 
 /**
@@ -340,7 +359,7 @@ export async function helperVerdict(
     const verdict = await readJobPodVerdict(
         deps,
         jobName,
-        result.outcome === 'succeeded',
+        { succeeded: result.outcome === 'succeeded' },
         `listing the pods of ${jobName}`
     );
     return { ...verdict, timedOut: timedOutOf(result.status) };
@@ -370,7 +389,10 @@ async function tailRunnerOutput(
     }
     if (resolvedPodName !== null) {
         try {
-            const log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, resolvedPodName));
+            const log = await deps.request(
+                'GET',
+                podLogPath(deps.config.k8sNamespace, resolvedPodName, undefined, AGENT_CONTAINER)
+            );
             if (log.status < HTTP_ERROR_STATUS) onOutput(reportTail(log.body));
         } catch {
             // The log endpoint hiccups on a pod that is only starting. Freshness waits a poll.
@@ -434,18 +456,46 @@ export async function readRunnerVerdict(
     fullLog: string;
     logTruncated: boolean;
     infraLoss: string | null;
+    /** The supervisor ended the agent at the run budget (its exit 124): the run timed out. */
+    supervisorDeadline: boolean;
 }> {
-    const verdict = await readJobPodVerdict(deps, runnerName(job), jobSucceeded, 'listing the runner pods');
+    // The agent's verdict: its exit status and its log — the pod holds the supervisor and the
+    // exporter beside it, whose own output is no part of the run's.
+    const verdict = await readJobPodVerdict(
+        deps,
+        runnerName(job),
+        { succeeded: jobSucceeded, container: AGENT_CONTAINER },
+        'listing the runner pods'
+    );
     // The tail for the verdict's output field, and the full log (issue #325) tail-kept at the
     // artifact cap for the loop's upload — both cut from the one pod log this read exists for.
     const full = tailKept(verdict.output, ARTIFACT_LIMIT);
+    const supervisorExit = containerStatusOf(livePodOfItems(verdict.pods), SUPERVISOR_CONTAINER)?.state?.terminated
+        ?.exitCode;
     return {
         exitCode: verdict.exitCode,
         output: reportTail(verdict.output),
         fullLog: full.content,
         logTruncated: full.truncated,
-        infraLoss: jobSucceeded ? null : runnerLossOf(verdict.pods),
+        infraLoss: jobSucceeded
+            ? null
+            : (runnerLossOf(verdict.pods) ?? supervisorLossOf(livePodOfItems(verdict.pods), supervisorExit)),
+        supervisorDeadline: supervisorExit === SUPERVISOR_EXIT.deadline,
     };
+}
+
+/**
+ * Why a run whose pod survived to the end was still lost: its task supervisor ended any way but
+ * finalizing (an exit other than 0 and its deadline's 124 — a crash, an OOM kill, its own failure
+ * 70), so nothing finalized the attempt, and the agent's exit code is no verdict on the work. The
+ * attempt is interrupted — the next claim adopts the session and the checkout — never failed.
+ * Null when the supervisor finalized, or left no status to read.
+ */
+export function supervisorLossOf(pod: K8sPod | undefined, supervisorExit: number | undefined): string | null {
+    if (supervisorExit === undefined || supervisorExit === 0 || supervisorExit === SUPERVISOR_EXIT.deadline)
+        return null;
+    const detail = containerFailure(pod, SUPERVISOR_CONTAINER) ?? `exit ${supervisorExit}`;
+    return `the task supervisor ended before it finalized the run (${detail})`;
 }
 
 /**

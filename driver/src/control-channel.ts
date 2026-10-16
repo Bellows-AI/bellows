@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readBody, respondJson } from './http.js';
 import { PUBLISH_BODY_LIMIT, type PublishRelay, servePublish } from './publish-control.js';
-import { type ExportDrain, type ExportRelay, EXPORT_PATH, serveExport } from './export-control.js';
+import { type ExportRelay, EXPORT_PATH, serveExport } from './export-control.js';
 import { REVIEW_BODY_LIMIT, type ReviewRelay, serveReviewRead, serveReviewRequest } from './review-control.js';
 import {
     cancelPendingQuestions,
@@ -17,13 +17,20 @@ import {
 } from './question-control.js';
 
 /**
- * The per-attempt run-control channel the gate server hosts beside the ad-hoc gate route: the
- * runner's stop poll (`GET /control`) and the agent's questions (`POST /question`,
- * `GET /question/:id`), all keyed by the CONTROL token only — a gate token is no key here, and an
- * unknown or closed token is 401. One entry per token, so one per lease.
+ * The per-attempt run-control channel the gate server hosts beside the ad-hoc gate route, keyed by
+ * two tokens of one lease that open different doors:
+ *
+ *  - the SUPERVISOR token — held by the task supervisor and the transcript exporter, never by the
+ *    agent container — reads the run's stop and kill orders (`GET /control`), relays the agent's
+ *    questions (`POST /question`, `GET /question/:id`) and carries the transcript chunks (`/export`);
+ *  - the AGENT token — all the agent container holds — reaches only the draft publication
+ *    (`POST /publish`) and the named reviewers (`/review`), the two routes the baked skills call.
+ *
+ * A token used on the other's route is 403; a gate token is no key here, and an unknown or closed
+ * token is 401. One entry per attempt, so one per lease.
  */
 
-/** The run-control poll route the runner's stop poller reads (docker/*-executor/stop-poller.cjs). */
+/** The run-control poll route the task supervisor reads (`scripts/supervisor.cjs`). */
 export const CONTROL_PATH = '/control';
 /** The draft-publication route beside it: `POST /publish`. */
 export const PUBLISH_PATH = '/publish';
@@ -34,23 +41,27 @@ export const REVIEW_PATH = '/review';
 
 const HTTP_OK = 200;
 const HTTP_UNAUTHORIZED = 401;
+const HTTP_FORBIDDEN = 403;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 
 export interface ControlChannel {
     /**
-     * Opens the token (idempotent); `relay` carries its questions to the board, `publisher` its draft
-     * publishes and `reviewer` its named-reviewer requests (none on a run that may not invoke one).
+     * Opens the supervisor token (idempotent); `relay` carries its questions to the board,
+     * `publisher` the agent's draft publishes and `reviewer` its named-reviewer requests (none on a
+     * run that may not invoke one).
      */
     open(token: string, relay?: QuestionRelay, publisher?: PublishRelay, reviewer?: ReviewRelay): void;
+    /** Opens the agent's own token beside the open supervisor `token`: the publish and review routes, no other. */
+    grantAgent(token: string, agentToken: string): void;
     /** Gives an open token its transcript exporter's relay: the `/export` routes answer 400 until then. */
     attachExporter(token: string, exporter: ExportRelay): void;
-    /** Orders the token's exporter to drain: the agent is gone, flush everything and close the manifests. */
-    drainExport(token: string, drain: ExportDrain): void;
-    /** Whether a runner has contacted this token — its stop poll, or a question POST. */
+    /** Whether the supervisor has contacted this token — its control poll, or a question POST. */
     polled(token: string): boolean;
     /** Raises the stop; repeated calls and unknown tokens do nothing. */
     raiseStop(token: string): void;
-    /** Ends the token: its stop flag and its questions are dropped, and the runner gets 401. */
+    /** Raises the kill order — the stop, and the supervisor ends the agent now; repeated calls do nothing. */
+    raiseKill(token: string): void;
+    /** Ends the attempt: its stop flag and its questions are dropped, and both tokens get 401. */
     close(token: string): void;
     /** Drops every token — the server is closing. */
     clear(): void;
@@ -82,8 +93,19 @@ function routeOf(request: IncomingMessage): Route | null {
     return isPostOrGetOf(request, REVIEW_PATH) ? 'review' : null;
 }
 
+/** The routes each token opens: the supervisor's, and the agent's two. */
+const SUPERVISOR_ROUTES: readonly Route[] = ['control', 'export', 'question'];
+const AGENT_ROUTES: readonly Route[] = ['publish', 'review'];
+
 export function createControlChannel(): ControlChannel {
+    /** Every attempt, under its supervisor token. */
     const controls = new Map<string, ControlEntry>();
+    /** An agent token, to the supervisor token of the attempt it belongs to. */
+    const agents = new Map<string, string>();
+
+    /** The attempt a token of either role belongs to, or undefined once it is closed. */
+    const entryOf = (auth: string): ControlEntry | undefined =>
+        controls.get(auth) ?? controls.get(agents.get(auth) ?? '');
 
     /** `POST /question` / `GET /question/:id`, once the token is known. */
     const serveQuestion = async (control: ControlEntry, request: IncomingMessage, auth: string) => {
@@ -91,7 +113,7 @@ export function createControlChannel(): ControlChannel {
         const raw = await readBody(request, QUESTION_BODY_LIMIT);
         if (raw === null) return { status: HTTP_PAYLOAD_TOO_LARGE, body: { error: 'body too large' } };
         // Closed while the body arrived: the entry read before is the dead attempt's.
-        if (controls.get(auth) !== control) return { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
+        if (entryOf(auth) !== control) return { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
         return recordQuestion(control, raw);
     };
 
@@ -101,7 +123,7 @@ export function createControlChannel(): ControlChannel {
             return { status: HTTP_PAYLOAD_TOO_LARGE, body: { error: 'body too large' } };
         }
         // Closed while the body arrived: the entry read before is the dead attempt's.
-        if (controls.get(auth) !== control) return { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
+        if (entryOf(auth) !== control) return { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
         return servePublish(control.publishing, control.publisher);
     };
 
@@ -113,7 +135,7 @@ export function createControlChannel(): ControlChannel {
         const raw = await readBody(request, REVIEW_BODY_LIMIT);
         if (raw === null) return { status: HTTP_PAYLOAD_TOO_LARGE, body: { error: 'body too large' } };
         // Closed while the body arrived: the entry read before is the dead attempt's.
-        if (controls.get(auth) !== control) return { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
+        if (entryOf(auth) !== control) return { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
         return serveReviewRequest(control.reviewing, control.reviewer, raw);
     };
 
@@ -122,6 +144,9 @@ export function createControlChannel(): ControlChannel {
             if (!controls.has(token)) {
                 controls.set(token, newControl(relay ?? null, publisher ?? null, reviewer ?? null));
             }
+        },
+        grantAgent(token, agentToken) {
+            if (agentToken !== token) agents.set(agentToken, token);
         },
         attachExporter(token, exporter) {
             const control = controls.get(token);
@@ -132,12 +157,20 @@ export function createControlChannel(): ControlChannel {
             const control = controls.get(token);
             if (control) control.stop = true;
         },
-        drainExport(token, drain) {
+        raiseKill(token) {
             const control = controls.get(token);
-            if (control) control.exporting.drain = drain;
+            if (!control) return;
+            control.stop = true;
+            control.kill = true;
         },
-        close: (token) => void controls.delete(token),
-        clear: () => controls.clear(),
+        close(token) {
+            controls.delete(token);
+            for (const [agent, owner] of agents) if (owner === token) agents.delete(agent);
+        },
+        clear() {
+            controls.clear();
+            agents.clear();
+        },
         resolveQuestion: (token, id, resolution) => {
             const control = controls.get(token);
             return control ? resolveQuestion(control, id, resolution) : false;
@@ -153,20 +186,27 @@ export function createControlChannel(): ControlChannel {
         async serve(request, reply, auth) {
             const route = routeOf(request);
             if (route === null) return false;
-            const control = controls.get(auth);
+            const control = entryOf(auth);
             if (!control) {
                 respondJson(reply, HTTP_UNAUTHORIZED, { error: 'unknown token' });
                 return true;
             }
+            const doors = controls.get(auth) === control ? SUPERVISOR_ROUTES : AGENT_ROUTES;
+            if (!doors.includes(route)) {
+                respondJson(reply, HTTP_FORBIDDEN, { error: 'this token does not open that route' });
+                return true;
+            }
             if (route === 'export') {
-                // Not the agent: the exporter's calls never say a stop poller is listening.
-                const answer = await serveExport(control.exporting, request, () => controls.get(auth) === control);
+                // Not the supervisor: the exporter's calls never say a supervisor is listening.
+                const answer = await serveExport(control.exporting, request, () => entryOf(auth) === control);
                 respondJson(reply, answer.status, answer.body);
                 return true;
             }
-            control.polled = true;
+            // Only the supervisor holds a door that gets here besides publish and review: its poll
+            // or its question is what says a Stop can be cooperative.
+            if (doors === SUPERVISOR_ROUTES) control.polled = true;
             if (route === 'control') {
-                respondJson(reply, HTTP_OK, { stop: control.stop });
+                respondJson(reply, HTTP_OK, { stop: control.stop, kill: control.kill });
                 return true;
             }
             const serveRoute = { publish: serveDraftPublish, review: serveReview, question: serveQuestion }[route];

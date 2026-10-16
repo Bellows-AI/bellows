@@ -8,18 +8,21 @@ import {
     GATE_UID,
     opencodeDbPath,
     runnerClaimEnv,
-    runTimeoutMs,
     runWorkingDir,
     transcriptDir,
     workspacePath,
 } from './claim.js';
-import { claudeTurnsScript, claudeExportScript, opencodeReadoutScript } from './container-scripts.js';
+import { claudeTurnsScript, claudeExportScript, opencodeReadoutScript, supervisorScript } from './container-scripts.js';
 import { commandMark, OPENCODE_EXPORT_LIMIT, type RunSession } from './runner.js';
-import { exportEnv } from './transcript-export.js';
+import { exportEnv, exportsTranscript } from './transcript-export.js';
+import { AGENT_CONTAINER, EXPORTER_CONTAINER, MAILBOXES, SUPERVISOR_CONTAINER } from './supervisor-contract.js';
+import { agentMailboxEnv, backstopMs, supervisorControlNames, supervisorLiterals } from './supervisor-plan.js';
 import { JOB_ID, MS_PER_SECOND, TTL_SECONDS } from './k8s-transport.js';
 import {
     containerHardeningField,
     doNotDisruptField,
+    mailboxMount,
+    mailboxVolumes,
     podHardeningField,
     resourcesField,
     runnerVolumesField,
@@ -35,8 +38,9 @@ import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
 
 /**
  * The kubernetes executor's pure Job/pod spec builders — the `dockerArgs` analogue for every
- * shape this driver POSTs to the API server: the runner itself, the gate runner, and the
- * opencode-session / claude-turns aux readouts. Everything security-relevant
+ * shape this driver POSTs to the API server: the runner pod (the agent, the task supervisor and
+ * the transcript exporter), the gate runner, and the opencode-session / claude-turns aux
+ * readouts. Everything security-relevant
  * about a runner is decided here, and pinned by tests for that reason. The transport, polling,
  * fence and runner assembly live in the sibling `k8s-*.ts` files this one has no dependency on;
  * see docs/kubernetes.md for the full map.
@@ -47,6 +51,21 @@ interface EnvVar {
     name: string;
     value?: string;
     valueFrom?: { secretKeyRef: { name: string; key: string; optional?: boolean } };
+}
+
+/** One container of the runner pod: the agent, the task supervisor, or the transcript exporter. */
+export interface RunnerPodContainer {
+    name: string;
+    image: string;
+    imagePullPolicy: string;
+    resources?: PodResources;
+    /** The executor hardening (#382) — `containerHardeningField`, always present. */
+    securityContext: ContainerSecurityContext;
+    env: EnvVar[];
+    /** The supervisor and the exporter run a script by content; the agent runs its image's entrypoint. */
+    command?: string[];
+    args?: string[];
+    volumeMounts: RunnerMount[];
 }
 
 /**
@@ -84,17 +103,8 @@ export interface RunnerJobSpec {
                 nodeSelector?: Record<string, string>;
                 tolerations?: Record<string, unknown>[];
                 affinity?: Record<string, unknown>;
-                containers: {
-                    name: string;
-                    image: string;
-                    imagePullPolicy: string;
-                    resources?: PodResources;
-                    /** The executor hardening (#382) — `containerHardeningField`, always present. */
-                    securityContext: ContainerSecurityContext;
-                    env: EnvVar[];
-                    args: string[];
-                    volumeMounts: RunnerMount[];
-                }[];
+                /** The agent, the supervisor beside it and, for a run that exports its transcript, the exporter. */
+                containers: RunnerPodContainer[];
                 volumes: RunnerVolume[];
             };
         };
@@ -168,6 +178,61 @@ function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
 }
 
 /**
+ * The task supervisor's container: the trusted half of the pod. It runs `scripts/supervisor.cjs` by
+ * content in the executor image and mounts all four mailboxes — and nothing of the member's: no
+ * workspace, no telemetry config, no claim env. The attempt's control pair reaches it by Secret
+ * reference, like every credential in this file; it has no ServiceAccount token (the pod has none)
+ * and so no Kubernetes API access. The driver keeps the lease, the claim fence and the reaper.
+ */
+function supervisorContainer(config: DriverConfig, job: BoardJob, exporting: boolean): RunnerPodContainer {
+    return {
+        name: SUPERVISOR_CONTAINER,
+        image: executorImage(config, job.executorType),
+        imagePullPolicy: config.imagePullPolicy,
+        ...containerHardeningField(),
+        command: ['node', '-e', supervisorScript],
+        env: [
+            ...supervisorLiterals(config, job, exporting).map(([name, value]) => ({ name, value })),
+            ...supervisorControlNames(job).map((name) => ({
+                name,
+                valueFrom: { secretKeyRef: { name: secretName(job), key: name } },
+            })),
+        ],
+        volumeMounts: Object.values(MAILBOXES).map((box) => mailboxMount(box, 'rw')),
+    };
+}
+
+/**
+ * The continuous claude-code transcript exporter (`claude-export.cjs`), the third container of the
+ * pod: beside the agent and under the supervisor, so a kill of the agent leaves it running to drain
+ * what the agent wrote — the pod only ends once the supervisor has had it close its manifests. The
+ * control pair comes from the attempt's Secret BY REFERENCE, under the names the script reads; it
+ * mounts the member's workspace (the transcripts, its own cursor files) and the one mailbox it
+ * shares with the supervisor.
+ */
+function exporterContainer(config: DriverConfig, job: BoardJob, startedAt: string, path: string): RunnerPodContainer {
+    const { literals, control } = exportEnv(config, job, startedAt);
+    return {
+        name: EXPORTER_CONTAINER,
+        image: executorImage(config, job.executorType),
+        imagePullPolicy: config.imagePullPolicy,
+        ...containerHardeningField(),
+        command: ['node', '-e', claudeExportScript],
+        env: [
+            ...literals.map(([name, value]) => ({ name, value })),
+            ...control.map(({ name, source }) => ({
+                name,
+                valueFrom: { secretKeyRef: { name: secretName(job), key: source } },
+            })),
+        ],
+        volumeMounts: [
+            { name: 'workspaces', mountPath: `${config.workspaceMount}/${path}`, subPath: path },
+            mailboxMount(MAILBOXES.export, 'rw'),
+        ],
+    };
+}
+
+/**
  * The full Job object. Pure, and exported, because it is the part worth pinning in a test:
  * everything security-relevant about a runner is decided here, exactly as everything about the
  * docker runner is decided in `dockerArgs`.
@@ -176,7 +241,12 @@ function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
  * re-asserted here rather than trusted from the board — the same refusals the docker runner makes,
  * because the API server changing the runtime does not change who is trusted with what.
  */
-export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunSession | null): RunnerJobSpec {
+export function runnerJobSpec(
+    config: DriverConfig,
+    job: BoardJob,
+    session: RunSession | null,
+    startedAt: string = new Date().toISOString()
+): RunnerJobSpec {
     // The id becomes the Job object's name; assert it before it lands in the spec, the same way
     // the workspace path is asserted before it becomes a working directory.
     if (!JOB_ID.test(job.id)) {
@@ -212,7 +282,11 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // the container is the only difference.
     const plan = runnerPlan(config, job, session);
     env.push(...plan.envPairs.map(([name, value]) => ({ name, value })));
+    // The agent finds its supervisor through two mailbox paths and nothing else: no control
+    // credential rides this container's env (runnerCredentialEnv never reads `supervisorEnv`).
+    env.push(...agentMailboxEnv().map(([name, value]) => ({ name, value })));
     const args = plan.cliArgs;
+    const exporting = exportsTranscript(job, session);
 
     return {
         apiVersion: 'batch/v1',
@@ -249,7 +323,9 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
             parallelism: 1,
             // DRIVER_JOB_TIMEOUT_MS maps onto the kubelet-enforced deadline, so a runner that
             // outlives its driver still dies — the k8s form of `docker kill` after the timeout.
-            activeDeadlineSeconds: Math.max(1, Math.round(runTimeoutMs(config, job) / MS_PER_SECOND)),
+            // The supervisor ends the agent at the budget itself; this backstop adds the drain and
+            // the report, and only ends a group whose supervisor stopped doing that.
+            activeDeadlineSeconds: Math.max(1, Math.round(backstopMs(config, job) / MS_PER_SECOND)),
             ttlSecondsAfterFinished: TTL_SECONDS,
             template: {
                 metadata: {
@@ -273,9 +349,9 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                         {
                             // A constant: a container name is a DNS LABEL (63 bytes), which rules
                             // out containerName(job) (85) the same way it rules the Job's own name
-                            // out of the raw form. Nothing addresses the container by name — its
-                            // log is read off the pod's labels, its lifecycle by the Job's.
-                            name: 'runner',
+                            // out of the raw form. The verdict and the log are read by this name:
+                            // the pod holds the supervisor and the exporter beside it.
+                            name: AGENT_CONTAINER,
                             image: executorImage(config, job.executorType),
                             // Stated, never defaulted: kubernetes reads a missing or :latest tag as
                             // `Always` and would reach for a registry, past the image the node
@@ -285,10 +361,21 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                             ...containerHardeningField(),
                             env,
                             args,
-                            volumeMounts: mounts,
+                            // The workspace and the telemetry config, and of the supervisor only
+                            // the two mailboxes the agent may touch: it reads `in` (a Stop, an
+                            // answer) and cannot write it, and it writes `out` (a question, its
+                            // heartbeat). It mounts nothing of the supervisor's own state or the
+                            // exporter's, and no Secret carries the control credential into it.
+                            volumeMounts: [
+                                ...mounts,
+                                mailboxMount(MAILBOXES.in, 'ro'),
+                                mailboxMount(MAILBOXES.out, 'rw'),
+                            ],
                         },
+                        supervisorContainer(config, job, exporting),
+                        ...(exporting ? [exporterContainer(config, job, startedAt, path)] : []),
                     ],
-                    volumes,
+                    volumes: [...volumes, ...mailboxVolumes()],
                 },
             },
         },
@@ -766,40 +853,6 @@ export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob, star
                 { name: 'RUN_STARTED_MS', value: String(Date.parse(startedAt)) },
                 // The per-stream cap of the session export the readout prints ahead of its answer.
                 { name: 'EXPORT_LIMIT_BYTES', value: String(OPENCODE_EXPORT_LIMIT) },
-            ],
-            volumeMounts: [workspaceMount(config, workspacePath(job))],
-        },
-    });
-}
-
-/**
- * The continuous claude-code transcript exporter (`claude-export.cjs`) as its own Job beside the
- * runner's — not a container of the runner's pod, so the Job delete that kills the agent leaves it
- * running to drain what the agent wrote. It lives until the loop deletes it, bounded by a deadline
- * of a week as the backstop; it exits by itself once its control token is closed. The control URL
- * and token come from the attempt's Secret BY REFERENCE, like the runner's — never in the spec.
- */
-const EXPORT_JOB_DEADLINE_SECONDS = 604_800;
-
-export const claudeExportJobName = (job: BoardJob): string =>
-    `factory-cexport-${hash16(`${job.id}|${job.leaseToken}`)}`;
-
-export function claudeExportJobSpec(config: DriverConfig, job: BoardJob, startedAt: string): AuxJobSpec {
-    const { literals, control } = exportEnv(config, job, startedAt);
-    return auxJobSpec(config, job, {
-        name: claudeExportJobName(job),
-        deadlineSeconds: EXPORT_JOB_DEADLINE_SECONDS,
-        container: {
-            name: 'claude-export',
-            image: executorImage(config, job.executorType),
-            imagePullPolicy: config.imagePullPolicy,
-            command: ['node', '-e', claudeExportScript],
-            env: [
-                ...literals.map(([name, value]) => ({ name, value })),
-                ...control.map((name) => ({
-                    name,
-                    valueFrom: { secretKeyRef: { name: secretName(job), key: name } },
-                })),
             ],
             volumeMounts: [workspaceMount(config, workspacePath(job))],
         },

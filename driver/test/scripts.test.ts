@@ -53,6 +53,7 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['opencode-readout.cjs', 'node'],
     ['claude-turns.cjs', 'node'],
     ['claude-export.cjs', 'node'],
+    ['supervisor.cjs', 'node'],
     ['opencode-cache-probe.cjs', 'node'],
     ['credential-helper.sh', 'sh'],
     ['review-collect.cjs', 'node'],

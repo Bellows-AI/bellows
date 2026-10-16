@@ -189,6 +189,13 @@ export interface BoardJob {
      */
     gateEnv?: Record<string, string>;
     /**
+     * The task supervisor's control pair (`SUPERVISOR_CONTROL_URL` / `SUPERVISOR_CONTROL_TOKEN`) —
+     * minted by the LOOP beside `gateEnv`, and kept apart from it on purpose: `gateEnv` rides the
+     * agent's environment, and this is the one credential the agent container must never hold.
+     * Only the supervisor and the transcript exporter receive it.
+     */
+    supervisorEnv?: Record<string, string>;
+    /**
      * How long this attempt's `environment.setup` ran before the agent started (issue #733) — set
      * by the LOOP, never by the board; the runner's deadline is the run budget less it.
      */

@@ -260,11 +260,14 @@ export interface Runner {
     /** Stops a container mid-run. Used when the lease is lost, and on shutdown. */
     kill(job: BoardJob): Promise<void>;
     /**
-     * Ends the attempt's continuous transcript exporter, which `run` started beside the agent and
-     * which `kill` deliberately leaves alive to drain. The loop calls it once the exporter said it
-     * is done (or its drain deadline passed); idempotent, and never throws.
+     * Ends the agent under its task supervisor: the loop has already raised the kill order on the
+     * attempt's control channel (`killAgent`), so the supervisor ends the agent, has the exporter
+     * drain what it wrote and finalizes, and the run's group then ends by itself — `run` resolves
+     * with the real outcome. This waits, bounded, for that and past the bound falls back to
+     * `kill`, the hard kill. A runner that supervises nothing leaves it out and the loop calls
+     * `kill`. Never throws.
      */
-    stopTranscriptExport?(job: BoardJob): Promise<void>;
+    stopAgent?(job: BoardJob): Promise<void>;
     /** Stops/resumes the runtime budget while questions are pending. */
     pauseDeadline?(job: BoardJob, paused: boolean): Promise<void>;
     /**

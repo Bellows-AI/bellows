@@ -1216,13 +1216,45 @@ start_open_board
 # The real `claude` and `opencode` binaries, in the real executor images (`make runners`), against
 # scripts/fake-model-endpoint.mjs: offline, deterministic, no credential. The endpoint also plays
 # the driver's control endpoint and raises the Stop the moment the first model request arrives —
-# inside the first step. The stop poller turns it into the marker, and the baked hook / plugin
+# inside the first step. The supervisor relays it through the mailbox, the agent's helper turns it into the marker, and the baked hook / plugin
 # must end the run after that step's tool call and before a second model request: the endpoint
 # counts exactly one agent request, the first step's tool ran, the second never did, and the
 # container exited on its own.
 
 echo
 echo '# cooperative stop (real agent CLIs against a scripted model endpoint)'
+
+# The driver's container group in miniature (docker-group.ts): the task supervisor, holding the
+# control pair and all four mailboxes, beside an agent that mounts `in` read-only and `out` and
+# nothing else. The scripted endpoint plays the driver's control endpoint; the supervisor reads the
+# Stop or the question from it, and the agent's mailbox helper and bridge read what it wrote.
+lane_group_up() { # lane_group_up <name> <image> <control-url>
+    local name="$1" image="$2" url="$3" box
+    for box in in out export supervisor; do
+        docker volume create "lane-$name-$box" >/dev/null
+    done
+    docker run -d --name "lane-sup-$name" --add-host host.docker.internal:host-gateway \
+        -v "$PWD/driver/src/scripts/supervisor.cjs:/supervisor.cjs:ro" \
+        -v "lane-$name-in:/factory/in" -v "lane-$name-out:/factory/out" \
+        -v "lane-$name-export:/factory/export" -v "lane-$name-supervisor:/factory/supervisor" \
+        -e "SUPERVISOR_CONTROL_URL=$url" -e SUPERVISOR_CONTROL_TOKEN=lane \
+        -e SUPERVISOR_CONTROL_MS=200 -e SUPERVISOR_TICK_MS=100 \
+        --entrypoint node "$image" /supervisor.cjs >/dev/null
+}
+
+lane_group_agent_args() { # lane_group_agent_args <name>: the agent's half of the mailboxes, as argv words
+    printf '%s\n' -v "lane-$1-in:/factory/in:ro" -v "lane-$1-out:/factory/out" \
+        -e FACTORY_CTL_IN=/factory/in -e FACTORY_CTL_OUT=/factory/out -e FACTORY_CTL_TICK_MS=200
+}
+
+lane_group_down() { # lane_group_down <name>: the supervisor finalizes after the agent exits; then the group goes
+    local box
+    timeout 60 docker wait "lane-sup-$1" >/dev/null 2>&1
+    docker rm -f "lane-sup-$1" >/dev/null 2>&1
+    for box in in out export supervisor; do
+        docker volume rm -f "lane-$1-$box" >/dev/null 2>&1
+    done
+}
 
 stop_lane() { # stop_lane <claude|opencode>
     local cli="$1" image="$1-executor" dir="$work/stop-$1" fake_pid port requests
@@ -1240,8 +1272,9 @@ stop_lane() { # stop_lane <claude|opencode>
     done
     port="$(cat "$work/fake-$cli.port")"
     local host="http://host.docker.internal:$port" run=(docker run --rm --add-host host.docker.internal:host-gateway)
-    run+=(-v "$dir:/workspace" -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key
-        -e "BELLOWS_CONTROL_URL=$host" -e BELLOWS_CONTROL_TOKEN=lane -e BELLOWS_CONTROL_POLL_MS=200)
+    lane_group_up "stop-$cli" "$image" "$host"
+    run+=(-v "$dir:/workspace" -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key)
+    while IFS= read -r word; do run+=("$word"); done < <(lane_group_agent_args "stop-$cli")
     if [ "$cli" = claude ]; then
         # `-p <prompt>` last: the bridge the entrypoint execs refuses any other shape (#536), and it
         # is the shape the driver passes.
@@ -1256,6 +1289,7 @@ stop_lane() { # stop_lane <claude|opencode>
     local status
     timeout 180 "${run[@]}" >"$work/stop-$cli.log" 2>&1
     status=$?
+    lane_group_down "stop-$cli"
     if [ "$status" = 0 ]; then
         ok "$cli exits on its own after the stop"
     else
@@ -1310,15 +1344,17 @@ ask_lane() {
         sleep 0.25
     done
     port="$(cat "$portfile")"
-    local host="http://host.docker.internal:$port"
+    local host="http://host.docker.internal:$port" agent_words=() word
+    lane_group_up "ask-$mode" "$image" "$host"
+    while IFS= read -r word; do agent_words+=("$word"); done < <(lane_group_agent_args "ask-$mode")
     if timeout 180 docker run --rm --add-host host.docker.internal:host-gateway -v "$dir:/workspace" -e WORKDIR=/workspace \
-        -e ANTHROPIC_API_KEY=fake-key -e "ANTHROPIC_BASE_URL=$host" -e "BELLOWS_CONTROL_URL=$host" \
-        -e BELLOWS_CONTROL_TOKEN=lane -e BELLOWS_CONTROL_POLL_MS=200 \
+        -e ANTHROPIC_API_KEY=fake-key -e "ANTHROPIC_BASE_URL=$host" "${agent_words[@]}" \
         "$image" --dangerously-skip-permissions --model fake-model -p 'ask which colour' >"$log" 2>&1; then
         ok "claude exits 0 after the question is answered ($mode)"
     else
         bad "claude exits 0 after the question is answered ($mode)" "$(tail -5 "$log")"
     fi
+    lane_group_down "ask-$mode"
     posts="$(node -e 'fetch(process.argv[1] + "/questions").then((r) => r.json()).then((j) => console.log(j.questionPosts))' "http://127.0.0.1:$port")"
     hooks="$(node -e 'fetch(process.argv[1] + "/hooks").then((r) => r.json()).then((j) => console.log(j.hookRequests))' "http://127.0.0.1:$port")"
     kill "$fake_pid" 2>/dev/null

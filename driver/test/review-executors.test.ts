@@ -4,6 +4,7 @@ import { loadDriverConfig } from '../src/config.js';
 import { syncCheckoutArgs } from '../src/docker-runner-support.js';
 import { syncJobSpec } from '../src/k8s-auxspec.js';
 import { runnerJobSpec } from '../src/k8s-podspec.js';
+import { SUPERVISOR_WINDDOWN_MS } from '../src/supervisor-contract.js';
 
 /**
  * A named reviewer's run on BOTH executors (issue #549): the same restore-at-the-snapshot start,
@@ -91,18 +92,21 @@ describe('the wall-clock budget of a reviewer’s run', () => {
         runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', ...env }), job, { id: SESSION, resume: false }).spec
             .activeDeadlineSeconds;
 
+    // The supervisor ends the agent at the budget; the kubelet's backstop adds its wind-down.
+    const WINDDOWN_S = SUPERVISOR_WINDDOWN_MS / 1000;
+
     it('on kubernetes is the profile’s, in the pod’s kubelet-enforced deadline', () => {
-        expect(deadline(reviewer)).toBe(5 * 60);
+        expect(deadline(reviewer)).toBe(5 * 60 + WINDDOWN_S);
     });
 
     it('is never past the operator’s ceiling', () => {
-        expect(deadline(reviewer, { DRIVER_JOB_TIMEOUT_MS: String(2 * 60_000) })).toBe(2 * 60);
+        expect(deadline(reviewer, { DRIVER_JOB_TIMEOUT_MS: String(2 * 60_000) })).toBe(2 * 60 + WINDDOWN_S);
         expect(deadline({ ...reviewer, reviewRun: { profile: 'x', ref: REF, timeoutMinutes: 600 } })).toBe(
             deadline(base)
         );
     });
 
     it('leaves an ordinary task on the operator’s timeout', () => {
-        expect(deadline(ordinary, { DRIVER_JOB_TIMEOUT_MS: String(90 * 60_000) })).toBe(90 * 60);
+        expect(deadline(ordinary, { DRIVER_JOB_TIMEOUT_MS: String(90 * 60_000) })).toBe(90 * 60 + WINDDOWN_S);
     });
 });

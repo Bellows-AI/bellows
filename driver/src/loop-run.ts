@@ -15,7 +15,7 @@ import {
     releaseGateSession,
     runDeclaredGates,
 } from './loop-gates.js';
-import { drainTranscriptExport, stopTranscriptExport } from './loop-export.js';
+import { drainTranscriptExport } from './loop-export.js';
 import { heartbeat, newJobState, raceStep, stopIfDraining, watchOutput } from './loop-attempt.js';
 import type { GateRunNote } from './timeout-note.js';
 import {
@@ -327,8 +327,8 @@ async function reportRunTail(
 ): Promise<void> {
     const { rt, job } = ctx;
     if (isAgentless(job)) return;
-    // The exporter drains first: a spool-cap stop is stamped on the outcome the session report reads.
-    await drainTranscriptExport(ctx, outcome);
+    // A spool-cap stop is stamped on the outcome the session report reads.
+    drainTranscriptExport(ctx, outcome);
     await reportScrapedSession(rt, job, executorType, outcome);
     // Never throws and never reaches the verdict: a failed upload only leaves a stream without a
     // `complete` manifest.
@@ -703,8 +703,6 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
             });
         } finally {
             closeRunControl(rt, state);
-            // A run that threw never drained; its exporter exits on the closed token, and is removed here.
-            await stopTranscriptExport(ctx);
             if (gateSession) releaseGateSession(rt, gateSession, job);
             // The services outlived run() for the declared gates' sake; they go now, on every
             // exit path — a thrown run included, whose own cleanup no longer takes them.

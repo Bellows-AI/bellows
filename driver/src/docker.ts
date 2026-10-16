@@ -33,6 +33,7 @@ import type { ServiceStatus } from './board.js';
 import { BYTES_PER_KIB, commandMark, OPENCODE_EXPORT_LIMIT, type RuntimeSample, type RunSession } from './runner.js';
 import { GATE_IMAGE, GATE_KEY } from './publish.js';
 import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
+import { agentMailboxArgs, agentRoleArgs } from './docker-mailbox.js';
 
 /**
  * The close-time claude-code turn read's whole budget, matching the kubernetes twin's
@@ -465,6 +466,9 @@ export function dockerArgs(
         ...(session ? ['--label', `${SESSION_MARK}=${session.id}`] : []),
         '--label',
         `${COMMAND_MARK}=${commandMark(job.command)}`,
+        // Which container of the run's group this is: a kill of the agent alone, or the teardown
+        // of the supervisor and exporter beside it, tells them apart by it.
+        ...agentRoleArgs(),
         '-e',
         // The AUTHOR's checkouts sit one directory down. A command-only job names no repo, so the
         // agent starts at the root of that person's workspace and can see everything they selected
@@ -480,6 +484,10 @@ export function dockerArgs(
         // member's and org's tree — is absent from the container's filesystem. Enforced by the
         // mount itself; an agent running arbitrary code inside cannot cross it.
         ...workspacesMountArgs(config, workspacePath(job)),
+        // The agent's side of the task supervisor's mailbox: `in` read-only (a Stop, an answer, a
+        // kill order — it cannot forge them) and `out` (its questions and heartbeat). Nothing of the
+        // supervisor's own state, the exporter's mailbox or the control credential is mounted or set.
+        ...agentMailboxArgs(job),
     ];
 
     // A gated job's runner reaches the driver's gate endpoint by the default

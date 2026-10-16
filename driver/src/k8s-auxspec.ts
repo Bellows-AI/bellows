@@ -477,9 +477,22 @@ export const podsPath = (namespace: string): string => `/api/v1/namespaces/${nam
 export const jobPodsPath = (namespace: string, jobName: string): string =>
     `${podsPath(namespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`;
 
-/** One pod's log, tailed to `LOG_TAIL_LINES` by default — the full log when `tail` is null. */
-export const podLogPath = (namespace: string, pod: string, tail: number | null = LOG_TAIL_LINES): string =>
-    `${podsPath(namespace)}/${pod}/log${tail !== null ? `?tailLines=${tail}` : ''}`;
+/**
+ * One pod's log, tailed to `LOG_TAIL_LINES` by default — the full log when `tail` is null. A pod
+ * with several containers (the runner's) answers 400 without `container`, the one whose log it is.
+ */
+export const podLogPath = (
+    namespace: string,
+    pod: string,
+    tail: number | null = LOG_TAIL_LINES,
+    container?: string
+): string => {
+    const query = [
+        ...(tail !== null ? [`tailLines=${tail}`] : []),
+        ...(container !== undefined ? [`container=${container}`] : []),
+    ];
+    return `${podsPath(namespace)}/${pod}/log${query.length > 0 ? `?${query.join('&')}` : ''}`;
+};
 
 /** One object's events, by name: read for why a service pod vanished (issue #560). */
 export const eventsForPath = (namespace: string, name: string): string =>

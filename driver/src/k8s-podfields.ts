@@ -1,5 +1,6 @@
 import type { DriverConfig } from './config.js';
 import type { ExecutorType } from './executors.js';
+import { type Mailbox, MAILBOXES } from './supervisor-contract.js';
 import { telemetryConfig, telemetryConfigK8s, type TelemetryConfigVolume } from './telemetry-config.js';
 
 /**
@@ -151,8 +152,30 @@ export interface RunnerMount {
     readOnly?: boolean;
 }
 
-/** A runner pod's volume: the workspaces claim, or the attempt Secret its telemetry config rides. */
-export type RunnerVolume = { name: string; persistentVolumeClaim: { claimName: string } } | TelemetryConfigVolume;
+/**
+ * A runner pod's volume: the workspaces claim, the attempt Secret its telemetry config rides, or
+ * one of the supervisor's mailboxes (an emptyDir — transient control, never finished work).
+ */
+export type RunnerVolume =
+    | { name: string; persistentVolumeClaim: { claimName: string } }
+    | { name: string; emptyDir: Record<string, never> }
+    | TelemetryConfigVolume;
+
+/**
+ * The supervisor's four mailboxes as pod volumes, one emptyDir each (`supervisor-contract.ts`). One
+ * volume per mailbox rather than subPaths of one: what a container mounts is then exactly the
+ * mailboxes it names, and kubelet-created subPath directories (root-owned) cannot lock a non-root
+ * container out of its own.
+ */
+export const mailboxVolumes = (): RunnerVolume[] =>
+    Object.values(MAILBOXES).map((box) => ({ name: box.name, emptyDir: {} }));
+
+/** One mailbox as a container mount — read-only where the contract says the container may only read it. */
+export const mailboxMount = (box: Mailbox, access: 'ro' | 'rw'): RunnerMount => ({
+    name: box.name,
+    mountPath: box.path,
+    ...(access === 'ro' ? { readOnly: true } : {}),
+});
 
 /**
  * The runner's volumes: the member's own subtree of the workspaces claim (`path`, asserted by the

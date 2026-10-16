@@ -26,7 +26,7 @@ import {
 } from '../src/question-control.js';
 import type { ControlEntry, QuestionRelay, QuestionResolution } from '../src/question-control.js';
 import { servePublish, type PublishRelay } from '../src/publish-control.js';
-import type { ExportDrain, ExportRelay } from '../src/export-control.js';
+import type { ExportRelay } from '../src/export-control.js';
 import type { ReviewRelay } from '../src/review-control.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
 import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
@@ -580,6 +580,7 @@ function stubGateStack(
     const stack = {
         controlOpened: [] as string[],
         stopsRaised: [] as string[],
+        killsRaised: [] as string[],
         deadNotes: [] as [string, string | null][],
         controlClosed: [] as string[],
         /** The real control state per open token (issue #226): questions run through the real code. */
@@ -628,15 +629,21 @@ function stubGateStack(
                 stack.controlOpened.push(token);
                 stack.controls.set(token, newControl(relay ?? null, publisher ?? null, reviewer ?? null));
             },
+            // The agent's own token opens the same entry's publish and review routes.
+            grantAgent: (token: string, agentToken: string) => {
+                const control = stack.controls.get(token);
+                if (control) stack.controls.set(agentToken, control);
+            },
             attachExporter: (token: string, exporter: ExportRelay) => {
                 const control = stack.controls.get(token);
                 if (control) control.exporting.relay = exporter;
             },
-            drainExport: (token: string, drain: ExportDrain) => {
-                const control = stack.controls.get(token);
-                if (control) control.exporting.drain = drain;
-            },
             controlPolled: () => options.polled ?? true,
+            raiseKill: (token: string) => {
+                stack.killsRaised.push(token);
+                const control = stack.controls.get(token);
+                if (control) control.kill = true;
+            },
             raiseStop: (token: string) => {
                 stack.stopsRaised.push(token);
                 const control = stack.controls.get(token);
@@ -644,7 +651,8 @@ function stubGateStack(
             },
             closeControl: (token: string) => {
                 stack.controlClosed.push(token);
-                stack.controls.delete(token);
+                const control = stack.controls.get(token);
+                for (const [key, entry] of stack.controls) if (entry === control) stack.controls.delete(key);
             },
             resolveQuestion: (token: string, id: string, resolution: QuestionResolution): boolean => {
                 const control = stack.controls.get(token);
@@ -5220,8 +5228,10 @@ describe('a cooperative stop (issue #442)', () => {
         const board = stubBoard([job(1)], options);
         const { stack, gates } = stubGateStack({}, { control: true });
         let launchedEnv: BoardJob['gateEnv'];
+        let supervisorEnv: BoardJob['supervisorEnv'];
         const runner = stubRunner(async (running) => {
             launchedEnv = { ...running.gateEnv };
+            supervisorEnv = { ...running.supervisorEnv };
             options.cancelRequested = true;
             // Several stop beats land while the agent is still finishing its step.
             const target = board.board.beats + 4;
@@ -5232,13 +5242,11 @@ describe('a cooperative stop (issue #442)', () => {
         await driveControlled({ ...board, runner, gates });
 
         // Ungated job, yet the endpoint opened: the control channel is not a gate feature.
-        expect(Object.keys(launchedEnv ?? {}).sort()).toEqual([
-            'BELLOWS_CONTROL_POLL_MS',
-            'BELLOWS_CONTROL_TOKEN',
-            'BELLOWS_CONTROL_URL',
-        ]);
-        expect(launchedEnv?.BELLOWS_CONTROL_POLL_MS).toBe('5000');
-        expect(stack.controlOpened).toEqual([launchedEnv?.BELLOWS_CONTROL_TOKEN]);
+        // The agent holds its own publish/review token; the supervisor's pair rides apart from it.
+        expect(Object.keys(launchedEnv ?? {}).sort()).toEqual(['BELLOWS_CONTROL_TOKEN', 'BELLOWS_CONTROL_URL']);
+        expect(Object.keys(supervisorEnv ?? {}).sort()).toEqual(['SUPERVISOR_CONTROL_TOKEN', 'SUPERVISOR_CONTROL_URL']);
+        expect(launchedEnv?.BELLOWS_CONTROL_TOKEN).not.toBe(supervisorEnv?.SUPERVISOR_CONTROL_TOKEN);
+        expect(stack.controlOpened).toEqual([supervisorEnv?.SUPERVISOR_CONTROL_TOKEN]);
         // Repeated stop beats are idempotent: one raise, scoped to this attempt's token.
         expect(stack.stopsRaised).toEqual(stack.controlOpened);
         expect(runner.killed).toEqual([]);

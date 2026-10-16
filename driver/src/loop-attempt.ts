@@ -6,6 +6,7 @@ import type { RuntimeSample } from './runner.js';
 import type { LoopRuntime } from './loop-types.js';
 import type { ExportRun } from './loop-export.js';
 import type { PublishResult } from './publish.js';
+import { RUN_CONTROL_POLL_MS } from './supervisor-contract.js';
 import type { TimeoutActivity } from './timeout-note.js';
 
 /** How often freshly arrived output is flushed to the board — the pace the dashboard polls at. */
@@ -22,10 +23,10 @@ const PROGRESS_MS = 2_000;
 const SETUP_POLL_MS = 2_000;
 /**
  * How often a launched attempt's heartbeat polls — and so how soon a Stop is seen — when that is
- * sooner than a lease third. Also the pace the runner's stop poller reads the control endpoint at
- * (handed to it as `BELLOWS_CONTROL_POLL_MS`). Not configurable (issue #442).
+ * sooner than a lease third. Also the pace the task supervisor reads the control endpoint at
+ * (handed to it as `SUPERVISOR_CONTROL_MS`). Not configurable (issue #442).
  */
-export const RUN_CONTROL_POLL_MS = 5_000;
+export { RUN_CONTROL_POLL_MS };
 /**
  * How long a draining attempt (a Stop raised on the control endpoint, the agent finishing its
  * current model step) gets before the hard kill lands. Not configurable (issue #442).
@@ -141,6 +142,21 @@ export function newJobState(): JobState {
     };
 }
 
+/**
+ * Ends the agent of a launched attempt now. With a control endpoint open and a runner that can
+ * stop an agent under its supervisor, the supervised way: the kill order is raised for the
+ * supervisor (it ends the agent, has the exporter drain what it wrote and finalizes), and the
+ * runner waits, bounded, for the group to wind down before it falls back to the hard kill. Without
+ * either — no endpoint, a runner that supervises nothing — the hard kill, as it always was.
+ */
+export function killAgent(rt: LoopRuntime, job: BoardJob, control: string | null): Promise<void> {
+    if (control !== null && rt.gates && rt.runner.stopAgent) {
+        rt.gates.server.raiseKill(control);
+        return rt.runner.stopAgent(job);
+    }
+    return rt.runner.kill(job);
+}
+
 /** The verdicts that end an attempt where it stands: a stop, a lost lease, a removed thread. */
 export const down = (state: JobState): boolean => state.stopped || state.lost || state.removed;
 
@@ -246,7 +262,7 @@ async function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, co
             state.stopped = true;
             rt.log(`job ${job.id}: the agent did not stop within ${graceMs}ms, killing the runner`);
             state.abortNow();
-            void rt.runner.kill(job).catch(() => {});
+            void killAgent(rt, job, control).catch(() => {});
         }, graceMs);
         state.graceTimer.unref?.();
     }
@@ -304,7 +320,7 @@ export async function applyHeartbeatVerdict(
     // so a slow teardown never holds the stand-down in place.
     state.abortNow();
     if (state.launched) {
-        await runner.kill(job);
+        await killAgent(rt, job, state.control);
     } else {
         // Before the spawn there is no container — the kill is best-effort
         // reclamation, and both executors swallow its rejections. Awaited,

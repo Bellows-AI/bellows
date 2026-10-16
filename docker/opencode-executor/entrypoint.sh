@@ -140,27 +140,28 @@ fi
 CLI_PID=''
 REPORTER_PID=''
 WATCHER_PID=''
-STOP_POLLER_PID=''
+CTL_PID=''
 TERM_PENDING=''
 on_term() {
     TERM_PENDING=1
     # shellcheck disable=SC2086 # deliberately unquoted: an unset pid must vanish, not empty-arg
-    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID $STOP_POLLER_PID 2>/dev/null || true
+    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID $CTL_PID 2>/dev/null || true
 }
 trap on_term TERM INT
 
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
 REPORTER_PID=$!
-# The cooperative Stop (issue #442): the poller reads the driver's control endpoint and writes the
-# stop marker the baked factory-stop plugin checks at each step boundary. Exported so the poller
-# and the plugin agree on one path; any marker left from before is cleared first. A background
-# sibling like the reporter, stdio discarded.
+# The cooperative Stop (issue #442): the mailbox agent reads what the task supervisor wrote into
+# the read-only FACTORY_CTL_IN directory and writes the stop marker the baked factory-stop plugin
+# checks at each step boundary; it also beats the heartbeat the supervisor reads and forwards a
+# kill order to this shell as TERM. Exported so the agent and the plugin agree on one path; any
+# marker left from before is cleared first. A background sibling like the reporter, stdio discarded.
 # Under TMPDIR when one is set (the offline suite gives each case its own), /tmp in the image.
 FACTORY_STOP_MARKER="${TMPDIR:-/tmp}/factory-stop"
 export FACTORY_STOP_MARKER
 rm -f "$FACTORY_STOP_MARKER" "$FACTORY_STOP_MARKER.aborted"
-node /usr/local/bin/stop-poller.cjs >/dev/null 2>&1 &
-STOP_POLLER_PID=$!
+node /usr/local/bin/ctl-agent.cjs >/dev/null 2>&1 &
+CTL_PID=$!
 # The CLI is forked through a subshell that CLEARS the inherited handler and execs. A background
 # child inherits the parent's traps until it execs, so a TERM landing in that sliver runs
 # `on_term` IN THE CHILD — which sets a copy of TERM_PENDING nothing reads, and swallows the very
@@ -185,7 +186,7 @@ WATCHER_PID=$!
 
 if [ -n "$TERM_PENDING" ]; then
     # shellcheck disable=SC2086 # same reason as on_term
-    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID $STOP_POLLER_PID 2>/dev/null || true
+    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID $CTL_PID 2>/dev/null || true
 fi
 
 set +e
@@ -209,7 +210,13 @@ fi
 
 # The run is over: stop the sampler and the watcher and reap them before the close-time sample,
 # which is the last thing that runs.
-kill -TERM "$REPORTER_PID" "$WATCHER_PID" "$STOP_POLLER_PID" 2>/dev/null || true
-wait "$REPORTER_PID" "$WATCHER_PID" "$STOP_POLLER_PID" 2>/dev/null || true
+kill -TERM "$REPORTER_PID" "$WATCHER_PID" "$CTL_PID" 2>/dev/null || true
+wait "$REPORTER_PID" "$WATCHER_PID" "$CTL_PID" 2>/dev/null || true
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs --once >/dev/null 2>&1 || true
+# The supervisor's word that the agent is over, written last and atomically: the exit status the
+# runtime reports is still the verdict, this only lets the supervisor start finalizing at once.
+if [ -n "${FACTORY_CTL_OUT:-}" ]; then
+    printf '%s\n' "$STATUS" > "$FACTORY_CTL_OUT/agent.exit.tmp" 2>/dev/null \
+        && mv "$FACTORY_CTL_OUT/agent.exit.tmp" "$FACTORY_CTL_OUT/agent.exit" 2>/dev/null || true
+fi
 exit "$STATUS"

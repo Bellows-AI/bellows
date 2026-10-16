@@ -9,8 +9,8 @@ this repo's application.
 | `ENTRYPOINT` (`/usr/local/bin/claude-executor`): `$WORKDIR`, `safe.directory`, `JIRA_API` export, transcript redirect | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Git/gh guard, wired as the `PreToolUse` hook | `git-guard.cjs`, `claude-home/settings.json` | `driver/test/executor-images.test.ts`, `git-guard.cjs --selftest` |
 | Sidecars: branch reporting to `/api/sessions/branch`; progress over the CLI's `stream-json` | `branch-reporter.cjs`, `claude-progress.cjs` | `driver/test/executor-images.test.ts`, `test.sh` |
-| The CLI launcher: `-p` rewritten to stream-json, `AskUserQuestion` answered through the control endpoint | `claude-bridge.cjs` | `driver/test/claude-bridge.test.ts` |
-| Cooperative Stop: the control-endpoint poller and the `PostToolUse` step-boundary hook | `stop-poller.cjs`, `stop-hook.cjs` | `driver/test/run-control.test.ts` |
+| The CLI launcher: `-p` rewritten to stream-json, `AskUserQuestion` relayed through the supervisor's mailbox | `claude-bridge.cjs` | `driver/test/claude-bridge.test.ts` |
+| Cooperative Stop: the supervisor-mailbox agent and the `PostToolUse` step-boundary hook | `ctl-agent.cjs`, `stop-hook.cjs` | `driver/test/supervisor.test.ts`, `driver/test/run-control.test.ts` |
 | Per-node turn context, the `UserPromptSubmit` hook | `turn-context-hook.cjs` | `driver/test/turn-context-hook.test.ts` |
 | Baked global instructions and config dir (`CLAUDE_CONFIG_DIR`) | `claude-home/` | `driver/test/executor-images.test.ts` |
 | OTLP exporter config, root-owned managed settings and the runner permission allow-list; the driver renders its endpoint | `managed-settings.json`, `driver/src/telemetry-config.ts` | `test.sh`, `driver/test/telemetry-shipping.test.ts`, `driver/test/executor-images.test.ts` |

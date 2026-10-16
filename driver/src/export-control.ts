@@ -4,14 +4,14 @@ import { readBody, readBodyBytes } from './http.js';
 
 /**
  * The control endpoint's transcript-export routes, one set per control token — so one lease. The
- * exporter (`scripts/claude-export.cjs`) runs beside the agent and carries no board credential: it
- * puts each chunk here and the loop (`loop-export.ts`) forwards it to the board's chunk route. The
- * routes never mark the token `polled` — only the agent's own stop poll says a Stop can be
- * cooperative.
+ * exporter (`scripts/claude-export.cjs`) runs beside the agent under the task supervisor and
+ * carries no board credential: it puts each chunk here and the loop (`loop-export.ts`) forwards it
+ * to the board's chunk route. The routes never mark the token `polled` — only the supervisor's own
+ * control poll says a Stop can be cooperative. The drain order does not travel here: the supervisor
+ * hands it to the exporter through the directory only the two of them mount.
  */
 
 export const EXPORT_PATH = '/export';
-export const EXPORT_CONTROL_PATH = `${EXPORT_PATH}/control`;
 export const EXPORT_CHUNK_PATH = `${EXPORT_PATH}/chunk`;
 export const EXPORT_MANIFEST_PATH = `${EXPORT_PATH}/manifest`;
 export const EXPORT_STATE_PATH = `${EXPORT_PATH}/state`;
@@ -33,12 +33,6 @@ const HTTP_BAD_GATEWAY = 502;
 
 /** The segment of a stream's key a session may fill: the board's own rule for ids in a key. */
 const SESSION = /^[A-Za-z0-9._-]{1,128}$/;
-
-/** What the agent's end means for the transcript: whole (a normal exit) or cut short (a kill, a timeout). */
-export interface ExportDrain {
-    state: 'complete' | 'partial';
-    cause: string | null;
-}
 
 /** The exporter's vitals: what is unacknowledged and for how long, and whether the spool cap is hit. */
 export interface ExportReport {
@@ -64,10 +58,9 @@ export interface ExportRelay {
     report(report: ExportReport): void;
 }
 
-/** One token's export state: the relay (null on a run with no exporter) and the drain order, once given. */
+/** One token's export state: the relay, null on a run with no exporter. */
 export interface ExportSlot {
     relay: ExportRelay | null;
-    drain: ExportDrain | null;
 }
 
 export interface ExportAnswer {
@@ -170,9 +163,6 @@ export async function serveExport(
 ): Promise<ExportAnswer> {
     const { relay } = slot;
     const path = (request.url ?? '').split('?')[0];
-    if (request.method === 'GET' && path === EXPORT_CONTROL_PATH) {
-        return { status: HTTP_OK, body: { drain: slot.drain } };
-    }
     if (!relay) return { status: HTTP_BAD_REQUEST, body: { error: 'this attempt exports no transcript' } };
     const serve =
         request.method === 'PUT' && path === EXPORT_CHUNK_PATH

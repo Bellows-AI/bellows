@@ -361,6 +361,8 @@ export interface K8sPod {
         /** `DisruptionTarget` is the control plane's mark on a pod it is taking away (issue #560). */
         conditions?: { type?: string; status?: string; reason?: string; message?: string }[];
         containerStatuses?: {
+            /** The container's name — the runner pod holds several, so its verdict reads them by name. */
+            name?: string;
             state?: {
                 terminated?: { exitCode?: number; reason?: string; message?: string };
                 running?: { startedAt?: string };
@@ -388,14 +390,20 @@ export function livePod(body: string): K8sPod | undefined {
     return livePodOfItems(parse<K8sPodList>(body).items ?? []);
 }
 
+/** One container's status: the named one in a multi-container pod, the first in an aux pod's only one. */
+export function containerStatusOf(pod: K8sPod | undefined, container?: string) {
+    const statuses = pod?.status?.containerStatuses;
+    return container === undefined ? statuses?.[0] : statuses?.find((status) => status.name === container);
+}
+
 /**
  * Why a pod's container ended without success, in the kubelet's own words — `StartError: exec:
  * "node": executable file not found` — or null when it exited 0 or has no state to read. The k8s
  * twin of the docker runner's `dockerErrorDetail`: a container that never started prints no
  * verdict line, and its status is the only place the cause survives.
  */
-export function containerFailure(pod: K8sPod | undefined): string | null {
-    const state = pod?.status?.containerStatuses?.[0]?.state;
+export function containerFailure(pod: K8sPod | undefined, container?: string): string | null {
+    const state = containerStatusOf(pod, container)?.state;
     const terminated = state?.terminated;
     if (terminated && terminated.exitCode !== 0) {
         const reason = terminated.reason ?? `exit ${terminated.exitCode ?? 'unknown'}`;

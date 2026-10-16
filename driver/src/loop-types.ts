@@ -31,8 +31,6 @@ export interface LoopRuntime {
     gates?: GateStack;
     /** Overrides `STOP_GRACE_MS` — a test seam, never set in production (issue #442). */
     stopGraceMs?: number;
-    /** Overrides `EXPORT_DRAIN_MS` — a test seam, never set in production. */
-    exportDrainMs?: number;
     log: (message: string) => void;
     sleep: (ms: number) => Promise<void>;
     reclaims: Map<string, Promise<void>>;
