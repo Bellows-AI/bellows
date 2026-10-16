@@ -16,6 +16,7 @@ codes, query parameters and error codes are read there, never restated here.
 | Jobs: create, claim, worker reports (a `failureCause` only beside a `gate`/`publish`/`helper` `failureKind`, else `BAD_FAILURE_KIND`; `setupMs` a non-negative integer, else `BAD_SETUP_MS`), actions (`done` with `force` closes a live batch's thread: 200, or 202 while it settles; [batches.md](batches.md)), reclaims; `GET /api/jobs/:id?waitFor=terminal` answers the explicit wait result (`terminal`, `parked`, `timeout`) with the thread identity beside the row | `server/src/routes/jobs.ts` and `job-*.ts` | `server/test/routes.jobs.test.ts` |
 | `Idempotency-Key` header on `POST /api/jobs`, `/:id/follow-up`, `/:id/retry` (`400 BAD_IDEMPOTENCY_KEY`, `409 IDEMPOTENCY_KEY_REUSED`; a replay is the same `201` plus `Idempotency-Replayed: true`) | `server/src/routes/job-idempotency.ts` | `server/test/routes.jobs.test.ts`, `server/test-db/cli.scripting.test.ts` |
 | `GET /api/jobs/:id/activity` answers one run's time buckets with `tokens` by type (`input`, `output`, `cacheRead`, `cacheCreation`) and `totals` (null when nothing was measured); the stored `agentTurns` rides on every job row, null when unmeasured | `server/src/routes/job-handlers-actions.ts`, `server/src/telemetry/run-activity.ts` | `server/test/routes.jobs.test.ts`, `server/test/run-activity.test.ts` |
+| Artifact reads: `GET /api/jobs/:id/artifacts` (streams and states) and `/artifacts/read` (cursor-paged chunks across attempts, sessions and streams) | `server/src/routes/job-handlers-artifacts.ts`, `server/src/artifacts/artifact-read.ts` | `server/test/routes.artifacts-read.test.ts`, `server/test-db/artifact-read.test.ts` |
 | Agent questions: `POST /api/jobs/:id/question` (worker; no expiry), `questions/:questionId/answer` (member); heartbeat `answeredQuestions` | `server/src/routes/job-handlers-questions.ts`, `job-handlers-worker.ts` | `server/test/routes.jobs.test.ts`, `server/test/auth.enforcement.test.ts` |
 | Named reviewers: `POST /api/jobs/:id/review`, `review-read` (worker, lease-fenced; `409 UNKNOWN_REVIEWER`, `409 REVIEW_UNSUPPORTED`, `400 INVALID_REVIEW`, `404 REVIEW_NOT_FOUND`) | `server/src/routes/job-handlers-reviews.ts` | `server/test/routes.jobs.test.ts`, `server/test/auth.enforcement.test.ts` |
 | Task read model (`/api/tasks`; each item carries the task `id` and its `headRunId`) | `server/src/routes/tasks.ts` | `server/test/routes.tasks.test.ts` |
@@ -37,9 +38,17 @@ and by the `lint/no-shared-literals.grit` plugin.
 
 - Artifact upload is `PUT /api/jobs/:id/artifact/chunk` (raw bytes) and `/manifest`: worker routes
   authorized by the claim sequence the request names (1 through the row's current one, else
-  `400 BAD_CLAIM_SEQ`), never by the lease, and they write nothing on `job`. The artifact reads do not exist
-  yet. `server/src/routes/job-handlers-artifacts.ts`, `server/test/routes.artifacts.test.ts`,
+  `400 BAD_CLAIM_SEQ`), never by the lease, and they write nothing on `job`.
+  `server/src/routes/job-handlers-artifacts.ts`, `server/test/routes.artifacts.test.ts`,
   `server/test/auth.enforcement.test.ts`.
+- Artifacts are read over HTTP: `GET /api/jobs/:id/artifacts` lists a job's streams and
+  `/artifacts/read` pages their chunks (whole chunks; `cursor`, `limit` bytes; `stream`, `attempt`, `session`,
+  `executor` narrow). Every stream carries a `state` (`complete`, `partial`, `truncated`, `deleted`) and a cause;
+  a removed job answers its indexed streams as `deleted`. Both resolve through the caller's org, so another
+  org's job is `404`. `GET /api/jobs/:id/log` and `/transcript` no longer
+  exist. `server/test/routes.artifacts-read.test.ts`, `server/test-db/artifact-read.test.ts`.
+- Transcript exports never reach token metrics: they are artifacts, and where a session has both, the
+  `session_source` view keeps OTEL. `server/test-db/artifact-read.test.ts`.
 - A route is authenticated unless `requirementFor` (`server/src/auth/plugin.ts`) deliberately
   exempts it — new paths fall through to the walled default. `server/test/auth.enforcement.test.ts`.
 - `GET /api/auth/me` answers `200 { authenticated: false }` anonymously, never `401`: it is what

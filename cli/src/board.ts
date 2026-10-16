@@ -104,6 +104,56 @@ export interface JobActivity {
     totals: ActivityTokens | null;
 }
 
+/**
+ * One stream of a run's artifacts (`GET /api/jobs/:id/artifacts`). `state` is the stream's whole
+ * condition: `complete`, `partial`, `truncated` (the producer hit a cap), or `deleted` (the task or
+ * its objects are gone); `terminalCause` says why it is not complete.
+ */
+export interface ArtifactStream {
+    attempt: number;
+    executor: string;
+    session: string;
+    stream: string;
+    state: 'complete' | 'partial' | 'truncated' | 'deleted';
+    terminalCause: string | null;
+    chunks: number;
+    bytes: number;
+    producer: string | null;
+    startedAt: string | null;
+    finishedAt: string | null;
+}
+
+/** One chunk of a read; `text` is null for a deleted chunk, and `gapBefore` counts bytes the index shows missing before it. */
+export interface ArtifactSegment {
+    attempt: number;
+    executor: string;
+    session: string;
+    stream: string;
+    offset: number;
+    length: number;
+    gapBefore: number;
+    state: 'ok' | 'deleted';
+    text: string | null;
+}
+
+/** One page of a read; `nextCursor` is null at the end of the selected streams. */
+export interface ArtifactPage {
+    jobId: string;
+    streams: readonly ArtifactStream[];
+    segments: readonly ArtifactSegment[];
+    nextCursor: string | null;
+}
+
+/** The selection and paging of an artifact read, each omitted when not given. */
+export interface ArtifactFilters {
+    stream?: string | undefined;
+    attempt?: number | undefined;
+    session?: string | undefined;
+    executor?: string | undefined;
+    cursor?: string | undefined;
+    limit?: number | undefined;
+}
+
 /** One option of an asked question. */
 export interface QuestionOption {
     label: string;
@@ -285,6 +335,13 @@ export interface BoardClient extends BatchRoutes {
     waitForJob(id: string, timeoutSeconds: number): Promise<JobWait>;
     thread(id: string): Promise<BoardJobRecord[]>;
     activity(id: string): Promise<JobActivity>;
+    /** The run's streams across attempts and sessions, each with its state. */
+    artifactStreams(
+        id: string,
+        filters: ArtifactFilters
+    ): Promise<{ jobId: string; streams: readonly ArtifactStream[] }>;
+    /** One page of the selected streams' text, in attempt, session, stream and offset order. */
+    readArtifacts(id: string, filters: ArtifactFilters): Promise<ArtifactPage>;
     followUp(id: string, command: string, idempotencyKey?: string): Promise<JobCreated>;
     /** Re-runs the thread head's own command as a fresh attempt; the board takes nothing from a body. */
     retry(id: string, idempotencyKey?: string): Promise<JobCreated>;
@@ -402,7 +459,16 @@ function isWait(value: unknown): value is JobWait {
     );
 }
 
-type ReadRoutes = 'activity' | 'listRepos' | 'workspace' | 'listSkills' | 'listConnections' | 'version' | 'me';
+type ReadRoutes =
+    | 'activity'
+    | 'artifactStreams'
+    | 'readArtifacts'
+    | 'listRepos'
+    | 'workspace'
+    | 'listSkills'
+    | 'listConnections'
+    | 'version'
+    | 'me';
 
 /** The plain GET reads, over whatever `get` does to fetch one authenticated path. */
 function readRoutes(get: (path: string) => Promise<unknown>): Pick<BoardClient, ReadRoutes> {
@@ -427,6 +493,15 @@ function readRoutes(get: (path: string) => Promise<unknown>): Pick<BoardClient, 
         },
         async activity(id) {
             return (await get(`${jobPath(id)}/activity`)) as JobActivity;
+        },
+        async artifactStreams(id, filters) {
+            return (await get(`${jobPath(id)}/artifacts${taskQuery({ ...filters })}`)) as {
+                jobId: string;
+                streams: readonly ArtifactStream[];
+            };
+        },
+        async readArtifacts(id, filters) {
+            return (await get(`${jobPath(id)}/artifacts/read${taskQuery({ ...filters })}`)) as ArtifactPage;
         },
     };
 }

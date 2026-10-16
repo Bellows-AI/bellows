@@ -70,7 +70,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | `task list` and cursors | `cli/src/tasks.ts` | `cli/test/tasks.test.ts` |
 | Discovery (`repo`, `executor`, `skill`, `connection list`) | `cli/src/discovery.ts` | `cli/test/discovery.test.ts` |
 | Diagnostics (`auth status`, `job preflight`, help, `--version`) | `cli/src/diagnose.ts`, `diagnostics.ts`, `selection.ts`, `usage.ts`, `version.ts` | `cli/test/diagnostics.test.ts` |
-| `job activity` | `cli/src/artifacts.ts` | `cli/test/artifacts.test.ts` |
+| `job activity`, `job streams`, `job read` (`--all` follows the cursors) | `cli/src/artifacts.ts` | `cli/test/artifacts.test.ts` |
 | `job retry`, `edit`, `reopen` | `cli/src/board.ts` | `cli/test/retry-edit.test.ts` |
 | `job questions`, `job answer` | `cli/src/run.ts` | `cli/test/questions.test.ts` |
 | `--idempotency-key` | `cli/src/board.ts` | `cli/test/idempotency.test.ts` |

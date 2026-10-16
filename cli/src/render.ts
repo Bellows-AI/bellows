@@ -1,4 +1,6 @@
 import type {
+    ArtifactSegment,
+    ArtifactStream,
     BatchThreadClosed,
     BoardJobRecord,
     BoardTaskPage,
@@ -189,6 +191,41 @@ export function renderActivity(activity: JobActivity): string {
         return `${b.start}  input ${input}  output ${output}  cache-read ${cacheRead}  cache-creation ${cacheCreation}  edits ${b.edits}`;
     });
     return [header, ...rows].join('\n');
+}
+
+const streamLabel = (s: Pick<ArtifactStream, 'attempt' | 'executor' | 'session' | 'stream'>) =>
+    `attempt ${s.attempt} ${s.executor} session ${s.session} stream ${s.stream}`;
+
+/** The streams listing: one row each, the state first and the cause beside any state that is not complete. */
+export function renderArtifactStreams(streams: readonly ArtifactStream[]): string {
+    if (streams.length === 0) return 'no artifacts: the run has uploaded no streams';
+    return streams
+        .map((s) => {
+            const cause = s.terminalCause === null ? '' : ` (${s.terminalCause})`;
+            return `${s.state}${cause}  ${streamLabel(s)}  ${s.chunks} chunks  ${s.bytes} bytes`;
+        })
+        .join('\n');
+}
+
+/**
+ * A read's text, with every condition the reader must not miss said inline as a `#` line: a stream
+ * that is not complete, bytes missing before a chunk, a chunk whose object is deleted.
+ */
+export function renderArtifactSegments(
+    streams: readonly ArtifactStream[],
+    segments: readonly ArtifactSegment[]
+): string {
+    const lines: string[] = [];
+    for (const s of streams) {
+        if (s.state !== 'complete') lines.push(`# ${s.state} (${s.terminalCause ?? DASH}): ${streamLabel(s)}`);
+    }
+    for (const segment of segments) {
+        if (segment.gapBefore > 0) lines.push(`# ${segment.gapBefore} bytes missing before offset ${segment.offset}`);
+        if (segment.text === null)
+            lines.push(`# deleted: ${segment.length} bytes at offset ${segment.offset} of ${streamLabel(segment)}`);
+        else lines.push(segment.text.replace(/\n$/, ''));
+    }
+    return lines.join('\n');
 }
 
 /**

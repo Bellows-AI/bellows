@@ -28,6 +28,7 @@ export function staticRegistry(
         telemetry?: TelemetryStub;
         service?: ReturnType<typeof createStatsService>;
         jobs?: OrgRuntime['jobs'];
+        artifacts?: OrgRuntime['artifacts'];
         workflows?: OrgRuntime['workflows'];
         prs?: OrgRuntime['prs'];
         envVars?: OrgRuntime['envVars'];
@@ -44,7 +45,6 @@ export function staticRegistry(
         userExecutors?: OrgRuntime['userExecutors'];
         cloneQueue?: OrgRuntime['cloneQueue'];
         purger?: OrgRuntime['purger'];
-        artifacts?: OrgRuntime['artifacts'];
         facts?: OrgRuntime['facts'];
         /** When set, `for()` answers null for every id not in it. */
         orgsFor?: readonly string[];
@@ -59,6 +59,7 @@ export function staticRegistry(
         telemetry,
         service: parts.service ?? createStatsService({ config, repos, telemetry }),
         jobs: parts.jobs,
+        artifacts: parts.artifacts,
         workflows: parts.workflows,
         prs: parts.prs,
         envVars: parts.envVars,
@@ -71,7 +72,6 @@ export function staticRegistry(
         userExecutors: parts.userExecutors,
         cloneQueue: parts.cloneQueue,
         purger: parts.purger,
-        artifacts: parts.artifacts,
         // Default, not undefined: a runtime with stores but no cache would 503 every GET, and a
         // cheap Map is not worth a per-test decision. A test that must SHARE the instance with
         // its purger passes it here.
