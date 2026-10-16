@@ -1276,7 +1276,7 @@ describe('the opencode-executor git guard policy', () => {
                 const inline = JSON.parse(
                     await runEntrypoint({
                         env: {
-                            XDG_DATA_HOME: join(sandboxData, 'org', 'uuid', '.opencode'),
+                            XDG_DATA_HOME: join(sandboxData, 'org', 'uuid', '.factory', 'opencode', 'task'),
                             OPENCODE_CONFIG_CONTENT: JSON.stringify({ agent: { factory: { mode: 'primary' } } }),
                         },
                     })

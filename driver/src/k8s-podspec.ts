@@ -13,13 +13,8 @@ import {
     transcriptDir,
     workspacePath,
 } from './claim.js';
-import {
-    claudeTurnsScript,
-    claudeExportScript,
-    opencodeReadoutScript,
-    opencodeTranscriptScript,
-} from './container-scripts.js';
-import { ARTIFACT_LIMIT, type RunSession } from './runner.js';
+import { claudeTurnsScript, claudeExportScript, opencodeReadoutScript } from './container-scripts.js';
+import { OPENCODE_EXPORT_LIMIT, type RunSession } from './runner.js';
 import { exportEnv } from './transcript-export.js';
 import { JOB_ID, MS_PER_SECOND, TTL_SECONDS } from './k8s-transport.js';
 import {
@@ -787,29 +782,20 @@ export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob, star
             command: ['node', '-e', opencodeReadoutScript],
             // Both travel as env VALUES — the script is static, so nothing board-derived is
             // ever part of its text. The directory scope is the run's own working directory
-            // (the same string opencode records on the session), because the database is per
-            // MEMBER: without it, two concurrent tasks of one member scrape each other's runs.
+            // (the same string opencode records on the session); the database is the task's own.
             env: [
                 { name: 'OPENCODE_DB', value: opencodeDbPath(config, job) },
                 { name: 'OPENCODE_DIR', value: runWorkingDir(config, job) },
                 // The per-run delta bound, exactly as docker passes it: a follow-up resumes the
                 // root conversation, and only the cycles this run wrote may count as its turns.
                 { name: 'RUN_STARTED_MS', value: String(Date.parse(startedAt)) },
+                // The per-stream cap of the session export the readout prints ahead of its answer.
+                { name: 'EXPORT_LIMIT_BYTES', value: String(OPENCODE_EXPORT_LIMIT) },
             ],
             volumeMounts: [workspaceMount(config, workspacePath(job))],
         },
     });
 }
-
-/**
- * The opencode transcript artifact's aux Job (issue #325) — the twin of the readout above, reading
- * the same records with the same delta bounds but exporting the run's transcript instead of
- * counting it. Its name is distinct from the readout Job's (`factory-otrans-` against
- * `factory-ocread-`) because their hash key is the same (job, lease) pair. The byte cap travels as
- * an env VALUE, this module's constant, so the cap cannot drift between the script and the upload.
- */
-export const opencodeTranscriptJobName = (job: BoardJob): string =>
-    `factory-otrans-${hash16(`${job.id}|${job.leaseToken}`)}`;
 
 /**
  * The continuous claude-code transcript exporter (`claude-export.cjs`) as its own Job beside the
@@ -839,32 +825,6 @@ export function claudeExportJobSpec(config: DriverConfig, job: BoardJob, started
                     name,
                     valueFrom: { secretKeyRef: { name: secretName(job), key: name } },
                 })),
-            ],
-            volumeMounts: [workspaceMount(config, workspacePath(job))],
-        },
-    });
-}
-
-export function opencodeTranscriptJobSpec(config: DriverConfig, job: BoardJob, startedAt: string): AuxJobSpec {
-    if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
-        throw new Error(
-            `refusing to export the opencode transcript of job ${job.id}: ` +
-                `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`
-        );
-    }
-    return auxJobSpec(config, job, {
-        name: opencodeTranscriptJobName(job),
-        deadlineSeconds: OPENCODE_READOUT_DEADLINE_SECONDS,
-        container: {
-            name: 'opencode-transcript',
-            image: executorImage(config, job.executorType),
-            imagePullPolicy: config.imagePullPolicy,
-            command: ['node', '-e', opencodeTranscriptScript],
-            env: [
-                { name: 'OPENCODE_DB', value: opencodeDbPath(config, job) },
-                { name: 'OPENCODE_DIR', value: runWorkingDir(config, job) },
-                { name: 'RUN_STARTED_MS', value: String(Date.parse(startedAt)) },
-                { name: 'TRANSCRIPT_LIMIT_BYTES', value: String(ARTIFACT_LIMIT) },
             ],
             volumeMounts: [workspaceMount(config, workspacePath(job))],
         },

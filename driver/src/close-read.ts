@@ -32,7 +32,58 @@ export interface OpencodeRunOutcome {
      * failure it can name; a readout that answers nothing at all parses with this null.
      */
     error: string | null;
+    /** The session export the readout printed ahead of its answer line; absent when it printed none. */
+    exported?: OpencodeExport;
 }
+
+/** One export stream as uploaded: its JSONL lines and whether the readout's cap dropped the head. */
+export interface ExportStream {
+    content: string;
+    truncated: boolean;
+}
+
+/** The readout's two export streams: every raw row, and the normalized events derived from them. */
+export interface OpencodeExport {
+    raw: ExportStream | null;
+    normalized: ExportStream | null;
+}
+
+const EXPORT_STREAMS = { raw: 'raw', normalized: 'normalized' } as const;
+
+/**
+ * Splits the readout's stdout into its export streams: every line tagged with a `stream` belongs
+ * to that stream and is kept verbatim; a `{stream,truncated:true}` marker only sets the flag.
+ * Undefined when no stream line was printed — a readout that exported nothing.
+ */
+export function parseOpencodeExport(stdout: string): OpencodeExport | undefined {
+    const lines: Record<string, string[]> = { raw: [], normalized: [] };
+    const truncated: Record<string, boolean> = { raw: false, normalized: false };
+    for (const line of stdout.split('\n')) {
+        if (!line.startsWith('{"stream":')) continue;
+        let tagged: { stream?: unknown; truncated?: unknown };
+        try {
+            tagged = JSON.parse(line) as { stream?: unknown; truncated?: unknown };
+        } catch {
+            continue;
+        }
+        const stream = typeof tagged.stream === 'string' ? tagged.stream : '';
+        if (!Object.hasOwn(lines, stream)) continue;
+        if (tagged.truncated === true) truncated[stream] = true;
+        else lines[stream]?.push(line);
+    }
+    const streamOf = (name: string): ExportStream | null => {
+        const kept = lines[name] ?? [];
+        return kept.length === 0 ? null : { content: kept.join('\n'), truncated: truncated[name] === true };
+    };
+    const raw = streamOf(EXPORT_STREAMS.raw);
+    const normalized = streamOf(EXPORT_STREAMS.normalized);
+    return raw || normalized ? { raw, normalized } : undefined;
+}
+
+const exportedOf = (stdout: string): { exported?: OpencodeExport } => {
+    const exported = parseOpencodeExport(stdout);
+    return exported ? { exported } : {};
+};
 
 /** A finite, non-negative number, or null for anything else — the shape a readout's cost/tokens field must have. */
 function finiteNonNegativeNumber(value: unknown): number | null {
@@ -82,7 +133,17 @@ export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
         const summary = nonEmptyString(parsed.summary);
         const blocked = typeof parsed.blocked === 'string' ? parsed.blocked : null;
         const error = nonEmptyString(parsed.error);
-        return { sessionId, finishReason, contextTokens, costUsd, agentTurns, summary, blocked, error };
+        return {
+            sessionId,
+            finishReason,
+            contextTokens,
+            costUsd,
+            agentTurns,
+            summary,
+            blocked,
+            error,
+            ...exportedOf(stdout),
+        };
     } catch {
         return nothing;
     }
@@ -152,6 +213,15 @@ export function mergeOpencodeOutcome(outcome: RunOutcome, scraped: OpencodeRunOu
     if (scraped.summary) outcome.summary = scraped.summary;
     if (scraped.blocked !== null) outcome.blockedLine = scraped.blocked;
     if (scraped.error) outcome.providerError = scraped.error;
+    // The export rode the same read, so it is the same snapshot as every figure above.
+    if (scraped.exported?.normalized) {
+        outcome.transcript = scraped.exported.normalized.content;
+        outcome.transcriptTruncated = scraped.exported.normalized.truncated;
+    }
+    if (scraped.exported?.raw) {
+        outcome.rawTranscript = scraped.exported.raw.content;
+        outcome.rawTranscriptTruncated = scraped.exported.raw.truncated;
+    }
 }
 
 /** What the claude close-time read answered: the turn count, the run's last words and its blocked line. */

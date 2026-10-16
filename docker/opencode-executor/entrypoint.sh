@@ -54,22 +54,22 @@ DEFAULT_BRANCH="${BASE_BRANCH:-$(git symbolic-ref --quiet --short refs/remotes/o
 DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
 if [ "$DEFAULT_BRANCH" = main ]; then DEFAULT_BRANCH=''; fi
 
-# The driver points XDG_DATA_HOME at a per-member directory on the workspaces volume so the
+# The driver points XDG_DATA_HOME at a per-task directory on the workspaces volume so the
 # session database outlives the container — that persistence is what makes a follow-up's
-# `--session <id>` resumable at all. The directory may not exist yet for a member's first run;
+# `--session <id>` resumable at all. The directory may not exist yet for a task's first run;
 # create it rather than letting the first run fail inside opencode's own setup.
 MEMBER_ROOT=''
 if [ -n "${XDG_DATA_HOME:-}" ]; then
     mkdir -p "$XDG_DATA_HOME"
 
-    # The driver's shape is <mount>/<org>/<user>/.opencode, so the member's own tree — checkouts,
-    # .worktrees, .opencode — is derivable here. The baked fence denies everything outside the
+    # The driver's shape is <mount>/<org>/<user>/.factory/opencode/<task>, so the member's own
+    # tree — checkouts, .worktrees, .factory — is derivable here. The baked fence denies everything outside the
     # working directory because the volume under the mount is shared by every member; the one
     # subtree a run may always operate in is its own member's. `**` rather than `*`: the allow
     # must cross "/" and reach the dot-directories the tree is made of. A path without the
     # driver's shape allows nothing — standalone runs keep the fence as baked.
     case "$XDG_DATA_HOME" in
-    */.opencode) MEMBER_ROOT="${XDG_DATA_HOME%/.opencode}" ;;
+    */.factory/opencode/*) MEMBER_ROOT="${XDG_DATA_HOME%/.factory/opencode/*}" ;;
     esac
 fi
 

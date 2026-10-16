@@ -133,6 +133,14 @@ export interface RunOutcome {
     transcript?: string;
     /** True when the transcript export dropped its head to hold the cap. */
     transcriptTruncated?: boolean;
+    /**
+     * opencode only: every row of the task's session, message and part tables, one JSON line per
+     * row, read in the same consistent snapshot as `transcript` — the lossless source of truth the
+     * normalized `transcript` is derived from. Absent when the readout exported none.
+     */
+    rawTranscript?: string;
+    /** True when the raw export dropped its head to hold the cap. */
+    rawTranscriptTruncated?: boolean;
 }
 
 /**
@@ -354,6 +362,12 @@ export const OUTPUT_LIMIT = OUTPUT_LIMIT_KIB * BYTES_PER_KIB;
  */
 const ARTIFACT_LIMIT_KIB = 512;
 export const ARTIFACT_LIMIT = ARTIFACT_LIMIT_KIB * BYTES_PER_KIB;
+
+/**
+ * Each of the opencode readout's two export streams (raw rows, normalized events) is tail-kept at
+ * this many bytes, so both plus the summary line stay under the 1 MiB a docker exec buffers.
+ */
+export const OPENCODE_EXPORT_LIMIT = ARTIFACT_LIMIT / 2;
 
 /**
  * The tail of a runner's output that is safe to put on a complete POST. The board refuses a body

@@ -22,7 +22,7 @@ import {
 } from './claim.js';
 import { opencodeReadoutScript } from './container-scripts.js';
 import type { ServiceStatus } from './board.js';
-import { BYTES_PER_KIB, type RuntimeSample, type RunSession } from './runner.js';
+import { BYTES_PER_KIB, OPENCODE_EXPORT_LIMIT, type RuntimeSample, type RunSession } from './runner.js';
 import { GATE_IMAGE, GATE_KEY } from './publish.js';
 import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
 
@@ -327,9 +327,8 @@ export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob, 
         // The database path and the directory scope travel as env VALUES — the script
         // (opencode-readout.cjs) is static, so nothing board-derived is ever part of its text.
         // The scope is the run's own working directory (runWorkingDir — the same string opencode
-        // records on the session), because the database is per MEMBER: without it, two
-        // concurrent tasks of one member share the file and the newest-root-session scrape
-        // answers whichever task closed last, recording one task's session on both rows.
+        // records on the session), so the scrape answers the root session that ran there. The
+        // database itself is the task's own (opencodeDataDir).
         '-e',
         `OPENCODE_DB=${db}`,
         '-e',
@@ -339,6 +338,9 @@ export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob, 
         // session would book earlier runs' turns again.
         '-e',
         `RUN_STARTED_MS=${Date.parse(startedAt)}`,
+        // The per-stream cap of the session export the readout prints ahead of its answer line.
+        '-e',
+        `EXPORT_LIMIT_BYTES=${OPENCODE_EXPORT_LIMIT}`,
         '--entrypoint',
         'node',
         executorImage(config, job.executorType),

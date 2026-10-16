@@ -20,7 +20,7 @@ import {
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
 import { argvEnv, bellowsService, bellowsTree } from './fixtures/bellows-tree.js';
 import { currentActivity, reportTail, type RunSession, stripAnsi, tailBytes } from '../src/runner.js';
-import { claudeTurnsArgs, opencodeCacheProbeArgs, opencodeTranscriptArgs } from '../src/docker-close-read.js';
+import { claudeTurnsArgs, opencodeCacheProbeArgs } from '../src/docker-close-read.js';
 import {
     CACHE_WATCH_TURNS,
     cacheCollapse,
@@ -30,13 +30,8 @@ import {
     parseTranscriptRead,
     readsAgentTurns,
 } from '../src/close-read.js';
-import { ARTIFACT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
-import {
-    claudeExportScript,
-    claudeTurnsScript,
-    opencodeReadoutScript,
-    opencodeTranscriptScript,
-} from '../src/container-scripts.js';
+import { ARTIFACT_LIMIT, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
+import { claudeExportScript, claudeTurnsScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { createDockerRunner } from '../src/docker-runner.js';
 import { claudeExportArgs, startDockerExporter } from '../src/docker-export.js';
 import { lookupHelper, type HelperPlan } from '../src/helpers.js';
@@ -160,7 +155,7 @@ describe('the docker run arguments', () => {
             'fix the failing build',
         ]);
         envBeforeImage(opencode, 'opencode-executor', [
-            `XDG_DATA_HOME=/workspaces/bellows/${USER}/.opencode`,
+            `XDG_DATA_HOME=/workspaces/bellows/${USER}/.factory/opencode/${opencodeJob.id}`,
             'NPM_CONFIG_UPDATE_NOTIFIER=false',
             'BELLOWS_SESSION_ID=ses_f86188c3dffeZGYO4yZq4atba9',
         ]);
@@ -720,30 +715,10 @@ describe('the transcript export reads (issue #325)', () => {
         expect(removed).toEqual([writes[0]?.file]);
     });
 
-    it('opencode: reads the session database by env, scoped to the run working directory', () => {
-        const line = opencodeTranscriptArgs(loadDriverConfig({}), opencodeJob, START);
-        expect(line.slice(0, 18)).toEqual([
-            'run',
-            '--cap-drop',
-            'ALL',
-            '--security-opt',
-            'no-new-privileges',
-            '--rm',
-            '--mount',
-            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
-            '-e',
-            `OPENCODE_DB=/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
-            '-e',
-            // A command-only job starts at the member root — the directory opencode records.
-            `OPENCODE_DIR=/workspaces/bellows/${USER}`,
-            '-e',
-            `RUN_STARTED_MS=${Date.parse(START)}`,
-            '-e',
-            `TRANSCRIPT_LIMIT_BYTES=${ARTIFACT_LIMIT}`,
-            '--entrypoint',
-            'node',
-        ]);
-        expect(line.slice(18)).toEqual(['opencode-executor', '-e', opencodeTranscriptScript]);
+    it('opencode: has no transcript container of its own — the session readout carries the export', () => {
+        const line = opencodeSessionReadoutArgs(loadDriverConfig({}), opencodeJob, START);
+        expect(line).toContain(`EXPORT_LIMIT_BYTES=${OPENCODE_EXPORT_LIMIT}`);
+        expect(line).toContain(opencodeReadoutScript);
     });
 
     /**
@@ -907,7 +882,7 @@ describe('scraping the session opencode used', () => {
 
     it('reads the session database out of the member’s data directory, root sessions only', () => {
         const line = opencodeSessionReadoutArgs(loadDriverConfig({}), opencodeJob, START);
-        expect(line.slice(0, 14)).toEqual([
+        expect(line.slice(0, 16)).toEqual([
             'run',
             '--cap-drop',
             'ALL',
@@ -917,7 +892,7 @@ describe('scraping the session opencode used', () => {
             '--mount',
             `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
             '-e',
-            `OPENCODE_DB=/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
+            `OPENCODE_DB=/workspaces/bellows/${USER}/.factory/opencode/${opencodeJob.id}/opencode/opencode.db`,
             '-e',
             // The scope: the session database is per member, so the readout answers only the
             // session whose `directory` is the working directory the RUN container had — the
@@ -930,9 +905,11 @@ describe('scraping the session opencode used', () => {
             // The per-run delta bound: a follow-up resumes the same root conversation, so the
             // turn count is bounded to the messages written at or after this run began.
             `RUN_STARTED_MS=${Date.parse(START)}`,
+            '-e',
+            `EXPORT_LIMIT_BYTES=${OPENCODE_EXPORT_LIMIT}`,
         ]);
         // The static script by content (what it answers: scripts-opencode-readout.test.ts).
-        expect(line.slice(14)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e', opencodeReadoutScript]);
+        expect(line.slice(16)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e', opencodeReadoutScript]);
     });
 
     it('scopes the readout to the task worktree when the job names a repo', () => {
@@ -1067,7 +1044,7 @@ describe('the cache watch', () => {
             '--mount',
             `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
             '-e',
-            `OPENCODE_DB=/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
+            `OPENCODE_DB=/workspaces/bellows/${USER}/.factory/opencode/${opencodeJob.id}/opencode/opencode.db`,
             '-e',
             // The turn count rides from the driver's own constant, so the probe and the verdict
             // cannot drift apart.
@@ -4861,7 +4838,6 @@ describe('every container the driver runs is hardened (#382)', () => {
         ['the opencode cache probe', () => opencodeCacheProbeArgs(config(), opencodeJob)],
         ['the claude turns readout', () => claudeTurnsArgs(config(), job, SESSION, START)],
         ['the claude transcript exporter', () => claudeExportArgs(config(), job, START, '/tmp/export.env')],
-        ['the opencode transcript export', () => opencodeTranscriptArgs(config(), opencodeJob, START)],
         ['the .bellows.yaml readout', () => readBellowsArgs(config(), job)],
         [
             'the startup sync',
