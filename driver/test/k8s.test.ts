@@ -6859,6 +6859,27 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         expect(JSON.parse(held.body)).toMatchObject({ data: { holder: NEW_TOKEN } });
     });
 
+    // Issue #796: a run read but never swept is no adoption — the claim goes back, the Job stays.
+    it('rejects and gives the checkout back when the read run cannot be swept', async () => {
+        const { request: base, calls } = withRunners([priorItem({ succeeded: 1 })]);
+        const priorDelete = (method: K8sMethod, path: string) =>
+            method === 'DELETE' && path.startsWith(jobPath(namespace, priorName));
+        const request: K8sRequest = (method, path, body) =>
+            priorDelete(method, path)
+                ? Promise.resolve({ status: 503, body: 'unavailable' })
+                : base(method, path, body);
+
+        await expect(runner(request).adopt!(adopter)).rejects.toThrow(/503/);
+
+        expect(calls.some((call) => call.path.startsWith(`/api/v1/namespaces/${namespace}/pods/${podName}/log`))).toBe(
+            true
+        );
+        const held = await request('GET', claimPathFor(job.id));
+        expect(held.status).toBe(404);
+        const listed = await request('GET', `${jobsPath(namespace)}?labelSelector=factory.job%3D${job.id}`);
+        expect(JSON.parse(listed.body).items.map(nameOf)).toEqual([priorName]);
+    });
+
     it('adopts the newest of two finished runners by claim sequence', async () => {
         const OLDER = '55555555-5555-4555-8555-555555555555';
         const { request } = withRunners([

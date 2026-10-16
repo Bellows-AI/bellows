@@ -42,6 +42,7 @@ const job = (id: string): Job => ({
     wallClockMs: null,
     agentTurns: null,
     setupMs: null,
+    interruptions: [],
     taskWallClockMs: null,
     waitReason: null,
     waitingSince: null,

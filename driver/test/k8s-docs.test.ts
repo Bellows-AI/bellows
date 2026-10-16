@@ -177,4 +177,11 @@ describe('the executor isolation record (#382)', () => {
         // The gaps no lane covers, listed rather than implied by their absence.
         expect(testingDocs).toContain('What no lane covers');
     });
+
+    // Issue #796: node disruption is proven on real infrastructure in both lanes, not only offline.
+    it('records the node-disruption acceptance both end-to-end lanes run', () => {
+        expect(prose(testingDocs)).toContain('kills (`kill -9`) and drains (`DRIVER_HANDOVER_MS`) a driver mid-run');
+        expect(prose(testingDocs)).toContain('a runner pod deleted mid-run each end succeeded with one attempt');
+        expect(prose(testingDocs)).toContain('never reaped unread');
+    });
 });

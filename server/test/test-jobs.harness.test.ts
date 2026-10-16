@@ -195,6 +195,21 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).not.toContain('--filter name=factory-job- ');
     });
 
+    // Issue #796: the node-disruption recovery pinned offline, on a real driver and real containers.
+    it('the node-disruption phase kills and drains a real driver mid-run, then adopts its runner', () => {
+        const start = SCRIPT.indexOf("echo '# node disruption'");
+        expect(start).toBeGreaterThan(SCRIPT.indexOf("echo '# orphan reaper'"));
+        expect(start).toBeLessThan(SCRIPT.indexOf("echo '# workflows'"));
+        const phase = SCRIPT.slice(start, SCRIPT.indexOf("echo '# workflows'"));
+        expect(phase).toContain('--filter "label=factory.claim-seq=1"');
+        expect(phase).toContain('kill -9 "$driver_pid"');
+        expect(phase).toContain('kill -TERM "$driver_pid"');
+        expect(phase).toContain('DRIVER_HANDOVER_MS=2000');
+        expect(phase).toContain("'the driver was drained'");
+        expect(phase).toContain("'adopted the finished runner of claim 1, whose driver was lost'");
+        expect(phase).toContain('attempts 1');
+    });
+
     it('the orphan runner is removed one id at a time, not as one newline-joined argument', () => {
         // `docker rm -f "$(docker ps -aq …)"` hands every match to docker as ONE argument: with
         // more than one container left under the job label (the fence's runner plus anything the

@@ -132,6 +132,29 @@ describe('TaskOutcome', () => {
         expect(renderDetail({ jobs: [job({ taskWallClockMs: 7_200_000 })] })).not.toContain('Environment setup');
     });
 
+    // Issue #796: an interrupted attempt is refunded, and the rail says so apart from the result.
+    it('lists each interruption with its time, reason and claim', () => {
+        const rail = railOf(
+            renderDetail({
+                jobs: [
+                    job({
+                        interruptions: [
+                            { at: '2026-09-01T12:05:00.000Z', reason: 'the driver was drained', claimSeq: 1 },
+                        ],
+                    }),
+                ],
+            })
+        );
+        expect(rail).toContain('Interruptions');
+        expect(rail).toContain('not counted as failed attempts');
+        expect(rail).toContain('Claim 1: the driver was drained');
+        expect(rail).toContain('dateTime="2026-09-01T12:05:00.000Z"');
+    });
+
+    it('renders no Interruptions section when nothing was interrupted', () => {
+        expect(railOf(renderDetail({ jobs: [job()] }))).not.toContain('Interruptions');
+    });
+
     it('renders repository, worktree, executor — omitting the absent rows', () => {
         const html = renderDetail({
             jobs: [

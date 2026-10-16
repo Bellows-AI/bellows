@@ -16,9 +16,11 @@ import {
     threadContextTokens,
     threadCostUsd,
     threadSetupMs,
+    threadInterruptions,
     threadIssue,
     threadPublish,
     type Closure,
+    type ThreadInterruption,
     type ThreadPublish,
 } from '../task-outcome.js';
 import { focusFollowUp, needsAnotherPass, notAuthorMessage, TaskStatePill } from './TaskHeader.js';
@@ -94,6 +96,29 @@ function ResultSection({
                 <p className="muted">Review wait ended: {latest.waitTerminalReason}.</p>
             ) : null}
             {resultPairs.length > 0 ? <KeyValues pairs={resultPairs} /> : null}
+        </section>
+    );
+}
+
+/** The Interruptions section (issue 796): each attempt the infrastructure took, refunded rather
+ * than counted — so an interrupted task reads apart from a failed retry. Nothing when none was. */
+function InterruptionsSection({ interruptions, runs }: { interruptions: ThreadInterruption[]; runs: number }) {
+    if (interruptions.length === 0) return null;
+    return (
+        <section>
+            <h3 className="task-outcome-label">Interruptions</h3>
+            <p className="muted">Lost to the infrastructure and retried — not counted as failed attempts.</p>
+            <ol className="task-history">
+                {interruptions.map((item) => (
+                    <li key={`${item.run}-${item.claimSeq}-${item.at}`} className="task-history-item">
+                        <span>
+                            {runs > 1 ? `Run ${item.run}, claim ${item.claimSeq}` : `Claim ${item.claimSeq}`}:{' '}
+                            {item.reason}
+                        </span>
+                        <RelativeTime at={item.at} />
+                    </li>
+                ))}
+            </ol>
         </section>
     );
 }
@@ -243,6 +268,7 @@ export function TaskOutcome({ jobs, viewer }: { jobs: Job[]; viewer: FollowUpVie
             </summary>
             <div className="task-outcome-body">
                 <ResultSection jobs={jobs} closure={closure} exit={exit} resultPairs={resultPairs} waiting={waiting} />
+                <InterruptionsSection interruptions={threadInterruptions(jobs)} runs={jobs.length} />
                 <NextActionSection latest={latest} viewer={viewer} />
                 {executionPairs.length > 0 ? (
                     <section>

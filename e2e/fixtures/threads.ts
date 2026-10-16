@@ -564,6 +564,25 @@ export const nullAuthorThread = thread([
     }),
 ]);
 
+/** Interrupted twice by the infrastructure (issue #796) and then succeeded: both attempts were
+ *  refunded, so the run spent one try. */
+export const interruptedThread = thread([
+    run({
+        id: 'aaaaaaaa-0000-4000-8000-000000000127',
+        command: 'a task the infrastructure interrupted twice',
+        sessionId: 'bbbbbbbb-0000-4000-8000-000000000127',
+        summary: 'Finished on the third claim.',
+        interruptions: [
+            { at: '2026-09-01T12:05:00.000Z', reason: 'the driver was drained', claimSeq: 1 },
+            {
+                at: '2026-09-01T12:12:00.000Z',
+                reason: 'infrastructure loss: the runner pod was deleted before it exited (Evicted)',
+                claimSeq: 2,
+            },
+        ],
+    }),
+]);
+
 /**
  * The activity payload a mocked thread answers with (issues #339, #530): empty buckets and null
  * totals, so the page's activity summary renders its "no telemetry" state. The page fetches

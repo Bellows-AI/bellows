@@ -42,6 +42,7 @@ export function job(overrides: Partial<Job> = {}): Job {
         wallClockMs: null,
         agentTurns: null,
         setupMs: null,
+        interruptions: [],
         taskWallClockMs: null,
         summary: null,
         failureKind: null,

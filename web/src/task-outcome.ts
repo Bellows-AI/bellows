@@ -1,4 +1,4 @@
-import { isTerminal, type FailureKind, type GateCheck, type Job } from './api/useJobs.js';
+import { isTerminal, type FailureKind, type GateCheck, type Job, type JobInterruption } from './api/useJobs.js';
 
 /**
  * The outcome summary's raw material, as pure data — the panel formats, these decide. Everything
@@ -128,6 +128,19 @@ export function threadCostUsd(jobs: Job[]): number | null {
 export function threadSetupMs(jobs: Job[]): number | null {
     const measured = jobs.filter((job) => job.setupMs != null);
     return measured.length === 0 ? null : measured.reduce((sum, job) => sum + (job.setupMs ?? 0), 0);
+}
+
+/** One interrupted attempt, with the 1-based run of the thread it interrupted. */
+export type ThreadInterruption = JobInterruption & { run: number };
+
+/**
+ * Every run's interruptions (issue 796), oldest first — the attempts the infrastructure took and
+ * the board refunded, so the outcome tells them apart from a failed retry. Empty when none was.
+ */
+export function threadInterruptions(jobs: Job[]): ThreadInterruption[] {
+    return jobs
+        .flatMap((job, i) => job.interruptions.map((interruption) => ({ ...interruption, run: i + 1 })))
+        .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
 }
 
 /** A gate status's pill tone: passed is the ok lamp, failed the bad one, a running gate grey. */
