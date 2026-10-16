@@ -6,6 +6,8 @@ import {
     GATE_GID,
     gateEnv,
     GATE_UID,
+    GITHUB_CACHE_DIR,
+    GITHUB_CACHE_SIZE,
     opencodeDbPath,
     runnerClaimEnv,
     runWorkingDir,
@@ -252,6 +254,9 @@ function exporterContainer(config: DriverConfig, job: BoardJob, startedAt: strin
  * task worktree (issue #35), the same tree the docker runner's WORKDIR names (`runWorkingDir`),
  * because the close-time readout scopes the session scrape by this exact string.
  */
+/** The agent's GitHub token cache volume (`GITHUB_CACHE_DIR`). */
+const GITHUB_CACHE_VOLUME = 'github-cache';
+
 function agentPart(
     config: DriverConfig,
     job: BoardJob,
@@ -273,7 +278,12 @@ function agentPart(
     // no publish token either — a publication's credential is the supervisor's step env alone.
     env.push(...agentMailboxEnv().map(([name, value]) => ({ name, value })));
     return {
-        volumes,
+        // The GitHub helper's token cache, in memory and the agent's own (docs/connections.md):
+        // mounted in this container alone, never on the task volume, gone with the pod.
+        volumes: [
+            ...volumes,
+            { name: GITHUB_CACHE_VOLUME, emptyDir: { medium: 'Memory', sizeLimit: GITHUB_CACHE_SIZE.k8s } },
+        ],
         container: {
             // A constant: a container name is a DNS LABEL (63 bytes), which rules out
             // containerName(job) (85) the same way it rules the Job's own name out of the raw form.
@@ -294,7 +304,12 @@ function agentPart(
             // it, and it writes `out` (a question, its heartbeat). It mounts nothing of the
             // supervisor's own state or the exporter's, and no Secret carries the control
             // credential into it.
-            volumeMounts: [...mounts, mailboxMount(MAILBOXES.in, 'ro'), mailboxMount(MAILBOXES.out, 'rw')],
+            volumeMounts: [
+                ...mounts,
+                mailboxMount(MAILBOXES.in, 'ro'),
+                mailboxMount(MAILBOXES.out, 'rw'),
+                { name: GITHUB_CACHE_VOLUME, mountPath: GITHUB_CACHE_DIR },
+            ],
         },
     };
 }

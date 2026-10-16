@@ -5,6 +5,9 @@
 #   docker run ... -e WORKDIR=/workspace/server opencode-executor run '...'
 set -eu
 
+# The GitHub helper beside this script (/usr/local/bin in the image), resolved before any `cd`.
+GITHUB_CREDENTIAL="$(cd "$(dirname "$0")" && pwd)/github-credential.cjs"
+
 # The task supervisor releases the agent (issue #771). The group exists from the attempt's first
 # step, the sync, and the tree this container works in does not exist until then, so the agent waits
 # for the supervisor's `go` marker in its read-only mailbox. A Stop or a kill order that lands first
@@ -37,11 +40,12 @@ if [ -e "$WORKDIR/.git" ]; then
     git config --global --add safe.directory "$WORKDIR" 2>/dev/null || true
 fi
 
-# gh reads GITHUB_TOKEN by itself; git over https does not, and asks for a username nobody can
-# type. The helper reads the variable when git asks, so the token never lands in the git config.
-if [ -n "${GITHUB_TOKEN:-}" ]; then
-    git config --global credential.https://github.com.helper \
-        '!f() { if [ "$1" = get ]; then printf "username=x-access-token\npassword=%s\n" "$GITHUB_TOKEN"; fi; }; f' \
+# GitHub (docs/connections.md): no token rides this container's env. git asks the image's helper
+# for github.com, and the helper obtains the attempt's token from the board with the attempt pair,
+# caches it on the memory-backed /run/factory-github and renews it ahead of expiry; gh is the
+# wrapper over the same helper. Only the helper's path lands in the git config, never a token.
+if [ -n "${FACTORY_STATS_URL:-}" ] && [ -n "${RUNNER_JOB_ID:-}" ] && [ -n "${RUNNER_LEASE_TOKEN:-}" ]; then
+    git config --global credential.https://github.com.helper "!node '$GITHUB_CREDENTIAL' git" \
         2>/dev/null || echo "opencode-executor: could not configure the git credential helper" >&2
 fi
 
@@ -233,4 +237,6 @@ if [ -n "${FACTORY_CTL_OUT:-}" ]; then
     printf '%s\n' "$STATUS" > "$FACTORY_CTL_OUT/agent.exit.tmp" 2>/dev/null \
         && mv "$FACTORY_CTL_OUT/agent.exit.tmp" "$FACTORY_CTL_OUT/agent.exit" 2>/dev/null || true
 fi
+# The cached GitHub token goes with the run; the memory-backed mount goes with the container.
+node "$GITHUB_CREDENTIAL" clear 2>/dev/null || true
 exit "$STATUS"

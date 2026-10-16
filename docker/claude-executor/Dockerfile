@@ -68,9 +68,10 @@ RUN curl -fsSL --proto '=https' --tlsv1.2 -o /usr/local/bin/acli \
 ARG GH_VERSION=2.102.0
 RUN curl -fsSL --proto '=https' --tlsv1.2 "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
         | tar -xz -C /tmp \
-    && mv "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/bin/gh \
+    && mkdir -p /usr/local/libexec \
+    && mv "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/libexec/gh \
     && rm -rf "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}" \
-    && gh --version
+    && /usr/local/libexec/gh --version
 
 # Pinned, not `latest`: two builds of the same commit must produce the same CLI, or a runner that
 # starts misbehaving gives no way to tell a code change from a silent upgrade underneath it.
@@ -155,7 +156,11 @@ COPY stop-hook.cjs /usr/local/bin/stop-hook.cjs
 # The claim's turn context (issue #509): settings.json's UserPromptSubmit hook answers it from
 # FACTORY_TURN_CONTEXT. Absolute path for the same reason as the git guard.
 COPY turn-context-hook.cjs /usr/local/bin/turn-context-hook.cjs
-RUN chmod 0755 /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/git-guard.cjs /usr/local/bin/claude-progress.cjs /usr/local/bin/claude-bridge.cjs /usr/local/bin/ctl-agent.cjs /usr/local/bin/stop-hook.cjs /usr/local/bin/turn-context-hook.cjs
+# The runner's GitHub token (docs/connections.md): the helper git's credential.helper and the gh
+# wrapper ask, which renews from the board; the real gh sits in /usr/local/libexec behind it.
+COPY github-credential.cjs /usr/local/bin/github-credential.cjs
+COPY gh-wrapper.sh /usr/local/bin/gh
+RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/git-guard.cjs /usr/local/bin/claude-progress.cjs /usr/local/bin/claude-bridge.cjs /usr/local/bin/ctl-agent.cjs /usr/local/bin/stop-hook.cjs /usr/local/bin/turn-context-hook.cjs
 # The task supervisor's mailbox mount points (driver/src/supervisor-contract.ts). Baked and node-
 # owned so a docker volume mounted over them inherits the owner; a kubernetes emptyDir needs no help.
 RUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory

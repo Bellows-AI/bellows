@@ -125,6 +125,16 @@ export function workspacePath(job: Pick<BoardJob, 'id' | 'workspacePath'>): stri
     return path;
 }
 
+/**
+ * The agent container's memory-backed GitHub token cache (docs/connections.md): the executor
+ * images' helper writes only here (`CACHE_DIR` in each image's github-credential.cjs), and both
+ * executors mount it in the agent container alone — docker a `--tmpfs`, kubernetes an
+ * `emptyDir: {medium: Memory}` — so the token never reaches a disk or the task volume.
+ */
+export const GITHUB_CACHE_DIR = '/run/factory-github';
+/** The cache's ceiling, one small JSON file: the kubernetes quantity and the docker tmpfs size. */
+export const GITHUB_CACHE_SIZE = { k8s: '1Mi', docker: '1m' } as const;
+
 /** The env names the loop mints for a launched attempt's run-control channel (issue #442). */
 export const CONTROL_URL_ENV = 'BELLOWS_CONTROL_URL';
 export const CONTROL_TOKEN_ENV = 'BELLOWS_CONTROL_TOKEN';

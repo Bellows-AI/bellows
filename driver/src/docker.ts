@@ -21,6 +21,8 @@ import {
     UUID,
     GATE_UID,
     GATE_GID,
+    GITHUB_CACHE_DIR,
+    GITHUB_CACHE_SIZE,
     type CacheJob,
     gateEnv,
     opencodeDbPath,
@@ -484,6 +486,10 @@ export function dockerArgs(
         // kill order — it cannot forge them) and `out` (its questions and heartbeat). Nothing of the
         // supervisor's own state, the exporter's mailbox or the control credential is mounted or set.
         ...agentMailboxArgs(job),
+        // The GitHub helper's token cache, in memory and the agent's own (docs/connections.md):
+        // never on the task volume, gone with the container.
+        '--tmpfs',
+        `${GITHUB_CACHE_DIR}:rw,noexec,nosuid,size=${GITHUB_CACHE_SIZE.docker},mode=0700,uid=${GATE_UID}`,
     ];
 
     // A gated job's runner reaches the driver's gate endpoint by the default
