@@ -51,3 +51,12 @@ driver:
     # Thirty minutes: a real repository's test gate installs its dependencies into a fresh
     # worktree before it runs the suite, and ten minutes cut one off mid-run.
     gateTimeoutMs: '1800000'
+
+runner:
+    # One node: every task's runner, services and gate share its CPUs. Two concurrent tasks'
+    # services and runners left the chart's 2-CPU gate request unschedulable, and a gate still
+    # Pending at gateTimeoutMs is killed and counted as an environment failure.
+    gateResources:
+        requests:
+            cpu: '1'
+            memory: 1Gi
