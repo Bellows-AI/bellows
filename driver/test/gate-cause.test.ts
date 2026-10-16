@@ -38,6 +38,17 @@ const FAILING_ASSERTION = [
     '      Tests  1 failed | 5602 passed (5603)',
 ].join('\n');
 const FILE_FAILED_TO_LOAD = [' Test Files  1 failed | 411 passed (412)', '      Tests  5603 passed (5603)'].join('\n');
+/** npm writing a package cache on an NFS volume another client changed under it (issue #789). */
+const NPM_STALE_HANDLE = [
+    'added 935 packages in 3m',
+    'npm error code UNKNOWN',
+    'npm error syscall write',
+    'npm error errno -116',
+    'npm error UNKNOWN: unknown error, write',
+].join('\n');
+/** A failing test whose name mentions the error code: the name is not the environment. */
+const ASSERTION_NAMING_ESTALE = FAILING_ASSERTION.replace('> sums', '> retries on ESTALE');
+const ASSERTION_NAMING_THE_PHRASE = FAILING_ASSERTION.replace('> sums', '> reports a stale file handle');
 
 /** The exits both gate managers report: the docker manager's execFile kill and the kubernetes deadline. */
 const GATE_TIMEOUT_EXIT = 124;
@@ -51,6 +62,14 @@ describe('gateCauseOf (issue #653)', () => {
         ['the gate timing out', GATE_TIMEOUT_EXIT, '[driver] gate killed after 1800000ms'],
         ['an OOM or throttle kill', GATE_KILLED_EXIT, FAILING_ASSERTION],
         ['an environment that could not run the gate', GATE_CONTAINER_GONE_EXIT, 'no such container'],
+        ['npm hitting a stale NFS file handle', 140, NPM_STALE_HANDLE],
+        ['the kernel reporting a stale file handle', 1, "cp: cannot stat 'x': Stale file handle"],
+        ["node's ESTALE error", 1, "Error: ESTALE: stale file handle, open '/w/.npm/_cacache/x'"],
+        [
+            'a stale handle under TTY colour',
+            1,
+            NPM_STALE_HANDLE.replaceAll('npm error', '\u001b[31mnpm error\u001b[39m'),
+        ],
     ])('names %s an environment fault', (_name, exitCode, output) => {
         expect(gateCauseOf({ exitCode, output })).toBe('environment');
     });
@@ -64,6 +83,9 @@ describe('gateCauseOf (issue #653)', () => {
         ['a worker timeout beside an unhandled error', 1, MIXED_ERRORS],
         ['a coverage threshold miss with every test passed', 1, COVERAGE_THRESHOLD],
         ['a command chained after a passing suite', 1, CHAINED_LINT],
+        ['a failing test whose name mentions ESTALE', 1, ASSERTION_NAMING_ESTALE],
+        ["a failing test whose name carries the kernel's phrase", 1, ASSERTION_NAMING_THE_PHRASE],
+        ['an errno that only starts with -116', 1, 'npm error errno -1160'],
     ])('keeps %s a verification failure', (_name, exitCode, output) => {
         expect(gateCauseOf({ exitCode, output })).toBe('verification');
     });
