@@ -447,6 +447,21 @@ describe('the driver config: the orphan reaper', () => {
     });
 });
 
+describe('the driver config: the drain handover', () => {
+    // Issue #792: how long a draining driver lets its runs finish before it hands them over —
+    // under the chart's ten-minute grace, so the handover lands before the SIGKILL does.
+    it('hands over after nine minutes by default, overridable, zero at once', () => {
+        expect(loadDriverConfig({}).handoverMs).toBe(540_000);
+        expect(loadDriverConfig({ DRIVER_HANDOVER_MS: '1000' }).handoverMs).toBe(1000);
+        expect(loadDriverConfig({ DRIVER_HANDOVER_MS: '0' }).handoverMs).toBe(0);
+    });
+
+    it('refuses a bad handover delay rather than falling back to the default', () => {
+        expect(() => loadDriverConfig({ DRIVER_HANDOVER_MS: '-1' })).toThrow(/DRIVER_HANDOVER_MS/);
+        expect(() => loadDriverConfig({ DRIVER_HANDOVER_MS: 'later' })).toThrow(/DRIVER_HANDOVER_MS/);
+    });
+});
+
 describe('the driver config: the service search domain', () => {
     const job = { id: '11111111-1111-4111-8111-111111111111', leaseToken: '22222222-2222-4222-8222-222222222222' };
     const k8s = (env: NodeJS.ProcessEnv) => loadDriverConfig({ EXECUTOR: 'kubernetes', ...env });

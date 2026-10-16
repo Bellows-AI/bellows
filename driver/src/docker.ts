@@ -1,4 +1,12 @@
-import { GATE_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
+import {
+    CLAIM_SEQ_MARK,
+    COMMAND_MARK,
+    GATE_LABEL,
+    JOB_LABEL,
+    LEASE_LABEL,
+    SERVICE_LABEL,
+    SESSION_MARK,
+} from './labels.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -22,7 +30,7 @@ import {
 } from './claim.js';
 import { opencodeReadoutScript } from './container-scripts.js';
 import type { ServiceStatus } from './board.js';
-import { BYTES_PER_KIB, OPENCODE_EXPORT_LIMIT, type RuntimeSample, type RunSession } from './runner.js';
+import { BYTES_PER_KIB, commandMark, OPENCODE_EXPORT_LIMIT, type RuntimeSample, type RunSession } from './runner.js';
 import { GATE_IMAGE, GATE_KEY } from './publish.js';
 import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
 
@@ -451,6 +459,12 @@ export function dockerArgs(
         `${JOB_LABEL}=${job.id}`,
         '--label',
         `${LEASE_LABEL}=${job.leaseToken}`,
+        // What the claim that supersedes a dead driver adopts this run by (issue #792).
+        '--label',
+        `${CLAIM_SEQ_MARK}=${job.claimSeq}`,
+        ...(session ? ['--label', `${SESSION_MARK}=${session.id}`] : []),
+        '--label',
+        `${COMMAND_MARK}=${commandMark(job.command)}`,
         '-e',
         // The AUTHOR's checkouts sit one directory down. A command-only job names no repo, so the
         // agent starts at the root of that person's workspace and can see everything they selected

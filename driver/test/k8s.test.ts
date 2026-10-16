@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Board, BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { claudeTurnsScript, claudeExportScript } from '../src/container-scripts.js';
-import { OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
+import { commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import { lookupHelper } from '../src/helpers.js';
 import { claudeManagedSettings, opencodeOtelConfig } from '../src/telemetry-config.js';
 import type { HelperPlan } from '../src/helpers.js';
@@ -6624,10 +6624,12 @@ describe('RUNNER_DO_NOT_DISRUPT on pod templates', () => {
         expect(everyPodSpec({ RUNNER_DO_NOT_DISRUPT: '1' })[name]().meta.annotations).toEqual(ANNOTATIONS);
     });
 
-    // Annotating the Job object itself would be cargo cult — Karpenter reads pods.
-    it.each(JOB_POD_NAMES)('leaves the Job object of %s unannotated', (name) => {
+    // Annotating the Job object itself would be cargo cult — Karpenter reads pods. (The runner Job
+    // carries its adoption marks, issue #792, and nothing of the disruption opt-out.)
+    it.each(JOB_POD_NAMES)('leaves the Job object of %s without the disruption annotations', (name) => {
         const { job: jobObject } = everyPodSpec({ RUNNER_DO_NOT_DISRUPT: '1' })[name]();
-        expect((jobObject as { metadata: { annotations?: object } }).metadata.annotations).toBeUndefined();
+        const annotations = (jobObject as { metadata: { annotations?: Record<string, string> } }).metadata.annotations;
+        for (const key of Object.keys(ANNOTATIONS)) expect(annotations?.[key]).toBeUndefined();
     });
 
     it.each(POD_NAMES)('leaves the annotations off %s entirely when the switch is unset', (name) => {
@@ -6794,5 +6796,127 @@ describe('runnerLossOf (issue #560)', () => {
         expect(runnerLossOf([{ ...exited(137), metadata: { name: 'p', deletionTimestamp: 'now' } }])).toBe(
             'the runner pod was deleted before it exited (evicted, drained or its node removed)'
         );
+    });
+});
+
+/*
+ * Issue #792: a runner that outlived its driver. The claim that superseded it finds it by the job
+ * label, and a FINISHED one is read — verdict, log, session — before anything of it is deleted;
+ * the run is never redone. A runner still running, or one the platform took away, is not adopted.
+ */
+describe('adopting a finished runner of an earlier claim (#792)', () => {
+    const adopter: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
+    const priorName = runnerJobName(job);
+    const priorItem = (status: Record<string, unknown>, seq = '1', name = priorName, lease = job.leaseToken) => ({
+        metadata: {
+            name,
+            labels: { 'factory.job': job.id, 'factory.lease': lease },
+            annotations: {
+                'factory.claim-seq': seq,
+                'factory.session': SESSION,
+                'factory.command': commandMark(job.command),
+            },
+        },
+        status: { startTime: START, ...status },
+    });
+
+    const nameOf = (item: unknown): string => (item as { metadata: { name: string } }).metadata.name;
+    /** A fake whose runner-Job listing answers `items`, each until its Job is deleted. */
+    const withRunners = (items: unknown[], overrides: Record<string, unknown> = {}) => {
+        let listed = items;
+        return routed((method, path) => {
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return { status: 200, body: JSON.stringify({ items: listed }) };
+            }
+            const name =
+                method === 'DELETE' ? listed.map(nameOf).find((n) => path.startsWith(jobPath(namespace, n))) : null;
+            if (name) {
+                listed = listed.filter((item) => nameOf(item) !== name);
+                return { status: 200, body: '{}' };
+            }
+        }, overrides);
+    };
+
+    it('reads its verdict, log and session before deleting it, and holds the checkout', async () => {
+        const { request, calls } = withRunners([priorItem({ succeeded: 1 })]);
+
+        const adopted = await runner(request).adopt!(adopter);
+
+        expect(adopted).toMatchObject({
+            claimSeq: 1,
+            outcome: { exitCode: 0, started: true, timedOut: false, sessionId: SESSION },
+        });
+        expect(adopted!.outcome.output).toContain('did the work');
+        const logRead = calls.findIndex((call) =>
+            call.path.startsWith(`/api/v1/namespaces/${namespace}/pods/${podName}/log`)
+        );
+        const deleted = calls.findIndex(
+            (call) => call.method === 'DELETE' && call.path.startsWith(jobPath(namespace, priorName))
+        );
+        expect(logRead).toBeGreaterThanOrEqual(0);
+        expect(deleted).toBeGreaterThan(logRead);
+        const held = await request('GET', claimPathFor(job.id));
+        expect(JSON.parse(held.body)).toMatchObject({ data: { holder: NEW_TOKEN } });
+    });
+
+    it('adopts the newest of two finished runners by claim sequence', async () => {
+        const OLDER = '55555555-5555-4555-8555-555555555555';
+        const { request } = withRunners([
+            priorItem({ succeeded: 1 }, '3'),
+            priorItem({ succeeded: 1 }, '1', runnerJobName({ ...job, leaseToken: OLDER }), OLDER),
+        ]);
+
+        expect((await runner(request).adopt!({ ...adopter, claimSeq: 4 }))?.claimSeq).toBe(3);
+    });
+
+    // A runner marked at or after this claim's sequence is a newer contender's, never an earlier one.
+    it('never adopts a runner of a claim at or after its own', async () => {
+        const { request } = withRunners([priorItem({ succeeded: 1 }, '2')]);
+        expect(await runner(request).adopt!(adopter)).toBeNull();
+    });
+
+    it('never adopts a runner that is still running, and deletes nothing', async () => {
+        const { request, calls } = withRunners([priorItem({ active: 1 })]);
+
+        expect(await runner(request).adopt!(adopter)).toBeNull();
+        expect(calls.some((call) => call.method === 'DELETE')).toBe(false);
+        expect(calls.some((call) => call.method === 'POST' && call.path === configmapsPath)).toBe(false);
+    });
+
+    it('never adopts a runner the platform took away, leaving it to the launch sweep', async () => {
+        const { request, calls } = withRunners([priorItem({ failed: 1 })], {
+            pods: {
+                status: 200,
+                body: JSON.stringify({
+                    items: [{ metadata: { name: podName, deletionTimestamp: 'now' }, status: {} }],
+                }),
+            },
+        });
+
+        expect(await runner(request).adopt!(adopter)).toBeNull();
+        expect(
+            calls.some((call) => call.method === 'DELETE' && call.path.startsWith(jobPath(namespace, priorName)))
+        ).toBe(false);
+        const held = await request('GET', claimPathFor(job.id));
+        expect(held.status).toBe(404);
+    });
+
+    // A queued task's command can be edited after a handover: a run of the old command is not its run.
+    it('never adopts a run of a command since edited', async () => {
+        const { request } = withRunners([priorItem({ succeeded: 1 })]);
+        expect(await runner(request).adopt!({ ...adopter, command: 'another command' })).toBeNull();
+    });
+
+    it('answers null when this job has no earlier runner', async () => {
+        const { request } = withRunners([]);
+        expect(await runner(request).adopt!(adopter)).toBeNull();
+    });
+
+    it('marks every runner Job with its claim sequence and session, for the next claim to read', () => {
+        expect(spec().metadata.annotations).toEqual({
+            'factory.claim-seq': '1',
+            'factory.session': SESSION,
+            'factory.command': commandMark(job.command),
+        });
     });
 });

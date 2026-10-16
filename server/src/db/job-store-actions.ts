@@ -621,6 +621,63 @@ export async function requeueJob(
     return (await exists(sql, orgId, id)) ? ({ result: 'lost' } as const) : ({ result: 'missing' } as const);
 }
 
+/**
+ * How many attempts the infrastructure may interrupt before an interruption is refused (issue
+ * #792): an interrupted attempt is refunded, so this — not `max_attempts` — bounds a job the
+ * platform keeps taking away.
+ */
+export const INTERRUPTION_BUDGET = 5;
+
+export async function interruptJob(
+    ctx: JobStoreContext,
+    id: string,
+    leaseToken: string,
+    { reason, release, claimSeq = null }: Parameters<JobStore['interrupt']>[2]
+): ReturnType<JobStore['interrupt']> {
+    const { sql, orgId, wallTick } = ctx;
+    // One lease-guarded update, like the requeue. Unlike it an agent ran: the segment banks to the
+    // wall clock and `started_at` clears, so the next claim banks nothing twice. `release` false is
+    // an adoption: an attempt this claim superseded was the one interrupted (`claimSeq` names it),
+    // and this one keeps its lease. A Stop already stamped wins over a release, as over the requeue.
+    // An attempt already recorded (handed over, then adopted) is one disruption: refunded once.
+    const entry = sql.json({ reason, at: new Date().toISOString() });
+    const recorded = sql`interruptions @> jsonb_build_array(
+        jsonb_build_object('claimSeq', coalesce(${claimSeq}::bigint, claim_seq))
+    )`;
+    const rows = await sql<{ status: JobStatus; root_job_id: string }[]>`
+        update job set
+            status           = case when not ${release} then status
+                                    when cancel_requested_at is null then 'queued' else 'stopped' end,
+            finished_at      = case when ${release} and cancel_requested_at is not null then now() else finished_at end,
+            wall_clock_ms    = case when ${release} then ${wallTick} else wall_clock_ms end,
+            started_at       = case when ${release} then null else started_at end,
+            lease_token      = case when ${release} then null else lease_token end,
+            lease_expires_at = case when ${release} then now() else lease_expires_at end,
+            cancel_requested_at = case when ${release} then null else cancel_requested_at end,
+            attempts         = greatest(attempts - 1, 0),
+            interruptions    = interruptions || jsonb_build_array(
+                ${entry}::jsonb || jsonb_build_object('claimSeq', coalesce(${claimSeq}::bigint, claim_seq))
+            )
+        where org_id = ${orgId} and id = ${id}
+          and status = 'running' and lease_token = ${leaseToken}
+          and jsonb_array_length(interruptions) < ${INTERRUPTION_BUDGET}
+          and not ${recorded}
+        returning status, root_job_id
+    `;
+    const row = rows[0];
+    if (row) {
+        if (row.status === 'stopped') await settleIfMergeClosed(ctx, row.root_job_id);
+        return { result: 'ok', status: row.status };
+    }
+    const [held] = await sql<{ held: boolean; recorded: boolean; status: JobStatus }[]>`
+        select status = 'running' and lease_token = ${leaseToken} as held, ${recorded} as recorded, status
+        from job where org_id = ${orgId} and id = ${id}
+    `;
+    if (!held) return { result: 'missing' };
+    if (!held.held) return { result: 'lost' };
+    return held.recorded ? { result: 'ok', status: held.status } : { result: 'exhausted' };
+}
+
 export async function removeJobThread(
     ctx: JobStoreContext,
     id: string,

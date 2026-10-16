@@ -4,6 +4,7 @@ import { uploadRunArtifacts } from './artifact-upload.js';
 import { repoCacheProblem } from './claim.js';
 import { evidenceDecision, evidencePolicyActive, type GatesOutcome, gatesEvidenceOf } from './evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from './runner.js';
+import { adoptStep } from './loop-adopt.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
 import {
@@ -19,9 +20,9 @@ import { heartbeat, newJobState, raceStep, stopIfDraining, watchOutput } from '.
 import type { GateRunNote } from './timeout-note.js';
 import {
     concludeSetup,
+    concludeUnreported,
     handBackFence,
     handOverConflict,
-    leaseLeftWhy,
     leaveToLease,
     releaseAbandonedSync,
     standDown,
@@ -111,6 +112,8 @@ async function waitReclaimBarrier(ctx: AttemptCtx): Promise<SetupConclusion | nu
 async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
     const { rt, job, state } = ctx;
     const { runner } = rt;
+    // An adopted run's tree is its result: nothing rewrites it.
+    if (ctx.adopted) return null;
     const turn = await awaitSyncTurn(ctx);
     if (turn === STOOD_DOWN || 'halt' in turn) return turn;
     const syncing = runner.syncCheckout(job, state.signal);
@@ -233,9 +236,11 @@ type SetupStep = (ctx: AttemptCtx) => Promise<SetupConclusion | null>;
 /** The steps of the setup phase, in order — the reclaim barrier and the sync before anything reads the tree. */
 const setupSteps: readonly SetupStep[] = [
     waitReclaimBarrier,
+    adoptStep,
     syncCheckoutStep,
     checkPlanStep,
-    preHelperStep,
+    // An adopted run's pre-helpers ran before it did.
+    (ctx) => (ctx.adopted ? Promise.resolve(null) : preHelperStep(ctx)),
     startServicesStep,
 ];
 
@@ -344,7 +349,7 @@ async function launchRun(
     const agentless = isAgentless(job);
     // Every launched attempt gets a control endpoint (issue #442), minted before the stand-down
     // check so the env the runner is launched with already names it.
-    if (!agentless) await openRunControl(rt, job, state);
+    if (!agentless && !ctx.adopted) await openRunControl(rt, job, state);
     // A Stop, lost lease or Remove that landed during setup, before the spawn: nothing runs, and
     // the stand-down fence releases a claim the runner never took.
     if (await standDown(ctx, 'setup')) return null;
@@ -352,6 +357,13 @@ async function launchRun(
         // The services the gates test against were started by the setup phase.
         await handBackFence(ctx);
         return AGENTLESS_OUTCOME;
+    }
+    // The adopted run already happened: its outcome is this attempt's, and nothing launches.
+    if (ctx.adopted) {
+        await handBackFence(ctx);
+        // Paced like a launched attempt for the gates and publish that follow.
+        state.launched = true;
+        return ctx.adopted.outcome;
     }
     // Reported here, not at attempt start: a setup that concludes the job starts no session, and a
     // session id reported for one would name a conversation that never existed.
@@ -390,11 +402,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
      * stamps `started: false` for it. Saying nothing here would rerun the job until attempts
      * run out and retire it dead, blaming the command for infrastructure.
      */
-    const leftToLease = leaseLeftWhy(outcome);
-    if (leftToLease !== null) {
-        await leaveToLease(ctx, leftToLease, `${leftToLease}, leaving it to the lease`, outcome.exitCode);
-        return { done: true };
-    }
+    if (await concludeUnreported(ctx, outcome)) return { done: true };
 
     // The artifacts upload HERE, before the gates, so a gate suite that runs minutes cannot push
     // the upload past the run's end. The board authorizes it by claim sequence, so even a reclaim
@@ -404,7 +412,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // The session minted and reported before the spawn never ran — no transcript exists under it,
     // so a follow-up resuming it would find no conversation. A resumed session is the parent's
     // and stays.
-    if (outcome.refused && session && !session.resume) {
+    if (outcome.refused && session && !session.resume && !ctx.adopted) {
         await rt.board
             .session(job, null)
             .catch((e: Error) => log(`job ${job.id}: could not clear the unused session: ${e.message}`));
@@ -555,7 +563,8 @@ async function reportNewSession(
  */
 async function probeTreeNow(ctx: AttemptCtx): Promise<string | null> {
     const { rt, job, treeBefore, state } = ctx;
-    if (treeBefore === null || !rt.runner.probeTree) return null;
+    // An adopted run has no synced fingerprint, but its tree is still the revision evidence binds to.
+    if ((treeBefore === null && !ctx.adopted) || !rt.runner.probeTree) return null;
     // The attempt's own signal is the probe's transport abort AND the race: a stand-down cancels
     // the request in flight and stops waiting on it, and the caller rechecks (issue #472).
     const raced = await raceStep(
@@ -624,6 +633,8 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     }
 
     const state = newJobState();
+    // In flight for a drain's handover (`loop.ts`) until it settles.
+    rt.live?.set(job.id, { job, state });
     const beating = heartbeat(rt, job, state);
     // Armed before the run so the runner can hand over tails from its first chunk; the pump's
     // snapshot is the liveness read the timeout note is built from (issue #339).
@@ -633,6 +644,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
 
     const settle = async () => {
         state.finished = true;
+        rt.live?.delete(job.id);
         if (state.graceTimer) clearTimeout(state.graceTimer);
         state.wake();
         await beating;

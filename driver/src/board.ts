@@ -225,6 +225,13 @@ export interface BoardJob {
 /** Whether the board still recognises this worker as the holder of the job. */
 export type LeaseState = 'held' | 'lost';
 
+/** One interrupted attempt, as `Board.interrupt` reports it. */
+export interface Interruption {
+    reason: string;
+    release: boolean;
+    claimSeq?: number;
+}
+
 /**
  * The job statuses the board answers a lease lookup with — the row statuses of
  * `POST /api/jobs/leases`, copied rather than imported (this package depends on nothing).
@@ -504,6 +511,14 @@ export interface Board {
      * there first. `lost` when the lease is no longer this attempt's.
      */
     requeue(job: BoardJob): Promise<LeaseState>;
+    /**
+     * Records an attempt the infrastructure interrupted (issue #792), with its attempt refunded:
+     * `release` hands the claim back claimable at once, else this claim adopted the attempt
+     * `claimSeq` names and keeps its lease. `exhausted` once the job's interruption budget is
+     * spent — nothing changed, and the caller treats the attempt as it did before; `lost` when
+     * the lease is no longer this attempt's, or the job is gone.
+     */
+    interrupt(job: BoardJob, interruption: Interruption): Promise<LeaseState | 'exhausted'>;
     /**
      * Asks the board what it thinks of a batch of job ids (issue #301): each known id's status
      * and CURRENT lease token. Unknown ids are ABSENT from the answer — that absence is the
@@ -934,6 +949,18 @@ export function createBoard({
             // 404: the thread was removed behind the requeue — nothing left to hand back.
             const response = await post(`/api/jobs/${job.id}/requeue`, { leaseToken: job.leaseToken }, true);
             return response.status === HTTP_CONFLICT ? 'lost' : 'held';
+        },
+
+        async interrupt(job, interruption) {
+            const response = await post(
+                `/api/jobs/${job.id}/interrupt`,
+                { leaseToken: job.leaseToken, ...interruption },
+                true
+            );
+            if (response.status === HTTP_NOT_FOUND) return 'lost';
+            if (response.status !== HTTP_CONFLICT) return 'held';
+            const answer = (await response.json().catch(() => ({}))) as { code?: unknown };
+            return answer.code === 'INTERRUPTIONS_EXHAUSTED' ? 'exhausted' : 'lost';
         },
 
         async leases(ids) {

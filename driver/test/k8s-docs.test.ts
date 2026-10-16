@@ -149,6 +149,14 @@ describe('the executor isolation record (#382)', () => {
         expect(jobsDocs).toContain('CAP_NET_RAW');
     });
 
+    // Issue #792: a runner that outlived its driver is adopted only once it finished; the running
+    // case is redone, and the bound on a finished one is the Job's TTL.
+    it('states that only a finished runner is adopted, and for how long', () => {
+        expect(kubernetesDocs).toContain('Stated limit: a runner still RUNNING when its driver is lost');
+        expect(prose(kubernetesDocs)).toContain('the job redone (refunded when the drain handed it over)');
+        expect(kubernetesDocs).toContain('`ttlSecondsAfterFinished`');
+    });
+
     // Issue #533: the question relay lands on both executors, but only docker has the real-agent
     // round trip; the kubernetes half is a stated limit, never a silent skip.
     it('states that the kubernetes question round trip is not run on a cluster, and what pins the relay', () => {

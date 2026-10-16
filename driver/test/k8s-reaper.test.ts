@@ -10,7 +10,7 @@ import {
     servicesPath,
     syncEnvSecretName,
 } from '../src/k8s-auxspec.js';
-import { gateEnvSecretName, jobsPath, secretName } from '../src/k8s-podspec.js';
+import { gateEnvSecretName, jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { createReaper, type OrphanGroup } from '../src/reaper.js';
@@ -386,6 +386,59 @@ describe('the kubernetes reaper arm: reap', () => {
         const arm = createKubernetesReaper({ config, request: failing });
 
         expect(await arm.reap(group(), 'gone')).toEqual([]);
+    });
+});
+
+// Issue #792: a runner that finished after its driver died is the next claim's to read. Superseded
+// is no reason to delete it — only a job that can never be claimed again (gone) is.
+describe('the kubernetes reaper arm: an unread finished runner', () => {
+    const runnerJob = runnerJobName({ id: JOB, leaseToken: LEASE } as BoardJob);
+    const finishedRunner = {
+        metadata: {
+            name: runnerJob,
+            labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE },
+            creationTimestamp: '2026-10-01T00:00:00Z',
+        },
+        status: { succeeded: 1 },
+    };
+    const lists = (jobs: unknown[]): readonly (readonly [K8sMethod, string, K8sResponse])[] => [
+        ['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: jobs }) }],
+        ['GET', LIST_PODS, { status: 200, body: JSON.stringify({ items: [] }) }],
+        ['GET', LIST_SERVICES, { status: 200, body: JSON.stringify({ items: [] }) }],
+    ];
+
+    it('marks a finished runner Job unread on the scan, and a running one not', async () => {
+        const running = { ...finishedRunner, status: { active: 1 } };
+        const arm = createKubernetesReaper({ config, request: router(lists([finishedRunner])).request });
+        expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, unread: true }]);
+
+        const live = createKubernetesReaper({ config, request: router(lists([running])).request });
+        expect((await live.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob }]);
+    });
+
+    it('never deletes an unread finished runner of a job that is still live', async () => {
+        const { request, calls } = router(lists([finishedRunner]));
+        const arm = createKubernetesReaper({ config, request });
+        const reaper = createReaper({
+            board: { leases: async () => [{ id: JOB, status: 'queued', leaseToken: null }] },
+            arm,
+            intervalMs: 0,
+            graceMs: 0,
+            log: () => {},
+        });
+
+        await reaper.sweep();
+
+        expect(deleteCalls(calls)).toEqual([]);
+    });
+
+    it('reaps it once the job can never be claimed again', async () => {
+        const { request, calls } = router(lists([finishedRunner]));
+        const arm = createKubernetesReaper({ config, request });
+
+        await arm.reap({ ...group(), objects: [{ kind: 'job', name: runnerJob, unread: true }] }, 'gone');
+
+        expect(deleteCalls(calls)).toContain(`${jobsPath(NAMESPACE)}/${runnerJob}?propagationPolicy=Foreground`);
     });
 });
 

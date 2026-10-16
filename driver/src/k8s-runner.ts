@@ -13,6 +13,7 @@ import {
     readOpencodeWithRetries,
 } from './close-read.js';
 import type { RunOutcome, RunSession, Runner } from './runner.js';
+import { adoptFinishedRunner } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from './close-read.js';
 import type { HelperPlan } from './helpers.js';
 import { runHelper } from './k8s-helper-runner.js';
@@ -599,6 +600,7 @@ export function createKubernetesRunner(
         publishGit: (job: BoardJob, publishToken?: string, options?: PublishOptions) =>
             publishGit(deps, job, publishToken, options),
         probeTree: (job: BoardJob, signal?: AbortSignal) => probeTree(deps, job, signal),
+        adopt: (job: BoardJob) => adoptFinishedRunner(deps, job, { scrapeClaudeCloseRead, attachOpencodeOutcome }),
         snapshotTree: (job: BoardJob, key: string, signal?: AbortSignal) => snapshotReviewTree(deps, job, key, signal),
         runHelper: (job: BoardJob, plan: HelperPlan, token?: string, signal?: AbortSignal) =>
             runHelper(deps, job, plan, { token, signal }),

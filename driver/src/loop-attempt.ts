@@ -51,6 +51,13 @@ export interface JobState {
      */
     removed: boolean;
     /**
+     * True once a draining driver handed this attempt over (issue #792): the board took the lease
+     * back as an interruption, so the attempt reads as lost — nothing parked, nothing reported —
+     * and the runner is NEVER killed, even by a beat in flight that answers 409 afterwards: the
+     * next claim adopts it.
+     */
+    handedOver: boolean;
+    /**
      * True once `runner.run` has been called. The heartbeat paces itself at `SETUP_POLL_MS` until
      * this turns — a verdict arriving during the setup phase must be answered in seconds, not a
      * beat period — and at the lease's third afterwards (issue #126).
@@ -114,6 +121,7 @@ export function newJobState(): JobState {
         lost: false,
         stopped: false,
         removed: false,
+        handedOver: false,
         launched: false,
         gateToken: null,
         control: null,
@@ -256,6 +264,8 @@ export async function applyHeartbeatVerdict(
     verdict: HeartbeatVerdict
 ) {
     const { runner, log } = rt;
+    // A handed-over attempt's runner belongs to the next claim (issue #792).
+    if (state.handedOver) return;
     if (
         typeof verdict === 'object' &&
         !verdict.cancelRequested &&

@@ -315,7 +315,7 @@ async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[]): Promise<n
  * every deleting round: a stale attempt whose claim was taken over mid-sweep STANDS DOWN having
  * deleted nothing.
  */
-async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, waits = 0): Promise<void> {
+export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, waits = 0): Promise<void> {
     const nextRound = async (giveUpMessage: string): Promise<void> => {
         if (waits + 1 > REPLACE_MAX_POLLS) {
             throw new Error(`${giveUpMessage} (${REPLACE_MAX_POLLS} polls)`);

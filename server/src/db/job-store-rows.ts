@@ -6,7 +6,18 @@
 
 import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode, type UserRef } from '@factory-ai/core';
 import type { Sql, Fragment, TransactionSql } from 'postgres';
-import type { JobStatus, GateReport, RuntimeVitals, Job, TaskSummary, JobStoreContext } from './job-store-types.js';
+import type {
+    JobStatus,
+    GateReport,
+    RuntimeVitals,
+    Job,
+    JobInterruption,
+    TaskSummary,
+    JobStoreContext,
+} from './job-store-types.js';
+
+/** The row's interruptions (071); the per-run lists do not select them, and serve none. */
+const interruptionsOf = (row: JobRow): JobInterruption[] => row.interruptions ?? [];
 
 export interface JobRow {
     id: string;
@@ -72,6 +83,8 @@ export interface JobRow {
     agent_turns?: number | null;
     /** Only the detail reads (get/thread) select it (069); bigint reads back as a string. */
     setup_ms?: string | null;
+    /** Only the detail reads (get/thread) select it (071); the per-run lists serve it empty. */
+    interruptions?: JobInterruption[];
     /** Only thread() and the grouped terminal list select it; bigint (and the sum over it) read
      * back as a string. */
     task_wall_clock_ms?: string | null;
@@ -201,6 +214,7 @@ export function toJob(orgId: string, hasWorkspaces: boolean, row: JobRow): Job {
         wallClockMs: row.wall_clock_ms == null ? null : Number(row.wall_clock_ms),
         agentTurns: row.agent_turns ?? null,
         setupMs: row.setup_ms == null ? null : Number(row.setup_ms),
+        interruptions: interruptionsOf(row),
         taskWallClockMs: row.task_wall_clock_ms == null ? null : Number(row.task_wall_clock_ms),
         waitReason: row.wait_reason ?? null,
         waitingSince: row.waiting_since ? row.waiting_since.toISOString() : null,

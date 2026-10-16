@@ -47,7 +47,7 @@ import {
     type RunSession,
     type RuntimeSample,
 } from './runner.js';
-import { applyCloseTimeReadout, tickCacheWatch } from './docker-close-read.js';
+import { applyCloseTimeReadout, dockerAdopt, tickCacheWatch } from './docker-close-read.js';
 import {
     ERROR_DETAIL_MAX_CHARS,
     assertJobNotKilled,
@@ -795,6 +795,7 @@ export function createDockerRunner(
         startServices: (job, signal) =>
             startJobServices(job, config, { ...deps, serviceTeardown: (j) => dockerServiceTeardown(deps, j) }, signal),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
+        adopt: (job) => dockerAdopt({ ...deps, fence: (fenced) => dockerReclaimFence(deps, fenced) }, job),
         stopTranscriptExport: (job) => stopDockerExporter(execDocker, job),
     };
 }

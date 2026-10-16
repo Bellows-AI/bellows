@@ -11,6 +11,7 @@ import {
     handleSession,
     handleSuspend,
     handleRequeue,
+    handleInterrupt,
 } from './job-handlers-worker.js';
 import {
     handleCompleteJob,
@@ -93,6 +94,9 @@ export const jobRoutes =
         );
         app.post('/api/jobs/:id/requeue', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleRequeue(orgs, request, reply)
+        );
+        app.post('/api/jobs/:id/interrupt', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleInterrupt(orgs, request, reply)
         );
         app.post('/api/jobs/:id/follow-up', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handleFollowUp(orgs, request, reply)

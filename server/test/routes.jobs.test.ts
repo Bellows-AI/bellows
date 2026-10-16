@@ -109,6 +109,7 @@ interface StoreStub extends JobStore {
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
     suspended: string[];
     requeued: string[];
+    interrupted: { id: string; interruption: { reason: string; release: boolean; claimSeq?: number | null } }[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
     retries: { id: string; createdBy: string | null }[];
     /** The idempotency input each create, follow-up and retry was handed, in call order (#589). */
@@ -171,6 +172,7 @@ function stubStore(
         fail?: boolean;
         claim?: Claim | null;
         verdict?: LeaseResult;
+        interruptExhausted?: boolean;
         /** The terminality answer the store computes at the verdict moment, on the 'ok' path. */
         threadDone?: boolean;
         job?: Job | null;
@@ -229,6 +231,7 @@ function stubStore(
         progressed: [],
         suspended: [],
         requeued: [],
+        interrupted: [],
         publishTokens: [],
         followUps: [],
         retries: [],
@@ -258,6 +261,13 @@ function stubStore(
         async requeue(id) {
             boom();
             stub.requeued.push(id);
+            const result = options.verdict ?? 'ok';
+            return result === 'ok' ? { result: 'ok', status: options.suspendStatus ?? 'queued' } : { result };
+        },
+        async interrupt(id, _leaseToken, interruption) {
+            boom();
+            stub.interrupted.push({ id, interruption });
+            if (options.interruptExhausted) return { result: 'exhausted' };
             const result = options.verdict ?? 'ok';
             return result === 'ok' ? { result: 'ok', status: options.suspendStatus ?? 'queued' } : { result };
         },
@@ -1675,6 +1685,72 @@ describe('POST /api/jobs/:id/requeue', () => {
     );
 });
 
+// Issue #792: an attempt the infrastructure interrupted, handed back or adopted, lease-guarded.
+describe('POST /api/jobs/:id/interrupt', () => {
+    it('hands the attempt back with its reason, echoing the status the board landed', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/interrupt`, {
+            leaseToken: TOKEN,
+            reason: 'the driver was drained',
+            release: true,
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ id: ID, status: 'queued' });
+        expect(store.interrupted).toEqual([
+            { id: ID, interruption: { reason: 'the driver was drained', release: true, claimSeq: null } },
+        ]);
+    });
+
+    it('passes an adopter its earlier claim sequence', async () => {
+        const store = stubStore({ verdict: 'ok', suspendStatus: 'running' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/interrupt`, {
+            leaseToken: TOKEN,
+            reason: 'adopted',
+            release: false,
+            claimSeq: 3,
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.interrupted[0]!.interruption).toEqual({ reason: 'adopted', release: false, claimSeq: 3 });
+    });
+
+    it('answers 409 INTERRUPTIONS_EXHAUSTED once the budget is spent', async () => {
+        const store = stubStore({ interruptExhausted: true });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/interrupt`, {
+            leaseToken: TOKEN,
+            reason: 'evicted',
+            release: true,
+        });
+
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toMatchObject({ code: 'INTERRUPTIONS_EXHAUSTED' });
+    });
+
+    it.each([
+        ['an empty reason', { reason: '', release: true }],
+        ['an oversized reason', { reason: 'x'.repeat(501), release: true }],
+        ['a missing release', { reason: 'evicted' }],
+        ['a fractional claim sequence', { reason: 'evicted', release: false, claimSeq: 1.5 }],
+        ['an adoption that names no adopted claim', { reason: 'adopted', release: false }],
+    ])('refuses %s with 400 BAD_BODY, touching nothing', async (_name, fields) => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/interrupt`, { leaseToken: TOKEN, ...fields });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json()).toMatchObject({ code: 'BAD_BODY' });
+        expect(store.interrupted).toEqual([]);
+    });
+});
+
 describe('POST /api/jobs/:id/stop', () => {
     // A queued job never started, so stopping it IS settling it — the turn ends before it began,
     // and the session (there is none yet) is untouched.
@@ -2468,6 +2544,7 @@ describe('GET /api/jobs', () => {
         executorScope: USER_SCOPE,
         workflowNode: null,
         setupMs: null,
+        interruptions: [],
         waitReason: null,
         waitingSince: null,
         waitTerminalReason: null,
@@ -2643,6 +2720,7 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
         failureCause: null,
         executorScope: USER_SCOPE,
         setupMs: null,
+        interruptions: [],
         publication: null,
         questions: [],
     };
@@ -2858,6 +2936,7 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         failureCause: null,
         executorScope: USER_SCOPE,
         setupMs: null,
+        interruptions: [],
         waitReason: null,
         waitingSince: null,
         waitTerminalReason: null,
@@ -3410,6 +3489,18 @@ describe('error-path mapping', () => {
         ['a park on a lost lease', POST(`${JOB}/suspend`, { leaseToken: TOKEN }), { verdict: 'lost' }, [409, null]],
         ['a requeue on a lost lease', POST(`${JOB}/requeue`, { leaseToken: TOKEN }), { verdict: 'lost' }, [409, null]],
         [
+            'an interruption on a lost lease',
+            POST(`${JOB}/interrupt`, { leaseToken: TOKEN, reason: 'evicted', release: true }),
+            { verdict: 'lost' },
+            [409, null],
+        ],
+        [
+            'an interruption for a missing job',
+            POST(`${JOB}/interrupt`, { leaseToken: TOKEN, reason: 'evicted', release: true }),
+            { verdict: 'missing' },
+            [404, null],
+        ],
+        [
             'a requeue for a missing job',
             POST(`${JOB}/requeue`, { leaseToken: TOKEN }),
             { verdict: 'missing' },
@@ -3512,6 +3603,12 @@ describe('error-path mapping', () => {
         ['id on activity', GET('/api/jobs/nope/activity'), 'BAD_ID', null],
         ['lease token on heartbeat', POST(`${JOB}/heartbeat`, { leaseToken: 'nope' }), 'BAD_TOKEN', null],
         ['lease token on requeue', POST(`${JOB}/requeue`, { leaseToken: 'nope' }), null, 'requeued'],
+        [
+            'lease token on interrupt',
+            POST(`${JOB}/interrupt`, { leaseToken: 'nope', reason: 'evicted', release: true }),
+            'BAD_TOKEN',
+            'interrupted',
+        ],
         ['lease token on publish-token', POST(`${JOB}/publish-token`, { leaseToken: 'not-a-uuid' }), 'BAD_TOKEN', null],
         ['lease token on question', POST(`${JOB}/question`, { ...ASK, leaseToken: 'nope' }), 'BAD_TOKEN', null],
         [

@@ -15,10 +15,10 @@ import { report } from './loop-verdict.js';
 
 /**
  * Why the loop reports no verdict for this outcome and leaves the job to the lease, or null when it
- * reports: a container that never started, or a runner the platform took away (issue #560).
+ * reports: a container that never started. A runner the platform took away is an interruption
+ * instead (`interruptAttempt`, issue #792).
  */
 export function leaseLeftWhy(outcome: RunOutcome): string | null {
-    if (outcome.infraLoss) return `infrastructure loss: ${outcome.infraLoss}`;
     if (outcome.started) return null;
     const said = outcome.output.trim();
     return `the runner reports the container never started${said ? `: ${said}` : ''}`;
@@ -54,6 +54,15 @@ export function releaseAbandonedSync(rt: LoopRuntime, job: BoardJob, syncing: Pr
     void syncing
         .then((result) => {
             if (result.ok) return rt.runner.releaseFence?.(job);
+        })
+        .catch(() => {});
+}
+
+/** `releaseAbandonedSync`'s twin for an abandoned adoption (issue #792): one that lands adopted holds the claim. */
+export function releaseAbandonedAdoption(rt: LoopRuntime, job: BoardJob, adopting: Promise<unknown>): void {
+    void adopting
+        .then((run) => {
+            if (run) return rt.runner.releaseFence?.(job);
         })
         .catch(() => {});
 }
@@ -127,6 +136,48 @@ export async function leaveToLease(
     exitCode: number | null
 ): Promise<void> {
     await concludeSetup(ctx, leaveConclusion(ctx.job, reason, leaveLog, exitCode));
+}
+
+/**
+ * Hands an attempt the infrastructure took away back to the board as an interruption (issue #792):
+ * refunded and claimable at once, its reason recorded, no verdict. A spent interruption budget, or
+ * a board that never answered, leaves it to the lease as before — the last attempt reports it.
+ */
+export async function interruptAttempt(ctx: AttemptCtx, reason: string, exitCode: number | null): Promise<void> {
+    const { rt, job } = ctx;
+    await handBackFence(ctx);
+    await ctx.settle();
+    const answer = await withBoardRetry(rt, `job ${job.id}: the interruption was not accepted`, () =>
+        rt.board.interrupt(job, { reason, release: true })
+    ).catch((e: Error) => {
+        rt.log(`job ${job.id}: could not report the interruption: ${e.message}`);
+        return null;
+    });
+    if (answer === 'held') {
+        rt.log(`job ${job.id}: ${reason}, handed back as an interruption`);
+        return;
+    }
+    if (answer === 'lost') {
+        rt.log(`job ${job.id}: ${reason}, and the lease was already lost`);
+        return;
+    }
+    const why = answer === 'exhausted' ? `${reason}, and the interruption budget is spent` : reason;
+    await leaveToLease(ctx, why, `${why}, leaving it to the lease`, exitCode);
+}
+
+/**
+ * Lands a run that has no verdict to report, answering whether it did: a runner the platform took
+ * away is an interruption (`interruptAttempt`), one that never started is left to the lease.
+ */
+export async function concludeUnreported(ctx: AttemptCtx, outcome: RunOutcome): Promise<boolean> {
+    if (outcome.infraLoss) {
+        await interruptAttempt(ctx, `infrastructure loss: ${outcome.infraLoss}`, outcome.exitCode);
+        return true;
+    }
+    const why = leaseLeftWhy(outcome);
+    if (why === null) return false;
+    await leaveToLease(ctx, why, `${why}, leaving it to the lease`, outcome.exitCode);
+    return true;
 }
 
 /** `leaveToLease`'s conclusion, as data: left to the lease, or reported failed on the last attempt. */

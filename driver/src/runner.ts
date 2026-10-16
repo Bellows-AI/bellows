@@ -5,6 +5,7 @@
  * only one executor needs belongs in that executor's files.
  */
 
+import { createHash } from 'node:crypto';
 import type { BoardJob, ServiceStatus } from './board.js';
 import type { HelperPlan, HelperResult } from './helpers.js';
 import type { PublishOptions, PublishResult, SyncResult, ReclaimResult } from './publish.js';
@@ -199,6 +200,23 @@ export function serviceHint(logTail: string): string | null {
     );
 }
 
+/** How many hex digits of the command's sha256 `commandMark` keeps: a label-sized value. */
+const COMMAND_MARK_HEX = 16;
+
+/** The command a runner ran, as its adoption mark (`COMMAND_MARK`, issue #792). */
+export const commandMark = (command: string): string =>
+    createHash('sha256').update(command).digest('hex').slice(0, COMMAND_MARK_HEX);
+
+/**
+ * A finished runner of an earlier claim of the same job, read by the claim that superseded it
+ * (issue #792): its driver died, the runner did not. `outcome` is what `run` would have answered
+ * it; `claimSeq` the earlier claim it ran under.
+ */
+export interface AdoptedRun {
+    outcome: RunOutcome;
+    claimSeq: number;
+}
+
 export interface Runner {
     /**
      * Runs the job. `onOutput` is the live-output hook: the runner calls it with its newest output
@@ -275,6 +293,15 @@ export interface Runner {
      * is the attempt's stand-down: an aborted probe tears its container or aux Job down.
      */
     probeTree?(job: BoardJob, signal?: AbortSignal): Promise<string | null>;
+    /**
+     * Reads and takes down a FINISHED runner an earlier claim of this job left behind (issue
+     * #792), before this attempt's sync touches the tree that run left: its verdict, log and
+     * session are this attempt's outcome instead of a second run. Null when there is none — no
+     * earlier runner, one still running, or one the platform took away. The earlier attempt's
+     * objects are swept only once read. Under kubernetes it takes the checkout claim, which the
+     * attempt holds from here as the sync would have taken it.
+     */
+    adopt?(job: BoardJob): Promise<AdoptedRun | null>;
     /**
      * Freezes the task tree's current state under a snapshot ref of the shared clone, for a named
      * reviewer to start from (issue #549) — over the same transport `probeTree` uses, so both
