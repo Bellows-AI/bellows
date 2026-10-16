@@ -15,13 +15,12 @@ import {
     parseClaudeCloseRead,
     mergeClaudeCloseRead,
     CLAUDE_READ_NONE,
-    parseTranscriptRead,
     parseOpencodeCacheProbe,
     cacheCollapse,
 } from './close-read.js';
 import { type DriverConfig, executorImage } from './config.js';
 import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts.js';
-import { UUID, workspacePath, transcriptDir, opencodeDbPath, runWorkingDir } from './claim.js';
+import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
 import type { ExecDocker } from './docker-runner-support.js';
 import {
     workspacesMountArgs,
@@ -29,7 +28,7 @@ import {
     containerHardeningArgs,
     CLOSE_READ_DEADLINE_MS,
 } from './docker.js';
-import { ARTIFACT_LIMIT, type RunOutcome, type RunSession } from './runner.js';
+import type { RunOutcome, RunSession } from './runner.js';
 import { OPENCODE } from './executors.js';
 
 /**
