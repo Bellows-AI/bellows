@@ -215,6 +215,16 @@
             }
         },
         {
+            "includes": ["driver/src/k8s-podspec.ts", "driver/src/scripts/supervisor.cjs"],
+            "linter": {
+                "rules": {
+                    "style": {
+                        "noExcessiveLinesPerFile": "off"
+                    }
+                }
+            }
+        },
+        {
             "includes": ["web/src/api/useTasks.ts"],
             "linter": {
                 "rules": {

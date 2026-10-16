@@ -3,9 +3,11 @@ import type { BoardJob } from '../src/board.js';
 import { RESERVED_ENV_NAMES } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
 import { dockerArgs } from '../src/docker.js';
-import { syncCheckoutArgs } from '../src/docker-runner-support.js';
-import { syncJobSpec } from '../src/k8s-auxspec.js';
+import { createDockerRunner } from '../src/docker-runner.js';
+import type { StepSink } from '../src/step-control.js';
+import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 import { runnerJobSpec } from '../src/k8s-podspec.js';
+import { k8sSyncStep } from './k8s-sync-step.js';
 
 /**
  * A claim that names its base branch (a batch task's target) on BOTH executors: the startup sync
@@ -41,36 +43,43 @@ const base: BoardJob = {
 const onSandbox: BoardJob = { ...base, baseBranch: 'batch-sandbox' };
 const malformed: BoardJob = { ...base, baseBranch: '-x;rm' };
 
-const dockerSync = (job: BoardJob) =>
-    syncCheckoutArgs(loadDriverConfig({}), job, {
-        clone: '/w/clone',
-        worktree: '/w/wt',
-        restore: false,
-        envFile: null,
-    });
-const k8sSyncEnv = (job: BoardJob) =>
-    syncJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), job, null).spec.template.spec.containers[0]!.env as {
-        name: string;
-        value: string;
-    }[];
+/** The env of the sync step the docker runner submits to the attempt's supervisor for `job`. */
+const dockerSync = async (job: BoardJob): Promise<Record<string, string>> => {
+    const steps: StepRequest[] = [];
+    const sink: StepSink = {
+        submit: async (_token, step) => {
+            steps.push(step);
+            return { exitCode: 0, stdout: '{"ok":true,"reason":null}', stderr: '', timedOut: false };
+        },
+        awaitReport: () => new Promise(() => undefined),
+        contacted: () => true,
+    };
+    const supervised: BoardJob = {
+        ...job,
+        supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: 'tok' },
+    };
+    const exec = async () => ({ stdout: '' });
+    await createDockerRunner(loadDriverConfig({}), undefined, exec, { steps: sink }).syncCheckout(supervised);
+    return steps[0]!.env;
+};
+/** The env of the sync step the kubernetes runner submits to the attempt's supervisor for `job`. */
+const k8sSyncEnv = async (job: BoardJob): Promise<Record<string, string>> => (await k8sSyncStep(job)).env;
 
 describe('the startup sync of a claim with a base branch', () => {
-    it('on docker: BASE_BRANCH as a literal', () => {
-        expect(dockerSync(onSandbox)).toContain('BASE_BRANCH=batch-sandbox');
+    it('on docker: BASE_BRANCH in the sync step’s env', async () => {
+        expect(await dockerSync(onSandbox)).toMatchObject({ BASE_BRANCH: 'batch-sandbox' });
     });
 
-    it('on kubernetes: the same literal', () => {
-        expect(k8sSyncEnv(onSandbox)).toEqual(
-            expect.arrayContaining([{ name: 'BASE_BRANCH', value: 'batch-sandbox' }])
-        );
+    it('on kubernetes: the same literal, in the sync step’s env', async () => {
+        expect(await k8sSyncEnv(onSandbox)).toMatchObject({ BASE_BRANCH: 'batch-sandbox' });
     });
 
     it.each([
         ['no base branch', base],
         ['a value no branch can have', malformed],
-    ])('carries none for %s, on either executor', (_case, job) => {
-        expect(dockerSync(job).some((arg) => arg.startsWith('BASE_BRANCH='))).toBe(false);
-        expect(k8sSyncEnv(job).map((entry) => entry.name)).not.toContain('BASE_BRANCH');
+    ])('carries none for %s, on either executor', async (_case, job) => {
+        expect(await dockerSync(job)).not.toHaveProperty('BASE_BRANCH');
+        expect(await k8sSyncEnv(job)).not.toHaveProperty('BASE_BRANCH');
     });
 });
 

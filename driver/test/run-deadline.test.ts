@@ -5,7 +5,8 @@ import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { createDockerRunner } from '../src/docker-runner.js';
 import { startDeadline } from '../src/run-deadline.js';
-import { SUPERVISOR_WINDDOWN_MS } from '../src/supervisor-contract.js';
+import type { StepSink } from '../src/step-control.js';
+import { SUPERVISOR_ENV, SUPERVISOR_WINDDOWN_MS } from '../src/supervisor-contract.js';
 
 /**
  * The paused runtime budget while an agent waits for an answer. The kubernetes counterpart is pinned in `k8s.test.ts`.
@@ -85,8 +86,16 @@ describe('the docker runner kill timer', () => {
         followUp: false,
         userId: '44444444-4444-4444-8444-444444444444',
         workspacePath: 'bellows/44444444-4444-4444-8444-444444444444',
+        supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: 'tok' },
     };
     const SESSION = '33333333-3333-4333-8333-333333333333';
+    // A supervisor that releases the agent (`go`) and then never reports: the run ends only by the
+    // backstop this suite is about — the budget the supervisor enforces, plus its wind-down.
+    const supervisorSteps: StepSink = {
+        submit: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
+        awaitReport: () => new Promise(() => undefined),
+        contacted: () => true,
+    };
 
     it('pauses until the answer and resumes its remaining budget', async () => {
         const calls: string[][] = [];
@@ -107,7 +116,7 @@ describe('the docker runner kill timer', () => {
             spawned as unknown as typeof spawn,
             exec,
             // No real file I/O: fake timers cannot advance a write that is waiting on the disk.
-            { writeFile: async () => undefined, rm: async () => undefined }
+            { files: { writeFile: async () => undefined, rm: async () => undefined }, steps: supervisorSteps }
         );
         const killed = () => calls.some((args) => args[0] === 'kill');
 
@@ -150,7 +159,7 @@ describe('the docker runner kill timer', () => {
             loadDriverConfig({ DRIVER_JOB_TIMEOUT_MS: String(10 * SECOND) }),
             spawned as unknown as typeof spawn,
             exec,
-            { writeFile: async () => undefined, rm: async () => undefined }
+            { files: { writeFile: async () => undefined, rm: async () => undefined }, steps: supervisorSteps }
         );
         const killed = () => calls.some((args) => args[0] === 'kill');
 

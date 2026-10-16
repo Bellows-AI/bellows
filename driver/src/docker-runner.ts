@@ -1,43 +1,46 @@
-import { JOB_LABEL, LEASE_LABEL } from './labels.js';
+import { JOB_LABEL } from './labels.js';
 import { awaitSupervisor, createGroup, removeGroup, startGroup, supervisorLossOf } from './docker-group.js';
 import { dockerKill, dockerServiceTeardown, dockerStopAgent } from './docker-teardown.js';
-import { SUPERVISOR_EXIT } from './supervisor-contract.js';
-import { backstopMs } from './supervisor-plan.js';
+import { SUPERVISOR_ENV, SUPERVISOR_EXIT, type SupervisorReport } from './supervisor-contract.js';
+import { agentBackstopMs } from './supervisor-plan.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
 import type { BoardJob } from './board.js';
-import { executorImage, type DriverConfig } from './config.js';
-import { HELPER_TIMEOUT_MS, helperInputValue, lookupHelper, parseHelperOutput } from './helpers.js';
+import type { DriverConfig } from './config.js';
 import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
+import { lookupHelper } from './helpers.js';
+import { noStepChannel, type StepSink, type SupervisorEndpoint } from './step-control.js';
 import {
-    gitWorktreeRemoveScript,
-    parseLastJsonLine,
+    controlTokenOf,
+    orderFinish,
+    orderGo,
+    runHelperStep,
+    runReclaimStep,
+    runSyncStep,
+    type StepHost,
+    supervisedStepRunner,
+} from './supervised-steps.js';
+import {
+    probeTreeFingerprint,
     publishCheckout,
     type PublishOptions,
-    publishFailed,
-    reclaimUnreadable,
+    type PublishResult,
     repoPath,
-    syncUnreadable,
-    withPublishToken,
     worktreeDir,
-    type PublishStep,
     type ReclaimResult,
-    SYNC_DEADLINE_MS,
     type SyncResult,
 } from './publish.js';
 import { missingDeclaredServices, serviceContainerName } from './services.js';
 import {
-    containerHardeningArgs,
     containerName,
     envFilePath,
     parseDockerServiceExit,
     parseDockerServicePs,
     parseDockerStats,
-    workspacesMountArgs,
 } from './docker.js';
-import { claimRestoresTree, envFileBody, workspacePath } from './claim.js';
-import { treeSteps } from './review-snapshot.js';
+import { envFileBody } from './claim.js';
+import { snapshotTree } from './review-snapshot.js';
 import {
     composeRuntimeSample,
     reportTail,
@@ -66,11 +69,6 @@ import {
     restartJobServices,
     servicePsArgs,
     startJobServices,
-    syncCheckoutArgs,
-    unreadableDockerDetail,
-    awaitAbandonedSync,
-    killedByTimeout,
-    syncPastDeadline,
     type RunnerFiles,
     type Spawn,
     type ExecDocker,
@@ -84,12 +82,26 @@ import { createDeadlineRegistry, type DeadlineRegistry } from './run-deadline.js
  * helpers live in `docker-runner-support.ts`, the close-time reads in `docker-close-read.ts`.
  */
 
+/** What this process remembers of an attempt's container group: the run it was created for. */
+interface GroupState {
+    startedAt: string;
+    session: RunSession | null;
+}
+
+/** How long `finish` waits for the group's supervisor to exit by itself before it kills the group. */
+const GROUP_END_WAIT_MS = 20_000;
+
 /** Everything a docker-runner method needs: the daemon transport, the config, and the per-attempt kill set. */
 interface RunnerDeps {
     config: DriverConfig;
     execDocker: ExecDocker;
     files: RunnerFiles;
     spawnFn: Spawn;
+    /** The supervised-step channel and the endpoint a supervisor-only group is served on (`step-control.ts`). */
+    steps?: StepSink;
+    endpoint?: SupervisorEndpoint;
+    /** The attempt groups this runner created, by lease token: one per attempt, never shared. */
+    groups: Map<string, GroupState>;
     /**
      * Lease tokens whose kill() fired while that attempt may still be awaiting the daemon in its
      * services setup. Keyed by LEASE TOKEN, not job id: the token is the per-attempt identity —
@@ -188,261 +200,172 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob): Promise<void
     await deps.execDocker(['network', 'rm', `factory-job-${job.id}-services`]).catch(() => undefined);
 }
 
-/*
- * The startup sync (or, for a claim that continues a session, the restore): one container, one
- * script. A starting claim gets fetch + create-or-rebase; a continuing claim gets RESTORE=1 — no
- * fetch, no rebase, nothing that touches the remote (issue #58) — so its env file is not written
- * at all and the credential helper is absent even when the claim carries a token. The env names
- * the three paths the script needs — the clone (where origin lives), the worktree, the branch —
- * literal values, not credentials. A conflicting rebase aborts itself in the script and answers
- * { ok: false } with the reason — the loop fails the run before it starts rather than leaving the
- * worktree mid-rebase for every later turn to trip over.
- */
-async function dockerSyncCheckout(deps: RunnerDeps, job: BoardJob, signal?: AbortSignal): Promise<SyncResult> {
-    const { config, execDocker, files } = deps;
-    const clone = repoPath(config, job);
-    const worktree = worktreeDir(config, job);
-    if (!clone || !worktree) return { ok: true, reason: null }; // nothing synced, nothing to fail either
-
-    /*
-     * The fence BEFORE the sync: the loop calls syncCheckout before run(), so without
-     * this the worktree script would start while a previous attempt's runner was still
-     * writing the same shared task worktree — mixed edits, or a rebase conflict nobody
-     * is awake to resolve. The sweep is idempotent, and run() keeps its own: twice per
-     * attempt is already the fence's documented shape, the same way the service
-     * teardown half runs twice.
-     */
-    await dockerReclaimFence(deps, job);
-    const deadline = Date.now() + SYNC_DEADLINE_MS;
-    const restore = claimRestoresTree(job);
-    let file: string | null = null;
-    if (!restore) {
-        try {
-            file = envFilePath(job);
-            await files.writeFile(file, envFileBody(job), { mode: 0o600 });
-        } catch (e) {
-            return { ok: false, reason: `could not write the sync env file: ${(e as Error).message}` };
-        }
-    }
-    try {
-        // 'run' and '--rm' INCLUDED — every execDocker argv here is a full `docker run`:
-        // this exact call once shipped as `docker -v ... -w ...`, which is not a command
-        // docker knows, and the sync failed on every job while the compile and the flow
-        // tests (which match argv by shape, not by head) stayed green.
-        // Bounded like the kubernetes sync Job (issue #559): a sync that never lands would hold its
-        // clone's queue forever.
-        const out = await execDocker(
-            syncCheckoutArgs(config, job, { clone, worktree, restore, envFile: file }),
-            signal ? { timeout: SYNC_DEADLINE_MS, signal } : { timeout: SYNC_DEADLINE_MS }
-        );
-        return parseLastJsonLine<SyncResult>(out.stdout, () => ({
-            ok: false,
-            reason: `${syncUnreadable.reason}: ${unreadableDockerDetail(out.stdout)}`,
-        }));
-    } catch (e) {
-        if (signal?.aborted) {
-            // A stand-down detaches the client only: the sync keeps writing, and this answer — the
-            // clone's queue place — is held until the container exits, within the same deadline.
-            await awaitAbandonedSync(execDocker, job, deadline);
-        } else if (killedByTimeout(e)) {
-            // The timeout killed the client, not the container: `--rm` waits for the daemon to see
-            // it exit, so it goes by name — the kubelet's deadline kill, on docker.
-            return syncPastDeadline(execDocker, job);
-        }
-        const detail = dockerErrorDetail(e);
-        return {
-            ok: false,
-            reason: `the worktree sync container failed: ${detail.slice(0, ERROR_DETAIL_MAX_CHARS)}`,
-        };
-    } finally {
-        if (file) await files.rm(file).catch(() => undefined);
-    }
-}
-
-/*
- * The terminal reclaim, one container one script like the sync it undoes: the clone (whose
- * admin dir registers the worktree) and the worktree, by env, nothing else — no env file, no
- * credential. Removing the tree needs nothing the claim held; a `docker run` with no --env-file
- * is simpler and leaves nothing to clean on either side. A job that names no repository never
- * had a tree, so the answer is "reclaimed, nothing was there".
- */
-async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<ReclaimResult> {
-    const { config, execDocker } = deps;
-    const clone = repoPath(config, job);
-    const worktree = worktreeDir(config, job);
-    if (!clone || !worktree) return { ok: true, removed: false, reason: null };
-    try {
-        const out = await execDocker([
-            'run',
-            '--rm',
-            ...containerHardeningArgs(),
-            ...workspacesMountArgs(config, workspacePath(job)),
-            '-e',
-            `REPO=${clone}`,
-            '-e',
-            `WORKTREE=${worktree}`,
-            '--entrypoint',
-            'node',
-            executorImage(config, job.executorType),
-            '-e',
-            gitWorktreeRemoveScript,
-        ]);
-        return parseLastJsonLine<ReclaimResult>(out.stdout, () => ({
-            ok: false,
-            removed: false,
-            reason: `${reclaimUnreadable.reason}: ${unreadableDockerDetail(out.stdout)}`,
-        }));
-    } catch (e) {
-        const detail = dockerErrorDetail(e);
-        return {
-            ok: false,
-            removed: false,
-            reason: `the worktree reclaim container failed: ${detail.slice(0, ERROR_DETAIL_MAX_CHARS)}`,
-        };
-    }
-}
+/** The step host of this runner: the channel its supervisor serves, or a refusal naming the missing one. */
+const stepHostOf = (deps: RunnerDeps): StepHost => ({ config: deps.config, sink: deps.steps ?? noStepChannel });
 
 /**
- * Publishing is attempt-scoped like everything else here: the env file is named after the lease
- * token, and the credential travels by --env-file — GITHUB_TOKEN from the claim env is in no
- * argv anywhere, only inside the container's environment where the credential helper reads it.
- * The steps themselves — probe, branch, commit, push, PR — live in publishCheckout (publish.ts),
- * shared with the kubernetes runner so the two executors cannot drift on what a publish decides;
- * this is only the docker transport: one `docker run --rm` per step, entrypoint swapped for the
- * tool, over the workspaces volume (this process has no host path into it).
- *
- * Every step runs in the task worktree (issue #35) — the tree the run actually edited.
+ * Creates the attempt's container group once, under the re-claim fence: the supervisor, the
+ * exporter and the mailboxes, started beside each other — the agent is created and started by
+ * `run`, attached, after the supervisor releases it. The group is the attempt's, from its first
+ * step (the sync) to its last, not the agent's: a second call (the run after the sync) finds it.
  */
-async function dockerPublishGit(deps: RunnerDeps, job: BoardJob, publishToken?: string, options?: PublishOptions) {
-    const { config, files } = deps;
-    let file: string | null = null;
+async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession | null): Promise<GroupState> {
+    const known = deps.groups.get(job.leaseToken);
+    if (known) return known;
+    await dockerReclaimFence(deps, job);
+    const startedAt = new Date().toISOString();
+    await createGroup(deps, job, session, startedAt);
     try {
-        file = envFilePath(job);
-        await files.writeFile(file, envFileBody(withPublishToken(job, publishToken)), { mode: 0o600 });
+        await startGroup(deps.execDocker, job, session);
     } catch (e) {
-        return publishFailed(`could not write the publish env file: ${(e as Error).message}`, 'transport');
+        await removeGroup(deps.execDocker, job);
+        throw e;
     }
-    const envFile = file;
-    try {
-        return await publishCheckout(config, job, options, (step) => dockerPublishStep(deps, job, step, { envFile }));
-    } finally {
-        if (file) await files.rm(file).catch(() => undefined);
-    }
+    const group: GroupState = { startedAt, session };
+    deps.groups.set(job.leaseToken, group);
+    return group;
 }
 
-/** One publish-shaped step as a `docker run --rm` over the task worktree; `envFile` only when it needs the claim env. */
-async function dockerPublishStep(
+/** Ends the attempt's group by order, waits (bounded) for its supervisor to exit, and removes it. Never throws. */
+async function finishGroup(deps: RunnerDeps, job: BoardJob): Promise<void> {
+    if (!deps.groups.delete(job.leaseToken)) return;
+    await orderFinish(stepHostOf(deps), job).catch(() => undefined);
+    if ((await awaitSupervisor(deps.execDocker, job, GROUP_END_WAIT_MS)) === null) {
+        await dockerKill(deps, job);
+    }
+    await removeGroup(deps.execDocker, job);
+}
+
+/*
+ * The startup sync (or, for a claim that continues a session, the restore) as the attempt's first
+ * supervised step. The fence BEFORE the sync: the sync is the first writer on the task worktree, so
+ * a previous attempt's containers must be off the daemon before the worktree script starts. A
+ * starting claim gets fetch + create-or-rebase; a continuing claim gets RESTORE=1 — no fetch, no
+ * rebase, nothing that touches the remote (issue #58). A conflicting rebase aborts itself in the
+ * script and answers { ok: false } with the reason — the loop fails the run before it starts
+ * rather than leaving the worktree mid-rebase for every later turn to trip over.
+ */
+async function dockerSyncCheckout(
     deps: RunnerDeps,
     job: BoardJob,
-    publish: PublishStep,
-    { envFile, signal }: { envFile: string | null; signal?: AbortSignal | undefined }
-): Promise<{ stdout: string }> {
-    const { config, execDocker } = deps;
-    const repo = worktreeDir(config, job);
-    const args = ['run', '--rm', ...containerHardeningArgs(), ...workspacesMountArgs(config, workspacePath(job))];
-    if (publish.inRepo && repo) args.push('-w', repo);
-    // Literal env values are paths and code (the probe's REPO) — the same class
-    // as the sync's three path literals, never a credential.
-    for (const [name, value] of Object.entries(publish.envLiterals ?? {})) {
-        args.push('-e', `${name}=${value}`);
-    }
-    if (publish.env && envFile) args.push('--env-file', envFile);
-    args.push('--entrypoint', publish.entrypoint, executorImage(config, job.executorType), ...publish.args);
+    session: RunSession | null = null
+): Promise<SyncResult> {
+    const { config } = deps;
+    if (!repoPath(config, job) || !worktreeDir(config, job)) return { ok: true, reason: null }; // nothing synced
     try {
-        return await execDocker(args, signal ? { signal } : undefined);
+        await ensureGroup(deps, job, session);
+        return await runSyncStep(stepHostOf(deps), job);
     } catch (e) {
-        // The tool's own output, never the echoed command (dockerErrorDetail):
-        // the execFile message is "Command failed: <the whole docker run argv>",
-        // which is exactly how a credential problem once shipped as an unreadable
-        // verdict. The step's name is added by the workflow; this is the detail
-        // under it.
-        throw new Error(dockerErrorDetail(e));
+        // A group that cannot exist, or a channel that closed under the sync, leaves nothing behind
+        // and nothing to hand back: the loop leaves the job to its lease.
+        await removeGroup(deps.execDocker, job);
+        deps.groups.delete(job.leaseToken);
+        throw e;
+    }
+}
+
+/*
+ * The terminal reclaim, in a supervisor-only group: the thread has no attempt, so there is no group
+ * to ask. The group is a supervisor and nothing else under a lease of its own — it answers to
+ * nothing of the thread's attempts. Removing the tree needs nothing the claim held, so no claim env
+ * rides it. A job that names no repository never had a tree: "reclaimed, nothing was there".
+ */
+async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<ReclaimResult> {
+    const { config } = deps;
+    if (!repoPath(config, job) || !worktreeDir(config, job)) return { ok: true, removed: false, reason: null };
+    if (!deps.endpoint) {
+        return {
+            ok: false,
+            removed: false,
+            reason: 'this driver has no supervisor endpoint to run the reclaim through',
+        };
+    }
+    const opened = await deps.endpoint.open();
+    const group: BoardJob = {
+        ...job,
+        agent: false,
+        leaseToken: randomUUID(),
+        supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: opened.url, [SUPERVISOR_ENV.controlToken]: opened.token },
+    };
+    try {
+        await createGroup(deps, group, null, new Date().toISOString());
+        await startGroup(deps.execDocker, group, null);
+        return await runReclaimStep(stepHostOf(deps), group);
+    } catch (e) {
+        return {
+            ok: false,
+            removed: false,
+            reason: `the worktree reclaim group failed: ${dockerErrorDetail(e).slice(0, ERROR_DETAIL_MAX_CHARS)}`,
+        };
+    } finally {
+        await orderFinish(stepHostOf(deps), group).catch(() => undefined);
+        deps.endpoint.close(opened.token);
+        await dockerKill(deps, group);
+        await removeGroup(deps.execDocker, group);
     }
 }
 
 /**
- * The docker transport for one block-helper step (issue #207): the same shape as
- * `dockerPublishGit` — an attempt-scoped env file when the helper writes to GitHub, one
- * `docker run` over the task worktree with the entrypoint swapped for `node`, the script passed
- * by CONTENT (never a path), and the bounded input as one literal `-e` value (never a credential —
- * the same class as the sync's `REPO`/`WORKTREE` literals). Unknown helper ids fail BEFORE any
- * container starts, matching the k8s transport's own first check.
- *
- * NOT `--rm`, on purpose — the same reason `dockerRun`'s own runner container skips it: `--rm`
- * removes the container only when the DAEMON sees it exit, and `execDocker`'s `timeout` option
- * kills the `docker run` CLIENT process, not the container the daemon is still running. A killed
- * client whose container keeps going would otherwise leak it forever — the job that timed out has
- * no guaranteed later attempt to sweep it up (a pre-helper timeout fails the attempt terminally).
- * The container gets its own attempt-scoped, per-call name instead, and the `finally` below
- * removes it explicitly and unconditionally, tolerating one already gone — the exact idiom
- * `dockerRunVerdict` uses for the runner container itself.
+ * The step host of an attempt whose first step is not its sync — an adopted run, whose agent
+ * already ended under an earlier claim: a group is created for it on demand, a supervisor and no
+ * agent, because the probe, the helpers and the publish are still its steps. A group the sync
+ * already created is simply answered.
+ */
+async function stepHostFor(deps: RunnerDeps, job: BoardJob): Promise<StepHost> {
+    if (!deps.groups.has(job.leaseToken)) await ensureGroup(deps, { ...job, agent: false }, null);
+    return stepHostOf(deps);
+}
+
+/**
+ * One allowlisted helper step. An unknown helper id creates nothing (`runHelperStep` refuses it
+ * first), and a group the daemon refuses is a failed helper, never a throw.
  */
 async function dockerRunHelper(
     deps: RunnerDeps,
     job: BoardJob,
     plan: HelperPlan,
-    { token, signal }: HelperCall
+    call: HelperCall
 ): Promise<HelperResult> {
-    const descriptor = lookupHelper(plan.helperId);
-    if (!descriptor) {
-        return {
-            ok: false,
-            reason: 'unknown_helper',
-            message: `no allowlisted helper is registered as "${plan.helperId}"`,
-        };
-    }
-    const { config, execDocker, files } = deps;
-    // A per-call name, not the shared attempt name: a real future producer could declare more
-    // than one plan of a phase, and this must never collide with a sibling call, or with the
-    // runner/service containers this same attempt starts under its own name/labels.
-    const helperContainerName = `factory-helper-${job.id}-${job.leaseToken}-${randomUUID()}`;
-    let file: string | null = null;
+    if (!lookupHelper(plan.helperId)) return runHelperStep(stepHostOf(deps), job, plan, call);
     try {
-        if (plan.githubWriting) {
-            file = envFilePath(job);
-            await files.writeFile(file, envFileBody(withPublishToken(job, token)), { mode: 0o600 });
-        }
-        const worktree = worktreeDir(config, job);
-        const args = [
-            'run',
-            '--name',
-            helperContainerName,
-            ...containerHardeningArgs(),
-            ...workspacesMountArgs(config, workspacePath(job)),
-        ];
-        if (worktree) args.push('-w', worktree);
-        args.push(
-            '--label',
-            `${JOB_LABEL}=${job.id}`,
-            '--label',
-            `${LEASE_LABEL}=${job.leaseToken}`,
-            '-e',
-            `HELPER_INPUT=${helperInputValue(plan)}`
-        );
-        if (file) args.push('--env-file', file);
-        args.push('--entrypoint', 'node', executorImage(config, job.executorType), '-e', descriptor.scriptBody);
-        let out: { stdout: string };
-        try {
-            out = await execDocker(
-                args,
-                signal ? { timeout: HELPER_TIMEOUT_MS, signal } : { timeout: HELPER_TIMEOUT_MS }
-            );
-        } catch (e) {
-            const timedOut = (e as { killed?: boolean }).killed === true && !signal?.aborted;
-            return {
-                ok: false,
-                reason: timedOut ? 'timeout' : 'runner_error',
-                message: timedOut
-                    ? `the helper exceeded its ${HELPER_TIMEOUT_MS}ms bound`
-                    : dockerErrorDetail(e).slice(0, ERROR_DETAIL_MAX_CHARS),
-            };
-        }
-        return parseHelperOutput(descriptor, out.stdout);
-    } finally {
-        if (file) await files.rm(file).catch(() => undefined);
-        await execDocker(['rm', '-f', helperContainerName]).catch(() => undefined);
+        return await runHelperStep(await stepHostFor(deps, job), job, plan, call);
+    } catch (e) {
+        return { ok: false, reason: 'runner_error', message: dockerErrorDetail(e).slice(0, ERROR_DETAIL_MAX_CHARS) };
     }
 }
+
+/** The publish: the one workflow both executors run, over the task supervisor's steps. */
+async function dockerPublishGit(
+    deps: RunnerDeps,
+    job: BoardJob,
+    publishToken?: string,
+    options?: PublishOptions
+): Promise<PublishResult> {
+    const host = await stepHostFor(deps, job);
+    return publishCheckout(
+        deps.config,
+        job,
+        options,
+        supervisedStepRunner(host, job, { kind: 'publish', publishToken })
+    );
+}
+
+/** The probe and the review snapshot: the steps that read the task worktree, over the supervisor. */
+const dockerTreeSteps = (deps: RunnerDeps): Pick<Runner, 'probeTree' | 'snapshotTree'> => ({
+    probeTree: async (job, signal) =>
+        probeTreeFingerprint(
+            deps.config,
+            job,
+            supervisedStepRunner(await stepHostFor(deps, job), job, { kind: 'probe', signal })
+        ),
+    snapshotTree: async (job, key, signal) =>
+        snapshotTree(
+            deps.config,
+            job,
+            key,
+            supervisedStepRunner(await stepHostFor(deps, job), job, { kind: 'snapshot', signal })
+        ),
+});
 
 // The container is named by this attempt's lease token, so a sample can only ever resolve
 // its own attempt's runner — the same attempt-scoping every per-attempt operation here
@@ -509,10 +432,12 @@ async function dockerRun(
 
     /*
      * The fence before anything this attempt creates — the job-scoped sweep documented
-     * on dockerReclaimFence above. It already ran once, in syncCheckout; run() keeps its own
-     * call so the guarantee never depends on the loop's ordering.
+     * on dockerReclaimFence above — and the group it guards: the supervisor and the exporter, which
+     * the sync already created when the loop synced first (`ensureGroup` finds them), or are
+     * created here when no sync preceded the run. A group the daemon refuses is infrastructure,
+     * thrown like a refused exporter was: never a run that silently loses its record.
      */
-    await dockerReclaimFence(deps, job);
+    const { startedAt } = await ensureGroup(deps, job, session);
 
     /*
      * Auxiliary services (issue #6) were started by the loop (`startServices`) before the gate
@@ -544,28 +469,16 @@ async function dockerRun(
     // reach spawnFn.
     await assertNotKilledAfterEnvWrite({ killed, job, files }, file);
 
-    // The run's start instant, captured before anything is created because the exporter and both
-    // close-time turn reads key on it: a follow-up resumes its session's conversation, so the
-    // delta each read reports is bounded to what THIS run wrote.
-    const startedAt = new Date().toISOString();
-
-    // The group's mailboxes, the supervisor and the exporter, before the agent that mounts the
-    // mailboxes. A group the daemon refuses is infrastructure, thrown like a refused exporter was:
-    // never a run that silently loses its record. It leaves nothing behind, nor the env file.
-    try {
-        await createGroup(deps, job, session, startedAt);
-    } catch (e) {
-        if (file) await files.rm(file).catch(() => undefined);
-        throw e;
-    }
-
+    // The run's start instant (the group's, which the exporter and both close-time turn reads key
+    // on): a follow-up resumes its session's conversation, so the delta each read reports is
+    // bounded to what THIS run wrote.
     const refused = await createRunnerContainer(deps, job, session, {
         servicesNetwork,
         ...(file ? { envFile: file } : {}),
     });
     if (refused) {
         if (file) await files.rm(file).catch(() => undefined);
-        await removeGroup(execDocker, job);
+        await finishGroup(deps, job);
         return refused;
     }
     // The create and the copy are awaits too: a lease lost behind them must not reach the start.
@@ -573,16 +486,19 @@ async function dockerRun(
     if (killed.has(job.leaseToken)) {
         await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
         await removeGroup(execDocker, job);
+        deps.groups.delete(job.leaseToken);
         await assertNotKilledAfterEnvWrite({ killed, job, files }, file);
     }
 
-    // The supervisor and the exporter start beside the agent and outlive it: the supervisor
-    // drains the exporter and finalizes once the agent is gone, and the close below waits for it.
+    // The supervisor and the exporter were started with the group and outlive the agent: the agent
+    // is released by the supervisor's `go` order, which also hands it what is left of the run
+    // budget, and the supervisor reports once the agent is gone and its exporter drained.
+    const host = stepHostOf(deps);
+    const reported = host.sink.awaitReport(controlTokenOf(job)).catch(() => null);
     try {
-        await startGroup(execDocker, job, session);
+        await orderGo(host, job);
     } catch (e) {
         await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
-        await removeGroup(execDocker, job);
         if (file) await files.rm(file).catch(() => undefined);
         throw e;
     }
@@ -635,7 +551,7 @@ async function dockerRun(
         // The BACKSTOP: the supervisor ends the agent at the run budget itself (its exit 124), so
         // this only fires for a group whose supervisor stopped doing that — the budget plus the
         // wind-down — and then kills all of it.
-        const deadline = deps.deadlines.start(job.leaseToken, backstopMs(config, job), () => {
+        const deadline = deps.deadlines.start(job.leaseToken, agentBackstopMs(config, job), () => {
             timedOut = true;
             void dockerKill(deps, job);
         });
@@ -695,13 +611,16 @@ async function dockerRun(
             // then claude-code's agent-turn count — lives in applyCloseTimeReadout:
             // best-effort throughout, so a failed read costs the task its follow-ups or
             // its turn figure, never its verdict.
-            // The agent's end does not end the run: the supervisor drains the exporter and
-            // finalizes first, and its exit status says how — 124 is the budget it enforced, and
-            // anything but 0 and 124 is a supervisor lost, an infrastructure loss.
-            void awaitSupervisor(execDocker, job)
-                .then(async (supervisorExit) => {
-                    if (supervisorExit === SUPERVISOR_EXIT.deadline) timedOut = true;
-                    const loss = supervisorLossOf(supervisorExit, timedOut);
+            // The agent's end does not end the run: the supervisor drains the exporter first and
+            // reports — the budget it enforced says `timed_out` — and then serves the attempt's
+            // steps. A supervisor that exited instead of reporting says how: 124 is the budget it
+            // enforced, and anything but 0 and 124 is a supervisor lost, an infrastructure loss.
+            void awaitReportOrExit(execDocker, job, reported)
+                .then(async ({ report, supervisorExit }) => {
+                    if (report?.outcome === 'timed_out' || supervisorExit === SUPERVISOR_EXIT.deadline) {
+                        timedOut = true;
+                    }
+                    const loss = report ? null : supervisorLossOf(supervisorExit, timedOut);
                     const settled = await verdict(code);
                     return loss && !settled.infraLoss ? { ...settled, infraLoss: loss } : settled;
                 })
@@ -714,12 +633,33 @@ async function dockerRun(
     // long since read it; the daemon has the values in the container's config.
     try {
         return await outcome;
+    } catch (e) {
+        // The run threw: nothing more will be asked of the group, and no loop step is owed it.
+        await finishGroup(deps, job);
+        throw e;
     } finally {
         if (file) await files.rm(file).catch(() => undefined);
-        // The supervisor and exporter are done (or the run threw): the group goes, its mailboxes
-        // with it — transient control, never finished work, which lives on the task volume.
-        await removeGroup(execDocker, job);
+        // A run that resolved leaves the group up — the gates, the helpers and the publish are its
+        // steps, and the loop's `finish` ends it (its mailboxes with it: transient control, never
+        // finished work, which lives on the task volume).
     }
+}
+
+/**
+ * Waits for the supervisor's report that the agent is over and its exporter drained, or for the
+ * supervisor to exit without one (a kill, the budget — both end it at once — or a crash), whichever
+ * comes first, bounded by the wind-down. The report's absence with no exit is reported as neither.
+ */
+async function awaitReportOrExit(
+    execDocker: ExecDocker,
+    job: BoardJob,
+    reported: Promise<SupervisorReport | null>
+): Promise<{ report: SupervisorReport | null; supervisorExit: number | null }> {
+    const exited = awaitSupervisor(execDocker, job).then((supervisorExit) => ({ report: null, supervisorExit }));
+    const answered = reported.then((report) =>
+        report ? { report, supervisorExit: null } : new Promise<never>(() => undefined)
+    );
+    return Promise.race([answered, exited]);
 }
 
 /**
@@ -739,20 +679,32 @@ export function createDockerRunner(
         if (input) pending.child.stdin?.end(input);
         return pending;
     },
-    files: RunnerFiles = { writeFile, rm }
+    extras: { files?: RunnerFiles; steps?: StepSink; endpoint?: SupervisorEndpoint } = {}
 ): Runner {
     const deadlines = createDeadlineRegistry();
-    const deps: RunnerDeps = { config, execDocker, files, spawnFn, killed: new Set(), deadlines };
+    const { files = { writeFile, rm }, steps, endpoint } = extras;
+    const deps: RunnerDeps = {
+        config,
+        execDocker,
+        files,
+        spawnFn,
+        killed: new Set(),
+        deadlines,
+        groups: new Map(),
+        ...(steps ? { steps } : {}),
+        ...(endpoint ? { endpoint } : {}),
+    };
     return {
         kill: (job) => dockerKill(deps, job),
         pauseDeadline: async (job, paused) => deadlines.pause(job.leaseToken, paused),
         releaseServices: (job) => dockerServiceTeardown(deps, job),
-        syncCheckout: (job, signal) => dockerSyncCheckout(deps, job, signal),
+        syncCheckout: (job, _signal, session) => dockerSyncCheckout(deps, job, session ?? null),
+        finish: (job) => finishGroup(deps, job),
         reclaimWorktree: (job) => dockerReclaimWorktree(deps, job),
         publishGit: (job, publishToken, options) => dockerPublishGit(deps, job, publishToken, options),
-        // The probe and the review snapshot need no claim env: no env file is written for them. A
-        // stand-down kills the client; the `--rm` container exits and is removed on its own.
-        ...treeSteps(config, (job, signal) => (step) => dockerPublishStep(deps, job, step, { envFile: null, signal })),
+        // The probe and the review snapshot need no claim env; like every step they run in the
+        // supervisor, and a stand-down ends the wait for the answer, never the supervisor.
+        ...dockerTreeSteps(deps),
         runHelper: (job, plan, token, signal) => dockerRunHelper(deps, job, plan, { token, signal }),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),

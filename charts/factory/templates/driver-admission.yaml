@@ -8,7 +8,7 @@ the API fails the install loudly rather than installing an unfenced driver.
 `-pods` fences what a pod the driver specs may hold — the runner, every aux Job, every service
 pod — because `create pods` would otherwise be `read every Secret`:
   - Secrets a container can read (volumes, env, envFrom) only when they are the driver's own
-    per-attempt ones (factory-{job,sync,publish,helper,gate}-…-env, docs/kubernetes.md) or the
+    per-attempt ones (factory-{job,gate}-…-env, docs/kubernetes.md) or the
     runner credentials. The chart's pull secrets only under imagePullSecrets — the kubelet reads
     those, a container never does. The dashboard Secret is none of these.
   - volumes: the workspaces claim, emptyDir, and such Secrets — no hostPath, no other claim, no
@@ -44,7 +44,7 @@ it is a smaller share of one shared kernel, not a different one (docs/security.m
 {{- if include "factory.runnerSecretEnabled" . }}
 {{- $allowed = append $allowed (include "factory.runnerSecretName" .) }}
 {{- end }}
-{{- $secretName := "^factory-(job|sync|publish|helper|gate)-[a-z0-9-]+-env$" }}
+{{- $secretName := "^factory-(job|gate)-[a-z0-9-]+-env$" }}
 {{- $workspaceSubPath := "^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" }}
 {{/* The declared-service hardening opt-out (#382) — driver/src/labels.ts, UNHARDENED_LABEL. */}}
 {{- $unhardenedLabel := "factory.unhardened" }}

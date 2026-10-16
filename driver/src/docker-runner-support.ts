@@ -10,26 +10,10 @@ import { execFile, type spawn } from 'node:child_process';
 import type { writeFile, rm } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import type { BoardJob } from './board.js';
-import { workspacePath, claimCarriesGithubToken } from './claim.js';
-import { type DriverConfig, executorImage } from './config.js';
-import {
-    workspacesMountArgs,
-    containerName,
-    containerHardeningArgs,
-    dockerArgs,
-    parseDockerServicePs,
-    syncContainerName,
-} from './docker.js';
+import type { DriverConfig } from './config.js';
+import { containerName, dockerArgs, parseDockerServicePs } from './docker.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import { telemetryConfig, telemetryConfigTar, telemetryCopyTarget } from './telemetry-config.js';
-import {
-    baseBranchOf,
-    worktreeBranch,
-    CREDENTIAL_HELPER,
-    gitWorktreeScript,
-    SYNC_DEADLINE_MS,
-    type SyncResult,
-} from './publish.js';
 import type { RunOutcome, RunSession } from './runner.js';
 import {
     declaredServiceSpecs,
@@ -80,21 +64,6 @@ export async function startEnvContainer(
 
 /** How much of a failed aux container's own error detail rides in a sync/reclaim/publish reason. */
 export const ERROR_DETAIL_MAX_CHARS = 300;
-
-/**
- * The unreadable-verdict detail the sync/reclaim callers fold into their reason (issue #344):
- * what the container actually did, given the verdict line never arrived — the exit code and the
- * last stdout line, preview-bounded, or the plain fact that it printed nothing. A nonzero exit
- * never reaches here: execDocker rejects on it, and that arm reports the daemon's stderr detail
- * as `container failed:` — so a RESOLVED unreadable verdict is by construction an exit-0
- * container whose stdout was not the JSON line the readout parses.
- */
-export function unreadableDockerDetail(stdout: string): string {
-    const line = stdout.trim().split('\n').filter(Boolean).pop();
-    return line === undefined
-        ? 'exit 0, the container printed nothing'
-        : `exit 0, last log line ${JSON.stringify(line.slice(0, ERROR_DETAIL_MAX_CHARS))}`;
-}
 
 /**
  * The tool's own output from a failed `execDocker` call, never the echoed command: the execFile
@@ -178,98 +147,6 @@ export async function removeEachTolerantly(
             throw new Error(`${whatFailed(name)}: ${(e as Error).message}`);
         }
     }
-}
-
-/** How long removing a sync container may take before it is left to the daemon. */
-const SYNC_REMOVE_TIMEOUT_MS = 30_000;
-
-/** A client the exec timeout killed — not one killed for overflowing its output buffer. */
-export const killedByTimeout = (e: unknown): boolean => {
-    const failure = e as { killed?: boolean; code?: unknown };
-    return failure.killed === true && failure.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
-};
-
-/** How often a sync container that will not go is removed and listed again. */
-const SYNC_GONE_POLL_MS = 1_000;
-
-/**
- * Removes the sync container until a daemon listing proves it gone. A removal that failed or timed
- * out is never taken as proof — the container may still be writing — so this keeps trying for as
- * long as the daemon does not answer; the queue's own wait bound keeps siblings from wedging on it.
- */
-async function removeSyncContainer(execDocker: ExecDocker, job: BoardJob): Promise<void> {
-    const name = syncContainerName(job);
-    const bounded = { timeout: SYNC_REMOVE_TIMEOUT_MS };
-    for (;;) {
-        await execDocker(['rm', '-f', name], bounded).catch(() => undefined);
-        const listed = await execDocker(['ps', '-aq', '--filter', `name=${name}`], bounded).catch(() => null);
-        if (listed && listed.stdout.trim() === '') return;
-        await new Promise((resolve) => setTimeout(resolve, SYNC_GONE_POLL_MS));
-    }
-}
-
-/** A sync container past its deadline: the run fails as the kubelet's kill fails it, at once. */
-export function syncPastDeadline(execDocker: ExecDocker, job: BoardJob): SyncResult {
-    return {
-        ok: false,
-        reason: `the worktree sync container failed: it exceeded its ${SYNC_DEADLINE_MS}ms deadline`,
-        settled: removeSyncContainer(execDocker, job),
-    };
-}
-
-/**
- * Waits out an abandoned sync container until the sync deadline. Only a wait that saw it exit is
- * proof it is done (`--rm` takes it from there); a wait that timed out or failed falls back to the
- * removal that proves it gone.
- */
-export async function awaitAbandonedSync(execDocker: ExecDocker, job: BoardJob, deadline: number) {
-    const timeout = Math.max(1, deadline - Date.now());
-    await execDocker(['wait', syncContainerName(job)], { timeout }).catch(() => removeSyncContainer(execDocker, job));
-}
-
-/**
- * The full `docker run` argv for the startup sync/restore container. Pure, for the same pinning
- * as dockerArgs: a starting claim's fetch + create-or-rebase versus a continuing claim's
- * RESTORE=1 — no fetch, no rebase, nothing that touches the remote (issue #58) — is decided here.
- */
-export function syncCheckoutArgs(
-    config: DriverConfig,
-    job: BoardJob,
-    sync: { clone: string; worktree: string; restore: boolean; envFile: string | null }
-): string[] {
-    return [
-        'run',
-        '--name',
-        syncContainerName(job),
-        ...containerHardeningArgs(),
-        '--rm',
-        ...workspacesMountArgs(config, workspacePath(job)),
-        ...(sync.envFile ? (['--env-file', sync.envFile] as string[]) : []),
-        '-e',
-        `REPO=${sync.clone}`,
-        '-e',
-        `WORKTREE=${sync.worktree}`,
-        '-e',
-        `BRANCH=${worktreeBranch(job)}`,
-        // Restore mode, as a literal: the script's "keep the tree as the task left it, remote
-        // untouched" switch (issue #58).
-        ...(sync.restore ? ['-e', 'RESTORE=1'] : []),
-        // A named reviewer's tree starts at the snapshot ref its caller froze (issue #549): a ref
-        // name, never a credential — the same literal class as the paths above.
-        ...(job.reviewRun ? ['-e', `REVIEW_REF=${job.reviewRun.ref}`] : []),
-        // The branch a batch task bases on: a validated branch name, the same literal class.
-        ...(baseBranchOf(job) ? ['-e', `BASE_BRANCH=${baseBranchOf(job)}`] : []),
-        // The fetch's credential helper, as CODE in an env VALUE — the same class of value as
-        // the three paths above, and the same mechanism as the push's `-c credential.helper=`.
-        // Only when the claim env carries the token the helper reads; the token itself travels
-        // the env file, never argv. A restore fetches nothing, so it never carries one.
-        ...(!sync.restore && claimCarriesGithubToken(job) ? ['-e', `CRED_HELPER=${CREDENTIAL_HELPER}`] : []),
-        '--entrypoint',
-        'node',
-        executorImage(config, job.executorType),
-        '-e',
-        gitWorktreeScript,
-    ];
 }
 
 /**

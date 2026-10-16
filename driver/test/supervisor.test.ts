@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readRepoFile as read } from './fixtures/repo-files.js';
-import { MAILBOX_FILES, MAILBOXES, SUPERVISOR_EXIT } from '../src/supervisor-contract.js';
+import { MAILBOX_FILES, MAILBOXES, STEP_KINDS, SUPERVISOR_EXIT } from '../src/supervisor-contract.js';
 
 /*
  * The task supervisor (`scripts/supervisor.cjs`): the lifecycle machine and the run it drives. The
@@ -33,6 +33,7 @@ interface SupervisorModule {
     FILES: Record<string, string>;
     EXIT: { finalized: number; deadline: number; failed: number };
     REPORT_PREFIX: string;
+    STEP_KINDS: string[];
     createMachine(initial?: string): Machine;
     supervise(env: Record<string, string>, log: (line: string) => void): Promise<number>;
 }
@@ -94,17 +95,46 @@ describe('the lifecycle machine', () => {
     });
 });
 
+interface QueuedStep {
+    id: string;
+    kind: string;
+    argv: string[];
+    cwd?: string;
+    env: Record<string, string>;
+    timeoutMs: number;
+}
+interface StepAnswer {
+    exitCode: number | null;
+    stdout: string;
+    stderr: string;
+    timedOut: boolean;
+    replayed?: boolean;
+}
+
 interface Driver {
     url: string;
     stop: boolean;
     kill: boolean;
     posted: { id: string; body: unknown }[];
+    /** The steps still to be pulled, and the answers the supervisor posted back. */
+    queue: QueuedStep[];
+    answers: Map<string, StepAnswer>;
+    reports: unknown[];
+    /** Whether the driver orders `finish` as soon as the supervisor reports; off, the supervisor keeps serving. */
+    autoFinish: boolean;
+    order(step: QueuedStep): void;
 }
+
+const ORDER_GO: QueuedStep = { id: 'go', kind: 'go', argv: [], env: {}, timeoutMs: 1000 };
+const ORDER_FINISH: QueuedStep = { id: 'finish', kind: 'finish', argv: [], env: {}, timeoutMs: 1000 };
 
 const servers: Server[] = [];
 const dirs: string[] = [];
 afterEach(async () => {
-    for (const server of servers.splice(0)) await new Promise((resolve) => server.close(resolve));
+    for (const server of servers.splice(0)) {
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+    }
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -116,8 +146,18 @@ const readBody = (request: IncomingMessage): Promise<string> =>
     });
 
 /** The driver's run-control endpoint as the supervisor sees it: `/control`, and the question routes. */
-async function startDriver(): Promise<Driver> {
-    const driver: Driver = { url: '', stop: false, kill: false, posted: [] };
+async function startDriver({ release = true }: { release?: boolean } = {}): Promise<Driver> {
+    const driver: Driver = {
+        url: '',
+        stop: false,
+        kill: false,
+        posted: [],
+        queue: release ? [ORDER_GO] : [],
+        answers: new Map(),
+        reports: [],
+        autoFinish: true,
+        order: (step) => driver.queue.push(step),
+    };
     const server = createServer((request: IncomingMessage, response: ServerResponse) => {
         void (async () => {
             const send = (status: number, body: unknown) => {
@@ -127,6 +167,22 @@ async function startDriver(): Promise<Driver> {
             if (request.headers.authorization !== `Bearer ${TOKEN}`) return send(401, {});
             if (request.method === 'GET' && request.url === '/control') {
                 return send(200, { stop: driver.stop, kill: driver.kill });
+            }
+            if (request.method === 'GET' && request.url?.startsWith('/step?')) {
+                const next = driver.queue.shift();
+                if (next) return send(200, { step: next });
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                return send(200, {});
+            }
+            if (request.method === 'POST' && request.url?.startsWith('/step/')) {
+                const id = decodeURIComponent(request.url.slice('/step/'.length));
+                driver.answers.set(id, JSON.parse(await readBody(request)) as StepAnswer);
+                return send(200, { ok: true });
+            }
+            if (request.method === 'POST' && request.url === '/report') {
+                driver.reports.push(JSON.parse(await readBody(request)));
+                if (driver.autoFinish) driver.order(ORDER_FINISH);
+                return send(200, { ok: true });
             }
             if (request.method === 'POST' && request.url === '/question') {
                 const body = JSON.parse(await readBody(request)) as { id: string };
@@ -208,8 +264,9 @@ function run(driver: Driver | null, env: Record<string, string> = {}) {
 describe('the supervisor run: agent exit with the supervisor alive', () => {
     it('stays alive after the agent exits, finalizes once the exporter has drained, then reports', async () => {
         const driver = await startDriver();
+        driver.autoFinish = false;
         const supervised = run(driver, { SUPERVISOR_EXPORTS: '1' });
-        await until('the supervisor to start', () => supervised.saw(MAILBOX_FILES.supervisorAlive));
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
 
         supervised.agentExits(0);
         await until('the drain order', () => supervised.saw(MAILBOX_FILES.drain, 'export'));
@@ -222,6 +279,13 @@ describe('the supervisor run: agent exit with the supervisor alive', () => {
         expect(supervised.report()).toEqual({});
 
         supervised.exporterDone();
+        // The drained exporter is reported to the driver, and the supervisor then serves its steps:
+        // the gates and the publish run beside it until the driver orders the end.
+        await until('the report', () => driver.reports.length === 1);
+        expect(driver.reports[0]).toMatchObject({ outcome: 'completed', agentEnd: 'exit', drained: true });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(finished).toBe(false);
+        driver.order(ORDER_FINISH);
         expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
         expect(supervised.report()).toMatchObject({
             outcome: 'completed',
@@ -280,8 +344,9 @@ describe('the supervisor run: Stop during a question', () => {
 
     it('cancels a question asked after the Stop at once, without bothering the driver', async () => {
         const driver = await startDriver();
-        driver.stop = true;
         const supervised = run(driver);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        driver.stop = true;
         await until('the Stop', () => supervised.saw(MAILBOX_FILES.stop));
         supervised.agentAsks('toolu_late');
         await until('the late question to be cancelled', () =>
@@ -298,7 +363,7 @@ describe('the supervisor run: the agent is killed', () => {
     it('drains the exporter after the kill: partial, with the cause, and the run still finalizes', async () => {
         const driver = await startDriver();
         const supervised = run(driver, { SUPERVISOR_EXPORTS: '1' });
-        await until('the supervisor to start', () => supervised.saw(MAILBOX_FILES.supervisorAlive));
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
 
         driver.kill = true;
         await until('the kill order', () => supervised.saw(MAILBOX_FILES.kill));
@@ -340,9 +405,14 @@ describe('the supervisor run: the agent is killed', () => {
         const driver = await startDriver();
         const supervised = run(driver, { SUPERVISOR_CONTROL_TOKEN: 'a-closed-token' });
         await until('the kill order', () => supervised.saw(MAILBOX_FILES.kill));
-        supervised.agentExits(143);
         await supervised.done;
-        expect(supervised.report()).toMatchObject({ outcome: 'cancelled', cause: 'control_closed' });
+        // The agent was never released: its entrypoint waits on `go` and exits on the kill marker.
+        expect(supervised.saw(MAILBOX_FILES.go)).toBe(false);
+        expect(supervised.report()).toMatchObject({
+            outcome: 'cancelled',
+            cause: 'control_closed',
+            agentEnd: 'unlaunched',
+        });
     });
 });
 
@@ -364,6 +434,186 @@ describe('the supervisor run: the budget', () => {
         expect(supervised.saw(MAILBOX_FILES.kill)).toBe(false);
         supervised.agentExits(0);
         await supervised.done;
+    });
+});
+
+const step = (id: string, kind: string, argv: string[], extra: Partial<QueuedStep> = {}): QueuedStep => ({
+    id,
+    kind,
+    argv,
+    env: {},
+    timeoutMs: 5_000,
+    ...extra,
+});
+
+describe('the supervisor run: supervised steps', () => {
+    it('holds the agent back until `go`, and does not start the budget before it', async () => {
+        const driver = await startDriver({ release: false });
+        const supervised = run(driver, { SUPERVISOR_DEADLINE_MS: '80' });
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        // Past the whole budget with no `go`: the agent was never released, so nothing timed out.
+        expect(supervised.saw(MAILBOX_FILES.go)).toBe(false);
+        expect(supervised.saw(MAILBOX_FILES.kill)).toBe(false);
+        driver.order(ORDER_GO);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        supervised.agentExits(0);
+        await supervised.done;
+        expect(supervised.report()).toMatchObject({ outcome: 'completed' });
+    });
+
+    it('runs a command step in its own container and answers its output and exit', async () => {
+        const driver = await startDriver();
+        driver.order(
+            step('probe-1', 'probe', ['node', '-e', 'console.log(process.cwd()); process.exit(3)'], { cwd: tmpdir() })
+        );
+        const supervised = run(driver);
+        await until('the answer', () => driver.answers.has('probe-1'));
+        expect(driver.answers.get('probe-1')).toMatchObject({ exitCode: 3, timedOut: false });
+        expect(driver.answers.get('probe-1')?.stdout.trim()).toMatch(/tmp/);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('serves a step while the agent works, and again once it is gone', async () => {
+        const driver = await startDriver();
+        driver.autoFinish = false;
+        const supervised = run(driver);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        driver.order(step('draft-1', 'publish', ['node', '-e', 'console.log("mid-run")']));
+        await until('the mid-run answer', () => driver.answers.has('draft-1'));
+        supervised.agentExits(0);
+        await until('the report', () => driver.reports.length === 1);
+        driver.order(step('probe-2', 'probe', ['node', '-e', 'console.log("after")']));
+        await until('the answer after the agent', () => driver.answers.has('probe-2'));
+        expect(driver.answers.get('probe-2')?.stdout.trim()).toBe('after');
+        driver.order(ORDER_FINISH);
+        await supervised.done;
+    });
+
+    it('gives a step its own environment and never the supervisor’s credential', async () => {
+        const driver = await startDriver();
+        driver.order(
+            step('env-1', 'helper', ['node', '-e', 'console.log(JSON.stringify(process.env))'], {
+                env: { GITHUB_TOKEN: 'publish-token-value', PLAIN: 'literal' },
+            })
+        );
+        const supervised = run(driver, { SUPERVISOR_EXPORTS: '' });
+        await until('the answer', () => driver.answers.has('env-1'));
+        const seen = JSON.parse(driver.answers.get('env-1')!.stdout) as Record<string, string>;
+        expect(seen.GITHUB_TOKEN).toBe('publish-token-value');
+        expect(seen.PLAIN).toBe('literal');
+        expect(Object.keys(seen).filter((name) => name.startsWith('SUPERVISOR_'))).toEqual([]);
+        expect(JSON.stringify(seen)).not.toContain(TOKEN);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('kills a step past its own timeout and says so', async () => {
+        const driver = await startDriver();
+        driver.order(step('slow-1', 'helper', ['node', '-e', 'setTimeout(() => {}, 60000)'], { timeoutMs: 150 }));
+        const supervised = run(driver);
+        await until('the answer', () => driver.answers.has('slow-1'));
+        expect(driver.answers.get('slow-1')).toMatchObject({ timedOut: true });
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers a step id it already ran from its ledger, and never runs it twice', async () => {
+        const driver = await startDriver();
+        const marker = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ran');
+        dirs.push(join(marker, '..'));
+        const append = [
+            'node',
+            '-e',
+            `require("fs").appendFileSync(${JSON.stringify(marker)}, "x"); console.log("once")`,
+        ];
+        driver.order(step('push-1', 'publish', append));
+        const supervised = run(driver);
+        await until('the first answer', () => driver.answers.has('push-1'));
+        // The driver lost the answer and asks again under the same identity.
+        driver.answers.clear();
+        driver.order(step('push-1', 'publish', append));
+        await until('the replayed answer', () => driver.answers.has('push-1'));
+        expect(driver.answers.get('push-1')).toMatchObject({ exitCode: 0, replayed: true });
+        expect(readFileSync(marker, 'utf8')).toBe('x');
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('refuses a publish step once the attempt ended any way but completed', async () => {
+        const driver = await startDriver();
+        driver.autoFinish = false;
+        const supervised = run(driver);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        supervised.agentExits(2);
+        await until('the report', () => driver.reports.length === 1);
+        driver.order(step('late-publish', 'publish', ['node', '-e', 'console.log("pushed")']));
+        await until('the refusal', () => driver.answers.has('late-publish'));
+        expect(driver.answers.get('late-publish')).toMatchObject({ exitCode: 126 });
+        expect(driver.answers.get('late-publish')?.stderr).toMatch(/refusing to publish/);
+        expect(driver.answers.get('late-publish')?.stdout).toBe('');
+        // A read-only step is still served: the machine only refuses what could publish.
+        driver.order(step('late-probe', 'probe', ['node', '-e', 'console.log("read")']));
+        await until('the probe', () => driver.answers.has('late-probe'));
+        expect(driver.answers.get('late-probe')).toMatchObject({ exitCode: 0 });
+        driver.order(ORDER_FINISH);
+        await supervised.done;
+    });
+
+    it('refuses a malformed step without starting anything', async () => {
+        const driver = await startDriver();
+        driver.order({ id: 'bad id!', kind: 'helper', argv: ['node'], env: {}, timeoutMs: 100 });
+        driver.order({ id: 'no-such-kind', kind: 'shell', argv: ['sh'], env: {}, timeoutMs: 100 });
+        const supervised = run(driver);
+        await until('the answer', () => driver.answers.has('no-such-kind'));
+        expect(driver.answers.get('no-such-kind')).toMatchObject({ exitCode: 126, stderr: 'malformed step' });
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('serves an agentless attempt with no agent to wait for: steps, then the order to finish', async () => {
+        const driver = await startDriver({ release: false });
+        driver.autoFinish = false;
+        driver.order(step('probe-1', 'probe', ['node', '-e', 'console.log("ok")']));
+        const supervised = run(driver, { SUPERVISOR_AGENTLESS: '1' });
+        await until('the answer', () => driver.answers.has('probe-1'));
+        expect(supervised.saw(MAILBOX_FILES.go)).toBe(false);
+        driver.order(ORDER_FINISH);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(supervised.report()).toMatchObject({ outcome: 'completed', agentEnd: 'none' });
+    });
+
+    it('does not release an agent for a Stop that landed before `go`', async () => {
+        const driver = await startDriver({ release: false });
+        driver.stop = true;
+        const supervised = run(driver);
+        await until('the stop', () => supervised.saw(MAILBOX_FILES.stop));
+        driver.order(ORDER_GO);
+        await supervised.done;
+        expect(supervised.saw(MAILBOX_FILES.go)).toBe(false);
+        expect(supervised.report()).toMatchObject({ outcome: 'cancelled', agentEnd: 'unlaunched' });
+    });
+
+    it('never launches the agent for a driver that does not answer past the orphan bound', async () => {
+        const driver = await startDriver();
+        const supervised = run({ ...driver, url: 'http://127.0.0.1:1' }, { SUPERVISOR_ORPHAN_MS: '200' });
+        await supervised.done;
+        expect(supervised.saw(MAILBOX_FILES.go)).toBe(false);
+        expect(supervised.report()).toMatchObject({ outcome: 'lost', cause: 'driver_lost', agentEnd: 'unlaunched' });
+    });
+
+    it('finalizes on its own once the agent is over and the driver stops answering past the orphan bound', async () => {
+        const driver = await startDriver();
+        driver.autoFinish = false;
+        const supervised = run(driver, { SUPERVISOR_ORPHAN_MS: '300' });
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        supervised.agentExits(0);
+        await until('the report', () => driver.reports.length === 1);
+        // The driver dies with its attempt: the finished agent's group ends by itself for the next claim to adopt.
+        for (const server of servers) server.closeAllConnections();
+        for (const server of servers.splice(0)) await new Promise((resolve) => server.close(resolve));
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(supervised.report()).toMatchObject({ outcome: 'completed', agentExit: 0 });
     });
 });
 
@@ -392,6 +642,7 @@ describe('what crosses the mailboxes', () => {
     it('speaks the contract the driver and the images spell: the same file names and exit statuses', () => {
         expect(supervisor.FILES).toEqual(MAILBOX_FILES);
         expect(supervisor.EXIT).toEqual(SUPERVISOR_EXIT);
+        expect(supervisor.STEP_KINDS).toEqual([...STEP_KINDS]);
     });
 
     it('gives the agent `in` read-only and `out` read-write, and no other mailbox', () => {

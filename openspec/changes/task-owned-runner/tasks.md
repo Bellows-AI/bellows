@@ -48,11 +48,12 @@ halves in the same change. Unchecked items are not implemented. `→` names hard
   prepare→setup→execute→verify→publish→finalize→report; agent is a child container; Stop,
   questions, deadlines and ad-hoc commands route to the supervisor; agent exit leaves it alive.
   Driver keeps lease, ConfigMap claim fencing and reaper.
-- [ ] 8. (#771) Executor-image steps into the supervisor → 7. Sync, reclaim, tree probe, review snapshot,
+- [x] 8. (#771) Executor-image steps into the supervisor → 7. Sync, reclaim, tree probe, review snapshot,
   publish steps and allowlisted helpers run in the supervisor; publish token only in the
   supervisor container. Publication gets a persisted operation identity and remote reconciliation.
   Deletes sync/reclaim/publish/helper aux Jobs and their `factory-(sync|publish|helper)-…-env`
-  admission names (also retires the nonce helper-secret reaper gap).
+  admission names (also retires the nonce helper-secret reaper gap). A thread with no attempt
+  reclaims in a supervisor-only group (design.md, "supervised steps"); #775 removes the need.
 - [ ] 9. (#772) Gates and setup as predeclared containers → 7. Uses the 0.1 bootstrap; same environment
   for setup and every gate; revision-bound evidence unchanged. Deletes `gateJobSpec` and
   `factory-gate-…-env`.

@@ -5,6 +5,20 @@
 #   docker run ... -e WORKDIR=/workspace/server opencode-executor run '...'
 set -eu
 
+# The task supervisor releases the agent (issue #771). The group exists from the attempt's first
+# step, the sync, and the tree this container works in does not exist until then, so the agent waits
+# for the supervisor's `go` marker in its read-only mailbox. A Stop or a kill order that lands first
+# means the agent is never released: it leaves quietly. An image run by hand has no mailbox and waits
+# for nothing.
+if [ -n "${FACTORY_CTL_GO:-}" ]; then
+    while [ ! -f "$FACTORY_CTL_GO" ]; do
+        if [ -f "${FACTORY_CTL_IN:-/nonexistent}/stop" ] || [ -f "${FACTORY_CTL_IN:-/nonexistent}/kill" ]; then
+            exit 0
+        fi
+        sleep 0.2
+    done
+fi
+
 WORKDIR="${WORKDIR:-/workspace}"
 
 if [ ! -d "$WORKDIR" ]; then

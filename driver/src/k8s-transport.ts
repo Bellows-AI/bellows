@@ -8,6 +8,8 @@ import type { RuntimeSample } from './runner.js';
 import { UUID } from './publish.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, MERGE_PATCH_CONTENT_TYPE } from './http.js';
 import type { BoardLease } from './board.js';
+import type { StepSink, SupervisorEndpoint } from './step-control.js';
+import type { TaskGroup } from './k8s-group.js';
 
 /**
  * The kubernetes executor's shared low-level vocabulary: the wire types (`K8sResponse`,
@@ -228,6 +230,15 @@ export interface K8sDeps {
      * that carries no claim sequence (`takeOverStaleClaim`). Absent, such a claim is stood down on.
      */
     leases?: (ids: readonly string[]) => Promise<BoardLease[] | null>;
+    /**
+     * The supervised-step channel (issue #771) every sync, probe, snapshot, publish and helper runs
+     * through, and the endpoint a supervisor-only group (a terminal reclaim) is served on. Absent,
+     * each such step is refused naming the missing channel — never run some other way.
+     */
+    steps?: StepSink;
+    endpoint?: SupervisorEndpoint;
+    /** The attempt groups this runner created, by lease token (`k8s-group.ts`); created on first use. */
+    groups?: Map<string, TaskGroup>;
 }
 
 /** The ServiceAccount volume every pod gets, holding the token and the cluster CA. */

@@ -162,6 +162,22 @@ the gates run. The in-place resize is a hard requirement of the one-pod phase. I
 and pod-level resources are both beta and on by default in Kubernetes 1.34, the EKS version
 observed in `docs/kubernetes.md`.
 
+## Decision: supervised steps (#771)
+
+Sync, reclaim, tree probe, review snapshot, publish steps and allowlisted helpers are requests the
+driver submits to the attempt's task supervisor, never a Job or container of their own.
+
+| Concern | Decision |
+| --- | --- |
+| Channel | The supervisor pulls (`GET /step?wait=`, a long poll) from the driver's run-control endpoint under its own token and answers (`POST /step/:id`, `POST /report`). The agent token opens neither route. `driver/src/step-control.ts`, `driver/src/control-channel.ts` |
+| Request | `{id, kind, argv, cwd, env, timeoutMs}`; the supervisor runs `argv` as a child process group of its own container (executor image, the task volume mounted read-write at the member subPath) and answers `{exitCode, stdout, stderr, timedOut}`. `driver/src/supervised-steps.ts`, `driver/src/scripts/supervisor.cjs` |
+| Lifetime | The group exists from the attempt's first step (the sync), not from the agent's start. The agent container waits on `in/go`; the `go` order releases it and starts the run budget. After the agent ends and the exporter drains, the supervisor reports and keeps serving steps until the `finish` order, a closed token, or a driver silent past `SUPERVISOR_ORPHAN_MS`. A kill, the budget or a full spool end the group without waiting for `finish` |
+| Identity | A step id is an operation identity. The supervisor keeps a ledger under its own mailbox and answers a succeeded id from it instead of running it again; a failed or killed step is run afresh. The driver asks an unanswered step again under the same id |
+| Credentials | The claim env and the publish-fresh token are the step's own `env`. The supervisor container mounts no Secret of them; the agent container's env never holds a publish token and has no route to the endpoint |
+| Publish | `publishCheckout` records an operation `<branch>@<sha>` in the worktree's `.factory/publication.json` (`pushing` → `pushed` → `opened`) and asks the remote (`git ls-remote`, `gh pr view`) after any failed push or PR creation before repeating it. A clean, pushed tree whose ledger says `pushed` opens the missing PR instead of reporting nothing to publish. `driver/src/publish-reconcile.ts` |
+| Refusals | The supervisor refuses a `publish` step once the attempt ended any way but completed |
+| Reclaim | A thread with no attempt has no group to ask, so its reclaim runs in a supervisor-only group: the one Job a thread without an attempt gets, deleted with the volume by #775 |
+
 ## Decision: artifact store (#762)
 
 Evidence, from `experiments/task-runner/spike-762/` on the POC branch:

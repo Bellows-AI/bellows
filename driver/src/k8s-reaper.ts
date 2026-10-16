@@ -10,15 +10,7 @@ import {
     type K8sRequest,
     type K8sResponse,
 } from './k8s-transport.js';
-import {
-    claimName,
-    configmapsPath,
-    podsPath,
-    publishEnvSecretName,
-    secretsPath,
-    servicesPath,
-    syncEnvSecretName,
-} from './k8s-auxspec.js';
+import { claimName, configmapsPath, podsPath, secretsPath, servicesPath } from './k8s-auxspec.js';
 import { gateEnvSecretName, jobsPath, runnerJobName, secretName } from './k8s-podspec.js';
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict } from './reaper.js';
@@ -31,11 +23,10 @@ import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict } from './reaper
  *
  * RBAC needs nothing new: `list` on jobs, pods and services is the fence's grant, `delete` on all resource
  * kinds is already the chart's Role. `list secrets` stays deliberately ungranted — which is why
- * the attempt-scoped env Secrets are reaped by DERIVED NAME, never enumerated. The runner, sync,
- * gate and publish env Secrets' names all hash the same (job id, lease token) pair the labels
- * carry, so they are derivable; the HELPER env Secret's name carries a caller-minted nonce and is
- * not — it remains the stated residual, holding bytes rather than CPU, memory and disk
- * (docs/kubernetes.md).
+ * the attempt-scoped env Secrets are reaped by DERIVED NAME, never enumerated. The runner and gate
+ * env Secrets' names hash the same (job id, lease token) pair the labels carry, so every one of
+ * them is derivable: the sync, publish and helper steps run in the task supervisor and have no
+ * Secret of their own, which is also why no nonce-named Secret is left for this arm to miss.
  */
 
 /** The two status codes a reaper delete can answer with that mean "already going away". */
@@ -186,9 +177,7 @@ const derivedSecretPaths = (config: DriverConfig, group: OrphanGroup): string[] 
     const namespace = config.k8sNamespace;
     // Every one of these hashes the same (job id, lease token) pair the labels carry — see the
     // file header for why the helper env Secret is the one left out.
-    return [secretName(job), syncEnvSecretName(job), gateEnvSecretName(job), publishEnvSecretName(job)].map(
-        (name) => `${secretsPath(namespace)}/${name}`
-    );
+    return [secretName(job), gateEnvSecretName(job)].map((name) => `${secretsPath(namespace)}/${name}`);
 };
 
 const uuidScoped = (group: OrphanGroup): group is OrphanGroup & { leaseToken: string } =>

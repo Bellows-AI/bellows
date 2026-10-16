@@ -1,22 +1,10 @@
 import type { BoardJob } from './board.js';
-import { claimRestoresTree, envFileBody } from './claim.js';
 import { executorImage } from './config.js';
 import { ARTIFACT_LIMIT, reportTail, tailKept } from './runner.js';
-import {
-    jobPath,
-    jobPodsPath,
-    podLogPath,
-    reclaimJobName,
-    reclaimJobSpec,
-    secretsPath,
-    syncEnvSecretName,
-    syncJobName,
-    syncJobSpec,
-} from './k8s-auxspec.js';
+import { jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
 import { vanishedRunner } from './k8s-kill.js';
-import { envBodyToData, jobsPath, runnerName, secretBody } from './k8s-podspec.js';
+import { runnerName } from './k8s-podspec.js';
 import {
-    answerPreview,
     containerFailure,
     containerStatusOf,
     ERROR_PREVIEW_CHARS,
@@ -31,13 +19,15 @@ import {
     parse,
     POLL_MAX_CONSECUTIVE_FAILURES,
     POLL_MS,
-    postRefusal,
     refusal,
 } from './k8s-transport.js';
 import type { K8sDeps, K8sJobStatus, K8sPod, K8sPodList, K8sResponse } from './k8s-transport.js';
-import { AGENT_CONTAINER, SUPERVISOR_CONTAINER, SUPERVISOR_EXIT } from './supervisor-contract.js';
-import { parseLastJsonLine, reclaimUnreadable, syncUnreadable } from './publish.js';
-import type { ReclaimResult, SyncResult } from './publish.js';
+import {
+    AGENT_CONTAINER,
+    SUPERVISOR_CONTAINER,
+    SUPERVISOR_EXIT,
+    type SupervisorReport,
+} from './supervisor-contract.js';
 
 /**
  * The kubernetes executor's job-status polling: reading one Job to a terminal state (bounded by
@@ -335,37 +325,6 @@ export async function auxVerdict(
 }
 
 /**
- * A block-helper aux Job's verdict (issue #207) — `auxVerdict`'s shape, plus whether the
- * kubelet's own `activeDeadlineSeconds` is what ended it, the same `DeadlineExceeded` condition
- * check `pollRunnerJobUntilTerminal` makes for the runner Job. A helper that outlives its bound is
- * reported as a named `timeout` failure by its caller, never an ordinary exit. An aborted `signal`
- * ends the poll by throwing, like `auxVerdict`.
- */
-export async function helperVerdict(
-    deps: K8sDeps,
-    jobName: string,
-    signal?: AbortSignal
-): Promise<{ exitCode: number | null; output: string; timedOut: boolean }> {
-    if (signal?.aborted) throw new Error(`the helper job ${jobName} was cancelled`);
-    const result = await readJobStatus(deps, jobName, `reading the helper job ${jobName}`);
-    if (result.kind === 'notFound') {
-        throw new Error(`the helper job ${jobName} no longer exists`);
-    }
-    if (result.kind === 'error') throw new Error(refusal(result, 'reading the helper job')!);
-    if (result.kind === 'pending') {
-        await deps.sleep(POLL_MS);
-        return helperVerdict(deps, jobName, signal);
-    }
-    const verdict = await readJobPodVerdict(
-        deps,
-        jobName,
-        { succeeded: result.outcome === 'succeeded' },
-        `listing the pods of ${jobName}`
-    );
-    return { ...verdict, timedOut: timedOutOf(result.status) };
-}
-
-/**
  * The mid-run live output tail, best effort: discovers the runner's pod once and remembers it,
  * then reads its log tail on every poll that has one — every failure here (not scheduled yet, a
  * 503, a dropped connection) costs freshness, never the run.
@@ -413,9 +372,15 @@ async function tailRunnerOutput(
 export async function pollRunnerJobUntilTerminal(
     deps: K8sDeps,
     job: BoardJob,
-    onOutput: ((tail: string) => void) | undefined,
-    podName: string | null = null
+    watch: {
+        onOutput?: ((tail: string) => void) | undefined;
+        /** True once the task supervisor reported the agent over and its exporter drained: the group outlives it. */
+        over?: (() => boolean) | undefined;
+        podName?: string | null;
+    } = {}
 ): Promise<{ timedOut: boolean; jobSucceeded: boolean }> {
+    const { onOutput, over } = watch;
+    const podName = watch.podName ?? null;
     const image = executorImage(deps.config, job.executorType);
     const seen = { container: false };
     const poll = async (pod: string | null): Promise<{ timedOut: boolean; jobSucceeded: boolean }> => {
@@ -429,6 +394,9 @@ export async function pollRunnerJobUntilTerminal(
         if (result.kind === 'terminal') {
             return { timedOut: timedOutOf(result.status), jobSucceeded: result.outcome === 'succeeded' };
         }
+        // The task group outlives the agent: its supervisor's report — the agent is over and the
+        // exporter drained — is the end of the run, with the Job still serving the attempt's steps.
+        if (over?.()) return { timedOut: false, jobSucceeded: false };
         if (!seen.container) {
             const failure = await executorImageWatch(deps, runnerName(job), image, seen);
             if (failure) throw new Error(failure);
@@ -449,7 +417,8 @@ export async function pollRunnerJobUntilTerminal(
 export async function readRunnerVerdict(
     deps: K8sDeps,
     job: BoardJob,
-    jobSucceeded: boolean
+    jobSucceeded: boolean,
+    report: SupervisorReport | null = null
 ): Promise<{
     exitCode: number | null;
     output: string;
@@ -473,14 +442,18 @@ export async function readRunnerVerdict(
     const supervisorExit = containerStatusOf(livePodOfItems(verdict.pods), SUPERVISOR_CONTAINER)?.state?.terminated
         ?.exitCode;
     return {
-        exitCode: verdict.exitCode,
+        // The supervisor's report carries the agent's own exit when the kubelet's status has not caught up
+        // with a pod that is still running its supervisor (the group outlives the agent).
+        exitCode: verdict.exitCode ?? report?.agentExit ?? null,
         output: reportTail(verdict.output),
         fullLog: full.content,
         logTruncated: full.truncated,
         infraLoss: jobSucceeded
             ? null
             : (runnerLossOf(verdict.pods) ?? supervisorLossOf(livePodOfItems(verdict.pods), supervisorExit)),
-        supervisorDeadline: supervisorExit === SUPERVISOR_EXIT.deadline,
+        // The budget ended the agent: the supervisor's report says so while it still serves, and its
+        // exit 124 says so once the group is over.
+        supervisorDeadline: supervisorExit === SUPERVISOR_EXIT.deadline || report?.outcome === 'timed_out',
     };
 }
 
@@ -496,162 +469,4 @@ export function supervisorLossOf(pod: K8sPod | undefined, supervisorExit: number
         return null;
     const detail = containerFailure(pod, SUPERVISOR_CONTAINER) ?? `exit ${supervisorExit}`;
     return `the task supervisor ended before it finalized the run (${detail})`;
-}
-
-/**
- * The verdict is the pod log — one JSON line, the same answer the docker sync/reclaim containers
- * print. A pod gone before its log could be read is a failed run: running on a tree of unknown
- * state would compound whatever went wrong. Empty for anything unreadable. `failure` is the
- * container's own status when it ended badly — a container that never started (an image with no
- * `node`) has no log at all, and its status is the only place the cause survives.
- *
- * `why` is issue #344's answer to the bare unreadable verdict: WHEN the log is empty, it names the
- * exact cause — no live pod (with the count), a refused or throwing read, or a container that
- * really printed nothing — so the caller can fold it into the failure reason it reports. By the
- * time anyone reads a failed sync, the Job has been reaped by its TTL and its pod events have
- * expired; this string is the only place the cause survives. Null whenever the log was read.
- */
-async function readJobLog(
-    deps: K8sDeps,
-    jobName: string
-): Promise<{ log: string; failure: string | null; why: string | null }> {
-    let failure: string | null = null;
-    let pods: K8sResponse;
-    try {
-        pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, jobName));
-    } catch (e) {
-        return {
-            log: '',
-            failure: null,
-            why: `the pod list of ${jobName} could not be read: ${(e as Error).message}`,
-        };
-    }
-    if (pods.status >= HTTP_ERROR_STATUS) {
-        return { log: '', failure: null, why: `the pod list of ${jobName} ${answerPreview(pods.status, pods.body)}` };
-    }
-    const items = parse<K8sPodList>(pods.body).items ?? [];
-    const pod = livePodOfItems(items);
-    failure = containerFailure(pod);
-    if (!pod) {
-        const why =
-            items.length === 0
-                ? `no live pod for ${jobName} (none listed)`
-                : `no live pod for ${jobName} (${items.length} listed, all terminating)`;
-        return { log: '', failure, why };
-    }
-    const name = pod.metadata?.name;
-    if (!name) {
-        return { log: '', failure, why: `the live pod of ${jobName} has no name` };
-    }
-    let log: K8sResponse;
-    try {
-        log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, name, null));
-    } catch (e) {
-        return { log: '', failure, why: `the log of ${name} could not be read: ${(e as Error).message}` };
-    }
-    if (log.status >= HTTP_ERROR_STATUS) {
-        return { log: '', failure, why: `the log of ${name} ${answerPreview(log.status, log.body)}` };
-    }
-    if (log.body.trim() === '') {
-        return {
-            log: '',
-            failure,
-            why: `the container printed nothing (pod ${name}, phase ${pod.status?.phase ?? 'unknown'})`,
-        };
-    }
-    return { log: log.body, failure, why: null };
-}
-
-/**
- * The unreadable-verdict detail the sync/reclaim callers fold into their reason: WHY the verdict
- * line could not be read — `readJobLog`'s empty-log cause when it has one, else the last log line
- * itself, preview-bounded like every other error preview (issue #344).
- */
-function unreadableDetail(log: string, why: string | null): string {
-    if (why) return why;
-    const line = log.trim().split('\n').filter(Boolean).pop() ?? '';
-    return `last log line ${JSON.stringify(line.slice(0, ERROR_PREVIEW_CHARS))}`;
-}
-
-/**
- * The sync Job itself: the fetch credential (by reference, same discipline as every other Secret
- * this driver mints), the Job, its poll, and its verdict line. The secret name is written into
- * `secretRef` the instant it is created — BEFORE the Job POST that can itself throw — so the
- * caller's `finally` can reap it whether this function returns or throws; a return value alone
- * would lose the name on a thrown transport failure between the two POSTs. A claim that continues
- * a session creates none at all: its restore fetches nothing, so there is no credential to hold.
- */
-export async function runSyncJob(
-    deps: K8sDeps,
-    job: BoardJob,
-    secretRef: { current: string | null }
-): Promise<SyncResult> {
-    const restore = claimRestoresTree(job);
-    const env = restore ? {} : envBodyToData(envFileBody(job));
-    if (Object.keys(env).length) {
-        const response = await deps.request(
-            'POST',
-            secretsPath(deps.config.k8sNamespace),
-            secretBody(job, syncEnvSecretName(job), env)
-        );
-        const refused = postRefusal(response, 'creating the sync secret');
-        if (refused) return { ok: false, reason: refused };
-        secretRef.current = syncEnvSecretName(job);
-    }
-    const create = await deps.request(
-        'POST',
-        jobsPath(deps.config.k8sNamespace),
-        syncJobSpec(deps.config, job, secretRef.current)
-    );
-    const refusedCreate = postRefusal(create, 'creating the worktree sync job');
-    if (refusedCreate) return { ok: false, reason: refusedCreate };
-    const jobName = syncJobName(job);
-    const pollFailure = await pollJobToTerminal(
-        deps,
-        jobName,
-        {
-            what: 'reading the worktree sync job',
-            notFound: (n) => `the worktree sync job ${n} no longer exists`,
-            errorStatus: (s, b) => `reading the worktree sync job ${answerPreview(s, b)}`,
-            failed: null,
-        },
-        executorImage(deps.config, job.executorType)
-    );
-    if (pollFailure) return { ok: false, reason: pollFailure };
-    const { log, failure, why } = await readJobLog(deps, jobName);
-    return parseLastJsonLine<SyncResult>(log, () =>
-        failure
-            ? { ok: false, reason: `the worktree sync container failed: ${failure}` }
-            : { ok: false, reason: `${syncUnreadable.reason}: ${unreadableDetail(log, why)}` }
-    );
-}
-
-/**
- * The reclaim Job itself: create, poll to terminal, read the verdict line. No Secret, no env:
- * removing needs nothing the claim held. Pulled out of `reclaimWorktree` purely to keep that
- * method's complexity readable — the same duplication `runSyncJob` closes for the sync.
- */
-export async function runReclaimJob(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult> {
-    const create = await deps.request('POST', jobsPath(deps.config.k8sNamespace), reclaimJobSpec(deps.config, job));
-    const refused = postRefusal(create, 'creating the worktree reclaim job');
-    if (refused) return { ok: false, removed: false, reason: refused };
-    const jobName = reclaimJobName(job);
-    const pollFailure = await pollJobToTerminal(
-        deps,
-        jobName,
-        {
-            what: 'reading the worktree reclaim job',
-            notFound: (n) => `the worktree reclaim job ${n} no longer exists`,
-            errorStatus: (s, b) => `reading the worktree reclaim job ${answerPreview(s, b)}`,
-            failed: null,
-        },
-        executorImage(deps.config, job.executorType)
-    );
-    if (pollFailure) return { ok: false, removed: false, reason: pollFailure };
-    const { log, failure, why } = await readJobLog(deps, jobName);
-    return parseLastJsonLine<ReclaimResult>(log, () =>
-        failure
-            ? { ok: false, removed: false, reason: `the worktree reclaim container failed: ${failure}` }
-            : { ok: false, removed: false, reason: `${reclaimUnreadable.reason}: ${unreadableDetail(log, why)}` }
-    );
 }
