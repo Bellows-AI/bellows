@@ -1216,8 +1216,8 @@ describe('the worktree sync', () => {
         steps.submitted.find((s) => s.kind === 'sync')!;
     const syncing = (stdout: string) => fakeSteps((step) => (step.kind === 'sync' ? stepOk(stdout) : stepOk()));
     const SESSION_OF = { id: SESSION, resume: false };
-    const sync = (j: BoardJob, steps = fakeSteps(), request = fakeRequest().request) =>
-        runner(request, {}, undefined, steps.sink).syncCheckout(j, undefined, SESSION_OF);
+    const sync = (j: BoardJob, steps = fakeSteps(), request = fakeRequest().request, githubToken?: string) =>
+        runner(request, {}, undefined, steps.sink).syncCheckout(j, undefined, SESSION_OF, githubToken);
     const deletedGroup = (calls: Call[], j: BoardJob, propagation: string) =>
         calls.findIndex(
             (call) =>
@@ -1251,25 +1251,26 @@ describe('the worktree sync', () => {
     });
 
     // The sync's fetch needs a credential helper to read the token git never reads from the
-    // environment — but only when there IS a token: a public repo must keep its plain
-    // unauthenticated fetch. What travels as the literal is helper CODE, never the credential
-    // value — the token is the step's claim env alone.
-    it('passes the sync the credential-helper code only when the claim env carries GITHUB_TOKEN', async () => {
+    // environment — but only beside the token the board minted for it (docs/connections.md): a
+    // public repo must keep its plain unauthenticated fetch. What travels as the literal is helper
+    // CODE, never the credential value — the token is the step's env alone.
+    it("passes the sync the credential-helper code only beside the board's minted token", async () => {
         const withToken = fakeSteps();
-        await sync({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } }, withToken);
+        await sync(repoJob, withToken, undefined, 'ghs_minted');
         expect(syncOf(withToken).env.CRED_HELPER).toBe(CREDENTIAL_HELPER);
-        expect(syncOf(withToken).env.GITHUB_TOKEN).toBe('t0k-3n');
-        expect(syncOf(withToken).env.CRED_HELPER).not.toContain('t0k-3n');
+        expect(syncOf(withToken).env.GITHUB_TOKEN).toBe('ghs_minted');
+        expect(syncOf(withToken).env.CRED_HELPER).not.toContain('ghs_minted');
 
+        // A claim value under the reserved name is no token: dropped, never forwarded, no helper.
         const noToken = fakeSteps();
-        await sync({ ...repoJob, env: { CORE_TOKEN: 'shh' } }, noToken);
+        await sync({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n', CORE_TOKEN: 'shh' } }, noToken);
         expect(syncOf(noToken).env).not.toHaveProperty('CRED_HELPER');
+        expect(JSON.stringify(syncOf(noToken))).not.toContain('t0k-3n');
 
-        // A PRESENT-BUT-EMPTY token is no token: the helper would answer an empty password and
-        // break the public-repo plain fetch it exists to preserve. Property presence is not the
-        // test; the VALUE is.
+        // An EMPTY token is no token: the helper would answer an empty password and break the
+        // public-repo plain fetch it exists to preserve.
         const emptyToken = fakeSteps();
-        await sync({ ...repoJob, env: { GITHUB_TOKEN: '' } }, emptyToken);
+        await sync(repoJob, emptyToken, undefined, '');
         expect(syncOf(emptyToken).env).not.toHaveProperty('CRED_HELPER');
     });
 
@@ -1279,20 +1280,20 @@ describe('the worktree sync', () => {
     // token, and no claim env at all.
     it('carries RESTORE for a claim that continues a session, with no helper and no claim env', async () => {
         const followUp = fakeSteps();
-        await sync({ ...repoJob, followUp: true, env: { GITHUB_TOKEN: 't0k-3n' } }, followUp);
+        await sync({ ...repoJob, followUp: true }, followUp, undefined, 't0k-3n');
         expect(syncOf(followUp).env.RESTORE).toBe('1');
         expect(syncOf(followUp).env).not.toHaveProperty('CRED_HELPER');
         expect(JSON.stringify(syncOf(followUp))).not.toContain('t0k-3n');
 
         // A parked job resumed (resumeSessionId without followUp) is the same mid-task hazard.
         const parked = fakeSteps();
-        await sync({ ...repoJob, resumeSessionId: SESSION, env: { GITHUB_TOKEN: 't0k-3n' } }, parked);
+        await sync({ ...repoJob, resumeSessionId: SESSION }, parked, undefined, 't0k-3n');
         expect(syncOf(parked).env.RESTORE).toBe('1');
         expect(JSON.stringify(syncOf(parked))).not.toContain('t0k-3n');
 
         // A starting claim — even with a token — carries no RESTORE.
         const fresh = fakeSteps();
-        await sync({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } }, fresh);
+        await sync(repoJob, fresh, undefined, 't0k-3n');
         expect(syncOf(fresh).env).not.toHaveProperty('RESTORE');
     });
 
@@ -2153,13 +2154,13 @@ describe('publishing the produced work', () => {
         expect(JSON.stringify(commands)).not.toContain('t0k-3n');
     });
 
-    it('hands the claim env to the steps that read it, and to no other', async () => {
+    it('hands the claim env and the minted token to the steps that read them, and to no other', async () => {
         const steps = scripted();
-        await publishing(steps).publishGit!(ISSUE_JOB);
+        await publishing(steps).publishGit!(ISSUE_JOB, 'ghs_minted');
 
         const sent = publishStepsOf(steps);
         const push = sent.find((step) => step.argv.includes('push'))!;
-        expect(push.env.GITHUB_TOKEN).toBe('t0k-3n');
+        expect(push.env.GITHUB_TOKEN).toBe('ghs_minted');
         const add = sent.find((step) => step.argv.includes('add'))!;
         expect(add.env).not.toHaveProperty('GITHUB_TOKEN');
         expect(add.cwd).toBe(WT);
@@ -2169,12 +2170,10 @@ describe('publishing the produced work', () => {
         expect(probe.env).toEqual({ REPO: WT });
     });
 
-    // The claim's GITHUB_TOKEN was minted at claim time and a long run can outlive its hour — a
-    // publish pushed with a token past expiry fails on 401 with the work done. The loop asks the
-    // board for a fresh one; the step must carry THAT credential, and the claim's must be gone from
-    // it. The override lives in withPublishToken, and this is the check it did not drift. Neither
-    // token reaches an object the cluster stores for the step.
-    it("publishes with the board's fresh credential in the step env, not the claim's hour-old token", async () => {
+    // The loop asks the board for a token right before the push (docs/connections.md); the step
+    // must carry THAT credential, and a claim value under the reserved name never. Neither reaches
+    // an object the cluster stores for the step.
+    it("publishes with the board's minted token in the step env, never a claim value", async () => {
         const steps = scripted();
         const { request, calls } = fakeRequest();
         await publishing(steps, request).publishGit!(ISSUE_JOB, 'ghs_fresh');

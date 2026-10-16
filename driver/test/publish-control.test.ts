@@ -185,7 +185,7 @@ describe('the publish relay: what an attempt may publish', () => {
         const rt = {
             runner,
             board: {
-                publishToken: async () => {
+                githubCredential: async () => {
                     calls.asks += 1;
                     onAsk();
                     return 'token' in over ? over.token : 'ghs_fresh';
@@ -196,14 +196,14 @@ describe('the publish relay: what an attempt may publish', () => {
         return { relay: createPublishRelay(rt, { ...JOB, ...over.job }, state), state, calls };
     };
 
-    it('publishes a draft with the fresh credential and remembers what landed', async () => {
+    it("publishes a draft with the board's minted token and remembers what landed", async () => {
         const { relay, state, calls } = relayFor();
         await expect(relay.publish()).resolves.toEqual(LANDED);
         expect(calls.published).toEqual([{ token: 'ghs_fresh', options: { draft: true } }]);
         expect(state.draftPublication).toEqual(LANDED);
     });
 
-    it('falls back to the claim env when the board has no fresh credential', async () => {
+    it('publishes without a token when the board issues none', async () => {
         const { relay, calls } = relayFor({ token: null });
         await relay.publish();
         expect(calls.published[0]?.token).toBeUndefined();

@@ -29,8 +29,8 @@
 //                 on its own branch AT this ref — still with no fetch and no rebase, because
 //                 nothing a reviewer needs is on the remote.
 //   CRED_HELPER — optional, STARTING claims only: the git credential-helper program the fetch
-//                 runs (`-c credential.helper=`), set only when the claim env carries a
-//                 NON-EMPTY GITHUB_TOKEN. The token itself still arrives only via the
+//                 runs (`-c credential.helper=`), set only beside the GITHUB_TOKEN the board
+//                 minted for this sync (docs/connections.md). The token itself arrives only via the
 //                 environment, which git hands the helper it spawns; git reads no token from
 //                 the environment itself, so a private-repo fetch without a helper cannot
 //                 authenticate. Absent: the fetch runs plain, which is what a public repo

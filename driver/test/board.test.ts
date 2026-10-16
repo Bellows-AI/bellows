@@ -248,35 +248,37 @@ describe('the claimed job', () => {
     });
 });
 
-describe('asking for a publish-fresh credential', () => {
+describe('asking for the attempt’s GitHub token (docs/connections.md)', () => {
     const job = boardJob();
 
-    it('asks the board with the lease token and carries the credential', async () => {
-        const { calls, fetch } = recorder(() => Response.json({ GITHUB_TOKEN: 'ghs_fresh' }, { status: 200 }));
+    it('asks the credential endpoint with the attempt pair, never the board secret', async () => {
+        const { calls, fetch } = recorder(() =>
+            Response.json({ token: 'ghs_fresh', expiresAt: '2026-10-16T13:00:00.000Z' }, { status: 200 })
+        );
         const board = boardOn(fetch, 'fwt_abc');
 
-        const token = await board.publishToken(job);
+        const token = await board.githubCredential(job);
 
-        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/publish-token');
-        expect(calls[0]!.body).toEqual({ leaseToken: 'token-1' });
-        expect(calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/credentials/github');
+        expect(calls[0]!.headers).toEqual({ 'x-factory-job-id': 'job-1', 'x-factory-job-lease-token': 'token-1' });
+        expect(calls[0]!.headers.authorization).toBeUndefined();
         expect(token).toBe('ghs_fresh');
     });
 
-    it('answers null — keep the claim env — when the board holds nothing fresher, refuses, or fails', async () => {
-        const nothing = recorder(() => Response.json({ GITHUB_TOKEN: null }, { status: 200 }));
-        expect(await boardOn(nothing.fetch).publishToken(job)).toBeNull();
+    it('answers null when the board has no App, refuses the attempt, or fails', async () => {
+        const noApp = recorder(() => Response.json({ code: 'GITHUB_UNAVAILABLE' }, { status: 409 }));
+        expect(await boardOn(noApp.fetch).githubCredential(job)).toBeNull();
 
-        const lost = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
-        expect(await boardOn(lost.fetch).publishToken(job)).toBeNull();
+        const refused = recorder(() => Response.json({ code: 'CONNECTION_NOT_AUTHORIZED' }, { status: 403 }));
+        expect(await boardOn(refused.fetch).githubCredential(job)).toBeNull();
 
-        const dead = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
-        expect(await boardOn(dead.fetch).publishToken(job)).toBeNull();
+        const empty = recorder(() => Response.json({ token: '' }, { status: 200 }));
+        expect(await boardOn(empty.fetch).githubCredential(job)).toBeNull();
 
         const broken = recorder(() => {
             throw new Error('board unreachable');
         });
-        expect(await boardOn(broken.fetch).publishToken(job)).toBeNull();
+        expect(await boardOn(broken.fetch).githubCredential(job)).toBeNull();
     });
 });
 

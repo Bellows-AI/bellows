@@ -11,7 +11,7 @@ import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js'
  * group's creation touches. For the suites that pin what the startup sync CARRIES on both
  * executors — its env, never its argv — and need no more of the cluster than that.
  */
-export async function k8sSyncStep(job: BoardJob): Promise<StepRequest> {
+export async function k8sSyncStep(job: BoardJob, githubToken?: string): Promise<StepRequest> {
     const claims = new Map<string, unknown>();
     const json = (body: unknown, status = 200): K8sResponse => ({ status, body: JSON.stringify(body) });
     const request: K8sRequest = async (method: K8sMethod, path: string, body?: unknown) => {
@@ -51,7 +51,12 @@ export async function k8sSyncStep(job: BoardJob): Promise<StepRequest> {
         async () => undefined,
         { steps: sink }
     );
-    await runner.syncCheckout(supervised, undefined, { id: '33333333-3333-4333-8333-333333333333', resume: false });
+    await runner.syncCheckout(
+        supervised,
+        undefined,
+        { id: '33333333-3333-4333-8333-333333333333', resume: false },
+        githubToken
+    );
     const sync = steps.find((step) => step.kind === 'sync');
     if (!sync) throw new Error('the kubernetes runner submitted no sync step');
     return sync;

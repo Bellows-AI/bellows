@@ -3743,45 +3743,46 @@ describe('publishing the produced work', () => {
         expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
     });
 
-    // git reads no token from the environment, and the executor images ship no credential
-    // helper — so a private-repo fetch needs the same token-backed helper the push uses. It
-    // rides CONDITIONALLY: only when the claim env actually carries GITHUB_TOKEN, because a
-    // public repo must keep its plain unauthenticated fetch (a helper answering an empty
-    // password would break it). The VALUE passed is helper CODE, never the credential — the
-    // token itself travels only in the step env, where the helper reads it.
-    it('hands the sync the credential-helper code only when the claim env carries GITHUB_TOKEN', async () => {
+    // git reads no token from the environment, so a private-repo fetch needs the same token-backed
+    // helper the push uses. It rides CONDITIONALLY: only beside the token the board minted for this
+    // sync (docs/connections.md), because a public repo must keep its plain unauthenticated fetch
+    // (a helper answering an empty password would break it). The VALUE passed is helper CODE,
+    // never the credential — the token itself travels only in the step env, where the helper reads it.
+    it("hands the sync the credential-helper code only beside the board's minted token", async () => {
         const supervised = syncSteps();
         const d = labelDaemon();
         const runner = dockerRunner(d.exec, { steps: supervised.sink });
 
-        await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } });
+        await runner.syncCheckout(repoJob, undefined, null, 't0k-3n');
         const [withToken] = supervised.ofKind('sync');
         expect(withToken?.env).toMatchObject({ CRED_HELPER: CREDENTIAL_HELPER, GITHUB_TOKEN: 't0k-3n' });
         // The token itself rides the step, never argv — the step's or the daemon's.
         expect(withToken?.argv.some((arg) => arg.includes('t0k-3n'))).toBe(false);
         expect(d.calls.flat().some((arg) => arg.includes('t0k-3n'))).toBe(false);
 
-        // Any other claim env — even a non-empty one — keeps the plain fetch, no helper.
-        await runner.syncCheckout({ ...repoJob, env: { CORE_TOKEN: 'shh' } });
-        expect(supervised.ofKind('sync')[1]?.env).not.toHaveProperty('CRED_HELPER');
+        // No minted token keeps the plain fetch — and a claim value under the reserved name is no
+        // token: it is dropped, never forwarded.
+        await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: 'claim-pat', CORE_TOKEN: 'shh' } });
+        const plain = supervised.ofKind('sync')[1];
+        expect(plain?.env).not.toHaveProperty('CRED_HELPER');
+        expect(plain?.env).not.toHaveProperty('GITHUB_TOKEN');
+        expect(plain?.env).toMatchObject({ CORE_TOKEN: 'shh' });
 
-        // A PRESENT-BUT-EMPTY token is no token: the helper would answer an empty password and
-        // break the public-repo plain fetch it exists to preserve — and a private repo with an
-        // empty token fails auth either way. Property presence is not the test; the VALUE is.
-        await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: '' } });
+        // An EMPTY token is no token: the helper would answer an empty password and break the
+        // public-repo plain fetch it exists to preserve.
+        await runner.syncCheckout(repoJob, undefined, null, '');
         expect(supervised.ofKind('sync')[2]?.env).not.toHaveProperty('CRED_HELPER');
     });
 
     // A claim that CONTINUES a session — a follow-up — is mid-task, and git operations that touch
     // the remote belong to the task's beginning and end (issue #58). Its sync is a RESTORE: the
     // step runs with RESTORE=1 and carries NO claim env at all (restore talks only to the local
-    // clone — nothing to credential), and the fetch's helper code is absent even when the claim
-    // carries a token.
+    // clone — nothing to credential), and the fetch's helper code is absent even beside a token.
     it('restores a claim that continues a session instead of syncing it', async () => {
         const supervised = syncSteps();
         const runner = dockerRunner(emptyDaemon, { steps: supervised.sink });
 
-        await runner.syncCheckout({ ...repoJob, followUp: true, env: { GITHUB_TOKEN: 't0k-3n' } });
+        await runner.syncCheckout({ ...repoJob, followUp: true }, undefined, null, 't0k-3n');
         const [follow] = supervised.ofKind('sync');
         expect(follow?.env).toMatchObject({ RESTORE: '1' });
         expect(follow?.env).not.toHaveProperty('GITHUB_TOKEN');
@@ -3789,13 +3790,13 @@ describe('publishing the produced work', () => {
 
         // A claim carrying a resume session (resumeSessionId without the followUp flag) is the
         // same mid-task hazard: the session's tree must not move under it either.
-        await runner.syncCheckout({ ...repoJob, resumeSessionId: SESSION, env: { GITHUB_TOKEN: 't0k-3n' } });
+        await runner.syncCheckout({ ...repoJob, resumeSessionId: SESSION }, undefined, null, 't0k-3n');
         const parked = supervised.ofKind('sync')[1];
         expect(parked?.env).toMatchObject({ RESTORE: '1' });
         expect(parked?.env).not.toHaveProperty('GITHUB_TOKEN');
 
-        // A starting claim — even with a token — keeps the sync shape: no RESTORE, claim env on.
-        await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } });
+        // A starting claim beside a token keeps the sync shape: no RESTORE, the token on.
+        await runner.syncCheckout(repoJob, undefined, null, 't0k-3n');
         const fresh = supervised.ofKind('sync')[2];
         expect(fresh?.env).not.toHaveProperty('RESTORE');
         expect(fresh?.env).toMatchObject({ GITHUB_TOKEN: 't0k-3n' });
@@ -4125,11 +4126,9 @@ describe('publishing the produced work', () => {
         );
     });
 
-    // The claim's GITHUB_TOKEN was minted at claim time and a long run can outlive its hour — a
-    // publish pushed with a token well past expiry and failed on 401 with the work done. The loop
-    // asks the board for a fresh one; the env the steps ride must carry THAT credential, and the
-    // claim's must be gone from it.
-    it("publishes with the board's fresh credential, not the claim's hour-old token", async () => {
+    // The loop asks the board for a token right before the push (docs/connections.md); the env the
+    // steps ride must carry THAT credential, and a claim value under the reserved name never.
+    it("publishes with the board's minted token, never a claim value", async () => {
         const { steps, docker, runner } = publishRunner(DIRTY_ON_MAIN);
         const result = await runner.publishGit!(ISSUE_JOB, 'ghs_fresh');
 
@@ -4347,7 +4346,7 @@ describe('publishing the produced work', () => {
         const { steps, docker, runner } = publishRunner(DIRTY_ON_MAIN, {
             fail: (a) => a.includes('switch') && !a.includes('-c'),
         });
-        const result = await runner.publishGit!(ISSUE_JOB);
+        const result = await runner.publishGit!(ISSUE_JOB, 'ghs_minted');
 
         expect(result).toEqual({
             ok: true,
@@ -4384,9 +4383,10 @@ describe('publishing the produced work', () => {
         // nowhere in what the daemon was asked.
         const pushStep = steps.steps().find((step) => step.argv.includes('push'))!;
         expect(pushStep.argv).toContain('--force-with-lease');
-        expect(pushStep.env).toMatchObject({ GITHUB_TOKEN: 't0k-3n' });
-        expect(calls.flat().join(' ')).not.toContain('t0k-3n');
-        expect(docker.flat().join(' ')).not.toContain('t0k-3n');
+        expect(pushStep.env).toMatchObject({ GITHUB_TOKEN: 'ghs_minted' });
+        expect(JSON.stringify(steps.steps())).not.toContain('t0k-3n');
+        expect(calls.flat().join(' ')).not.toContain('ghs_minted');
+        expect(docker.flat().join(' ')).not.toContain('ghs_minted');
         // A step's literal envs ride as env, and a step that needs no credential carries none.
         const summary = steps.steps().find((step) => step.argv.some((x) => x.includes('shortstat')))!;
         expect(summary.env).toEqual({
@@ -4525,7 +4525,7 @@ describe('the block-helper transport (issue #207)', () => {
 
         expect(result).toEqual({ ok: true, output: { echoed: true } });
         const [step] = supervised.ofKind('helper');
-        // The fresh token overlays the claim env (withPublishToken), never the claim's own token.
+        // The minted token is the step's GitHub credential; a claim value under the name never is.
         expect(step?.env).toMatchObject({ GITHUB_TOKEN: 'fresh-install-token' });
         expect(JSON.stringify(step)).not.toContain('claim-token');
     });

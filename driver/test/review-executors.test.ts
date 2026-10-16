@@ -40,14 +40,16 @@ const base: BoardJob = {
     userId: USER,
     workspacePath: `bellows/${USER}`,
     repo: 'Bellows-AI/factory',
-    // A reviewer's claim carries no GITHUB_TOKEN, so no fetch credential ever exists for its sync.
+    // A reviewer's claim carries no GitHub credential, and its restore takes none (docs/connections.md).
     env: { JIRA_TOKEN: 'jira' },
 };
 const reviewer: BoardJob = { ...base, reviewRun: { profile: 'security', ref: REF, timeoutMinutes: 5 } };
-const ordinary: BoardJob = { ...base, env: { GITHUB_TOKEN: 'ghp_x' } };
+const ordinary: BoardJob = { ...base };
+/** A token the board minted for a sync; a restore ignores one even when handed it. */
+const MINTED = 'ghs_minted';
 
 /** The sync step the docker runner submits to the attempt's supervisor for `job`: its env, never its argv. */
-const dockerSync = async (job: BoardJob): Promise<Record<string, string>> => {
+const dockerSync = async (job: BoardJob, githubToken?: string): Promise<Record<string, string>> => {
     const steps: StepRequest[] = [];
     const sink: StepSink = {
         submit: async (_token, step) => {
@@ -62,15 +64,21 @@ const dockerSync = async (job: BoardJob): Promise<Record<string, string>> => {
         supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: 'tok' },
     };
     const exec = async () => ({ stdout: '' });
-    await createDockerRunner(loadDriverConfig({}), undefined, exec, { steps: sink }).syncCheckout(supervised);
+    await createDockerRunner(loadDriverConfig({}), undefined, exec, { steps: sink }).syncCheckout(
+        supervised,
+        undefined,
+        null,
+        githubToken
+    );
     return steps[0]!.env;
 };
 /** The sync step the kubernetes runner submits to the attempt's supervisor for `job`: its env, never its argv. */
-const k8sSyncEnv = async (job: BoardJob): Promise<Record<string, string>> => (await k8sSyncStep(job)).env;
+const k8sSyncEnv = async (job: BoardJob, githubToken?: string): Promise<Record<string, string>> =>
+    (await k8sSyncStep(job, githubToken)).env;
 
 describe('the startup sync of a reviewer’s claim', () => {
     it('on docker: restore mode and the snapshot ref, as literals, with no credential helper', async () => {
-        const env = await dockerSync(reviewer);
+        const env = await dockerSync(reviewer, MINTED);
         expect(env).toMatchObject({ RESTORE: '1', REVIEW_REF: REF });
         expect(env).not.toHaveProperty('CRED_HELPER');
         // A restore carries no claim env at all: nothing of the claim reaches the sync.
@@ -78,7 +86,7 @@ describe('the startup sync of a reviewer’s claim', () => {
     });
 
     it('on kubernetes: the same two literals and no credential helper', async () => {
-        const env = await k8sSyncEnv(reviewer);
+        const env = await k8sSyncEnv(reviewer, MINTED);
         expect(env).toMatchObject({ RESTORE: '1', REVIEW_REF: REF });
         expect(env).not.toHaveProperty('CRED_HELPER');
         // A restore carries no claim env at all: nothing of the claim reaches the sync.
@@ -86,11 +94,11 @@ describe('the startup sync of a reviewer’s claim', () => {
     });
 
     it('is unchanged for an ordinary first claim: no restore, no snapshot ref, a helper when it holds a token', async () => {
-        const dockerEnv = await dockerSync(ordinary);
+        const dockerEnv = await dockerSync(ordinary, MINTED);
         expect(dockerEnv).not.toHaveProperty('RESTORE');
         expect(dockerEnv).not.toHaveProperty('REVIEW_REF');
         expect(dockerEnv).toHaveProperty('CRED_HELPER');
-        const env = await k8sSyncEnv(ordinary);
+        const env = await k8sSyncEnv(ordinary, MINTED);
         expect(env).toHaveProperty('CRED_HELPER');
         expect(env).not.toHaveProperty('RESTORE');
         expect(env).not.toHaveProperty('REVIEW_REF');

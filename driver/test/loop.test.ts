@@ -74,7 +74,8 @@ interface BoardStub extends Board {
     interrupted: ({ id: string } & Interruption)[];
     beats: number;
     gatesReported: { id: string; results: Parameters<Board['gates']>[1] }[];
-    publishTokenAsks: string[];
+    /** Every GitHub credential ask the loop made, by job id (docs/connections.md). */
+    githubAsks: string[];
     reclaimGrants: Reclaim[];
     reclaimAcks: string[];
     leaseLookups: string[][];
@@ -107,7 +108,7 @@ function stubBoard(
         reclaims?: Reclaim[];
         ackReclaimLease?: 'ok' | 'lost' | 'missing';
         failAckReclaim?: boolean;
-        publishToken?: string | null;
+        githubToken?: string | null;
         /** The board's answer to `leases` — null models a refused lookup (issue #344). */
         leaseRows?: BoardLease[] | null | undefined;
         /** The board's answer to a question report (issue #226); held when absent. */
@@ -133,7 +134,7 @@ function stubBoard(
         interrupted: [],
         beats: 0,
         gatesReported: [],
-        publishTokenAsks: [],
+        githubAsks: [],
         reclaimGrants: [],
         reclaimAcks: [],
         leaseLookups: [],
@@ -215,9 +216,9 @@ function stubBoard(
             board.reclaimAcks.push(id);
             return options.ackReclaimLease ?? 'ok';
         },
-        async publishToken(claimed) {
-            board.publishTokenAsks.push(claimed.id);
-            return options.publishToken ?? null;
+        async githubCredential(claimed) {
+            board.githubAsks.push(claimed.id);
+            return options.githubToken ?? null;
         },
         async complete(claimed, result) {
             board.completed.push({ id: claimed.id, ...result });
@@ -417,7 +418,9 @@ function stubRunner(
     killed: string[];
     samples: number;
     published: BoardJob[];
-    publishTokens: (string | undefined)[];
+    githubTokens: (string | undefined)[];
+    /** The GitHub token each sync was handed. */
+    syncTokens: (string | undefined)[];
     publishOptions: (PublishOptions | undefined)[];
     restartedServices: string[];
     synced: BoardJob[];
@@ -456,7 +459,8 @@ function stubRunner(
         },
         samples: 0,
         published: [] as BoardJob[],
-        publishTokens: [] as (string | undefined)[],
+        githubTokens: [] as (string | undefined)[],
+        syncTokens: [] as (string | undefined)[],
         publishOptions: [] as (PublishOptions | undefined)[],
         synced: [] as BoardJob[],
         reclaimed: [] as BoardJob[],
@@ -473,9 +477,9 @@ function stubRunner(
         async kill(killedJob: BoardJob) {
             runner.killed.push(killedJob.id);
         },
-        async publishGit(publishedJob: BoardJob, publishToken?: string, publishOptions?: PublishOptions) {
+        async publishGit(publishedJob: BoardJob, githubToken?: string, publishOptions?: PublishOptions) {
             runner.published.push(publishedJob);
-            runner.publishTokens.push(publishToken);
+            runner.githubTokens.push(githubToken);
             runner.publishOptions.push(publishOptions);
             return (
                 publish ?? {
@@ -491,8 +495,14 @@ function stubRunner(
                 }
             );
         },
-        async syncCheckout(syncedJob: BoardJob) {
+        async syncCheckout(
+            syncedJob: BoardJob,
+            _signal?: AbortSignal,
+            _session?: RunSession | null,
+            githubToken?: string
+        ) {
             runner.synced.push(syncedJob);
+            runner.syncTokens.push(githubToken);
             if (syncError) throw syncError;
             return sync ?? { ok: true, reason: null };
         },
@@ -586,6 +596,8 @@ function stubGateStack(
         /** The real control state per open token (issue #226): questions run through the real code. */
         controls: new Map<string, ControlEntry>(),
         acquired: [] as string[],
+        /** The env-file body each acquire was handed. */
+        envBodies: [] as string[],
         released: [] as string[],
         registered: 0,
         unregistered: 0,
@@ -595,8 +607,9 @@ function stubGateStack(
         /** Every pre-agent `runSetup` call's options (issue #733), in order. */
         setups: [] as GateRunOptions[],
         manager: {
-            acquire: async (key: string) => {
+            acquire: async (key: string, _image: string, envBody: string) => {
                 stack.acquired.push(key);
+                stack.envBodies.push(envBody);
             },
             runSetup: async (_key: string, setupOptions: GateRunOptions = {}) => {
                 stack.setups.push(setupOptions);
@@ -1010,7 +1023,7 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(runner.published).toHaveLength(0);
-        expect(board.board.publishTokenAsks).toHaveLength(0);
+        expect(board.board.githubAsks).toHaveLength(0);
         // The run itself still succeeded — the work stays on the task branch in the worktree.
         expect(board.board.completed[0]?.status).toBe('succeeded');
     });
@@ -1066,39 +1079,59 @@ describe('the poll loop', () => {
 
         expect(board.board.completed[0]?.status).toBe('succeeded');
         // The publish credential is the publisher's ask — no publisher, no ask.
-        expect(board.board.publishTokenAsks).toHaveLength(0);
+        expect(board.board.githubAsks).toHaveLength(0);
     });
 
-    // The claim's installation token is an hour old at best; a run that outlives it must not
-    // publish with a dead credential (job 43379d3a pushed with a token 34 minutes past expiry
-    // and the publish failed on 401 with the work done). The loop asks right before the push
-    // and lays the answer over the claim env; null keeps the claim env.
-    it("publishes with the board's fresh credential laid over the claim env", async () => {
-        const claimed = { ...job(1), env: { GITHUB_TOKEN: 'claim-token', CORE: 'claim-value' } };
-        const board = stubBoard([claimed], { publishToken: 'ghs_fresh' });
+    // The claim carries no GitHub token (docs/connections.md): the loop asks the board for one
+    // right before the push, so a run that outlived any earlier token still publishes.
+    it("publishes with the board's token minted for the push", async () => {
+        const claimed = { ...job(1), env: { CORE: 'claim-value' } };
+        const board = stubBoard([claimed], { githubToken: 'ghs_fresh' });
         const runner = stubRunner(async () => ok());
 
         await drive({ ...board, runner });
 
-        expect(board.board.publishTokenAsks).toEqual([job(1).id]);
-        // The credential rides the runner call; laying it over the claim env is the transport's
-        // job (withPublishToken), pinned by the docker and kubernetes suites.
-        expect(runner.publishTokens).toEqual(['ghs_fresh']);
+        expect(board.board.githubAsks).toEqual([job(1).id]);
+        // The credential rides the runner call; laying it into the publish steps' env is the
+        // transport's job (`supervisedStepRunner`), pinned by the supervised-steps suite.
+        expect(runner.githubTokens).toEqual(['ghs_fresh']);
     });
 
-    it('publishes with the claim env untouched when the board holds nothing fresher', async () => {
-        const claimed = { ...job(1), env: { GITHUB_TOKEN: 'claim-token', CORE: 'claim-value' } };
-        const board = stubBoard([claimed]);
+    it('publishes without a token, and says so, when the board issues none', async () => {
+        const board = stubBoard([job(1)]);
         const runner = stubRunner(async () => ok());
         const logs: string[] = [];
 
         await drive({ ...board, runner, log: (m) => logs.push(m) });
 
-        expect(board.board.publishTokenAsks).toEqual([job(1).id]);
-        expect(runner.publishTokens).toEqual([undefined]);
-        // Null is both the route's honest "nothing fresher" and its failure shape — the driver
-        // cannot tell a 401 from an answer, so the degradation says itself either way.
-        expect(logs.some((m) => m.includes('publish-token ask answered nothing fresh'))).toBe(true);
+        expect(board.board.githubAsks).toEqual([job(1).id]);
+        expect(runner.githubTokens).toEqual([undefined]);
+        // Null is both the board's "no App installation" and every failure shape: the degradation
+        // says itself either way.
+        expect(logs.some((m) => m.includes('the board issued no GitHub token for the publish'))).toBe(true);
+    });
+
+    it("hands a starting claim's sync a token minted for it, and asks nothing for a restore", async () => {
+        const repoJob = { ...job(1), repo: 'Bellows-AI/factory', publish: false };
+        const board = stubBoard([repoJob], { githubToken: 'ghs_sync' });
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(runner.syncTokens).toEqual(['ghs_sync']);
+        expect(board.board.githubAsks).toEqual([job(1).id]);
+
+        // A follow-up restores its tree: nothing touches the remote, so nothing is asked.
+        const restoring = stubBoard(
+            [{ ...job(2, 'session-x'), repo: 'Bellows-AI/factory', followUp: true, publish: false }],
+            {
+                githubToken: 'ghs_unused',
+            }
+        );
+        const restoreRunner = stubRunner(async () => ok());
+        await drive({ ...restoring, runner: restoreRunner });
+        expect(restoreRunner.syncTokens).toEqual([undefined]);
+        expect(restoring.board.githubAsks).toEqual([]);
     });
 
     // Only a succeeded run publishes: a failed or truncated run's tree may be mid-thought, and
@@ -3979,13 +4012,13 @@ describe('block-helper steps (issue #207)', () => {
         // ordinary publish flow (publishIfDue) asks for its own fresh token too, on a job this
         // plain would otherwise publish (absent `publish` reads as "publish").
         const board = stubBoard([{ ...job(1), publish: false, helperPlans: [helperPlan({ githubWriting: true })] }], {
-            publishToken: 'fresh-install-token',
+            githubToken: 'fresh-install-token',
         });
         const { runner, calls } = runnerWithHelper(async () => ok(), [{ ok: true, output: null }]);
 
         await drive({ ...board, runner });
 
-        expect(board.board.publishTokenAsks).toEqual([job(1).id]);
+        expect(board.board.githubAsks).toEqual([job(1).id]);
         expect(calls[0]!.token).toBe('fresh-install-token');
 
         const readOnlyBoard = stubBoard([
@@ -3996,7 +4029,7 @@ describe('block-helper steps (issue #207)', () => {
             [{ ok: true, output: null }]
         );
         await drive({ ...readOnlyBoard, runner: readOnlyRunner });
-        expect(readOnlyBoard.board.publishTokenAsks).toEqual([]);
+        expect(readOnlyBoard.board.githubAsks).toEqual([]);
         expect(readOnlyCalls[0]!.token).toBeUndefined();
     });
 
@@ -4063,7 +4096,7 @@ describe('block-helper steps (issue #207)', () => {
             await drive({ ...board, runner, log: (m) => logs.push(m) });
 
             expect(calls).toEqual([]);
-            expect(board.board.publishTokenAsks).toEqual([]);
+            expect(board.board.githubAsks).toEqual([]);
             expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
             expect(logs).toContain(`job ${job(1).id}: post-run helpers skipped — ${why}`);
         }
@@ -4375,7 +4408,7 @@ describe('block-helper steps (issue #207)', () => {
             const board = stubBoard(
                 [{ ...job(1), publish: false, helperPlans: [helperPlan({ helperId: 'sequence-fixture' })] }],
                 {
-                    publishToken: 'fresh-install-token',
+                    githubToken: 'fresh-install-token',
                 }
             );
             const { runner, calls } = runnerWithHelper(
@@ -4388,7 +4421,7 @@ describe('block-helper steps (issue #207)', () => {
 
             await drive({ ...board, runner });
 
-            expect(board.board.publishTokenAsks).toEqual([]);
+            expect(board.board.githubAsks).toEqual([]);
             expect(calls.map((c) => c.token)).toEqual([undefined, undefined]);
         });
     });
@@ -4613,7 +4646,11 @@ describe('a dead declared service (issue #423)', () => {
         await drive({ ...board, runner, gates: stack.gates });
 
         expect(runner.deadServiceProbes).toBe(0);
-        expect(board.board.completed.map((c) => c.failureKind ?? null)).toEqual(['runner_error', null]);
+        // By id too: the two attempts' verdicts land in either order.
+        expect(Object.fromEntries(board.board.completed.map((c) => [c.id, c.failureKind ?? null]))).toEqual({
+            [gatedJob(1).id]: 'runner_error',
+            [job(2).id]: null,
+        });
     });
 
     it('names the dead service when the gates are skipped — an unclean exit or a blocked agent (issue #487)', async () => {
@@ -4702,6 +4739,33 @@ describe('a service that dies during the gates (issue #437)', () => {
  * Gates judge work: a run that did not finish cleanly left none, and a failed gate over it would
  * fire the workflow's `gate-failed` edge on work that never happened (task d0a4146f).
  */
+describe('the gate environment’s GitHub token (docs/connections.md)', () => {
+    it('is fetched once at gate start and rides the gate env file, never the runner’s', async () => {
+        const board = stubBoard([{ ...gatedJob(1), publish: false }], { githubToken: 'ghs_gate' });
+        const runner = stubRunner(async () => ok());
+        const { gates, stack } = stubGateStack();
+
+        await drive({ ...board, runner, gates });
+
+        // Every acquire of the attempt's environment carries the one body built at gate start.
+        expect(new Set(stack.envBodies).size).toBe(1);
+        expect(stack.envBodies[0]).toContain('GITHUB_TOKEN=ghs_gate\n');
+        // One ask for the sync and one at gate start; none per gate.
+        expect(board.board.githubAsks).toEqual([gatedJob(1).id, gatedJob(1).id]);
+        expect(stack.ran.names).toEqual(['test', 'lint']);
+    });
+
+    it('starts the environment without one when the board issues none', async () => {
+        const board = stubBoard([{ ...gatedJob(1), publish: false }]);
+        const runner = stubRunner(async () => ok());
+        const { gates, stack } = stubGateStack();
+
+        await drive({ ...board, runner, gates });
+
+        expect(stack.envBodies[0]).not.toContain('GITHUB_TOKEN');
+    });
+});
+
 describe('gates over a run that did not finish cleanly', () => {
     it.each([
         ['a non-zero exit', ok({ exitCode: 2, output: 'boom' }), "the agent's run exited 2", 'runner_error'],
@@ -5083,10 +5147,14 @@ describe('a stand-down after the gates (issue #427)', () => {
         }
     );
 
-    it('G2 a stop landing during the publish-token ask publishes nothing and parks the run', async () => {
+    it('G2 a stop landing during the publish token ask publishes nothing and parks the run', async () => {
         const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
         const fire = armHeartbeat(board.board, 'stop');
-        board.board.publishToken = async () => {
+        let asks = 0;
+        board.board.githubCredential = async () => {
+            // The first ask is the sync's; the stop lands during the publish's.
+            asks += 1;
+            if (asks < 2) return null;
             fire();
             await ticks();
             return null;

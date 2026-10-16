@@ -1,6 +1,7 @@
 import type { BoardJob, FailureKind } from './board.js';
 import type { HelperFailureReport, HelperPlan, HelperResult } from './helpers.js';
 import { formatConcludeOutput, runHelperPlan } from './helpers.js';
+import { askGithubToken } from './loop-github.js';
 import { down, raceStep } from './loop-attempt.js';
 import type { JobState } from './loop-attempt.js';
 import { helperCauseOf } from './loop-ledger.js';
@@ -34,7 +35,7 @@ import { STOOD_DOWN } from './loop-types.js';
  */
 export async function preHelperStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
     const { rt, job, state } = ctx;
-    const { runner, board } = rt;
+    const { runner } = rt;
     const plans = (job.helperPlans ?? []).filter((plan) => plan.phase === 'pre');
     if (!plans.length || !runner.runHelper) return null;
 
@@ -42,7 +43,9 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<SetupConclusion | 
     // declared order for a composite — so a stop or lost lease mid-composite is observed between
     // children, not just around the composite as a whole.
     const invokeChild = async (childPlan: HelperPlan): Promise<HelperResult | null> => {
-        const token = childPlan.githubWriting ? ((await board.publishToken(job)) ?? undefined) : undefined;
+        const token = childPlan.githubWriting
+            ? ((await askGithubToken(rt, job, `the helper ${childPlan.helperId}`)) ?? undefined)
+            : undefined;
         if (down(state)) return null;
         const resultOut = await raceStep(state.signal, runner.runHelper!(job, childPlan, token, state.signal));
         return resultOut === null || down(state) ? null : resultOut.value;
@@ -93,7 +96,7 @@ export async function runPostHelperPhase(
     state: JobState,
     skipReason: string | null
 ): Promise<HelperFailureReport | null> {
-    const { runner, board, log } = rt;
+    const { runner, log } = rt;
     const plans = (job.helperPlans ?? []).filter((plan) => plan.phase === 'post');
     if (!plans.length || !runner.runHelper) return null;
     if (skipReason !== null) {
@@ -103,7 +106,9 @@ export async function runPostHelperPhase(
 
     const invokeChild = async (childPlan: HelperPlan): Promise<HelperResult | null> => {
         if (down(state)) return null;
-        const token = childPlan.githubWriting ? ((await board.publishToken(job)) ?? undefined) : undefined;
+        const token = childPlan.githubWriting
+            ? ((await askGithubToken(rt, job, `the helper ${childPlan.helperId}`)) ?? undefined)
+            : undefined;
         if (down(state)) return null;
         return runner.runHelper!(job, childPlan, token, state.signal);
     };

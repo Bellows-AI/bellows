@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob, DeclaredGate } from './board.js';
-import { CONTROL_TOKEN_ENV, CONTROL_URL_ENV, envFileBody, setupTimeoutMs } from './claim.js';
+import { CONTROL_TOKEN_ENV, CONTROL_URL_ENV, gateEnvBody, setupTimeoutMs } from './claim.js';
 import { tailBytes, type DeadService } from './runner.js';
 import { declaredTimeoutMs, type GateRun } from './gates.js';
 import { clearPendingQuestions, down, raceStep } from './loop-attempt.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
 import type { JobState } from './loop-attempt.js';
+import { askGithubToken } from './loop-github.js';
 import { createPublishRelay } from './loop-publish.js';
 import { createQuestionRelay } from './loop-questions.js';
 import { createReviewRelay, reviewerQuestionRelay } from './loop-review.js';
@@ -75,9 +76,9 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
     // that names no repository has no worktree and no gates either.
     const key = worktreeRelDir(job);
     if (!key) return null;
-    // The environment starts with the claim's own env — resolved for THIS author and repo —
-    // which is exactly what a test suite needs to reach the forge.
-    const envBody = envFileBody(job);
+    // The environment starts with the claim's own env — resolved for THIS author and repo — and a
+    // GitHub token fetched now, which is what a test suite needs to reach the forge. Not renewed.
+    const envBody = gateEnvBody(job, await askGithubToken(rt, job, 'the gate environment'));
     // The job is the kubernetes gate manager's attempt context — its gate Jobs carry the
     // job and lease labels, and their names are derived from them. The docker manager joins
     // the attempt's services network by it.
