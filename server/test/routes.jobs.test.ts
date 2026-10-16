@@ -1738,6 +1738,7 @@ describe('POST /api/jobs/:id/interrupt', () => {
         ['an oversized reason', { reason: 'x'.repeat(501), release: true }],
         ['a missing release', { reason: 'evicted' }],
         ['a fractional claim sequence', { reason: 'evicted', release: false, claimSeq: 1.5 }],
+        ['an adoption that names no adopted claim', { reason: 'adopted', release: false }],
     ])('refuses %s with 400 BAD_BODY, touching nothing', async (_name, fields) => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);

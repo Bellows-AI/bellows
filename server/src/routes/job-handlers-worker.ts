@@ -464,6 +464,9 @@ function interruptionOf(
     if (claimSeq !== undefined && claimSeq !== null && (!Number.isSafeInteger(claimSeq) || (claimSeq as number) < 1)) {
         return 'claimSeq must be a positive integer';
     }
+    // An adoption records the earlier claim it adopted, never the adopter's own.
+    if (!release && (claimSeq === undefined || claimSeq === null))
+        return 'an adoption (release false) names its claimSeq';
     return { reason, release, claimSeq: (claimSeq as number | null | undefined) ?? null };
 }
 
