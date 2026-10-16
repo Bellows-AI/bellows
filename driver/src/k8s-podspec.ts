@@ -179,12 +179,19 @@ function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
 
 /**
  * The task supervisor's container: the trusted half of the pod. It runs `scripts/supervisor.cjs` by
- * content in the executor image and mounts all four mailboxes — and nothing of the member's: no
- * workspace, no telemetry config, no claim env. The attempt's control pair reaches it by Secret
- * reference, like every credential in this file; it has no ServiceAccount token (the pod has none)
- * and so no Kubernetes API access. The driver keeps the lease, the claim fence and the reaper.
+ * content in the executor image and mounts all four mailboxes and the member's workspace subtree —
+ * the steps it runs for the driver (the sync, the probe, the publish, the helpers, the reclaim) work
+ * on the task worktree — and nothing else of the member's: no telemetry config and no claim env. A
+ * step's credentials arrive with the step over its authenticated channel (`supervised-steps.ts`),
+ * never as this container's spec; the attempt's control pair reaches it by Secret reference, like
+ * every credential in this file. It has no ServiceAccount token (the pod has none) and so no
+ * Kubernetes API access. The driver keeps the lease, the claim fence and the reaper.
  */
-function supervisorContainer(config: DriverConfig, job: BoardJob, exporting: boolean): RunnerPodContainer {
+function supervisorContainer(
+    config: DriverConfig,
+    job: BoardJob,
+    group: { exporting: boolean; agentless: boolean }
+): RunnerPodContainer {
     return {
         name: SUPERVISOR_CONTAINER,
         image: executorImage(config, job.executorType),
@@ -192,13 +199,16 @@ function supervisorContainer(config: DriverConfig, job: BoardJob, exporting: boo
         ...containerHardeningField(),
         command: ['node', '-e', supervisorScript],
         env: [
-            ...supervisorLiterals(config, job, exporting).map(([name, value]) => ({ name, value })),
+            ...supervisorLiterals(config, job, group).map(([name, value]) => ({ name, value })),
             ...supervisorControlNames(job).map((name) => ({
                 name,
                 valueFrom: { secretKeyRef: { name: secretName(job), key: name } },
             })),
         ],
-        volumeMounts: Object.values(MAILBOXES).map((box) => mailboxMount(box, 'rw')),
+        volumeMounts: [
+            workspaceMount(config, workspacePath(job)),
+            ...Object.values(MAILBOXES).map((box) => mailboxMount(box, 'rw')),
+        ],
     };
 }
 
@@ -229,6 +239,63 @@ function exporterContainer(config: DriverConfig, job: BoardJob, startedAt: strin
             { name: 'workspaces', mountPath: `${config.workspaceMount}/${path}`, subPath: path },
             mailboxMount(MAILBOXES.export, 'rw'),
         ],
+    };
+}
+
+/**
+ * The agent's container and the volumes it needs: the member's workspace subtree and telemetry
+ * config, and of the supervisor's mailboxes only the two the agent may touch.
+ *
+ * WORKDIR is the one literal value: a path, not a credential. Every forwarded credential is a
+ * NAME only — the value lives in a Secret the cluster already holds, and `valueFrom` is what
+ * keeps it out of the pod spec, which anyone who can `get pods` can read. A repo job starts in its
+ * task worktree (issue #35), the same tree the docker runner's WORKDIR names (`runWorkingDir`),
+ * because the close-time readout scopes the session scrape by this exact string.
+ */
+function agentPart(
+    config: DriverConfig,
+    job: BoardJob,
+    session: RunSession | null
+): { container: RunnerPodContainer; volumes: RunnerVolume[] } {
+    const env: EnvVar[] = [{ name: 'WORKDIR', value: runWorkingDir(config, job) }, ...runnerCredentialEnv(config, job)];
+    const { mounts, volumes } = runnerVolumesField(config, job.executorType, workspacePath(job), secretName(job));
+
+    // The argv each CLI speaks, and the executor-specific env beside it (opencode's session
+    // database path, or claude-code's transcript store and session id) — decided once, for both
+    // platforms, in runner-plan.ts, and RENDERED here as pod env and container args. The docker
+    // runner renders the SAME plan as `-e NAME=value` plus the argv after the image name, so the
+    // ENTRYPOINT of either executor image receives exactly these arguments and the platform below
+    // the container is the only difference.
+    const plan = runnerPlan(config, job, session);
+    env.push(...plan.envPairs.map(([name, value]) => ({ name, value })));
+    // The agent finds its supervisor through three mailbox paths and nothing else: no control
+    // credential rides this container's env (runnerCredentialEnv never reads `supervisorEnv`), and
+    // no publish token either — a publication's credential is the supervisor's step env alone.
+    env.push(...agentMailboxEnv().map(([name, value]) => ({ name, value })));
+    return {
+        volumes,
+        container: {
+            // A constant: a container name is a DNS LABEL (63 bytes), which rules out
+            // containerName(job) (85) the same way it rules the Job's own name out of the raw form.
+            // The verdict and the log are read by this name: the pod holds the supervisor and the
+            // exporter beside it.
+            name: AGENT_CONTAINER,
+            image: executorImage(config, job.executorType),
+            // Stated, never defaulted: kubernetes reads a missing or :latest tag as `Always` and
+            // would reach for a registry, past the image the node already holds — which is how the
+            // docker runner finds it.
+            imagePullPolicy: config.imagePullPolicy,
+            ...resourcesField(config),
+            ...containerHardeningField(),
+            env,
+            args: plan.cliArgs,
+            // The workspace and the telemetry config, and of the supervisor only the two mailboxes
+            // the agent may touch: it reads `in` (a Stop, an answer, its release) and cannot write
+            // it, and it writes `out` (a question, its heartbeat). It mounts nothing of the
+            // supervisor's own state or the exporter's, and no Secret carries the control
+            // credential into it.
+            volumeMounts: [...mounts, mailboxMount(MAILBOXES.in, 'ro'), mailboxMount(MAILBOXES.out, 'rw')],
+        },
     };
 }
 
@@ -271,22 +338,14 @@ export function runnerJobSpec(
     // scrape by this exact string — a scope key that drifted from the runner's would answer
     // nothing. Asserted from the same line dockerArgs asserts it from.
     assertWorktreeResolvable(config, job);
-    const env: EnvVar[] = [{ name: 'WORKDIR', value: runWorkingDir(config, job) }, ...runnerCredentialEnv(config, job)];
-    const { mounts, volumes } = runnerVolumesField(config, job.executorType, path, secretName(job));
-
-    // The argv each CLI speaks, and the executor-specific env beside it (opencode's session
-    // database path, or claude-code's transcript store and session id) — decided once, for both
-    // platforms, in runner-plan.ts, and RENDERED here as pod env and container args. The docker
-    // runner renders the SAME plan as `-e NAME=value` plus the argv after the image name, so the
-    // ENTRYPOINT of either executor image receives exactly these arguments and the platform below
-    // the container is the only difference.
-    const plan = runnerPlan(config, job, session);
-    env.push(...plan.envPairs.map(([name, value]) => ({ name, value })));
-    // The agent finds its supervisor through two mailbox paths and nothing else: no control
-    // credential rides this container's env (runnerCredentialEnv never reads `supervisorEnv`).
-    env.push(...agentMailboxEnv().map(([name, value]) => ({ name, value })));
-    const args = plan.cliArgs;
-    const exporting = exportsTranscript(job, session);
+    // A node that launches no agent (issue #503) still gets its group — the sync, the gates' tree
+    // probe and the publish are the supervisor's — but no agent container, and so no member env.
+    const agentless = job.agent === false;
+    const agent = agentless ? null : agentPart(config, job, session);
+    const exporting = !agentless && exportsTranscript(job, session);
+    const volumes: RunnerVolume[] = agent?.volumes ?? [
+        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
+    ];
 
     return {
         apiVersion: 'batch/v1',
@@ -346,33 +405,8 @@ export function runnerJobSpec(
                     ...schedulingField(config),
                     ...fleetDnsField(config, job),
                     containers: [
-                        {
-                            // A constant: a container name is a DNS LABEL (63 bytes), which rules
-                            // out containerName(job) (85) the same way it rules the Job's own name
-                            // out of the raw form. The verdict and the log are read by this name:
-                            // the pod holds the supervisor and the exporter beside it.
-                            name: AGENT_CONTAINER,
-                            image: executorImage(config, job.executorType),
-                            // Stated, never defaulted: kubernetes reads a missing or :latest tag as
-                            // `Always` and would reach for a registry, past the image the node
-                            // already holds — which is how the docker runner finds it.
-                            imagePullPolicy: config.imagePullPolicy,
-                            ...resourcesField(config),
-                            ...containerHardeningField(),
-                            env,
-                            args,
-                            // The workspace and the telemetry config, and of the supervisor only
-                            // the two mailboxes the agent may touch: it reads `in` (a Stop, an
-                            // answer) and cannot write it, and it writes `out` (a question, its
-                            // heartbeat). It mounts nothing of the supervisor's own state or the
-                            // exporter's, and no Secret carries the control credential into it.
-                            volumeMounts: [
-                                ...mounts,
-                                mailboxMount(MAILBOXES.in, 'ro'),
-                                mailboxMount(MAILBOXES.out, 'rw'),
-                            ],
-                        },
-                        supervisorContainer(config, job, exporting),
+                        ...(agent ? [agent.container] : []),
+                        supervisorContainer(config, job, { exporting, agentless }),
                         ...(exporting ? [exporterContainer(config, job, startedAt, path)] : []),
                     ],
                     volumes: [...volumes, ...mailboxVolumes()],
@@ -406,12 +440,11 @@ export const secretName = (job: BoardJob): string => {
 
 /**
  * The Secret object an attempt-scoped env becomes — the ONE shape for every Secret this driver
- * creates: the runner's claim env, the publish credential, a helper's, the sync's and the gate
- * environment's. Values ride in stringData, nowhere else. The name is the caller's because each
- * of those has its own (secretName, publishEnvSecretName, helperEnvSecretName,
- * syncEnvSecretName, gateEnvSecretName); everything else — the labels above all — is identical
- * by construction rather than by five copies agreeing. `factory.job` is what the re-claim fence
- * sweeps by; `factory.lease` is what scopes a reap to the attempt that created it.
+ * creates: the runner's claim env and the gate environment's. Values ride in stringData, nowhere
+ * else. The name is the caller's because each of those has its own (secretName, gateEnvSecretName);
+ * everything else — the labels above all — is identical by construction rather than by two copies
+ * agreeing. `factory.job` is what the re-claim fence sweeps by; `factory.lease` is what scopes a
+ * reap to the attempt that created it.
  */
 export const secretBody = (job: BoardJob, name: string, env: Record<string, string>) => ({
     apiVersion: 'v1',

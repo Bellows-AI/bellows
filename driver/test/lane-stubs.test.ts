@@ -154,6 +154,45 @@ describe('scripts/stub-agent.sh, run locally under /bin/sh', () => {
         CASE_TIMEOUT_MS
     );
 
+    // Issue #771's release: the agent starts only once the supervisor writes `go`, as the real
+    // entrypoints do, and a Stop or kill order that lands first means it never starts.
+    it(
+        'starts the command only once the supervisor writes go',
+        async () => {
+            const box = sandbox();
+            const ran = join(box.outDir, 'ran');
+            const go = join(box.inDir, 'go');
+            const child = run(box.wrapper, ['sh', '-c', `: > "${ran}"; exit 4`], {
+                FACTORY_CTL_IN: box.inDir,
+                FACTORY_CTL_OUT: box.outDir,
+                FACTORY_CTL_GO: go,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 600));
+            expect(existsSync(ran)).toBe(false);
+            writeFileSync(go, '');
+            expect(await child.exited).toBe(4);
+            expect(existsSync(ran)).toBe(true);
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it(
+        'leaves quietly, running nothing, when a stop lands before go',
+        async () => {
+            const box = sandbox();
+            const ran = join(box.outDir, 'ran');
+            const child = run(box.wrapper, ['sh', '-c', `: > "${ran}"`], {
+                FACTORY_CTL_IN: box.inDir,
+                FACTORY_CTL_OUT: box.outDir,
+                FACTORY_CTL_GO: join(box.inDir, 'go'),
+            });
+            writeFileSync(join(box.inDir, 'stop'), '');
+            expect(await child.exited).toBe(0);
+            expect(existsSync(ran)).toBe(false);
+        },
+        CASE_TIMEOUT_MS
+    );
+
     it(
         'runs the command with no mailbox at all and writes nothing',
         async () => {

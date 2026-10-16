@@ -87,6 +87,10 @@ const transport = (
         const refused = opts.fail?.(step);
         if (refused) throw new Error(refused);
         if (step.label === 'probe') return { stdout: `${JSON.stringify(state)}\n` };
+        // The publication's own identity (issue #771): the commit it pushes, and its ledger — pinned
+        // in publish-reconcile.test.ts; here they only have to answer.
+        if (step.label === 'git rev-parse HEAD') return { stdout: `${'a'.repeat(40)}\n` };
+        if (step.label === 'publication ledger') return { stdout: '{}\n' };
         if (step.label === 'git switch' && !step.args.includes('-c')) throw new Error('invalid reference: fix/10');
         if (step.label === 'gh pr view') {
             if (opts.prExists) return { stdout: `${PR_URL}\n` };
@@ -97,7 +101,9 @@ const transport = (
         if (step.label === 'gh pr create') return { stdout: `${PR_URL}\n` };
         return { stdout: '' };
     };
-    const labels = () => steps.map((s) => s.label);
+    // The publication's identity steps (the commit read, the ledger) are pinned in publish-reconcile.test.ts.
+    const IDENTITY = new Set(['git rev-parse HEAD', 'publication ledger']);
+    const labels = () => steps.map((s) => s.label).filter((label) => !IDENTITY.has(label));
     const find = (label: string) => steps.find((s) => s.label === label)!;
     return { run, steps, labels, find };
 };
@@ -127,11 +133,15 @@ describe('the publish workflow', () => {
         ]);
         // The probe reads the worktree by its REPO literal; every other step runs inside it.
         expect(t.find('probe')).toMatchObject({ inRepo: false, env: false, envLiterals: { REPO: WT } });
-        expect(t.steps.slice(1).every((s) => s.inRepo)).toBe(true);
+        expect(t.steps.slice(1).every((s) => s.inRepo || s.label === 'publication ledger')).toBe(true);
+        // The operation is recorded around the push: pushing before it, pushed after it, opened last.
+        expect(
+            t.steps.filter((s) => s.label === 'publication ledger').map((s) => s.envLiterals?.STATE ?? 'read')
+        ).toEqual(['pushing', 'pushed', 'opened']);
         // Only the push and the two PR calls are handed the claim env — the token they read.
         expect(t.steps.filter((s) => s.env).map((s) => s.label)).toEqual(['git push', 'gh pr view', 'gh pr create']);
         // The plain switch finds no branch; `-c` creates it.
-        expect(t.steps[2]?.args).toEqual(['switch', '-c', 'fix/10']);
+        expect(t.steps.filter((s) => s.label === 'git switch')[1]?.args).toEqual(['switch', '-c', 'fix/10']);
         // The commit carries the plan title, and the fallback identity only when the probe found none.
         expect(t.find('git commit').args).toEqual([
             '-c',
@@ -340,7 +350,8 @@ describe('a failed publish step', () => {
 
         expect(result).toMatchObject({ ok: false, published: false, cause });
         expect(result.reason).toBe(`git push: ${words}`);
-        expect(t.labels().at(-1)).toBe('git push');
+        // The remote is asked whether the push landed anyway before the failure stands.
+        expect(t.labels().slice(-2)).toEqual(['git push', 'git ls-remote']);
     });
 });
 

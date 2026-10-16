@@ -2,10 +2,12 @@ import type { BoardJob } from './board.js';
 import { runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
 import {
+    GO_MARKER,
     MAILBOXES,
     RUN_CONTROL_POLL_MS,
     SUPERVISOR_DRAIN_MS,
     SUPERVISOR_ENV,
+    SUPERVISOR_STEPS_MS,
     SUPERVISOR_WINDDOWN_MS,
 } from './supervisor-contract.js';
 
@@ -18,19 +20,26 @@ import {
  */
 
 /** The supervisor's own env literals: the budget it enforces, the paces it works at, whether an exporter waits. */
-export function supervisorLiterals(config: DriverConfig, job: BoardJob, exporting: boolean): [string, string][] {
+export function supervisorLiterals(
+    config: DriverConfig,
+    job: BoardJob,
+    group: { exporting: boolean; agentless?: boolean }
+): [string, string][] {
     return [
         [SUPERVISOR_ENV.controlMs, String(RUN_CONTROL_POLL_MS)],
         [SUPERVISOR_ENV.deadlineMs, String(runTimeoutMs(config, job))],
         [SUPERVISOR_ENV.drainMs, String(SUPERVISOR_DRAIN_MS)],
-        ...(exporting ? ([[SUPERVISOR_ENV.exports, '1']] as [string, string][]) : []),
+        ...(group.exporting ? ([[SUPERVISOR_ENV.exports, '1']] as [string, string][]) : []),
+        ...(group.agentless ? ([[SUPERVISOR_ENV.agentless, '1']] as [string, string][]) : []),
     ];
 }
 
-/** The mailbox the agent container finds its supervisor through: two paths, no credential. */
+/** The mailbox the agent container finds its supervisor through: three paths, no credential. */
 export const agentMailboxEnv = (): [string, string][] => [
     ['FACTORY_CTL_IN', MAILBOXES.in.path],
     ['FACTORY_CTL_OUT', MAILBOXES.out.path],
+    // The agent's entrypoint waits for the supervisor's release before it starts (`go`).
+    ['FACTORY_CTL_GO', GO_MARKER],
 ];
 
 /** The names of the supervisor's control pair this attempt carries; none when it has no control endpoint. */
@@ -39,9 +48,17 @@ export function supervisorControlNames(job: BoardJob): string[] {
 }
 
 /**
- * The backstop deadline of the whole group: the run budget plus the wind-down. The supervisor ends
- * the agent at the budget itself and finalizes within the wind-down; the kubelet (or the docker
- * driver's timer) only ends a group whose supervisor stopped doing that.
+ * The agent phase's backstop: the run budget plus the wind-down. The supervisor ends the agent at
+ * the budget itself and reports within the wind-down; the docker driver's timer only ends a group
+ * whose supervisor stopped doing that.
+ */
+export const agentBackstopMs = (config: DriverConfig, job: BoardJob): number =>
+    runTimeoutMs(config, job) + SUPERVISOR_WINDDOWN_MS;
+
+/**
+ * The backstop deadline of the whole group (the kubelet's, on the Job): the agent phase's plus the
+ * steps the group serves before and after the agent — the sync, the gates, the helpers, the
+ * publish. The driver ends the group itself long before; this only ends one it forgot.
  */
 export const backstopMs = (config: DriverConfig, job: BoardJob): number =>
-    runTimeoutMs(config, job) + SUPERVISOR_WINDDOWN_MS;
+    agentBackstopMs(config, job) + SUPERVISOR_STEPS_MS;

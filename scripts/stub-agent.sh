@@ -7,6 +7,18 @@
 # and last, then re-raised. Without agent.exit the supervisor waits out its agent-start window and
 # reads the run as lost. The command's stdout and stderr are the run's, unchanged.
 # Pinned by driver/test/lane-stubs.test.ts.
+
+# The supervisor's release (issue #771), as the real entrypoints wait for it: nothing starts until
+# `go`, and a Stop or a kill order that lands first means the agent leaves quietly.
+if [ -n "${FACTORY_CTL_GO:-}" ]; then
+    while [ ! -f "$FACTORY_CTL_GO" ]; do
+        if [ -f "${FACTORY_CTL_IN:-/nonexistent}/stop" ] || [ -f "${FACTORY_CTL_IN:-/nonexistent}/kill" ]; then
+            exit 0
+        fi
+        sleep 0.2
+    done
+fi
+
 CHILD_PID=''
 CTL_PID=''
 TERM_PENDING=''

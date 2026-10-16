@@ -329,7 +329,16 @@ export interface Runner {
      * writes the worktree, so it is never killed mid-write, and kubernetes does not take the signal
      * at all — the abandoned sync finishes and `releaseAbandonedSync` hands its claim back.
      */
-    syncCheckout(job: BoardJob, signal?: AbortSignal): Promise<SyncResult>;
+    syncCheckout(job: BoardJob, signal?: AbortSignal, session?: RunSession | null): Promise<SyncResult>;
+    /**
+     * Ends the attempt's task group (issue #771): the supervisor that ran the sync, serves the
+     * probe, the helpers and the publish, and held the agent. The group exists from the attempt's
+     * first step, not from the agent's start, and `run` leaves it alive — so the loop finishes it,
+     * on every way the attempt ends, while the run-control channel its order travels is still open.
+     * Idempotent, never throws, and a no-op for an attempt with no group. Optional: a runner with
+     * no group has nothing to end.
+     */
+    finish?(job: BoardJob): Promise<void>;
     /**
      * Reclaims the task worktree after the thread's LAST job is terminal: removes the per-thread
      * tree and prunes its admin entry, so a finished or deleted task does not leave its tree

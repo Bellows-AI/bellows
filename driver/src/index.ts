@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { createBoard } from './board.js';
 import { gateAdvertiseUrlFor, loadDriverConfig } from './config.js';
@@ -8,6 +9,7 @@ import { createKubernetesGateManager } from './k8s-gates.js';
 import { createKubernetesReaper } from './k8s-reaper.js';
 import { createKubernetesRunner } from './k8s-runner.js';
 import { inClusterRequest } from './k8s-transport.js';
+import { createStepBroker, type SupervisorEndpoint } from './step-control.js';
 import { createLoop } from './loop.js';
 import type { GateStack } from './loop-types.js';
 import { createReaper } from './reaper.js';
@@ -42,10 +44,22 @@ const board = createBoard({
 // EXECUTOR picks the platform runners run on. `inClusterRequest()` is fatal here rather than on
 // the first claim: a driver asked for kubernetes outside a cluster should say so at startup.
 const request = config.executor === 'kubernetes' ? inClusterRequest() : null;
+// The supervised-step channel: the broker the runners submit steps to and the gate server's control
+// endpoint serves them from (issue #771), and the endpoint a runner opens a supervisor-only token on
+// for a group with no attempt (a terminal reclaim). `gates` is bound below; both read it lazily.
+const steps = createStepBroker();
+const endpoint: SupervisorEndpoint = {
+    open: async () => {
+        const token = randomUUID();
+        steps.open(token);
+        return { url: gates.advertiseUrl(await gates.server.listen()), token };
+    },
+    close: (token) => steps.close(token),
+};
 const runner =
     config.executor === 'kubernetes'
-        ? createKubernetesRunner(config, request!, undefined, (ids) => board.leases(ids))
-        : createDockerRunner(config);
+        ? createKubernetesRunner(config, request!, undefined, { leases: (ids) => board.leases(ids), steps, endpoint })
+        : createDockerRunner(config, undefined, undefined, { steps, endpoint });
 
 // The gate machinery exists under both executors: docker keeps a warm environment container per
 // checkout and execs into it, kubernetes runs each gate as a Job in the declared image — the
@@ -57,7 +71,7 @@ const gates: GateStack = (() => {
         const manager = createKubernetesGateManager({ config, request: request! });
         return {
             manager,
-            server: createGateServer({ host: config.gateListenHost, manager }),
+            server: createGateServer({ host: config.gateListenHost, manager, steps }),
             advertiseUrl: (port) => gateAdvertiseUrlFor(config.gateAdvertiseUrl, port),
         };
     }
@@ -69,7 +83,7 @@ const gates: GateStack = (() => {
     holdsGateContainer = manager.holds;
     return {
         manager,
-        server: createGateServer({ host: config.gateListenHost, manager }),
+        server: createGateServer({ host: config.gateListenHost, manager, steps }),
         advertiseUrl: (port) => gateAdvertiseUrlFor(config.gateAdvertiseUrl, port),
     };
 })();

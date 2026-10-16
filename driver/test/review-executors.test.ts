@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { syncCheckoutArgs } from '../src/docker-runner-support.js';
-import { syncJobSpec } from '../src/k8s-auxspec.js';
+import { createDockerRunner } from '../src/docker-runner.js';
+import type { StepSink } from '../src/step-control.js';
+import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 import { runnerJobSpec } from '../src/k8s-podspec.js';
-import { SUPERVISOR_WINDDOWN_MS } from '../src/supervisor-contract.js';
+import { SUPERVISOR_STEPS_MS, SUPERVISOR_WINDDOWN_MS } from '../src/supervisor-contract.js';
+import { k8sSyncStep } from './k8s-sync-step.js';
 
 /**
  * A named reviewer's run on BOTH executors (issue #549): the same restore-at-the-snapshot start,
@@ -44,46 +46,54 @@ const base: BoardJob = {
 const reviewer: BoardJob = { ...base, reviewRun: { profile: 'security', ref: REF, timeoutMinutes: 5 } };
 const ordinary: BoardJob = { ...base, env: { GITHUB_TOKEN: 'ghp_x' } };
 
-const dockerSync = (job: BoardJob, restore: boolean) =>
-    syncCheckoutArgs(loadDriverConfig({}), job, {
-        clone: '/w/clone',
-        worktree: '/w/wt',
-        restore,
-        envFile: null,
-    });
-const k8sConfig = loadDriverConfig({ EXECUTOR: 'kubernetes' });
-const k8sSyncEnv = (job: BoardJob) =>
-    syncJobSpec(k8sConfig, job, null).spec.template.spec.containers[0]!.env as { name: string; value: string }[];
-const names = (env: { name: string }[]) => env.map((entry) => entry.name);
+/** The sync step the docker runner submits to the attempt's supervisor for `job`: its env, never its argv. */
+const dockerSync = async (job: BoardJob): Promise<Record<string, string>> => {
+    const steps: StepRequest[] = [];
+    const sink: StepSink = {
+        submit: async (_token, step) => {
+            steps.push(step);
+            return { exitCode: 0, stdout: '{"ok":true,"reason":null}', stderr: '', timedOut: false };
+        },
+        awaitReport: () => new Promise(() => undefined),
+        contacted: () => true,
+    };
+    const supervised: BoardJob = {
+        ...job,
+        supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: 'tok' },
+    };
+    const exec = async () => ({ stdout: '' });
+    await createDockerRunner(loadDriverConfig({}), undefined, exec, { steps: sink }).syncCheckout(supervised);
+    return steps[0]!.env;
+};
+/** The sync step the kubernetes runner submits to the attempt's supervisor for `job`: its env, never its argv. */
+const k8sSyncEnv = async (job: BoardJob): Promise<Record<string, string>> => (await k8sSyncStep(job)).env;
 
 describe('the startup sync of a reviewer’s claim', () => {
-    it('on docker: restore mode and the snapshot ref, as literals, with no credential helper', () => {
-        const argv = dockerSync(reviewer, true);
-        expect(argv).toContain('RESTORE=1');
-        expect(argv).toContain(`REVIEW_REF=${REF}`);
-        expect(argv.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
-        expect(argv.join(' ')).not.toContain('jira');
+    it('on docker: restore mode and the snapshot ref, as literals, with no credential helper', async () => {
+        const env = await dockerSync(reviewer);
+        expect(env).toMatchObject({ RESTORE: '1', REVIEW_REF: REF });
+        expect(env).not.toHaveProperty('CRED_HELPER');
+        // A restore carries no claim env at all: nothing of the claim reaches the sync.
+        expect(JSON.stringify(env)).not.toContain('jira');
     });
 
-    it('on kubernetes: the same two literals and no credential helper', () => {
-        const env = k8sSyncEnv(reviewer);
-        expect(env).toEqual(
-            expect.arrayContaining([
-                { name: 'RESTORE', value: '1' },
-                { name: 'REVIEW_REF', value: REF },
-            ])
-        );
-        expect(names(env)).not.toContain('CRED_HELPER');
+    it('on kubernetes: the same two literals and no credential helper', async () => {
+        const env = await k8sSyncEnv(reviewer);
+        expect(env).toMatchObject({ RESTORE: '1', REVIEW_REF: REF });
+        expect(env).not.toHaveProperty('CRED_HELPER');
+        // A restore carries no claim env at all: nothing of the claim reaches the sync.
+        expect(JSON.stringify(env)).not.toContain('jira');
     });
 
-    it('is unchanged for an ordinary first claim: no restore, no snapshot ref, a helper when it holds a token', () => {
-        expect(dockerSync(ordinary, false)).not.toContain('RESTORE=1');
-        expect(dockerSync(ordinary, false).some((arg) => arg.startsWith('REVIEW_REF='))).toBe(false);
-        expect(dockerSync(ordinary, false).some((arg) => arg.startsWith('CRED_HELPER='))).toBe(true);
-        const env = k8sSyncEnv(ordinary);
-        expect(names(env)).toEqual(expect.arrayContaining(['CRED_HELPER']));
-        expect(names(env)).not.toContain('RESTORE');
-        expect(names(env)).not.toContain('REVIEW_REF');
+    it('is unchanged for an ordinary first claim: no restore, no snapshot ref, a helper when it holds a token', async () => {
+        const dockerEnv = await dockerSync(ordinary);
+        expect(dockerEnv).not.toHaveProperty('RESTORE');
+        expect(dockerEnv).not.toHaveProperty('REVIEW_REF');
+        expect(dockerEnv).toHaveProperty('CRED_HELPER');
+        const env = await k8sSyncEnv(ordinary);
+        expect(env).toHaveProperty('CRED_HELPER');
+        expect(env).not.toHaveProperty('RESTORE');
+        expect(env).not.toHaveProperty('REVIEW_REF');
     });
 });
 
@@ -92,8 +102,9 @@ describe('the wall-clock budget of a reviewer’s run', () => {
         runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', ...env }), job, { id: SESSION, resume: false }).spec
             .activeDeadlineSeconds;
 
-    // The supervisor ends the agent at the budget; the kubelet's backstop adds its wind-down.
-    const WINDDOWN_S = SUPERVISOR_WINDDOWN_MS / 1000;
+    // The supervisor ends the agent at the budget; the kubelet's backstop adds its wind-down and
+    // the hours the group serves the attempt's steps after the agent.
+    const WINDDOWN_S = (SUPERVISOR_WINDDOWN_MS + SUPERVISOR_STEPS_MS) / 1000;
 
     it('on kubernetes is the profile’s, in the pod’s kubelet-enforced deadline', () => {
         expect(deadline(reviewer)).toBe(5 * 60 + WINDDOWN_S);

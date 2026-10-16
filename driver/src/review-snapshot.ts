@@ -1,14 +1,7 @@
 import type { BoardJob } from './board.js';
 import { containerScript } from './container-scripts.js';
 import type { DriverConfig } from './config.js';
-import {
-    parseLastJsonLine,
-    probeTreeFingerprint,
-    type PublishStep,
-    type RunPublishStep,
-    worktreeDir,
-} from './publish.js';
-import type { Runner } from './runner.js';
+import { parseLastJsonLine, type PublishStep, type RunPublishStep, worktreeDir } from './publish.js';
 
 /**
  * The review snapshot (issue #549): the step that freezes the task worktree's current state under
@@ -29,21 +22,6 @@ export const gitReviewSnapshotScript = containerScript('git-review-snapshot.cjs'
 export const reviewRefOf = (job: BoardJob, key: string): string => `refs/factory/review/${job.id}/${key}`;
 
 export type SnapshotResult = { ok: true; ref: string } | { ok: false; reason: string };
-
-/**
- * The two steps that read the task worktree and need no claim env — the tree probe and the review
- * snapshot — built over one transport: `bare` answers the step runner for a job and its stand-down
- * signal. The docker runner spreads this into itself; both ride the same `PublishStep` seam.
- */
-export function treeSteps(
-    config: DriverConfig,
-    bare: (job: BoardJob, signal?: AbortSignal) => RunPublishStep
-): Pick<Runner, 'probeTree' | 'snapshotTree'> {
-    return {
-        probeTree: (job, signal) => probeTreeFingerprint(config, job, bare(job, signal)),
-        snapshotTree: (job, key, signal) => snapshotTree(config, job, key, bare(job, signal)),
-    };
-}
 
 /**
  * Freezes the task tree for review `key`. A job with no worktree, or a step that cannot run or

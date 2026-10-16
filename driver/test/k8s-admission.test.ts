@@ -2,18 +2,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
-import type { HelperPlan } from '../src/helpers.js';
-import {
-    helperEnvSecretName,
-    publishEnvSecretName,
-    servicePodSpec,
-    syncEnvSecretName,
-    syncJobSpec,
-} from '../src/k8s-auxspec.js';
+import { servicePodSpec } from '../src/k8s-auxspec.js';
 import { workspacePath } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
 import { UNHARDENED_LABEL } from '../src/labels.js';
 import { gateEnvSecretName, runnerJobSpec, secretName } from '../src/k8s-podspec.js';
+import { reclaimGroupSpec } from '../src/k8s-group.js';
 import { WORKSPACE_PATH } from '../src/publish.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
@@ -44,17 +38,19 @@ const job: BoardJob = {
     workspacePath: 'bellows/44444444-4444-4444-8444-444444444444',
 } as BoardJob;
 
-const plan: HelperPlan = { helperId: 'noop', phase: 'pre', input: {}, githubWriting: false };
-
 describe('the admission policy Secret pattern', () => {
     it.each([
         ['runner claim env', secretName(job)],
-        ['sync env', syncEnvSecretName(job)],
-        ['publish env', publishEnvSecretName(job)],
-        ['helper env', helperEnvSecretName(job, plan, 'nonce')],
         ['gate env', gateEnvSecretName(job)],
     ])('admits the %s Secret name', (_label, name) => {
         expect(name).toMatch(pattern);
+    });
+
+    // Issue #771: the sync, the publish steps and the helpers run in the task supervisor and hold
+    // no Secret of their own, so the policy admits no name for them — a Secret by one of these
+    // names is a driver doing something the design forbids, and admission refuses it.
+    it.each(['sync', 'publish', 'helper'])('refuses a retired %s env Secret name', (kind) => {
+        expect(`factory-${kind}-0123456789abcdef-env`).not.toMatch(pattern);
     });
 
     it('refuses the chart-created Secrets the driver must never reach', () => {
@@ -155,7 +151,9 @@ describe('the admission policy requires the pod hardening (#382)', () => {
         const promptedJob: BoardJob = { ...job, masterPrompt: 'Factory execution contract' };
         const pods = [
             runnerJobSpec(config, promptedJob, { id: SESSION, resume: false }).spec.template.spec,
-            syncJobSpec(config, { ...job, repo: 'Bellows-AI/factory' }, null).spec.template.spec,
+            // The supervisor-only group of an agentless attempt and of a reclaim: no agent container.
+            runnerJobSpec(config, { ...promptedJob, agent: false }, null).spec.template.spec,
+            reclaimGroupSpec(config, { ...job, repo: 'Bellows-AI/factory' }).spec.template.spec,
             servicePodSpec(config, job, { name: 'cache', image: 'redis', environment: [] }, 'uid').spec,
         ];
         for (const pod of pods) {

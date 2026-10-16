@@ -56,15 +56,19 @@ const mounts = (argv: string[]): string[] => argv.filter((_arg, i) => argv[i - 1
 const volumeOf = (box: keyof typeof MAILBOXES): string => `src=${ctlVolumeName(job, MAILBOXES[box])},`;
 
 describe('the supervisor container', () => {
-    const argv = supervisorCreateArgs(config, job, true, '/tmp/supervisor.env');
+    const argv = supervisorCreateArgs(config, job, { exporting: true, agentless: false }, '/tmp/supervisor.env');
 
-    it('mounts all four mailboxes and none of the member’s workspace', () => {
+    // The supervisor runs the attempt's steps (sync, probe, publish, helpers, reclaim) as children
+    // of its own container, so it mounts the member's workspace — only the member's own subtree.
+    it('mounts all four mailboxes and the member’s own workspace subtree, nothing broader', () => {
         const mounted = mounts(argv);
-        expect(mounted).toHaveLength(4);
+        expect(mounted).toHaveLength(5);
         for (const box of ['in', 'out', 'export', 'supervisor'] as const) {
             expect(mounted.some((mount) => mount.includes(volumeOf(box)))).toBe(true);
         }
-        expect(argv.join(' ')).not.toContain('workspaces');
+        const workspace = mounted.filter((mount) => mount.includes('workspaces'));
+        expect(workspace).toHaveLength(1);
+        expect(workspace[0]).toContain(`volume-subpath=bellows/${USER}`);
     });
 
     it('takes its control pair by env file, never by argv', () => {

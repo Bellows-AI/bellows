@@ -13,6 +13,7 @@ import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateRunNote } from './timeout-note.js';
 import { networkName } from './services.js';
 import { createControlChannel } from './control-channel.js';
+import type { StepBroker } from './step-control.js';
 import { readBody, respondJson } from './http.js';
 import type { PublishRelay } from './publish-control.js';
 import type { ReviewRelay } from './review-control.js';
@@ -635,9 +636,12 @@ const hangupSignal = (reply: ServerResponse): AbortSignal => {
 export function createGateServer({
     host,
     manager,
+    steps,
 }: {
     host: string;
     manager: Pick<GateManager, 'acquire' | 'runGate'>;
+    /** The supervised-step broker the control channel serves; the runners submit to the same one. */
+    steps?: StepBroker;
 }): GateServer {
     const claims = new Map<string, GateClaim>();
     /** Per token, the controller every ad-hoc run of it listens on — `cancel` aborts it. */
@@ -645,7 +649,7 @@ export function createGateServer({
     /** Per token, the latest completed run per gate name — the timeout note's raw material. */
     const history = new Map<string, Map<string, GateRunNote>>();
     /** The stop poll and the question routes, per control token (`control-channel.ts`). */
-    const channel = createControlChannel();
+    const channel = createControlChannel(steps);
     let server: Server | null = null;
     let listening: Promise<number> | null = null;
 

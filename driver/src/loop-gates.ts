@@ -94,7 +94,9 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
         gates.server.register(token, { key, image: job.gates.image, envBody, job, gates: job.gates.gates });
         // Beside `env`, not inside it: the reserved-name filter keeps a member-configured
         // BELLOWS_GATE_* out of the claim lines, and these are the driver's own minted values.
+        // The run-control pair, minted earlier (`openRunControl`, before the sync), stays beside it.
         job.gateEnv = {
+            ...job.gateEnv,
             BELLOWS_GATE_URL: gates.advertiseUrl(port),
             BELLOWS_GATE_TOKEN: token,
         };
@@ -227,7 +229,11 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
  */
 export function closeRunControl(rt: LoopRuntime, state: JobState): void {
     clearPendingQuestions(state);
-    if (state.control !== null) rt.gates?.server.closeControl(state.control);
+    if (state.control === null) return;
+    rt.gates?.server.closeControl(state.control);
+    // Closed once: the attempt's `settle` closes it after the group's `finish`, and the run's
+    // `finally` closes it again on the paths that never settled.
+    state.control = null;
 }
 
 /** The declared gates of one running attempt: what `runDeclaredGates` and its helper share. */

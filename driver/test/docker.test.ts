@@ -33,7 +33,7 @@ import { ARTIFACT_LIMIT, commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LI
 import { claudeTurnsScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { createDockerRunner } from '../src/docker-runner.js';
 import { exporterCreateArgs, supervisorCreateArgs, supervisorName } from '../src/docker-group.js';
-import { lookupHelper, type HelperPlan } from '../src/helpers.js';
+import { HELPER_TIMEOUT_MS, lookupHelper, type HelperPlan } from '../src/helpers.js';
 import {
     forgetDeclaredServices,
     networkName,
@@ -41,7 +41,15 @@ import {
     serviceContainerName,
     serviceRunArgs,
 } from '../src/services.js';
-import { type RunnerFiles, startJobServices, syncCheckoutArgs } from '../src/docker-runner-support.js';
+import { type RunnerFiles, startJobServices } from '../src/docker-runner-support.js';
+import type { StepSink, SupervisorEndpoint } from '../src/step-control.js';
+import {
+    SUPERVISOR_ENV,
+    type StepKind,
+    type StepRequest,
+    type StepResult,
+    type SupervisorReport,
+} from '../src/supervisor-contract.js';
 import { ServicesNotRunning } from '../src/service-restart.js';
 import { telemetryConfig, telemetryConfigTar } from '../src/telemetry-config.js';
 import {
@@ -62,6 +70,7 @@ import {
 } from '../src/publish.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
+const CONTROL_TOKEN = 'supervisor-control-token';
 
 /** A fixed, valid Factory execution context — the shape master-prompt.test.ts pins; only its
  *  presence matters to this file's own tests, none of which assert its exact text. */
@@ -86,7 +95,60 @@ const job: BoardJob = {
     followUp: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
+    supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: CONTROL_TOKEN },
 };
+
+const ok = (stdout = ''): StepResult => ({ exitCode: 0, stdout, stderr: '', timedOut: false });
+const FINALIZED: SupervisorReport = { outcome: null, cause: null, agentExit: 0, agentEnd: 'exited', drained: true };
+
+/**
+ * The supervised-step channel stood in: every step is recorded (with the token it was submitted
+ * under) and answered by `answer` — default exit 0, empty — and the supervisor's report is
+ * `reported` at once, as a finalized run's would be.
+ */
+function fakeSteps(
+    answer: (step: StepRequest) => StepResult | Promise<StepResult> = () => ok(),
+    reported: SupervisorReport | Promise<SupervisorReport> = FINALIZED
+) {
+    const submitted: { token: string; step: StepRequest }[] = [];
+    const sink: StepSink = {
+        submit: async (token, step) => {
+            submitted.push({ token, step });
+            return answer(step);
+        },
+        awaitReport: () => Promise.resolve(reported),
+        contacted: () => true,
+    };
+    const ofKind = (kind: StepKind) => submitted.filter((entry) => entry.step.kind === kind).map((entry) => entry.step);
+    return { sink, submitted, steps: () => submitted.map((entry) => entry.step), ofKind };
+}
+
+/** A supervisor that answers every step with the sync's `stdout` — by default, a clean sync. */
+const syncSteps = (stdout = '{"ok":true,"reason":null}') => fakeSteps(() => ok(stdout));
+
+/** A daemon that answers every verb with nothing. */
+const emptyDaemon = (async () => ({ stdout: '' })) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+
+const RECLAIM_TOKEN = 'reclaim-control-token';
+
+/** The endpoint a supervisor-only group is served on, recording the tokens it closed. */
+function reclaimEndpoint() {
+    const closed: string[] = [];
+    const endpoint: SupervisorEndpoint = {
+        open: async () => ({ url: 'http://driver:8130', token: RECLAIM_TOKEN }),
+        close: (token) => {
+            closed.push(token);
+        },
+    };
+    return { endpoint, closed };
+}
+
+/** A runner whose reclaim step prints `stdout`, over a group served by {@link reclaimEndpoint}. */
+function reclaimRunner(stdout: string) {
+    const supervised = fakeSteps((step) => ok(step.kind === 'reclaim' ? stdout : ''));
+    const { endpoint, closed } = reclaimEndpoint();
+    return { supervised, closed, runner: dockerRunner(emptyDaemon, { steps: supervised.sink, endpoint }) };
+}
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
 const PR_URL = 'https://github.com/Bellows-AI/factory/pull/42';
@@ -1605,9 +1667,21 @@ function dockerRunner(
         env = {},
         spawn: spawnFn = spawnChild('', '', 0),
         files,
-    }: { env?: Parameters<typeof loadDriverConfig>[0]; spawn?: typeof spawn; files?: RunnerFiles } = {}
+        steps = fakeSteps().sink,
+        endpoint,
+    }: {
+        env?: Parameters<typeof loadDriverConfig>[0];
+        spawn?: typeof spawn;
+        files?: RunnerFiles;
+        steps?: StepSink;
+        endpoint?: SupervisorEndpoint;
+    } = {}
 ): ReturnType<typeof createDockerRunner> {
-    return createDockerRunner(loadDriverConfig(env), spawnFn, exec, files);
+    return createDockerRunner(loadDriverConfig(env), spawnFn, exec, {
+        ...(files ? { files } : {}),
+        steps,
+        ...(endpoint ? { endpoint } : {}),
+    });
 }
 
 describe('the docker runner', () => {
@@ -3363,7 +3437,8 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const outcome = await createDockerRunner(
             cfg,
             fn,
-            exec as unknown as (args: string[]) => Promise<{ stdout: string }>
+            exec as unknown as (args: string[]) => Promise<{ stdout: string }>,
+            { steps: fakeSteps().sink }
         ).run(job, { id: SESSION, resume: false });
 
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
@@ -3639,27 +3714,33 @@ describe('publishing the produced work', () => {
     });
 
     it('hands the sync the clone, the worktree and the branch, by env', async () => {
-        const { exec, calls } = entrypointAnswers('{"ok":true,"reason":null}');
-        const runner = dockerRunner(exec);
+        const supervised = syncSteps();
+        const d = labelDaemon();
+        const runner = dockerRunner(d.exec, { steps: supervised.sink });
         const result = await runner.syncCheckout(repoJob);
 
         expect(result).toEqual({ ok: true, reason: null });
-        const run = calls.find((a) => a[0] === 'run')!;
-        // The clone — where origin lives and the worktree is created FROM. Paths, not
-        // credentials: the claim env rides the env file exactly as before.
-        expect(run).toEqual(expect.arrayContaining(['-e', `REPO=/workspaces/bellows/${USER}/factory`]));
-        expect(run).toEqual(
-            expect.arrayContaining(['-e', `WORKTREE=/workspaces/bellows/${USER}/.worktrees/${job.id}`])
-        );
-        expect(run).toEqual(expect.arrayContaining(['-e', `BRANCH=factory/${job.id}`]));
-        // The sync container mounts the job's own subtree — the same scoping every other
-        // container this runner starts gets, nothing broader.
-        expect(run).toEqual(
+        const [sync] = supervised.ofKind('sync');
+        expect(sync?.argv).toEqual(['node', '-e', gitWorktreeScript]);
+        // The clone — where origin lives and the worktree is created FROM. Paths, not credentials:
+        // the claim env rides the step's own env, exactly as it rode the env file.
+        expect(sync?.env).toMatchObject({
+            REPO: `/workspaces/bellows/${USER}/factory`,
+            WORKTREE: `/workspaces/bellows/${USER}/.worktrees/${job.id}`,
+            BRANCH: `factory/${job.id}`,
+        });
+        // The step goes to the attempt's supervisor, under the control token only it holds.
+        expect(supervised.submitted.map((entry) => entry.token)).toEqual([CONTROL_TOKEN]);
+        // The supervisor mounts the job's own subtree — the same scoping every other container
+        // this runner starts gets, nothing broader — and the sync starts no container of its own.
+        const create = d.calls.find((a) => a[0] === 'create' && a.includes(supervisorName(repoJob)))!;
+        expect(create).toEqual(
             expect.arrayContaining([
                 '--mount',
                 `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
             ])
         );
+        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
     });
 
     // git reads no token from the environment, and the executor images ship no credential
@@ -3667,92 +3748,111 @@ describe('publishing the produced work', () => {
     // rides CONDITIONALLY: only when the claim env actually carries GITHUB_TOKEN, because a
     // public repo must keep its plain unauthenticated fetch (a helper answering an empty
     // password would break it). The VALUE passed is helper CODE, never the credential — the
-    // token itself travels only in the env file, where the helper reads it.
+    // token itself travels only in the step env, where the helper reads it.
     it('hands the sync the credential-helper code only when the claim env carries GITHUB_TOKEN', async () => {
-        const { exec, calls } = entrypointAnswers('{"ok":true,"reason":null}');
-        const runner = dockerRunner(exec);
+        const supervised = syncSteps();
+        const d = labelDaemon();
+        const runner = dockerRunner(d.exec, { steps: supervised.sink });
 
         await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } });
-        const run = calls.find((a) => a[0] === 'run')!;
-        expect(run).toEqual(expect.arrayContaining(['-e', `CRED_HELPER=${CREDENTIAL_HELPER}`]));
-        // The token itself rides the env file, never argv.
-        expect(run.some((arg) => arg.includes('t0k-3n'))).toBe(false);
+        const [withToken] = supervised.ofKind('sync');
+        expect(withToken?.env).toMatchObject({ CRED_HELPER: CREDENTIAL_HELPER, GITHUB_TOKEN: 't0k-3n' });
+        // The token itself rides the step, never argv — the step's or the daemon's.
+        expect(withToken?.argv.some((arg) => arg.includes('t0k-3n'))).toBe(false);
+        expect(d.calls.flat().some((arg) => arg.includes('t0k-3n'))).toBe(false);
 
         // Any other claim env — even a non-empty one — keeps the plain fetch, no helper.
         await runner.syncCheckout({ ...repoJob, env: { CORE_TOKEN: 'shh' } });
-        const plain = calls.filter((a) => a[0] === 'run')[1]!;
-        expect(plain.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
+        expect(supervised.ofKind('sync')[1]?.env).not.toHaveProperty('CRED_HELPER');
 
         // A PRESENT-BUT-EMPTY token is no token: the helper would answer an empty password and
         // break the public-repo plain fetch it exists to preserve — and a private repo with an
         // empty token fails auth either way. Property presence is not the test; the VALUE is.
         await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: '' } });
-        const empty = calls.filter((a) => a[0] === 'run')[2]!;
-        expect(empty.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
+        expect(supervised.ofKind('sync')[2]?.env).not.toHaveProperty('CRED_HELPER');
     });
 
-    // A claim that CONTINUES a session — a follow-up — is mid-task,
-    // and git operations that touch the remote belong to the task's beginning and end (issue
-    // #58). Its sync is a RESTORE: the script runs with RESTORE=1, the claim env file is not
-    // written (restore talks only to the local clone — nothing to credential), and the fetch's
-    // helper code is absent even when the claim carries a token.
+    // A claim that CONTINUES a session — a follow-up — is mid-task, and git operations that touch
+    // the remote belong to the task's beginning and end (issue #58). Its sync is a RESTORE: the
+    // step runs with RESTORE=1 and carries NO claim env at all (restore talks only to the local
+    // clone — nothing to credential), and the fetch's helper code is absent even when the claim
+    // carries a token.
     it('restores a claim that continues a session instead of syncing it', async () => {
-        const { exec, calls } = entrypointAnswers('{"ok":true,"reason":null}');
-        const runner = dockerRunner(exec);
+        const supervised = syncSteps();
+        const runner = dockerRunner(emptyDaemon, { steps: supervised.sink });
 
         await runner.syncCheckout({ ...repoJob, followUp: true, env: { GITHUB_TOKEN: 't0k-3n' } });
-        const follow = calls.filter((a) => a[0] === 'run')[0]!;
-        expect(follow).toEqual(expect.arrayContaining(['-e', 'RESTORE=1']));
-        expect(follow).not.toContain('--env-file');
-        expect(follow.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
+        const [follow] = supervised.ofKind('sync');
+        expect(follow?.env).toMatchObject({ RESTORE: '1' });
+        expect(follow?.env).not.toHaveProperty('GITHUB_TOKEN');
+        expect(follow?.env).not.toHaveProperty('CRED_HELPER');
 
         // A claim carrying a resume session (resumeSessionId without the followUp flag) is the
         // same mid-task hazard: the session's tree must not move under it either.
         await runner.syncCheckout({ ...repoJob, resumeSessionId: SESSION, env: { GITHUB_TOKEN: 't0k-3n' } });
-        const parked = calls.filter((a) => a[0] === 'run')[1]!;
-        expect(parked).toEqual(expect.arrayContaining(['-e', 'RESTORE=1']));
-        expect(parked).not.toContain('--env-file');
+        const parked = supervised.ofKind('sync')[1];
+        expect(parked?.env).toMatchObject({ RESTORE: '1' });
+        expect(parked?.env).not.toHaveProperty('GITHUB_TOKEN');
 
-        // A starting claim — even with a token — keeps the sync shape: no RESTORE, env file on.
+        // A starting claim — even with a token — keeps the sync shape: no RESTORE, claim env on.
         await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } });
-        const fresh = calls.filter((a) => a[0] === 'run')[2]!;
-        expect(fresh.some((arg) => arg.startsWith('RESTORE='))).toBe(false);
-        expect(fresh.indexOf('--env-file')).toBeGreaterThan(-1);
+        const fresh = supervised.ofKind('sync')[2];
+        expect(fresh?.env).not.toHaveProperty('RESTORE');
+        expect(fresh?.env).toMatchObject({ GITHUB_TOKEN: 't0k-3n' });
     });
 
-    /* The terminal reclaim (issue #47): the same one-container shape as the sync it undoes,
-     * but naming only the clone and the tree — no BRANCH, no credential helper, no env file. */
-    it('reclaims the worktree in a throwaway container, naming only paths', async () => {
-        const calls: string[][] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            if (args[0] === 'run') return { stdout: '{"ok":true,"removed":true,"reason":null}' };
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = dockerRunner(exec);
-        const result = await runner.reclaimWorktree(repoJob);
+    /* The terminal reclaim (issue #47): the one step that undoes the sync, naming only the clone
+     * and the tree — no BRANCH, no credential helper, no claim env. The thread has no attempt, so
+     * it runs in a supervisor-only group of its own, under a token of its own, and ends it. */
+    it('reclaims the worktree through a supervisor-only group of its own, naming only paths', async () => {
+        const d = labelDaemon();
+        const { endpoint, closed } = reclaimEndpoint();
+        const supervised = fakeSteps((step) =>
+            ok(step.kind === 'reclaim' ? '{"ok":true,"removed":true,"reason":null}' : '')
+        );
+        const runner = dockerRunner(d.exec, { steps: supervised.sink, endpoint });
+        const result = await runner.reclaimWorktree({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } });
 
         expect(result).toEqual({ ok: true, removed: true, reason: null });
-        const run = calls.find((a) => a[0] === 'run')!;
-        expect(run).toEqual(expect.arrayContaining(['-e', `REPO=/workspaces/bellows/${USER}/factory`]));
-        expect(run).toEqual(
-            expect.arrayContaining(['-e', `WORKTREE=/workspaces/bellows/${USER}/.worktrees/${job.id}`])
-        );
-        expect(run).toEqual(
-            expect.arrayContaining(['--entrypoint', 'node', 'claude-executor', '-e', gitWorktreeRemoveScript])
-        );
-        // Scoped to the job's own subtree, like the sync it undoes.
-        expect(run).toEqual(
+        const [reclaim] = supervised.ofKind('reclaim');
+        expect(reclaim?.argv).toEqual(['node', '-e', gitWorktreeRemoveScript]);
+        // Reclaim touches no credential and no branch: the thread is terminal, so there is no
+        // fetch to authenticate and no follow-up branch to preserve.
+        expect(reclaim?.env).toEqual({
+            REPO: `/workspaces/bellows/${USER}/factory`,
+            WORKTREE: `/workspaces/bellows/${USER}/.worktrees/${job.id}`,
+        });
+        // Under the token its own endpoint opened — not the attempt's — and ended with the group.
+        expect(supervised.submitted.every((entry) => entry.token === RECLAIM_TOKEN)).toBe(true);
+        expect(supervised.ofKind('finish')).toHaveLength(1);
+        expect(closed).toEqual([RECLAIM_TOKEN]);
+        // A supervisor and nothing else, under a lease of its own, with the control pair off argv;
+        // it mounts the job's own subtree like the sync it undoes, and it is gone afterwards.
+        const creates = d.calls.filter((a) => a[0] === 'create');
+        expect(creates).toHaveLength(1);
+        const create = creates[0]!;
+        expect(create).toContain('--entrypoint');
+        expect(create.some((arg) => arg.includes(repoJob.leaseToken))).toBe(false);
+        expect(create.join(' ')).not.toContain(RECLAIM_TOKEN);
+        expect(create).toEqual(
             expect.arrayContaining([
                 '--mount',
                 `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
             ])
         );
-        // Reclaim touches no credential and no branch: the thread is terminal, so there is no
-        // fetch to authenticate and no follow-up branch to preserve.
-        expect(run.some((arg) => arg.startsWith('BRANCH='))).toBe(false);
-        expect(run.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
-        expect(run.some((arg) => arg.startsWith('--env-file'))).toBe(false);
+        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
+        expect(d.containers.size).toBe(0);
+    });
+
+    it('refuses a reclaim by saying this driver has no supervisor endpoint to run it through', async () => {
+        const supervised = fakeSteps();
+        const runner = dockerRunner(emptyDaemon, { steps: supervised.sink });
+
+        const result = await runner.reclaimWorktree(repoJob);
+
+        expect(result).toMatchObject({ ok: false, removed: false });
+        expect(result.reason).toContain('no supervisor endpoint');
+        expect(supervised.steps()).toEqual([]);
     });
 
     it('reclaims nothing, run untouched, for a job that never had a worktree', async () => {
@@ -3767,154 +3867,79 @@ describe('publishing the produced work', () => {
     });
 
     /*
-     * Issue #344's docker half: an unreadable sync/reclaim verdict names why — the exit code and
-     * the last stdout line, or the plain fact that nothing was printed. (A nonzero exit already
-     * lands in the `container failed:` arm with the daemon's stderr detail; a RESOLVED unreadable
-     * verdict is by construction an exit-0 container.)
+     * An unreadable sync/reclaim verdict names why — what the step printed — and a step that
+     * exited non-zero says it in the tool's own words. (A RESOLVED unreadable verdict is by
+     * construction an exit-0 step.)
      */
-    it('names the last stdout line when the sync container answers nothing parseable', async () => {
-        const { exec } = entrypointAnswers('fetching origin\nfatal: could not read from remote repository\n');
-        const runner = dockerRunner(exec);
-        const result = await runner.syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: 'the worktree sync answered nothing readable: exit 0, last log line "fatal: could not read from remote repository"',
-        });
+    it('names what the sync step printed when its answer is not a verdict', async () => {
+        const supervised = syncSteps('fetching origin\nfatal: could not read from remote repository\n');
+        const result = await dockerRunner(emptyDaemon, { steps: supervised.sink }).syncCheckout(repoJob);
+
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('the worktree sync answered nothing readable');
+        expect(result.reason).toContain('fatal: could not read from remote repository');
+    });
+
+    it('names a sync step that printed nothing readable', async () => {
+        const result = await dockerRunner(emptyDaemon, { steps: syncSteps('').sink }).syncCheckout(repoJob);
+
+        expect(result.ok).toBe(false);
+        expect(result.reason).toMatch(/^the worktree sync answered nothing readable/);
+    });
+
+    it('says why a sync step that exited non-zero failed, in the tool’s own words', async () => {
+        const supervised = fakeSteps(() => ({
+            exitCode: 128,
+            stdout: '',
+            stderr: 'fatal: unable to access the remote',
+            timedOut: false,
+        }));
+        const result = await dockerRunner(emptyDaemon, { steps: supervised.sink }).syncCheckout(repoJob);
+
+        expect(result).toEqual({ ok: false, reason: 'the worktree sync failed: fatal: unable to access the remote' });
     });
 
     /*
      * Issue #559: a sync that never lands (a fetch stalled on the network) would hold its clone's
-     * queue, and every sibling behind it, forever. The container is bounded like the kubernetes
-     * sync Job's deadline: past it the client is killed AND the container removed by name — `--rm`
-     * alone fires only when the daemon sees the container exit — and the run fails like a sync Job
-     * the kubelet ended. A stand-down is not a timeout: an abandoned sync still finishes its writes.
+     * queue, and every sibling behind it, forever. The step carries the sync deadline, which the
+     * supervisor enforces — it kills the step's process and answers `timedOut` — and the run fails
+     * like a sync the kubelet ended. Nothing of the step outlives the answer, so there is nothing
+     * further to wait out.
      */
-    type ExecOptions = { timeout?: number; signal?: AbortSignal };
-    const runSyncWith = async (
-        fail: (options: ExecOptions | undefined) => never,
-        wait: () => Promise<{ stdout: string }> = async () => ({ stdout: '0\n' })
-    ) => {
-        const calls: { args: string[]; options?: ExecOptions }[] = [];
-        const exec = vitest.fn(async (args: string[], options?: ExecOptions) => {
-            calls.push({ args, ...(options ? { options } : {}) });
-            if (args[0] === 'run' && args.includes('--entrypoint')) fail(options);
-            if (args[0] === 'wait') return wait();
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = dockerRunner(exec);
-        return { calls, runner };
-    };
-    const killed = () => Object.assign(new Error('Command failed: docker run'), { killed: true, signal: 'SIGTERM' });
+    it('bounds the sync step by the sync deadline, and fails the run when the supervisor ends it there', async () => {
+        const supervised = fakeSteps(() => ({ exitCode: null, stdout: '', stderr: '', timedOut: true }));
+        const result = await dockerRunner(emptyDaemon, { steps: supervised.sink }).syncCheckout(repoJob);
 
-    it('bounds the sync container by the sync deadline, and removes it by name when it outlives it', async () => {
-        const { calls, runner } = await runSyncWith(() => {
-            throw killed();
-        });
-
-        const result = await runner.syncCheckout(repoJob);
-
-        const run = calls.find((call) => call.args[0] === 'run' && call.args.includes('--entrypoint'))!;
-        expect(run.options?.timeout).toBe(SYNC_DEADLINE_MS);
-        const name = run.args[run.args.indexOf('--name') + 1]!;
-        expect(name).toBe(`factory-sync-${repoJob.id}-${repoJob.leaseToken}`);
+        const [sync] = supervised.ofKind('sync');
+        expect(sync?.timeoutMs).toBe(SYNC_DEADLINE_MS);
         expect(result).toMatchObject({
             ok: false,
-            reason: `the worktree sync container failed: it exceeded its ${SYNC_DEADLINE_MS}ms deadline`,
+            reason: `the worktree sync failed: the step exceeded its ${SYNC_DEADLINE_MS}ms deadline`,
         });
         expect(TRANSIENT_SYNC_REASON.test(result.reason ?? '')).toBe(false);
-        // The verdict answers at once; the writes are over only once the daemon proves it gone.
-        await result.settled;
-        const remove = calls.find((call) => call.args.join(' ') === `rm -f ${name}`);
-        // Bounded too: a daemon that hangs on the removal must not wedge the proof loop.
-        expect(remove?.options?.timeout).toBeGreaterThan(0);
-        expect(calls.some((call) => call.args[0] === 'ps' && call.args.join(' ').includes(name))).toBe(true);
+        expect(result.settled).toBeUndefined();
     });
 
-    it('settles a timed-out sync only once a listing proves its container gone, however the removal answered', async () => {
-        const name = `factory-sync-${repoJob.id}-${repoJob.leaseToken}`;
-        const listings = [`${name}\n`, ''];
-        const calls: string[] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--entrypoint')) throw killed();
-            // Only the calls about the sync container — the re-claim fence lists by label.
-            if (!args.some((arg) => arg.includes(name))) return { stdout: '' };
-            calls.push(args[0]!);
-            // The daemon refuses the first removal; only a listing that no longer shows it counts.
-            if (args[0] === 'rm' && calls.filter((c) => c === 'rm').length === 1) throw new Error('daemon busy');
-            if (args[0] === 'ps') return { stdout: listings.shift() ?? '' };
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = dockerRunner(exec);
+    // The sync is never abandoned mid-write: a stand-down — or an attempt whose channel closed —
+    // kills the whole group instead, which rejects the step. The loop leaves the job to its lease,
+    // and the group is gone from the daemon.
+    it('removes the group and throws when the channel closes under the sync', async () => {
+        const d = labelDaemon();
+        const sink: StepSink = {
+            submit: () => Promise.reject(new Error('the task supervisor channel closed before its step was answered')),
+            awaitReport: () => Promise.resolve(FINALIZED),
+            contacted: () => true,
+        };
+        const runner = dockerRunner(d.exec, { steps: sink });
 
-        const result = await runner.syncCheckout(repoJob);
-        let settled = false;
-        void result.settled?.then(() => (settled = true));
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        expect(settled).toBe(false);
-        await result.settled;
+        await expect(runner.syncCheckout(repoJob)).rejects.toThrow('channel closed');
 
-        expect(calls.filter((c) => c === 'ps')).toHaveLength(2);
-        expect(calls.filter((c) => c === 'rm')).toHaveLength(2);
-    });
-
-    it('lets an abandoned sync container finish its writes, and answers only once it has exited', async () => {
-        const stop = new AbortController();
-        let exited: (out: { stdout: string }) => void = () => {};
-        const { calls, runner } = await runSyncWith(
-            () => {
-                stop.abort();
-                throw killed();
-            },
-            () => new Promise((resolve) => (exited = resolve))
-        );
-
-        let answered = false;
-        const syncing = runner.syncCheckout(repoJob, stop.signal).then(() => (answered = true));
-        // Wait for the `docker wait` itself, not a fixed tick: under load the chain up to it is slow.
-        const wait = await vitest.waitFor(() => {
-            const found = calls.find((call) => call.args[0] === 'wait');
-            if (!found) throw new Error('docker wait not issued yet');
-            return found;
-        });
-        // Still holding: the queue keeps this sync's place until the container is gone.
-        expect(answered).toBe(false);
-        expect(wait.args).toEqual(['wait', `factory-sync-${repoJob.id}-${repoJob.leaseToken}`]);
-        expect(wait.options?.timeout).toBeGreaterThan(0);
-        expect(wait.options?.timeout).toBeLessThanOrEqual(SYNC_DEADLINE_MS);
-        exited({ stdout: '0\n' });
-        await syncing;
-
-        expect(calls.some((call) => call.args[0] === 'rm')).toBe(false);
-    });
-
-    it('removes an abandoned sync container that is still running at the deadline', async () => {
-        const stop = new AbortController();
-        const { calls, runner } = await runSyncWith(
-            () => {
-                stop.abort();
-                throw killed();
-            },
-            async () => {
-                throw killed();
-            }
-        );
-
-        await runner.syncCheckout(repoJob, stop.signal);
-
-        expect(
-            calls.some((call) => call.args.join(' ') === `rm -f factory-sync-${repoJob.id}-${repoJob.leaseToken}`)
-        ).toBe(true);
-    });
-
-    it('does not read an output overflow as the deadline', async () => {
-        const { calls, runner } = await runSyncWith(() => {
-            throw Object.assign(killed(), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' });
-        });
-
-        const result = await runner.syncCheckout(repoJob);
-
-        expect(result.reason).not.toContain('deadline');
-        expect(calls.some((call) => call.args[0] === 'rm')).toBe(false);
+        expect(d.calls).toContainEqual(['rm', '-f', supervisorName(repoJob)]);
+        expect(d.containers.size).toBe(0);
+        // Nothing is remembered of the group: the next sync creates one afresh.
+        const created = d.calls.filter((a) => a[0] === 'create').length;
+        await expect(runner.syncCheckout(repoJob)).rejects.toThrow('channel closed');
+        expect(d.calls.filter((a) => a[0] === 'create').length).toBe(created * 2);
     });
 
     // Issue #559: the contention verdict reaches the loop unchanged — the anchored marker is what
@@ -3922,61 +3947,38 @@ describe('publishing the produced work', () => {
     it('passes checkout contention through as the transient reason, with the shipped lock wait', async () => {
         const reason =
             'transient worktree sync: the checkout lock /w/.git/factory-sync.lock is still held after 20000ms';
-        const runs: string[][] = [];
-        const { exec } = entrypointAnswers((args) => {
-            runs.push(args);
-            return `${JSON.stringify({ ok: false, reason })}\n`;
-        });
-        const runner = dockerRunner(exec);
+        const supervised = syncSteps(`${JSON.stringify({ ok: false, reason })}\n`);
+        const runner = dockerRunner(emptyDaemon, { steps: supervised.sink });
 
         const result = await runner.syncCheckout(repoJob);
 
         expect(result).toMatchObject({ ok: false, reason });
         expect(TRANSIENT_SYNC_REASON.test(result.reason ?? '')).toBe(true);
-        expect(runs.flat().some((arg) => arg.startsWith('SYNC_LOCK_WAIT_MS'))).toBe(false);
+        expect(
+            Object.keys(supervised.ofKind('sync')[0]!.env).some((name) => name.startsWith('SYNC_LOCK_WAIT_MS'))
+        ).toBe(false);
     });
 
-    it('carries the script’s failure kind through the sync container’s stdout (issue #666)', async () => {
+    it('carries the script’s failure kind through the sync step’s stdout (issue #666)', async () => {
         const verdict = { ok: false, reason: 'the repository clone /w/r does not exist', kind: 'missing_clone' };
-        const { exec } = entrypointAnswers(`${JSON.stringify(verdict)}\n`);
-        const runner = dockerRunner(exec);
+        const runner = dockerRunner(emptyDaemon, { steps: syncSteps(`${JSON.stringify(verdict)}\n`).sink });
 
         expect(await runner.syncCheckout(repoJob)).toMatchObject(verdict);
     });
 
-    it('says the sync container printed nothing when its stdout is empty', async () => {
-        const { exec } = entrypointAnswers('');
-        const runner = dockerRunner(exec);
-        const result = await runner.syncCheckout(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            reason: 'the worktree sync answered nothing readable: exit 0, the container printed nothing',
-        });
-    });
-
     it('names why the reclaim verdict was unreadable', async () => {
-        const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run') return { stdout: 'rm: permission denied\n' };
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = dockerRunner(exec);
+        const { runner } = reclaimRunner('rm: permission denied\n');
         const result = await runner.reclaimWorktree(repoJob);
-        expect(result).toEqual({
-            ok: false,
-            removed: false,
-            reason: 'the worktree reclaim answered nothing readable: exit 0, last log line "rm: permission denied"',
-        });
+        expect(result.ok).toBe(false);
+        expect(result.removed).toBe(false);
+        expect(result.reason).toContain('the worktree reclaim answered nothing readable');
+        expect(result.reason).toContain('rm: permission denied');
     });
 
     it('answers the refusal verbatim when the reclaim script refuses', async () => {
-        const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run')
-                return {
-                    stdout: '{"ok":false,"removed":false,"reason":"refusing to remove /x: a git tree that is not a registered worktree"}',
-                };
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = dockerRunner(exec);
+        const { runner } = reclaimRunner(
+            '{"ok":false,"removed":false,"reason":"refusing to remove /x: a git tree that is not a registered worktree"}'
+        );
         const result = await runner.reclaimWorktree(repoJob);
         expect(result.ok).toBe(false);
         expect(result.reason).toContain('registered worktree');
@@ -3985,20 +3987,23 @@ describe('publishing the produced work', () => {
     // The fence before the sync (PR #46 review): the loop calls syncCheckout before the
     // runner's own fence, so the sweep has to come here — the sync is the first writer on the
     // task worktree, and starting it over a previous attempt's live runner would mix edits.
-    it('sweeps the job label before the sync container is created', async () => {
+    it('sweeps the job label before the sync step is asked of a group', async () => {
         const d = labelDaemon();
-        const runner = dockerRunner(d.exec);
+        const supervised = syncSteps();
+        const runner = dockerRunner(d.exec, { steps: supervised.sink });
         const result = await runner.syncCheckout(repoJob);
 
         expect(result).toEqual({ ok: true, reason: null });
         const shapes = d.calls.map((a) => a[0]);
         expect(shapes).toContain('ps');
-        expect(shapes.indexOf('ps')).toBeLessThan(shapes.indexOf('run'));
+        expect(shapes.indexOf('ps')).toBeLessThan(shapes.indexOf('create'));
+        expect(shapes.indexOf('create')).toBeLessThan(shapes.indexOf('start'));
+        expect(supervised.ofKind('sync')).toHaveLength(1);
     });
 
     // The replacement-with-an-active-previous-runner shape of the review comment: the old
     // attempt's runner is still on the daemon when the replacement's sync starts, and the
-    // fence's removal must land BEFORE the sync container runs — not after it.
+    // fence's removal must land BEFORE the sync's group is created — not after it.
     it('removes a previous attempt’s still-running runner before the sync runs', async () => {
         const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
         const NEW_TOKEN = 'bbbbbbbb-2222-4222-8222-222222222222';
@@ -4007,16 +4012,17 @@ describe('publishing the produced work', () => {
             'factory.job': job.id,
             'factory.lease': OLD_TOKEN,
         });
-        const runner = dockerRunner(d.exec);
-        const result = await runner.syncCheckout({ ...repoJob, leaseToken: NEW_TOKEN });
+        const runner = dockerRunner(d.exec, { steps: syncSteps().sink });
+        const next = { ...repoJob, leaseToken: NEW_TOKEN };
+        const result = await runner.syncCheckout(next);
 
         expect(result).toEqual({ ok: true, reason: null });
-        // The previous runner is off the daemon by the time the sync container is created.
-        expect(d.containers.size).toBe(0);
+        // The previous runner is off the daemon; what is there is the new attempt's own group.
+        expect([...d.containers.keys()]).toEqual([supervisorName(next)]);
         const rmIndex = d.calls.findIndex((a) => a[0] === 'rm');
-        const runIndex = d.calls.findIndex((a) => a[0] === 'run');
+        const createIndex = d.calls.findIndex((a) => a[0] === 'create');
         expect(rmIndex).toBeGreaterThanOrEqual(0);
-        expect(rmIndex).toBeLessThan(runIndex);
+        expect(rmIndex).toBeLessThan(createIndex);
     });
 
     // A fence that converts a failed `docker ps` into an empty answer reads "nothing left" —
@@ -4051,11 +4057,13 @@ describe('publishing the produced work', () => {
         const labels = { 'factory.job': job.id, 'factory.lease': OLD_TOKEN };
         if (leftover === 'container') d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), labels);
         if (leftover === 'network') d.networks.set(networkName({ ...job, leaseToken: OLD_TOKEN }), labels);
-        const runner = dockerRunner(d.exec);
+        const supervised = syncSteps();
+        const runner = dockerRunner(d.exec, { steps: supervised.sink });
 
         await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
-        // No sync container over an unfenced checkout: the throw precedes the run argv entirely.
-        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
+        // No group, and no sync step, over an unfenced checkout: the throw precedes both.
+        expect(d.calls.some((a) => a[0] === 'create')).toBe(false);
+        expect(supervised.steps()).toEqual([]);
     });
 
     // The one tolerated shape: a container exiting between the fence's ps and its rm answers
@@ -4073,61 +4081,65 @@ describe('publishing the produced work', () => {
             'factory.job': job.id,
             'factory.lease': OLD_TOKEN,
         });
-        const runner = dockerRunner(d.exec);
+        const supervised = syncSteps();
+        const runner = dockerRunner(d.exec, { steps: supervised.sink });
 
         expect(await runner.syncCheckout(repoJob)).toEqual({ ok: true, reason: null });
-        expect(d.calls.some((a) => a[0] === 'run')).toBe(true);
+        expect(d.calls.some((a) => a[0] === 'create' && a.includes(supervisorName(repoJob)))).toBe(true);
+        expect(supervised.ofKind('sync')).toHaveLength(1);
     });
 
     it('runs every publish step inside the task worktree', async () => {
-        const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
+        const { steps, docker, runner } = publishRunner(DIRTY_ON_MAIN, {
             fail: (a) => a.includes('switch') && !a.includes('-c'),
         });
         await runner.publishGit!(ISSUE_JOB);
 
         const wt = `/workspaces/bellows/${USER}/.worktrees/${job.id}`;
-        expect(calls.length).toBeGreaterThan(0);
-        for (const call of calls) {
-            // Every step container mounts the job's own subtree — the publish never sees
-            // another member's tree.
-            if (call[0] === 'run') {
-                expect(call).toEqual(
-                    expect.arrayContaining([
-                        '--mount',
-                        `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
-                    ])
-                );
-            }
-            if (call.some((x) => typeof x === 'string' && x.includes('shortstat'))) {
-                // The summarizer (issue #82) is anchored like every git step — `-w` at the task
-                // worktree, never the image default, where git would find no repo and the
-                // summary would silently degrade to the command title. Pinned explicitly,
-                // because its failure mode is the quiet one.
-                expect(call.indexOf('-w')).toBeGreaterThan(-1);
-                expect(call[call.indexOf('-w') + 1]).toBe(wt);
-            } else if (call.some((x) => typeof x === 'string' && x.includes('execFileSync'))) {
+        expect(steps.steps().length).toBeGreaterThan(0);
+        for (const step of steps.steps()) {
+            if (step.argv.some((x) => x.includes('shortstat'))) {
+                // The summarizer (issue #82) is anchored like every git step — the task
+                // worktree as its working directory, never the image default, where git would find
+                // no repo and the summary would silently degrade to the command title. Pinned
+                // explicitly, because its failure mode is the quiet one.
+                expect(step.cwd).toBe(wt);
+            } else if ('LEDGER' in step.env) {
+                // The publication ledger is a file under the worktree, named by path.
+                expect(step.env.LEDGER?.startsWith(`${wt}/`)).toBe(true);
+            } else if (step.argv.some((x) => x.includes('execFileSync'))) {
                 // The probe runs at the mount root and reads the repo by REPO.
-                expect(call).toEqual(expect.arrayContaining(['-e', `REPO=${wt}`]));
-            } else if (call.includes('-w')) {
-                expect(call[call.indexOf('-w') + 1]).toBe(wt);
+                expect(step.env).toMatchObject({ REPO: wt });
+            } else {
+                expect(step.cwd).toBe(wt);
             }
         }
+        // The steps run in the supervisor, which mounts the job's own subtree — the publish never
+        // sees another member's tree.
+        const create = docker.find((a) => a[0] === 'create' && a.includes(supervisorName(ISSUE_JOB)))!;
+        expect(create).toEqual(
+            expect.arrayContaining([
+                '--mount',
+                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
+            ])
+        );
     });
 
-    // The claim's GITHUB_TOKEN was minted at claim time and a long run can outlive its hour —
-    // job 43379d3a pushed with a token 34 minutes past expiry and the publish failed on 401 with
-    // the work done. The loop asks the board for a fresh one; the env file the steps ride must
-    // carry THAT credential, and the claim's must be gone from it.
+    // The claim's GITHUB_TOKEN was minted at claim time and a long run can outlive its hour — a
+    // publish pushed with a token well past expiry and failed on 401 with the work done. The loop
+    // asks the board for a fresh one; the env the steps ride must carry THAT credential, and the
+    // claim's must be gone from it.
     it("publishes with the board's fresh credential, not the claim's hour-old token", async () => {
-        const { envBodies, runner } = publishRunner(DIRTY_ON_MAIN);
+        const { steps, docker, runner } = publishRunner(DIRTY_ON_MAIN);
         const result = await runner.publishGit!(ISSUE_JOB, 'ghs_fresh');
 
         expect(result.ok).toBe(true);
-        expect(envBodies.length).toBeGreaterThan(0);
-        for (const body of envBodies) {
-            expect(body).toContain('GITHUB_TOKEN=ghs_fresh');
-            expect(body).not.toContain('GITHUB_TOKEN=t0k-3n');
-        }
+        const credentialed = steps.steps().filter((step) => 'GITHUB_TOKEN' in step.env);
+        expect(credentialed.length).toBeGreaterThan(0);
+        for (const step of credentialed) expect(step.env.GITHUB_TOKEN).toBe('ghs_fresh');
+        expect(JSON.stringify(steps.steps())).not.toContain('t0k-3n');
+        // Credentials ride the step and nothing else: never the daemon's argv.
+        expect(docker.flat().join(' ')).not.toContain('ghs_fresh');
     });
 
     // Executor parity for the publish flag (docs/workflows.md): the flag is read in exactly ONE
@@ -4135,11 +4147,11 @@ describe('publishing the produced work', () => {
     // own. The loop tests pin that a publish:false claim never reaches publishGit; this pins the
     // other half, that the docker transport grew no gate of its own to drift against.
     it('leaves the publish decision to the loop: publishGit ignores a publish:false claim', async () => {
-        const { calls, runner } = publishRunner(DIRTY_ON_MAIN);
+        const { steps, runner } = publishRunner(DIRTY_ON_MAIN);
         const result = await runner.publishGit!({ ...ISSUE_JOB, publish: false });
 
         expect(result.ok).toBe(true);
-        expect(calls.length).toBeGreaterThan(0);
+        expect(steps.steps().length).toBeGreaterThan(0);
     });
 
     it('refuses branch names that could read as something else', () => {
@@ -4207,53 +4219,53 @@ describe('publishing the produced work', () => {
     });
 
     /**
-     * A stateful daemon: the probe answers from `state`, git steps mutate nothing, and every
-     * call is recorded so the flow — what ran, in which order, and what was skipped — is the
-     * assertion. The runner's own `docker run` never happens; only publish argv reaches the
-     * exec seam here.
+     * The supervisor stood in: the probe answers from `state`, git steps mutate nothing, and every
+     * step the runner submits is recorded, so the flow — what ran, in which order, and what was
+     * skipped — is the assertion. A step is a request over the control channel, never a container:
+     * the daemon only ever sees the group (the supervisor), recorded in `docker`.
      */
     const publishRunner = (
         state: Record<string, unknown>,
         opts: {
             prExists?: boolean;
-            fail?: ((args: string[]) => boolean) | undefined;
-            /** The step's stderr, carried the way execFile rejects: on `stderr`, beside the echoed command. */
+            fail?: ((argv: string[]) => boolean) | undefined;
+            /** The step's stderr, as the supervisor answers it beside a non-zero exit. */
             failStderr?: string;
             summary?: Record<string, unknown>;
-            files?: RunnerFiles;
+            exec?: (args: string[]) => Promise<{ stdout: string }>;
         } = {}
     ) => {
-        const calls: string[][] = [];
-        const envBodies: string[] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            // The env file is deleted when the publish settles; snapshot it while a credentialed
-            // step runs, so a test can assert exactly what the container was handed.
-            const envAt = args.indexOf('--env-file');
-            if (envAt !== -1) envBodies.push(readFileSync(args[envAt + 1] as string, 'utf8'));
-            if (opts.fail?.(args)) {
-                throw opts.failStderr === undefined
-                    ? new Error('step refused')
-                    : Object.assign(new Error('Command failed: docker run …'), { stderr: opts.failStderr });
+        const docker: string[][] = [];
+        const steps = fakeSteps((step) => {
+            const argv = step.argv;
+            if (opts.fail?.(argv)) {
+                return { exitCode: 1, stdout: '', stderr: opts.failStderr ?? 'step refused', timedOut: false };
             }
+            // The publication ledger answers "never recorded", and HEAD is a commit.
+            if ('LEDGER' in step.env) return ok('{}');
+            if (argv.includes('rev-parse')) return ok(`${'a'.repeat(40)}\n`);
             // The probe's marker rides INSIDE the -e script string; the git steps carry their
             // subcommand as a standalone argv element. The PR summarizer (issue #82) is the
             // second node step — told apart by the git argv its script embeds.
-            if (args.some((a) => typeof a === 'string' && a.includes('execFileSync'))) {
-                if (args.some((a) => typeof a === 'string' && a.includes('shortstat'))) {
-                    return { stdout: JSON.stringify(opts.summary ?? SUMMARY) };
-                }
-                return { stdout: JSON.stringify(state) };
+            if (argv.some((a) => a.includes('execFileSync'))) {
+                if (argv.some((a) => a.includes('shortstat'))) return ok(JSON.stringify(opts.summary ?? SUMMARY));
+                return ok(JSON.stringify(state));
             }
-            if (args.includes('pr') && args.includes('view')) {
-                if (opts.prExists) return { stdout: `${PR_URL}\n` };
-                throw new Error('no pull requests');
+            if (argv.includes('pr') && argv.includes('view')) {
+                if (opts.prExists) return ok(`${PR_URL}\n`);
+                return { exitCode: 1, stdout: '', stderr: 'no pull requests', timedOut: false };
             }
-            if (args.includes('pr') && args.includes('create')) return { stdout: `${PR_URL}\n` };
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = dockerRunner(exec, { spawn: spawnChild(''), ...(opts.files ? { files: opts.files } : {}) });
-        return { calls, envBodies, runner };
+            if (argv.includes('pr') && argv.includes('create')) return ok(`${PR_URL}\n`);
+            return ok();
+        });
+        const exec =
+            opts.exec ??
+            (vitest.fn(async (args: string[]) => {
+                docker.push(args);
+                return { stdout: args[0] === 'wait' ? '0\n' : '' };
+            }) as unknown as (args: string[]) => Promise<{ stdout: string }>);
+        const runner = dockerRunner(exec, { spawn: spawnChild(''), steps: steps.sink });
+        return { steps, docker, runner };
     };
 
     const DIRTY_ON_MAIN = {
@@ -4268,10 +4280,15 @@ describe('publishing the produced work', () => {
     /** What the PR summarizer answers (issue #82): what the branch did, not what was asked. */
     const SUMMARY = { title: 'Fix the sync re-claim fence', body: '## Commits\n\n- Fix the sync re-claim fence' };
 
-    const shapesOf = (calls: string[][]): string[] =>
-        calls.map((a) => {
-            if (a.some((x) => typeof x === 'string' && x.includes('execFileSync'))) {
-                return a.some((x) => typeof x === 'string' && x.includes('shortstat')) ? 'summary' : 'probe';
+    const argvsOf = (steps: ReturnType<typeof fakeSteps>): string[][] => steps.steps().map((step) => step.argv);
+
+    const shapesOf = (steps: ReturnType<typeof fakeSteps>): string[] =>
+        steps.steps().map(({ argv: a, env }) => {
+            // The publication ledger (publish-reconcile.ts) is a node step keyed by its LEDGER path.
+            if ('LEDGER' in env) return 'ledger';
+            if (a.includes('rev-parse')) return 'rev-parse';
+            if (a.some((x) => x.includes('execFileSync'))) {
+                return a.some((x) => x.includes('shortstat')) ? 'summary' : 'probe';
             }
             if (a.includes('switch')) return 'switch';
             if (a.includes('add')) return 'add';
@@ -4283,27 +4300,33 @@ describe('publishing the produced work', () => {
             return 'other';
         });
 
-    // The post-gate tree read: the probe container alone, over the worktree, with no env file.
-    it('probes the tree fingerprint with one env-less container', async () => {
-        const { calls, envBodies, runner } = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:1' });
+    // The post-gate tree read: one probe step over the worktree, with no claim env.
+    it('probes the tree fingerprint with one env-less step', async () => {
+        const { steps, runner } = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:1' });
 
         expect(await runner.probeTree?.(ISSUE_JOB)).toBe('h:1');
 
-        expect(shapesOf(calls)).toEqual(['probe']);
-        expect(calls[0]).not.toContain('--env-file');
-        expect(envBodies).toEqual([]);
+        expect(shapesOf(steps)).toEqual(['probe']);
+        const [probe] = steps.ofKind('probe');
+        expect(probe?.env).toEqual({ REPO: worktreeDir(loadDriverConfig({}), ISSUE_JOB) });
+        expect(JSON.stringify(steps.steps())).not.toContain('t0k-3n');
     });
 
-    // A Stop while the probe container runs kills its docker client rather than waiting it out.
-    it('hands the stand-down signal to the probe container and answers null once it aborts', async () => {
+    // A Stop while the probe step is in flight ends the wait for its answer, never the supervisor.
+    it('hands the stand-down signal to the probe step and answers null once it aborts', async () => {
         const cancel = new AbortController();
         const seen: (AbortSignal | undefined)[] = [];
-        const exec = (async (_args: string[], options?: { signal?: AbortSignal }) => {
-            seen.push(options?.signal);
-            cancel.abort();
-            throw new Error('The operation was aborted');
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = dockerRunner(exec, { spawn: spawnChild('') });
+        const sink: StepSink = {
+            submit: async (_token, _step, signal) => {
+                seen.push(signal);
+                cancel.abort();
+                throw new Error('step was cancelled');
+            },
+            awaitReport: () => Promise.resolve(FINALIZED),
+            contacted: () => true,
+        };
+        const exec = (async () => ({ stdout: '' })) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = dockerRunner(exec, { spawn: spawnChild(''), steps: sink });
 
         expect(await runner.probeTree?.(ISSUE_JOB, cancel.signal)).toBeNull();
 
@@ -4321,7 +4344,7 @@ describe('publishing the produced work', () => {
     it('branches, commits, pushes and opens the PR — in that order', async () => {
         // The checkout sits on main with no fix branch yet: the plain switch refuses (no such
         // branch), and `-c` creates it — both calls are part of the expected shape.
-        const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
+        const { steps, docker, runner } = publishRunner(DIRTY_ON_MAIN, {
             fail: (a) => a.includes('switch') && !a.includes('-c'),
         });
         const result = await runner.publishGit!(ISSUE_JOB);
@@ -4337,64 +4360,57 @@ describe('publishing the produced work', () => {
             prNumber: 42,
             cause: null,
         });
-        expect(shapesOf(calls)).toEqual([
+        const calls = argvsOf(steps);
+        expect(shapesOf(steps)).toEqual([
             'probe',
             'switch',
             'switch',
             'add',
             'reset',
             'commit',
+            // The operation (`branch@sha`) is named and recorded in the publication ledger around
+            // each effect, so a retry after a lost answer reads what happened instead of redoing it.
+            'rev-parse',
+            'ledger',
             'push',
+            'ledger',
             'pr-view',
             'summary',
             'pr-create',
+            'ledger',
         ]);
-        // The decisions are publishCheckout's (publish-checkout.test.ts); this is their docker
-        // rendering. A step that needs the claim env gets the env file, never the token on argv.
-        const push = calls.find((a) => a.includes('push'));
-        expect(push).toContain('--env-file');
-        expect(push).toContain('--force-with-lease');
-        expect(push!.join(' ')).not.toContain('t0k-3n');
-        // A step's literal envs ride as `-e`, with no env file for a step that needs no credential.
-        const summary = calls.find((a) => a.some((x) => typeof x === 'string' && x.includes('shortstat')));
-        expect(summary).toEqual(
-            expect.arrayContaining([
-                '-e',
-                'BASE=origin/main',
-                '-e',
-                'BACKSTOP_TITLE=/fix https://github.com/Bellows-AI/factory/issues/10 (#10)',
-            ])
-        );
-        expect(summary).not.toContain('--env-file');
+        // The decisions are publishCheckout's (publish-checkout.test.ts); this is their supervised
+        // rendering. A step that needs the claim env gets it as its own env, never on argv — and
+        // nowhere in what the daemon was asked.
+        const pushStep = steps.steps().find((step) => step.argv.includes('push'))!;
+        expect(pushStep.argv).toContain('--force-with-lease');
+        expect(pushStep.env).toMatchObject({ GITHUB_TOKEN: 't0k-3n' });
+        expect(calls.flat().join(' ')).not.toContain('t0k-3n');
+        expect(docker.flat().join(' ')).not.toContain('t0k-3n');
+        // A step's literal envs ride as env, and a step that needs no credential carries none.
+        const summary = steps.steps().find((step) => step.argv.some((x) => x.includes('shortstat')))!;
+        expect(summary.env).toEqual({
+            BASE: 'origin/main',
+            BACKSTOP_TITLE: '/fix https://github.com/Bellows-AI/factory/issues/10 (#10)',
+        });
         // The summarizer's stdout reaches the PR through this transport.
         const create = calls.find((a) => a.includes('pr') && a.includes('create'));
         expect(create?.[create.indexOf('--title') + 1]).toBe('Fix the sync re-claim fence (#10)');
     });
 
-    // EVERY container this feature starts is a full `docker run` — the sync and the publisher
-    // once built argv without the subcommand, and `docker -v ... -w ...` failed on every job
-    // while the flow tests (matching argv by shape, not by head) stayed green. Pinned at the
-    // head, where the omission actually lives.
-    it('starts every sync and publish container with `docker run --rm`', async () => {
-        const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
+    // The acceptance of #771: a sync or a publish step is a request to the task supervisor, never a
+    // `docker run`. The daemon is asked for the group's own containers and nothing else.
+    it('starts no container of its own for a sync or a publish step', async () => {
+        const { steps, docker, runner } = publishRunner(DIRTY_ON_MAIN, {
             fail: (a) => a.includes('switch') && !a.includes('-c'),
         });
+        await runner.syncCheckout(ISSUE_JOB);
         await runner.publishGit!(ISSUE_JOB);
 
-        expect(calls.length).toBeGreaterThan(0);
-        for (const args of calls) {
-            expect(args[0]).toBe('run');
-            expect(args).toContain('--rm');
-        }
-        // And the sync, which takes no part in the publish flow above. The re-claim fence now
-        // precedes the sync container (ps / network reads and removals — argv-only, no
-        // container among them), so the pin counts CONTAINER starts: one, a full
-        // `docker run --rm`.
-        const { calls: syncCalls, runner: syncRunner } = publishRunner(DIRTY_ON_MAIN);
-        await syncRunner.syncCheckout(ISSUE_JOB);
-        const syncContainers = syncCalls.filter((a) => a[0] === 'run');
-        expect(syncContainers).toHaveLength(1);
-        expect(syncContainers[0]).toContain('--rm');
+        expect(steps.steps().length).toBeGreaterThan(0);
+        expect(docker.some((a) => a[0] === 'run')).toBe(false);
+        const created = docker.filter((a) => a[0] === 'create').map((a) => a[a.indexOf('--name') + 1]);
+        expect(created).toEqual([supervisorName(ISSUE_JOB)]);
     });
 
     // Issue #581: the board recovers a failed publish by its cause, read from the step's own words.
@@ -4408,17 +4424,18 @@ describe('publishing the produced work', () => {
         expect(result).toMatchObject({ ok: false, published: false, cause: 'conflict' });
     });
 
-    it('names an env file it could not write a transport failure', async () => {
-        const { runner } = publishRunner(DIRTY_ON_MAIN, {
-            files: {
-                writeFile: () => Promise.reject(new Error('ENOSPC: no space left on device')),
-                rm: () => Promise.resolve(),
-            } as unknown as RunnerFiles,
+    // The group the publish needs is infrastructure: a daemon that refuses it is thrown to the
+    // loop — never a publish verdict, and no step is asked of a supervisor that does not exist.
+    it('throws, submitting nothing, when the daemon refuses the group a publish needs', async () => {
+        const { steps, runner } = publishRunner(DIRTY_ON_MAIN, {
+            exec: async (args) => {
+                if (args[0] === 'create') throw new Error('Error response from daemon: no space left on device');
+                return { stdout: '' };
+            },
         });
-        const result = await runner.publishGit!(ISSUE_JOB);
 
-        expect(result).toMatchObject({ ok: false, published: false, cause: 'transport' });
-        expect(result.reason).toContain('could not write the publish env file');
+        await expect(runner.publishGit!(ISSUE_JOB)).rejects.toThrow('no space left on device');
+        expect(steps.steps()).toEqual([]);
     });
 });
 
@@ -4434,153 +4451,101 @@ describe('the block-helper transport (issue #207)', () => {
         ...over,
     });
 
-    it('fails an unknown helper id before any container starts', async () => {
-        const exec = vitest.fn(async () => ({ stdout: NOOP_VERDICT }));
-        const runner = dockerRunner(exec);
+    /** A runner whose supervisor answers each helper step with `answer`; the daemon's every argv is kept. */
+    const helperRunner = (answer: (step: StepRequest) => StepResult | Promise<StepResult> = () => ok(NOOP_VERDICT)) => {
+        const docker: string[][] = [];
+        const supervised = fakeSteps(answer);
+        const exec = vitest.fn(async (args: string[]) => {
+            docker.push(args);
+            return { stdout: args[0] === 'wait' ? '0\n' : '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        return { docker, supervised, runner: dockerRunner(exec, { steps: supervised.sink }) };
+    };
+
+    it('fails an unknown helper id before any step is submitted', async () => {
+        const { supervised, runner } = helperRunner();
         const result = await runner.runHelper!(job, plan({ helperId: 'not-a-real-helper' }));
         expect(result).toEqual({
             ok: false,
             reason: 'unknown_helper',
             message: expect.stringContaining('not-a-real-helper'),
         });
-        expect(exec).not.toHaveBeenCalled();
+        expect(supervised.steps()).toEqual([]);
     });
 
-    it('runs the noop helper end to end, over a named container with --entrypoint node and the script by content', async () => {
-        const calls: string[][] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            return { stdout: NOOP_VERDICT };
-        });
-        const runner = dockerRunner(exec);
+    it('runs the noop helper end to end, as one supervised step with node and the script by content', async () => {
+        const { docker, supervised, runner } = helperRunner();
         const result = await runner.runHelper!(repoJob, plan());
 
         expect(result).toEqual({ ok: true, output: { echoed: true } });
-        const run = calls[0]!;
-        expect(run[0]).toBe('run');
-        // NOT --rm: the container is named and explicitly removed in the finally, the same
-        // discipline the runner container itself uses, precisely so a killed CLI client (the
-        // timeout path) cannot leave a container --rm never had the chance to reap.
-        expect(run).not.toContain('--rm');
-        const nameIdx = run.indexOf('--name');
-        expect(nameIdx).toBeGreaterThan(-1);
-        expect(run[nameIdx + 1]).toMatch(new RegExp(`^factory-helper-${repoJob.id}-${repoJob.leaseToken}-`));
-        expect(run).toEqual(expect.arrayContaining(['--entrypoint', 'node']));
-        expect(run).toEqual(expect.arrayContaining(['-e', NOOP_SCRIPT]));
-        expect(run).toEqual(expect.arrayContaining(['-e', `HELPER_INPUT=${JSON.stringify({ a: 1 })}`]));
+        const [step] = supervised.ofKind('helper');
+        // Submitted to the attempt's supervisor, under the token only it holds.
+        expect(supervised.submitted.map((entry) => entry.token)).toEqual([CONTROL_TOKEN]);
+        expect(step?.argv).toEqual(['node', '-e', NOOP_SCRIPT]);
+        expect(step?.timeoutMs).toBe(HELPER_TIMEOUT_MS);
+        // Each call is its own operation: a helper is never replayed from an earlier answer.
+        expect(step?.id).toMatch(/^helper-[0-9a-f]{16}-/);
         // The task worktree, when the job names a repo — the same tree the agent run edits.
-        expect(run).toEqual(expect.arrayContaining(['-w', `/workspaces/bellows/${USER}/.worktrees/${job.id}`]));
-        // Attempt-scoped labels, matching every other container this runner starts.
-        expect(run).toEqual(expect.arrayContaining(['--label', `factory.job=${repoJob.id}`]));
-        expect(run).toEqual(expect.arrayContaining(['--label', `factory.lease=${repoJob.leaseToken}`]));
-        // A read-only helper (githubWriting: false) never gets an env file.
-        expect(run).not.toContain('--env-file');
-        // The container is removed explicitly, by the exact name it was given.
-        const rm = calls.find((a) => a[0] === 'rm');
-        expect(rm).toEqual(['rm', '-f', run[nameIdx + 1]]);
+        expect(step?.cwd).toBe(`/workspaces/bellows/${USER}/.worktrees/${job.id}`);
+        // A read-only helper (githubWriting: false) gets its bounded input and nothing of the claim env.
+        expect(step?.env).toEqual({ HELPER_INPUT: JSON.stringify({ a: 1 }) });
+        // No container of its own: the daemon never saw the helper.
+        expect(docker.some((a) => a[0] === 'run')).toBe(false);
     });
 
-    it('removes the named container even when the run times out, so a killed client never leaks it', async () => {
-        const calls: string[][] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            if (args[0] === 'run') {
-                const err = new Error('command timed out');
-                (err as unknown as { killed: boolean }).killed = true;
-                throw err;
-            }
-            return { stdout: '' };
-        });
-        const runner = dockerRunner(exec);
+    it('maps a step the supervisor timed out to a named timeout failure', async () => {
+        const { runner } = helperRunner(() => ({ exitCode: null, stdout: '', stderr: '', timedOut: true }));
         const result = await runner.runHelper!(job, plan());
         expect(result).toEqual({ ok: false, reason: 'timeout', message: expect.stringContaining('ms bound') });
-        const run = calls.find((a) => a[0] === 'run')!;
-        const nameIdx = run.indexOf('--name');
-        const rm = calls.find((a) => a[0] === 'rm');
-        expect(rm).toEqual(['rm', '-f', run[nameIdx + 1]]);
     });
 
-    it('hands the stand-down signal to the container, and a cancelled helper is no timeout (issue #488)', async () => {
+    it('hands the stand-down signal to the step, and a cancelled helper is no timeout (issue #488)', async () => {
         const controller = new AbortController();
         const seen: (AbortSignal | undefined)[] = [];
-        const calls: string[][] = [];
-        const exec = vitest.fn(async (args: string[], options?: { signal?: AbortSignal }) => {
-            calls.push(args);
-            if (args[0] === 'run') {
-                seen.push(options?.signal);
+        const sink: StepSink = {
+            submit: async (_token, _step, signal) => {
+                seen.push(signal);
                 controller.abort();
-                const err = new Error('the operation was aborted');
-                (err as unknown as { killed: boolean }).killed = true;
-                throw err;
-            }
-            return { stdout: '' };
-        });
-        const runner = dockerRunner(exec);
+                throw new Error('step was cancelled');
+            },
+            awaitReport: () => Promise.resolve(FINALIZED),
+            contacted: () => true,
+        };
+        const runner = dockerRunner(emptyDaemon, { steps: sink });
 
         const result = await runner.runHelper!(job, plan(), undefined, controller.signal);
 
         expect(seen).toEqual([controller.signal]);
         expect(result).toMatchObject({ ok: false, reason: 'runner_error' });
-        const run = calls.find((a) => a[0] === 'run')!;
-        expect(calls.find((a) => a[0] === 'rm')).toEqual(['rm', '-f', run[run.indexOf('--name') + 1]]);
     });
 
-    it('writes an attempt-scoped env file, carrying a fresh token, only for a github-writing helper', async () => {
-        const calls: string[][] = [];
-        let capturedFile: string | null = null;
-        let capturedBody: string | null = null;
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            const idx = args.indexOf('--env-file');
-            if (idx !== -1) {
-                capturedFile = args[idx + 1]!;
-                // Read the body WHILE it is still on disk — the runner's own finally removes it
-                // the moment this call resolves, the same cleanup every other env file here has.
-                capturedBody = readFileSync(capturedFile, 'utf8');
-            }
-            return { stdout: NOOP_VERDICT };
-        });
-        const runner = dockerRunner(exec);
+    it('carries a fresh token in the step env, only for a github-writing helper', async () => {
+        const { supervised, runner } = helperRunner();
         const result = await runner.runHelper!(repoJob, plan({ githubWriting: true }), 'fresh-install-token');
 
         expect(result).toEqual({ ok: true, output: { echoed: true } });
-        expect(calls[0]).toContain('--env-file');
+        const [step] = supervised.ofKind('helper');
         // The fresh token overlays the claim env (withPublishToken), never the claim's own token.
-        expect(capturedBody).toContain('GITHUB_TOKEN=fresh-install-token');
-        expect(capturedBody).not.toContain('claim-token');
-        // Cleaned up after: no leaked temp file, the same discipline every other env file here has.
-        expect(existsSync(capturedFile!)).toBe(false);
+        expect(step?.env).toMatchObject({ GITHUB_TOKEN: 'fresh-install-token' });
+        expect(JSON.stringify(step)).not.toContain('claim-token');
     });
 
-    it('never puts the token in argv — only ever in the env file', async () => {
-        const calls: string[][] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            return { stdout: NOOP_VERDICT };
-        });
-        const runner = dockerRunner(exec);
+    it('never puts the token in the daemon’s argv or the step’s — only in the step env', async () => {
+        const { docker, supervised, runner } = helperRunner();
         await runner.runHelper!(repoJob, plan({ githubWriting: true }), 'super-secret-token');
-        expect(calls[0]!.some((a) => a.includes('super-secret-token'))).toBe(false);
+        expect(docker.flat().some((a) => a.includes('super-secret-token'))).toBe(false);
+        const [step] = supervised.ofKind('helper');
+        expect(step?.argv.some((a) => a.includes('super-secret-token'))).toBe(false);
+        expect(step?.env.GITHUB_TOKEN).toBe('super-secret-token');
     });
 
-    it('maps an execDocker timeout to a named timeout failure', async () => {
-        const exec = vitest.fn(async () => {
-            const err = new Error('command timed out');
-            (err as unknown as { killed: boolean }).killed = true;
-            throw err;
-        });
-        const runner = dockerRunner(exec);
-        const result = await runner.runHelper!(job, plan());
-        expect(result).toEqual({ ok: false, reason: 'timeout', message: expect.stringContaining('ms bound') });
-    });
-
-    it('maps any other execDocker failure to runner_error, using the tool own output', async () => {
-        const exec = vitest.fn(async () => {
-            const err = new Error('Command failed: docker run ...') as Error & { stderr: string };
-            err.stderr = 'permission denied while running the helper';
-            throw err;
-        });
-        const runner = dockerRunner(exec);
+    it('maps any other failure to runner_error, using the tool own output', async () => {
+        const { runner } = helperRunner(() => ({
+            exitCode: 1,
+            stdout: '',
+            stderr: 'permission denied while running the helper',
+            timedOut: false,
+        }));
         const result = await runner.runHelper!(job, plan());
         expect(result).toEqual({
             ok: false,
@@ -4589,15 +4554,10 @@ describe('the block-helper transport (issue #207)', () => {
         });
     });
 
-    it('runs a command-only job (no repo) at the member root, with no -w flag', async () => {
-        const calls: string[][] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            return { stdout: NOOP_VERDICT };
-        });
-        const runner = dockerRunner(exec);
+    it('runs a command-only job (no repo) at the member root, with no working directory', async () => {
+        const { supervised, runner } = helperRunner();
         await runner.runHelper!(job, plan());
-        expect(calls[0]).not.toContain('-w');
+        expect(supervised.ofKind('helper')[0]).not.toHaveProperty('cwd');
     });
 });
 
@@ -4631,18 +4591,15 @@ describe('every container the driver runs is hardened (#382)', () => {
         ['the opencode session readout', () => opencodeSessionReadoutArgs(config(), opencodeJob, START)],
         ['the opencode cache probe', () => opencodeCacheProbeArgs(config(), opencodeJob)],
         ['the claude turns readout', () => claudeTurnsArgs(config(), job, SESSION, START)],
-        ['the task supervisor', () => supervisorCreateArgs(config(), job, true, '/tmp/supervisor.env')],
-        ['the claude transcript exporter', () => exporterCreateArgs(config(), job, START, '/tmp/export.env')],
         [
-            'the startup sync',
-            () =>
-                syncCheckoutArgs(config(), repoJob, {
-                    clone: '/w/clone',
-                    worktree: '/w/wt',
-                    restore: false,
-                    envFile: null,
-                }),
+            'the task supervisor',
+            () => supervisorCreateArgs(config(), job, { exporting: true, agentless: false }, '/tmp/supervisor.env'),
         ],
+        [
+            'the task supervisor of an agentless or reclaim group',
+            () => supervisorCreateArgs(config(), repoJob, { exporting: false, agentless: true }, '/tmp/supervisor.env'),
+        ],
+        ['the claude transcript exporter', () => exporterCreateArgs(config(), job, START, '/tmp/export.env')],
         ['a declared service', () => serviceRunArgs(job, { name: 'cache', image: 'redis', environment: [] })],
     ];
 
@@ -4655,58 +4612,35 @@ describe('every container the driver runs is hardened (#382)', () => {
     });
 
     /*
-     * The three paths that build their argv INLINE inside docker-runner.ts rather than through an
-     * exported builder — the worktree reclaim, the publish steps and the block helpers. The
-     * kubernetes side funnels all of these through `auxJobSpec`, so one spread covers them; docker
-     * has no such chokepoint, and the issue names reclaim, publish and helper explicitly. Without
-     * these three they were the only `docker run` sites in the process with nothing asserting the
-     * flags, which is exactly where a new one would land unnoticed.
+     * The paths that used to build a `docker run` argv INLINE — the worktree reclaim, the publish
+     * steps, the tree probe and the block helpers — now ask the task supervisor for a step instead
+     * (#771). What they leave on the daemon is the group they ran in, so what is asserted is every
+     * container THEY create (the supervisor of a group they open) and that none of them runs one
+     * of its own: a new `docker run` site would land here unnoticed otherwise.
      *
      * Asserted through each path's own `execDocker` fake, so the argv checked is the argv the
      * daemon would have been handed.
      */
-    const runArgvFrom = async (drive: (runner: ReturnType<typeof createDockerRunner>) => Promise<unknown>) => {
+    const containersFrom = async (drive: (runner: ReturnType<typeof createDockerRunner>) => Promise<unknown>) => {
         const calls: string[][] = [];
         const exec = vitest.fn(async (args: string[]) => {
             calls.push(args);
-            // Enough of a daemon for each path to get PAST its first step. The publish path reads
-            // a git state before it does anything, and a state that says "not cloned" would stop
-            // it after one container — leaving this helper asserting over a single argv while
-            // claiming to cover the step containers.
-            //
-            // The responses are NOT path-appropriate beyond that, and do not need to be: the
-            // reclaim script also embeds `execFileSync`, so it receives a git-state payload
-            // rather than its removal JSON. These tests read the ARGV, never the verdict, and
-            // reclaim runs its one container unconditionally either way. A test here that cared
-            // about the verdict would need a router, not this.
-            if (args.some((a) => typeof a === 'string' && a.includes('execFileSync'))) {
-                if (args.some((a) => typeof a === 'string' && a.includes('shortstat'))) {
-                    return { stdout: JSON.stringify({ title: 'Harden the executors', body: '## Commits' }) };
-                }
-                return {
-                    stdout: JSON.stringify({
-                        cloned: true,
-                        branch: 'main',
-                        defaultBranch: 'main',
-                        dirty: true,
-                        unpushed: 0,
-                        hasIdentity: false,
-                    }),
-                };
-            }
-            if (args.includes('pr') && args.includes('view')) throw new Error('no pull requests');
-            if (args.includes('pr') && args.includes('create')) return { stdout: `${PR_URL}\n` };
-            if (args[0] === 'run') return { stdout: '{"ok":true,"removed":true,"reason":null}' };
-            return { stdout: '' };
+            return { stdout: args[0] === 'wait' ? '0\n' : '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const runner = dockerRunner(
             exec,
-            // A fake `files`: the publish path writes a real env file into os.tmpdir() under the
+            // A fake `files`: the group's control env file is a real file in os.tmpdir() under the
             // default, and an offline unit test has no business touching the filesystem.
-            { files: { writeFile: async () => undefined, rm: async () => undefined } as unknown as RunnerFiles }
+            {
+                files: { writeFile: async () => undefined, rm: async () => undefined } as unknown as RunnerFiles,
+                endpoint: reclaimEndpoint().endpoint,
+            }
         );
         await drive(runner).catch(() => undefined);
-        return calls.filter((a) => a[0] === 'run');
+        return {
+            created: calls.filter((a) => a[0] === 'create'),
+            runs: calls.filter((a) => a[0] === 'run'),
+        };
     };
 
     it.each([
@@ -4719,24 +4653,26 @@ describe('every container the driver runs is hardened (#382)', () => {
             (r: ReturnType<typeof createDockerRunner>) =>
                 r.runHelper!(job, { helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false }),
         ],
-    ])('hardens every container %s runs', async (_name, drive) => {
-        const runs = await runArgvFrom(drive as (r: ReturnType<typeof createDockerRunner>) => Promise<unknown>);
-        expect(runs.length).toBeGreaterThan(0);
-        for (const argv of runs) {
-            expect(hasPair(argv, '--cap-drop', 'ALL')).toBe(true);
-            expect(hasPair(argv, '--security-opt', 'no-new-privileges')).toBe(true);
-        }
-    });
-
-    // Publish is its own case: it runs SEVERAL containers per attempt (the git state probe, the
-    // summarizer, each git step), and every one of them must carry the flags — so the assertion
-    // is over all of them, not the first. The `toBeGreaterThan(1)` is load-bearing: with a fake
-    // that stops the path after its probe this test would pass over a single argv while its name
-    // claimed the step containers.
-    it('hardens every container the publish path runs', async () => {
-        const runs = await runArgvFrom((r) => r.publishGit!({ ...job, repo: 'Bellows-AI/factory' }));
-        expect(runs.length).toBeGreaterThan(1);
-        for (const argv of runs) {
+        [
+            'the publish path',
+            (r: ReturnType<typeof createDockerRunner>) => r.publishGit!({ ...job, repo: 'Bellows-AI/factory' }),
+        ],
+        [
+            'the tree probe',
+            (r: ReturnType<typeof createDockerRunner>) => r.probeTree!({ ...job, repo: 'Bellows-AI/factory' }),
+        ],
+        [
+            'the startup sync',
+            (r: ReturnType<typeof createDockerRunner>) => r.syncCheckout({ ...job, repo: 'Bellows-AI/factory' }),
+        ],
+    ])('hardens every container %s creates, and runs none of its own', async (_name, drive) => {
+        const { created, runs } = await containersFrom(
+            drive as (r: ReturnType<typeof createDockerRunner>) => Promise<unknown>
+        );
+        // The load-bearing guard: a path that created nothing would pass the loop below vacuously.
+        expect(created.length).toBeGreaterThan(0);
+        expect(runs).toEqual([]);
+        for (const argv of created) {
             expect(hasPair(argv, '--cap-drop', 'ALL')).toBe(true);
             expect(hasPair(argv, '--security-opt', 'no-new-privileges')).toBe(true);
         }
