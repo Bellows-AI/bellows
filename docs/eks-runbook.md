@@ -1,8 +1,8 @@
 # EKS runbook — a cloud install, by hand
 
 The cloud twin of [the chart README's kind commands](../charts/factory/README.md#commands); no lane validates this
-chart against a cloud cluster. **Last walked 2026-10-01** (EKS
-`internal-utils`, eu-central-1, v1.34, chart `v0.0.0`, offline entry): steps 2, 3, 4 and 7's
+chart against a cloud cluster. **Last walked 2026-10-01** (a production EKS cluster,
+eu-central-1, v1.34, chart `v0.0.0`, offline entry): steps 2, 3, 4 and 7's
 ingress half held; 1, 6 and 7's job half were not walked.
 
 ## 1. Cluster prerequisites

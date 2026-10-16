@@ -94,7 +94,7 @@ The chart defaults (`ReadWriteMany`, `storageClass: ''`) fit kind and nothing on
 the access point's POSIX user is what makes the tree writable. Dynamic provisioning always applies
 identity enforcement, and a class omitting `uid`/`gid` draws from the driver's allocation range.
 
-That contract was **observed on a real EKS cluster** — `internal-utils`, eu-central-1, v1.34, **2026-09-30**:
+That contract was **observed on a real EKS cluster** — eu-central-1, v1.34, **2026-09-30**:
 `Uid 1000` / `Permissions 0775`, a cross-zone `subPath` mount over `nfs4`. The chart itself
 has **never been installed on EKS**. The single-AZ `ReadWriteOnce` fallback needs
 `runner.nodeSelector`/`tolerations`/`affinity`; without them a driver-specced pod has no scheduling knob

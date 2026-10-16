@@ -97,13 +97,13 @@ describe('the workspaces volume prerequisites', () => {
 
     /**
      * The storage contract was measured on a real cluster, so the document must say so and must
-     * name the cluster and the date — a measurement a later reader cannot date is a quotation.
+     * date it — a measurement a later reader cannot date is a quotation. The cluster is described,
+     * never named: the repository is public (AGENTS.md).
      */
     it('records that the EFS shape was observed on a real EKS cluster', () => {
         expect(kubernetes).toContain('observed on a real EKS cluster');
-        expect(kubernetes).toContain('internal-utils');
-        expect(kubernetes).toContain('2026-09-30');
-        expect(limits).toContain('internal-utils');
+        expect(kubernetes).toContain('eu-central-1, v1.34, **2026-09-30**');
+        expect(limits).toContain('observed on a real EKS cluster\n  (eu-central-1, 2026-09-30)');
     });
 
     /**
