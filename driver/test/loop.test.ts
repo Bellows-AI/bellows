@@ -4,6 +4,7 @@ import type {
     BoardJob,
     BoardLease,
     HeartbeatVerdict,
+    Interruption,
     LeaseState,
     ArtifactManifest,
     QuestionVerdict,
@@ -11,7 +12,7 @@ import type {
     RuntimeReport,
 } from '../src/board.js';
 import { loadDriverConfig, type DriverConfig } from '../src/config.js';
-import type { DeadService, RunOutcome, RunSession, Runner, RuntimeSample } from '../src/runner.js';
+import type { AdoptedRun, DeadService, RunOutcome, RunSession, Runner, RuntimeSample } from '../src/runner.js';
 import type { GateManager, GateRun, GateRunOptions, GateServer } from '../src/gates.js';
 import { setupTimeoutMs } from '../src/claim.js';
 import { ServicesNotRunning } from '../src/service-restart.js';
@@ -69,6 +70,8 @@ interface BoardStub extends Board {
     suspended: string[];
     /** The pre-run claims the loop handed back for checkout contention (issue #559). */
     requeued: string[];
+    /** The interrupted attempts the loop reported (issue #792). */
+    interrupted: ({ id: string } & Interruption)[];
     beats: number;
     gatesReported: { id: string; results: Parameters<Board['gates']>[1] }[];
     gatesReread: number;
@@ -115,6 +118,8 @@ function stubBoard(
         questionVerdict?: QuestionVerdict;
         /** Every artifact call throws, as a board that is down does. */
         artifactsDown?: boolean;
+        /** The board's answer to an interruption report (issue #792); held when absent. */
+        interruptVerdict?: LeaseState | 'exhausted';
     } = {}
 ): { board: BoardStub; attach: (loop: Loop) => void } {
     let loop: Loop | null = null;
@@ -129,6 +134,7 @@ function stubBoard(
         progressed: [],
         suspended: [],
         requeued: [],
+        interrupted: [],
         beats: 0,
         gatesReported: [],
         gatesReread: 0,
@@ -171,6 +177,10 @@ function stubBoard(
         async requeue(claimed) {
             board.requeued.push(claimed.id);
             return 'held';
+        },
+        async interrupt(claimed, interruption) {
+            board.interrupted.push({ id: claimed.id, ...interruption });
+            return options.interruptVerdict ?? 'held';
         },
         async session(claimed, sessionId) {
             if (options.failSession) throw new Error('board unreachable');
@@ -410,6 +420,8 @@ function stubRunner(
         deadServices?: () => Promise<DeadService[]>;
         /** The pre-gate fleet restart (issue #560); every call is recorded in `restartedServices`. */
         restartServices?: (signal: AbortSignal) => Promise<void>;
+        /** A finished runner of an earlier claim to adopt (issue #792); absent leaves `adopt` unwired. */
+        adopt?: (job: BoardJob) => Promise<AdoptedRun | null>;
     } = {}
 ): Runner & {
     killed: string[];
@@ -508,6 +520,7 @@ function stubRunner(
                   },
               }
             : {}),
+        ...(options.adopt ? { adopt: options.adopt } : {}),
         ...(options.reapOrphanedClaim
             ? {
                   reapOrphanedClaim: async (orphanJob: BoardJob) => {
@@ -2481,9 +2494,11 @@ describe('the poll loop', () => {
     });
 
     // A runner the platform took away — its pod deleted, evicted or its node removed — never gave
-    // the agent's verdict (issue #560): it is left to the lease and re-offered, never reported.
-    it('leaves a job to its lease when the runner reports an infrastructure loss', async () => {
-        const board = stubBoard([gatedJob(1)]);
+    // the agent's verdict (issue #560): no verdict is reported, and the attempt goes back to the
+    // board as an interruption, refunded and claimable at once (issue #792).
+    it('hands back as an interruption a job whose runner reports an infrastructure loss', async () => {
+        const claimed = { ...gatedJob(1), attempts: 3 };
+        const board = stubBoard([claimed]);
         const stack = stubGateStack();
         const logs: string[] = [];
         const runner = stubRunner(async () =>
@@ -2493,11 +2508,187 @@ describe('the poll loop', () => {
         await drive({ ...board, runner, gates: stack.gates, log: (m) => logs.push(m) });
 
         expect(board.board.completed).toEqual([]);
+        expect(board.board.interrupted).toEqual([
+            {
+                id: claimed.id,
+                reason: 'infrastructure loss: the runner pod was deleted before it exited (Evicted)',
+                release: true,
+            },
+        ]);
         expect(stack.stack.ran.names).toEqual([]);
         expect(runner.published).toEqual([]);
         expect(
             logs.some((m) => m.includes('infrastructure loss: the runner pod was deleted before it exited (Evicted)'))
         ).toBe(true);
+    });
+
+    // Issue #792: a draining driver whose grace runs short hands its running attempts over —
+    // reported as interruptions, the runner left alive and never killed, nothing parked or
+    // reported — and `start()` stops waiting on runs it no longer owns.
+    it('hands a running attempt over on handover: interrupted, never killed, start() returns', async () => {
+        const claimed = job(1);
+        const board = stubBoard([claimed]);
+        let running: () => void = () => {};
+        const inFlight = new Promise<void>((resolve) => {
+            running = resolve;
+        });
+        const runner = stubRunner(async () => {
+            running();
+            return new Promise<RunOutcome>(() => {});
+        });
+        const loop = createLoop({ board: board.board, runner, config: config(), sleep });
+        board.attach(loop);
+        const started = loop.start();
+
+        await inFlight;
+        await loop.handover('the driver was drained');
+        await started;
+
+        expect(board.board.interrupted).toEqual([{ id: claimed.id, reason: 'the driver was drained', release: true }]);
+        expect(runner.killed).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.suspended).toEqual([]);
+    });
+
+    // A beat in flight at the handover answers 409 once the board released the lease: it must not
+    // kill the runner the next claim adopts.
+    it('never kills a handed-over runner on the lease-lost beat that follows the handover', async () => {
+        const claimed = job(1);
+        const board = stubBoard([claimed]);
+        let running: () => void = () => {};
+        const inFlight = new Promise<void>((resolve) => {
+            running = resolve;
+        });
+        const runner = stubRunner(async () => {
+            running();
+            return new Promise<RunOutcome>(() => {});
+        });
+        const loop = createLoop({ board: board.board, runner, config: config(), sleep });
+        board.attach(loop);
+        const started = loop.start();
+        await inFlight;
+
+        let answerBeat: (verdict: 'lost') => void = () => {};
+        let beatAsked: () => void = () => {};
+        const asked = new Promise<void>((resolve) => {
+            beatAsked = resolve;
+        });
+        board.board.heartbeat = () =>
+            new Promise((resolve) => {
+                answerBeat = resolve;
+                beatAsked();
+            });
+        await asked;
+        await loop.handover('the driver was drained');
+        answerBeat('lost');
+        await started;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        expect(runner.killed).toEqual([]);
+    });
+
+    // Issue #792: the next claim finds the earlier attempt's runner already finished — its driver
+    // died. The run is read, never redone: no sync rewrites the tree it left, no runner launches,
+    // the gates run over it, its verdict is reported, and the earlier attempt is recorded as an
+    // interruption under this claim's lease.
+    it('adopts a finished runner of an earlier claim instead of running the job again', async () => {
+        const claimed = { ...gatedJob(1), attempts: 2, claimSeq: 2 };
+        const board = stubBoard([claimed]);
+        const stack = stubGateStack();
+        let launched = 0;
+        const runner = stubRunner(
+            async () => {
+                launched += 1;
+                return ok();
+            },
+            {
+                adopt: async () => ({
+                    outcome: ok({ output: 'the adopted run', sessionId: 'session-of-claim-1' }),
+                    claimSeq: 1,
+                }),
+            }
+        );
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(launched).toBe(0);
+        expect(runner.synced).toEqual([]);
+        expect(stack.stack.ran.names).not.toEqual([]);
+        expect(board.board.interrupted).toEqual([
+            {
+                id: claimed.id,
+                reason: 'adopted the finished runner of claim 1, whose driver was lost',
+                release: false,
+                claimSeq: 1,
+            },
+        ]);
+        expect(board.board.sessions).toContainEqual({ id: claimed.id, sessionId: 'session-of-claim-1' });
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', output: 'the adopted run' });
+    });
+
+    it('runs the job as ever when there is nothing to adopt', async () => {
+        const board = stubBoard([job(1)]);
+        let launched = 0;
+        const runner = stubRunner(
+            async () => {
+                launched += 1;
+                return ok();
+            },
+            { adopt: async () => null }
+        );
+
+        await drive({ ...board, runner });
+
+        expect(launched).toBe(1);
+        expect(runner.synced).toHaveLength(1);
+        expect(board.board.interrupted).toEqual([]);
+    });
+
+    // A failed adoption read is no verdict: the attempt goes on to run the job itself.
+    it('runs the job when the adoption read throws', async () => {
+        const board = stubBoard([job(1)]);
+        let launched = 0;
+        const logs: string[] = [];
+        const runner = stubRunner(
+            async () => {
+                launched += 1;
+                return ok();
+            },
+            {
+                adopt: async () => {
+                    throw new Error('listing the runner jobs answered 503');
+                },
+            }
+        );
+
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
+
+        expect(launched).toBe(1);
+        expect(logs.some((m) => m.includes('could not adopt an earlier runner'))).toBe(true);
+    });
+
+    // A spent interruption budget falls back to the lease, and the last attempt reports the loss.
+    it('leaves an infrastructure loss to the lease once the interruption budget is spent', async () => {
+        const board = stubBoard([{ ...job(1), attempts: 3 }], { interruptVerdict: 'exhausted' });
+        const runner = stubRunner(async () =>
+            ok({ exitCode: null, output: '', infraLoss: 'the runner pod was deleted before it exited (Evicted)' })
+        );
+
+        await drive({ ...board, runner });
+
+        expect(board.board.interrupted).toHaveLength(1);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+        expect(board.board.completed[0]?.output).toContain('infrastructure loss');
+    });
+
+    // A container that never started is not an interruption: no agent ran, the lease decides.
+    it('never reports an interruption for a runner that never started', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok({ exitCode: 125, output: 'no such image', started: false }));
+
+        await drive({ ...board, runner });
+
+        expect(board.board.interrupted).toEqual([]);
     });
 
     // The mirror case, and why classification lives in the runner rather than in an exit code

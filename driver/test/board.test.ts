@@ -307,6 +307,32 @@ describe('asking for a publish-fresh credential', () => {
     });
 });
 
+describe('reporting an interrupted attempt (issue #792)', () => {
+    const job = boardJob();
+
+    it('posts the reason, the release and the adopted claim sequence under the lease', async () => {
+        const { calls, fetch } = recorder(() => Response.json({ id: 'job-1', status: 'queued' }, { status: 200 }));
+
+        expect(await boardOn(fetch).interrupt(job, { reason: 'evicted', release: true })).toBe('held');
+        expect(await boardOn(fetch).interrupt(job, { reason: 'adopted', release: false, claimSeq: 2 })).toBe('held');
+
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/interrupt');
+        expect(calls[0]!.body).toEqual({ leaseToken: 'token-1', reason: 'evicted', release: true });
+        expect(calls[1]!.body).toEqual({ leaseToken: 'token-1', reason: 'adopted', release: false, claimSeq: 2 });
+    });
+
+    it('tells a spent budget apart from a lost lease, and reads a removed job as lost', async () => {
+        const spent = recorder(() => Response.json({ code: 'INTERRUPTIONS_EXHAUSTED' }, { status: 409 }));
+        expect(await boardOn(spent.fetch).interrupt(job, { reason: 'evicted', release: true })).toBe('exhausted');
+
+        const lost = recorder(() => Response.json({ code: 'LEASE_LOST' }, { status: 409 }));
+        expect(await boardOn(lost.fetch).interrupt(job, { reason: 'evicted', release: true })).toBe('lost');
+
+        const gone = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
+        expect(await boardOn(gone.fetch).interrupt(job, { reason: 'evicted', release: true })).toBe('lost');
+    });
+});
+
 describe('asking the board for the orphan reaper lease lookups', () => {
     // Issue #301: one batched worker route, so a reaper sweep is one request per 100 job ids,
     // not one per object. Null — a refused, lost, or failed answer — means "board cannot

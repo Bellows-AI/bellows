@@ -1,4 +1,4 @@
-import { JOB_LABEL, LEASE_LABEL } from './labels.js';
+import { CLAIM_SEQ_MARK, COMMAND_MARK, JOB_LABEL, LEASE_LABEL, SESSION_MARK } from './labels.js';
 import { createHash } from 'node:crypto';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
@@ -14,7 +14,7 @@ import {
     workspacePath,
 } from './claim.js';
 import { claudeTurnsScript, claudeExportScript, opencodeReadoutScript } from './container-scripts.js';
-import { OPENCODE_EXPORT_LIMIT, type RunSession } from './runner.js';
+import { commandMark, OPENCODE_EXPORT_LIMIT, type RunSession } from './runner.js';
 import { exportEnv } from './transcript-export.js';
 import { JOB_ID, MS_PER_SECOND, TTL_SECONDS } from './k8s-transport.js';
 import {
@@ -60,6 +60,7 @@ export interface RunnerJobSpec {
     metadata: {
         name: string;
         labels: Record<string, string>;
+        annotations: Record<string, string>;
     };
     spec: {
         backoffLimit: 0;
@@ -232,6 +233,12 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                 [JOB_LABEL]: job.id,
                 [LEASE_LABEL]: job.leaseToken,
                 ...releaseLabel(config),
+            },
+            // What the claim that supersedes a dead driver adopts this run by (issue #792).
+            annotations: {
+                [CLAIM_SEQ_MARK]: String(job.claimSeq),
+                ...(session ? { [SESSION_MARK]: session.id } : {}),
+                [COMMAND_MARK]: commandMark(job.command),
             },
         },
         spec: {

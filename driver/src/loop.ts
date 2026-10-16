@@ -9,11 +9,21 @@ import { processReclaim } from './loop-reclaim.js';
 import { CLAUDE_CODE } from './executors.js';
 import { withBoardRetry } from './board-retry.js';
 import { type SyncQueue, syncQueue } from './sync-queue.js';
+import { down, type JobState } from './loop-attempt.js';
 
 export interface Loop {
-    /** Resolves once `stop()` has been called and every in-flight job has finished. */
+    /**
+     * Resolves once `stop()` has been called and every in-flight job has finished — or, after a
+     * `handover`, at once: the runs it handed over are no longer this loop's to wait on.
+     */
     start(): Promise<void>;
     stop(): void;
+    /**
+     * Hands every attempt still in flight back to the board as an interruption (issue #792): each
+     * reads as lost from here — nothing parked, reported or killed — and its runner is left alive
+     * for the next claim. What a draining driver does before its grace runs out.
+     */
+    handover(reason: string): Promise<void>;
 }
 
 export interface LoopDeps {
@@ -80,6 +90,43 @@ function claimRefusal(job: BoardJob): { log: string; output: string; config?: tr
     return null;
 }
 
+/** One attempt handed over: stood down as lost, then its lease handed back as an interruption. */
+async function handOver(rt: LoopRuntime, job: BoardJob, state: JobState, reason: string): Promise<void> {
+    state.handedOver = true;
+    state.lost = true;
+    state.abortNow();
+    state.wake();
+    const answer = await withBoardRetry(rt, `job ${job.id}: the handover was not accepted`, () =>
+        rt.board.interrupt(job, { reason, release: true })
+    ).catch((e: Error) => {
+        rt.log(`job ${job.id}: could not hand over: ${e.message}`);
+        return null;
+    });
+    if (answer === 'held') rt.log(`job ${job.id}: handed over (${reason}); its runner is left for the next claim`);
+    else rt.log(`job ${job.id}: not handed over (${answer ?? 'unanswered'}); left to the lease`);
+}
+
+/**
+ * The drain's handover (issue #792): the attempts in flight — registered on `rt.live`, where each
+ * `runJob` reports its own — and the latch `start()` stops waiting at.
+ */
+function handoverOf(rt: LoopRuntime) {
+    const live = new Map<string, { job: BoardJob; state: JobState }>();
+    rt.live = live;
+    let landed: () => void = () => {};
+    const done = new Promise<void>((resolve) => {
+        landed = resolve;
+    });
+    return {
+        done,
+        async run(reason: string): Promise<void> {
+            const handing = [...live.values()].filter(({ state }) => !state.finished && !down(state));
+            await Promise.all(handing.map(({ job, state }) => handOver(rt, job, state, reason)));
+            landed();
+        },
+    };
+}
+
 export function createLoop({
     board,
     runner,
@@ -143,6 +190,7 @@ export function createLoop({
         ...(exportDrainMs === undefined ? {} : { exportDrainMs }),
         ...(syncWaitMs === undefined ? {} : { syncWaitMs }),
     };
+    const handoff = handoverOf(rt);
 
     /**
      * The verdict is reported, then the task worktree is reclaimed — but only when the thread is
@@ -294,6 +342,8 @@ export function createLoop({
             running = false;
         },
 
+        handover: (reason) => handoff.run(reason),
+
         async start() {
             log(
                 `polling ${config.boardUrl} every ${config.pollMs}ms as "${config.worker}", ` +
@@ -317,7 +367,7 @@ export function createLoop({
             // Claiming has stopped; let what is already running finish rather than orphaning
             // containers that are mid-edit in a checkout.
             if (active.size) log(`draining ${active.size} running job(s)`);
-            await Promise.all(active);
+            await Promise.race([Promise.all(active), handoff.done]);
             await draining;
         },
     };

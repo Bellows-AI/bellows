@@ -1,6 +1,6 @@
 import type { Board, BoardJob, LeaseState } from './board.js';
 import type { DriverConfig } from './config.js';
-import type { Runner } from './runner.js';
+import type { AdoptedRun, Runner } from './runner.js';
 import type { GateManager, GateServer } from './gates.js';
 import type { JobState } from './loop-attempt.js';
 import type { SyncQueue } from './sync-queue.js';
@@ -41,6 +41,8 @@ export interface LoopRuntime {
     /** Overrides `SYNC_QUEUE_WAIT_MS` — a test seam, never set in production. */
     syncWaitMs?: number;
     report: (job: BoardJob, result: Parameters<Board['complete']>[1]) => Promise<LeaseState>;
+    /** The attempts in flight, by job id — what a drain hands over (`Loop.handover`, issue #792). */
+    live?: Map<string, { job: BoardJob; state: JobState }>;
 }
 
 /**
@@ -64,6 +66,11 @@ export interface AttemptCtx {
     treeBefore: string | null;
     /** Set once the services step started the attempt's declared services (`loop-services.ts`). */
     servicesStarted?: true;
+    /**
+     * The finished runner of an earlier claim this attempt adopted (issue #792): its outcome is the
+     * run, so no sync, pre-helper or launch follows — the tree is the one that run left.
+     */
+    adopted?: AdoptedRun;
 }
 
 /** The completion body the board's `complete` takes: what a conclusion reports. */

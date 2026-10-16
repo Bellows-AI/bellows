@@ -112,6 +112,8 @@ export interface ThreadJob {
     agentTurns: number | null;
     /** How long `environment.setup` ran before the agent (issue #733); null when none ran. */
     setupMs: number | null;
+    /** The attempts the infrastructure interrupted (issue #792); empty when none was. */
+    interruptions: { at: string; reason: string; claimSeq: number }[];
     taskWallClockMs: number | null;
     waitReason: string | null;
     waitingSince: string | null;
@@ -213,6 +215,7 @@ function run(fields: RunFields): ThreadJob {
         wallClockMs: 1_799_000,
         agentTurns: null,
         setupMs: null,
+        interruptions: [],
         taskWallClockMs: null,
         publication: null,
         questions: [],

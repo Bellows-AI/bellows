@@ -477,6 +477,59 @@ export async function handleRequeue(orgs: OrgRegistry, request: FastifyRequest, 
     return reply.code(HTTP_OK).send({ id, status: result.value.status });
 }
 
+/** The longest interruption reason the board records (issue #792): one driver sentence. */
+const INTERRUPTION_REASON_MAX = 500;
+
+/** The interruption body's fields, or the refusal message for the first bad one. */
+function interruptionOf(
+    raw: Record<string, unknown>
+): { reason: string; release: boolean; claimSeq: number | null } | string {
+    const { reason, release, claimSeq } = raw;
+    if (typeof reason !== 'string' || !reason.trim() || reason.length > INTERRUPTION_REASON_MAX) {
+        return `reason must be a non-empty string of at most ${INTERRUPTION_REASON_MAX} characters`;
+    }
+    if (typeof release !== 'boolean') return 'release must be a boolean';
+    if (claimSeq !== undefined && claimSeq !== null && (!Number.isSafeInteger(claimSeq) || (claimSeq as number) < 1)) {
+        return 'claimSeq must be a positive integer';
+    }
+    return { reason, release, claimSeq: (claimSeq as number | null | undefined) ?? null };
+}
+
+// An attempt the infrastructure interrupted (issue #792): handed back claimable at once with its
+// attempt refunded (`release`), or recorded by the claim that adopted it. Lease-guarded; a spent
+// interruption budget is a 409 of its own, and the driver then treats the attempt as before.
+export async function handleInterrupt(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
+
+    const fields = body(request.body);
+    const { leaseToken } = fields;
+    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
+        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
+    }
+    const interruption = interruptionOf(fields);
+    if (typeof interruption === 'string') return bad(reply, ERROR_CODES.BAD_BODY, interruption);
+
+    const result = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job interrupt failed'),
+        () => store.interrupt(id, leaseToken, interruption)
+    );
+    if (!result.ok) return reply;
+    if (result.value.result === 'missing') return notFoundJob(reply);
+    if (result.value.result === 'lost') return leaseLost(reply);
+    if (result.value.result === 'exhausted') {
+        return bad(
+            reply,
+            ERROR_CODES.INTERRUPTIONS_EXHAUSTED,
+            'this job has spent its interruption budget',
+            HTTP_CONFLICT
+        );
+    }
+    return reply.code(HTTP_OK).send({ id, status: result.value.status });
+}
+
 /*
  * The orphan reaper's one board route (issue #301): a batched "what does the board think of these
  * job ids" — each known id's status and CURRENT lease, absent for the ids it does not know. The

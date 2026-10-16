@@ -1,10 +1,11 @@
 /**
  * The docker side of the close-time reads and the live cache watch: the argv of each throwaway
  * container that scrapes a run's session database, and the runner steps that spawn them and fold
- * the answer into the outcome. The parsing and the policy are executor-neutral, in close-read.ts.
+ * the answer into the outcome — and the same reads over an earlier claim's exited runner, adopted
+ * (issue #792). The parsing and the policy are executor-neutral, in close-read.ts.
  */
 
-import type { BoardJob } from './board.js';
+import { type BoardJob, UUID_SHAPE } from './board.js';
 import {
     CACHE_WATCH_TURNS,
     mergeOpencodeOutcome,
@@ -21,15 +22,25 @@ import {
 import { type DriverConfig, executorImage } from './config.js';
 import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts.js';
 import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
-import type { ExecDocker } from './docker-runner-support.js';
+import { type ExecDocker, linesOf } from './docker-runner-support.js';
 import {
+    containerName,
     workspacesMountArgs,
     opencodeSessionReadoutArgs,
     containerHardeningArgs,
     CLOSE_READ_DEADLINE_MS,
 } from './docker.js';
-import type { RunOutcome, RunSession } from './runner.js';
+import {
+    ARTIFACT_LIMIT,
+    type AdoptedRun,
+    commandMark,
+    type RunOutcome,
+    type RunSession,
+    reportTail,
+    tailKept,
+} from './runner.js';
 import { OPENCODE } from './executors.js';
+import { CLAIM_SEQ_MARK, COMMAND_MARK, JOB_LABEL, LEASE_LABEL, SESSION_MARK } from './labels.js';
 
 /**
  * The full `docker run` argv that counts the agent turns a finished claude-code run banked —
@@ -184,4 +195,83 @@ export async function tickCacheWatch(
         state.cacheLost = collapse;
         void ctx.kill(ctx.job);
     }
+}
+
+/** The fields of each listed container the adoption reads, tab-separated. */
+const ADOPT_FORMAT = [LEASE_LABEL, CLAIM_SEQ_MARK, SESSION_MARK, COMMAND_MARK].reduce(
+    (format, label) => `${format}\t{{.Label "${label}"}}`,
+    '{{.Names}}'
+);
+
+/** The newest EXITED runner container of an earlier claim of this job, by claim sequence; null when none. */
+async function exitedEarlierRunner(
+    execDocker: ExecDocker,
+    job: BoardJob
+): Promise<{ prior: BoardJob; claimSeq: number; session: string | null } | null> {
+    const listed = await execDocker([
+        'ps',
+        '-a',
+        '--filter',
+        `label=${JOB_LABEL}=${job.id}`,
+        '--filter',
+        'status=exited',
+        '--format',
+        ADOPT_FORMAT,
+    ]);
+    let newest: { prior: BoardJob; claimSeq: number; session: string | null } | null = null;
+    for (const line of linesOf(listed.stdout)) {
+        const [name, lease = '', seq = '', session = '', command = ''] = line.split('\t');
+        // A queued task's command edited since the run (after a handover) makes that run not its own.
+        if (!UUID_SHAPE.test(lease) || !/^\d+$/.test(seq) || command !== commandMark(job.command)) continue;
+        const prior = { ...job, leaseToken: lease };
+        // Only the runner itself: a service, gate or exporter container carries a name of its own.
+        if (name !== containerName(prior)) continue;
+        const claimSeq = Number(seq);
+        if (claimSeq >= job.claimSeq || (newest && newest.claimSeq >= claimSeq)) continue;
+        newest = { prior, claimSeq, session: session || null };
+    }
+    return newest;
+}
+
+/**
+ * The docker `Runner.adopt` (issue #792): a driver restarted while its runner container ran on, and
+ * the claim that superseded it reads the container that has since exited — its exit code, its log,
+ * the close-time session readouts — exactly as the attached run would have, then runs the re-claim
+ * `fence` the skipped sync would have run, which removes it and everything else the earlier
+ * attempt left. A timeout the dead driver enforced reads as the exit it caused: the deadline died
+ * with it.
+ */
+export async function dockerAdopt(
+    deps: { execDocker: ExecDocker; config: DriverConfig; fence: (job: BoardJob) => Promise<void> },
+    job: BoardJob
+): Promise<AdoptedRun | null> {
+    const { execDocker, config } = deps;
+    const found = await exitedEarlierRunner(execDocker, job);
+    if (!found) return null;
+    const { prior, claimSeq, session } = found;
+    const name = containerName(prior);
+    const state = JSON.parse((await execDocker(['inspect', '--format', '{{json .State}}', name])).stdout) as {
+        ExitCode?: number;
+        StartedAt?: string;
+    };
+    const logs = await execDocker(['logs', name]);
+    const text = `${logs.stdout}${logs.stderr ?? ''}`;
+    const full = tailKept(text, ARTIFACT_LIMIT);
+    const outcome: RunOutcome = {
+        exitCode: state.ExitCode ?? null,
+        output: reportTail(text),
+        timedOut: false,
+        started: true,
+        fullLog: full.content,
+        logTruncated: full.truncated,
+    };
+    const startedAt = state.StartedAt ?? new Date(0).toISOString();
+    await applyCloseTimeReadout(
+        outcome,
+        { execDocker, config, job: prior, startedAt },
+        session ? { id: session, resume: false } : null
+    );
+    if (session && !outcome.sessionId) outcome.sessionId = session;
+    await deps.fence(job);
+    return { outcome, claimSeq };
 }

@@ -126,6 +126,13 @@ export interface TranscriptExportVitals {
     oldestUnackedMs: number;
 }
 
+/** One attempt the infrastructure interrupted (071, issue #792). */
+export interface JobInterruption {
+    at: string;
+    reason: string;
+    claimSeq: number;
+}
+
 export interface Job {
     id: string;
     command: string;
@@ -294,6 +301,11 @@ export interface Job {
      * Null when no setup ran or the read does not select it (the per-run lists).
      */
     setupMs: number | null;
+    /**
+     * The attempts the infrastructure interrupted (071, issue #792), oldest first: when, why, and
+     * the claim sequence each ran under. Empty when none was; the per-run lists serve it empty too.
+     */
+    interruptions: JobInterruption[];
     /**
      * The wall clock the task's WHOLE thread has banked — every executed segment of every run,
      * accumulated by the board at the settle points (claim, the dead retirement, the verdict,
@@ -1139,6 +1151,19 @@ export interface JobStore {
      * already stamped on the row wins: it settles `stopped` instead. `lost` for a stale token.
      */
     requeue(id: string, leaseToken: string): Promise<SuspendResult>;
+    /**
+     * Records an attempt the infrastructure interrupted (issue #792), lease-guarded, refunding the
+     * attempt and appending the reason. `release` hands the claim back claimable at once (a drained
+     * driver, an evicted runner) — queued, or stopped when a Stop got there first — with the
+     * segment banked; without it the claim is an adopter's and keeps its lease, `claimSeq` naming
+     * the earlier attempt it adopted. `exhausted` once `INTERRUPTION_BUDGET` is spent: nothing
+     * changed, and the caller reports or leaves the attempt as before.
+     */
+    interrupt(
+        id: string,
+        leaseToken: string,
+        interruption: { reason: string; release: boolean; claimSeq?: number | null }
+    ): Promise<SuspendResult | { result: 'exhausted' }>;
     /**
      * Records the verdict and answers it with whether the thread is DONE — computed in the same
      * transaction: `threadDone` is true only when every job of the thread — the root and every

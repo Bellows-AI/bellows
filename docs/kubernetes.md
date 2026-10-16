@@ -21,7 +21,7 @@ Helm chart that deploys the whole factory.
 | A named reviewer: snapshot aux Job, a `RESTORE=1` sync Job, `activeDeadlineSeconds` capped by `DRIVER_JOB_TIMEOUT_MS` | `driver/src/k8s-steps.ts`, `review-snapshot.ts`, `k8s-auxspec.ts` | `driver/test/review-executors.test.ts`, `driver/test/review-snapshot.test.ts` |
 | Same image, same argv: the Jira connector's `JIRA_API`, the AskUserQuestion bridge, selected skills | `docker/claude-executor/entrypoint.sh`, `claude-bridge.cjs`, `driver/src/loop-run.ts` | `driver/test/executor-images.test.ts`, `driver/test/claude-bridge.test.ts` |
 | Question wait pauses: remove the runner Job's `activeDeadlineSeconds`, restore it after answers (`patch` on `jobs`) | `driver/src/k8s-runner.ts`, `k8s-transport.ts`, `charts/factory/templates/driver-rbac.yaml` | `driver/test/k8s.test.ts`, `scripts/test-k8s.sh` |
-| Orphan Jobs (including paused runners), service resources and attempt Secrets | `driver/src/reaper.ts`, `driver/src/k8s-reaper.ts` | `driver/test/k8s-reaper.test.ts` |
+| Orphan Jobs (including paused runners), service resources and attempt Secrets; a finished runner Job (marked `factory.claim-seq`/`factory.session`) is adopted by the next claim, never reaped unread | `driver/src/reaper.ts`, `driver/src/k8s-reaper.ts`, `driver/src/k8s-adopt.ts` | `driver/test/k8s-reaper.test.ts`, `driver/test/k8s.test.ts` |
 | Every `EXECUTOR`, `K8S_*`, `RUNNER_*` and `GATE_*` variable, with its boot-time validation | `driver/src/config.ts` | `driver/test/config.test.ts` |
 | The app chart: dashboard, driver, collector, RBAC, PDBs, Ingress, `LimitRange` | `charts/factory/` ([README](../charts/factory/README.md)) | `scripts/test-k8s.sh` |
 | The admission policies that fence the driver | `charts/factory/templates/driver-admission.yaml` | `driver/test/k8s-admission.test.ts` |
@@ -46,6 +46,10 @@ What a run does — sync, gates, services, publish, helpers, reclaim — is one 
   derived name.
 - **`make start` refuses a state claim initialised without `PGDATA`** and a pre-StatefulSet state release; both name
   `make reset`. `core/test/makefile.state-preflight.test.ts`.
+- Stated limit: a runner still RUNNING when its driver is lost is swept by the next claim's re-claim fence and
+  the job redone (refunded when the drain handed it over); a finished one is adoptable only until its Job's
+  one-hour `ttlSecondsAfterFinished`. Docker's fence removes a still-running container the same way.
+  `driver/src/k8s-adopt.ts`, `driver/src/k8s-fence.ts`, `driver/src/docker-runner.ts`.
 - Stated limit: the kubernetes question round trip (a real claude CLI through the bridge)
   is not run on a kind cluster — the cluster lane installs the stub executor image. The relay is pinned offline in
   `driver/test/k8s.test.ts`; docker's lane is `ask_roundtrip_lane` in `scripts/test-jobs.sh`.

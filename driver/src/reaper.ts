@@ -16,6 +16,11 @@ import { LEASE_BATCH_MAX, type Board, type BoardLease, UUID_SHAPE } from './boar
 export interface OrphanObject {
     kind: 'job' | 'pod' | 'service' | 'container' | 'network';
     name: string;
+    /**
+     * A runner that finished after its driver died (issue #792): the next claim's to adopt, so a
+     * `superseded` verdict spares its whole group — only a `gone` job's is reaped.
+     */
+    unread?: true;
 }
 
 /**
@@ -117,6 +122,8 @@ const reapOne = async (
 ): Promise<void> => {
     const verdict = reapDecision(ctx.lease, group, ctx.nowMs, ctx.graceMs);
     if (verdict === null) return;
+    // A live job's next claim adopts it (issue #792): never deleted unread.
+    if (verdict === 'superseded' && group.objects.some((object) => object.unread)) return;
     for (const removed of await arm.reap(group, verdict)) {
         ctx.log(`reaper: job ${group.jobId} lease ${group.leaseToken ?? 'none'} (${verdict}) — removed ${removed}`);
     }

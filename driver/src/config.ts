@@ -213,6 +213,13 @@ export interface DriverConfig {
      */
     reapGraceMs: number;
     /**
+     * How long a draining driver lets its in-flight runs finish before it hands them over
+     * (DRIVER_HANDOVER_MS, issue #792): each attempt still running is then reported to the board as
+     * an interruption — refunded, claimable at once — and its runner is left alive for the next
+     * claim, instead of the drain being SIGKILLed with the lease held. `0` hands over at once.
+     */
+    handoverMs: number;
+    /**
      * Resource requests and limits (RUNNER_CPU_REQUEST / RUNNER_MEMORY_REQUEST /
      * RUNNER_CPU_LIMIT / RUNNER_MEMORY_LIMIT, kubernetes quantity strings) rendered onto every
      * pod this driver specs — the runner, every aux Job, every declared service pod — so a
@@ -295,6 +302,8 @@ const MAX_CACHE_WATCH_POLL_MS = 300_000;
 const DEFAULT_REAP_INTERVAL_MS = 300_000;
 /** The default DRIVER_REAP_GRACE_MS: ten minutes, comfortably longer than an attempt's own teardown. */
 const DEFAULT_REAP_GRACE_MS = 600_000;
+/** The default DRIVER_HANDOVER_MS: nine minutes, a minute under the chart's drain grace. */
+const DEFAULT_HANDOVER_MS = 540_000;
 
 // An explicit enum, like the server's AUTH_MODE: a value this process does not know is fatal,
 // never a fallback to docker — the first symptom of a fallback would be a driver that claims
@@ -732,6 +741,10 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
             max: 24 * MS_PER_HOUR,
         }),
         reapGraceMs: int(env.DRIVER_REAP_GRACE_MS, 'DRIVER_REAP_GRACE_MS', DEFAULT_REAP_GRACE_MS, {
+            min: 0,
+            max: 24 * MS_PER_HOUR,
+        }),
+        handoverMs: int(env.DRIVER_HANDOVER_MS, 'DRIVER_HANDOVER_MS', DEFAULT_HANDOVER_MS, {
             min: 0,
             max: 24 * MS_PER_HOUR,
         }),

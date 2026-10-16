@@ -6,6 +6,15 @@
 export const JOB_LABEL = 'factory.job';
 export const LEASE_LABEL = 'factory.lease';
 export const SERVICE_LABEL = 'factory.service';
+/**
+ * The claim sequence and session a runner ran under (issue #792) — a kubernetes runner Job's
+ * annotations, a docker runner container's labels — so the claim that supersedes a dead driver
+ * can adopt the newest finished runner and report its session.
+ */
+export const CLAIM_SEQ_MARK = 'factory.claim-seq';
+export const SESSION_MARK = 'factory.session';
+/** The run's command, hashed (`commandMark`): a queued task's command edited since is not adopted. */
+export const COMMAND_MARK = 'factory.command';
 /** Docker only: the transcript exporter's container, which a kill of the agent must not reach. */
 export const EXPORT_LABEL = 'factory.export';
 

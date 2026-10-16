@@ -30,7 +30,7 @@ import {
     parseTranscriptRead,
     readsAgentTurns,
 } from '../src/close-read.js';
-import { ARTIFACT_LIMIT, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
+import { ARTIFACT_LIMIT, commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import { claudeExportScript, claudeTurnsScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { createDockerRunner } from '../src/docker-runner.js';
 import { claudeExportArgs, startDockerExporter } from '../src/docker-export.js';
@@ -4973,5 +4973,102 @@ describe('every container the driver runs is hardened (#382)', () => {
 
     it('passes no --user to a service that declared none', () => {
         expect(serviceRunArgs(job, { name: 'db', image: 'postgres:17', environment: [] })).not.toContain('--user');
+    });
+});
+
+/*
+ * Issue #792, the docker twin: a driver restarted while its runner container ran on. The claim
+ * that superseded it reads the EXITED runner container of the earlier claim — exit code, log,
+ * session — and only then removes it; the run is never redone.
+ */
+describe('adopting a finished runner container of an earlier claim (#792)', () => {
+    const adopter: BoardJob = { ...job, leaseToken: '99999999-9999-4999-8999-999999999999', claimSeq: 2 };
+    const listing = (
+        seq = '1',
+        lease = job.leaseToken,
+        name = containerName({ ...job, leaseToken: lease }),
+        command = commandMark(job.command)
+    ) => `${name}\t${lease}\t${seq}\t${SESSION}\t${command}\n`;
+
+    /** The fence's own listing: every container of the job by id and lease — the runner's and the exporter's. */
+    const FENCE_PS = `runner-id\t${job.leaseToken}\nexporter-id\t${job.leaseToken}\n`;
+
+    const daemon = (ps: string) => {
+        const calls: string[][] = [];
+        const exec = (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'ps') return Promise.resolve({ stdout: args.includes('status=exited') ? ps : FENCE_PS });
+            if (args[0] === 'inspect') {
+                return Promise.resolve({
+                    stdout: '{"Status":"exited","ExitCode":0,"StartedAt":"2026-10-01T00:00:00Z"}\n',
+                });
+            }
+            if (args[0] === 'logs') return Promise.resolve({ stdout: 'did the work\n', stderr: '' });
+            return Promise.resolve({ stdout: '' });
+        };
+        return { exec, calls };
+    };
+
+    it('reads the exit code, log and session before removing the container', async () => {
+        const { exec, calls } = daemon(listing());
+
+        const adopted = await dockerRunner(exec).adopt!(adopter);
+
+        expect(adopted).toMatchObject({
+            claimSeq: 1,
+            outcome: { exitCode: 0, started: true, timedOut: false, sessionId: SESSION },
+        });
+        expect(adopted!.outcome.output).toContain('did the work');
+        const read = calls.findIndex((args) => args[0] === 'logs');
+        const removed = calls.findIndex((args) => args[0] === 'rm' && args.includes('runner-id'));
+        expect(read).toBeGreaterThanOrEqual(0);
+        expect(removed).toBeGreaterThan(read);
+        expect(calls[0]).toEqual(expect.arrayContaining(['ps', '-a', `label=factory.job=${job.id}`, 'status=exited']));
+        // The earlier attempt's other leftovers go with it, read first: the fence the sync would run.
+        const swept = calls.findIndex((args) => args[0] === 'rm' && args.includes('exporter-id'));
+        expect(swept).toBeGreaterThan(read);
+    });
+
+    // A queued task's command can be edited after a handover: a run of the old command is not its run.
+    it('never adopts a run of a command since edited', async () => {
+        const { exec, calls } = daemon(
+            listing('1', job.leaseToken, containerName(job), commandMark('another command'))
+        );
+
+        expect(await dockerRunner(exec).adopt!(adopter)).toBeNull();
+        expect(calls.some((args) => args[0] === 'logs')).toBe(false);
+    });
+
+    it('adopts nothing of its own claim, a newer one, or a container that is not the runner', async () => {
+        const own = listing('2', adopter.leaseToken);
+        const notRunner = listing('1', job.leaseToken, `factory-svc-${job.id}-db`);
+        const { exec, calls } = daemon(own + notRunner);
+
+        expect(await dockerRunner(exec).adopt!(adopter)).toBeNull();
+        expect(calls.some((args) => args[0] === 'rm')).toBe(false);
+    });
+
+    it('answers null when no earlier runner exited', async () => {
+        const { exec } = daemon('');
+        expect(await dockerRunner(exec).adopt!(adopter)).toBeNull();
+    });
+
+    it('labels every runner container with its claim sequence and session', () => {
+        const args = dockerArgs(
+            loadDriverConfig({}),
+            job,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
+        expect(args).toEqual(
+            expect.arrayContaining([
+                '--label',
+                'factory.claim-seq=1',
+                '--label',
+                `factory.session=${SESSION}`,
+                '--label',
+                `factory.command=${commandMark(job.command)}`,
+            ])
+        );
     });
 });

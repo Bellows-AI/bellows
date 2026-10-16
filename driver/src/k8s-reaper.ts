@@ -19,7 +19,7 @@ import {
     servicesPath,
     syncEnvSecretName,
 } from './k8s-auxspec.js';
-import { gateEnvSecretName, jobsPath, secretName } from './k8s-podspec.js';
+import { gateEnvSecretName, jobsPath, runnerJobName, secretName } from './k8s-podspec.js';
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict } from './reaper.js';
 
@@ -64,7 +64,15 @@ interface ListedItem {
         labels?: Record<string, string>;
         creationTimestamp?: string;
     };
+    status?: { succeeded?: number; failed?: number };
 }
+
+/** A finished runner Job — its name is the (job, lease) hash no aux Job shares — that nobody has read yet. */
+const unreadRunner = (item: ListedItem, jobId: string, leaseToken: string): boolean =>
+    JOB_ID.test(jobId) &&
+    JOB_ID.test(leaseToken) &&
+    item.metadata?.name === runnerJobName(attemptPair(jobId, leaseToken)) &&
+    ((item.status?.succeeded ?? 0) >= 1 || (item.status?.failed ?? 0) >= 1);
 
 /** One label-selector collection GET, parsed into the fields the grouping needs. */
 const listBySelector = async (request: K8sRequest, path: string): Promise<ListedItem[] | null> => {
@@ -103,7 +111,11 @@ const groupKeyOf = (
     if (!name || !jobId || !leaseToken || created === undefined) return null;
     const createdAtMs = Date.parse(created);
     if (Number.isNaN(createdAtMs)) return null;
-    const object: OrphanObject = { kind, name };
+    const object: OrphanObject = {
+        kind,
+        name,
+        ...(kind === 'job' && unreadRunner(item, jobId, leaseToken) ? { unread: true as const } : {}),
+    };
     return { jobId, leaseToken, name, object, createdAtMs };
 };
 

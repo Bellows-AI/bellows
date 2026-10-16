@@ -103,8 +103,11 @@ const reaper = createReaper({
 if (config.reapIntervalMs > 0) reaper.start();
 
 // Stop claiming, then drain. A second signal is the escape hatch, since a drain waits for a job
-// that may have half an hour left on it.
+// that may have half an hour left on it. A drain that outlasts DRIVER_HANDOVER_MS hands its runs
+// over (issue #792): their leases go back as interruptions, claimable at once, and their runners
+// stay up for the next claim — rather than the SIGKILL landing with every lease still held.
 let stopping = false;
+let handedOver = false;
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
         if (stopping) {
@@ -115,6 +118,10 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         console.log('[driver] draining; signal again to exit immediately');
         loop.stop();
         reaper.stop();
+        setTimeout(() => {
+            handedOver = true;
+            void loop.handover('the driver was drained');
+        }, config.handoverMs).unref();
     });
 }
 
@@ -127,3 +134,5 @@ await gates.manager.stop();
 // The ad-hoc socket holds the event loop open; without this the process never exits after a
 // graceful drain once any gated job has run.
 await gates.server.close();
+// A handed-over run's poll is still pending in this process, and is no longer this driver's.
+if (handedOver) process.exit(0);

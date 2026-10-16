@@ -235,9 +235,10 @@ driver:
         spoolMax: 1Gi
         streamMax: 1Gi
     # On SIGTERM the driver stops claiming and drains: in-flight jobs finish, then it exits. This is
-    # how long the kubelet waits before SIGKILL. A killed drain loses nothing durable — each runner
-    # Job keeps running under its own deadline and the job's lease expires and is re-offered — but
-    # the work in flight is redone. Raise it toward jobTimeoutMs to trade slower rollouts for that.
+    # how long the kubelet waits before SIGKILL. A minute before it (DRIVER_HANDOVER_MS), the drain
+    # hands what is still running over: each lease goes back as an interruption, refunded and
+    # claimable at once, and each runner Job keeps running under its own deadline for the next
+    # claim. Raise it toward jobTimeoutMs to let more runs finish in place.
     terminationGracePeriodSeconds: 600
     # Off by default and a real decision, here as everywhere: on, the agent edits and runs whatever
     # it likes inside the runner without asking. Read docs/jobs.md first.

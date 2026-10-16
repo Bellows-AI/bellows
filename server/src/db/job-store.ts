@@ -27,6 +27,7 @@ import {
     stopJob,
     suspendJob,
     requeueJob,
+    interruptJob,
     removeJobThread,
     cancelThreadWait,
     pokeThreadWait,
@@ -167,6 +168,8 @@ function workerMethods(
  * exactly the case the driver's null check exists to catch, and it only reaches it if the board is
  * honest here.
  */
+export { INTERRUPTION_BUDGET } from './job-store-actions.js';
+
 export function createJobStore(deps: CreateJobStoreDeps): JobStore {
     const { sql, orgId, hasWorkspaces = true, ready, env, githubToken, gates: gatesReader, executorConfig, prs } = deps;
     const gate = async () => {
@@ -247,6 +250,10 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
         async requeue(id, leaseToken) {
             await gate();
             return requeueJob(ctx, id, leaseToken);
+        },
+        async interrupt(id, leaseToken, interruption) {
+            await gate();
+            return interruptJob(ctx, id, leaseToken, interruption);
         },
         async suspend(id, leaseToken) {
             await gate();

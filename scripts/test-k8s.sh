@@ -439,6 +439,7 @@ gh_driver="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/
 expect_contains 'the driver has a liveness probe'      "$gh_driver" 'livenessProbe:'
 expect_contains 'the driver writes the heartbeat it reads' "$gh_driver" 'DRIVER_HEARTBEAT_FILE'
 expect_contains 'the driver drains before SIGKILL'     "$gh_driver" 'terminationGracePeriodSeconds: 600'
+expect_contains 'the driver hands over a minute before SIGKILL' "$(grep -A1 'name: DRIVER_HANDOVER_MS' <<<"$gh_driver")" 'value: "540000"'
 
 # Selectors hold only name/instance/component: they are immutable, so a chart-version label in
 # one would make every upgrade an apiserver refusal.
