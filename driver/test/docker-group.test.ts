@@ -18,6 +18,7 @@ import {
 import { ctlVolumeName } from '../src/docker-mailbox.js';
 import type { RunnerFiles } from '../src/docker-runner-support.js';
 import { MAILBOXES, SUPERVISOR_CREDENTIAL_NAMES, SUPERVISOR_EXIT } from '../src/supervisor-contract.js';
+import { orphanBoundMs } from '../src/supervisor-plan.js';
 
 /*
  * The docker twin of the runner pod: the supervisor, the agent and the exporter as one container
@@ -69,6 +70,13 @@ describe('the supervisor container', () => {
         const workspace = mounted.filter((mount) => mount.includes('workspaces'));
         expect(workspace).toHaveLength(1);
         expect(workspace[0]).toContain(`volume-subpath=bellows/${USER}`);
+    });
+
+    it('is told the orphan bound the lease allows, as the exporter is its drain give-up', () => {
+        const bound = orphanBoundMs(config);
+        expect(argv).toContain(`SUPERVISOR_ORPHAN_MS=${bound}`);
+        const exporter = exporterCreateArgs(config, job, START, '/tmp/export.env');
+        expect(exporter).toContain(`EXPORT_DRAIN_GIVEUP_MS=${bound}`);
     });
 
     it('takes its control pair by env file, never by argv', () => {

@@ -25,6 +25,7 @@ import {
     parsePodMetrics,
 } from '../src/k8s-transport.js';
 import { readVerdict, runnerLossOf } from '../src/k8s-poll.js';
+import { orphanBoundMs } from '../src/supervisor-plan.js';
 import {
     claudeTurnsJobName,
     claudeTurnsJobSpec,
@@ -6520,5 +6521,26 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
             'factory.session': SESSION,
             'factory.command': commandMark(job.command),
         });
+    });
+});
+
+describe('the bound a runner pod outlives a lost driver by', () => {
+    it('is a quarter of the lease, clamped to [30 s, 90 s], so the group ends inside the lost driver’s lease', () => {
+        expect(orphanBoundMs(loadDriverConfig({ DRIVER_LEASE_SECONDS: '120' }))).toBe(30_000);
+        expect(orphanBoundMs(loadDriverConfig({ DRIVER_LEASE_SECONDS: '300' }))).toBe(75_000);
+        expect(orphanBoundMs(loadDriverConfig({ DRIVER_LEASE_SECONDS: '3600' }))).toBe(90_000);
+    });
+
+    it('reaches the supervisor as its orphan bound and the exporter as its drain give-up', () => {
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', DRIVER_LEASE_SECONDS: '120' });
+        const bound = String(orphanBoundMs(config));
+        const pod = runnerJobSpec(
+            config,
+            { ...job, executorType: 'claude-code', ...SUPERVISED },
+            { id: SESSION, resume: false }
+        ).spec.template.spec;
+        const envOf = (name: string) => pod.containers.find((container) => container.name === name)?.env;
+        expect(envOf(SUPERVISOR_CONTAINER)).toContainEqual({ name: 'SUPERVISOR_ORPHAN_MS', value: bound });
+        expect(envOf(EXPORTER_CONTAINER)).toContainEqual({ name: 'EXPORT_DRAIN_GIVEUP_MS', value: bound });
     });
 });

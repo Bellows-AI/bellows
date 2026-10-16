@@ -720,7 +720,11 @@ async function serveUntilFinish(run) {
     }
 }
 
-/** finalize: the exporter closes every session's manifest, partial when the agent did not end by itself. */
+/**
+ * finalize: the exporter closes every session's manifest, partial when the agent did not end by
+ * itself. A driver lost meanwhile ends the wait at the orphan bound: the exporter cannot reach it
+ * either, and what it holds stays on the volume for the next claim.
+ */
 async function drainExporter(run) {
     const { settings, file, machine } = run;
     if (!settings.exports) return true;
@@ -728,7 +732,7 @@ async function drainExporter(run) {
     const { cause } = machine;
     writeAtomic(file.drain, JSON.stringify({ state: cause === null ? 'complete' : 'partial', cause }));
     const waitUntil = run.now() + settings.drainMs;
-    while (run.now() < waitUntil) {
+    while (run.now() < waitUntil && !orphaned(run)) {
         beat(run);
         if (readJson(file.exportStatus)?.done === true) return true;
         await sleep(settings.tickMs);

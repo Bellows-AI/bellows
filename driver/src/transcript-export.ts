@@ -4,6 +4,7 @@ import { CONTROL_TOKEN_ENV, CONTROL_URL_ENV, transcriptDir } from './claim.js';
 import { CLAUDE_CODE } from './executors.js';
 import type { RunSession } from './runner.js';
 import { MAILBOXES, SUPERVISOR_ENV } from './supervisor-contract.js';
+import { orphanBoundMs } from './supervisor-plan.js';
 
 /**
  * What both executors share about the continuous claude-code transcript exporter
@@ -67,6 +68,8 @@ export function exportEnv(
             ['EXPORT_FLUSH_MS', String(EXPORT_FLUSH_MS)],
             ['EXPORT_SPOOL_MAX_BYTES', String(EXPORT_SPOOL_MAX_BYTES)],
             ['FACTORY_EXPORT_DIR', MAILBOXES.export.path],
+            // A drain whose driver stays unreachable this long ends, its bytes left on the volume.
+            ['EXPORT_DRAIN_GIVEUP_MS', String(orphanBoundMs(config))],
         ],
         control: [
             { name: CONTROL_URL_ENV, source: SUPERVISOR_ENV.controlUrl },

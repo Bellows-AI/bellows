@@ -627,6 +627,39 @@ describe('the supervisor run: supervised steps', () => {
         expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
         expect(supervised.report()).toMatchObject({ outcome: 'completed', agentExit: 0 });
     });
+
+    it('finalizes inside the orphan bound when the driver is lost while the exporter drains', async () => {
+        const driver = await startDriver();
+        driver.autoFinish = false;
+        const supervised = run(driver, {
+            SUPERVISOR_EXPORTS: '1',
+            SUPERVISOR_DRAIN_MS: '60000',
+            SUPERVISOR_ORPHAN_MS: '300',
+        });
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        supervised.agentExits(0);
+        await until('the drain order', () => supervised.saw(MAILBOX_FILES.drain, 'export'));
+        // The driver is gone and the exporter, unable to reach it, never says `done`.
+        for (const server of servers) server.closeAllConnections();
+        for (const server of servers.splice(0)) await new Promise((resolve) => server.close(resolve));
+        const lost = Date.now();
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(Date.now() - lost).toBeLessThan(3_000);
+        expect(supervised.report()).toMatchObject({ outcome: 'completed', agentExit: 0, drained: false });
+    });
+
+    it('keeps waiting on a slow drain while the driver still answers', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, { SUPERVISOR_EXPORTS: '1', SUPERVISOR_ORPHAN_MS: '200' });
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        supervised.agentExits(0);
+        await until('the drain order', () => supervised.saw(MAILBOX_FILES.drain, 'export'));
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        expect(driver.reports).toEqual([]);
+        supervised.exporterDone();
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(supervised.report()).toMatchObject({ outcome: 'completed', drained: true });
+    });
 });
 
 describe('what crosses the mailboxes', () => {

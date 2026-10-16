@@ -45,6 +45,10 @@ What a run does — sync, gates, services, publish, helpers, reclaim — is one 
   publish-fresh token are a step's own `env`. `driver/test/supervised-steps.test.ts`.
 - **The fence orders contenders by `claim_seq`, never by a clock or the refundable attempt counter.**
   `driver/test/k8s.test.ts` (`after its attempt was refunded`, `no claim sequence`).
+- **A runner group whose driver is lost ends inside that driver's lease** (`orphanBoundMs` in
+  `driver/src/supervisor-plan.ts`; a lease under 120 s gets the 30 s floor), so the next claim adopts it; every
+  exporter request is time-bounded.
+  `driver/test/supervisor.test.ts`, `driver/test/scripts-claude-export.test.ts`.
 - **The driver never reads a Secret back** — the Role grants no `get`/`list`; attempt Secrets are reaped by
   derived name.
 - **`make start` refuses a state claim initialised without `PGDATA`** and a pre-StatefulSet state release; both name
