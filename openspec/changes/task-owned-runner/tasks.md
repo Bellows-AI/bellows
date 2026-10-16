@@ -27,7 +27,7 @@ halves in the same change. Unchecked items are not implemented. `→` names hard
 - [x] 2. (#765) Chunked upload protocol → 1. Replace `POST /api/jobs/:id/artifact` (single 512 KiB
   upsert, live-lease only) with chunk put + manifest finalize authorized by claim sequence, so a
   stale or reclaimed attempt may finish its own prefix but advances nothing authoritative.
-- [ ] 3. (#766) Claude continuous exporter → 2. Exporter process in the runner pod / docker group tails
+- [x] 3. (#766) Claude continuous exporter → 2. Exporter process in the runner pod / docker group tails
   `projects/*/<session>.jsonl`; partial trailing records, rotation, bounded spool, backpressure
   (pause or explicit failure, never drop); exposes oldest-unacked age and bytes. Lossless — drops
   `TRANSCRIPT_LIMIT_BYTES`. Deletes the `claudeTranscriptJobSpec` close-read Job and its docker twin.

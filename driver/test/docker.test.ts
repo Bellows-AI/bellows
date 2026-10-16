@@ -20,12 +20,7 @@ import {
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
 import { argvEnv, bellowsService, bellowsTree } from './fixtures/bellows-tree.js';
 import { currentActivity, reportTail, type RunSession, stripAnsi, tailBytes } from '../src/runner.js';
-import {
-    claudeTurnsArgs,
-    claudeTranscriptArgs,
-    opencodeCacheProbeArgs,
-    opencodeTranscriptArgs,
-} from '../src/docker-close-read.js';
+import { claudeTurnsArgs, opencodeCacheProbeArgs, opencodeTranscriptArgs } from '../src/docker-close-read.js';
 import {
     CACHE_WATCH_TURNS,
     cacheCollapse,
@@ -37,12 +32,13 @@ import {
 } from '../src/close-read.js';
 import { ARTIFACT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import {
-    claudeTranscriptScript,
+    claudeExportScript,
     claudeTurnsScript,
     opencodeReadoutScript,
     opencodeTranscriptScript,
 } from '../src/container-scripts.js';
 import { createDockerRunner } from '../src/docker-runner.js';
+import { claudeExportArgs, startDockerExporter } from '../src/docker-export.js';
 import { lookupHelper, type HelperPlan } from '../src/helpers.js';
 import {
     forgetDeclaredServices,
@@ -658,33 +654,70 @@ describe('the transcript export reads (issue #325)', () => {
      * throwaway shape, same env-only parameter rule, the byte cap riding as a VALUE so the cap
      * cannot drift between the script and the upload.
      */
-    it('claude: reads the transcript off the workspaces volume, cap and delta by env, never in the script text', () => {
-        const line = claudeTranscriptArgs(loadDriverConfig({}), job, SESSION, START);
-        expect(line.slice(0, 18)).toEqual([
+    it('claude: the exporter is a detached, labelled container whose control token rides an env file, never argv', () => {
+        const line = claudeExportArgs(loadDriverConfig({}), job, START, '/tmp/export.env');
+        expect(line.slice(0, 20)).toEqual([
             'run',
+            '-d',
+            '--rm',
             '--cap-drop',
             'ALL',
             '--security-opt',
             'no-new-privileges',
-            '--rm',
+            '--name',
+            `factory-export-${job.id}-${job.leaseToken}`,
+            '--label',
+            `factory.job=${job.id}`,
+            '--label',
+            `factory.lease=${job.leaseToken}`,
+            '--label',
+            'factory.export=true',
             '--mount',
             `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
-            '-e',
-            `CLAUDE_TRANSCRIPT_DIR=/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
-            '-e',
-            `CLAUDE_SESSION_ID=${SESSION}`,
-            '-e',
-            `RUN_STARTED_AT=${START}`,
-            '-e',
-            `TRANSCRIPT_LIMIT_BYTES=${ARTIFACT_LIMIT}`,
-            '--entrypoint',
-            'node',
+            '--add-host',
+            'host.docker.internal:host-gateway',
+            '--env-file',
         ]);
-        expect(line.slice(18)).toEqual(['claude-executor', '-e', claudeTranscriptScript]);
+        expect(line.slice(20, 22)).toEqual(['/tmp/export.env', '-e']);
+        expect(line).toContain(`CLAUDE_TRANSCRIPT_DIR=/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`);
+        expect(line).toContain(`RUN_STARTED_AT=${START}`);
+        // The script reads the name; only the argv BEFORE the script could carry a value.
+        expect(line.slice(0, -1).join(' ')).not.toContain('BELLOWS_CONTROL_TOKEN');
+        expect(line.slice(-5)).toEqual(['--entrypoint', 'node', 'claude-executor', '-e', claudeExportScript]);
     });
 
-    it('claude: refuses a session id that is not a uuid', () => {
-        expect(() => claudeTranscriptArgs(loadDriverConfig({}), job, '../../etc/passwd', START)).toThrow(/not a uuid/);
+    it('claude: starting the exporter writes only the control pair to a 0600 env file and removes it', async () => {
+        const writes: { file: string; body: string; mode: number }[] = [];
+        const removed: string[] = [];
+        const ran: string[][] = [];
+        const gated = {
+            ...job,
+            gateEnv: { BELLOWS_CONTROL_URL: 'http://driver:1', BELLOWS_CONTROL_TOKEN: 'tok', OTHER: 'x' },
+        };
+        await startDockerExporter(
+            {
+                config: loadDriverConfig({}),
+                execDocker: async (args) => {
+                    ran.push(args);
+                    return { stdout: '' };
+                },
+                files: {
+                    writeFile: (async (file: string, body: string, options: { mode: number }) => {
+                        writes.push({ file, body, mode: options.mode });
+                    }) as never,
+                    rm: (async (file: string) => {
+                        removed.push(file);
+                    }) as never,
+                },
+            },
+            gated,
+            START
+        );
+        expect(writes).toHaveLength(1);
+        expect(writes[0]?.body).toBe('BELLOWS_CONTROL_URL=http://driver:1\nBELLOWS_CONTROL_TOKEN=tok\n');
+        expect(writes[0]?.mode).toBe(0o600);
+        expect(ran).toHaveLength(1);
+        expect(removed).toEqual([writes[0]?.file]);
     });
 
     it('opencode: reads the session database by env, scoped to the run working directory', () => {
@@ -1670,6 +1703,71 @@ function dockerRunner(
 ): ReturnType<typeof createDockerRunner> {
     return createDockerRunner(loadDriverConfig(env), spawnFn, exec, files);
 }
+
+describe('the docker runner and the continuous transcript exporter', () => {
+    const exporting: BoardJob = {
+        ...job,
+        gateEnv: { BELLOWS_CONTROL_URL: 'http://driver:7000', BELLOWS_CONTROL_TOKEN: 'tok-control' },
+    };
+    const files = () => {
+        const written: string[] = [];
+        return {
+            written,
+            files: {
+                writeFile: (async (_file: string, body: string) => {
+                    written.push(body);
+                }) as never,
+                rm: (async () => {}) as never,
+            },
+        };
+    };
+
+    it('starts the exporter container before the agent and leaves it alive when the agent exits', async () => {
+        const { exec, calls } = entrypointAnswers('');
+        const { files: fakeFiles } = files();
+        const runner = dockerRunner(exec, { files: fakeFiles });
+        await runner.run(exporting, { id: SESSION, resume: false });
+        const started = calls.findIndex((args) => args[0] === 'run' && args.includes('factory.export=true'));
+        expect(started).toBeGreaterThanOrEqual(0);
+        expect(calls[started]).toContain('-d');
+        // Never removed by the run itself: the loop drains it, then calls stopTranscriptExport.
+        expect(
+            calls.some(
+                (args) => args[0] === 'rm' && args.includes(`factory-export-${exporting.id}-${exporting.leaseToken}`)
+            )
+        ).toBe(false);
+    });
+
+    it('starts no exporter for a run with no control endpoint', async () => {
+        const { exec, calls } = entrypointAnswers('');
+        await dockerRunner(exec).run(job, { id: SESSION, resume: false });
+        expect(calls.some((args) => args.includes('factory.export=true'))).toBe(false);
+    });
+
+    it('stopTranscriptExport removes the exporter container by name', async () => {
+        const { exec, calls } = entrypointAnswers('');
+        await dockerRunner(exec).stopTranscriptExport?.(exporting);
+        expect(calls).toContainEqual(['rm', '-f', `factory-export-${exporting.id}-${exporting.leaseToken}`]);
+    });
+
+    it('a refused exporter start fails the run as infrastructure and removes the created agent container', async () => {
+        const { calls } = entrypointAnswers('');
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'run' && args.includes('factory.export=true')) throw new Error('daemon said no');
+            return { stdout: '' };
+        });
+        const { files: fakeFiles } = files();
+        await expect(
+            dockerRunner(exec, { files: fakeFiles }).run(exporting, { id: SESSION, resume: false })
+        ).rejects.toThrow(/daemon said no/);
+        expect(
+            calls.some(
+                (args) => args[0] === 'rm' && args.includes(`factory-job-${exporting.id}-${exporting.leaseToken}`)
+            )
+        ).toBe(true);
+    });
+});
 
 describe('the docker runner', () => {
     // The daemon is stood in by `execDocker`, so the suite never shells out: the fence and the
@@ -2780,7 +2878,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const calls = exec.mock.calls.map((call) => call[0]);
         // The runner is resolved through this attempt's own labels and killed by ID — never by
         // name, which a stale attempt's kill could otherwise compute against a replacement's
-        // container.
+        // container. The transcript exporter is excluded: it outlives the agent to drain.
         expect(calls).toContainEqual([
             'ps',
             '-aq',
@@ -2788,6 +2886,8 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             `label=factory.job=${job.id}`,
             '--filter',
             `label=factory.lease=${job.leaseToken}`,
+            '--filter',
+            'label!=factory.export',
         ]);
         expect(calls).toContainEqual(['kill', 'svc-id-1']);
         expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
@@ -4760,7 +4860,7 @@ describe('every container the driver runs is hardened (#382)', () => {
         ['the opencode session readout', () => opencodeSessionReadoutArgs(config(), opencodeJob, START)],
         ['the opencode cache probe', () => opencodeCacheProbeArgs(config(), opencodeJob)],
         ['the claude turns readout', () => claudeTurnsArgs(config(), job, SESSION, START)],
-        ['the claude transcript export', () => claudeTranscriptArgs(config(), job, SESSION, START)],
+        ['the claude transcript exporter', () => claudeExportArgs(config(), job, START, '/tmp/export.env')],
         ['the opencode transcript export', () => opencodeTranscriptArgs(config(), opencodeJob, START)],
         ['the .bellows.yaml readout', () => readBellowsArgs(config(), job)],
         [

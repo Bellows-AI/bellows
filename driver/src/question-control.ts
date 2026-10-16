@@ -1,6 +1,7 @@
 import type { AskedQuestion } from './board.js';
 import type { PublishRelay, PublishSlot } from './publish-control.js';
 import type { ReviewRelay, ReviewSlot } from './review-control.js';
+import type { ExportRelay, ExportSlot } from './export-control.js';
 import { QUESTION_ID, validateQuestionReport } from './question-validation.js';
 
 /**
@@ -54,12 +55,15 @@ export interface ControlEntry {
     /** The reviewer routes' relay and in-flight flag (`review-control.ts`); null on a run that may not invoke one. */
     reviewer: ReviewRelay | null;
     reviewing: ReviewSlot;
+    /** The transcript-export routes' relay and drain order (`export-control.ts`); no relay on a run with no exporter. */
+    exporting: ExportSlot;
 }
 
 export const newControl = (
     relay: QuestionRelay | null,
     publisher: PublishRelay | null = null,
-    reviewer: ReviewRelay | null = null
+    reviewer: ReviewRelay | null = null,
+    exporter: ExportRelay | null = null
 ): ControlEntry => ({
     stop: false,
     polled: false,
@@ -70,6 +74,7 @@ export const newControl = (
     publishing: { running: false },
     reviewer,
     reviewing: { running: false },
+    exporting: { relay: exporter, drain: null },
 });
 
 export interface QuestionAnswer {

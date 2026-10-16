@@ -396,6 +396,11 @@ export interface RuntimeReport {
     sampledAt: string;
     /** The attempt's declared `.bellows.yaml` services and their current states, when it declared any. */
     services?: ServiceStatus[];
+    /**
+     * How far behind the continuous transcript export is: the bytes not yet acknowledged by the
+     * board and the age of the oldest of them. Present only on a run that exports its transcript.
+     */
+    transcriptExport?: { pendingBytes: number; oldestUnackedMs: number };
 }
 
 /** The stream one artifact upload belongs to, below the job and the claim sequence the job carries. */

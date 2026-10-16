@@ -1,0 +1,128 @@
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { ChunkAnswer } from '../src/board.js';
+import { createControlChannel, type ControlChannel } from '../src/control-channel.js';
+import type { ExportRelay } from '../src/export-control.js';
+
+/** The control channel's transcript-export routes: their statuses, their validation, and what they never touch. */
+
+const TOKEN = 'tok';
+
+let server: Server;
+let channel: ControlChannel;
+let base: string;
+let answer: () => Promise<ChunkAnswer>;
+const seen: { chunks: [string, number, number][]; reports: unknown[] } = { chunks: [], reports: [] };
+
+const relay: ExportRelay = {
+    putChunk: (session, offset, bytes) => {
+        seen.chunks.push([session, offset, bytes.length]);
+        return answer();
+    },
+    finalize: async () => 'stored',
+    report: (report) => {
+        seen.reports.push(report);
+    },
+};
+
+beforeEach(async () => {
+    seen.chunks = [];
+    seen.reports = [];
+    answer = async () => ({ result: 'stored' });
+    channel = createControlChannel();
+    server = createServer((request, reply) => {
+        const auth = /^Bearer (.+)$/.exec(request.headers.authorization ?? '')?.[1] ?? '';
+        void channel.serve(request, reply, auth).then((handled) => {
+            if (!handled) reply.end();
+        });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+});
+
+afterEach(() => {
+    server.close();
+});
+
+const openExporting = (): void => {
+    channel.open(TOKEN);
+    channel.attachExporter(TOKEN, relay);
+};
+
+const call = (method: string, path: string, body?: string | Uint8Array, token = TOKEN) =>
+    fetch(`${base}${path}`, { method, headers: { authorization: `Bearer ${token}` }, ...(body ? { body } : {}) });
+
+describe('the export routes of the control channel', () => {
+    it('refuse an unknown token', async () => {
+        openExporting();
+        expect((await call('GET', '/export/control', undefined, 'other')).status).toBe(401);
+    });
+
+    it('answer the drain order, null until it is given', async () => {
+        openExporting();
+        expect(await (await call('GET', '/export/control')).json()).toEqual({ drain: null });
+        channel.drainExport(TOKEN, { state: 'partial', cause: 'agent_killed' });
+        expect(await (await call('GET', '/export/control')).json()).toEqual({
+            drain: { state: 'partial', cause: 'agent_killed' },
+        });
+    });
+
+    it('never mark the token polled: only the agent’s own stop poll does', async () => {
+        openExporting();
+        await call('GET', '/export/control');
+        await call(
+            'POST',
+            '/export/state',
+            JSON.stringify({ pendingBytes: 0, oldestUnackedMs: 0, spoolFull: false, done: false })
+        );
+        expect(channel.polled(TOKEN)).toBe(false);
+        await call('GET', '/control');
+        expect(channel.polled(TOKEN)).toBe(true);
+    });
+
+    it('relay a chunk at its offset and map the board’s answers to statuses', async () => {
+        openExporting();
+        const put = () => call('PUT', '/export/chunk?session=abc&offset=40', new Uint8Array([1, 2, 3]));
+        expect((await put()).status).toBe(200);
+        expect(seen.chunks).toEqual([['abc', 40, 3]]);
+        answer = async () => ({ result: 'refused', cause: 'stream_cap' });
+        const refused = await put();
+        expect(refused.status).toBe(413);
+        expect(await refused.json()).toEqual({ cause: 'stream_cap' });
+        answer = async () => ({ result: 'conflict' });
+        expect((await put()).status).toBe(409);
+        answer = async () => {
+            throw new Error('the board is down');
+        };
+        expect((await put()).status).toBe(502);
+    });
+
+    it('refuse a chunk with a session or offset that is not one', async () => {
+        openExporting();
+        expect((await call('PUT', '/export/chunk?session=../x&offset=0', new Uint8Array([1]))).status).toBe(400);
+        expect((await call('PUT', '/export/chunk?session=abc&offset=-1', new Uint8Array([1]))).status).toBe(400);
+        expect((await call('PUT', '/export/chunk?session=abc', new Uint8Array([1]))).status).toBe(400);
+        expect(seen.chunks).toEqual([]);
+    });
+
+    it('keep the vitals the exporter reports and refuse a malformed report', async () => {
+        openExporting();
+        const report = { pendingBytes: 12, oldestUnackedMs: 3400, spoolFull: false, done: false };
+        expect((await call('POST', '/export/state', JSON.stringify(report))).status).toBe(200);
+        expect(seen.reports).toEqual([report]);
+        expect((await call('POST', '/export/state', JSON.stringify({ pendingBytes: -1 }))).status).toBe(400);
+    });
+
+    it('answer 400 where the attempt exports no transcript', async () => {
+        channel.open(TOKEN);
+        expect((await call('PUT', '/export/chunk?session=abc&offset=0', new Uint8Array([1]))).status).toBe(400);
+        expect((await call('GET', '/export/control')).status).toBe(200);
+    });
+
+    it('answer 401 to a request whose token closed while its body arrived', async () => {
+        openExporting();
+        channel.close(TOKEN);
+        expect((await call('PUT', '/export/chunk?session=abc&offset=0', new Uint8Array([1]))).status).toBe(401);
+    });
+});

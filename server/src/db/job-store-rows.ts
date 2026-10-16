@@ -153,6 +153,7 @@ export function runtimePatch(runtime: RuntimeVitals): Record<string, unknown> {
         activity: runtime.activity,
         sampledAt: runtime.sampledAt,
         ...(runtime.services ? { services: runtime.services } : {}),
+        ...(runtime.transcriptExport ? { transcriptExport: runtime.transcriptExport } : {}),
     };
 }
 

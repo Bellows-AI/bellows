@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Board, BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { claudeTurnsScript, claudeTranscriptScript, opencodeTranscriptScript } from '../src/container-scripts.js';
+import { claudeTurnsScript, claudeExportScript, opencodeTranscriptScript } from '../src/container-scripts.js';
 import { ARTIFACT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import { lookupHelper } from '../src/helpers.js';
 import { claudeManagedSettings, opencodeOtelConfig } from '../src/telemetry-config.js';
@@ -18,8 +18,8 @@ import {
     bellowsJobSpec,
     claudeTurnsJobName,
     claudeTurnsJobSpec,
-    claudeTranscriptJobName,
-    claudeTranscriptJobSpec,
+    claudeExportJobName,
+    claudeExportJobSpec,
     envBodyToData,
     fleetDnsField,
     gateEnvSecretName,
@@ -560,7 +560,7 @@ const POD_NAMES = [
     'the bellows readout',
     'the opencode session readout',
     'the claude turns readout',
-    'the claude transcript export',
+    'the claude transcript exporter',
     'the opencode transcript export',
     'the sync',
     'the reclaim',
@@ -627,7 +627,7 @@ const everyPodSpec = (env: NodeJS.ProcessEnv = {}, of: BoardJob = job): Record<P
         'the bellows readout': () => jobView(bellowsJobSpec(config, of)),
         'the opencode session readout': () => jobView(opencodeReadoutJobSpec(config, of, startedAt)),
         'the claude turns readout': () => jobView(claudeTurnsJobSpec(config, of, SESSION, startedAt)),
-        'the claude transcript export': () => jobView(claudeTranscriptJobSpec(config, of, SESSION, startedAt)),
+        'the claude transcript exporter': () => jobView(claudeExportJobSpec(config, of, startedAt)),
         'the opencode transcript export': () => jobView(opencodeTranscriptJobSpec(config, of, startedAt)),
         'the sync': () => jobView(syncJobSpec(config, repoJob, null)),
         'the reclaim': () => jobView(reclaimJobSpec(config, repoJob)),
@@ -861,27 +861,14 @@ const cturnsCalls = (j: BoardJob): string[] => [
 ];
 
 /**
- * The transcript artifact's close-time Job requests (issue #325) — the twin read that follows the
- * turn read, same shape, distinct name (`factory-ctrans-`).
- */
-const ctransCalls = (j: BoardJob): string[] => [
-    `POST ${jobsPath(namespace)}`,
-    `GET ${jobPath(namespace, claudeTranscriptJobName(j))}`,
-    `GET /api/v1/namespaces/factory/pods`,
-    `GET /api/v1/namespaces/factory/pods/${podName}/log`,
-    `DELETE ${jobPath(namespace, claudeTranscriptJobName(j))}`,
-];
-
-/**
  * The methods of a runner attempt from its Secret on: the Secret POST, the claim verify, the
  * Job POST, the claim verify, the status poll, the pod list and the log; then the close-time
- * claude-code turn read and the transcript read (issue #325) — one aux Job each, posted,
+ * claude-code turn read — one aux Job, posted,
  * polled, its pod listed, logged and reaped; then the claim read, its release and the Secret's
  * reap. The fence tests spell out everything before it.
  */
 const RUN_FROM_SECRET = [
     ...['POST', 'GET', 'POST', 'GET', 'GET', 'GET', 'GET'],
-    ...['POST', 'GET', 'GET', 'GET', 'DELETE'],
     ...['POST', 'GET', 'GET', 'GET', 'DELETE'],
     ...['GET', 'DELETE', 'DELETE'],
 ];
@@ -3005,6 +2992,61 @@ describe('the runner vitals', () => {
     });
 });
 
+describe('the kubernetes runner and the continuous transcript exporter', () => {
+    const exporting: BoardJob = {
+        ...job,
+        gateEnv: { BELLOWS_CONTROL_URL: 'http://driver:7000', BELLOWS_CONTROL_TOKEN: 'tok-control' },
+    };
+
+    it('starts the exporter as its own Job before the runner Job, and leaves it running when the run ends', async () => {
+        const { request, calls } = fakeRequest();
+        await runner(request).run(exporting, { id: SESSION, resume: false });
+        const posted = calls
+            .filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))
+            .map((call) => (call.body as { metadata: { name: string } }).metadata.name);
+        expect(posted).toEqual([claudeExportJobName(exporting), runnerJobName(exporting), expect.any(String)]);
+        // Nothing deletes it: the loop drains it and ends it through stopTranscriptExport.
+        expect(
+            calls.some((call) => call.method === 'DELETE' && call.path?.includes(claudeExportJobName(exporting)))
+        ).toBe(false);
+    });
+
+    it('starts no exporter for a run with no control endpoint', async () => {
+        const { request, calls } = fakeRequest();
+        await runner(request).run(job, { id: SESSION, resume: false });
+        expect(calls.some((call) => call.path?.includes('factory-cexport-'))).toBe(false);
+    });
+
+    it('kill deletes the runner Job and not the exporter, which drains what the agent wrote', async () => {
+        const { request, calls } = fakeRequest();
+        await runner(request).kill(exporting);
+        const deleted = calls.filter((call) => call.method === 'DELETE').map((call) => call.path ?? '');
+        expect(deleted.some((path) => path.includes(runnerJobName(exporting)))).toBe(true);
+        expect(deleted.some((path) => path.includes(claudeExportJobName(exporting)))).toBe(false);
+    });
+
+    it('stopTranscriptExport deletes the exporter Job by name', async () => {
+        const { request, calls } = fakeRequest();
+        await runner(request).stopTranscriptExport?.(exporting);
+        expect(calls).toContainEqual(
+            expect.objectContaining({
+                method: 'DELETE',
+                path: expect.stringContaining(jobPath(namespace, claudeExportJobName(exporting))),
+            })
+        );
+    });
+
+    it('a refused exporter Job fails the run as infrastructure, before any runner Job exists', async () => {
+        const { request, calls } = fakeRequest({
+            create: { status: 403, body: 'forbidden' },
+        });
+        await expect(runner(request).run(exporting, { id: SESSION, resume: false })).rejects.toThrow();
+        expect(calls.some((call) => call.path?.includes(runnerJobName(exporting)) && call.method === 'POST')).toBe(
+            false
+        );
+    });
+});
+
 describe('the kubernetes runner', () => {
     it('sweeps the job label, then creates the job in the configured namespace and reports success', async () => {
         const { request, calls } = fakeRequest();
@@ -3035,8 +3077,6 @@ describe('the kubernetes runner', () => {
             `GET /api/v1/namespaces/factory/pods/${podName}/log`,
             // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
             ...cturnsCalls(job),
-            // The transcript artifact's read (issue #325): the twin Job, right behind it.
-            ...ctransCalls(job),
             `GET ${claimPathFor(job.id)}`,
             `DELETE ${claimPathFor(job.id)}`,
             // No fleet teardown here: the services outlive run() for the declared gates, and the
@@ -3053,10 +3093,6 @@ describe('the kubernetes runner', () => {
             // The full log rides the outcome now (issue #325) — the whole (one-line) log, uncut.
             fullLog: 'did the work\n',
             logTruncated: false,
-            // The fake serves the runner's own log to the transcript Job too, so the export's
-            // answer is that line as content.
-            transcript: 'did the work',
-            transcriptTruncated: false,
         });
     });
 
@@ -3295,10 +3331,6 @@ describe('the kubernetes runner', () => {
             // The full log rides the outcome now (issue #325) — the whole (one-line) log, uncut.
             fullLog: 'did the work\n',
             logTruncated: false,
-            // The fake serves the runner's own log to the transcript Job too, so the export's
-            // answer is that line as content.
-            transcript: 'did the work',
-            transcriptTruncated: false,
         });
     });
 
@@ -3557,8 +3589,6 @@ describe('the kubernetes runner', () => {
             // The close-time claude-code turn read: one aux Job, polled, logged, reaped. It
             // rides THIS attempt, so its name hashes the token this run holds.
             ...cturnsCalls(newerJob),
-            // The transcript artifact's read (issue #325): the twin Job, right behind it.
-            ...ctransCalls(newerJob),
             `GET ${claimPath}`,
             `DELETE ${claimPath}`,
             `DELETE /api/v1/namespaces/factory/secrets/${secretName(newerJob)}`,
@@ -4629,8 +4659,8 @@ describe('the kubernetes runner', () => {
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
-        // The runner's poll plus the close-time reads' own pod list.
-        expect(lists).toBe(5);
+        // The runner's poll plus the claude turn read's own pod list.
+        expect(lists).toBe(4);
     });
 
     // A log read that fails outright — connection reset, pod gone — must not fail the report: the
@@ -6179,18 +6209,23 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
      */
     const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
 
-    it('claude: exports the transcript as one aux Job, its inputs by env, the cap as a VALUE', () => {
-        const spec = claudeTranscriptJobSpec(config, job, SESSION, START);
+    it('claude: the exporter is its own Job with the control pair by Secret reference, never a value', () => {
+        const spec = claudeExportJobSpec(config, job, START);
         const container = spec.spec.template.spec.containers[0]!;
-        expect(spec.metadata.name).toBe(claudeTranscriptJobName(job));
-        expect(spec.metadata.name).toMatch(/^factory-ctrans-/);
-        expect(container.command).toEqual(['node', '-e', claudeTranscriptScript]);
-        expect(container.env).toEqual([
-            { name: 'CLAUDE_TRANSCRIPT_DIR', value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}` },
-            { name: 'CLAUDE_SESSION_ID', value: SESSION },
-            { name: 'RUN_STARTED_AT', value: START },
-            { name: 'TRANSCRIPT_LIMIT_BYTES', value: String(ARTIFACT_LIMIT) },
-        ]);
+        expect(spec.metadata.name).toBe(claudeExportJobName(job));
+        expect(spec.metadata.name).toMatch(/^factory-cexport-/);
+        expect(spec.metadata.labels).toMatchObject({ 'factory.job': job.id, 'factory.lease': job.leaseToken });
+        expect(container.command).toEqual(['node', '-e', claudeExportScript]);
+        expect(container.env).toContainEqual({
+            name: 'CLAUDE_TRANSCRIPT_DIR',
+            value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
+        });
+        expect(container.env).toContainEqual({ name: 'RUN_STARTED_AT', value: START });
+        expect(container.env).toContainEqual({
+            name: 'BELLOWS_CONTROL_TOKEN',
+            valueFrom: { secretKeyRef: { name: secretName(job), key: 'BELLOWS_CONTROL_TOKEN' } },
+        });
+        expect(JSON.stringify(spec)).not.toMatch(/"value":"[^"]*tok-/);
         expect(container.volumeMounts).toEqual([
             { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
@@ -6211,7 +6246,6 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
     });
 
     it('refuses the same broken inputs the turn Jobs refuse', () => {
-        expect(() => claudeTranscriptJobSpec(config, job, 'not-a-uuid', START)).toThrow(/not a session id/);
         expect(() => opencodeTranscriptJobSpec(config, { ...job, workspacePath: null }, START)).toThrow(
             /workspace path/
         );

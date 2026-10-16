@@ -34,8 +34,9 @@ import {
 } from './k8s-auxspec.js';
 import { acquireClaim, prepare, launch, releaseClaim, type RunCleanup } from './k8s-fence.js';
 import {
+    claudeExportJobName,
+    claudeExportJobSpec,
     claudeTurnsJobSpec,
-    claudeTranscriptJobSpec,
     envBodyToData,
     jobsPath,
     opencodeReadoutJobSpec,
@@ -84,6 +85,7 @@ import {
 } from './publish.js';
 import type { PublishResult, ReclaimResult, SyncResult } from './publish.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
+import { exportsTranscript } from './transcript-export.js';
 
 /**
  * The kubernetes `Runner`: assembles the fence (`k8s-fence.ts`), the pollers (`k8s-poll.ts`) and
@@ -185,18 +187,19 @@ async function scrapeClaudeCloseRead(
 }
 
 /**
- * The transcript artifact of one finished run (issue #325), as a Job: the executor's export
+ * The opencode transcript artifact of one finished run (issue #325), as a Job: the export
  * script over the PVC, its answer parsed to `{content, truncated}` — or null when the read
- * failed, answered nothing, or its spec could not be built (a missing workspace path, a
- * non-uuid session — the same refusals the turn reads answer through their null contracts).
- * Best-effort: a failed export costs the attempt its transcript artifact, never its verdict.
+ * failed, answered nothing, or its spec could not be built (a missing workspace path — the same
+ * refusal the readout answers through its null contract). Best-effort: a failed export costs the
+ * attempt its transcript artifact, never its verdict. Claude's transcript is streamed whole by
+ * its exporter Job while the run lives (`claudeExportJobSpec`).
  */
 async function scrapeTranscriptArtifact(
     deps: K8sDeps,
-    buildSpec: () => ReturnType<typeof claudeTranscriptJobSpec> | ReturnType<typeof opencodeTranscriptJobSpec>
+    buildSpec: () => ReturnType<typeof opencodeTranscriptJobSpec>
 ): Promise<{ content: string; truncated: boolean } | null> {
     let jobName: string;
-    let spec: ReturnType<typeof claudeTranscriptJobSpec> | ReturnType<typeof opencodeTranscriptJobSpec>;
+    let spec: ReturnType<typeof opencodeTranscriptJobSpec>;
     try {
         spec = buildSpec();
         jobName = spec.metadata.name;
@@ -341,6 +344,19 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     await prepare(deps, job, cleanup);
 
     const startedAt = new Date().toISOString();
+    // The exporter is its own Job, started beside the agent and deliberately outliving it: a kill
+    // deletes the runner's Job only, and the exporter drains what the agent wrote until the loop
+    // says done (`stopTranscriptExport`). A Job the cluster refuses is infrastructure, thrown like
+    // a refused runner Job — never a run that silently loses its record.
+    if (exportsTranscript(job, session)) {
+        const created = await deps.request(
+            'POST',
+            jobsPath(deps.config.k8sNamespace),
+            claudeExportJobSpec(deps.config, job, startedAt)
+        );
+        expectOk(created, 'creating the transcript exporter job');
+        cleanup.exporterStarted = true;
+    }
     await launch(deps, job, runnerJobSpec(deps.config, job, session), cleanup);
 
     let polled: { timedOut: boolean; jobSucceeded: boolean };
@@ -374,14 +390,6 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     if (job.executorType === CLAUDE_CODE && session) {
         const read = await scrapeClaudeCloseRead(deps, job, session.id, startedAt);
         mergeClaudeCloseRead(outcome, read);
-        // The transcript artifact (issue #325), from the same file the count came from.
-        const transcript = await scrapeTranscriptArtifact(deps, () =>
-            claudeTranscriptJobSpec(deps.config, job, session.id, startedAt)
-        );
-        if (transcript) {
-            outcome.transcript = transcript.content;
-            outcome.transcriptTruncated = transcript.truncated;
-        }
     }
     return outcome;
 }
@@ -397,9 +405,13 @@ async function run(
     session: RunSession | null,
     onOutput?: (tail: string) => void
 ): Promise<RunOutcome> {
-    const cleanup: RunCleanup = { holdClaim: false };
+    const cleanup: RunCleanup = { holdClaim: false, exporterStarted: false };
     try {
         return await run0(deps, job, { session, onOutput, cleanup });
+    } catch (e) {
+        // A throw is no run to drain: the exporter started beside it has nothing left to wait for.
+        if (cleanup.exporterStarted) await deleteJob(deps, claudeExportJobName(job));
+        throw e;
     } finally {
         if (!cleanup.holdClaim) await releaseClaim(deps, job);
         await forgetSecret(deps, job);
@@ -617,6 +629,7 @@ export function createKubernetesRunner(
     return {
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
         kill: (job: BoardJob) => killRunner(deps, job),
+        stopTranscriptExport: (job: BoardJob) => deleteJob(deps, claudeExportJobName(job)),
         pauseDeadline: (job: BoardJob, paused: boolean) => pauseRunnerDeadline(deps, job, paused),
         releaseServices: (job: BoardJob) => teardownServices(deps, job),
         deadServices: (job: BoardJob) => deadServices(deps, job),

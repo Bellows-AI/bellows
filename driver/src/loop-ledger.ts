@@ -11,6 +11,7 @@ import { gateCauseOf } from './gate-cause.js';
 import type { GateFailure } from './loop-gates.js';
 import type { PublishResult } from './publish.js';
 import { serviceHint } from './runner.js';
+import { SPOOL_FULL_CAUSE } from './transcript-export.js';
 import { MISSING_SERVICE_STATE } from './services.js';
 import type { DeadService, RunOutcome } from './runner.js';
 
@@ -113,6 +114,17 @@ export function agentFaults(outcome: RunOutcome): Fault[] {
                     'Every turn was re-reading the whole context, so the run was burning its time budget ' +
                     'without progressing. Retry when the cache is healthy again, or on another model.',
                 'the run was killed for prompt-cache loss'
+            )
+        );
+    }
+    if (outcome.artifactSpoolFull) {
+        faults.push(
+            skips(
+                'runner_error',
+                `${SPOOL_FULL_CAUSE} — the transcript exporter held ${outcome.artifactSpoolFull} unacknowledged ` +
+                    'on the task volume and the board stayed out of reach, so the run was stopped before any ' +
+                    'record could be dropped. Retry when the board accepts uploads again.',
+                'the run was stopped for a full transcript spool'
             )
         );
     }
