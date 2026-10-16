@@ -5,6 +5,8 @@ type Fetch = typeof globalThis.fetch;
 /** The attempt pair the runner-facing routes take, copied from the board's auth plugin (no shared types). */
 const JOB_ID_HEADER = 'x-factory-job-id';
 const LEASE_TOKEN_HEADER = 'x-factory-job-lease-token';
+/** The ask runs inside a held sync turn and before a push: a board that never answers must not hold either. */
+const ASK_TIMEOUT_MS = 15_000;
 
 /**
  * `Board.githubCredential`: the attempt's GitHub token from `POST /api/jobs/:id/credentials/github`
@@ -20,6 +22,7 @@ export function githubCredentialCall({ url, fetch }: { url: string; fetch: Fetch
                 const response = await fetch(`${url}/api/jobs/${job.id}/credentials/github`, {
                     method: 'POST',
                     headers: { [JOB_ID_HEADER]: job.id, [LEASE_TOKEN_HEADER]: job.leaseToken },
+                    signal: AbortSignal.timeout(ASK_TIMEOUT_MS),
                 });
                 if (!response.ok) return null;
                 const body = (await response.json()) as { token?: unknown };
