@@ -20,12 +20,7 @@ import {
     cacheCollapse,
 } from './close-read.js';
 import { type DriverConfig, executorImage } from './config.js';
-import {
-    claudeTurnsScript,
-    claudeTranscriptScript,
-    opencodeCacheProbeScript,
-    opencodeTranscriptScript,
-} from './container-scripts.js';
+import { claudeTurnsScript, opencodeCacheProbeScript, opencodeTranscriptScript } from './container-scripts.js';
 import { UUID, workspacePath, transcriptDir, opencodeDbPath, runWorkingDir } from './claim.js';
 import type { ExecDocker } from './docker-runner-support.js';
 import {
@@ -100,42 +95,6 @@ export function opencodeCacheProbeArgs(config: DriverConfig, job: BoardJob): str
         executorImage(config, job.executorType),
         '-e',
         opencodeCacheProbeScript,
-    ];
-}
-
-/**
- * The full `docker run` argv that exports a finished claude-code run's transcript (issue #325) —
- * the twin of `claudeTurnsArgs` above, reading the same file with the same delta bound, but
- * answering the transcript's own JSONL instead of a count. The byte cap travels as an env VALUE
- * (this module's constant, so the cap cannot drift between the script and the upload).
- */
-export function claudeTranscriptArgs(
-    config: DriverConfig,
-    job: BoardJob,
-    sessionId: string,
-    startedAt: string
-): string[] {
-    if (!UUID.test(sessionId)) {
-        throw new Error(`refusing to export the transcript of a session id that is not a uuid: ${sessionId}`);
-    }
-    return [
-        'run',
-        ...containerHardeningArgs(),
-        '--rm',
-        ...workspacesMountArgs(config, workspacePath(job)),
-        '-e',
-        `CLAUDE_TRANSCRIPT_DIR=${transcriptDir(config, job)}`,
-        '-e',
-        `CLAUDE_SESSION_ID=${sessionId}`,
-        '-e',
-        `RUN_STARTED_AT=${startedAt}`,
-        '-e',
-        `TRANSCRIPT_LIMIT_BYTES=${ARTIFACT_LIMIT}`,
-        '--entrypoint',
-        'node',
-        executorImage(config, job.executorType),
-        '-e',
-        claudeTranscriptScript,
     ];
 }
 
@@ -243,10 +202,6 @@ async function applyClaudeCloseRead(
             () => CLAUDE_READ_NONE
         );
     mergeClaudeCloseRead(outcome, read);
-    // The transcript artifact (issue #325), from the same file the count came from.
-    await readTranscriptArtifact(outcome, ctx, () =>
-        claudeTranscriptArgs(ctx.config, ctx.job, (session as RunSession).id, ctx.startedAt)
-    );
 }
 
 /**

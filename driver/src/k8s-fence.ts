@@ -42,6 +42,8 @@ import type { K8sClaim, K8sDeps, K8sResponse } from './k8s-transport.js';
 /** True once a post-create stand-down could not prove its own Job deleted — see `k8s-runner.ts`'s `RunCleanup`. */
 export interface RunCleanup {
     holdClaim: boolean;
+    /** True once the transcript exporter's Job was created: a run that throws has nothing left for it to drain. */
+    exporterStarted: boolean;
 }
 
 /**

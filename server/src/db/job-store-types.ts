@@ -112,6 +112,18 @@ export interface RuntimeVitals {
      * the next claim: the fleet describes the attempt that took the lease.
      */
     services?: ServiceStatus[];
+    /**
+     * How far behind the continuous transcript export is: the bytes the board has not yet
+     * acknowledged and the age of the oldest of them. Present only on a run that exports its
+     * transcript; like the fleet, a missing key leaves the last report standing.
+     */
+    transcriptExport?: TranscriptExportVitals;
+}
+
+/** The transcript exporter's backlog, as the driver reports it with the vitals. */
+export interface TranscriptExportVitals {
+    pendingBytes: number;
+    oldestUnackedMs: number;
 }
 
 export interface Job {

@@ -1,4 +1,5 @@
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
+import { NOT_THE_EXPORTER, startExporterBesideRunner, stopDockerExporter } from './docker-export.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
@@ -181,6 +182,8 @@ async function dockerKill(deps: RunnerDeps, job: BoardJob): Promise<void> {
             `label=${JOB_LABEL}=${job.id}`,
             '--filter',
             `label=${LEASE_LABEL}=${job.leaseToken}`,
+            // The agent is what dies: the transcript exporter drains what it wrote (docker-export.ts).
+            ...NOT_THE_EXPORTER,
         ])
         .catch(() => ({ stdout: '' }));
     for (const id of linesOf(found.stdout)) {
@@ -627,6 +630,9 @@ async function dockerRun(
         await assertNotKilledAfterEnvWrite({ killed, job, files }, file);
     }
 
+    // The exporter starts beside the agent and outlives it: it drains until the loop says done.
+    await startExporterBesideRunner(deps, job, session, file);
+
     const outcome = new Promise<RunOutcome>((resolve, reject) => {
         // See dockerRunVerdict for what a close decides and why. Bound to this attempt's
         // own mutable state, read at call time (the close handler, well after all of it
@@ -789,5 +795,6 @@ export function createDockerRunner(
         startServices: (job, signal) =>
             startJobServices(job, config, { ...deps, serviceTeardown: (j) => dockerServiceTeardown(deps, j) }, signal),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
+        stopTranscriptExport: (job) => stopDockerExporter(execDocker, job),
     };
 }

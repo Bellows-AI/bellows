@@ -4,6 +4,7 @@ import { currentActivity, DEAD_SERVICE_STATES, serviceHint } from './runner.js';
 import type { DeadService } from './runner.js';
 import type { RuntimeSample } from './runner.js';
 import type { LoopRuntime } from './loop-types.js';
+import type { ExportRun } from './loop-export.js';
 import type { PublishResult } from './publish.js';
 import type { TimeoutActivity } from './timeout-note.js';
 
@@ -62,6 +63,8 @@ export interface JobState {
      * open for it; null until then, and for a driver with no endpoint at all.
      */
     control: string | null;
+    /** The attempt's continuous transcript export (`loop-export.ts`); null for an executor with none. */
+    transcriptExport: ExportRun | null;
     /**
      * True only while `runner.run` is in flight — the agent is working. A Stop is cooperative
      * only then; after the run (the gates, helpers, publish) there is no agent left to ask, and a
@@ -114,6 +117,7 @@ export function newJobState(): JobState {
         launched: false,
         gateToken: null,
         control: null,
+        transcriptExport: null,
         running: false,
         draining: false,
         graceTimer: null,
@@ -372,6 +376,7 @@ function buildRuntimeReport(sample: RuntimeSample, latest: string): RuntimeRepor
         // (never an empty array) otherwise, so the wire shape of a service-less
         // job is byte-identical to what it always was.
         ...(sample.services ? { services: sample.services } : {}),
+        ...(sample.transcriptExport ? { transcriptExport: sample.transcriptExport } : {}),
         // Derived at flush, from the tail being flushed — the activity line and
         // the numbers must describe the same moment.
         activity: currentActivity(latest),
@@ -456,10 +461,20 @@ function kickSample(rt: LoopRuntime, job: BoardJob, state: JobState, pump: Outpu
     pump.sampling = true;
     rt.runner
         .sampleRuntime(job)
-        .then(async (read) => {
+        .then(async (sampled) => {
+            // The exporter's vitals ride the sample: a run whose container could not be read still
+            // reports how far behind its transcript upload is.
+            const exporting = state.transcriptExport?.vitals;
+            const read: Omit<RuntimeSample, 'sampledAt'> | null =
+                sampled ?? (exporting ? { cpuPercent: null, memUsedMb: null, memPercent: null } : null);
             if (!read) return;
             const services = read.services ? await withDeadDetail({ rt, job, state, pump }, read.services) : undefined;
-            pump.sample = { ...read, ...(services ? { services } : {}), sampledAt: new Date().toISOString() };
+            pump.sample = {
+                ...read,
+                ...(services ? { services } : {}),
+                ...(exporting ? { transcriptExport: exporting } : {}),
+                sampledAt: new Date().toISOString(),
+            };
         })
         .catch(() => {})
         .finally(() => {

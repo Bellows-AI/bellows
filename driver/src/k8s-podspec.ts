@@ -15,11 +15,12 @@ import {
 } from './claim.js';
 import {
     claudeTurnsScript,
-    claudeTranscriptScript,
+    claudeExportScript,
     opencodeReadoutScript,
     opencodeTranscriptScript,
 } from './container-scripts.js';
 import { ARTIFACT_LIMIT, type RunSession } from './runner.js';
+import { exportEnv } from './transcript-export.js';
 import { JOB_ID, MS_PER_SECOND, TTL_SECONDS } from './k8s-transport.js';
 import {
     containerHardeningField,
@@ -801,41 +802,43 @@ export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob, star
 }
 
 /**
- * The transcript artifact's aux Jobs (issue #325) — the twins of the two readouts above, reading
+ * The opencode transcript artifact's aux Job (issue #325) — the twin of the readout above, reading
  * the same records with the same delta bounds but exporting the run's transcript instead of
- * counting it. Names are distinct from the turns/readout Jobs' (`factory-ctrans-`/`factory-otrans-`
- * against `factory-cturns-`/`factory-ocread-`) because their hash key is the same (job, lease)
- * pair — one attempt's transcript Job and its turn Job must not collide. The byte cap travels as
+ * counting it. Its name is distinct from the readout Job's (`factory-otrans-` against
+ * `factory-ocread-`) because their hash key is the same (job, lease) pair. The byte cap travels as
  * an env VALUE, this module's constant, so the cap cannot drift between the script and the upload.
  */
-export const claudeTranscriptJobName = (job: BoardJob): string =>
-    `factory-ctrans-${hash16(`${job.id}|${job.leaseToken}`)}`;
-
 export const opencodeTranscriptJobName = (job: BoardJob): string =>
     `factory-otrans-${hash16(`${job.id}|${job.leaseToken}`)}`;
 
-export function claudeTranscriptJobSpec(
-    config: DriverConfig,
-    job: BoardJob,
-    sessionId: string,
-    startedAt: string
-): AuxJobSpec {
-    if (!JOB_ID.test(sessionId)) {
-        throw new Error(`refusing to export the transcript of job ${job.id}: not a session id: ${sessionId}`);
-    }
+/**
+ * The continuous claude-code transcript exporter (`claude-export.cjs`) as its own Job beside the
+ * runner's — not a container of the runner's pod, so the Job delete that kills the agent leaves it
+ * running to drain what the agent wrote. It lives until the loop deletes it, bounded by a deadline
+ * of a week as the backstop; it exits by itself once its control token is closed. The control URL
+ * and token come from the attempt's Secret BY REFERENCE, like the runner's — never in the spec.
+ */
+const EXPORT_JOB_DEADLINE_SECONDS = 604_800;
+
+export const claudeExportJobName = (job: BoardJob): string =>
+    `factory-cexport-${hash16(`${job.id}|${job.leaseToken}`)}`;
+
+export function claudeExportJobSpec(config: DriverConfig, job: BoardJob, startedAt: string): AuxJobSpec {
+    const { literals, control } = exportEnv(config, job, startedAt);
     return auxJobSpec(config, job, {
-        name: claudeTranscriptJobName(job),
-        deadlineSeconds: OPENCODE_READOUT_DEADLINE_SECONDS,
+        name: claudeExportJobName(job),
+        deadlineSeconds: EXPORT_JOB_DEADLINE_SECONDS,
         container: {
-            name: 'claude-transcript',
+            name: 'claude-export',
             image: executorImage(config, job.executorType),
             imagePullPolicy: config.imagePullPolicy,
-            command: ['node', '-e', claudeTranscriptScript],
+            command: ['node', '-e', claudeExportScript],
             env: [
-                { name: 'CLAUDE_TRANSCRIPT_DIR', value: transcriptDir(config, job) },
-                { name: 'CLAUDE_SESSION_ID', value: sessionId },
-                { name: 'RUN_STARTED_AT', value: startedAt },
-                { name: 'TRANSCRIPT_LIMIT_BYTES', value: String(ARTIFACT_LIMIT) },
+                ...literals.map(([name, value]) => ({ name, value })),
+                ...control.map((name) => ({
+                    name,
+                    valueFrom: { secretKeyRef: { name: secretName(job), key: name } },
+                })),
             ],
             volumeMounts: [workspaceMount(config, workspacePath(job))],
         },

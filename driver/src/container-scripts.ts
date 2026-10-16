@@ -23,8 +23,8 @@ export const opencodeReadoutScript = script('opencode-readout.cjs');
 /** The close-time claude-code turn count: see scripts/claude-turns.cjs. */
 export const claudeTurnsScript = script('claude-turns.cjs');
 
-/** The close-time claude-code transcript export: see scripts/claude-transcript.cjs. */
-export const claudeTranscriptScript = script('claude-transcript.cjs');
+/** The continuous claude-code transcript exporter: see scripts/claude-export.cjs. */
+export const claudeExportScript = script('claude-export.cjs');
 
 /** The close-time opencode transcript export: see scripts/opencode-transcript.cjs. */
 export const opencodeTranscriptScript = script('opencode-transcript.cjs');

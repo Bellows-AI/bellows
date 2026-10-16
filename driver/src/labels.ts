@@ -6,6 +6,8 @@
 export const JOB_LABEL = 'factory.job';
 export const LEASE_LABEL = 'factory.lease';
 export const SERVICE_LABEL = 'factory.service';
+/** Docker only: the transcript exporter's container, which a kill of the agent must not reach. */
+export const EXPORT_LABEL = 'factory.export';
 
 /**
  * Kubernetes only: the attempt's service subdomain on each of its service pods — what the

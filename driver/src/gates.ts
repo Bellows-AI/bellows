@@ -16,6 +16,7 @@ import { createControlChannel } from './control-channel.js';
 import { readBody, respondJson } from './http.js';
 import type { PublishRelay } from './publish-control.js';
 import type { ReviewRelay } from './review-control.js';
+import type { ExportDrain, ExportRelay } from './export-control.js';
 import type { QuestionRelay, QuestionResolution } from './question-control.js';
 
 const run = promisify(execFile);
@@ -516,6 +517,10 @@ export interface GateServer {
      * attempt gets one, gated or not. Idempotent.
      */
     openControl(token: string, relay?: QuestionRelay, publisher?: PublishRelay, reviewer?: ReviewRelay): void;
+    /** Gives an open control token its transcript exporter's relay (the `/export` routes). */
+    attachExporter(token: string, exporter: ExportRelay): void;
+    /** Orders the token's transcript exporter to drain: the agent is gone, flush and close the manifests. */
+    drainExport(token: string, drain: ExportDrain): void;
     /**
      * Settles a pending question on an open control token: an answer the board recorded, or an
      * answer arriving. False — and nothing changes — for an unknown token or id and a question
@@ -713,6 +718,8 @@ export function createGateServer({
             this.unregister(token);
         },
         openControl: (token, relay, publisher, reviewer) => channel.open(token, relay, publisher, reviewer),
+        attachExporter: (token, exporter) => channel.attachExporter(token, exporter),
+        drainExport: (token, drain) => channel.drainExport(token, drain),
         resolveQuestion: (token, id, resolution) => channel.resolveQuestion(token, id, resolution),
         hasPendingQuestion: (token) => channel.hasPendingQuestion(token),
         cancelQuestions: (token) => channel.cancelQuestions(token),

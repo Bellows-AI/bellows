@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readBody, respondJson } from './http.js';
 import { PUBLISH_BODY_LIMIT, type PublishRelay, servePublish } from './publish-control.js';
+import { type ExportDrain, type ExportRelay, EXPORT_PATH, serveExport } from './export-control.js';
 import { REVIEW_BODY_LIMIT, type ReviewRelay, serveReviewRead, serveReviewRequest } from './review-control.js';
 import {
     cancelPendingQuestions,
@@ -41,6 +42,10 @@ export interface ControlChannel {
      * publishes and `reviewer` its named-reviewer requests (none on a run that may not invoke one).
      */
     open(token: string, relay?: QuestionRelay, publisher?: PublishRelay, reviewer?: ReviewRelay): void;
+    /** Gives an open token its transcript exporter's relay: the `/export` routes answer 400 until then. */
+    attachExporter(token: string, exporter: ExportRelay): void;
+    /** Orders the token's exporter to drain: the agent is gone, flush everything and close the manifests. */
+    drainExport(token: string, drain: ExportDrain): void;
     /** Whether a runner has contacted this token — its stop poll, or a question POST. */
     polled(token: string): boolean;
     /** Raises the stop; repeated calls and unknown tokens do nothing. */
@@ -59,7 +64,7 @@ export interface ControlChannel {
     serve(request: IncomingMessage, reply: ServerResponse, auth: string): Promise<boolean>;
 }
 
-type Route = 'control' | 'publish' | 'question' | 'review';
+type Route = 'control' | 'export' | 'publish' | 'question' | 'review';
 
 /** A path that is a POST of its own, or a GET of `<path>/<id>`: the shape the question and review routes share. */
 const isPostOrGetOf = (request: IncomingMessage, path: string): boolean => {
@@ -71,6 +76,7 @@ const isPostOrGetOf = (request: IncomingMessage, path: string): boolean => {
 function routeOf(request: IncomingMessage): Route | null {
     const url = request.url ?? '';
     if (request.method === 'GET' && url === CONTROL_PATH) return 'control';
+    if (url === EXPORT_PATH || url.startsWith(`${EXPORT_PATH}/`)) return 'export';
     if (request.method === 'POST' && url === PUBLISH_PATH) return 'publish';
     if (isPostOrGetOf(request, QUESTION_PATH)) return 'question';
     return isPostOrGetOf(request, REVIEW_PATH) ? 'review' : null;
@@ -117,10 +123,18 @@ export function createControlChannel(): ControlChannel {
                 controls.set(token, newControl(relay ?? null, publisher ?? null, reviewer ?? null));
             }
         },
+        attachExporter(token, exporter) {
+            const control = controls.get(token);
+            if (control) control.exporting.relay = exporter;
+        },
         polled: (token) => controls.get(token)?.polled ?? false,
         raiseStop(token) {
             const control = controls.get(token);
             if (control) control.stop = true;
+        },
+        drainExport(token, drain) {
+            const control = controls.get(token);
+            if (control) control.exporting.drain = drain;
         },
         close: (token) => void controls.delete(token),
         clear: () => controls.clear(),
@@ -142,6 +156,12 @@ export function createControlChannel(): ControlChannel {
             const control = controls.get(auth);
             if (!control) {
                 respondJson(reply, HTTP_UNAUTHORIZED, { error: 'unknown token' });
+                return true;
+            }
+            if (route === 'export') {
+                // Not the agent: the exporter's calls never say a stop poller is listening.
+                const answer = await serveExport(control.exporting, request, () => controls.get(auth) === control);
+                respondJson(reply, answer.status, answer.body);
                 return true;
             }
             control.polled = true;

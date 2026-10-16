@@ -8,6 +8,7 @@ import type { JobState } from './loop-attempt.js';
 import { createPublishRelay } from './loop-publish.js';
 import { createQuestionRelay } from './loop-questions.js';
 import { createReviewRelay, reviewerQuestionRelay } from './loop-review.js';
+import { attachTranscriptExport } from './loop-export.js';
 import type { LoopRuntime } from './loop-types.js';
 import { worktreeRelDir } from './publish.js';
 
@@ -198,6 +199,7 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
                 createReviewRelay(rt, job, state)
             );
         }
+        attachTranscriptExport({ rt, job, state }, token);
         job.gateEnv = {
             ...job.gateEnv,
             [CONTROL_URL_ENV]: gates.advertiseUrl(port),

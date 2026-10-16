@@ -88,6 +88,11 @@ export interface RunOutcome {
      */
     cacheLost?: string | null;
     /**
+     * Set when the attempt was failed because the transcript exporter's spool hit its cap
+     * (`artifact_spool_full`): the unacknowledged bytes it held. Undefined on every other run.
+     */
+    artifactSpoolFull?: string | null;
+    /**
      * The run's agent turns — one assistant response cycle in the run's ROOT conversation,
      * counted from the session's own records at close (opencode: the session database the
      * readout walks; claude-code: the transcript on the workspaces volume). Null when the read
@@ -120,10 +125,10 @@ export interface RunOutcome {
     /** True when the full-log accumulator cut bytes off the head to hold the cap. */
     logTruncated?: boolean;
     /**
-     * The agent session transcript of THIS run (the per-run delta, the same bound the turn
-     * count keeps), exported from the executor's own records at close — claude's session JSONL,
-     * opencode's reshaped message view — tail-kept at ARTIFACT_LIMIT bytes. Absent when no read
-     * ran or answered: no artifact, never an empty one.
+     * The opencode session transcript of THIS run (the per-run delta, the same bound the turn
+     * count keeps), exported from its database at close — the reshaped message view — tail-kept
+     * at ARTIFACT_LIMIT bytes. Absent when no read ran or answered: no artifact, never an empty
+     * one. Claude's transcript never rides here: its exporter streams it whole while the run lives.
      */
     transcript?: string;
     /** True when the transcript export dropped its head to hold the cap. */
@@ -228,6 +233,12 @@ export interface Runner {
     restartServices(job: BoardJob, signal: AbortSignal): Promise<void>;
     /** Stops a container mid-run. Used when the lease is lost, and on shutdown. */
     kill(job: BoardJob): Promise<void>;
+    /**
+     * Ends the attempt's continuous transcript exporter, which `run` started beside the agent and
+     * which `kill` deliberately leaves alive to drain. The loop calls it once the exporter said it
+     * is done (or its drain deadline passed); idempotent, and never throws.
+     */
+    stopTranscriptExport?(job: BoardJob): Promise<void>;
     /** Stops/resumes the runtime budget while questions are pending. */
     pauseDeadline?(job: BoardJob, paused: boolean): Promise<void>;
     /**
@@ -403,6 +414,8 @@ export interface RuntimeSample {
      * declared any and their states could be read.
      */
     services?: ServiceStatus[];
+    /** The transcript exporter's backlog, when the run has one: set by the loop, never by a runner. */
+    transcriptExport?: { pendingBytes: number; oldestUnackedMs: number };
     /** When the sample was taken, stamped by the sampler. A reader sees staleness from this. */
     sampledAt: string;
 }

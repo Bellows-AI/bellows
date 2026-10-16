@@ -25,6 +25,8 @@ import {
 } from '../src/question-control.js';
 import type { ControlEntry, QuestionRelay, QuestionResolution } from '../src/question-control.js';
 import { servePublish, type PublishRelay } from '../src/publish-control.js';
+import type { ExportDrain, ExportRelay } from '../src/export-control.js';
+import type { ReviewRelay } from '../src/review-control.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
 import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
 import { BOARD_CALL_ATTEMPTS } from '../src/board-retry.js';
@@ -618,10 +620,18 @@ function stubGateStack(
             },
             // The run-control channel (issue #442) is opt-in: a stack without it models a driver
             // whose endpoint could not open, where a Stop kills at once.
-            openControl: (token: string, relay?: QuestionRelay, publisher?: PublishRelay) => {
+            openControl: (token: string, relay?: QuestionRelay, publisher?: PublishRelay, reviewer?: ReviewRelay) => {
                 if (!options.control) throw new Error('no control endpoint in this stub');
                 stack.controlOpened.push(token);
-                stack.controls.set(token, newControl(relay ?? null, publisher ?? null));
+                stack.controls.set(token, newControl(relay ?? null, publisher ?? null, reviewer ?? null));
+            },
+            attachExporter: (token: string, exporter: ExportRelay) => {
+                const control = stack.controls.get(token);
+                if (control) control.exporting.relay = exporter;
+            },
+            drainExport: (token: string, drain: ExportDrain) => {
+                const control = stack.controls.get(token);
+                if (control) control.exporting.drain = drain;
             },
             controlPolled: () => options.polled ?? true,
             raiseStop: (token: string) => {

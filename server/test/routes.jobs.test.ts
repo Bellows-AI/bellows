@@ -1448,6 +1448,35 @@ describe('POST /api/jobs/:id/output', () => {
         expect('services' in (store.progressed[5]?.runtime ?? {})).toBe(false);
     });
 
+    // The continuous transcript export's backlog rides the vitals: both counts, or a refusal.
+    it('passes the transcript export backlog through and refuses a malformed one', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const backlog = { pendingBytes: 4096, oldestUnackedMs: 15_000 };
+
+        await post(instance, `/api/jobs/${ID}/output`, {
+            leaseToken: TOKEN,
+            output: 'x',
+            runtime: { ...VITALS, transcriptExport: backlog },
+        });
+        expect(store.progressed[0]?.runtime?.transcriptExport).toEqual(backlog);
+
+        for (const bad of [
+            { pendingBytes: -1, oldestUnackedMs: 0 },
+            { pendingBytes: 1.5, oldestUnackedMs: 0 },
+            {},
+            'x',
+        ]) {
+            const refused = await post(instance, `/api/jobs/${ID}/output`, {
+                leaseToken: TOKEN,
+                output: 'x',
+                runtime: { ...VITALS, transcriptExport: bad },
+            });
+            expect(refused.statusCode).toBe(400);
+        }
+        expect(store.progressed).toHaveLength(1);
+    });
+
     // A dead service's ending (issue #487) rides the fleet: the exit, the reason, the log tail
     // (bounded to its END), the hint — and a malformed one is refused like any other bad field.
     it('passes a dead service ending through, bounding the log tail to its last lines', async () => {
