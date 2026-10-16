@@ -381,6 +381,15 @@ const envLine = (job: BoardJob, name: string, value: string): string => {
     return `${name}=${value}`;
 };
 
+/** The `--env-file` body carrying only the named gate-env values — the transcript exporter's control pair. */
+export function gateEnvFileBody(job: BoardJob, names: readonly string[]): string {
+    const lines = names.flatMap((name) => {
+        const value = job.gateEnv?.[name];
+        return value === undefined ? [] : [envLine(job, name, value)];
+    });
+    return lines.length ? `${lines.join('\n')}\n` : '';
+}
+
 /**
  * The `--env-file` body for the runner: the claim env's lines, then the loop's minted gate
  * credentials, then the runner's own branch-ingest credential. Pure and exported for the same

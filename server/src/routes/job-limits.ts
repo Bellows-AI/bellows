@@ -1,6 +1,6 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply } from 'fastify';
-import type { JobStatus, RuntimeVitals, ServiceStatus } from '../db/job-store-types.js';
+import type { JobStatus, RuntimeVitals, ServiceStatus, TranscriptExportVitals } from '../db/job-store-types.js';
 import { bad, badSegment } from './helpers.js';
 
 /**
@@ -183,6 +183,25 @@ function badSampledAt(sampledAt: unknown): boolean {
     return typeof sampledAt !== 'string' || !sampledAt.trim() || Number.isNaN(Date.parse(sampledAt));
 }
 
+/** The transcript exporter's backlog: far past a spool cap (1 GiB) and a year of waiting are both bounds, not data. */
+const EXPORT_BYTES_MAX = 1_099_511_627_776;
+const EXPORT_AGE_MS_MAX = 31_622_400_000;
+
+const exportCount = (value: unknown, max: number): value is number =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= max;
+
+/** The `runtime.transcriptExport` backlog: both counts, or the reason it is refused. */
+function parseTranscriptExport(raw: unknown): TranscriptExportVitals | string | undefined {
+    if (raw === undefined) return undefined;
+    const fields =
+        typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+    const { pendingBytes, oldestUnackedMs } = fields;
+    if (!exportCount(pendingBytes, EXPORT_BYTES_MAX) || !exportCount(oldestUnackedMs, EXPORT_AGE_MS_MAX)) {
+        return 'runtime.transcriptExport must carry integer pendingBytes and oldestUnackedMs';
+    }
+    return { pendingBytes, oldestUnackedMs };
+}
+
 /** The `runtime.services` fleet: validated item by item, an empty result meaning "no fleet". */
 function parseServiceFleet(services: unknown): ServiceStatus[] | string | undefined {
     if (services === undefined) return undefined;
@@ -204,7 +223,7 @@ export function runtimeVitals(raw: unknown): RuntimeVitals | null | string {
     if (raw === undefined || raw === null) return null;
     if (typeof raw !== 'object' || Array.isArray(raw)) return 'runtime must be an object';
     const fields = raw as Record<string, unknown>;
-    const { cpuPercent, memUsedMb, memPercent, activity, sampledAt, services } = fields;
+    const { cpuPercent, memUsedMb, memPercent, activity, sampledAt, services, transcriptExport } = fields;
     if (badCpuPercent(cpuPercent)) return `runtime.cpuPercent must be a number 0..${CPU_PERCENT_MAX} or null`;
     if (badMemUsedMb(memUsedMb)) return `runtime.memUsedMb must be a number 0..${MEM_MB_MAX} or null`;
     if (badMemPercent(memPercent)) return `runtime.memPercent must be a number 0..${MEM_PERCENT_MAX} or null`;
@@ -212,6 +231,8 @@ export function runtimeVitals(raw: unknown): RuntimeVitals | null | string {
     if (badSampledAt(sampledAt)) return 'runtime.sampledAt must be a parseable timestamp';
     const fleet = parseServiceFleet(services);
     if (typeof fleet === 'string') return fleet;
+    const exporting = parseTranscriptExport(transcriptExport);
+    if (typeof exporting === 'string') return exporting;
     return {
         cpuPercent: cpuPercent as number | null,
         memUsedMb: memUsedMb as number | null,
@@ -219,6 +240,7 @@ export function runtimeVitals(raw: unknown): RuntimeVitals | null | string {
         activity: typeof activity === 'string' ? activity.trim().slice(0, RUNTIME_ACTIVITY_LIMIT) : null,
         sampledAt: (sampledAt as string).slice(0, SAMPLED_AT_LIMIT),
         ...(fleet ? { services: fleet } : {}),
+        ...(exporting ? { transcriptExport: exporting } : {}),
     };
 }
 

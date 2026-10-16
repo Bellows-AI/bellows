@@ -29,8 +29,8 @@ export const respondJson = (reply: ServerResponse, status: number, body: unknown
     reply.end(JSON.stringify(body));
 };
 
-/** The request body as text, or null when it outgrew `limit` bytes — declared or streamed. */
-export const readBody = async (request: IncomingMessage, limit: number): Promise<string | null> => {
+/** The request body as bytes, or null when it outgrew `limit` bytes — declared or streamed. */
+export const readBodyBytes = async (request: IncomingMessage, limit: number): Promise<Buffer | null> => {
     const declared = Number(request.headers['content-length'] ?? '0');
     if (Number.isFinite(declared) && declared > limit) return null;
     const chunks: Buffer[] = [];
@@ -40,5 +40,9 @@ export const readBody = async (request: IncomingMessage, limit: number): Promise
         if (total > limit) return null;
         chunks.push(chunk as Buffer);
     }
-    return Buffer.concat(chunks).toString('utf8');
+    return Buffer.concat(chunks);
 };
+
+/** The request body as text, or null when it outgrew `limit` bytes — declared or streamed. */
+export const readBody = async (request: IncomingMessage, limit: number): Promise<string | null> =>
+    (await readBodyBytes(request, limit))?.toString('utf8') ?? null;

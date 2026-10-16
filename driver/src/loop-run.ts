@@ -15,6 +15,7 @@ import {
     releaseGateSession,
     runDeclaredGates,
 } from './loop-gates.js';
+import { drainTranscriptExport, stopTranscriptExport } from './loop-export.js';
 import { heartbeat, newJobState, raceStep, stopIfDraining, watchOutput } from './loop-attempt.js';
 import type { GateRunNote } from './timeout-note.js';
 import {
@@ -346,12 +347,14 @@ interface RunInputs {
 
 /** What an agent run leaves behind: its scraped session and its artifacts. An agent-less node leaves neither. */
 async function reportRunTail(
-    rt: LoopRuntime,
-    job: BoardJob,
+    ctx: AttemptCtx,
     executorType: BoardJob['executorType'],
     outcome: RunOutcome
 ): Promise<void> {
+    const { rt, job } = ctx;
     if (isAgentless(job)) return;
+    // The exporter drains first: a spool-cap stop is stamped on the outcome the session report reads.
+    await drainTranscriptExport(ctx, outcome);
     await reportScrapedSession(rt, job, executorType, outcome);
     // Never throws and never reaches the verdict: a failed upload only leaves a stream without a
     // `complete` manifest.
@@ -410,7 +413,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // was asked to, so no gates, helpers, publish or `complete` follow (issue #442). A stop after
     // the run still reports the session and uploads the artifacts BEFORE the park.
     stopIfDraining(state);
-    const lastWords = () => reportRunTail(rt, job, executorType, outcome);
+    const lastWords = () => reportRunTail(ctx, executorType, outcome);
     if (await standDown(ctx, 'its run', lastWords)) return { done: true };
 
     /*
@@ -428,7 +431,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // the upload past the run's end. The board authorizes it by claim sequence, so even a reclaim
     // would not refuse it. Best-effort throughout; a failed upload leaves the stream without a
     // complete manifest, never a failed run.
-    await reportRunTail(rt, job, executorType, outcome);
+    await reportRunTail(ctx, executorType, outcome);
     // The session minted and reported before the spawn never ran — no transcript exists under it,
     // so a follow-up resuming it would find no conversation. A resumed session is the parent's
     // and stays.
@@ -715,6 +718,8 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
             });
         } finally {
             closeRunControl(rt, state);
+            // A run that threw never drained; its exporter exits on the closed token, and is removed here.
+            await stopTranscriptExport(ctx);
             if (gateSession) releaseGateSession(rt, gateSession, job);
             // The services outlived run() for the declared gates' sake; they go now, on every
             // exit path — a thrown run included, whose own cleanup no longer takes them.

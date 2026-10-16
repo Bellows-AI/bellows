@@ -20,8 +20,8 @@ import {
     cacheCollapse,
 } from './close-read.js';
 import { type DriverConfig, executorImage } from './config.js';
-import { claudeTurnsScript, claudeTranscriptScript, opencodeCacheProbeScript } from './container-scripts.js';
-import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
+import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts.js';
+import { UUID, workspacePath, transcriptDir, opencodeDbPath, runWorkingDir } from './claim.js';
 import type { ExecDocker } from './docker-runner-support.js';
 import {
     workspacesMountArgs,
@@ -98,76 +98,12 @@ export function opencodeCacheProbeArgs(config: DriverConfig, job: BoardJob): str
     ];
 }
 
-/**
- * The full `docker run` argv that exports a finished claude-code run's transcript (issue #325) —
- * the twin of `claudeTurnsArgs` above, reading the same file with the same delta bound, but
- * answering the transcript's own JSONL instead of a count. The byte cap travels as an env VALUE
- * (this module's constant, so the cap cannot drift between the script and the upload).
- */
-export function claudeTranscriptArgs(
-    config: DriverConfig,
-    job: BoardJob,
-    sessionId: string,
-    startedAt: string
-): string[] {
-    if (!UUID.test(sessionId)) {
-        throw new Error(`refusing to export the transcript of a session id that is not a uuid: ${sessionId}`);
-    }
-    return [
-        'run',
-        ...containerHardeningArgs(),
-        '--rm',
-        ...workspacesMountArgs(config, workspacePath(job)),
-        '-e',
-        `CLAUDE_TRANSCRIPT_DIR=${transcriptDir(config, job)}`,
-        '-e',
-        `CLAUDE_SESSION_ID=${sessionId}`,
-        '-e',
-        `RUN_STARTED_AT=${startedAt}`,
-        '-e',
-        `TRANSCRIPT_LIMIT_BYTES=${ARTIFACT_LIMIT}`,
-        '--entrypoint',
-        'node',
-        executorImage(config, job.executorType),
-        '-e',
-        claudeTranscriptScript,
-    ];
-}
-
 /** What every close-time read needs: how to reach the daemon, and which run it is reading. */
 export interface CloseReadContext {
     execDocker: ExecDocker;
     config: DriverConfig;
     job: BoardJob;
     startedAt: string;
-}
-
-/**
- * The transcript artifact of one finished run (issue #325): one throwaway container running the
- * executor's export script, the answer parsed to `{content, truncated}` — or nothing, when the
- * read failed, answered nothing, or its argv could not be built (a missing workspace path — the
- * same assertion the turn read already made and refused on). Best-effort like every close-time
- * read: a failed export costs the attempt its transcript artifact, never its verdict.
- */
-async function readTranscriptArtifact(
-    outcome: RunOutcome,
-    ctx: CloseReadContext,
-    buildArgs: () => string[]
-): Promise<void> {
-    let args: string[];
-    try {
-        args = buildArgs();
-    } catch {
-        return;
-    }
-    const read = await ctx.execDocker(args, { timeout: CLOSE_READ_DEADLINE_MS }).then(
-        (out) => parseTranscriptRead(out.stdout),
-        () => null
-    );
-    if (read) {
-        outcome.transcript = read.content;
-        outcome.transcriptTruncated = read.truncated;
-    }
 }
 
 /**
@@ -209,10 +145,6 @@ async function applyClaudeCloseRead(
             () => CLAUDE_READ_NONE
         );
     mergeClaudeCloseRead(outcome, read);
-    // The transcript artifact (issue #325), from the same file the count came from.
-    await readTranscriptArtifact(outcome, ctx, () =>
-        claudeTranscriptArgs(ctx.config, ctx.job, (session as RunSession).id, ctx.startedAt)
-    );
 }
 
 /**
