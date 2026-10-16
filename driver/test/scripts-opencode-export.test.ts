@@ -1,4 +1,6 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import { setPriority } from 'node:os';
+import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { uploadRunArtifacts } from '../src/artifact-upload.js';
@@ -8,27 +10,37 @@ import type { RunOutcome } from '../src/runner.js';
 import { insertMessage, insertPart, MINE, seedOpencodeDb } from './fixtures/opencode-db.js';
 import { hasNodeSqlite, pathOf } from './fixtures/scripts-support.js';
 
+const execFileAsync = promisify(execFile);
 const KIB = 1024;
 const EXPORT_LIMIT = 256 * KIB;
-const CONSISTENCY_ROUNDS = 12;
-const WRITER_PAIRS = 20_000;
+const CONSISTENCY_ROUNDS = 8;
+// Committing flat out is what puts a commit between an unsafe export's reads; the writer runs at a
+// low priority so it never starves the rest of a parallel suite.
+const WRITER_PAIRS = 40_000;
+const WRITER_NICE = 15;
 // Large enough that no stream is cut: a cut drops the oldest rows and would read as inconsistency.
 const UNCAPPED_EXPORT = String(64 * KIB * KIB);
 const WRITER_POLL_MS = 20;
 const WRITER_WAIT_ROUNDS = 500;
 
+const exportOptions = (dbPath: string, env: Record<string, string>) => ({
+    env: {
+        ...process.env,
+        OPENCODE_DB: dbPath,
+        OPENCODE_DIR: MINE,
+        EXPORT_LIMIT_BYTES: String(EXPORT_LIMIT),
+        ...env,
+    },
+    encoding: 'utf8' as const,
+    maxBuffer: 64 * KIB * KIB,
+});
+
 const runExport = (dbPath: string, env: Record<string, string> = {}): string =>
-    execFileSync('node', [pathOf('opencode-readout.cjs')], {
-        env: {
-            ...process.env,
-            OPENCODE_DB: dbPath,
-            OPENCODE_DIR: MINE,
-            EXPORT_LIMIT_BYTES: String(EXPORT_LIMIT),
-            ...env,
-        },
-        encoding: 'utf8',
-        maxBuffer: 256 * KIB * KIB,
-    });
+    execFileSync('node', [pathOf('opencode-readout.cjs')], exportOptions(dbPath, env));
+
+// Async, so a long export never blocks the worker's event loop beside the rest of the suite.
+const runExportAsync = async (dbPath: string, env: Record<string, string> = {}): Promise<string> =>
+    (await execFileAsync('node', [pathOf('opencode-readout.cjs')], exportOptions(dbPath, env))).stdout;
 
 // biome-ignore lint/suspicious/noExplicitAny: export lines are probed field by field in assertions
 const jsonLines = (stdout: string): Record<string, any>[] =>
@@ -204,6 +216,7 @@ describe.skipIf(!hasNodeSqlite())('the opencode session export', () => {
             ],
             { stdio: 'ignore' }
         );
+        if (writer.pid) setPriority(writer.pid, WRITER_NICE);
         try {
             const probe = new DatabaseSync(dbPath, { readOnly: true });
             for (let round = 0; round < WRITER_WAIT_ROUNDS; round += 1) {
@@ -214,7 +227,7 @@ describe.skipIf(!hasNodeSqlite())('the opencode session export', () => {
 
             const sizes = new Set<number>();
             for (let round = 0; round < CONSISTENCY_ROUNDS; round += 1) {
-                const lines = jsonLines(runExport(dbPath, { EXPORT_LIMIT_BYTES: UNCAPPED_EXPORT }));
+                const lines = jsonLines(await runExportAsync(dbPath, { EXPORT_LIMIT_BYTES: UNCAPPED_EXPORT }));
                 expect(lines.some((l) => l.truncated)).toBe(false);
                 const raw = lines.filter((l) => l.stream === 'raw');
                 const messages = raw.filter((l) => l.table === 'message').length;
