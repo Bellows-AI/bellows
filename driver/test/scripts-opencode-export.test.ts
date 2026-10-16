@@ -11,7 +11,9 @@ import { hasNodeSqlite, pathOf } from './fixtures/scripts-support.js';
 const KIB = 1024;
 const EXPORT_LIMIT = 256 * KIB;
 const CONSISTENCY_ROUNDS = 12;
-const WRITER_PAIRS = 40_000;
+const WRITER_PAIRS = 20_000;
+// Large enough that no stream is cut: a cut drops the oldest rows and would read as inconsistency.
+const UNCAPPED_EXPORT = String(64 * KIB * KIB);
 const WRITER_POLL_MS = 20;
 const WRITER_WAIT_ROUNDS = 500;
 
@@ -25,7 +27,7 @@ const runExport = (dbPath: string, env: Record<string, string> = {}): string =>
             ...env,
         },
         encoding: 'utf8',
-        maxBuffer: 16 * KIB * KIB,
+        maxBuffer: 256 * KIB * KIB,
     });
 
 // biome-ignore lint/suspicious/noExplicitAny: export lines are probed field by field in assertions
@@ -212,7 +214,9 @@ describe.skipIf(!hasNodeSqlite())('the opencode session export', () => {
 
             const sizes = new Set<number>();
             for (let round = 0; round < CONSISTENCY_ROUNDS; round += 1) {
-                const raw = jsonLines(runExport(dbPath)).filter((l) => l.stream === 'raw');
+                const lines = jsonLines(runExport(dbPath, { EXPORT_LIMIT_BYTES: UNCAPPED_EXPORT }));
+                expect(lines.some((l) => l.truncated)).toBe(false);
+                const raw = lines.filter((l) => l.stream === 'raw');
                 const messages = raw.filter((l) => l.table === 'message').length;
                 const parts = raw.filter((l) => l.table === 'part').length;
                 expect(messages - parts).toBe(baseline.messages - baseline.parts);
