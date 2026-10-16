@@ -123,6 +123,8 @@ export async function dockerKill(deps: TeardownDeps, job: BoardJob): Promise<voi
  * once, with nobody left to deliver the kill order. Whatever it exited with, the agent still
  * running is killed — the agent alone, so the group stays for the close path to finish, and a lost
  * supervisor stays an interruption for the next claim (`supervisorLossOf`), never a failed run.
+ * Never throws, like `dockerKill`: a lookup the daemon refused falls back to the hard kill, and a
+ * refused kill to force-removing the agent.
  */
 export async function dockerStopAgent(deps: TeardownDeps, job: BoardJob): Promise<void> {
     deps.killed.add(job.leaseToken);
@@ -139,9 +141,13 @@ export async function dockerStopAgent(deps: TeardownDeps, job: BoardJob): Promis
             '--filter',
             `label=${ROLE_LABEL}=${AGENT_CONTAINER}`,
         ])
-        .catch(() => ({ stdout: '' }));
+        .catch(() => null);
+    if (running === null) return dockerKill(deps, job);
     for (const id of linesOf(running.stdout)) {
-        await deps.execDocker(['kill', id]).catch(() => undefined);
+        await deps
+            .execDocker(['kill', id])
+            .catch(() => deps.execDocker(['rm', '-f', id]))
+            .catch(() => undefined);
     }
     await dockerServiceTeardown(deps, job);
 }

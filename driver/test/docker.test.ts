@@ -4712,14 +4712,17 @@ describe('every container the driver runs is hardened (#382)', () => {
  * still running, and only the agent: the supervisor's loss stays the close path's to record.
  */
 describe('stopping an agent whose supervisor already exited (#805)', () => {
-    const daemon = (supervisorExit: string, agentPs: string) => {
+    const daemon = (supervisorExit: string, agentPs: string, refuses: (args: string[]) => boolean = () => false) => {
         const calls: string[][] = [];
         const exec = (args: string[]) => {
             calls.push(args);
+            if (refuses(args)) return Promise.reject(new Error('the daemon answered 503'));
             if (args[0] === 'wait') return Promise.resolve({ stdout: `${supervisorExit}\n` });
             if (args[0] === 'ps' && args.includes('label=factory.role=agent'))
                 return Promise.resolve({ stdout: agentPs });
-            if (args[0] === 'ps') return Promise.resolve({ stdout: 'agent-id\nsupervisor-id\nexporter-id\n' });
+            // The whole group's listing; the service teardown's own listing finds no services.
+            if (args[0] === 'ps' && !args.includes('label=factory.service'))
+                return Promise.resolve({ stdout: 'agent-id\nsupervisor-id\nexporter-id\n' });
             return Promise.resolve({ stdout: '' });
         };
         return { exec, calls };
@@ -4744,6 +4747,27 @@ describe('stopping an agent whose supervisor already exited (#805)', () => {
         await dockerRunner(exec).stopAgent!(job);
 
         expect(kills(calls)).toEqual([]);
+    });
+
+    // Never throws, like the kubernetes twin: a lookup the daemon refused falls back to the hard kill.
+    it('falls back to the hard kill of the whole group when the agent lookup fails', async () => {
+        const { exec, calls } = daemon('70', 'agent-id\n', (args) => args.includes('label=factory.role=agent'));
+
+        await dockerRunner(exec).stopAgent!(job);
+
+        expect(kills(calls)).toEqual([
+            ['kill', 'agent-id'],
+            ['kill', 'supervisor-id'],
+            ['kill', 'exporter-id'],
+        ]);
+    });
+
+    it('force-removes the agent when its kill fails', async () => {
+        const { exec, calls } = daemon('70', 'agent-id\n', (args) => args[0] === 'kill');
+
+        await dockerRunner(exec).stopAgent!(job);
+
+        expect(calls).toContainEqual(['rm', '-f', 'agent-id']);
     });
 });
 
