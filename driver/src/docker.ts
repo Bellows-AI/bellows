@@ -44,7 +44,7 @@ export const CLOSE_READ_DEADLINE_MS = 120_000;
  *
  * The target is the subtree's OWN volume path (`${mount}/${subPath}`, review finding on #151):
  * every consumer path this driver composes — WORKDIR, the sync's REPO/WORKTREE, the readouts'
- * database and transcript paths, BELLOWS_ROOT, the gate's working directory — is the string
+ * database and transcript paths, the gate's working directory — is the string
  * `${config.workspaceMount}/${subPath}/…`, shared verbatim between argv/env and the scripts.
  * Mounting the subtree there keeps every one of those paths resolving inside the container,
  * while the rest of the volume is absent from its filesystem entirely: `/workspaces` holds only

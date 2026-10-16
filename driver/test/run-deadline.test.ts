@@ -76,6 +76,7 @@ describe('the docker runner kill timer', () => {
         leaseExpiresAt: '2026-08-29T12:05:00.000Z',
         executorType: 'claude-code',
         executorRefusal: null,
+        planRefusal: null,
         skillRefusal: null,
         masterPrompt:
             'Factory execution contract (factory-master-prompt/v1)\n\nFactory execution context\n- Mode: standalone',

@@ -197,11 +197,18 @@ describe('the claimed job', () => {
             'helperPlans',
             undefined,
         ],
-        // Issue #444: which tree the claim's gates were read from. Only the two known values pass;
-        // anything else reads as absent, which the loop treats as "no stale-source refusal".
-        ['carries the worktree gates source', { gatesSource: 'worktree' }, 'gatesSource', 'worktree'],
-        ['carries the clone gates source', { gatesSource: 'clone' }, 'gatesSource', 'clone'],
-        ['drops an unknown gates source', { gatesSource: 'elsewhere' }, 'gatesSource', undefined],
+        // Issue #769: the claim carries the resolved execution plan; a malformed services value is a
+        // refusal sentence, never a half-read fleet.
+        [
+            'carries the services the board resolved',
+            { services: [{ name: 'db', image: 'postgres:16', environment: [], ports: [5432] }] },
+            'services',
+            [{ name: 'db', image: 'postgres:16', environment: [], ports: [5432] }],
+        ],
+        ['reads missing services as absent', {}, 'services', ABSENT],
+        ['reads a missing planRefusal as null', {}, 'planRefusal', null],
+        ['carries the board’s plan refusal', { planRefusal: 'bad plan' }, 'planRefusal', 'bad plan'],
+        ['drops a malformed services value', { services: [{ name: 1 }] }, 'services', ABSENT],
         // Issue #244: the board-owned Factory execution context. Read defensively like every other
         // field added after launch — a board that predates it, or a malformed value, both read as
         // null, which the loop refuses the launch for explicitly (loop-run.test.ts) rather than
@@ -231,47 +238,13 @@ describe('the claimed job', () => {
         if (expected === ABSENT) expect(job).not.toHaveProperty(field);
         else expect(job?.[field as keyof typeof job]).toEqual(expected);
     });
-});
 
-describe('rereading the gates after the startup sync', () => {
-    const job = boardJob();
-
-    it('asks the board with the lease token and carries the fresh answer', async () => {
-        const { calls, fetch } = recorder(() =>
-            Response.json(
-                { gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] }, gateError: null },
-                { status: 200 }
-            )
-        );
-        const board = boardOn(fetch, 'fwt_abc');
-
-        const fresh = await board.rereadGates(job);
-
-        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/gates-reread');
-        expect(calls[0]!.body).toEqual({ leaseToken: 'token-1' });
-        expect(calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
-        expect(fresh).toEqual({
-            gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
-            gateError: null,
-        });
-    });
-
-    it('answers null — keep the claim’s decision — when the board refuses', async () => {
-        const lost = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
-        expect(await boardOn(lost.fetch).rereadGates(job)).toBeNull();
-
-        const dead = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
-        expect(await boardOn(dead.fetch).rereadGates(job)).toBeNull();
-    });
-
-    it('throws when the board could not answer, so the caller can retry it', async () => {
-        const broken = recorder(() => {
-            throw new Error('board unreachable');
-        });
-        await expect(boardOn(broken.fetch).rereadGates(job)).rejects.toThrow('board unreachable');
-
-        const down = recorder(() => new Response('bad gateway', { status: 502 }));
-        await expect(boardOn(down.fetch).rereadGates(job)).rejects.toThrow(/answered 502/);
+    it('turns a malformed services value into a plan refusal sentence', async () => {
+        const { fetch } = recorder(() => claimed({ services: [{ name: 1 }] }));
+        const job = await boardOn(fetch).claim('driver-1');
+        expect(job).not.toHaveProperty('services');
+        expect(typeof job?.planRefusal).toBe('string');
+        expect(job?.planRefusal).not.toBe('');
     });
 });
 

@@ -12,7 +12,7 @@ import { fail, KEY_VALUE, MAX_COMMAND_LENGTH, readTimeoutMinutes, scalar } from 
  *
  * `instructions` is the one required field; `timeout` is whole minutes (a budget the driver caps by
  * its own ceiling); `connections` lists the env names the reviewer may receive — nothing else of the
- * member's env reaches it. `readGatesFile` reads this from the base clone only, like `policy:`.
+ * member's env reaches it. Read at the base branch tip, like `policy:`.
  */
 
 /** One named reviewer profile: its own instructions, the env it may receive, and its wall-clock budget. */

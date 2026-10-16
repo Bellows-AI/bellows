@@ -25,7 +25,7 @@ import type { TelemetryClient } from './telemetry/client.js';
 import { createCloneQueue, type CloneQueue } from './workspace/queue.js';
 import { createPurger, type Purger } from './workspace/purge.js';
 import { createFactsCache, type FactsCache } from './workspace/facts.js';
-import { readGatesFile } from './workspace/bellows.js';
+import { createPlanReader } from './workspace/bellows-plan.js';
 
 /**
  * Everything one organization needs at runtime, built lazily and cached.
@@ -169,16 +169,10 @@ function buildOrgStores({
         ready,
         env: envVars,
         executorConfig: userExecutors,
-        // Gates are read off the server's own workspace mount, per claim, for the job's
-        // author and repo label — worktree-first, falling back to the clone.
-        ...(config.workspaceRoot
-            ? {
-                  gates: {
-                      readFor: (workspacePath: string, repo: string, worktreeId: string | null) =>
-                          readGatesFile({ root: config.workspaceRoot!, workspacePath, repo, worktreeId }),
-                  },
-              }
-            : {}),
+        // The execution plan is read per claim through the org's installation, at the tip of the
+        // thread's base branch — never from a checkout on disk. Offline there is no client, so
+        // a claim carries no plan.
+        ...(client ? { plan: { readFor: createPlanReader(client).read } } : {}),
         // The claim mints the org's installation token under the runner env as its base
         // layer. Per-org here is the whole point: a runner gets the installation of the
         // org whose board it is working, and no other.

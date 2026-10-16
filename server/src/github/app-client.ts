@@ -8,6 +8,7 @@ import {
 } from '@factory-ai/core';
 import type { GitHubConfig, Repo } from '../config.js';
 import type { InstallationTokenProvider } from './app-token.js';
+import { readRepoFileAtBranchTip, type RepoFileRead } from './file-read.js';
 import { classifyMergeFailure, GitHubMergeError, readMergeResponse, type MergeResult } from './pr-merge.js';
 import {
     classifyReadFailure,
@@ -69,6 +70,12 @@ export interface GitHubAppClient {
     readBranchState(repo: string, branch: string, shas: readonly string[]): Promise<BranchState>;
     /** A branch's tip commit, or null when it cannot be read. */
     readBranchHead(repo: string, branch: string): Promise<string | null>;
+    /**
+     * A repository file at the tip of `branch` (the default branch when null), pinned to the commit
+     * it was read at. Null when the installation cannot see the repository or branch; rejects with a
+     * `GitHubReadError` for a failure that says nothing about the repository (rate limit, transport).
+     */
+    readFileAtBranchTip(repo: string, branch: string | null, path: string): Promise<RepoFileRead | null>;
 }
 
 /**
@@ -229,6 +236,14 @@ export function createGitHubAppClient(
         async readBranchHead(repo, branch) {
             try {
                 return await readBranchHead(call, repo, branch);
+            } catch (e) {
+                throw readError(e);
+            }
+        },
+
+        async readFileAtBranchTip(repo, branch, path) {
+            try {
+                return await readRepoFileAtBranchTip(call, repo, branch, path);
             } catch (e) {
                 throw readError(e);
             }

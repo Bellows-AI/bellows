@@ -220,7 +220,6 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // gate state unstored: under AUTH_MODE=github both fell through to `user` and answered the
     // worker token 401, while the gates themselves ran and passed unseen.
     [`/api/jobs/${JOB_ID}/gates`, 'worker'],
-    [`/api/jobs/${JOB_ID}/gates-reread`, 'worker'],
     // The publish credential ask is the driver's too — the loop calls it right before the
     // push. Missing from this table is what made it answer the worker token 401 in
     // production while the fix looked deployed (jobs 9bf1002a, 4bcfe8be and b0ac2284,
@@ -278,7 +277,7 @@ describe('the route table', () => {
         expect(requirementFor(path)).toBe(expected);
     });
 
-    // The table is hand-written beside the regex, which is how gates, gates-reread, publish-token
+    // The table is hand-written beside the regex, which is how gates, publish-token
     // and artifact each slipped through: a worker-shaped handler, absent from both, failing quietly
     // because its caller treats the answer as best-effort. Every route the job board registers
     // must be a decision recorded above.

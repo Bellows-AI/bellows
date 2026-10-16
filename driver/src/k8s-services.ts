@@ -7,9 +7,7 @@ import {
 } from './runner.js';
 import type { DeadService, RunOutcome } from './runner.js';
 import {
-    deleteJob,
     eventsForPath,
-    jobPodsPath,
     podLogPath,
     podsByLeasePath,
     podsPath,
@@ -19,77 +17,30 @@ import {
     servicePodSpec,
     serviceDnsSpec,
 } from './k8s-auxspec.js';
-import { bellowsJobSpec, jobsPath } from './k8s-podspec.js';
-import { pollJobToTerminal, readVerdict } from './k8s-poll.js';
 import {
     answerPreview,
     expectOk,
     HTTP_ERROR_STATUS,
-    livePod,
     parse,
     parseDeadServicePods,
     parseServicePods,
 } from './k8s-transport.js';
 import type { K8sDeps, K8sResponse } from './k8s-transport.js';
 import {
-    collectServices,
     declaredServiceSpecs,
     forgetDeclaredServices,
     missingDeclaredServices,
+    plannedServices,
     recordDeclaredServices,
-    splitBellowsSections,
 } from './services.js';
 import { awaitServicesRunning, throwIfStoodDown } from './service-restart.js';
 import type { ServiceSpec } from './services.js';
 
 /**
- * A declared service under kubernetes: read `.bellows.yaml` through a throwaway readout Job, then
- * start each declared service as a Pod with a headless Service as its DNS name — and the fleet's
- * teardown, by lease label, at the run's close. See docs/kubernetes.md's "A declared service is a
+ * A declared service under kubernetes: start each service of the claim's plan as a Pod with a
+ * headless Service as its DNS name — and the fleet's teardown, by lease label, at the run's close. See docs/kubernetes.md's "A declared service is a
  * Pod with a headless Service as its DNS name".
  */
-
-/**
- * The `.bellows.yaml` readout, as a Job: the same script docker runs in a throwaway container,
- * over a read-only PVC mount. Runs to terminal status, its log IS the output the section splitter
- * consumes, and the Job goes as soon as it is read. A readout that cannot run is infrastructure —
- * so every failure here throws and the job goes back to its lease.
- */
-async function readBellows(deps: K8sDeps, job: BoardJob): Promise<string> {
-    const spec = bellowsJobSpec(deps.config, job);
-    const jobName = spec.metadata.name;
-    try {
-        const created = await deps.request('POST', jobsPath(deps.config.k8sNamespace), spec);
-        expectOk(created, 'creating the .bellows.yaml readout');
-        const pollFailure = await pollJobToTerminal(deps, jobName, {
-            what: 'the .bellows.yaml readout',
-            notFound: (n) => `the .bellows.yaml readout ${n} no longer exists`,
-            errorStatus: (s, b) => `reading the .bellows.yaml readout ${answerPreview(s, b)}`,
-            failed: 'the .bellows.yaml readout failed — its own deadline is its bound',
-        });
-        if (pollFailure !== null) throw new Error(pollFailure);
-        const podsResponse = await readVerdict(
-            deps,
-            jobPodsPath(deps.config.k8sNamespace, jobName),
-            'listing the readout pods'
-        );
-        const pod = livePod(podsResponse.body);
-        if (!pod?.metadata?.name) {
-            throw new Error('the .bellows.yaml readout left no pod to read its output from');
-        }
-        const log = await readVerdict(
-            deps,
-            podLogPath(deps.config.k8sNamespace, pod.metadata.name, null),
-            'reading the readout log'
-        );
-        if (log.status >= HTTP_ERROR_STATUS) {
-            throw new Error(`reading the .bellows.yaml readout's log ${answerPreview(log.status, log.body)}`);
-        }
-        return log.body;
-    } finally {
-        void deleteJob(deps, jobName);
-    }
-}
 
 /**
  * This attempt's service fleet — every pod and headless Service carrying this attempt's lease
@@ -207,29 +158,10 @@ async function startFleet(deps: K8sDeps, job: BoardJob, specs: ServiceSpec[]): P
     }
 }
 
-/** Reads and parses `.bellows.yaml` into its declared services, or the parse refusal. */
-async function readServiceSpecs(
-    deps: K8sDeps,
-    job: BoardJob
-): Promise<{ specs: ServiceSpec[]; refusal: string | null }> {
-    let raw: string;
-    try {
-        raw = await readBellows(deps, job);
-    } catch (e) {
-        throw new Error(`could not read .bellows.yaml: ${(e as Error).message}`);
-    }
-    try {
-        return { specs: collectServices(splitBellowsSections(raw)), refusal: null };
-    } catch (e) {
-        return { specs: [], refusal: (e as Error).message };
-    }
-}
-
 /**
- * The k8s form of docker.ts's setup: read the checkouts' `.bellows.yaml` through a throwaway
- * readout Job, then start each declared service as a Pod with a headless Service as its DNS name.
- * Answers a terminal `RunOutcome` for an author's parse refusal, or `null` once every pod runs —
- * the pre-gate restart's bar, so `environment.setup` never races scheduling or an image pull (a
+ * The k8s form of docker.ts's setup: start each service of the claim's plan (`BoardJob.services`)
+ * as a Pod with a headless Service as its DNS name. Answers `null` once every pod runs — the
+ * pre-gate restart's bar, so `environment.setup` never races scheduling or an image pull (a
  * headless Service resolves to nothing until then); a pod that never runs throws
  * `ServicesNotRunning`. The loop calls it (`Runner.startServices`) before the gate environment and
  * the runner; `signal` is the stand-down, which ends the wait.
@@ -240,10 +172,7 @@ export async function startServiceFleet(
     signal?: AbortSignal
 ): Promise<RunOutcome | null> {
     if (!deps.config.servicesEnabled) return null;
-    const { specs, refusal } = await readServiceSpecs(deps, job);
-    if (refusal !== null) {
-        return { exitCode: null, output: refusal, timedOut: false, started: true, refused: true };
-    }
+    const specs = plannedServices(job);
     if (specs.length > 0) {
         await startFleet(deps, job, specs);
         recordDeclaredServices(job, specs);

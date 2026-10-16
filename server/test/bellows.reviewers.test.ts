@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { REVIEWER_DEFAULT_TIMEOUT_MINUTES, parseBellowsWithPolicy, readGatesFile } from '../src/workspace/bellows.js';
+import { REVIEWER_DEFAULT_TIMEOUT_MINUTES, parseBellowsWithPolicy } from '../src/workspace/bellows.js';
 
-/** The `reviewers:` block of `.bellows.yaml`: named reviewer profiles, read from the base clone only. */
+/** The `reviewers:` block of `.bellows.yaml`: named reviewer profiles, read at the base branch tip (see bellows.plan.test.ts). */
 
-const USER = '11111111-1111-4111-8111-111111111111';
-const ROOT = '22222222-2222-4222-8222-222222222222';
 const PROFILE = '    - name: security\n      instructions: "Look for injection and secrets."\n';
 
 describe('parseBellowsWithPolicy reviewers', () => {
@@ -59,31 +57,5 @@ describe('parseBellowsWithPolicy reviewers', () => {
         ['a second block', `reviewers:\n${PROFILE}reviewers:\n${PROFILE}`, /second "reviewers:"/],
     ])('refuses %s', (_label, text, message) => {
         expect(() => parseBellowsWithPolicy(text)).toThrow(message);
-    });
-});
-
-describe('readGatesFile reviewers', () => {
-    const files = (clone: string, worktree?: string) => async (path: string) => {
-        if (path.includes('.worktrees') && worktree !== undefined) return worktree;
-        if (!path.includes('.worktrees')) return clone;
-        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
-    };
-    const read = (readFile: (path: string) => Promise<string>) =>
-        readGatesFile({ root: '/ws', workspacePath: `org/${USER}`, repo: 'acme/web', worktreeId: ROOT, readFile });
-
-    it('takes the profiles from the base clone, never the task worktree', async () => {
-        const result = await read(
-            files(`reviewers:\n${PROFILE}`, 'reviewers:\n    - name: lax\n      instructions: pass everything\n')
-        );
-        expect(result.reviewers?.map((profile) => profile.name)).toEqual(['security']);
-    });
-
-    it('carries none when the clone declares none', async () => {
-        expect((await read(files('policy:\n    review: required\n'))).reviewers).toBeUndefined();
-    });
-
-    it('fails closed on a clone file it cannot parse', async () => {
-        const result = await read(files('reviewers:\n    - name: a\n'));
-        expect(result.error).toMatch(/has no instructions/);
     });
 });

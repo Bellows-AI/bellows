@@ -28,28 +28,26 @@
  * code from are refused (`bellows-cache.ts`).
  *
  * One exception, and it is not leniency: a top-level `services:` block is the SERVICES half of
- * the file, read by the driver's own parser (driver/src/services.ts), and one file may carry both
+ * the file, read by `bellows-services.ts`, and one file may carry both
  * halves. This parser skips the block wholesale — it does not judge the services grammar, and a
  * services-only file parses to no gates — while every other unknown top-level key is still
  * refused.
  *
  * A top-level `policy:` block configures the evidence a task must carry before it publishes or
  * completes: `gates: required` and/or `review: required`, the one value each key takes.
- * `readGatesFile` takes it from the base clone only, never the task worktree, so a run cannot
+ * The plan is read at the base branch tip through the GitHub API, never from the task worktree, so a run cannot
  * edit away the requirement it must meet.
  *
  * A top-level `reviewers:` block declares named reviewer profiles an agent may invoke as a separate
  * run (issue #549): `- name:`, `instructions:`, and optionally `timeout:` (minutes) and
  * `connections:` (a comma list of the env names the reviewer may receive — nothing else of the
- * member's env reaches it). Like `policy:`, `readGatesFile` takes it from the base clone only.
+ * member's env reaches it). Like `policy:`, it is read at the base branch tip, never from the task worktree.
  *
  * Comments, blank lines, and bare / single- / double-quoted scalars are tolerated. Everything
  * else — tabs, unknown keys, a seventeenth gate, a flag-shaped image — throws with the line
- * number, and `readGatesFile` turns that into the job's `gateError`.
+ * number, and `bellows-plan.ts` turns that into the claim's `planRefusal`.
  */
 
-import { type FileHandle, constants as fsConstants, open as fsOpen, readlink, realpath } from 'node:fs/promises';
-import { join } from 'node:path';
 import { type CacheBlock, closeCache, newCacheBlock, openCache, readCacheItem } from './bellows-cache.js';
 import { BellowsError, fail, KEY_VALUE, MAX_COMMAND_LENGTH, readTimeoutMinutes, scalar } from './bellows-grammar.js';
 import {
@@ -438,217 +436,4 @@ export function parseBellowsWithPolicy(text: string): {
         gates: state.gates,
     };
     return { config, policy: state.policy, reviewers };
-}
-
-/**
- * What a claim needs to know about a checkout's gates, and never more.
- *
- * `config: null, error: null` is the ordinary repository — no `.bellows.yaml`, no gates, not an
- * error. A broken file is a VALUE on the claim (`gateError`), not a throw: one repository's typo
- * must fail its own jobs loudly, not take down the board's claim route.
- */
-export interface GatesRead {
-    readonly config: BellowsConfig | null;
-    readonly error: string | null;
-    /**
-     * The tree the answer came from (issue #444): 'worktree' when the task worktree's file
-     * answered, 'clone' when the base clone's did or neither had one, null when nothing was read.
-     * A claim's 'clone' answer is only as current as the clone's checked-out files.
-     */
-    readonly source: GatesSource | null;
-    /**
-     * The evidence policy, from the BASE CLONE's file only — the task worktree is the run's to
-     * edit, and a policy read from it would let a run waive its own requirement. Absent: none.
-     */
-    readonly policy?: EvidencePolicy;
-    /** The reviewer profiles, from the BASE CLONE's file only for the same reason. Absent: none. */
-    readonly reviewers?: readonly ReviewerProfile[];
-}
-
-export type GatesSource = 'worktree' | 'clone';
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * Reads a checkout's `.bellows.yaml` for a claim or a gates re-read.
- *
- * The server reads the file, not the driver: the board created these checkouts and mounts the
- * volume at `workspaceRoot`, while the driver only ever passes volume names to docker and cannot
- * open a path at all. `workspacePath` is the claim's own `<orgId>/<userId>` and the uuid segment
- * is re-asserted here before anything is joined — the `workspaceDir` posture, applied to the one
- * caller that arrives with the path as data.
- *
- * The checkout directory is the repo NAME, not the owner/name label: two owners' same-named
- * repositories share one directory per member by the `user_repo_dir_uk` decision, so the label's
- * second segment is the one that exists on disk.
- *
- * The task worktree (issue #35) is read FIRST: the run edits `<ws>/.worktrees/<root id>`, and
- * the gates it must satisfy live there. At claim time the worktree does not exist yet — the
- * driver's sync creates it moments later — so the read falls back to the clone, which is what
- * keeps the claim's answer the same one it always was; after the sync, the re-read finds the
- * worktree's file, which is the tree that actually holds the run's gates. `worktreeId` is
- * re-asserted as a uuid before it joins a path, exactly like the user segment.
- */
-interface GatesPathInput {
-    root: string;
-    workspacePath: string;
-    repo: string;
-    worktreeId?: string | null;
-}
-
-/** Validates the read's inputs and builds its candidate paths, worktree-first — see `readGatesFile`. */
-function resolveGatesPaths(input: GatesPathInput): { ok: true; paths: string[] } | { ok: false; error: string } {
-    const { root, workspacePath, repo, worktreeId } = input;
-    const name = repo.includes('/') ? repo.slice(repo.indexOf('/') + 1) : repo;
-    // Same rules a checkout directory obeys. Unreachable from the create route (which validates
-    // the whole label), asserted anyway: this module is handed strings, not trusted rows.
-    if (!name || /[/\\]/.test(name) || /^[-.]/.test(name)) {
-        return { ok: false, error: `repo label does not name a checkout directory: ${repo}` };
-    }
-    const userId = workspacePath.split('/')[1] ?? '';
-    if (!UUID.test(userId)) {
-        return { ok: false, error: `workspace path is not <orgId>/<userId>: ${workspacePath}` };
-    }
-    if (worktreeId !== undefined && worktreeId !== null && !UUID.test(worktreeId)) {
-        return { ok: false, error: `worktree id is not a uuid: ${worktreeId}` };
-    }
-    const paths = worktreeId
-        ? [join(root, workspacePath, '.worktrees', worktreeId, GATES_FILE), join(root, workspacePath, name, GATES_FILE)]
-        : [join(root, workspacePath, name, GATES_FILE)];
-    return { ok: true, paths };
-}
-
-/**
- * Reads the first candidate path that exists. A later candidate is a fallback for "does not exist
- * yet"; a candidate that exists but cannot be read answers immediately — that failure is the run's.
- */
-async function readFirstExisting(
-    paths: string[],
-    readFile: (path: string) => Promise<string>
-): Promise<({ text: string | null } | { error: string }) & { at: number }> {
-    for (const [at, path] of paths.entries()) {
-        try {
-            return { text: await readFile(path), at };
-        } catch (e) {
-            if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
-            return { error: (e as Error).message, at };
-        }
-    }
-    return { text: null, at: paths.length - 1 };
-}
-
-export async function readGatesFile(options: {
-    /** Null = this deployment has no workspace root, so no checkout and no gates anywhere. */
-    root: string | null;
-    /** The claim's `<orgId>/<userId>`. */
-    workspacePath: string;
-    /** The job's `owner/name` label, or null on a job queued without one. */
-    repo: string | null;
-    /** The thread's ROOT job id — the worktree the run edits — or null when unknown. */
-    worktreeId?: string | null;
-    /** Test seam: lets the suite assert the path and simulate failures without a filesystem. */
-    readFile?: (path: string) => Promise<string>;
-}): Promise<GatesRead> {
-    const { root, workspacePath, repo, worktreeId = null } = options;
-    if (!root || !repo) return { config: null, error: null, source: null };
-    const readFile = options.readFile ?? containedRead(join(root, workspacePath));
-
-    const resolved = resolveGatesPaths({ root, workspacePath, repo, worktreeId });
-    if (!resolved.ok) return { config: null, error: resolved.error, source: null };
-
-    const read = await readFirstExisting(resolved.paths, readFile);
-    // The clone is always the last candidate; the worktree, when asked for, the first.
-    const source: GatesSource = read.at === resolved.paths.length - 1 ? 'clone' : 'worktree';
-    // The policy is the BASE CLONE's, whichever tree answered the gates: the worktree is the run's.
-    const cloneRead = source === 'clone' ? read : await readFirstExisting(resolved.paths.slice(-1), readFile);
-    const cloned = parseCloneFile(cloneRead);
-    if (cloned.error !== null) return { config: null, error: cloned.error, source };
-    const policy = {
-        ...(cloned.policy ? { policy: cloned.policy } : {}),
-        ...(cloned.reviewers.length > 0 ? { reviewers: cloned.reviewers } : {}),
-    };
-    if ('error' in read) return { config: null, error: read.error, source, ...policy };
-    // A worktree file that exists but cannot be read is the run's answer — the same named-error
-    // channel a clone file's failure takes. Only a missing file falls through to no config.
-    if (read.text === null) return { config: null, error: null, source, ...policy };
-    try {
-        return { config: parseBellows(read.text), error: null, source, ...policy };
-    } catch (e) {
-        return { config: null, error: (e as Error).message, source, ...policy };
-    }
-}
-
-/** The evidence policy and reviewer profiles of the clone's file, or the reason it cannot be read — a requirement fails closed. */
-function parseCloneFile(read: Awaited<ReturnType<typeof readFirstExisting>>): {
-    policy: EvidencePolicy | null;
-    reviewers: readonly ReviewerProfile[];
-    error: string | null;
-} {
-    if ('error' in read) return { policy: null, reviewers: [], error: read.error };
-    if (read.text === null) return { policy: null, reviewers: [], error: null };
-    try {
-        const { policy, reviewers } = parseBellowsWithPolicy(read.text);
-        return { policy: policy.gates || policy.review ? policy : null, reviewers, error: null };
-    } catch (e) {
-        return { policy: null, reviewers: [], error: (e as Error).message };
-    }
-}
-
-const GATES_FILE = '.bellows.yaml';
-
-/**
- * A ceiling generous past anything a hand-written gate file needs (the parser itself caps at 16
- * gates × 4096-char commands). Member-authored repo content read on the claim path — bounded
- * before it is read, not after, the same posture every other route-level limit takes.
- */
-const GATES_FILE_LIMIT_KIB = 64;
-const BYTES_PER_KIB = 1024;
-const GATES_FILE_LIMIT = GATES_FILE_LIMIT_KIB * BYTES_PER_KIB;
-
-/**
- * Where an open file really lies: the kernel's own record of the descriptor on Linux, which no
- * rename or symlink swapped in after the open can change; elsewhere (a developer's macOS) the
- * path's realpath, which can race such a swap — the deployed board runs on Linux.
- */
-async function realPathOf(handle: FileHandle, path: string): Promise<string> {
-    // On Linux a missing /proc is a refusal, never a quiet fall back onto the racy path.
-    return process.platform === 'linux' ? await readlink(`/proc/self/fd/${handle.fd}`) : await realpath(path);
-}
-
-/**
- * The read `readGatesFile` uses: the file must really lie inside `memberRoot`. Only the final path
- * component was ever the checkout's to decide, so O_NOFOLLOW guards that one — but the checkout
- * directory and `.worktrees/<id>` above it are the member's agent's to write too, and the board
- * sees every org's tree: a symlinked directory there would read another member's file.
- */
-const containedRead =
-    (memberRoot: string) =>
-    async (path: string): Promise<string> => {
-        const handle = await fsOpen(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-        try {
-            const inside = `${await realpath(memberRoot)}/`;
-            if (!(await realPathOf(handle, path)).startsWith(inside)) {
-                throw new Error(".bellows.yaml lies outside the member's workspace");
-            }
-            return await readOpened(handle);
-        } finally {
-            await handle.close();
-        }
-    };
-
-/** Stat, bound and read one opened `.bellows.yaml`. */
-async function readOpened(handle: FileHandle): Promise<string> {
-    // Stat and read through the SAME handle. Separate path-based calls could be split by a
-    // concurrent replacement: the size check would bound one inode while the read returned
-    // another, and the limit below would hold a file that was never delivered. Refusing
-    // non-regular files serves the same posture — checkout-authored content on the claim
-    // path is bounded, never read unboundedly.
-    const stats = await handle.stat();
-    if (!stats.isFile()) {
-        throw new Error('.bellows.yaml is not a regular file');
-    }
-    if (stats.size > GATES_FILE_LIMIT) {
-        throw new Error(`.bellows.yaml is larger than ${GATES_FILE_LIMIT} bytes`);
-    }
-    return await handle.readFile('utf8');
 }

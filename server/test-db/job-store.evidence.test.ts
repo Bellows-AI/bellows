@@ -34,12 +34,20 @@ const account = async (): Promise<string> => {
     return row!.id;
 };
 
-/** A store whose gates reader answers the repository's policy from memory — the SQL is under test. */
+/** A store whose plan reader answers the repository's policy from memory — the SQL is under test. */
 const storeWith = (policy: EvidencePolicy | undefined): JobStore =>
     createJobStore({
         sql,
         orgId: ORG,
-        gates: { readFor: async () => ({ config: null, error: null, source: 'clone', ...(policy ? { policy } : {}) }) },
+        plan: {
+            readFor: async () => ({
+                config: null,
+                services: [],
+                revision: null,
+                error: null,
+                ...(policy ? { policy } : {}),
+            }),
+        },
     });
 
 const PASSED: RecordedEvidence = { treeBefore: 'h:1', treeAfter: 'h:2', gates: 'passed' };

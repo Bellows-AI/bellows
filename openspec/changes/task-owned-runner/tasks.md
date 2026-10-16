@@ -40,7 +40,7 @@ halves in the same change. Unchecked items are not implemented. `→` names hard
 
 ## Phase 2 — one task pod, still on the shared volume
 
-- [ ] 6. (#769) Execution plan at claim → 0.1. Board resolves gate and service images from `.bellows.yaml`
+- [x] 6. (#769) Execution plan at claim → 0.1. Board resolves gate and service images from `.bellows.yaml`
   at the claimed revision via the GitHub API (removes the server filesystem read in
   `workspace/bellows.ts` and the `bellowsJobSpec` readout). Rejects port collisions, undeclared
   images and unsupported plans before launch with an actionable error.
