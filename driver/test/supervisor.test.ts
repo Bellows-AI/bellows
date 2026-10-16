@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    realpathSync,
+    rmSync,
+    writeFileSync,
+} from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createRequire } from 'node:module';
@@ -449,8 +458,10 @@ const step = (id: string, kind: string, argv: string[], extra: Partial<QueuedSte
 describe('the supervisor run: supervised steps', () => {
     it('holds the agent back until `go`, and does not start the budget before it', async () => {
         const driver = await startDriver({ release: false });
-        const supervised = run(driver, { SUPERVISOR_DEADLINE_MS: '80' });
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        // A budget the released agent's exit lands well inside even on a loaded machine, and a
+        // pre-`go` wait well past it.
+        const supervised = run(driver, { SUPERVISOR_DEADLINE_MS: '1000' });
+        await new Promise((resolve) => setTimeout(resolve, 1500));
         // Past the whole budget with no `go`: the agent was never released, so nothing timed out.
         expect(supervised.saw(MAILBOX_FILES.go)).toBe(false);
         expect(supervised.saw(MAILBOX_FILES.kill)).toBe(false);
@@ -469,7 +480,8 @@ describe('the supervisor run: supervised steps', () => {
         const supervised = run(driver);
         await until('the answer', () => driver.answers.has('probe-1'));
         expect(driver.answers.get('probe-1')).toMatchObject({ exitCode: 3, timedOut: false });
-        expect(driver.answers.get('probe-1')?.stdout.trim()).toMatch(/tmp/);
+        // The step's cwd as the child resolves it: macOS links its temp directory through /private.
+        expect(driver.answers.get('probe-1')?.stdout.trim()).toBe(realpathSync(tmpdir()));
         supervised.agentExits(0);
         await supervised.done;
     });

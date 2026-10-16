@@ -214,10 +214,13 @@ echo 'building the stub runner images'
 # edge missed and the stub-walk graph stalled after its first review round.
 # Every stub stands on node + git as the uid-1000 `node` user, like the executor images: the driver
 # runs the startup sync and the other git steps IN the job's executor image (`--entrypoint node`),
-# and every task now has a checkout to sync (issue #263).
-printf 'FROM public.ecr.aws/docker/library/node:24-alpine\nRUN apk add --no-cache git\nUSER node\n' >"$work/Dockerfile.base"
-printf 'FROM %s\nENTRYPOINT ["sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}; echo \\"$@\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' "$IMAGE_BASE" >"$work/Dockerfile.ok"
-printf 'FROM %s\nENTRYPOINT ["sh","-c","echo boom >&2; exit 3"]\n' "$IMAGE_BASE" >"$work/Dockerfile.fail"
+# and every task now has a checkout to sync (issue #263). Each executor stub starts through
+# scripts/stub-agent.sh, beside ctl-agent.cjs, over the node-owned mailbox mount points: the task
+# supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real entrypoints honor.
+cp docker/claude-executor/ctl-agent.cjs scripts/stub-agent.sh "$work/"
+printf 'FROM public.ecr.aws/docker/library/node:24-alpine\nRUN apk add --no-cache git\nCOPY ctl-agent.cjs stub-agent.sh /usr/local/bin/\nRUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory\nUSER node\n' >"$work/Dockerfile.base"
+printf 'FROM %s\nENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh","sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}; echo \\"$@\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' "$IMAGE_BASE" >"$work/Dockerfile.ok"
+printf 'FROM %s\nENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh","sh","-c","echo boom >&2; exit 3"]\n' "$IMAGE_BASE" >"$work/Dockerfile.fail"
 docker build -q -t "$IMAGE_BASE" -f "$work/Dockerfile.base" "$work" >/dev/null &&
     docker build -q -t "$IMAGE_OK" -f "$work/Dockerfile.ok" "$work" >/dev/null &&
     docker build -q -t "$IMAGE_FAIL" -f "$work/Dockerfile.fail" "$work" >/dev/null || {
@@ -614,7 +617,7 @@ docker build -q -t "$IMAGE_SVC" "$work/svc" >/dev/null || {
 mkdir -p "$work/run"
 printf '#!/bin/sh\nfor last in "$@"; do :; done\nexec sh -c "$last"\n' >"$work/run/run.sh"
 # `sh /run.sh` rather than exec-ing it: a file written by this script has no exec bit to copy in.
-printf 'FROM %s\nCOPY run.sh /run.sh\nENTRYPOINT ["sh","/run.sh"]\n' "$IMAGE_BASE" >"$work/run/Dockerfile"
+printf 'FROM %s\nCOPY run.sh /run.sh\nENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh","sh","/run.sh"]\n' "$IMAGE_BASE" >"$work/run/Dockerfile"
 docker build -q -t "$IMAGE_RUN" "$work/run" >/dev/null || {
     echo 'test-jobs: could not build the runner-exec stub image'
     exit 1

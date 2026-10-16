@@ -1171,7 +1171,11 @@ echo 'building the images on the host daemon'
 # the node-disruption section lose a driver or a pod while a runner is still running. It stands on
 # node + git as the uid-1000 `node` user, like the executor images: the startup sync and the other
 # supervised steps run IN the job's executor image (the task supervisor's container,
-# `driver/src/scripts/supervisor.cjs`), and every task has a checkout to sync (issue #263).
+# `driver/src/scripts/supervisor.cjs`), and every task has a checkout to sync (issue #263). It
+# starts through scripts/stub-agent.sh, beside ctl-agent.cjs, over the node-owned mailbox mount
+# points: the task supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real
+# entrypoints honor.
+cp docker/claude-executor/ctl-agent.cjs scripts/stub-agent.sh "$work/"
 printf '%s\n' \
     'echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}' \
     'echo "$@"' \
@@ -1187,7 +1191,7 @@ printf '%s\n' \
     'done' >"$work/stub.sh"
 docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >/dev/null &&
     docker build -f docker/driver.Dockerfile -q -t "$DRIVER_IMAGE" . >/dev/null &&
-    printf 'FROM public.ecr.aws/docker/library/node:24-alpine\nRUN apk add --no-cache git\nCOPY stub.sh /stub.sh\nUSER node\nENTRYPOINT ["sh","/stub.sh"]\n' >"$work/stub.Dockerfile" &&
+    printf 'FROM public.ecr.aws/docker/library/node:24-alpine\nRUN apk add --no-cache git\nCOPY stub.sh /stub.sh\nCOPY ctl-agent.cjs stub-agent.sh /usr/local/bin/\nRUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory\nUSER node\nENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' >"$work/stub.Dockerfile" &&
     docker build -q -t "$STUB_IMAGE" -f "$work/stub.Dockerfile" "$work" >/dev/null &&
     docker pull -q "$COLLECTOR_IMAGE" >/dev/null 2>&1 || {
     echo 'test-k8s: image build or pull failed'
