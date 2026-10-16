@@ -44,11 +44,24 @@ export function npmQuietEnv(job: Pick<BoardJob, 'env'> | undefined): [string, st
     return Object.hasOwn(job?.env ?? {}, NPM_UPDATE_NOTIFIER) ? [] : [[NPM_UPDATE_NOTIFIER, 'false']];
 }
 /**
- * The session database opencode writes under XDG_DATA_HOME, as the runner sets it: one directory
- * per member, next to their checkouts, on the workspaces volume.
+ * The data directory (XDG_DATA_HOME) an opencode run gets: one directory per TASK — the thread
+ * root, like the claude transcript store — inside the member's tree on the workspaces volume, so
+ * every attempt and follow-up of a task resumes in one session database and two tasks of one
+ * member never share a file. The opencode entrypoint derives the member tree from this shape. The
+ * root is asserted before it joins the path, as in `transcriptDir`.
  */
+export function opencodeDataDir(config: DriverConfig, job: BoardJob): string {
+    const path = workspacePath(job);
+    const root = job.rootJobId ?? job.id;
+    if (!UUID.test(root)) {
+        throw new Error(`refusing to run job ${job.id}: a thread root id that is not a uuid: ${root}`);
+    }
+    return `${config.workspaceMount}/${path}/.factory/opencode/${root}`;
+}
+
+/** The session database opencode writes under the task's data directory. */
 export function opencodeDbPath(config: DriverConfig, job: BoardJob): string {
-    return `${config.workspaceMount}/${workspacePath(job)}/.opencode/opencode/opencode.db`;
+    return `${opencodeDataDir(config, job)}/opencode/opencode.db`;
 }
 
 /**

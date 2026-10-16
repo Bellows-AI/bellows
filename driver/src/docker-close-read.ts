@@ -20,13 +20,8 @@ import {
     cacheCollapse,
 } from './close-read.js';
 import { type DriverConfig, executorImage } from './config.js';
-import {
-    claudeTurnsScript,
-    claudeTranscriptScript,
-    opencodeCacheProbeScript,
-    opencodeTranscriptScript,
-} from './container-scripts.js';
-import { UUID, workspacePath, transcriptDir, opencodeDbPath, runWorkingDir } from './claim.js';
+import { claudeTurnsScript, claudeTranscriptScript, opencodeCacheProbeScript } from './container-scripts.js';
+import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
 import type { ExecDocker } from './docker-runner-support.js';
 import {
     workspacesMountArgs,
@@ -139,34 +134,6 @@ export function claudeTranscriptArgs(
     ];
 }
 
-/**
- * The full `docker run` argv that exports a finished opencode run's transcript (issue #325) —
- * the twin of `opencodeSessionReadoutArgs` (docker.ts), reading the same database with the same
- * directory scope and delta bound, answering the reshaped message view the script prints.
- */
-export function opencodeTranscriptArgs(config: DriverConfig, job: BoardJob, startedAt: string): string[] {
-    const db = opencodeDbPath(config, job);
-    return [
-        'run',
-        ...containerHardeningArgs(),
-        '--rm',
-        ...workspacesMountArgs(config, workspacePath(job)),
-        '-e',
-        `OPENCODE_DB=${db}`,
-        '-e',
-        `OPENCODE_DIR=${runWorkingDir(config, job)}`,
-        '-e',
-        `RUN_STARTED_MS=${Date.parse(startedAt)}`,
-        '-e',
-        `TRANSCRIPT_LIMIT_BYTES=${ARTIFACT_LIMIT}`,
-        '--entrypoint',
-        'node',
-        executorImage(config, job.executorType),
-        '-e',
-        opencodeTranscriptScript,
-    ];
-}
-
 /** What every close-time read needs: how to reach the daemon, and which run it is reading. */
 export interface CloseReadContext {
     execDocker: ExecDocker;
@@ -208,8 +175,8 @@ async function readTranscriptArtifact(
  * report at spawn, the finish reason (a zero exit with a finish reason that is not `stop` is the
  * model's context limit, or an abort, cutting a task short), and the context stats — all read
  * from the database the run just closed. A failed read is not a failed run: it costs the task
- * its follow-ups and this verdict-check, never its verdict. The transcript artifact rides the
- * same close (issue #325), one more throwaway read over the same database.
+ * its follow-ups and this verdict-check, never its verdict. The session export (raw rows and the
+ * normalized stream) rides the same read, so it is one consistent snapshot with the figures.
  */
 async function applyOpencodeCloseRead(outcome: RunOutcome, ctx: CloseReadContext): Promise<void> {
     const readOnce = () =>
@@ -219,7 +186,6 @@ async function applyOpencodeCloseRead(outcome: RunOutcome, ctx: CloseReadContext
         );
     const { scraped, reason } = await readOpencodeWithRetries(readOnce, (ms) => new Promise((r) => setTimeout(r, ms)));
     mergeOpencodeOutcome(outcome, scraped, reason);
-    await readTranscriptArtifact(outcome, ctx, () => opencodeTranscriptArgs(ctx.config, ctx.job, ctx.startedAt));
 }
 
 /**

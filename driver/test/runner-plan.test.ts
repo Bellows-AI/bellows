@@ -95,11 +95,24 @@ describe('the opencode runner plan', () => {
     it('runs a fresh job headless, with no session id anywhere', () => {
         expect(plan(opencodeJob, null)).toEqual({
             envPairs: [
-                ['XDG_DATA_HOME', `/workspaces/bellows/${USER}/.opencode`],
+                ['XDG_DATA_HOME', `/workspaces/bellows/${USER}/.factory/opencode/${opencodeJob.id}`],
                 ['NPM_CONFIG_UPDATE_NOTIFIER', 'false'],
             ],
             cliArgs: ['run', '--agent', 'factory', 'fix the failing build'],
         });
+    });
+
+    // The data directory is per TASK: a follow-up shares its thread root's, a second task of the
+    // same member gets its own, and a root that is not a uuid never joins the path.
+    it('keeps opencode data per task, keyed by the thread root', () => {
+        const dataHome = (j: BoardJob) => plan(j, null).envPairs.find(([name]) => name === 'XDG_DATA_HOME')?.[1];
+        const root = opencodeJob.id;
+        const followUp = { ...opencodeJob, id: '33333333-3333-4333-8333-333333333333', rootJobId: root };
+        const other = { ...opencodeJob, id: '44444444-4444-4444-8444-444444444444' };
+        expect(dataHome(followUp)).toBe(dataHome(opencodeJob));
+        expect(dataHome(other)).not.toBe(dataHome(opencodeJob));
+        expect(dataHome(other)).toBe(`/workspaces/bellows/${USER}/.factory/opencode/${other.id}`);
+        expect(() => plan({ ...opencodeJob, rootJobId: '../../etc' }, null)).toThrow(/not a uuid/);
     });
 
     // A follow-up continues the session opencode ITSELF created, and the reporter names it.
@@ -107,7 +120,7 @@ describe('the opencode runner plan', () => {
         const session = { id: 'ses_f86188c3dffeZGYO4yZq4atba9', resume: true };
         expect(plan({ ...opencodeJob, followUp: true }, session)).toEqual({
             envPairs: [
-                ['XDG_DATA_HOME', `/workspaces/bellows/${USER}/.opencode`],
+                ['XDG_DATA_HOME', `/workspaces/bellows/${USER}/.factory/opencode/${opencodeJob.id}`],
                 ['NPM_CONFIG_UPDATE_NOTIFIER', 'false'],
                 ['BELLOWS_SESSION_ID', session.id],
             ],

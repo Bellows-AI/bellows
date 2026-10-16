@@ -278,7 +278,7 @@ fi
 # workspaces volume: the entrypoint creates the data directory in it.
 WS="$(mktemp -d)"
 chmod -R a+rwX "$WS"
-member="$(docker run --rm -e XDG_DATA_HOME=/workspaces/org/uuid/.opencode -v "$WS:/workspaces/org/uuid" \
+member="$(docker run --rm -e XDG_DATA_HOME=/workspaces/org/uuid/.factory/opencode/task -v "$WS:/workspaces/org/uuid" \
     "$IMAGE" debug config 2>/dev/null)"
 rm -rf "$WS"
 if node -e '

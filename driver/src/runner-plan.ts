@@ -1,6 +1,6 @@
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { npmQuietEnv, repoCacheEnv, SESSION_ID, transcriptDir, workspacePath } from './claim.js';
+import { npmQuietEnv, opencodeDataDir, repoCacheEnv, SESSION_ID, transcriptDir } from './claim.js';
 import { OPENCODE } from './executors.js';
 import {
     claudeSystemPromptArgs,
@@ -72,16 +72,16 @@ const baseBranchEnv = (job: BoardJob): [string, string][] => {
  * refusal — the loop refuses the state first, and this is the runner asserting it too.
  *
  * The session database has to outlive the container or there is nothing to resume into: a fresh
- * one starts empty. XDG_DATA_HOME points at the member's own tree on the workspaces volume,
- * persisting it per member next to their checkouts — a dot-directory the workspace reconcile
- * never mistakes for a checkout.
+ * one starts empty. XDG_DATA_HOME points at the task's own directory on the workspaces volume,
+ * persisting it per task (thread root) inside the member's tree — a dot-directory the workspace
+ * reconcile never mistakes for a checkout.
  */
 function opencodePlan(config: DriverConfig, job: BoardJob, session: RunSession | null): RunnerPlan {
     if (session && !session.resume) {
         throw new Error(`refusing to run job ${job.id}: the opencode runner cannot adopt a minted session`);
     }
     const envPairs: [string, string][] = [
-        ['XDG_DATA_HOME', `${config.workspaceMount}/${workspacePath(job)}/.opencode`],
+        ['XDG_DATA_HOME', opencodeDataDir(config, job)],
         ...npmQuietEnv(job),
         ...repoCacheEnv(config, job),
         ...baseBranchEnv(job),

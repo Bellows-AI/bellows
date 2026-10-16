@@ -26,8 +26,5 @@ export const claudeTurnsScript = script('claude-turns.cjs');
 /** The close-time claude-code transcript export: see scripts/claude-transcript.cjs. */
 export const claudeTranscriptScript = script('claude-transcript.cjs');
 
-/** The close-time opencode transcript export: see scripts/opencode-transcript.cjs. */
-export const opencodeTranscriptScript = script('opencode-transcript.cjs');
-
 /** The live cache probe: see scripts/opencode-cache-probe.cjs. */
 export const opencodeCacheProbeScript = script('opencode-cache-probe.cjs');

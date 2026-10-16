@@ -34,7 +34,8 @@ export const UPLOAD_CAUSE = {
 /** The session segment of a stream whose run reported no session. */
 export const NO_SESSION = 'none';
 
-export const ARTIFACT_STREAM = { log: 'log', transcript: 'transcript' } as const;
+/** `transcript` is the normalized stream; `transcript-raw` is the executor's own records, verbatim. */
+export const ARTIFACT_STREAM = { log: 'log', transcript: 'transcript', rawTranscript: 'transcript-raw' } as const;
 
 /** Cuts `bytes` into chunks of about `max` bytes, ending at a newline where one allows. Offsets are the cut points. */
 export function cutChunks(bytes: Uint8Array, max = CHUNK_BYTES): { offset: number; body: Uint8Array }[] {
@@ -128,7 +129,7 @@ export async function uploadStream(target: UploadTarget, source: StreamSource, i
     return manifest.state === 'complete';
 }
 
-/** The streams a run left to upload: its log and its transcript, each only when it captured one. */
+/** The streams a run left to upload: its log, transcript and raw transcript, each only when it captured one. */
 function sourcesOf(outcome: RunOutcome): StreamSource[] {
     const sources: StreamSource[] = [];
     if (outcome.fullLog) {
@@ -139,6 +140,13 @@ function sourcesOf(outcome: RunOutcome): StreamSource[] {
             stream: ARTIFACT_STREAM.transcript,
             text: outcome.transcript,
             truncated: outcome.transcriptTruncated === true,
+        });
+    }
+    if (outcome.rawTranscript) {
+        sources.push({
+            stream: ARTIFACT_STREAM.rawTranscript,
+            text: outcome.rawTranscript,
+            truncated: outcome.rawTranscriptTruncated === true,
         });
     }
     return sources;

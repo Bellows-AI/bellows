@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Board, BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { claudeTurnsScript, claudeTranscriptScript, opencodeTranscriptScript } from '../src/container-scripts.js';
-import { ARTIFACT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
+import { claudeTurnsScript, claudeTranscriptScript } from '../src/container-scripts.js';
+import { ARTIFACT_LIMIT, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import { lookupHelper } from '../src/helpers.js';
 import { claudeManagedSettings, opencodeOtelConfig } from '../src/telemetry-config.js';
 import type { HelperPlan } from '../src/helpers.js';
@@ -27,8 +27,6 @@ import {
     jobsPath,
     opencodeReadoutJobName,
     opencodeReadoutJobSpec,
-    opencodeTranscriptJobName,
-    opencodeTranscriptJobSpec,
     runnerJobName,
     runnerJobSpec,
     secretName,
@@ -561,7 +559,6 @@ const POD_NAMES = [
     'the opencode session readout',
     'the claude turns readout',
     'the claude transcript export',
-    'the opencode transcript export',
     'the sync',
     'the reclaim',
     'the publish step',
@@ -628,7 +625,6 @@ const everyPodSpec = (env: NodeJS.ProcessEnv = {}, of: BoardJob = job): Record<P
         'the opencode session readout': () => jobView(opencodeReadoutJobSpec(config, of, startedAt)),
         'the claude turns readout': () => jobView(claudeTurnsJobSpec(config, of, SESSION, startedAt)),
         'the claude transcript export': () => jobView(claudeTranscriptJobSpec(config, of, SESSION, startedAt)),
-        'the opencode transcript export': () => jobView(opencodeTranscriptJobSpec(config, of, startedAt)),
         'the sync': () => jobView(syncJobSpec(config, repoJob, null)),
         'the reclaim': () => jobView(reclaimJobSpec(config, repoJob)),
         'the publish step': () =>
@@ -6069,7 +6065,10 @@ describe('the runner job spec under opencode', () => {
             'ses_abc123',
             'fix the failing build',
         ]);
-        expect(container.env).toContainEqual({ name: 'XDG_DATA_HOME', value: `/workspaces/bellows/${USER}/.opencode` });
+        expect(container.env).toContainEqual({
+            name: 'XDG_DATA_HOME',
+            value: `/workspaces/bellows/${USER}/.factory/opencode/${opencodeJob.id}`,
+        });
         expect(container.env).toContainEqual({ name: 'BELLOWS_SESSION_ID', value: 'ses_abc123' });
         expect(container.env).toContainEqual({ name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' });
     });
@@ -6091,7 +6090,7 @@ describe('the opencode session readout job', () => {
         expect(container.env).toEqual([
             {
                 name: 'OPENCODE_DB',
-                value: `/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
+                value: `/workspaces/bellows/${USER}/.factory/opencode/${opencodeJob.id}/opencode/opencode.db`,
             },
             {
                 // The scope: only the session that ran in this job's working directory — the
@@ -6101,6 +6100,7 @@ describe('the opencode session readout job', () => {
                 value: `/workspaces/bellows/${USER}`,
             },
             { name: 'RUN_STARTED_MS', value: String(Date.parse(START)) },
+            { name: 'EXPORT_LIMIT_BYTES', value: String(OPENCODE_EXPORT_LIMIT) },
         ]);
     });
 
@@ -6196,25 +6196,18 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
         ]);
     });
 
-    it('opencode: exports the transcript from the session database, scoped to the run directory', () => {
-        const spec = opencodeTranscriptJobSpec(config, job, START);
-        const container = spec.spec.template.spec.containers[0]!;
-        expect(spec.metadata.name).toBe(opencodeTranscriptJobName(job));
-        expect(spec.metadata.name).toMatch(/^factory-otrans-/);
-        expect(container.command).toEqual(['node', '-e', opencodeTranscriptScript]);
-        expect(container.env).toEqual([
-            { name: 'OPENCODE_DB', value: `/workspaces/bellows/${USER}/.opencode/opencode/opencode.db` },
-            { name: 'OPENCODE_DIR', value: `/workspaces/bellows/${USER}` },
-            { name: 'RUN_STARTED_MS', value: String(Date.parse(START)) },
-            { name: 'TRANSCRIPT_LIMIT_BYTES', value: String(ARTIFACT_LIMIT) },
-        ]);
-    });
-
     it('refuses the same broken inputs the turn Jobs refuse', () => {
         expect(() => claudeTranscriptJobSpec(config, job, 'not-a-uuid', START)).toThrow(/not a session id/);
-        expect(() => opencodeTranscriptJobSpec(config, { ...job, workspacePath: null }, START)).toThrow(
-            /workspace path/
-        );
+    });
+
+    it('opencode: exports through the readout Job, not a Job of its own', () => {
+        const spec = opencodeReadoutJobSpec(config, job, START);
+        const container = spec.spec.template.spec.containers[0]!;
+        expect(container.env).toContainEqual({ name: 'EXPORT_LIMIT_BYTES', value: String(OPENCODE_EXPORT_LIMIT) });
+        expect(container.env).toContainEqual({
+            name: 'OPENCODE_DB',
+            value: `/workspaces/bellows/${USER}/.factory/opencode/${job.id}/opencode/opencode.db`,
+        });
     });
 });
 

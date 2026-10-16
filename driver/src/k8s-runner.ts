@@ -39,7 +39,6 @@ import {
     envBodyToData,
     jobsPath,
     opencodeReadoutJobSpec,
-    opencodeTranscriptJobSpec,
     runnerJobSpec,
     runnerName,
     secretBody,
@@ -193,10 +192,10 @@ async function scrapeClaudeCloseRead(
  */
 async function scrapeTranscriptArtifact(
     deps: K8sDeps,
-    buildSpec: () => ReturnType<typeof claudeTranscriptJobSpec> | ReturnType<typeof opencodeTranscriptJobSpec>
+    buildSpec: () => ReturnType<typeof claudeTranscriptJobSpec>
 ): Promise<{ content: string; truncated: boolean } | null> {
     let jobName: string;
-    let spec: ReturnType<typeof claudeTranscriptJobSpec> | ReturnType<typeof opencodeTranscriptJobSpec>;
+    let spec: ReturnType<typeof claudeTranscriptJobSpec>;
     try {
         spec = buildSpec();
         jobName = spec.metadata.name;
@@ -360,15 +359,8 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     const outcome: RunOutcome = { exitCode, output, timedOut, started: true, fullLog, logTruncated };
 
     if (job.executorType === OPENCODE) {
+        // The session export rides the same readout, one consistent snapshot with its figures.
         await attachOpencodeOutcome(deps, job, startedAt, outcome);
-        // The transcript artifact (issue #325), from the same database the scrape read.
-        const transcript = await scrapeTranscriptArtifact(deps, () =>
-            opencodeTranscriptJobSpec(deps.config, job, startedAt)
-        );
-        if (transcript) {
-            outcome.transcript = transcript.content;
-            outcome.transcriptTruncated = transcript.truncated;
-        }
     }
 
     if (job.executorType === CLAUDE_CODE && session) {

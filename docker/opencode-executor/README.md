@@ -27,7 +27,7 @@ guard as a guardrail): [claude-executor](../claude-executor/README.md).
   first, deny globs next, exact-match allows last. A trailing-glob allow would bless a compound
   command containing a denied one. `test.sh`.
 - opencode mints its own session ids (`ses_…`) in sqlite under `XDG_DATA_HOME`, which the driver
-  points into the member's tree on the workspaces volume — the only reason a follow-up's
+  points at the task's own directory (`.factory/opencode/<task>`) on the workspaces volume — the only reason a follow-up's
   `run --session <id>` works in a fresh container.
 - opencode answers prompts with **no key at all** through its free tier, so `test.sh` asserts the
   absence of credential material in the image rather than a failure without a credential.
