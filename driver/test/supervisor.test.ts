@@ -458,8 +458,10 @@ const step = (id: string, kind: string, argv: string[], extra: Partial<QueuedSte
 describe('the supervisor run: supervised steps', () => {
     it('holds the agent back until `go`, and does not start the budget before it', async () => {
         const driver = await startDriver({ release: false });
-        const supervised = run(driver, { SUPERVISOR_DEADLINE_MS: '80' });
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        // A budget the released agent's exit lands well inside even on a loaded machine, and a
+        // pre-`go` wait well past it.
+        const supervised = run(driver, { SUPERVISOR_DEADLINE_MS: '1000' });
+        await new Promise((resolve) => setTimeout(resolve, 1500));
         // Past the whole budget with no `go`: the agent was never released, so nothing timed out.
         expect(supervised.saw(MAILBOX_FILES.go)).toBe(false);
         expect(supervised.saw(MAILBOX_FILES.kill)).toBe(false);
