@@ -48,16 +48,17 @@ const SECURITY: ReviewerSpec = {
 
 const MEMBER_ENV = { JIRA_TOKEN: 'jira', AWS_SECRET: 'aws', GITHUB_TOKEN: 'member-pat' };
 
-/** A store whose gates reader answers the repository's policy and profiles from memory. */
+/** A store whose plan reader answers the repository's policy and profiles from memory. */
 const storeWith = (declared: { policy?: EvidencePolicy; reviewers?: ReviewerSpec[] } = {}): JobStore =>
     createJobStore({
         sql,
         orgId: ORG,
-        gates: {
+        plan: {
             readFor: async () => ({
                 config: null,
                 error: null,
-                source: 'clone',
+                services: [],
+                revision: null,
                 ...(declared.policy ? { policy: declared.policy } : {}),
                 ...(declared.reviewers ? { reviewers: declared.reviewers } : {}),
             }),

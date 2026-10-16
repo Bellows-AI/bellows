@@ -9,6 +9,7 @@ import type { UserRef, ExecutorScope, ExecutorType, JobMode } from '@factory-ai/
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
 import type { BellowsConfig } from '../workspace/bellows.js';
+import type { ServiceSpec } from '../workspace/bellows-services.js';
 import type { EvidencePolicy, RecordedEvidence, ReviewEvidence } from './evidence-policy.js';
 import type { WorkflowDefinition, ParamValues } from './workflow-schema.js';
 import type { IdempotencyInput } from './job-store-idempotency.js';
@@ -428,9 +429,6 @@ export interface ClaimHelperPlan {
     input: unknown;
 }
 
-/** The tree a gates answer was read from — `GatesRead.source`, declared inline like `gates`. */
-export type ClaimGatesSource = 'worktree' | 'clone';
-
 /** What a worker gets back from a successful claim. The lease token is its proof for later. */
 export interface Claim {
     id: string;
@@ -460,6 +458,14 @@ export interface Claim {
      * nothing was selected or every requirement is met.
      */
     skillRefusal: string | null;
+    /**
+     * Why the task's execution plan cannot launch: its `.bellows.yaml` at the claimed revision does
+     * not parse, declares an image the pod cannot run, or declares services whose ports collide in
+     * the task pod's shared network namespace — or the installation cannot read the revision at
+     * all. An actionable sentence. The driver fails the task `config` with it before any runner
+     * starts; null when the plan is schedulable (or the repository declares none).
+     */
+    planRefusal: string | null;
     /**
      * Who queued the job, so a worker can run it as them. Null for an unattributed job.
      *
@@ -551,27 +557,18 @@ export interface Claim {
      */
     repo?: string | null;
     /**
-     * The `.bellows.yaml` a checkout declares, read at claim time — the environment image the
-     * gates run in and the named commands they run. Null when the repository declares none, which
-     * is the ordinary case. Absent on a board built without a gates reader, read as "no gates".
+     * The gates the repository's `.bellows.yaml` declares at `planRevision` — the environment image
+     * they run in and the named commands they run — resolved by the board through the GitHub API.
+     * Null when none is declared (the ordinary case); absent when the board resolved no plan.
      */
     gates?: BellowsConfig | null;
-    /**
-     * Why the gates file could not be read or parsed, when it exists but is wrong. A VALUE and not
-     * a throw: one repository's typo must fail its own jobs loudly at the driver, never take down
-     * the claim route or pass silently as "no gates".
-     */
-    gateError?: string | null;
-    /**
-     * Which tree the claim's gates answer was read from (issue #444): the task worktree, or the
-     * base clone — whose checked-out files may lag, and which every first claim reads, the
-     * worktree not existing yet. Rides with `gates`; the driver refuses to gate on a 'clone'
-     * answer its post-sync re-read could not replace.
-     */
-    gatesSource?: ClaimGatesSource;
+    /** The services that file declares, validated as a whole with the gates; absent when there are none. */
+    services?: readonly ServiceSpec[];
+    /** The commit the plan was read at: the tip of the base branch (the default branch when none) at claim time. */
+    planRevision?: string;
     /**
      * The evidence the repository requires before this work publishes or completes, read from the
-     * base clone's `.bellows.yaml`. ABSENT means none is required. `review` is the thread's review
+     * `.bellows.yaml` at `planRevision`. ABSENT means none is required. `review` is the thread's review
      * evidence as of this claim; the driver refuses a publish the pair does not authorise.
      */
     policy?: EvidencePolicy;
@@ -1065,20 +1062,6 @@ export interface JobStore {
      */
     gates(id: string, leaseToken: string, results: GateReport[]): Promise<LeaseResult>;
     /**
-     * Re-reads what the job's checkout declares in `.bellows.yaml` — the same read the claim
-     * made, made again because the driver's startup sync has just brought the checkout up to the
-     * remote default, and the claim's answer predates that. Lease-guarded like every worker
-     * route: a worker that lost the job must not steer the run that replaced it. A deployment
-     * with no gates reader (or a job with no repo label or author) answers no gates, exactly as
-     * its claim did.
-     */
-    rereadGates(
-        id: string,
-        leaseToken: string
-    ): Promise<
-        { result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | { result: 'lost' | 'missing' }
-    >;
-    /**
      * Stores one question the agent asked (050, issue #531), pending, for the attempt holding the
      * lease. Idempotent on `(job, questionId)` (`existing`, nothing changed); an attempt holds at
      * most `QUESTIONS_PER_ATTEMPT` rows (`limit`). The lease guard and the cap count serialize on
@@ -1394,22 +1377,21 @@ export interface CreateJobStoreDeps {
         fresh(repo?: string | null): Promise<string>;
     };
     /**
-     * The gates reader, when the deployment has a workspace root to read checkouts from. Declared
-     * inline like `env`, because `db/` imports nothing from `workspace/` at runtime — a claim
-     * hands it the workspace path, the repo label and the thread's root id (the worktree the run
-     * edits), and gets the parsed `.bellows.yaml` or the reason the file could not be honoured.
-     * Present in main.ts, absent in the tests that predate gates — a claim then simply carries
-     * none.
+     * The execution-plan reader, when the deployment has a GitHub App installation to read through.
+     * Declared inline like `env`, because `db/` imports nothing from `workspace/` at runtime — a
+     * claim hands it the repo label and the thread's base branch and gets the plan at that
+     * branch's tip, or the reason it cannot be honoured. A GitHub outage rejects, so the claim is
+     * retried. Present in main.ts, absent in the tests that predate it — a claim then carries none.
      */
-    gates?: {
+    plan?: {
         readFor(
-            workspacePath: string,
             repo: string,
-            worktreeId: string | null
+            baseBranch: string | null
         ): Promise<{
             config: BellowsConfig | null;
+            services: readonly ServiceSpec[];
+            revision: string | null;
             error: string | null;
-            source: ClaimGatesSource | null;
             policy?: EvidencePolicy;
             reviewers?: readonly ReviewerSpec[];
         }>;
@@ -1514,7 +1496,7 @@ export interface JobStoreContext {
     hasWorkspaces: boolean;
     env: CreateJobStoreDeps['env'];
     githubToken: CreateJobStoreDeps['githubToken'];
-    gatesReader: CreateJobStoreDeps['gates'];
+    planReader: CreateJobStoreDeps['plan'];
     executorConfig: CreateJobStoreDeps['executorConfig'];
     prs: JobStorePrs | undefined;
     wallTick: Fragment;

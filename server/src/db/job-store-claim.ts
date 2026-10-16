@@ -7,6 +7,7 @@
 import { OBJECTIVE_MODE, type JobMode, skillSelectionProblems } from '@factory-ai/core';
 import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../workspace/bellows.js';
+import type { ServiceSpec } from '../workspace/bellows-services.js';
 import type { EvidencePolicy, ReviewEvidence } from './evidence-policy.js';
 import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-claim-executor.js';
 import { readReviewEvidence } from './job-store-evidence.js';
@@ -18,7 +19,6 @@ import type {
     JobStore,
     CreateJobStoreDeps,
     Claim,
-    ClaimGatesSource,
     ClaimHelperPlan,
     JobStorePrs,
     ReviewerSpec,
@@ -317,6 +317,7 @@ async function assembleClaim(
     row: Parameters<typeof reviewRowOf>[0] & {
         created_by: string | null;
         repo: string | null;
+        base_branch: string | null;
         executor: string | null;
         executor_scope: string | null;
         workflow_node: string | null;
@@ -325,11 +326,11 @@ async function assembleClaim(
     },
     rootJobId: string
 ): Promise<Claim> {
-    const { orgId, env, githubToken, gatesReader, executorConfig, hasWorkspaces, prs } = ctx;
+    const { orgId, env, githubToken, planReader, executorConfig, hasWorkspaces, prs } = ctx;
     const reviewRow = reviewRowOf(row);
     if (reviewRow) return claimReview(tx, { env, executorConfig, orgId, hasWorkspaces, rootJobId }, reviewRow);
     const executor = await resolveClaimExecutor(tx, { env, githubToken, executorConfig }, row);
-    const gates = await resolveClaimGates(gatesReader, { orgId, hasWorkspaces, rootJobId }, row);
+    const gates = await resolveClaimGates(planReader, { orgId, hasWorkspaces, rootJobId }, row);
     const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
     const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates);
     const command = await claimCommand(tx, orgId, rootJobId, row);
@@ -441,8 +442,11 @@ export function resolveClaimSkills(
 
 export interface ResolvedClaimGates {
     claimGates: BellowsConfig | null;
-    gateError: string | null;
-    gatesSource: ClaimGatesSource | null;
+    claimServices: readonly ServiceSpec[];
+    /** The commit the plan was read at; null when nothing was read. */
+    planRevision: string | null;
+    /** Why the plan cannot launch (`Claim.planRefusal`); null for a schedulable plan. */
+    planRefusal: string | null;
     claimPath: string | null;
     /** The repository's evidence policy (base clone only); null when none is declared. */
     claimPolicy: EvidencePolicy | null;
@@ -457,33 +461,36 @@ export interface ResolvedClaimEvidence {
 }
 
 /**
- * claim()'s gates read, off the filesystem inside the claim but OFF the transaction's tables: a
- * broken `.bellows.yaml` travels to the driver as `gateError` — the job fails at the worker with
- * the reason, where the run's author can see it — rather than as a 503 that would retry the claim
- * forever. Gates ride only when the job has both a repo label (the checkout the file lives in)
- * and a workspace to read it from.
+ * claim()'s plan resolution, off the transaction's tables: the repository's `.bellows.yaml` at the
+ * tip of the thread's base branch (its default branch outside a batch), read through the GitHub
+ * API and validated as one execution plan. A refusal — a typo, a port collision, an unreadable
+ * branch — travels to the driver as `planRefusal`, so the task fails `config` before anything
+ * launches, rather than as a 503 that would retry the claim forever; a GitHub outage rejects and
+ * is retried. The plan rides only when the job has a repo label to read it from.
  */
 export async function resolveClaimGates(
-    gatesReader: CreateJobStoreDeps['gates'],
+    planReader: CreateJobStoreDeps['plan'],
     ctx: { orgId: string; hasWorkspaces: boolean; rootJobId: string },
-    row: { created_by: string | null; repo: string | null }
+    row: { created_by: string | null; repo: string | null; base_branch: string | null }
 ): Promise<ResolvedClaimGates> {
     const claimPath = workspacePathFor(ctx.orgId, ctx.hasWorkspaces, row.created_by);
-    if (!gatesReader || !row.repo || !claimPath) {
+    if (!planReader || !row.repo) {
         return {
             claimGates: null,
-            gateError: null,
-            gatesSource: null,
+            claimServices: [],
+            planRevision: null,
+            planRefusal: null,
             claimPath,
             claimPolicy: null,
             claimReviewers: [],
         };
     }
-    const read = await gatesReader.readFor(claimPath, row.repo, ctx.rootJobId);
+    const read = await planReader.readFor(row.repo, row.base_branch);
     return {
         claimGates: read.error ? null : read.config,
-        gateError: read.error,
-        gatesSource: read.source,
+        claimServices: read.error ? [] : read.services,
+        planRevision: read.revision,
+        planRefusal: read.error,
         claimPath,
         claimPolicy: read.policy ?? null,
         claimReviewers: read.reviewers ?? [],
@@ -554,8 +561,9 @@ async function claimReview(
         ...executor,
         claimPath: workspacePathFor(orgId, hasWorkspaces, row.created_by),
         claimGates: null,
-        gateError: null,
-        gatesSource: null,
+        claimServices: [],
+        planRevision: null,
+        planRefusal: null,
         claimPolicy: null,
         claimReviewers: [],
         publish: false,
@@ -573,11 +581,12 @@ export interface ResolvedClaimPublish {
     /** `false` only for an agent-less workflow node; absent otherwise. */
     agent?: false;
     claimGates: BellowsConfig | null;
-    gateError: string | null;
-    gatesSource: ClaimGatesSource | null;
+    claimServices: readonly ServiceSpec[];
+    planRevision: string | null;
+    planRefusal: string | null;
 }
 
-type ClaimGatesRead = Pick<ResolvedClaimGates, 'claimGates' | 'gateError' | 'gatesSource'>;
+type ClaimGatesRead = Pick<ResolvedClaimGates, 'claimGates' | 'claimServices' | 'planRevision' | 'planRefusal'>;
 
 /**
  * claim()'s ONE read of the root row's frozen workflow snapshot — the graph every per-node
@@ -620,7 +629,7 @@ export function resolveClaimPublish(
     const publish = isPublishNode(snapshot, workflowNode);
     const agent = isAgentlessNode(snapshot, workflowNode) ? { agent: false as const } : {};
     if (nodeSkipsGates(snapshot, workflowNode)) {
-        return { publish, ...agent, claimGates: null, gateError: null, gatesSource: null };
+        return { publish, ...agent, claimGates: null, claimServices: [], planRevision: null, planRefusal: null };
     }
     return { publish, ...agent, ...gates };
 }
@@ -727,8 +736,9 @@ export function buildClaimResult(
         skillRefusal,
         claimPath,
         claimGates,
-        gateError,
-        gatesSource,
+        claimServices,
+        planRevision,
+        planRefusal,
         publish,
         agent,
         helperPlans,
@@ -748,6 +758,7 @@ export function buildClaimResult(
         executorType,
         executorRefusal,
         skillRefusal,
+        planRefusal,
         userId: row.created_by,
         masterPrompt,
         turnContext,
@@ -763,8 +774,9 @@ export function buildClaimResult(
         ...(claimEnv ? { env: claimEnv } : {}),
         ...(row.repo !== null ? { repo: row.repo } : {}),
         ...(row.base_branch ? { baseBranch: row.base_branch } : {}),
-        ...(claimGates || gateError ? { gates: claimGates, gateError } : {}),
-        ...(gatesSource ? { gatesSource } : {}),
+        ...(claimGates ? { gates: claimGates } : {}),
+        ...(claimServices.length > 0 ? { services: claimServices } : {}),
+        ...(planRevision ? { planRevision } : {}),
         ...(policy ? { policy } : {}),
         ...(review ? { review } : {}),
         ...(publish !== undefined ? { publish } : {}),

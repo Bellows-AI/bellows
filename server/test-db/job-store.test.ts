@@ -255,13 +255,6 @@ describe.skipIf(!enabled)('job store', () => {
                     expect((await store.get(id))?.gates ?? null).toBeNull();
                 },
             },
-            {
-                name: 'rereadGates',
-                stale: 'foreign',
-                write: (id, token) => store.rereadGates(id, token),
-                lost: { result: 'lost' },
-                missing: { result: 'missing' },
-            },
         ])(
             '$name: lost for a $stale token, missing for an unknown job',
             async ({ stale, write, lost, missing, after }) => {

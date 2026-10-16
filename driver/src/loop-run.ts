@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob, VerdictEvidence } from './board.js';
-import { withBoardRetry } from './board-retry.js';
 import { uploadRunArtifacts } from './artifact-upload.js';
 import { repoCacheProblem } from './claim.js';
 import { evidenceDecision, evidencePolicyActive, type GatesOutcome, gatesEvidenceOf } from './evidence-policy.js';
@@ -167,52 +166,22 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
 }
 
 /**
- * Re-reads the claim's gates decision now that the sync has freshened the tree, and refuses the
- * job when its `.bellows.yaml` cannot be read, or declares gates this driver cannot run.
+ * Checks the claim's resolved gates against this driver, and refuses the job when they declare a
+ * package cache the driver will not set, or gates it cannot run. The plan itself was resolved at
+ * the claim, at one revision; nothing is re-read after the sync.
  */
-async function rereadGatesStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
-    const { rt, job, state } = ctx;
-    const { board, log } = rt;
-
-    // A board restart is seconds of refused connections, not a refusal: retried through, and only
-    // a board that stays unreachable is read as one. A stood-down attempt stops asking.
-    const reread = withBoardRetry(rt, `job ${job.id}: the gates re-read was not answered`, () =>
-        state.signal.aborted ? Promise.resolve(null) : board.rereadGates(job, state.signal)
-    ).catch(() => null);
-    const freshOut = await raceStep(state.signal, reread);
-    if (freshOut === null) return STOOD_DOWN;
-    const fresh = freshOut.value;
-    if (fresh) {
-        job.gates = fresh.gates ?? null;
-        job.gateError = fresh.gateError ?? null;
-    } else if (job.gatesSource === 'clone') {
-        // Issue #444: the claim read the base clone, whose checked-out files may lag the tree this
-        // run edits, and nothing replaced that answer — never gate against a stale declaration.
+async function checkPlanStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
+    const { rt, job } = ctx;
+    // The declaration may name a package cache the driver will not set (issue #734).
+    const cacheProblem = repoCacheProblem(job);
+    if (cacheProblem) {
         return {
             halt: 'fault',
-            log: "gates re-read refused and the claim's gates came from the base clone, failing",
+            log: 'its declared package cache is refused, failing',
             verdict: {
                 status: 'failed',
                 exitCode: null,
-                output:
-                    "The board refused or never answered the post-sync .bellows.yaml re-read, and this claim's gates were read from " +
-                    'the base clone, not the task worktree — the run will not be gated against a stale declaration.',
-                failureKind: 'runner_error',
-            },
-        };
-    } else {
-        log(`job ${job.id}: gates re-read refused, keeping the claim's decision`);
-    }
-
-    // A re-read may also declare a package cache the driver will not set (issue #734).
-    if (job.gateError || repoCacheProblem(job)) {
-        return {
-            halt: 'fault',
-            log: 'its gates file could not be read, failing',
-            verdict: {
-                status: 'failed',
-                exitCode: null,
-                output: `This job's .bellows.yaml could not be read as a gate declaration: ${job.gateError ?? repoCacheProblem(job)}`,
+                output: `This job's .bellows.yaml declares a gate environment this driver will not run: ${cacheProblem}`,
                 failureKind: 'config',
             },
         };
@@ -265,7 +234,7 @@ type SetupStep = (ctx: AttemptCtx) => Promise<SetupConclusion | null>;
 const setupSteps: readonly SetupStep[] = [
     waitReclaimBarrier,
     syncCheckoutStep,
-    rereadGatesStep,
+    checkPlanStep,
     preHelperStep,
     startServicesStep,
 ];
@@ -289,7 +258,7 @@ async function conclude(ctx: AttemptCtx, conclusion: SetupConclusion | null): Pr
 }
 
 /**
- * The setup phase of one attempt: the reclaim barrier, the checkout sync, the gates re-read and
+ * The setup phase of one attempt: the reclaim barrier, the checkout sync, the plan check and
  * its refusals, the job's declared PRE block-helper steps, and the gate environment. Answers the
  * gate session to run with (null when the job declares none), or `STOOD_DOWN` when the attempt is
  * finished here — settled, released and reported by this function alone, so the caller must not
@@ -604,15 +573,19 @@ function gateHistory(rt: LoopRuntime, gateSession: GateSession | null): readonly
 
 /**
  * A launch the board refused in the claim itself: the executor selection, then the selected
- * skills (issue #545). Both `config`: the member fixes the settings or the selection and retries,
- * and a batch asks a person instead of retrying it as infrastructure. True when the task was
- * failed here and nothing may launch.
+ * skills (issue #545), then the execution plan (a `.bellows.yaml` that does not resolve at the
+ * claimed revision, or services that cannot share one pod). All `config`: the member fixes the
+ * settings, the selection or the file and retries, and a batch asks a person instead of retrying
+ * it as infrastructure. True when the task was failed here and nothing may launch — no sync, no
+ * service, no gate environment, no agent.
  */
 async function failOnClaimRefusal(rt: LoopRuntime, job: BoardJob): Promise<boolean> {
     const executorRefusal = executorRefusalReason(rt, job);
     const [reason, failureKind, what] = executorRefusal
         ? ([executorRefusal, 'config', 'executor selection'] as const)
-        : ([job.skillRefusal, 'config', 'selected skills'] as const);
+        : job.skillRefusal
+          ? ([job.skillRefusal, 'config', 'selected skills'] as const)
+          : ([job.planRefusal, 'config', 'execution plan'] as const);
     if (!reason) return false;
     rt.log(`job ${job.id}: ${what} is not runnable, failing`);
     await report(rt, job, { status: 'failed', exitCode: null, output: reason, failureKind }).catch((e: Error) =>
@@ -623,7 +596,7 @@ async function failOnClaimRefusal(rt: LoopRuntime, job: BoardJob): Promise<boole
 
 /**
  * One attempt, end to end: the startup setup (the reclaim barrier, the checkout sync, the
- * gates re-read, the gate environment) and the run itself. The setup lives here rather than in
+ * plan check, the gate environment) and the run itself. The setup lives here rather than in
  * the claim loop so the attempt's state — heartbeat, abort signal, cleanup — covers all of it:
  * a Stop issued while the dashboard says "Waiting for the executor…" interrupts the setup
  * within one heartbeat poll and stands the attempt down before anything spawns (issue #126).

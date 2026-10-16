@@ -15,7 +15,6 @@ import {
 } from '../src/k8s-transport.js';
 import { readVerdict, runnerLossOf } from '../src/k8s-poll.js';
 import {
-    bellowsJobSpec,
     claudeTurnsJobName,
     claudeTurnsJobSpec,
     claudeExportJobName,
@@ -60,7 +59,6 @@ import {
     TRANSIENT_SYNC_REASON,
 } from '../src/publish.js';
 import { forgetDeclaredServices, type ServiceSpec } from '../src/services.js';
-import { bellowsService, bellowsTree } from './fixtures/bellows-tree.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -79,6 +77,7 @@ const job: BoardJob = {
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
     executorRefusal: null,
+    planRefusal: null,
     skillRefusal: null,
     masterPrompt: MASTER_PROMPT,
     resumeSessionId: null,
@@ -555,7 +554,6 @@ describe('the runner job spec', () => {
 const POD_NAMES = [
     'the runner',
     'the gate',
-    'the bellows readout',
     'the opencode session readout',
     'the claude turns readout',
     'the claude transcript exporter',
@@ -621,7 +619,6 @@ const everyPodSpec = (env: NodeJS.ProcessEnv = {}, of: BoardJob = job): Record<P
     return {
         'the runner': () => jobView(runnerJobSpec(config, of, { id: SESSION, resume: false })),
         'the gate': () => jobView(gateJobSpec(config, of, gateArgs())),
-        'the bellows readout': () => jobView(bellowsJobSpec(config, of)),
         'the opencode session readout': () => jobView(opencodeReadoutJobSpec(config, of, startedAt)),
         'the claude turns readout': () => jobView(claudeTurnsJobSpec(config, of, SESSION, startedAt)),
         'the claude transcript exporter': () => jobView(claudeExportJobSpec(config, of, startedAt)),
@@ -5235,32 +5232,6 @@ describe('the kubernetes gate manager', () => {
 // name, alive for exactly the attempt.
 // ==============================================================================================
 
-describe('the .bellows.yaml readout job spec', () => {
-    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
-
-    // The readout cats every checkout's .bellows.yaml — for THIS member, whose tree is all it
-    // sees: read-only, and scoped to the job's own subtree like every other mount.
-    it("runs the read script over a read-only mount scoped to the job's own subtree", () => {
-        const s = bellowsJobSpec(cfg(), job);
-        const container = s.spec.template.spec.containers[0]!;
-        expect(container.volumeMounts).toEqual([
-            {
-                name: 'workspaces',
-                mountPath: `/workspaces/bellows/${USER}`,
-                readOnly: true,
-                subPath: `bellows/${USER}`,
-            },
-        ]);
-        expect(s.spec.template.spec.volumes).toEqual([
-            { name: 'workspaces', persistentVolumeClaim: { claimName: 'factory-ai_workspaces' } },
-        ]);
-    });
-
-    it('refuses a claim whose workspace path cannot be asserted', () => {
-        expect(() => bellowsJobSpec(cfg(), { ...job, workspacePath: '../other-org' })).toThrow(/workspace path/);
-    });
-});
-
 describe('the service pod and DNS specs', () => {
     const cache: ServiceSpec = {
         name: 'cache',
@@ -5372,22 +5343,26 @@ describe('the service pod and DNS specs', () => {
     });
 });
 
+/** The suite's job with no services on the claim, for the block below that shadows `job`. */
+const baseJob = job;
+
 describe('the kubernetes services flow', () => {
+    // Issue #769: the services ride on the claim — this block's `job` declares the one `cache` service.
+    const CACHE: ServiceSpec = {
+        name: 'cache',
+        image: 'redis',
+        environment: [{ key: 'ALLOW_EMPTY_PASSWORD', value: 'yes' }],
+    };
+    const job: BoardJob = { ...baseJob, services: [CACHE] };
     // The declared fleet is process-wide and the suite runs isolate: false — a failed test must not leak it.
     afterEach(() => forgetDeclaredServices(job));
     /** A restart's stand-down signal that never fires. */
     const live = new AbortController().signal;
-    const BELLOWS_OUTPUT =
-        '###__bellows:factory\nservices:\n  - name: cache\n    image: redis\n    environment:\n      ALLOW_EMPTY_PASSWORD: "yes"\n';
     const DNS_UID = '99999999-9999-4999-8999-999999999999';
 
-    /** A fake that routes one full run with services: readout Job, service objects, runner Job. */
-    // `bellowsLog` as a function answers from the env the readout Job was actually posted with.
-    const servicesFake = (
-        options: { bellowsLog?: string | ((env: Record<string, string>) => string); dnsCreate?: K8sResponse } = {}
-    ) => {
+    /** A fake that routes one full run with services: service objects, runner Job. */
+    const servicesFake = (options: { dnsCreate?: K8sResponse } = {}) => {
         const calls: Call[] = [];
-        let bellowsEnv: Record<string, string> = {};
         const createdPods: { metadata: { labels: Record<string, string> }; spec: unknown }[] = [];
         const runningPod = (pod: (typeof createdPods)[number]) => ({ ...pod, status: { phase: 'Running' } });
         const serve = claimServer();
@@ -5398,12 +5373,6 @@ describe('the kubernetes services flow', () => {
             const respond = (r: K8sResponse) => Promise.resolve(r);
             const empty = { status: 200, body: '{"items":[]}' };
             if (path === jobsPath(namespace)) {
-                const posted = body as ReturnType<typeof bellowsJobSpec> | undefined;
-                if (posted?.metadata.name.startsWith('factory-bellows-')) {
-                    bellowsEnv = Object.fromEntries(
-                        (posted.spec.template.spec.containers[0]!.env ?? []).map((e) => [e.name, e.value ?? ''])
-                    );
-                }
                 // Every Job POST is accepted; nothing ever polls as failed.
                 return respond({ status: 201, body: '{}' });
             }
@@ -5418,17 +5387,6 @@ describe('the kubernetes services flow', () => {
                 return respond(
                     options.dnsCreate ?? { status: 201, body: JSON.stringify({ metadata: { uid: DNS_UID } }) }
                 );
-            }
-            // The readout's pod list: answer once with a pod so its log can be read.
-            if (path.includes('pods?') && decodeURIComponent(path).includes('job-name=factory-bellows')) {
-                return respond({
-                    status: 200,
-                    body: JSON.stringify({ items: [{ metadata: { name: 'bellows-pod' } }] }),
-                });
-            }
-            if (path === `/api/v1/namespaces/${namespace}/pods/bellows-pod/log`) {
-                const log = options.bellowsLog ?? BELLOWS_OUTPUT;
-                return respond({ status: 200, body: typeof log === 'function' ? log(bellowsEnv) : log });
             }
             if (path.includes('pods?') && decodeURIComponent(path).includes('job-name=')) {
                 return respond({
@@ -5485,11 +5443,8 @@ describe('the kubernetes services flow', () => {
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
 
-        // The readout Job ran first, then the attempt's DNS name and the service pod under it,
-        // and only then the runner Job — docker's fleet-before-runner order.
-        const bellowsPost = calls.findIndex(
-            (c) => c.body && (c.body as { metadata?: { name?: string } }).metadata?.name?.startsWith('factory-bellows-')
-        );
+        // The attempt's DNS name, then the service pod under it, and only then the runner Job —
+        // docker's fleet-before-runner order. No readout Job runs before them.
         const podPost = calls.findIndex((c) => c.method === 'POST' && c.path?.endsWith('/pods'));
         const dnsPost = calls.findIndex((c) => c.method === 'POST' && c.path?.endsWith('/services'));
         const jobPost = calls.findIndex(
@@ -5498,8 +5453,7 @@ describe('the kubernetes services flow', () => {
                 c.path === jobsPath(namespace) &&
                 (c.body as { metadata?: { name?: string } })?.metadata?.name === runnerJobName(job)
         );
-        expect(bellowsPost).toBeGreaterThanOrEqual(0);
-        expect(dnsPost).toBeGreaterThan(bellowsPost);
+        expect(dnsPost).toBeGreaterThanOrEqual(0);
         expect(podPost).toBeGreaterThan(dnsPost);
         expect(jobPost).toBeGreaterThan(podPost);
         expect((calls[dnsPost]!.body as { metadata: { name: string } }).metadata.name).toBe(serviceSubdomain(job));
@@ -5578,10 +5532,8 @@ describe('the kubernetes services flow', () => {
         await runner.run(job, { id: SESSION, resume: false });
 
         const during = calls.slice(startedAt);
-        const named = (c: Call) => (c.body as { metadata?: { name?: string } } | undefined)?.metadata?.name ?? '';
         expect(during.some((c) => c.method === 'POST' && c.path?.endsWith('/pods'))).toBe(false);
         expect(during.some((c) => c.method === 'POST' && c.path?.endsWith('/services'))).toBe(false);
-        expect(during.some((c) => c.method === 'POST' && named(c).startsWith('factory-bellows-'))).toBe(false);
         const sweeps = during.filter(
             (c) => c.method === 'GET' && decodeURIComponent(c.path ?? '').includes(`factory.job=${job.id}`)
         );
@@ -5681,20 +5633,6 @@ describe('the kubernetes services flow', () => {
                     c.path?.includes(`services?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`)
             )
         ).toBe(true);
-    });
-
-    it('fails the read as infrastructure when the readout object disappears', async () => {
-        const { request } = servicesFake({ bellowsLog: 'cat: cannot open: boom' });
-        // The readout Job answering 404 while its output is being read is INFRASTRUCTURE — the
-        // object was removed under us — so the run throws and goes back to its lease, never
-        // reporting a verdict over the API server's answer.
-        const failing: K8sRequest = (method, path, body) => {
-            if (path.startsWith(`${jobsPath(namespace)}/`) && decodeURIComponent(path).includes('factory-bellows')) {
-                return Promise.resolve({ status: 404, body: '{}' });
-            }
-            return request(method, path, body);
-        };
-        await expect(servicesRunner(failing).run(job, { id: SESSION, resume: false })).rejects.toThrow();
     });
 
     it('reports a declared service whose pod is gone from the lease list as dead (issue #471)', async () => {
@@ -5984,58 +5922,56 @@ describe('the kubernetes services flow', () => {
         await runner.releaseServices(job);
     });
 
-    /*
-     * Issue #444: the task's own repo is read from its worktree — the tree the gates read — so a
-     * service or a `user:` its base clone has not checked out yet still reaches the pod. The
-     * readout log is the shipped script's output, run on a real member tree with the posted env.
-     */
-    describe('reading the task worktree (issue #444)', () => {
-        const ROOT = '55555555-5555-4555-8555-555555555555';
-        const repoJob: BoardJob = { ...job, repo: 'acme/app', rootJobId: ROOT };
-        const run = async (tree: ReturnType<typeof bellowsTree>) => {
-            const { request, calls } = servicesFake({ bellowsLog: (env) => tree.read(env) });
-            const runner = asLoop(
-                createKubernetesRunner(
-                    loadDriverConfig({
-                        EXECUTOR: 'kubernetes',
-                        K8S_NAMESPACE: namespace,
-                        RUNNER_SERVICES: '1',
-                        WORKSPACE_MOUNT: tree.mount,
-                    }),
-                    request,
-                    async () => {}
-                )
-            );
-            const outcome = await runner.run(repoJob, { id: SESSION, resume: false });
-            const pods = calls
-                .filter((c) => c.method === 'POST' && c.path === `/api/v1/namespaces/${namespace}/pods`)
-                .map((c) => c.body as ReturnType<typeof servicePodSpec>);
-            return { outcome, pods };
+    // Issue #769: the fleet is exactly the claim's services — nothing is read from a checkout.
+    const podsPosted = (calls: Call[]) =>
+        calls
+            .filter((c) => c.method === 'POST' && c.path === `/api/v1/namespaces/${namespace}/pods`)
+            .map((c) => c.body as ReturnType<typeof servicePodSpec>);
+    const jobPosts = (calls: Call[]) =>
+        calls
+            .filter((c) => c.method === 'POST' && c.path === jobsPath(namespace))
+            .map((c) => (c.body as { metadata: { name: string } }).metadata.name);
+
+    it('starts every service the claim carries, a declared port changing no pod spec', async () => {
+        const planned: BoardJob = {
+            ...baseJob,
+            services: [
+                { name: 'postgres', image: 'postgres:1', environment: [], ports: [5432], user: { uid: 999, gid: 999 } },
+                { name: 'redis', image: 'redis:1', environment: [] },
+            ],
         };
+        const { request, calls } = servicesFake();
+        const outcome = await servicesRunner(request).run(planned, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
 
-        it("starts the worktree's services, with a user only the worktree declares, beside another checkout's", async () => {
-            const tree = bellowsTree(repoJob.workspacePath!);
-            tree.write('app/.bellows.yaml', bellowsService('postgres'));
-            tree.write(`.worktrees/${ROOT}/.bellows.yaml`, bellowsService('postgres', '\n    user: "999:999"'));
-            tree.write('api/.bellows.yaml', bellowsService('redis'));
-            const { pods } = await run(tree);
+        const pods = podsPosted(calls);
+        const byImage = new Map(pods.map((p) => [p.spec.containers[0]!.image, p.spec.containers[0]!]));
+        expect([...byImage.keys()].sort()).toEqual(['postgres:1', 'redis:1']);
+        expect(byImage.get('postgres:1')!.securityContext).toMatchObject({ runAsUser: 999, runAsGroup: 999 });
+        expect(byImage.get('redis:1')!.securityContext?.runAsUser).toBeUndefined();
+        expect(JSON.stringify(pods)).not.toContain('5432');
+        await servicesRunner(request).releaseServices(planned);
+    });
 
-            const byImage = new Map(pods.map((p) => [p.spec.containers[0]!.image, p.spec.containers[0]!]));
-            expect([...byImage.keys()].sort()).toEqual(['postgres:1', 'redis:1']);
-            expect(byImage.get('postgres:1')!.securityContext).toMatchObject({ runAsUser: 999, runAsGroup: 999 });
-            expect(byImage.get('redis:1')!.securityContext?.runAsUser).toBeUndefined();
-        });
+    it('posts no readout Job: only the runner Job, the service pod and its DNS Service', async () => {
+        const { request, calls } = servicesFake();
+        await bareServicesRunner(request).startServices(job);
 
-        it('refuses a name the worktree and another checkout both declare, naming both', async () => {
-            const tree = bellowsTree(repoJob.workspacePath!);
-            tree.write(`.worktrees/${ROOT}/.bellows.yaml`, bellowsService('postgres'));
-            tree.write('api/.bellows.yaml', bellowsService('postgres'));
-            const { outcome, pods } = await run(tree);
+        expect(jobPosts(calls)).toEqual([]);
+        expect(podsPosted(calls)).toHaveLength(1);
+        expect(calls.filter((c) => c.method === 'POST' && c.path?.endsWith('/services'))).toHaveLength(1);
+        await bareServicesRunner(request).releaseServices(job);
+    });
 
-            expect(outcome.exitCode).toBeNull();
-            expect(outcome.output).toMatch(/"postgres" is defined in both (app\/ and api\/|api\/ and app\/)/);
-            expect(pods).toHaveLength(0);
-        });
+    it('starts no pod and creates no DNS Service when the claim carries no services', async () => {
+        const { request, calls } = servicesFake();
+        const outcome = await servicesRunner(request).run(baseJob, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+
+        expect(podsPosted(calls)).toEqual([]);
+        expect(calls.some((c) => c.method === 'POST' && c.path?.endsWith('/services'))).toBe(false);
+        expect(jobPosts(calls)).toContain(runnerJobName(baseJob));
+        expect(jobPosts(calls).some((name) => name.startsWith('factory-bellows-'))).toBe(false);
     });
 });
 

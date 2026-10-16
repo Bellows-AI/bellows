@@ -12,6 +12,7 @@ export const boardJob = (over: { attempts?: number; claimSeq?: number } = {}): B
     leaseExpiresAt: '2026-08-21T12:05:00.000Z',
     executorType: 'claude-code',
     executorRefusal: null,
+    planRefusal: null,
     skillRefusal: null,
     masterPrompt: null,
     resumeSessionId: null,

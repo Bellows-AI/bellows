@@ -32,12 +32,11 @@ import {
 } from './k8s-podfields.js';
 import { GATE_IMAGE, GATE_KEY } from './publish.js';
 import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
-import { assertedWorkspacePath, bellowsReadEnv, bellowsReadScript } from './services.js';
 
 /**
  * The kubernetes executor's pure Job/pod spec builders — the `dockerArgs` analogue for every
  * shape this driver POSTs to the API server: the runner itself, the gate runner, and the
- * `.bellows.yaml` / opencode-session / claude-turns aux readouts. Everything security-relevant
+ * opencode-session / claude-turns aux readouts. Everything security-relevant
  * about a runner is decided here, and pinned by tests for that reason. The transport, polling,
  * fence and runner assembly live in the sibling `k8s-*.ts` files this one has no dependency on;
  * see docs/kubernetes.md for the full map.
@@ -330,7 +329,7 @@ export const secretBody = (job: BoardJob, name: string, env: Record<string, stri
 
 /**
  * A batch Job this driver creates for its own auxiliary work — one gate run, or the
- * `.bellows.yaml` readout — as opposed to a runner. Structural like `RunnerJobSpec`, and
+ * readout — as opposed to a runner. Structural like `RunnerJobSpec`, and
  * deliberately a second interface rather than a widening of it: the runner's shape is pinned
  * field by field (claude argv, WORKDIR, per-name secretKeyRef), and an aux Job decides different
  * things. Sharing a type would make "the runner has no envFrom" unreadable.
@@ -477,7 +476,7 @@ export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpe
 
 /**
  * One `workspaces` volumeMount, scoped to `subPath` — the subtree every aux Job's container
- * mounts, read-write unless the caller marks it read-only (the `.bellows.yaml` readout's own).
+ * mounts, read-write unless the caller marks it read-only.
  */
 export function workspaceMount(
     config: DriverConfig,
@@ -648,25 +647,15 @@ export const envBodyToData = (body: string): Record<string, string> => {
 };
 
 /**
- * The `.bellows.yaml` readout under kubernetes: the same shell script docker runs in a
- * throwaway container, as a Job over the read-only PVC mount. The readout must finish before
- * anything else about the job's services happens, so it gets a tight deadline of its own.
- */
-const BELLOWS_READ_DEADLINE_SECONDS = 120;
-
-const bellowsJobName = (job: BoardJob): string => `factory-bellows-${hash16(`${job.id}|${job.leaseToken}`)}`;
-
-/**
- * The runner Job's name, hashed like the readout's rather than `containerName(job)`'s raw
+ * The runner Job's name, hashed rather than `containerName(job)`'s raw
  * `<id>-<lease token>`: the apiserver carries the Job's name onto the pod template as the
  * `job-name` label, and a LABEL VALUE is capped at 63 bytes — the raw form is 85, and the
  * create answers 422. A DNS subdomain would take it; the label does not, and the label wins.
  * The hash keys on the same pair the raw form spelled out — job id and lease token — so the
  * name stays attempt-scoped: a reclaimed job's replacement attempt gets a different name, and
- * nothing a superseded attempt deletes by name can reach the winner's Job. Distinct prefix from
- * `bellowsJobName`, whose hash key is the same pair — one attempt's readout and runner must not
- * collide. Addressing is by label everywhere it can be (the fence's sweep, the pod log); the
- * name is only ever spoken by this process, which minted it.
+ * nothing a superseded attempt deletes by name can reach the winner's Job. Addressing is by label
+ * everywhere it can be (the fence's sweep, the pod log); the name is only ever spoken by this
+ * process, which minted it.
  */
 export const runnerJobName = (job: BoardJob): string => `factory-runner-${hash16(`${job.id}|${job.leaseToken}`)}`;
 
@@ -682,27 +671,6 @@ export const runnerName = (job: BoardJob): string => {
     return runnerJobName(job);
 };
 
-export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec {
-    // One home for the `.bellows.yaml` refusal: services.ts composes the readout's env from the
-    // same assertion, so the docker readout and this Job cannot drift on which paths they accept.
-    const path = assertedWorkspacePath(job);
-    return auxJobSpec(config, job, {
-        name: bellowsJobName(job),
-        deadlineSeconds: BELLOWS_READ_DEADLINE_SECONDS,
-        container: {
-            name: 'bellows-read',
-            image: executorImage(config, job.executorType),
-            imagePullPolicy: config.imagePullPolicy,
-            command: ['sh', '-c', bellowsReadScript],
-            // The readout's parameters as literal env values — a path and two constants shared
-            // with the splitter, never a credential (the same justification the sync's
-            // REPO/WORKTREE/BRANCH literals give).
-            env: Object.entries(bellowsReadEnv(config, job)).map(([name, value]) => ({ name, value })),
-            volumeMounts: [workspaceMount(config, path, true)],
-        },
-    });
-}
-
 /**
  * `<org>/<user id>` — COPIED from services.ts (which copied it from docker.ts): the path becomes
  * an env value the readout script globs under, and the board is not something this process trusts
@@ -714,7 +682,7 @@ const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a
  * The close-time opencode session readout under kubernetes: the same script docker runs in a
  * throwaway container (opencode-readout.cjs, passed by content), as one aux Job over the PVC.
  * The database path travels as an env VALUE — the script is static, so nothing board-derived is
- * ever part of its text. The mount is READ-WRITE on purpose, unlike the bellows readout's:
+ * ever part of its text. The mount is READ-WRITE on purpose, unlike a plain readout:
  * opening a sqlite database whose WAL needs recovery has to write the recovery, and the run
  * that died mid-checkpoint is exactly the readout this exists for. The docker readout mounts
  * the same volume read-write for the same reason.
