@@ -99,6 +99,17 @@ describe('the runner GitHub credential route', () => {
         expect(mints).toEqual([]);
     });
 
+    it('refuses a job id that is not a uuid without asking the check', async () => {
+        const { app, checks } = await boot({ fresh: minted });
+        const res = await app.inject({
+            method: 'POST',
+            url: '/api/jobs/not-a-uuid/credentials/github',
+            headers: { ...PAIR, 'x-factory-job-id': 'not-a-uuid' },
+        });
+        expect(res.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(checks()).toBe(0);
+    });
+
     it('withholds the token when the attempt ended during the exchange', async () => {
         const { app, lines } = await boot({ answers: [LIVE, { ok: false }], fresh: minted });
         const res = await app.inject({ method: 'POST', url: URL_PATH, headers: PAIR });

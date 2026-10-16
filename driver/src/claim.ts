@@ -129,7 +129,7 @@ export function workspacePath(job: Pick<BoardJob, 'id' | 'workspacePath'>): stri
  * The agent container's memory-backed GitHub token cache (docs/connections.md): the executor
  * images' helper writes only here (`CACHE_DIR` in each image's github-credential.cjs), and both
  * executors mount it in the agent container alone — docker a `--tmpfs`, kubernetes an
- * `emptyDir: {medium: Memory}` — so the token never reaches a disk or the task volume.
+ * `emptyDir: {medium: Memory}` — so the helper's cached token never reaches a disk or the task volume.
  */
 export const GITHUB_CACHE_DIR = '/run/factory-github';
 /** The cache's ceiling, one small JSON file: the kubernetes quantity and the docker tmpfs size. */

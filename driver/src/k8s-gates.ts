@@ -34,8 +34,9 @@ const gateHarness = (message: string): Error => Object.assign(new Error(message)
 
 /**
  * The attempt's env Secret, created before any gate Job references it. A 409 means a previous
- * acquire of this same attempt already created it — same name, same values — so only any OTHER
- * failure status is worth failing the acquire over. Pulled out of `acquire` purely to keep that
+ * acquire of this same attempt already created it — same name — and its values stand: the GitHub
+ * token in it is the first acquire's, not renewed (docs/connections.md), so only any OTHER failure
+ * status is worth failing the acquire over. Pulled out of `acquire` purely to keep that
  * method's complexity readable.
  */
 async function createGateEnvSecret(deps: K8sDeps, job: BoardJob, secretName: string, envBody: string): Promise<void> {

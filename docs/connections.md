@@ -40,8 +40,8 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
   HEAD only. `server/src/routes/connections.ts`, `server/test/routes.connections.test.ts`.
 - **Refusals name the fix** (`CONNECTION_NOT_AUTHORIZED`), and the token is in no response, log line
   or error text. `server/test/routes.connector-jira.test.ts`.
-- **GitHub's token is the attempt's, never the claim's.** No GitHub value rides the claim, the runner
-  env or a Secret; a reviewer row and a superseded, cancelled or finished attempt get none, so a lost
+- **GitHub's token is the attempt's, never the claim's.** No GitHub value rides the claim, the runner's
+  env or the runner's Secret; a reviewer row and a superseded, cancelled or finished attempt get none, so a lost
   runner's next claim renews under its own pair. `server/test-db/github-credential.test.ts`,
   `driver/test/github-credential.test.ts`.
 - **The proxy reaches `rest/api/3/*` on the connection's cloud id and nothing else**, and `site` must
@@ -57,5 +57,11 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 - GitHub is the App's alone: no member token and no PAT, so an org without an installation has no
   GitHub credential at all. A revoked or suspended installation surfaces as the route's `502`.
 - A gate environment's GitHub token is fetched once at gate start and never renewed: a gate still
-  running past its hour runs on an expired token (`driver/src/claim.ts`, `gateEnvBody`).
+  running past its hour runs on an expired token (`driver/src/claim.ts`, `gateEnvBody`). It lives in
+  the gate's env file (docker) or the attempt's gate env Secret (kubernetes, `driver/src/k8s-gates.ts`).
+- A runner whose driver was lost keeps its old pair: once the lease expires or a reclaim rotates it,
+  the helper is refused for the rest of that run, and the next claim's runner gets its own.
+- The helper answers `https://github.com` only: an Enterprise `GITHUB_API_URL` deployment's agent
+  runs git and gh without a credential.
+- A supervised step's token rides its step request, which crosses the mailbox volume, not memory.
 - No in-place edit and no per-task picker in the UI: delete and re-add; the injected default covers selection.

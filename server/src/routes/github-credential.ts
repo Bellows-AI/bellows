@@ -1,6 +1,7 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { JOB_ID_HEADER, LEASE_TOKEN_HEADER } from '../auth/plugin.js';
+import { UUID } from '../config.js';
 import type { GithubCredentialOfLease } from '../db/github-credential.js';
 import type { MintedToken } from '../github/app-token.js';
 import { bad } from './helpers.js';
@@ -42,6 +43,9 @@ export function githubCredentialRoutes({ credentialOfLease, mint }: GithubCreden
         if (request.headers[JOB_ID_HEADER] !== jobId || typeof leaseToken !== 'string') {
             return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Job id and lease token required', HTTP_FORBIDDEN);
         }
+        // A malformed id is no attempt, refused before the database's uuid cast can throw.
+        if (!UUID.test(jobId))
+            return bad(reply, ERROR_CODES.CONNECTION_NOT_AUTHORIZED, ATTEMPT_REFUSED, HTTP_FORBIDDEN);
         const attempt = await credentialOfLease(jobId, leaseToken);
         if (!attempt.ok) return bad(reply, ERROR_CODES.CONNECTION_NOT_AUTHORIZED, ATTEMPT_REFUSED, HTTP_FORBIDDEN);
         let minted: MintedToken | null;
