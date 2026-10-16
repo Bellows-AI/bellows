@@ -16,7 +16,7 @@ import { createControlChannel } from './control-channel.js';
 import { readBody, respondJson } from './http.js';
 import type { PublishRelay } from './publish-control.js';
 import type { ReviewRelay } from './review-control.js';
-import type { ExportDrain, ExportRelay } from './export-control.js';
+import type { ExportRelay } from './export-control.js';
 import type { QuestionRelay, QuestionResolution } from './question-control.js';
 
 const run = promisify(execFile);
@@ -512,15 +512,15 @@ export interface GateServer {
      */
     setDeadServices(token: string, note: string | null): void;
     /**
-     * Opens the run-control channel for one attempt: `GET /control` under this token answers
-     * `{ stop }`, false until `raiseStop`. Independent of any gate registration — every launched
-     * attempt gets one, gated or not. Idempotent.
+     * Opens the run-control channel for one attempt: `GET /control` under the supervisor `token`
+     * answers `{ stop, kill }`, false until `raiseStop` / `raiseKill`. Independent of any gate
+     * registration — every launched attempt gets one, gated or not. Idempotent.
      */
     openControl(token: string, relay?: QuestionRelay, publisher?: PublishRelay, reviewer?: ReviewRelay): void;
+    /** Opens the agent's own token beside an open supervisor `token`: the publish and review routes only. */
+    grantAgent(token: string, agentToken: string): void;
     /** Gives an open control token its transcript exporter's relay (the `/export` routes). */
     attachExporter(token: string, exporter: ExportRelay): void;
-    /** Orders the token's transcript exporter to drain: the agent is gone, flush and close the manifests. */
-    drainExport(token: string, drain: ExportDrain): void;
     /**
      * Settles a pending question on an open control token: an answer the board recorded, or an
      * answer arriving. False — and nothing changes — for an unknown token or id and a question
@@ -539,7 +539,9 @@ export interface GateServer {
     controlPolled(token: string): boolean;
     /** Raises the stop on an open control token; repeated calls and unknown tokens do nothing. */
     raiseStop(token: string): void;
-    /** Ends the control token: the runner's poller gets 401 from here on. */
+    /** Raises the kill order on an open control token: the supervisor ends the agent now. Idempotent. */
+    raiseKill(token: string): void;
+    /** Ends the control token: the supervisor and the agent both get 401 from here on. */
     closeControl(token: string): void;
     /** Idempotent. Resolves with the bound port, which is what the advertised URL is built from. */
     listen(): Promise<number>;
@@ -718,13 +720,14 @@ export function createGateServer({
             this.unregister(token);
         },
         openControl: (token, relay, publisher, reviewer) => channel.open(token, relay, publisher, reviewer),
+        grantAgent: (token, agentToken) => channel.grantAgent(token, agentToken),
         attachExporter: (token, exporter) => channel.attachExporter(token, exporter),
-        drainExport: (token, drain) => channel.drainExport(token, drain),
         resolveQuestion: (token, id, resolution) => channel.resolveQuestion(token, id, resolution),
         hasPendingQuestion: (token) => channel.hasPendingQuestion(token),
         cancelQuestions: (token) => channel.cancelQuestions(token),
         controlPolled: (token) => channel.polled(token),
         raiseStop: (token) => channel.raiseStop(token),
+        raiseKill: (token) => channel.raiseKill(token),
         closeControl: (token) => channel.close(token),
         setDeadServices: (token, note) => setDeadNote(claims.get(token), note),
         lastRuns(token) {

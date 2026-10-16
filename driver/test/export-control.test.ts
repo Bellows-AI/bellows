@@ -56,21 +56,19 @@ const call = (method: string, path: string, body?: string | Uint8Array, token = 
 describe('the export routes of the control channel', () => {
     it('refuse an unknown token', async () => {
         openExporting();
-        expect((await call('GET', '/export/control', undefined, 'other')).status).toBe(401);
+        expect((await call('POST', '/export/state', '{}', 'other')).status).toBe(401);
     });
 
-    it('answer the drain order, null until it is given', async () => {
+    // The drain order is the supervisor's file in a directory only it and the exporter mount: no
+    // route carries it, and none answers one.
+    it('carry no drain order: the supervisor hands it over by file', async () => {
         openExporting();
-        expect(await (await call('GET', '/export/control')).json()).toEqual({ drain: null });
-        channel.drainExport(TOKEN, { state: 'partial', cause: 'agent_killed' });
-        expect(await (await call('GET', '/export/control')).json()).toEqual({
-            drain: { state: 'partial', cause: 'agent_killed' },
-        });
+        expect((await call('GET', '/export/control')).status).toBe(400);
+        expect('drainExport' in channel).toBe(false);
     });
 
-    it('never mark the token polled: only the agent’s own stop poll does', async () => {
+    it('never mark the token polled: only the supervisor’s own control poll does', async () => {
         openExporting();
-        await call('GET', '/export/control');
         await call(
             'POST',
             '/export/state',
@@ -117,7 +115,6 @@ describe('the export routes of the control channel', () => {
     it('answer 400 where the attempt exports no transcript', async () => {
         channel.open(TOKEN);
         expect((await call('PUT', '/export/chunk?session=abc&offset=0', new Uint8Array([1]))).status).toBe(400);
-        expect((await call('GET', '/export/control')).status).toBe(200);
     });
 
     it('answer 401 to a request whose token closed while its body arrived', async () => {

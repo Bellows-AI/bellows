@@ -107,7 +107,7 @@ async function readGateJobResult(
 ): Promise<{ exitCode: number; output: string }> {
     let verdict: { exitCode: number | null; output: string };
     try {
-        verdict = await readJobPodVerdict(deps, jobName, succeeded, 'listing the gate pods');
+        verdict = await readJobPodVerdict(deps, jobName, { succeeded }, 'listing the gate pods');
     } catch (e) {
         throw gateHarness((e as Error).message);
     }

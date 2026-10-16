@@ -41,9 +41,11 @@ export interface QuestionRelay {
     ask(questionId: string, questions: AskedQuestion[]): Promise<'accepted' | 'refused' | 'gone'>;
 }
 
-/** One control token's state: the stop flag, whether a runner ever read it, and its questions. */
+/** One attempt's control state: the stop and kill flags, whether the supervisor ever read them, and its questions. */
 export interface ControlEntry {
     stop: boolean;
+    /** The supervisor is to end the agent now, not at its next step boundary. */
+    kill: boolean;
     polled: boolean;
     questions: Map<string, QuestionState>;
     /** The forward of each question still being reported to the board, by id. */
@@ -55,7 +57,7 @@ export interface ControlEntry {
     /** The reviewer routes' relay and in-flight flag (`review-control.ts`); null on a run that may not invoke one. */
     reviewer: ReviewRelay | null;
     reviewing: ReviewSlot;
-    /** The transcript-export routes' relay and drain order (`export-control.ts`); no relay on a run with no exporter. */
+    /** The transcript-export routes' relay (`export-control.ts`); none on a run with no exporter. */
     exporting: ExportSlot;
 }
 
@@ -66,6 +68,7 @@ export const newControl = (
     exporter: ExportRelay | null = null
 ): ControlEntry => ({
     stop: false,
+    kill: false,
     polled: false,
     questions: new Map(),
     inflight: new Map(),
@@ -74,7 +77,7 @@ export const newControl = (
     publishing: { running: false },
     reviewer,
     reviewing: { running: false },
-    exporting: { relay: exporter, drain: null },
+    exporting: { relay: exporter },
 });
 
 export interface QuestionAnswer {
@@ -148,7 +151,7 @@ export function resolveQuestion(control: ControlEntry, questionId: string, resol
     return true;
 }
 
-/** A stop: every pending question is cancelled, so the bridge interrupts the CLI without polling `/control`. */
+/** A stop: every pending question is cancelled, so the supervisor answers `cancelled` and the bridge interrupts the CLI. */
 export function cancelPendingQuestions(control: ControlEntry): void {
     for (const [id, question] of control.questions) {
         if (question.state === 'pending') control.questions.set(id, { state: 'cancelled' });

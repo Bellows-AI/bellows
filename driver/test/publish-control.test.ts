@@ -47,7 +47,9 @@ describe('the control server: POST /publish', () => {
 
     async function opened(relay: PublishRelay | undefined) {
         const server = createGateServer({ host: '127.0.0.1', manager });
-        server.openControl('tok-p', undefined, relay);
+        // 'tok-p' is the AGENT's token: the publish route is one of the two the agent holds a door to.
+        server.openControl('tok-p-supervisor', undefined, relay);
+        server.grantAgent('tok-p-supervisor', 'tok-p');
         return { server, port: await server.listen() };
     }
 
@@ -109,12 +111,14 @@ describe('the control server: POST /publish', () => {
     it('refuses an unknown token, a gate token and a closed one', async () => {
         const server = createGateServer({ host: '127.0.0.1', manager });
         server.register('gate-tok', { key: 'k', image: 'node:24', job: JOB, gates: [] });
-        server.openControl('tok-p', undefined, { publish: async () => LANDED });
+        server.openControl('tok-p-supervisor', undefined, { publish: async () => LANDED });
+        server.grantAgent('tok-p-supervisor', 'tok-p');
         const port = await server.listen();
 
         expect((await post(port, 'nope')).status).toBe(UNAUTHORIZED_STATUS);
         expect((await post(port, 'gate-tok')).status).toBe(UNAUTHORIZED_STATUS);
-        server.closeControl('tok-p');
+        // Closing the attempt closes both its tokens.
+        server.closeControl('tok-p-supervisor');
         expect((await post(port, 'tok-p')).status).toBe(UNAUTHORIZED_STATUS);
         await server.close();
     });

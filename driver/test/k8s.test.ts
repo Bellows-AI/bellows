@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Board, BoardJob } from '../src/board.js';
-import { loadDriverConfig } from '../src/config.js';
+import { type DriverConfig, loadDriverConfig } from '../src/config.js';
+import { EXPORTER_CONTAINER, SUPERVISOR_CONTAINER, SUPERVISOR_WINDDOWN_MS } from '../src/supervisor-contract.js';
 import { claudeTurnsScript, claudeExportScript } from '../src/container-scripts.js';
 import { commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import { lookupHelper } from '../src/helpers.js';
@@ -17,8 +18,6 @@ import { readVerdict, runnerLossOf } from '../src/k8s-poll.js';
 import {
     claudeTurnsJobName,
     claudeTurnsJobSpec,
-    claudeExportJobName,
-    claudeExportJobSpec,
     envBodyToData,
     fleetDnsField,
     gateEnvSecretName,
@@ -61,6 +60,7 @@ import {
 import { forgetDeclaredServices, type ServiceSpec } from '../src/services.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
+const WINDDOWN_S = SUPERVISOR_WINDDOWN_MS / 1000;
 
 /** A fixed, valid Factory execution context — the shape master-prompt.test.ts pins; only its
  *  presence matters to this file's own tests, none of which assert its exact text. */
@@ -288,6 +288,9 @@ describe('the runner job spec', () => {
             },
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
+            // The two mailbox paths the agent finds its supervisor through — paths, no credential.
+            { name: 'FACTORY_CTL_IN', value: '/factory/in' },
+            { name: 'FACTORY_CTL_OUT', value: '/factory/out' },
         ]);
     });
 
@@ -348,6 +351,8 @@ describe('the runner job spec', () => {
             },
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
+            { name: 'FACTORY_CTL_IN', value: '/factory/in' },
+            { name: 'FACTORY_CTL_OUT', value: '/factory/out' },
         ]);
     });
 
@@ -377,14 +382,13 @@ describe('the runner job spec', () => {
             gateEnv: {
                 BELLOWS_CONTROL_URL: 'http://10.1.2.3:41000',
                 BELLOWS_CONTROL_TOKEN: 'ctl-secret',
-                BELLOWS_CONTROL_POLL_MS: '5000',
             },
         };
         const container = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), controlled, {
             id: SESSION,
             resume: false,
         }).spec.template.spec.containers[0]!;
-        for (const name of ['BELLOWS_CONTROL_URL', 'BELLOWS_CONTROL_TOKEN', 'BELLOWS_CONTROL_POLL_MS']) {
+        for (const name of ['BELLOWS_CONTROL_URL', 'BELLOWS_CONTROL_TOKEN']) {
             expect(container.env).toContainEqual({
                 name,
                 valueFrom: { secretKeyRef: { name: secretName(controlled), key: name } },
@@ -412,6 +416,8 @@ describe('the runner job spec', () => {
             },
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
+            { name: 'FACTORY_CTL_IN', value: '/factory/in' },
+            { name: 'FACTORY_CTL_OUT', value: '/factory/out' },
         ]);
     });
 
@@ -460,15 +466,16 @@ describe('the runner job spec', () => {
 
     it('bounds the run with an active deadline', () => {
         // DRIVER_JOB_TIMEOUT_MS maps onto the kubelet-enforced deadline, so a runner that outlives
-        // its driver still dies — the k8s form of `docker kill`.
-        expect(spec({ DRIVER_JOB_TIMEOUT_MS: '45000' }).spec.activeDeadlineSeconds).toBe(45);
+        // its driver still dies — the k8s form of `docker kill`. The supervisor ends the agent at the
+        // budget itself; the kubelet's backstop adds the drain and the report on top.
+        expect(spec({ DRIVER_JOB_TIMEOUT_MS: '45000' }).spec.activeDeadlineSeconds).toBe(45 + WINDDOWN_S);
     });
 
     // Issue #733: environment.setup ran before the agent, inside the same run budget.
     it('takes the time environment.setup spent off the active deadline', () => {
         const config = loadDriverConfig({ EXECUTOR: 'kubernetes', DRIVER_JOB_TIMEOUT_MS: '45000' });
         const setUp = runnerJobSpec(config, { ...job, setupMs: 15_000 }, { id: SESSION, resume: false });
-        expect(setUp.spec.activeDeadlineSeconds).toBe(30);
+        expect(setUp.spec.activeDeadlineSeconds).toBe(30 + WINDDOWN_S);
     });
 
     it('runs exactly one pod, and reaps the object when it is done', () => {
@@ -556,7 +563,8 @@ const POD_NAMES = [
     'the gate',
     'the opencode session readout',
     'the claude turns readout',
-    'the claude transcript exporter',
+    'the task supervisor',
+    'the transcript exporter',
     'the sync',
     'the reclaim',
     'the publish step',
@@ -600,6 +608,28 @@ const jobView = (spec: JobSpecOf): PodView => ({
     pod: spec.spec.template.spec,
 });
 
+/** The control pair a run with a control endpoint carries for its supervisor — the exporter's, too. */
+const SUPERVISED: Pick<BoardJob, 'supervisorEnv'> = {
+    supervisorEnv: { SUPERVISOR_CONTROL_URL: 'http://driver:7000', SUPERVISOR_CONTROL_TOKEN: 'tok-supervisor' },
+};
+
+/**
+ * One container of a claude-code run's pod, seen through the fields every pod shares: the same Job
+ * and pod, with only the named container left in `containers` — so each per-container pin below
+ * reads `containers[0]` for the supervisor and the exporter as it does for the agent.
+ */
+const containerView = (config: DriverConfig, of: BoardJob, name: string): PodView => {
+    const spec = runnerJobSpec(
+        config,
+        { ...of, executorType: 'claude-code', ...SUPERVISED },
+        { id: SESSION, resume: false }
+    );
+    const view = jobView(spec);
+    const container = spec.spec.template.spec.containers.find((candidate) => candidate.name === name);
+    if (!container) throw new Error(`the run's pod has no ${name} container`);
+    return { ...view, pod: { ...view.pod, containers: [container] } };
+};
+
 /** The gate builder's input, the one argument object every gate spec here starts from. */
 const gateArgs = (over: Partial<Parameters<typeof gateJobSpec>[2]> = {}): Parameters<typeof gateJobSpec>[2] => ({
     key: `bellows/${USER}/.worktrees/${job.id}`,
@@ -621,7 +651,8 @@ const everyPodSpec = (env: NodeJS.ProcessEnv = {}, of: BoardJob = job): Record<P
         'the gate': () => jobView(gateJobSpec(config, of, gateArgs())),
         'the opencode session readout': () => jobView(opencodeReadoutJobSpec(config, of, startedAt)),
         'the claude turns readout': () => jobView(claudeTurnsJobSpec(config, of, SESSION, startedAt)),
-        'the claude transcript exporter': () => jobView(claudeExportJobSpec(config, of, startedAt)),
+        'the task supervisor': () => containerView(config, of, SUPERVISOR_CONTAINER),
+        'the transcript exporter': () => containerView(config, of, EXPORTER_CONTAINER),
         'the sync': () => jobView(syncJobSpec(config, repoJob, null)),
         'the reclaim': () => jobView(reclaimJobSpec(config, repoJob)),
         'the publish step': () =>
@@ -658,7 +689,17 @@ describe('resources on every pod the driver specs', () => {
     const REQUESTS = { requests: { cpu: '500m', memory: '1Gi' } };
     const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
 
-    it.each(POD_NAMES)('carries the same requests on %s', (name) => {
+    // The runner's pod is sized by its agent: the supervisor and the exporter beside it are small
+    // scripts, and a request on each would multiply the pod's reservation by three.
+    const SIDECARS: readonly PodName[] = ['the task supervisor', 'the transcript exporter'];
+    const SIZED_POD_NAMES = POD_NAMES.filter((name) => !SIDECARS.includes(name));
+
+    it.each(SIDECARS)('leaves %s unsized: the pod is sized by its agent', (name) => {
+        const { pod } = everyPodSpec({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' })[name]();
+        expect(pod.containers[0]!.resources).toBeUndefined();
+    });
+
+    it.each(SIZED_POD_NAMES)('carries the same requests on %s', (name) => {
         const { pod } = everyPodSpec({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' })[name]();
         expect(pod.containers[0]!.resources).toEqual(REQUESTS);
     });
@@ -686,7 +727,7 @@ describe('resources on every pod the driver specs', () => {
         });
     });
 
-    it.each(POD_NAMES)('carries no resources on %s when none are configured', (name) => {
+    it.each(SIZED_POD_NAMES)('carries no resources on %s when none are configured', (name) => {
         expect(everyPodSpec()[name]().pod.containers[0]!.resources).toBeUndefined();
     });
 });
@@ -2985,58 +3026,84 @@ describe('the runner vitals', () => {
     });
 });
 
-describe('the kubernetes runner and the continuous transcript exporter', () => {
+describe('the kubernetes runner and the task supervisor', () => {
     const exporting: BoardJob = {
         ...job,
-        gateEnv: { BELLOWS_CONTROL_URL: 'http://driver:7000', BELLOWS_CONTROL_TOKEN: 'tok-control' },
+        gateEnv: { BELLOWS_CONTROL_URL: 'http://driver:7000', BELLOWS_CONTROL_TOKEN: 'tok-agent' },
+        ...SUPERVISED,
     };
+    const containersOf = (body: unknown): string[] =>
+        (body as ReturnType<typeof runnerJobSpec>).spec.template.spec.containers.map((c) => c.name);
+    const jobBodies = (calls: Call[]) =>
+        calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace)).map((c) => c.body);
 
-    it('starts the exporter as its own Job before the runner Job, and leaves it running when the run ends', async () => {
+    it('runs the supervisor, the agent and the exporter as one pod — no exporter Job beside it', async () => {
         const { request, calls } = fakeRequest();
         await runner(request).run(exporting, { id: SESSION, resume: false });
-        const posted = calls
-            .filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))
-            .map((call) => (call.body as { metadata: { name: string } }).metadata.name);
-        expect(posted).toEqual([claudeExportJobName(exporting), runnerJobName(exporting), expect.any(String)]);
-        // Nothing deletes it: the loop drains it and ends it through stopTranscriptExport.
-        expect(
-            calls.some((call) => call.method === 'DELETE' && call.path?.includes(claudeExportJobName(exporting)))
-        ).toBe(false);
+        const names = jobBodies(calls).map((body) => (body as { metadata: { name: string } }).metadata.name);
+        expect(names[0]).toBe(runnerJobName(exporting));
+        expect(names.some((name) => name.startsWith('factory-cexport-'))).toBe(false);
+        expect(containersOf(jobBodies(calls)[0]).sort()).toEqual(['agent', 'exporter', 'supervisor']);
+        // Nothing deletes the pod while the supervisor drains: the pod ends once it has finalized.
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes(runnerJobName(exporting)))).toBe(
+            false
+        );
     });
 
-    it('starts no exporter for a run with no control endpoint', async () => {
+    it('keeps the supervisor, and drops only the exporter, for a run with no control endpoint', async () => {
         const { request, calls } = fakeRequest();
         await runner(request).run(job, { id: SESSION, resume: false });
-        expect(calls.some((call) => call.path?.includes('factory-cexport-'))).toBe(false);
+        expect(containersOf(jobBodies(calls)[0]).sort()).toEqual(['agent', 'supervisor']);
     });
 
-    it('kill deletes the runner Job and not the exporter, which drains what the agent wrote', async () => {
+    it('keeps the supervisor’s control pair in the attempt Secret and out of the agent’s env', async () => {
+        const { request, calls } = fakeRequest();
+        await runner(request).run(exporting, { id: SESSION, resume: false });
+        const secret = calls.find((call) => call.method === 'POST' && call.path.endsWith('/secrets'))!;
+        const data = JSON.stringify(secret.body);
+        expect(data).toContain('tok-supervisor');
+        const pod = jobBodies(calls)[0] as ReturnType<typeof runnerJobSpec>;
+        const agent = pod.spec.template.spec.containers.find((c) => c.name === 'agent')!;
+        expect(JSON.stringify(agent)).not.toMatch(/SUPERVISOR_CONTROL/);
+        expect(JSON.stringify(agent.volumeMounts)).not.toMatch(/ctl-supervisor|ctl-export/);
+    });
+
+    it('kill deletes the whole pod: the agent, the supervisor and the exporter go together', async () => {
         const { request, calls } = fakeRequest();
         await runner(request).kill(exporting);
         const deleted = calls.filter((call) => call.method === 'DELETE').map((call) => call.path ?? '');
         expect(deleted.some((path) => path.includes(runnerJobName(exporting)))).toBe(true);
-        expect(deleted.some((path) => path.includes(claudeExportJobName(exporting)))).toBe(false);
     });
 
-    it('stopTranscriptExport deletes the exporter Job by name', async () => {
+    // The loop raised the kill order; the supervisor ends the agent, drains the exporter and
+    // finalizes, so the pod ends by itself — a stop that waits is not a delete.
+    it('stopAgent waits for the supervisor to finalize and deletes nothing once the pod is done', async () => {
         const { request, calls } = fakeRequest();
-        await runner(request).stopTranscriptExport?.(exporting);
+        await runner(request).stopAgent!(exporting);
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes(runnerJobName(exporting)))).toBe(
+            false
+        );
+    });
+
+    it('stopAgent falls back to deleting the pod when the supervisor never finishes', async () => {
+        const { request, calls } = fakeRequest({
+            job: { status: 200, body: JSON.stringify({ status: { active: 1 } }) },
+        });
+        await runner(request).stopAgent!(exporting);
         expect(calls).toContainEqual(
             expect.objectContaining({
                 method: 'DELETE',
-                path: expect.stringContaining(jobPath(namespace, claudeExportJobName(exporting))),
+                path: expect.stringContaining(jobPath(namespace, runnerJobName(exporting))),
             })
         );
     });
 
-    it('a refused exporter Job fails the run as infrastructure, before any runner Job exists', async () => {
+    it('a refused Job fails the run as infrastructure, with no second Job left over', async () => {
         const { request, calls } = fakeRequest({
             create: { status: 403, body: 'forbidden' },
         });
         await expect(runner(request).run(exporting, { id: SESSION, resume: false })).rejects.toThrow();
-        expect(calls.some((call) => call.path?.includes(runnerJobName(exporting)) && call.method === 'POST')).toBe(
-            false
-        );
+        expect(jobBodies(calls)).toHaveLength(1);
     });
 });
 
@@ -3276,7 +3343,12 @@ describe('the kubernetes runner', () => {
                     items: [
                         {
                             metadata: { name: podName },
-                            status: { containerStatuses: [{ state: { terminated: { exitCode: 3 } } }] },
+                            status: {
+                                containerStatuses: [
+                                    { name: 'agent', state: { terminated: { exitCode: 3 } } },
+                                    { name: 'supervisor', state: { terminated: { exitCode: 0 } } },
+                                ],
+                            },
                         },
                     ],
                 }),
@@ -5987,7 +6059,12 @@ describe("scoping the kubernetes mounts to the job's own subtree", () => {
     // pod whose subPath does not exist and leaves it stuck in ContainerCreating — and what
     // makes a broader fallback mount structurally impossible: there is no spec shape here that
     // mounts the workspaces PVC without a subPath.
-    it.each(JOB_POD_NAMES)(
+    it('mounts none of the member’s workspace on the task supervisor', () => {
+        const { pod } = everyPodSpec()['the task supervisor']();
+        expect(pod.containers[0]!.volumeMounts?.some((m) => m.name === 'workspaces')).toBe(false);
+    });
+
+    it.each(JOB_POD_NAMES.filter((name) => name !== 'the task supervisor'))(
         'mounts nothing broader than the member subtree on %s — it names the exact target',
         (name) => {
             const { pod } = everyPodSpec({ RUNNER_SERVICES: '0' })[name]();
@@ -6145,25 +6222,25 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
      */
     const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
 
-    it('claude: the exporter is its own Job with the control pair by Secret reference, never a value', () => {
-        const spec = claudeExportJobSpec(config, job, START);
-        const container = spec.spec.template.spec.containers[0]!;
-        expect(spec.metadata.name).toBe(claudeExportJobName(job));
-        expect(spec.metadata.name).toMatch(/^factory-cexport-/);
-        expect(spec.metadata.labels).toMatchObject({ 'factory.job': job.id, 'factory.lease': job.leaseToken });
+    it('claude: the exporter is a container of the run’s pod with the control pair by Secret reference, never a value', () => {
+        const spec = runnerJobSpec(config, { ...job, ...SUPERVISED }, { id: SESSION, resume: false }, START);
+        const container = spec.spec.template.spec.containers.find((c) => c.name === EXPORTER_CONTAINER)!;
         expect(container.command).toEqual(['node', '-e', claudeExportScript]);
         expect(container.env).toContainEqual({
             name: 'CLAUDE_TRANSCRIPT_DIR',
             value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
         });
         expect(container.env).toContainEqual({ name: 'RUN_STARTED_AT', value: START });
+        expect(container.env).toContainEqual({ name: 'FACTORY_EXPORT_DIR', value: '/factory/export' });
         expect(container.env).toContainEqual({
             name: 'BELLOWS_CONTROL_TOKEN',
-            valueFrom: { secretKeyRef: { name: secretName(job), key: 'BELLOWS_CONTROL_TOKEN' } },
+            valueFrom: { secretKeyRef: { name: secretName(job), key: 'SUPERVISOR_CONTROL_TOKEN' } },
         });
         expect(JSON.stringify(spec)).not.toMatch(/"value":"[^"]*tok-/);
+        // The member's subtree and the one mailbox it shares with the supervisor — nothing else.
         expect(container.volumeMounts).toEqual([
             { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
+            { name: 'ctl-export', mountPath: '/factory/export' },
         ]);
     });
 

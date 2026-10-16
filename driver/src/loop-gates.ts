@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob, DeclaredGate } from './board.js';
-import { CONTROL_POLL_MS_ENV, CONTROL_TOKEN_ENV, CONTROL_URL_ENV, envFileBody, setupTimeoutMs } from './claim.js';
+import { CONTROL_TOKEN_ENV, CONTROL_URL_ENV, envFileBody, setupTimeoutMs } from './claim.js';
 import { tailBytes, type DeadService } from './runner.js';
 import { declaredTimeoutMs, type GateRun } from './gates.js';
-import { clearPendingQuestions, down, raceStep, RUN_CONTROL_POLL_MS } from './loop-attempt.js';
+import { clearPendingQuestions, down, raceStep } from './loop-attempt.js';
+import { SUPERVISOR_ENV } from './supervisor-contract.js';
 import type { JobState } from './loop-attempt.js';
 import { createPublishRelay } from './loop-publish.js';
 import { createQuestionRelay } from './loop-questions.js';
@@ -176,17 +177,22 @@ async function runEnvironmentSetup(rt: LoopRuntime, job: BoardJob, key: string, 
 }
 
 /**
- * Opens the run-control channel for one attempt about to launch, gated or not (issue #442): a
- * token scoped to this lease, advertised to the runner beside the gate pair so its stop poller
- * can read a Stop the board raised. Best-effort — a driver whose endpoint cannot bind keeps
- * today's immediate-kill Stop, said out loud, instead of refusing every job over a feature.
+ * Opens the run-control channel for one attempt about to launch, gated or not (issue #442): two
+ * tokens scoped to this lease. The supervisor's goes to the task supervisor and the exporter alone
+ * (`job.supervisorEnv`) so the supervisor can read a Stop the board raised and relay the agent's
+ * questions; the agent's, advertised beside the gate pair (`job.gateEnv`), opens only the publish
+ * and review routes. Best-effort — a driver whose endpoint cannot bind keeps today's immediate-kill
+ * Stop, said out loud, instead of refusing every job over a feature.
  */
 export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<void> {
     const { gates } = rt;
     if (!gates) return;
     try {
         const port = await gates.server.listen();
+        // Two tokens of one lease: the supervisor's (stop, kill, questions, the transcript) never
+        // leaves the supervisor and the exporter; the agent's opens only publish and review.
         const token = randomUUID();
+        const agentToken = randomUUID();
         // A named reviewer's run (issue #549) gets the stop poll and nothing else: no publish, no
         // reviewer of its own, and its questions are refused — it reports to its caller, not a member.
         if (job.reviewRun) {
@@ -199,12 +205,13 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
                 createReviewRelay(rt, job, state)
             );
         }
+        gates.server.grantAgent(token, agentToken);
         attachTranscriptExport({ rt, job, state }, token);
-        job.gateEnv = {
-            ...job.gateEnv,
-            [CONTROL_URL_ENV]: gates.advertiseUrl(port),
-            [CONTROL_TOKEN_ENV]: token,
-            [CONTROL_POLL_MS_ENV]: String(RUN_CONTROL_POLL_MS),
+        const url = gates.advertiseUrl(port);
+        job.gateEnv = { ...job.gateEnv, [CONTROL_URL_ENV]: url, [CONTROL_TOKEN_ENV]: agentToken };
+        job.supervisorEnv = {
+            [SUPERVISOR_ENV.controlUrl]: url,
+            [SUPERVISOR_ENV.controlToken]: token,
         };
         state.control = token;
     } catch (e) {

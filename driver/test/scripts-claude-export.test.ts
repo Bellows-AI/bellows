@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync, mkdtempSync, renameSync, truncateSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, truncateSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -19,6 +19,14 @@ const SESSION = '44444444-4444-4444-8444-444444444444';
 const TOKEN = 'export-token';
 const WAIT_MS = 15_000;
 
+interface ExporterStatus {
+    pendingBytes: number;
+    oldestUnackedMs: number;
+    spoolFull: boolean;
+    done: boolean;
+    gone: boolean;
+}
+
 interface Chunk {
     session: string;
     offset: number;
@@ -32,7 +40,12 @@ interface Harness {
     reports: ExportReport[];
     board: { down: boolean };
     drain: (state: 'complete' | 'partial', cause: string | null) => void;
+    /** The directory shared with the supervisor, and what the exporter wrote there last. */
+    exportDir: string;
+    status: () => ExporterStatus | null;
     close: () => void;
+    /** The control endpoint goes away: the board, and the driver in front of it, are unreachable. */
+    stopServer: () => void;
     start: (env?: Record<string, string>) => ChildProcess;
     /** The bytes the board holds for one session, in offset order, with a check that offsets chain. */
     stored: (session: string) => Buffer;
@@ -58,6 +71,7 @@ async function harness(): Promise<Harness> {
     const dir = mkdtempSync(join(tmpdir(), 'claude-export-'));
     const projects = join(dir, 'projects', '-work-tree');
     mkdirSync(projects, { recursive: true });
+    const exportDir = mkdtempSync(join(tmpdir(), 'claude-export-mailbox-'));
     const channel = createControlChannel();
     const chunks: Chunk[] = [];
     const manifests: ExportManifestRequest[] = [];
@@ -97,13 +111,24 @@ async function harness(): Promise<Harness> {
         manifests,
         reports,
         board,
-        drain: (state, cause) => channel.drainExport(TOKEN, { state, cause }),
+        // The supervisor's drain order: a file in the directory only it and the exporter mount.
+        drain: (state, cause) => writeFileSync(join(exportDir, 'drain.json'), JSON.stringify({ state, cause })),
+        exportDir,
+        status: () => {
+            try {
+                return JSON.parse(readFileSync(join(exportDir, 'status.json'), 'utf8')) as ExporterStatus;
+            } catch {
+                return null;
+            }
+        },
         close: () => channel.close(TOKEN),
+        stopServer: () => server.close(),
         start: (env = {}) => {
             const child = spawn('node', [pathOf('claude-export.cjs')], {
                 env: {
                     ...process.env,
                     CLAUDE_TRANSCRIPT_DIR: dir,
+                    FACTORY_EXPORT_DIR: exportDir,
                     BELLOWS_CONTROL_URL: url,
                     BELLOWS_CONTROL_TOKEN: TOKEN,
                     EXPORT_POLL_MS: '30',
@@ -298,6 +323,61 @@ describe('the continuous claude-code exporter', () => {
         h.start();
         await until('the first chunk', () => h.chunks.length > 0);
         h.close();
+        // The next record it tries to upload meets a token the endpoint no longer knows.
+        appendFileSync(fileOf(h), records(1, 1));
         expect(await h.exited()).toBe(3);
+        expect(h.status()).toMatchObject({ done: true, gone: true });
+    });
+
+    it('tells the supervisor its vitals, and `done` once it drained', async () => {
+        const h = await harness();
+        writeFileSync(fileOf(h), records(3));
+        h.start();
+        await until('a status', () => h.status() !== null);
+        expect(h.status()).toMatchObject({ done: false, gone: false, spoolFull: false });
+        h.drain('complete', null);
+        expect(await h.exited()).toBe(0);
+        expect(h.status()).toMatchObject({ done: true, gone: false, pendingBytes: 0 });
+    });
+
+    it('tells the supervisor the spool is full, so it can end the agent itself', async () => {
+        const h = await harness();
+        h.board.down = true;
+        writeFileSync(fileOf(h), records(60));
+        h.start({ EXPORT_SPOOL_MAX_BYTES: '2000', EXPORT_FLUSH_BYTES: '500' });
+        await until('a full spool in the status file', () => h.status()?.spoolFull === true);
+    });
+
+    // The supervisor died: nobody will order the drain. The exporter orders it itself, partial, so
+    // what the agent wrote still reaches the board — and says why it is not whole.
+    it('drains itself, partial, when the supervisor’s heartbeat stops', async () => {
+        const h = await harness();
+        writeFileSync(fileOf(h), records(4));
+        writeFileSync(join(h.exportDir, 'supervisor.alive'), `${Date.now() - 120_000}\n`);
+        h.start({ EXPORT_SUPERVISOR_LOST_MS: '60000' });
+        expect(await h.exited()).toBe(0);
+        expect(h.stored(SESSION).toString()).toBe(records(4));
+        expect(h.manifests[0]).toMatchObject({ state: 'partial', terminalCause: 'supervisor_lost' });
+    });
+
+    it('a heartbeat that is fresh is no drain, and none at all is no drain either', async () => {
+        const h = await harness();
+        writeFileSync(fileOf(h), records(2));
+        writeFileSync(join(h.exportDir, 'supervisor.alive'), `${Date.now()}\n`);
+        h.start({ EXPORT_SUPERVISOR_LOST_MS: '60000' });
+        await until('the records', () => h.stored(SESSION).length === Buffer.byteLength(records(2)));
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(h.manifests).toEqual([]);
+    });
+
+    it('gives up with its own exit code when the endpoint stays unreachable past the window', async () => {
+        const h = await harness();
+        writeFileSync(fileOf(h), records(2));
+        h.start({ EXPORT_GIVEUP_MS: '400' });
+        await until('the first chunk', () => h.chunks.length > 0);
+        h.stopServer();
+        appendFileSync(fileOf(h), records(2, 2));
+        expect(await h.exited()).toBe(4);
+        expect(h.status()).toMatchObject({ done: true, gone: true });
     });
 });

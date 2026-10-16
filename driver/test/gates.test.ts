@@ -105,6 +105,7 @@ const recording = exec((args) => {
 const CONTAINER_GONE_CODE = 125;
 const OK_STATUS = 200;
 const UNAUTHORIZED_STATUS = 401;
+const FORBIDDEN_STATUS = 403;
 const NOT_FOUND_STATUS = 404;
 const BAD_REQUEST_STATUS = 400;
 const CONFLICT_STATUS = 409;
@@ -926,14 +927,54 @@ describe('the gate server: run control (issue #442)', () => {
         const port = await server.listen();
 
         expect(server.controlPolled('tok-a')).toBe(false);
-        await expect((await read(port, 'tok-a')).json()).resolves.toEqual({ stop: false });
+        await expect((await read(port, 'tok-a')).json()).resolves.toEqual({ stop: false, kill: false });
         expect(server.controlPolled('tok-a')).toBe(true);
         expect(server.controlPolled('tok-b')).toBe(false);
         server.raiseStop('tok-a');
         server.raiseStop('tok-a');
-        await expect((await read(port, 'tok-a')).json()).resolves.toEqual({ stop: true });
+        await expect((await read(port, 'tok-a')).json()).resolves.toEqual({ stop: true, kill: false });
         // Another attempt's token is unaffected by the first one's stop.
-        await expect((await read(port, 'tok-b')).json()).resolves.toEqual({ stop: false });
+        await expect((await read(port, 'tok-b')).json()).resolves.toEqual({ stop: false, kill: false });
+        await server.close();
+    });
+
+    it('raises the kill order beside the stop, idempotently, for the one token only', async () => {
+        const server = createGateServer({ host: '127.0.0.1', manager: idle });
+        server.openControl('tok-a');
+        server.openControl('tok-b');
+        const port = await server.listen();
+
+        server.raiseKill('tok-a');
+        server.raiseKill('tok-a');
+        server.raiseKill('unknown');
+        await expect((await read(port, 'tok-a')).json()).resolves.toEqual({ stop: true, kill: true });
+        await expect((await read(port, 'tok-b')).json()).resolves.toEqual({ stop: false, kill: false });
+        await server.close();
+    });
+
+    // Two tokens of one lease open different doors: the supervisor's the run's control, the agent's
+    // only the publish and review routes the baked skills call.
+    it('opens the control routes to the supervisor token only, and publish and review to the agent token only', async () => {
+        const server = createGateServer({ host: '127.0.0.1', manager: idle });
+        server.openControl('sup', undefined, { publish: async () => 'unsupported' });
+        server.grantAgent('sup', 'agent');
+        const port = await server.listen();
+        const get = (path: string, token: string) =>
+            fetch(`http://127.0.0.1:${port}${path}`, { headers: { authorization: `Bearer ${token}` } });
+        const post = (path: string, token: string) =>
+            fetch(`http://127.0.0.1:${port}${path}`, { method: 'POST', headers: { authorization: `Bearer ${token}` } });
+
+        expect((await post('/publish', 'agent')).status).not.toBe(FORBIDDEN_STATUS);
+        // The agent's own calls never say a supervisor is listening.
+        expect(server.controlPolled('sup')).toBe(false);
+        expect((await get('/control', 'agent')).status).toBe(FORBIDDEN_STATUS);
+        expect((await get('/export/chunk', 'agent')).status).toBe(FORBIDDEN_STATUS);
+        expect((await post('/publish', 'sup')).status).toBe(FORBIDDEN_STATUS);
+        expect((await get('/control', 'sup')).status).toBe(OK_STATUS);
+        expect(server.controlPolled('sup')).toBe(true);
+        server.closeControl('sup');
+        expect((await post('/publish', 'agent')).status).toBe(UNAUTHORIZED_STATUS);
+        expect((await get('/control', 'sup')).status).toBe(UNAUTHORIZED_STATUS);
         await server.close();
     });
 

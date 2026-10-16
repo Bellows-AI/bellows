@@ -3,6 +3,7 @@ import type { BoardJob } from '../src/board.js';
 import { CONTROL_TOKEN_ENV, CONTROL_URL_ENV } from '../src/claim.js';
 import { newJobState } from '../src/loop-attempt.js';
 import { openRunControl } from '../src/loop-gates.js';
+import { SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 import { reviewerQuestionRelay } from '../src/loop-review.js';
 import type { LoopRuntime } from '../src/loop-types.js';
 
@@ -24,8 +25,12 @@ function opened() {
         gates: {
             server: {
                 listen: async () => 9099,
-                openControl: (...args: unknown[]) => {
-                    calls.push(args);
+                openControl: (token: string, relay?: unknown, publisher?: unknown, reviewer?: unknown) => {
+                    calls.push([token, relay, publisher, reviewer]);
+                },
+                // Recorded as the call's agent token: the fifth entry, after the supervisor's relays.
+                grantAgent: (_token: string, agentToken: string) => {
+                    calls[0]?.push(agentToken);
                 },
             },
             advertiseUrl: (port: number) => `http://driver:${port}`,
@@ -40,16 +45,25 @@ describe('openRunControl', () => {
         const job = { ...JOB } as BoardJob;
         const { rt, calls, state } = opened();
         await openRunControl(rt, job, state);
-        const [token, questions, publisher, reviewer] = calls[0] as [
+        const [token, questions, publisher, reviewer, agentToken] = calls[0] as [
             string,
             object,
             object,
             { request: unknown; read: unknown },
+            string,
         ];
         expect(questions).toBeDefined();
         expect(publisher).toBeDefined();
         expect(reviewer).toMatchObject({ request: expect.any(Function), read: expect.any(Function) });
-        expect(job.gateEnv).toMatchObject({ [CONTROL_URL_ENV]: 'http://driver:9099', [CONTROL_TOKEN_ENV]: token });
+        // Two tokens of one lease: the agent's rides its env beside the endpoint, the supervisor's
+        // only the supervisor's own env — never the agent's.
+        expect(agentToken).not.toBe(token);
+        expect(job.gateEnv).toMatchObject({ [CONTROL_URL_ENV]: 'http://driver:9099', [CONTROL_TOKEN_ENV]: agentToken });
+        expect(job.supervisorEnv).toEqual({
+            [SUPERVISOR_ENV.controlUrl]: 'http://driver:9099',
+            [SUPERVISOR_ENV.controlToken]: token,
+        });
+        expect(JSON.stringify(job.gateEnv)).not.toContain(token);
         expect(state.control).toBe(token);
     });
 
@@ -60,10 +74,11 @@ describe('openRunControl', () => {
         } as BoardJob;
         const { rt, calls, state } = opened();
         await openRunControl(rt, job, state);
-        const [token, questions, publisher, reviewer] = calls[0] as unknown[];
+        const [token, questions, publisher, reviewer, agentToken] = calls[0] as unknown[];
         expect(questions).toBe(reviewerQuestionRelay);
         expect(publisher).toBeUndefined();
         expect(reviewer).toBeUndefined();
-        expect(job.gateEnv).toMatchObject({ [CONTROL_TOKEN_ENV]: token });
+        expect(job.gateEnv).toMatchObject({ [CONTROL_TOKEN_ENV]: agentToken });
+        expect(job.supervisorEnv).toMatchObject({ [SUPERVISOR_ENV.controlToken]: token });
     });
 });

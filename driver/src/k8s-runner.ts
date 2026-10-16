@@ -34,8 +34,6 @@ import {
 } from './k8s-auxspec.js';
 import { acquireClaim, prepare, launch, releaseClaim, type RunCleanup } from './k8s-fence.js';
 import {
-    claudeExportJobName,
-    claudeExportJobSpec,
     claudeTurnsJobSpec,
     envBodyToData,
     jobsPath,
@@ -49,6 +47,7 @@ import {
     auxVerdict,
     pollJobToTerminal,
     pollRunnerJobUntilTerminal,
+    readJobStatus,
     readRunnerVerdict,
     readVerdict,
     runReclaimJob,
@@ -68,6 +67,7 @@ import {
     MS_PER_SECOND,
     parse,
     parsePodMetrics,
+    POLL_MS,
     parseServicePods,
     refusal,
     wait,
@@ -84,7 +84,7 @@ import {
 } from './publish.js';
 import type { PublishResult, ReclaimResult, SyncResult } from './publish.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
-import { exportsTranscript } from './transcript-export.js';
+import { KILL_WINDDOWN_MS } from './supervisor-contract.js';
 
 /**
  * The kubernetes `Runner`: assembles the fence (`k8s-fence.ts`), the pollers (`k8s-poll.ts`) and
@@ -242,6 +242,28 @@ async function killRunner(deps: K8sDeps, job: BoardJob): Promise<void> {
     await teardownServices(deps, job);
 }
 
+/**
+ * Ends the agent under its supervisor. The loop has already raised the kill order on the control
+ * channel (`killAgent`), so the supervisor ends the agent, has the exporter drain what the agent
+ * wrote and finalizes — the pod then ends by itself and `run` reads its real outcome. This only
+ * waits, bounded, for that, and past the bound falls back to the hard kill every other path uses:
+ * the backstop for a supervisor that is gone. Never throws, like `kill`.
+ */
+async function stopAgent(deps: K8sDeps, job: BoardJob): Promise<void> {
+    const polls = Math.ceil(KILL_WINDDOWN_MS / POLL_MS);
+    for (let poll = 0; poll < polls; poll += 1) {
+        const read = await readJobStatus(deps, runnerName(job), 'reading the runner job').catch(() => null);
+        if (!read) break;
+        if (read.kind === 'notFound' || read.kind === 'terminal') {
+            await teardownServices(deps, job);
+            return;
+        }
+        if (read.kind === 'error') break;
+        await deps.sleep(POLL_MS);
+    }
+    await killRunner(deps, job);
+}
+
 /** Persist the paused budget on the Job so waiting has no kubelet deadline. */
 const PAUSED_DEADLINE = 'bellows.ai/paused-deadline';
 const deadlineChains = new Map<string, Promise<void>>();
@@ -311,20 +333,12 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     await prepare(deps, job, cleanup);
 
     const startedAt = new Date().toISOString();
-    // The exporter is its own Job, started beside the agent and deliberately outliving it: a kill
-    // deletes the runner's Job only, and the exporter drains what the agent wrote until the loop
-    // says done (`stopTranscriptExport`). A Job the cluster refuses is infrastructure, thrown like
-    // a refused runner Job — never a run that silently loses its record.
-    if (exportsTranscript(job, session)) {
-        const created = await deps.request(
-            'POST',
-            jobsPath(deps.config.k8sNamespace),
-            claudeExportJobSpec(deps.config, job, startedAt)
-        );
-        expectOk(created, 'creating the transcript exporter job');
-        cleanup.exporterStarted = true;
-    }
-    await launch(deps, job, runnerJobSpec(deps.config, job, session), cleanup);
+    // One Job, one pod: the agent, the task supervisor that owns its lifecycle and — for a run that
+    // exports its transcript — the exporter, all created together (a pod the cluster refuses is
+    // infrastructure, thrown like any refused runner Job, never a run that silently loses its
+    // record). The agent's end does not end the pod: the supervisor has the exporter drain and
+    // finalizes first, which is what lets a kill of the agent still leave its transcript whole.
+    await launch(deps, job, runnerJobSpec(deps.config, job, session, startedAt), cleanup);
 
     let polled: { timedOut: boolean; jobSucceeded: boolean };
     try {
@@ -335,8 +349,15 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
         // resolves exit 137), where a rejection would be left to the lease.
         return { exitCode: KILLED_EXIT_CODE, output: '', timedOut: false, started: true };
     }
-    const { timedOut, jobSucceeded } = polled;
-    const { exitCode, output, fullLog, logTruncated, infraLoss } = await readRunnerVerdict(deps, job, jobSucceeded);
+    const { jobSucceeded } = polled;
+    const { exitCode, output, fullLog, logTruncated, infraLoss, supervisorDeadline } = await readRunnerVerdict(
+        deps,
+        job,
+        jobSucceeded
+    );
+    // The run budget ends the agent through the supervisor (its exit 124), the kubelet's deadline
+    // only a supervisor that stopped doing so: either is the timeout's verdict.
+    const timedOut = polled.timedOut || supervisorDeadline;
     // A deadline kill deletes the pod too: that is the timeout's verdict, never a loss.
     if (infraLoss && !timedOut) return { exitCode, output, timedOut, started: true, infraLoss };
 
@@ -365,13 +386,9 @@ async function run(
     session: RunSession | null,
     onOutput?: (tail: string) => void
 ): Promise<RunOutcome> {
-    const cleanup: RunCleanup = { holdClaim: false, exporterStarted: false };
+    const cleanup: RunCleanup = { holdClaim: false };
     try {
         return await run0(deps, job, { session, onOutput, cleanup });
-    } catch (e) {
-        // A throw is no run to drain: the exporter started beside it has nothing left to wait for.
-        if (cleanup.exporterStarted) await deleteJob(deps, claudeExportJobName(job));
-        throw e;
     } finally {
         if (!cleanup.holdClaim) await releaseClaim(deps, job);
         await forgetSecret(deps, job);
@@ -589,7 +606,7 @@ export function createKubernetesRunner(
     return {
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
         kill: (job: BoardJob) => killRunner(deps, job),
-        stopTranscriptExport: (job: BoardJob) => deleteJob(deps, claudeExportJobName(job)),
+        stopAgent: (job: BoardJob) => stopAgent(deps, job),
         pauseDeadline: (job: BoardJob, paused: boolean) => pauseRunnerDeadline(deps, job, paused),
         releaseServices: (job: BoardJob) => teardownServices(deps, job),
         deadServices: (job: BoardJob) => deadServices(deps, job),

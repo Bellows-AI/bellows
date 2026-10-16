@@ -1,5 +1,5 @@
 // OpenCode's step boundary for a cooperative Stop (issue #442). Baked as a plugin: when the stop
-// marker the stop poller writes exists, it aborts the session at the end of a model step (the
+// marker the mailbox agent (ctl-agent.cjs) writes exists, it aborts the session at the end of a model step (the
 // step-finish part) or after a tool call, so no further model request is made. Reads only the
 // marker — never the control credential. Aborting is the chosen mechanism because throwing from
 // `tool.execute.before` shows the model a tool error and it keeps going. Fails open: any error

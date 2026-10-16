@@ -1,6 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer, type Server } from 'node:http';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -8,15 +7,16 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.js';
 
 /*
- * The runner's half of the cooperative Stop (issue #442): the stop poller turns the driver's
- * control answer into a marker file, and the agent-side mechanism — Claude Code's PostToolUse hook,
- * OpenCode's plugin — reads only that marker. The real binaries are the `test:jobs` lane's
- * business (scripts/test-jobs.sh); what is pinned here is every file the images ship.
+ * The runner's half of the cooperative Stop (issue #442): the mailbox agent turns what the task
+ * supervisor wrote into the agent's read-only directory into a marker file, and the agent-side
+ * mechanism — Claude Code's PostToolUse hook, OpenCode's plugin — reads only that marker. The agent
+ * holds no control credential at all. The real binaries are the `test:jobs` lane's business
+ * (scripts/test-jobs.sh); what is pinned here is every file the images ship.
  */
 const path = (rel: string): string => join(ROOT, rel);
 
-const CLAUDE_POLLER = 'docker/claude-executor/stop-poller.cjs';
-const OPENCODE_POLLER = 'docker/opencode-executor/stop-poller.cjs';
+const CLAUDE_AGENT = 'docker/claude-executor/ctl-agent.cjs';
+const OPENCODE_AGENT = 'docker/opencode-executor/ctl-agent.cjs';
 const CLAUDE_HOOK = 'docker/claude-executor/stop-hook.cjs';
 const OPENCODE_PLUGIN = 'docker/opencode-executor/stop-plugin/index.js';
 
@@ -29,10 +29,18 @@ const STOP_PROMPT = [
 ].join('\n');
 
 const dirs: string[] = [];
-const servers: Server[] = [];
+const children: ReturnType<typeof spawn>[] = [];
 afterEach(() => {
+    // Each child leads its own process group, so the group kill reaps the agent it spawned as well, even
+    // once its stand-in entrypoint is gone. Never a pid this test did not spawn.
+    for (const child of children.splice(0)) {
+        try {
+            if (child.pid) process.kill(-child.pid, 'SIGKILL');
+        } catch {
+            // The whole group already ended.
+        }
+    }
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-    for (const server of servers.splice(0)) server.close();
 });
 const scratch = (): string => {
     const dir = mkdtempSync(join(tmpdir(), 'run-control-'));
@@ -40,98 +48,185 @@ const scratch = (): string => {
     return dir;
 };
 
-/** A control endpoint stub: answers `answers` in order, then the last one forever. */
-async function controlStub(answers: { status: number; body: unknown }[]) {
-    const seen: { url: string | undefined; authorization: string | undefined }[] = [];
-    const server = createServer((request, reply) => {
-        seen.push({ url: request.url, authorization: request.headers.authorization });
-        const answer = answers[Math.min(seen.length - 1, answers.length - 1)]!;
-        reply.statusCode = answer.status;
-        reply.setHeader('content-type', 'application/json');
-        reply.end(JSON.stringify(answer.body));
-    });
-    servers.push(server);
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const address = server.address();
-    const port = typeof address === 'object' && address ? address.port : 0;
-    return { seen, url: `http://127.0.0.1:${port}` };
+const until = async (what: string, ready: () => boolean, ms = 10_000): Promise<void> => {
+    const deadline = Date.now() + ms;
+    while (!ready()) {
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+        await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+};
+
+/**
+ * A mailbox on disk and the agent running in it under a stand-in entrypoint: the agent signals its
+ * PARENT, so the parent here is a process that records the TERM it receives — the way the real
+ * entrypoint's trap receives it, and the vitest worker never does.
+ */
+function mailbox(script: string, env: Record<string, string> = {}) {
+    const root = scratch();
+    const inDir = join(root, 'in');
+    const outDir = join(root, 'out');
+    mkdirSync(inDir);
+    mkdirSync(outDir);
+    const marker = join(root, 'factory-stop');
+    const termed = join(root, 'termed');
+    const parent = `
+        const { spawn } = require('node:child_process');
+        const fs = require('node:fs');
+        process.on('SIGTERM', () => { fs.appendFileSync(${JSON.stringify(termed)}, 'TERM\\n'); });
+        const child = spawn(process.execPath, [${JSON.stringify(path(script))}], { stdio: 'ignore', env: process.env });
+        child.on('exit', (code) => process.exit(code ?? 0));
+        setInterval(() => {}, 1000);
+    `;
+    const start = (extra: Record<string, string> = {}) => {
+        const child = spawn(process.execPath, ['-e', parent], {
+            env: {
+                PATH: process.env.PATH ?? '',
+                FACTORY_CTL_IN: inDir,
+                FACTORY_CTL_OUT: outDir,
+                FACTORY_STOP_MARKER: marker,
+                FACTORY_CTL_TICK_MS: '20',
+                ...env,
+                ...extra,
+            },
+            stdio: 'ignore',
+            detached: true,
+        });
+        children.push(child);
+        return child;
+    };
+    return {
+        root,
+        inDir,
+        outDir,
+        marker,
+        start,
+        terms: (): number => (existsSync(termed) ? readFileSync(termed, 'utf8').trim().split('\n').length : 0),
+        heartbeat: (): number => Number.parseInt(readFileSync(join(outDir, 'agent.alive'), 'utf8'), 10),
+        say: (name: string, body = '1\n') => writeFileSync(join(inDir, name), body),
+    };
 }
 
-/** Runs the poller to its exit; resolves with the exit code. */
-const runPoller = (script: string, env: Record<string, string>): Promise<number | null> =>
-    new Promise((resolve) => {
-        const child = spawn('node', [path(script)], { env: { PATH: process.env.PATH ?? '', ...env }, stdio: 'ignore' });
-        child.on('close', (code) => resolve(code));
+describe('the agent’s mailbox helper', () => {
+    it.each([CLAUDE_AGENT, OPENCODE_AGENT])('%s beats its heartbeat for the supervisor to read', async (script) => {
+        const box = mailbox(script);
+        box.start();
+        await until('a heartbeat', () => existsSync(join(box.outDir, 'agent.alive')));
+        const first = box.heartbeat();
+        await until('a later heartbeat', () => box.heartbeat() > first);
+        expect(existsSync(join(box.outDir, 'questions'))).toBe(true);
     });
 
-describe('the stop poller', () => {
-    it.each([CLAUDE_POLLER, OPENCODE_POLLER])(
-        '%s writes the marker once a Stop is raised, with its token',
+    it.each([CLAUDE_AGENT, OPENCODE_AGENT])(
+        '%s copies a Stop into the local marker, and only once one exists',
         async (script) => {
-            const marker = join(scratch(), 'stop');
-            const control = await controlStub([
-                { status: 200, body: { stop: false } },
-                { status: 200, body: { stop: true } },
-            ]);
+            const box = mailbox(script);
+            box.start();
+            await until('a heartbeat', () => existsSync(join(box.outDir, 'agent.alive')));
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            expect(existsSync(box.marker)).toBe(false);
 
-            const code = await runPoller(script, {
-                BELLOWS_CONTROL_URL: control.url,
-                BELLOWS_CONTROL_TOKEN: 'tok-1',
-                BELLOWS_CONTROL_POLL_MS: '20',
-                FACTORY_STOP_MARKER: marker,
-            });
-
-            expect(code).toBe(0);
-            expect(existsSync(marker)).toBe(true);
-            // At least two polls: it kept going past `stop: false`. Not exactly two — each fetch aborts
-            // after BELLOWS_CONTROL_POLL_MS, so a reply delayed past 20ms under load is re-polled.
-            // Exiting with the marker written is what proves it stopped once a Stop was raised.
-            expect(control.seen.length).toBeGreaterThanOrEqual(2);
-            expect(control.seen.every((call) => call.url === '/control' && call.authorization === 'Bearer tok-1')).toBe(
-                true
-            );
+            box.say('stop', 'stop\n');
+            await until('the marker', () => existsSync(box.marker));
+            // A Stop is the step boundary's, not a kill: nothing was signalled.
+            expect(box.terms()).toBe(0);
         }
     );
 
-    it('leaves no marker and exits when the endpoint no longer knows the token', async () => {
-        const marker = join(scratch(), 'stop');
-        const control = await controlStub([{ status: 401, body: { error: 'unknown token' } }]);
-
-        const code = await runPoller(CLAUDE_POLLER, {
-            BELLOWS_CONTROL_URL: control.url,
-            BELLOWS_CONTROL_TOKEN: 'tok-gone',
-            BELLOWS_CONTROL_POLL_MS: '20',
-            FACTORY_STOP_MARKER: marker,
-        });
-
-        expect(code).toBe(0);
-        expect(existsSync(marker)).toBe(false);
+    it('sends TERM to its parent, once, on a kill order — the way a runtime stop reaches the entrypoint', async () => {
+        const box = mailbox(CLAUDE_AGENT);
+        box.start();
+        await until('a heartbeat', () => existsSync(join(box.outDir, 'agent.alive')));
+        box.say('kill', '{"cause":"agent_killed"}\n');
+        await until('the TERM', () => box.terms() > 0);
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(box.terms()).toBe(1);
     });
 
-    it('keeps polling through an unreachable driver and does nothing without a control channel', async () => {
-        const marker = join(scratch(), 'stop');
-        // No env at all: nothing to poll, exits at once.
-        expect(await runPoller(CLAUDE_POLLER, { FACTORY_STOP_MARKER: marker })).toBe(0);
+    // The supervisor is the agent's only way to a Stop, an answer or a drained transcript: an agent
+    // whose supervisor stopped beating is ended, not left running unsupervised.
+    it('ends the run when the supervisor’s heartbeat, once seen, goes stale', async () => {
+        const box = mailbox(CLAUDE_AGENT, { FACTORY_SUPERVISOR_LOST_MS: '3000' });
+        box.say('supervisor.alive', `${Date.now() - 120_000}\n`);
+        box.start();
+        await until('the TERM', () => box.terms() > 0);
+    });
 
-        // An unreachable endpoint is not a Stop: it keeps polling until killed, writing nothing.
-        const child = spawn('node', [path(CLAUDE_POLLER)], {
+    it('leaves a run alone while the supervisor beats, and while it has not started yet', async () => {
+        const beating = mailbox(CLAUDE_AGENT, { FACTORY_SUPERVISOR_LOST_MS: '3000' });
+        beating.say('supervisor.alive', `${Date.now()}\n`);
+        beating.start();
+        const waiting = mailbox(CLAUDE_AGENT, { FACTORY_SUPERVISOR_LOST_MS: '3000' });
+        waiting.start();
+        await until('both heartbeats', () => existsSync(join(waiting.outDir, 'agent.alive')));
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        expect(beating.terms()).toBe(0);
+        expect(waiting.terms()).toBe(0);
+    });
+
+    // An agent whose entrypoint is gone has a new ppid — the container's init. TERM to that ends an
+    // unrelated run's CLI, so a reparented agent exits and signals nobody. `process.kill` is replaced by a
+    // recorder here: a regression is caught by the record, never by a signal.
+    it('signals nobody once it is orphaned, whatever the mailbox says', async () => {
+        const box = mailbox(CLAUDE_AGENT);
+        const recorded = join(box.root, 'kills');
+        const preload = join(box.root, 'record-kill.cjs');
+        writeFileSync(
+            preload,
+            `process.kill = (pid, signal) => { require('node:fs').appendFileSync(${JSON.stringify(recorded)}, pid + ' ' + signal + '\\n'); };`
+        );
+        const pidFile = join(box.root, 'agent.pid');
+        const parent = `
+            const { spawn } = require('node:child_process');
+            const child = spawn(process.execPath, ['--require', ${JSON.stringify(preload)}, ${JSON.stringify(path(CLAUDE_AGENT))}], { stdio: 'ignore', env: process.env });
+            require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+            // Gone only once the agent runs, so it recorded this process as its parent first.
+            setInterval(() => {
+                if (require('node:fs').existsSync(${JSON.stringify(join(box.outDir, 'agent.alive'))})) process.exit(0);
+            }, 10);
+        `;
+        const launcher = spawn(process.execPath, ['-e', parent], {
             env: {
                 PATH: process.env.PATH ?? '',
-                BELLOWS_CONTROL_URL: 'http://127.0.0.1:1',
-                BELLOWS_CONTROL_TOKEN: 'tok',
-                BELLOWS_CONTROL_POLL_MS: '20',
-                FACTORY_STOP_MARKER: marker,
+                FACTORY_CTL_IN: box.inDir,
+                FACTORY_CTL_OUT: box.outDir,
+                FACTORY_CTL_TICK_MS: '20',
             },
             stdio: 'ignore',
+            detached: true,
         });
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        expect(child.exitCode).toBeNull();
-        child.kill();
-        expect(existsSync(marker)).toBe(false);
+        children.push(launcher);
+        await new Promise((resolve) => launcher.on('exit', resolve));
+        await until('the agent pid', () => existsSync(pidFile));
+        const agent = Number.parseInt(readFileSync(pidFile, 'utf8'), 10);
+        box.say('kill', '{"cause":"agent_killed"}\n');
+        const alive = (): boolean => {
+            try {
+                process.kill(agent, 0);
+                // An exited orphan awaits its new parent's wait(2); a zombie has ended.
+                return !/^\d+ \(.*\) Z /.test(readFileSync(`/proc/${agent}/stat`, 'utf8'));
+            } catch {
+                return false;
+            }
+        };
+        await until('the orphan to exit', () => !alive());
+        expect(existsSync(recorded) ? readFileSync(recorded, 'utf8') : '').toBe('');
+    });
+
+    it('does nothing without a mailbox, as an image run by hand', async () => {
+        const box = mailbox(CLAUDE_AGENT);
+        const child = box.start({ FACTORY_CTL_IN: '', FACTORY_CTL_OUT: '' });
+        const code = await new Promise<number | null>((resolve) => child.on('exit', resolve));
+        expect(code).toBe(0);
+        expect(existsSync(join(box.outDir, 'agent.alive'))).toBe(false);
     });
 
     it('is the same file in both images', () => {
-        expect(read(OPENCODE_POLLER)).toBe(read(CLAUDE_POLLER));
+        expect(read(OPENCODE_AGENT)).toBe(read(CLAUDE_AGENT));
+    });
+
+    it('holds no control credential: it names no control URL or token, and speaks no HTTP', () => {
+        const source = read(CLAUDE_AGENT);
+        expect(source).not.toMatch(/BELLOWS_CONTROL|SUPERVISOR_CONTROL|fetch\(|node:http/);
     });
 });
 
@@ -239,23 +334,44 @@ describe("OpenCode's stop plugin", () => {
 });
 
 describe('the images ship the cooperative Stop', () => {
-    it('copies the claude pieces to /usr/local/bin and starts the poller beside the reporter', () => {
+    it('copies the claude pieces to /usr/local/bin and starts the mailbox agent beside the reporter', () => {
         const dockerfile = read('docker/claude-executor/Dockerfile');
-        expect(dockerfile).toMatch(/COPY[^\n]*stop-poller\.cjs \/usr\/local\/bin\/stop-poller\.cjs/);
+        expect(dockerfile).toMatch(/COPY[^\n]*ctl-agent\.cjs \/usr\/local\/bin\/ctl-agent\.cjs/);
         expect(dockerfile).toMatch(/COPY[^\n]*stop-hook\.cjs \/usr\/local\/bin\/stop-hook\.cjs/);
+        expect(dockerfile).not.toContain('stop-poller');
         const entrypoint = read('docker/claude-executor/entrypoint.sh');
-        expect(entrypoint).toContain('node /usr/local/bin/stop-poller.cjs >/dev/null 2>&1 &');
-        expect(entrypoint).toContain('$STOP_POLLER_PID');
+        expect(entrypoint).toContain('node /usr/local/bin/ctl-agent.cjs >/dev/null 2>&1 &');
+        expect(entrypoint).toContain('$CTL_PID');
     });
 
     it('bakes the opencode plugin root-owned and registers it beside the others', () => {
         const dockerfile = read('docker/opencode-executor/Dockerfile');
-        expect(dockerfile).toMatch(/COPY[^\n]*stop-poller\.cjs \/usr\/local\/bin\/stop-poller\.cjs/);
+        expect(dockerfile).toMatch(/COPY[^\n]*ctl-agent\.cjs \/usr\/local\/bin\/ctl-agent\.cjs/);
         expect(dockerfile).toMatch(/COPY stop-plugin\/ \/usr\/local\/lib\/node_modules\/factory-stop-plugin\//);
+        expect(dockerfile).not.toContain('stop-poller');
         const config = JSON.parse(read('docker/opencode-executor/opencode-home/opencode.json')) as { plugin: string[] };
         expect(config.plugin).toContain('/usr/local/lib/node_modules/factory-stop-plugin');
         const entrypoint = read('docker/opencode-executor/entrypoint.sh');
-        expect(entrypoint).toContain('node /usr/local/bin/stop-poller.cjs >/dev/null 2>&1 &');
-        expect(entrypoint).toContain('$STOP_POLLER_PID');
+        expect(entrypoint).toContain('node /usr/local/bin/ctl-agent.cjs >/dev/null 2>&1 &');
+        expect(entrypoint).toContain('$CTL_PID');
+    });
+
+    // The supervisor learns the agent is over from this file, written last; the runtime's own exit
+    // status stays the verdict.
+    it.each(['claude', 'opencode'])(
+        'the %s entrypoint writes the agent’s exit status for the supervisor, last',
+        (name) => {
+            const entrypoint = read(`docker/${name}-executor/entrypoint.sh`);
+            expect(entrypoint).toContain('"$FACTORY_CTL_OUT/agent.exit.tmp"');
+            expect(entrypoint).toContain('mv "$FACTORY_CTL_OUT/agent.exit.tmp" "$FACTORY_CTL_OUT/agent.exit"');
+            expect(entrypoint.lastIndexOf('agent.exit')).toBeLessThan(entrypoint.lastIndexOf('exit "$STATUS"'));
+        }
+    );
+
+    it.each(['claude', 'opencode'])('the %s image bakes the mailbox mount points node-owned', (name) => {
+        const dockerfile = read(`docker/${name}-executor/Dockerfile`);
+        expect(dockerfile).toContain(
+            'RUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory'
+        );
     });
 });

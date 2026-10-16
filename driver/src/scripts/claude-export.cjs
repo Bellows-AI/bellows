@@ -1,5 +1,5 @@
-// The continuous claude-code transcript exporter: runs beside the agent in its own container (docker)
-// or Job (kubernetes) over the same volume, tails every session file under
+// The continuous claude-code transcript exporter: runs beside the agent as its own container of the
+// run's pod (docker: its container group), under the task supervisor, over the same volume, tails every session file under
 // <CLAUDE_TRANSCRIPT_DIR>/projects and uploads byte-range chunks of it, cut at record boundaries,
 // through the driver's run-control channel (the driver relays them to the board's chunk route).
 // The raw files on the volume are the spool: nothing is ever dropped, an unacknowledged byte just
@@ -15,12 +15,17 @@
 //                            oldest unflushed byte.
 //   EXPORT_SPOOL_MAX_BYTES — unacknowledged bytes allowed before `spoolFull` is reported.
 //   EXPORT_RECORD_MAX_BYTES — a record above this is cut and its stream marked truncated.
+//   FACTORY_EXPORT_DIR     — the directory only the supervisor and this exporter mount: the supervisor's
+//                            `drain.json` and `supervisor.alive` in, this exporter's `status.json` out.
+//   EXPORT_SUPERVISOR_LOST_MS — a supervisor heartbeat older than this drains the exporter by itself,
+//                            partial with cause `supervisor_lost`: the bytes stay on the volume either way.
 //   EXPORT_POLL_MS, EXPORT_GIVEUP_MS — the tick, and how long a dead endpoint is tolerated.
 //
-// Protocol (all keyed by the token): GET /export/control -> {drain}; PUT /export/chunk?session&offset
-// (raw bytes) -> 200 stored, 413 refused {cause}, 409/400 permanent, 5xx retry; PUT /export/manifest
-// (json) closes a session; POST /export/state reports the vitals. `drain` tells the exporter the
-// agent is gone: flush everything, close every session's manifest, report `done`, exit 0.
+// Protocol (all keyed by the token): PUT /export/chunk?session&offset (raw bytes) -> 200 stored, 413
+// refused {cause}, 409/400 permanent, 5xx retry; PUT /export/manifest (json) closes a session; POST
+// /export/state reports the vitals. `drain.json` ({state, cause}, written by the supervisor) says the
+// agent is gone: flush everything, close every session's manifest, report `done`, exit 0. A token the
+// endpoint no longer knows, or an endpoint dead past the give-up window, ends the exporter too.
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
@@ -47,6 +52,8 @@ const STATUS_REFUSED = 413;
 const STATUS_SERVER_ERROR = 500;
 const EXIT_FAILED = 1;
 const EXIT_UNAUTHORIZED = 3;
+const EXIT_GAVE_UP = 4;
+const DEFAULT_SUPERVISOR_LOST_MS = 60_000;
 const NEWLINE = 0x0a;
 const SESSION = /^[A-Za-z0-9._-]{1,128}$/;
 
@@ -55,6 +62,7 @@ const positive = (name, fallback) => {
     return Number.isFinite(value) && value > 0 ? value : fallback;
 };
 const DIR = process.env.CLAUDE_TRANSCRIPT_DIR;
+const EXPORT_DIR = process.env.FACTORY_EXPORT_DIR;
 const CONTROL_URL = process.env.BELLOWS_CONTROL_URL;
 const TOKEN = process.env.BELLOWS_CONTROL_TOKEN;
 const STARTED_MS = Date.parse(process.env.RUN_STARTED_AT ?? '');
@@ -63,6 +71,7 @@ const FLUSH_MS = positive('EXPORT_FLUSH_MS', DEFAULT_FLUSH_MS);
 const SPOOL_MAX = positive('EXPORT_SPOOL_MAX_BYTES', DEFAULT_SPOOL_BYTES);
 const RECORD_MAX = positive('EXPORT_RECORD_MAX_BYTES', DEFAULT_RECORD_MIB * MIB);
 const POLL_MS = positive('EXPORT_POLL_MS', DEFAULT_POLL_MS);
+const SUPERVISOR_LOST_MS = positive('EXPORT_SUPERVISOR_LOST_MS', DEFAULT_SUPERVISOR_LOST_MS);
 const GIVEUP_MS = positive('EXPORT_GIVEUP_MS', DEFAULT_GIVEUP_MINUTES * MS_PER_MINUTE);
 const READ_BYTES = READ_MIB * MIB;
 // Bytes read ahead of the acknowledged point: past this the file itself is the spool and reading pauses.
@@ -70,11 +79,11 @@ const HELD_MAX = 2 * RECORD_MAX;
 
 const tracks = new Map();
 const startedAt = new Date().toISOString();
-const progress = { drain: null, lastStateAt: 0, lastReported: '' };
+const progress = { drain: null, lastStateAt: 0, lastReported: '', outageSince: null, spoolFull: false };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const request = (method, target, body) =>
+const send = (method, target, body) =>
     new Promise((resolve) => {
         const headers = { authorization: `Bearer ${TOKEN}` };
         if (body) headers['content-length'] = Buffer.byteLength(body);
@@ -95,6 +104,19 @@ const request = (method, target, body) =>
         if (body) req.write(body);
         req.end();
     });
+
+// One call, with the outage clock the main loop's give-up window reads: a dead endpoint starts it, any answer stops it.
+const request = async (method, target, body) => {
+    const answer = await send(method, target, body);
+    const dead = answer.status === 0 || answer.status >= STATUS_SERVER_ERROR;
+    progress.outageSince = dead ? (progress.outageSince ?? Date.now()) : null;
+    return answer;
+};
+
+const bail = (code) => {
+    writeStatus({ done: true, gone: true });
+    process.exit(code);
+};
 
 const statePath = (session) => path.join(DIR, 'export-state', `${session}.json`);
 
@@ -323,7 +345,7 @@ const upload = async (track) => {
         track.failures = 0;
         ack(track);
     } else if (answer.status === STATUS_UNAUTHORIZED) {
-        process.exit(EXIT_UNAUTHORIZED);
+        bail(EXIT_UNAUTHORIZED);
     } else if ([STATUS_REFUSED, STATUS_CONFLICT, STATUS_BAD_REQUEST].includes(answer.status)) {
         stopStream(track, answer);
     } else {
@@ -347,12 +369,19 @@ const vitals = () => {
 const report = async (done) => {
     const { pendingBytes, oldestUnackedMs } = vitals();
     const spoolFull = pendingBytes > SPOOL_MAX;
+    progress.spoolFull = spoolFull;
     const key = JSON.stringify({ spoolFull, done });
     const quiet = key === progress.lastReported && Date.now() - progress.lastStateAt < STATE_MS;
     if (!done && quiet) return;
     progress.lastStateAt = Date.now();
     progress.lastReported = key;
-    await request('POST', '/export/state', JSON.stringify({ pendingBytes, oldestUnackedMs, spoolFull, done }));
+    const answer = await request(
+        'POST',
+        '/export/state',
+        JSON.stringify({ pendingBytes, oldestUnackedMs, spoolFull, done })
+    );
+    // The endpoint no longer knows the token: the attempt is over, and nothing here can reach the board again.
+    if (answer.status === STATUS_UNAUTHORIZED) bail(EXIT_UNAUTHORIZED);
 };
 
 // One session's closing record: what the drain says, unless the stream itself ended another way.
@@ -380,10 +409,11 @@ const finalize = async () => {
         const manifest = manifestOf(track);
         let answer = await request('PUT', '/export/manifest', manifest);
         while (answer.status === 0 || answer.status >= STATUS_SERVER_ERROR) {
+            if (progress.outageSince !== null && Date.now() - progress.outageSince > GIVEUP_MS) bail(EXIT_GAVE_UP);
             await sleep(POLL_MS);
             answer = await request('PUT', '/export/manifest', manifest);
         }
-        if (answer.status === STATUS_UNAUTHORIZED) process.exit(EXIT_UNAUTHORIZED);
+        if (answer.status === STATUS_UNAUTHORIZED) bail(EXIT_UNAUTHORIZED);
     }
 };
 
@@ -409,36 +439,68 @@ const tick = async () => {
 // Nothing in flight, nothing unread, and no whole record held back.
 const settled = () => [...tracks.values()].every((t) => !t.inflight && t.size === t.pos && t.held.indexOf(NEWLINE) < 0);
 
-// Polls the drain order; false once the endpoint has been unreachable past the give-up window.
-const pollControl = async (outage) => {
-    const control = await request('GET', '/export/control');
-    if (control.status === STATUS_UNAUTHORIZED) process.exit(EXIT_UNAUTHORIZED);
-    if (control.status !== STATUS_OK) {
-        outage.since = outage.since ?? Date.now();
-        return Date.now() - outage.since <= GIVEUP_MS;
+const readText = (file) => {
+    try {
+        return fs.readFileSync(file, 'utf8');
+    } catch {
+        return null;
     }
-    outage.since = null;
-    if (control.json.drain && !progress.drain) progress.drain = control.json.drain;
-    return true;
+};
+
+// What the supervisor reads of this exporter: the vitals, whether it finished, whether its token is gone.
+function writeStatus({ done = false, gone = false } = {}) {
+    if (!EXPORT_DIR) return;
+    const { pendingBytes, oldestUnackedMs } = vitals();
+    const body = JSON.stringify({ pendingBytes, oldestUnackedMs, spoolFull: progress.spoolFull, done, gone });
+    const target = path.join(EXPORT_DIR, 'status.json');
+    const tmp = `${target}.tmp`;
+    try {
+        fs.writeFileSync(tmp, body);
+        fs.renameSync(tmp, target);
+    } catch {
+        // The directory is the supervisor's to keep; an unwritable one costs it this exporter's vitals only.
+    }
+}
+
+// The drain order: the supervisor's file, or — when its heartbeat stopped — this exporter's own.
+const pollDrain = () => {
+    if (progress.drain || !EXPORT_DIR) return;
+    try {
+        const ordered = JSON.parse(readText(path.join(EXPORT_DIR, 'drain.json')) ?? 'null');
+        if (ordered && (ordered.state === 'complete' || ordered.state === 'partial')) {
+            progress.drain = { state: ordered.state, cause: typeof ordered.cause === 'string' ? ordered.cause : null };
+            return;
+        }
+    } catch {
+        // Half a file is no order yet; the supervisor writes it atomically, so the next tick has it whole.
+    }
+    const beat = Number.parseInt(readText(path.join(EXPORT_DIR, 'supervisor.alive')) ?? '', 10);
+    if (Number.isFinite(beat) && Date.now() - beat > SUPERVISOR_LOST_MS) {
+        progress.drain = { state: 'partial', cause: 'supervisor_lost' };
+    }
 };
 
 const main = async () => {
-    if (!DIR || !CONTROL_URL || !TOKEN) {
-        throw new Error('CLAUDE_TRANSCRIPT_DIR, BELLOWS_CONTROL_URL and BELLOWS_CONTROL_TOKEN are required');
+    if (!DIR || !CONTROL_URL || !TOKEN || !EXPORT_DIR) {
+        throw new Error(
+            'CLAUDE_TRANSCRIPT_DIR, FACTORY_EXPORT_DIR, BELLOWS_CONTROL_URL and BELLOWS_CONTROL_TOKEN are required'
+        );
     }
-    const outage = { since: null };
     for (;;) {
         await tick();
-        if (!(await pollControl(outage))) process.exit(EXIT_UNAUTHORIZED);
+        pollDrain();
+        if (progress.outageSince !== null && Date.now() - progress.outageSince > GIVEUP_MS) bail(EXIT_GAVE_UP);
         if (progress.drain && settled()) {
             await tick();
             if (settled()) {
                 await finalize();
                 await report(true);
+                writeStatus({ done: true });
                 return;
             }
         }
         await report(false);
+        writeStatus();
         await sleep(POLL_MS);
     }
 };

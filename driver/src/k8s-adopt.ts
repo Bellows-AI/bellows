@@ -61,8 +61,8 @@ async function finishedEarlierRunner(deps: K8sDeps, job: BoardJob): Promise<Earl
 /** The earlier run's outcome, read the way `run` reads its own; null for a runner the platform took away. */
 async function readEarlierRun(deps: K8sDeps, job: BoardJob, found: EarlierRunner, reads: CloseReads) {
     const { prior, session, status } = found;
-    const timedOut = timedOutOf(status);
     const verdict = await readRunnerVerdict(deps, prior, (status.succeeded ?? 0) >= 1);
+    const timedOut = timedOutOf(status) || verdict.supervisorDeadline;
     if (verdict.infraLoss && !timedOut) return null;
     const { exitCode, output, fullLog, logTruncated } = verdict;
     const outcome: RunOutcome = { exitCode, output, timedOut, started: true, fullLog, logTruncated };

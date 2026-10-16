@@ -52,7 +52,9 @@ describe('the control server: POST /review and GET /review/:key', () => {
 
     async function opened(reviewer: ReviewRelay | undefined) {
         const server = createGateServer({ host: '127.0.0.1', manager });
-        server.openControl('tok-r', undefined, undefined, reviewer);
+        // 'tok-r' is the AGENT's token: the review routes are the two the agent holds a door to.
+        server.openControl('tok-r-supervisor', undefined, undefined, reviewer);
+        server.grantAgent('tok-r-supervisor', 'tok-r');
         return { server, port: await server.listen() };
     }
 
@@ -169,7 +171,8 @@ describe('the control server: POST /review and GET /review/:key', () => {
             headers: { authorization: 'Bearer tok-r' },
         });
         expect(put.status).toBe(NOT_FOUND_STATUS);
-        server.closeControl('tok-r');
+        // Closing the attempt closes both its tokens.
+        server.closeControl('tok-r-supervisor');
         expect((await read(port, 'tok-r', 'k')).status).toBe(UNAUTHORIZED_STATUS);
         await server.close();
     });

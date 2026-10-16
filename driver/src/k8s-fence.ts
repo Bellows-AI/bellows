@@ -42,18 +42,19 @@ import type { K8sClaim, K8sDeps, K8sResponse } from './k8s-transport.js';
 /** True once a post-create stand-down could not prove its own Job deleted — see `k8s-runner.ts`'s `RunCleanup`. */
 export interface RunCleanup {
     holdClaim: boolean;
-    /** True once the transcript exporter's Job was created: a run that throws has nothing left for it to drain. */
-    exporterStarted: boolean;
 }
 
 /**
- * The Secret's contents: the claim env, the loop's minted gate credentials, and the runner's own
+ * The Secret's contents: the claim env, the loop's minted gate credentials, the task supervisor's
+ * control pair (referenced by the supervisor and exporter containers only — the agent's env is
+ * built from the first two and the attempt pair, never from these names) and the runner's own
  * attempt pair — the branch-ingest credential, always present, because it is how the reporter
  * authenticates at all.
  */
 const runnerEnv = (config: DriverConfig, job: BoardJob): Record<string, string> => ({
     ...runnerClaimEnv(job),
     ...(job.gateEnv ?? {}),
+    ...(job.supervisorEnv ?? {}),
     RUNNER_JOB_ID: job.id,
     RUNNER_LEASE_TOKEN: job.leaseToken,
     // Issue #452: the runner's telemetry config, rendered here and mounted read-only by the pod

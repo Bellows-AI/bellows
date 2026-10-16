@@ -30,9 +30,9 @@ import {
     readsAgentTurns,
 } from '../src/close-read.js';
 import { ARTIFACT_LIMIT, commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
-import { claudeExportScript, claudeTurnsScript, opencodeReadoutScript } from '../src/container-scripts.js';
+import { claudeTurnsScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { createDockerRunner } from '../src/docker-runner.js';
-import { claudeExportArgs, startDockerExporter } from '../src/docker-export.js';
+import { exporterCreateArgs, supervisorCreateArgs, supervisorName } from '../src/docker-group.js';
 import { lookupHelper, type HelperPlan } from '../src/helpers.js';
 import {
     forgetDeclaredServices,
@@ -644,77 +644,6 @@ describe('which runs get a close-time turn read', () => {
 });
 
 describe('the transcript export reads (issue #325)', () => {
-    /**
-     * The transcript artifact's argv pins — the twins of the two readout pins above, same
-     * throwaway shape, same env-only parameter rule, the byte cap riding as a VALUE so the cap
-     * cannot drift between the script and the upload.
-     */
-    it('claude: the exporter is a detached, labelled container whose control token rides an env file, never argv', () => {
-        const line = claudeExportArgs(loadDriverConfig({}), job, START, '/tmp/export.env');
-        expect(line.slice(0, 20)).toEqual([
-            'run',
-            '-d',
-            '--rm',
-            '--cap-drop',
-            'ALL',
-            '--security-opt',
-            'no-new-privileges',
-            '--name',
-            `factory-export-${job.id}-${job.leaseToken}`,
-            '--label',
-            `factory.job=${job.id}`,
-            '--label',
-            `factory.lease=${job.leaseToken}`,
-            '--label',
-            'factory.export=true',
-            '--mount',
-            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
-            '--add-host',
-            'host.docker.internal:host-gateway',
-            '--env-file',
-        ]);
-        expect(line.slice(20, 22)).toEqual(['/tmp/export.env', '-e']);
-        expect(line).toContain(`CLAUDE_TRANSCRIPT_DIR=/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`);
-        expect(line).toContain(`RUN_STARTED_AT=${START}`);
-        // The script reads the name; only the argv BEFORE the script could carry a value.
-        expect(line.slice(0, -1).join(' ')).not.toContain('BELLOWS_CONTROL_TOKEN');
-        expect(line.slice(-5)).toEqual(['--entrypoint', 'node', 'claude-executor', '-e', claudeExportScript]);
-    });
-
-    it('claude: starting the exporter writes only the control pair to a 0600 env file and removes it', async () => {
-        const writes: { file: string; body: string; mode: number }[] = [];
-        const removed: string[] = [];
-        const ran: string[][] = [];
-        const gated = {
-            ...job,
-            gateEnv: { BELLOWS_CONTROL_URL: 'http://driver:1', BELLOWS_CONTROL_TOKEN: 'tok', OTHER: 'x' },
-        };
-        await startDockerExporter(
-            {
-                config: loadDriverConfig({}),
-                execDocker: async (args) => {
-                    ran.push(args);
-                    return { stdout: '' };
-                },
-                files: {
-                    writeFile: (async (file: string, body: string, options: { mode: number }) => {
-                        writes.push({ file, body, mode: options.mode });
-                    }) as never,
-                    rm: (async (file: string) => {
-                        removed.push(file);
-                    }) as never,
-                },
-            },
-            gated,
-            START
-        );
-        expect(writes).toHaveLength(1);
-        expect(writes[0]?.body).toBe('BELLOWS_CONTROL_URL=http://driver:1\nBELLOWS_CONTROL_TOKEN=tok\n');
-        expect(writes[0]?.mode).toBe(0o600);
-        expect(ran).toHaveLength(1);
-        expect(removed).toEqual([writes[0]?.file]);
-    });
-
     it('opencode: has no transcript container of its own — the session readout carries the export', () => {
         const line = opencodeSessionReadoutArgs(loadDriverConfig({}), opencodeJob, START);
         expect(line).toContain(`EXPORT_LIMIT_BYTES=${OPENCODE_EXPORT_LIMIT}`);
@@ -1681,78 +1610,14 @@ function dockerRunner(
     return createDockerRunner(loadDriverConfig(env), spawnFn, exec, files);
 }
 
-describe('the docker runner and the continuous transcript exporter', () => {
-    const exporting: BoardJob = {
-        ...job,
-        gateEnv: { BELLOWS_CONTROL_URL: 'http://driver:7000', BELLOWS_CONTROL_TOKEN: 'tok-control' },
-    };
-    const files = () => {
-        const written: string[] = [];
-        return {
-            written,
-            files: {
-                writeFile: (async (_file: string, body: string) => {
-                    written.push(body);
-                }) as never,
-                rm: (async () => {}) as never,
-            },
-        };
-    };
-
-    it('starts the exporter container before the agent and leaves it alive when the agent exits', async () => {
-        const { exec, calls } = entrypointAnswers('');
-        const { files: fakeFiles } = files();
-        const runner = dockerRunner(exec, { files: fakeFiles });
-        await runner.run(exporting, { id: SESSION, resume: false });
-        const started = calls.findIndex((args) => args[0] === 'run' && args.includes('factory.export=true'));
-        expect(started).toBeGreaterThanOrEqual(0);
-        expect(calls[started]).toContain('-d');
-        // Never removed by the run itself: the loop drains it, then calls stopTranscriptExport.
-        expect(
-            calls.some(
-                (args) => args[0] === 'rm' && args.includes(`factory-export-${exporting.id}-${exporting.leaseToken}`)
-            )
-        ).toBe(false);
-    });
-
-    it('starts no exporter for a run with no control endpoint', async () => {
-        const { exec, calls } = entrypointAnswers('');
-        await dockerRunner(exec).run(job, { id: SESSION, resume: false });
-        expect(calls.some((args) => args.includes('factory.export=true'))).toBe(false);
-    });
-
-    it('stopTranscriptExport removes the exporter container by name', async () => {
-        const { exec, calls } = entrypointAnswers('');
-        await dockerRunner(exec).stopTranscriptExport?.(exporting);
-        expect(calls).toContainEqual(['rm', '-f', `factory-export-${exporting.id}-${exporting.leaseToken}`]);
-    });
-
-    it('a refused exporter start fails the run as infrastructure and removes the created agent container', async () => {
-        const { calls } = entrypointAnswers('');
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            if (args[0] === 'run' && args.includes('factory.export=true')) throw new Error('daemon said no');
-            return { stdout: '' };
-        });
-        const { files: fakeFiles } = files();
-        await expect(
-            dockerRunner(exec, { files: fakeFiles }).run(exporting, { id: SESSION, resume: false })
-        ).rejects.toThrow(/daemon said no/);
-        expect(
-            calls.some(
-                (args) => args[0] === 'rm' && args.includes(`factory-job-${exporting.id}-${exporting.leaseToken}`)
-            )
-        ).toBe(true);
-    });
-});
-
 describe('the docker runner', () => {
     // The daemon is stood in by `execDocker`, so the suite never shells out: the fence and the
     // cleanup `rm` answer empty, and the `inspect` that classifies a 125 close is scripted per
     // test. The fake child carries whatever the run itself printed.
     const noContainer = (args: string[]) => {
         if (args[0] === 'inspect') throw new Error('Error: No such object');
-        return Promise.resolve({ stdout: '' });
+        // The task supervisor finalized: the group's `wait` answers its exit status.
+        return Promise.resolve({ stdout: args[0] === 'wait' ? '0\n' : '' });
     };
 
     it('reads a daemon refusal as a container that never started', async () => {
@@ -1787,8 +1652,10 @@ describe('the docker runner', () => {
 
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
         const verbs = calls.map((call) => call.args[0]);
-        const create = calls.find((call) => call.args[0] === 'create');
-        expect(create?.args).toContain(containerName(job));
+        // The supervisor's group is created first; the agent's own create is the one that names it.
+        const create = calls.find((call) => call.args[0] === 'create' && call.args.includes(containerName(job)));
+        expect(create).toBeDefined();
+        expect(calls.findIndex((call) => call.args.includes(supervisorName(job)))).toBeLessThan(calls.indexOf(create!));
         const cp = calls.find((call) => call.args[0] === 'cp');
         expect(cp?.args).toEqual(['cp', '-', `${containerName(job)}:/etc`]);
         expect(cp?.input?.equals(telemetryConfigTar(telemetryConfig('claude-code', 'http://otel.example:4318')))).toBe(
@@ -1822,7 +1689,7 @@ describe('the docker runner', () => {
         const calls: string[][] = [];
         const exec = (args: string[]) => {
             calls.push(args);
-            if (args[0] === verb) {
+            if (args[0] === verb && (verb !== 'create' || args.includes(containerName(job)))) {
                 return Promise.reject(
                     Object.assign(new Error('Command failed'), { stderr: 'Error response from daemon: Conflict\n' })
                 );
@@ -1887,7 +1754,9 @@ describe('the docker runner', () => {
 
     it('reads an inspect that fails for any other reason as no loss', async () => {
         const exec = (args: string[]) =>
-            args[0] === 'inspect' ? Promise.reject(new Error('daemon unreachable')) : Promise.resolve({ stdout: '' });
+            args[0] === 'inspect'
+                ? Promise.reject(new Error('daemon unreachable'))
+                : Promise.resolve({ stdout: args[0] === 'wait' ? '0\n' : '' });
         const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('', '', 1) });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 1, started: true });
@@ -1978,7 +1847,7 @@ describe('the docker runner', () => {
         const spawnFn = vitest.fn((_cmd: string, _argv: string[], _options?: object) => fakeChild('', '', 0));
         let create: string[] = [];
         const exec = (args: string[]) => {
-            if (args[0] === 'create') create = args;
+            if (args[0] === 'create' && args.includes(containerName(job))) create = args;
             return noContainer(args);
         };
         const runner = dockerRunner(exec, { spawn: spawnFn as unknown as typeof spawn });
@@ -2307,7 +2176,7 @@ describe('the docker runner', () => {
         let create: string[] = [];
         const exec = (args: string[]) => {
             // Read at create time, through the argv: what the CLI could see is what counts.
-            if (args[0] === 'create') {
+            if (args[0] === 'create' && args.includes(containerName(job))) {
                 create = args;
                 fileBody = readFileSync(args[args.indexOf('--env-file') + 1]!, 'utf8');
             }
@@ -2383,7 +2252,7 @@ describe('the docker runner', () => {
         let runner: ReturnType<typeof createDockerRunner> | null = null;
         const exec = async (args: string[]) => {
             calls.push(args);
-            if (args[0] === 'create') {
+            if (args[0] === 'create' && args.includes(containerName(job))) {
                 envFile = args[args.indexOf('--env-file') + 1]!;
                 await runner!.kill(job); // the lease dies while the create is pending
             }
@@ -2436,6 +2305,8 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             // The attempt's own service: what the fence's lease-labelled listing shows for it.
             if (args[0] === 'ps')
                 return { stdout: args.includes('--format') ? `svc-id-1\t${job.leaseToken}\n` : 'svc-id-1\n' };
+            // The task supervisor finalized: the group's `wait` answers its exit status.
+            if (args[0] === 'wait') return { stdout: '0\n' };
             return { stdout: '' };
         });
 
@@ -2566,7 +2437,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // The runner shares the network — that is the whole feature: inside the job, `stub`
         // resolves to the service container.
         expect(seen[0]).toEqual(['start', '-a', containerName(job)]);
-        expect(calls.find((a) => a[0] === 'create')).toEqual(
+        expect(calls.find((a) => a[0] === 'create' && a.includes(containerName(job)))).toEqual(
             dockerArgs(
                 loadDriverConfig({ RUNNER_SERVICES: '1' }),
                 job,
@@ -2632,7 +2503,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
         const calls = exec.mock.calls.map((call) => call[0]);
         expect(seen[0]).toEqual(['start', '-a', containerName(baseJob)]);
-        expect(calls.find((a) => a[0] === 'create')).toEqual(
+        expect(calls.find((a) => a[0] === 'create' && a.includes(containerName(baseJob)))).toEqual(
             dockerArgs(
                 loadDriverConfig({ RUNNER_SERVICES: '1' }),
                 baseJob,
@@ -2728,7 +2599,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(during.some((a) => a[0] === 'network' && a[1] === 'create')).toBe(false);
         const readsBellows = (a: string[]) => a.some((arg) => arg.startsWith('BELLOWS_ROOT='));
         expect(during.some((a) => a[0] === 'run' && (a.includes('--network-alias') || readsBellows(a)))).toBe(false);
-        const created = during.find((a) => a[0] === 'create');
+        const created = during.find((a) => a[0] === 'create' && a.includes(containerName(job)));
         expect(created?.[created.indexOf('--network') + 1]).toBe(networkName(job));
     });
 
@@ -2783,7 +2654,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const calls = exec.mock.calls.map((call) => call[0]);
         // The runner is resolved through this attempt's own labels and killed by ID — never by
         // name, which a stale attempt's kill could otherwise compute against a replacement's
-        // container. The transcript exporter is excluded: it outlives the agent to drain.
+        // container. The hard kill takes the whole group: the supervisor and the exporter too.
         expect(calls).toContainEqual([
             'ps',
             '-aq',
@@ -2791,8 +2662,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             `label=factory.job=${job.id}`,
             '--filter',
             `label=factory.lease=${job.leaseToken}`,
-            '--filter',
-            'label!=factory.export',
         ]);
         expect(calls).toContainEqual(['kill', 'svc-id-1']);
         expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
@@ -3433,8 +3302,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(d.containers.has(containerName(attemptA))).toBe(false);
         expect(d.containers.has(serviceContainerName(attemptA, 'stub'))).toBe(false);
         // And B's own create and start are B-scoped: no name A could have been holding.
-        const created = d.calls.find((a) => a[0] === 'create')!;
+        const created = d.calls.find((a) => a[0] === 'create' && a.includes(containerName(attemptB)))!;
         expect(created[created.indexOf('--name') + 1]).toBe(containerName(attemptB));
+        // The supervisor beside it carries B's names too.
+        expect(d.calls.some((a) => a[0] === 'create' && a.includes(supervisorName(attemptB)))).toBe(true);
         expect(seen[0]).toEqual(['start', '-a', containerName(attemptB)]);
     });
 
@@ -3511,7 +3382,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             )
         ).toBe(true);
         expect(seen[0]).toEqual(['start', '-a', containerName(job)]);
-        expect(calls.find((a) => a[0] === 'create')).toEqual(
+        expect(calls.find((a) => a[0] === 'create' && a.includes(containerName(job)))).toEqual(
             dockerArgs(cfg, job, { id: SESSION, resume: false }, { envFile: envFilePath(job) })
         );
     });
@@ -4760,7 +4631,8 @@ describe('every container the driver runs is hardened (#382)', () => {
         ['the opencode session readout', () => opencodeSessionReadoutArgs(config(), opencodeJob, START)],
         ['the opencode cache probe', () => opencodeCacheProbeArgs(config(), opencodeJob)],
         ['the claude turns readout', () => claudeTurnsArgs(config(), job, SESSION, START)],
-        ['the claude transcript exporter', () => claudeExportArgs(config(), job, START, '/tmp/export.env')],
+        ['the task supervisor', () => supervisorCreateArgs(config(), job, true, '/tmp/supervisor.env')],
+        ['the claude transcript exporter', () => exporterCreateArgs(config(), job, START, '/tmp/export.env')],
         [
             'the startup sync',
             () =>
@@ -4915,10 +4787,12 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     /** The fence's own listing: every container of the job by id and lease — the runner's and the exporter's. */
     const FENCE_PS = `runner-id\t${job.leaseToken}\nexporter-id\t${job.leaseToken}\n`;
 
-    const daemon = (ps: string) => {
+    const daemon = (ps: string, supervisorExit = '0') => {
         const calls: string[][] = [];
         const exec = (args: string[]) => {
             calls.push(args);
+            // The earlier attempt's supervisor: finalized (0) unless a test says how it ended.
+            if (args[0] === 'wait') return Promise.resolve({ stdout: `${supervisorExit}\n` });
             if (args[0] === 'ps') return Promise.resolve({ stdout: args.includes('status=exited') ? ps : FENCE_PS });
             if (args[0] === 'inspect') {
                 return Promise.resolve({
@@ -4965,6 +4839,27 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const read = calls.findIndex((args) => args[0] === 'logs');
         expect(read).toBeGreaterThanOrEqual(0);
         expect(calls.findIndex((args) => args[0] === 'rm')).toBeGreaterThan(read);
+    });
+
+    // The supervisor outlives the agent to finalize: the next claim waits for it rather than
+    // reading a half-finished group, and a supervisor lost mid-finalize adopts nothing — and
+    // sweeps nothing: the group stays for the fence the sync runs.
+    it('waits for the earlier attempt’s supervisor before it reads, and reads its deadline exit as a timeout', async () => {
+        const { exec, calls } = daemon(listing(), '124');
+
+        const adopted = await dockerRunner(exec).adopt!(adopter);
+
+        expect(adopted?.outcome.timedOut).toBe(true);
+        const waited = calls.findIndex((args) => args[0] === 'wait');
+        expect(waited).toBeGreaterThanOrEqual(0);
+        expect(calls.findIndex((args) => args[0] === 'logs')).toBeGreaterThan(waited);
+    });
+
+    it('adopts nothing and removes nothing when the earlier supervisor was lost before it finalized', async () => {
+        const { exec, calls } = daemon(listing(), '137');
+
+        expect(await dockerRunner(exec).adopt!(adopter)).toBeNull();
+        expect(calls.some((args) => args[0] === 'logs' || args[0] === 'rm')).toBe(false);
     });
 
     // A queued task's command can be edited after a handover: a run of the old command is not its run.

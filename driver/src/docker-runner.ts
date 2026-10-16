@@ -1,5 +1,8 @@
-import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
-import { NOT_THE_EXPORTER, startExporterBesideRunner, stopDockerExporter } from './docker-export.js';
+import { JOB_LABEL, LEASE_LABEL } from './labels.js';
+import { awaitSupervisor, createGroup, removeGroup, startGroup, supervisorLossOf } from './docker-group.js';
+import { dockerKill, dockerServiceTeardown, dockerStopAgent } from './docker-teardown.js';
+import { SUPERVISOR_EXIT } from './supervisor-contract.js';
+import { backstopMs } from './supervisor-plan.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
@@ -23,7 +26,7 @@ import {
     SYNC_DEADLINE_MS,
     type SyncResult,
 } from './publish.js';
-import { forgetDeclaredServices, missingDeclaredServices, networkName, serviceContainerName } from './services.js';
+import { missingDeclaredServices, serviceContainerName } from './services.js';
 import {
     containerHardeningArgs,
     containerName,
@@ -33,7 +36,7 @@ import {
     parseDockerStats,
     workspacesMountArgs,
 } from './docker.js';
-import { claimRestoresTree, envFileBody, runTimeoutMs, workspacePath } from './claim.js';
+import { claimRestoresTree, envFileBody, workspacePath } from './claim.js';
 import { treeSteps } from './review-snapshot.js';
 import {
     composeRuntimeSample,
@@ -55,7 +58,6 @@ import {
     createRunnerContainer,
     dockerErrorDetail,
     dockerRunVerdict,
-    linesOf,
     LEASE_FORMAT,
     listOtherAttemptsOrThrow,
     servicesNetworkOf,
@@ -107,94 +109,6 @@ interface RunnerDeps {
      */
     killed: Set<BoardJob['leaseToken']>;
     deadlines: DeadlineRegistry;
-}
-
-/**
- * Tears down THIS attempt's services and network — and, by construction, nothing else. The `ps`
- * filters carry this attempt's lease token beside the job id, and the network it removes is named
- * after the token too, so every call here resolves only to resources this attempt created. That
- * is what makes it safe to run UNCONDITIONALLY, from every closing path: a close that lands late,
- * a kill that lands after a replacement claim stood its own fleet up, a spawn error racing a newer
- * attempt's setup — none of them can NAME anything but this attempt's own fleet, so none of them
- * needs an ownership gate. Daemon calls are arbitrarily slow and attempts can supersede each other
- * mid-call; attempt scoping is what holds at execution time, because it is not a snapshot but a
- * property of the argv itself.
- *
- * Every removal tolerates the thing already being gone, which makes the whole teardown
- * idempotent — it runs twice per attempt by design, as the fence's service half before the run
- * and as the teardown after it.
- */
-async function dockerServiceTeardown(deps: RunnerDeps, job: BoardJob): Promise<void> {
-    if (!deps.config.servicesEnabled) return;
-    forgetDeclaredServices(job);
-    const found = await deps
-        .execDocker([
-            'ps',
-            '-aq',
-            '--filter',
-            `label=${JOB_LABEL}=${job.id}`,
-            '--filter',
-            `label=${LEASE_LABEL}=${job.leaseToken}`,
-            '--filter',
-            `label=${SERVICE_LABEL}`,
-        ])
-        .catch(() => ({ stdout: '' }));
-    for (const id of linesOf(found.stdout)) {
-        await deps.execDocker(['rm', '-f', id]).catch(() => undefined);
-    }
-    // The gate environment joins this network to reach the fleet, and outlives the attempt on
-    // its cooldown; docker refuses to remove a network with an endpoint still attached, so
-    // whatever is left on it is detached first.
-    const attached = await deps
-        .execDocker([
-            'network',
-            'inspect',
-            '--format',
-            '{{range .Containers}}{{println .Name}}{{end}}',
-            networkName(job),
-        ])
-        .catch(() => ({ stdout: '' }));
-    for (const name of linesOf(attached.stdout)) {
-        await deps.execDocker(['network', 'disconnect', '-f', networkName(job), name]).catch(() => undefined);
-    }
-    await deps.execDocker(['network', 'rm', networkName(job)]).catch(() => undefined);
-}
-
-async function dockerKill(deps: RunnerDeps, job: BoardJob): Promise<void> {
-    // Recorded before anything is torn down: this attempt, sitting in its services setup,
-    // reads this between awaited steps and aborts instead of creating more resources or
-    // spawning the runner over a lease that is already gone. The token, not the id, is what
-    // is recorded — a sibling attempt of the same job carries a different token and must
-    // not read this one's cancellation.
-    deps.killed.add(job.leaseToken);
-    // Killing the attached `docker start` process would only detach the CLI; the container keeps running
-    // and the workspace keeps being written to. The daemon has to be told — by ID, resolved
-    // through this attempt's own lease label, never by name: a kill that resolved a
-    // job-derived name would address whatever owns that name at daemon-execution time, and
-    // names are attempt-scoped now precisely so no such ambiguity exists. The label pair
-    // (job, lease) resolves to this attempt's containers alone; a stale kill that finds
-    // nothing has nothing of its own left to kill.
-    const found = await deps
-        .execDocker([
-            'ps',
-            '-aq',
-            '--filter',
-            `label=${JOB_LABEL}=${job.id}`,
-            '--filter',
-            `label=${LEASE_LABEL}=${job.leaseToken}`,
-            // The agent is what dies: the transcript exporter drains what it wrote (docker-export.ts).
-            ...NOT_THE_EXPORTER,
-        ])
-        .catch(() => ({ stdout: '' }));
-    for (const id of linesOf(found.stdout)) {
-        await deps.execDocker(['kill', id]).catch(() => undefined);
-    }
-    // The declared services go with the runner: a killed job's database has no reason to
-    // outlive the job, and the close handler's teardown would catch them anyway — this is so
-    // a kill while nothing is reading the outcome (lost lease, shutdown) still reclaims them.
-    // Attempt-scoped, like every teardown: whatever a replacement attempt is running is
-    // invisible to these filters.
-    await dockerServiceTeardown(deps, job);
 }
 
 /*
@@ -250,6 +164,21 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob): Promise<void
         staleNetworks,
         (name) => ['network', 'rm', name],
         (name) => `the re-claim fence could not remove the leftover network ${name} of job ${job.id}`
+    );
+
+    // The supervisor's mailboxes of those attempts, after their containers: transient control —
+    // a Stop, an answer, a heartbeat — never finished work, which lives on the task volume.
+    const staleVolumes = await listOtherAttemptsOrThrow(
+        deps.execDocker,
+        ['volume', 'ls', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', LEASE_FORMAT('Name')],
+        `the re-claim fence could not list the leftover control volumes of job ${job.id}`,
+        job
+    );
+    await removeEachTolerantly(
+        deps.execDocker,
+        staleVolumes,
+        (name) => ['volume', 'rm', '-f', name],
+        (name) => `the re-claim fence could not remove the leftover control volume ${name} of job ${job.id}`
     );
 
     // TRANSITIONAL: networks created before the lease token joined the name carry no
@@ -615,23 +544,48 @@ async function dockerRun(
     // reach spawnFn.
     await assertNotKilledAfterEnvWrite({ killed, job, files }, file);
 
+    // The run's start instant, captured before anything is created because the exporter and both
+    // close-time turn reads key on it: a follow-up resumes its session's conversation, so the
+    // delta each read reports is bounded to what THIS run wrote.
+    const startedAt = new Date().toISOString();
+
+    // The group's mailboxes, the supervisor and the exporter, before the agent that mounts the
+    // mailboxes. A group the daemon refuses is infrastructure, thrown like a refused exporter was:
+    // never a run that silently loses its record. It leaves nothing behind, nor the env file.
+    try {
+        await createGroup(deps, job, session, startedAt);
+    } catch (e) {
+        if (file) await files.rm(file).catch(() => undefined);
+        throw e;
+    }
+
     const refused = await createRunnerContainer(deps, job, session, {
         servicesNetwork,
         ...(file ? { envFile: file } : {}),
     });
     if (refused) {
         if (file) await files.rm(file).catch(() => undefined);
+        await removeGroup(execDocker, job);
         return refused;
     }
     // The create and the copy are awaits too: a lease lost behind them must not reach the start.
-    // The created container is this attempt's leftover to remove, the env file with it.
+    // The created container is this attempt's leftover to remove, the group and the env file with it.
     if (killed.has(job.leaseToken)) {
         await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
+        await removeGroup(execDocker, job);
         await assertNotKilledAfterEnvWrite({ killed, job, files }, file);
     }
 
-    // The exporter starts beside the agent and outlives it: it drains until the loop says done.
-    await startExporterBesideRunner(deps, job, session, file);
+    // The supervisor and the exporter start beside the agent and outlive it: the supervisor
+    // drains the exporter and finalizes once the agent is gone, and the close below waits for it.
+    try {
+        await startGroup(execDocker, job, session);
+    } catch (e) {
+        await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
+        await removeGroup(execDocker, job);
+        if (file) await files.rm(file).catch(() => undefined);
+        throw e;
+    }
 
     const outcome = new Promise<RunOutcome>((resolve, reject) => {
         // See dockerRunVerdict for what a close decides and why. Bound to this attempt's
@@ -648,10 +602,6 @@ async function dockerRun(
                 logTruncated,
             });
 
-        // The run's start instant, captured here because both close-time turn reads key
-        // on it: a follow-up resumes its session's conversation, so the delta each read
-        // reports is bounded to what THIS run wrote.
-        const startedAt = new Date().toISOString();
         const child = spawnFn('docker', ['start', '-a', containerName(job)], {
             stdio: ['ignore', 'pipe', 'pipe'],
         });
@@ -682,7 +632,10 @@ async function dockerRun(
         child.stdout?.on('data', collect);
         child.stderr?.on('data', collect);
 
-        const deadline = deps.deadlines.start(job.leaseToken, runTimeoutMs(config, job), () => {
+        // The BACKSTOP: the supervisor ends the agent at the run budget itself (its exit 124), so
+        // this only fires for a group whose supervisor stopped doing that — the budget plus the
+        // wind-down — and then kills all of it.
+        const deadline = deps.deadlines.start(job.leaseToken, backstopMs(config, job), () => {
             timedOut = true;
             void dockerKill(deps, job);
         });
@@ -726,7 +679,7 @@ async function dockerRun(
             // replacement claim landed while this attempt was failing, the filters carry
             // this attempt's lease and the network is named after it — the teardown
             // cannot reach the replacement's fleet.
-            dockerServiceTeardown(deps, job).then(
+            Promise.all([dockerServiceTeardown(deps, job), removeGroup(execDocker, job)]).then(
                 () => reject(error),
                 () => reject(error)
             );
@@ -742,7 +695,16 @@ async function dockerRun(
             // then claude-code's agent-turn count — lives in applyCloseTimeReadout:
             // best-effort throughout, so a failed read costs the task its follow-ups or
             // its turn figure, never its verdict.
-            void verdict(code)
+            // The agent's end does not end the run: the supervisor drains the exporter and
+            // finalizes first, and its exit status says how — 124 is the budget it enforced, and
+            // anything but 0 and 124 is a supervisor lost, an infrastructure loss.
+            void awaitSupervisor(execDocker, job)
+                .then(async (supervisorExit) => {
+                    if (supervisorExit === SUPERVISOR_EXIT.deadline) timedOut = true;
+                    const loss = supervisorLossOf(supervisorExit, timedOut);
+                    const settled = await verdict(code);
+                    return loss && !settled.infraLoss ? { ...settled, infraLoss: loss } : settled;
+                })
                 .then((outcome) => applyCloseTimeReadout(outcome, { execDocker, config, job, startedAt }, session))
                 .then(resolve, reject);
         });
@@ -754,6 +716,9 @@ async function dockerRun(
         return await outcome;
     } finally {
         if (file) await files.rm(file).catch(() => undefined);
+        // The supervisor and exporter are done (or the run threw): the group goes, its mailboxes
+        // with it — transient control, never finished work, which lives on the task volume.
+        await removeGroup(execDocker, job);
     }
 }
 
@@ -796,6 +761,6 @@ export function createDockerRunner(
             startJobServices(job, config, { ...deps, serviceTeardown: (j) => dockerServiceTeardown(deps, j) }, signal),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
         adopt: (job) => dockerAdopt({ ...deps, fence: (fenced) => dockerReclaimFence(deps, fenced) }, job),
-        stopTranscriptExport: (job) => stopDockerExporter(execDocker, job),
+        stopAgent: (job) => dockerStopAgent(deps, job),
     };
 }

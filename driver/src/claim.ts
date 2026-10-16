@@ -10,6 +10,7 @@ import type { BoardJob } from './board.js';
 import { OPENCODE } from './executors.js';
 import { opencodeConfigContent } from './master-prompt.js';
 import { UUID, WORKSPACE_PATH, worktreeDir } from './publish.js';
+import { SUPERVISOR_ENV } from './supervisor-contract.js';
 
 export { UUID };
 
@@ -127,7 +128,6 @@ export function workspacePath(job: Pick<BoardJob, 'id' | 'workspacePath'>): stri
 /** The env names the loop mints for a launched attempt's run-control channel (issue #442). */
 export const CONTROL_URL_ENV = 'BELLOWS_CONTROL_URL';
 export const CONTROL_TOKEN_ENV = 'BELLOWS_CONTROL_TOKEN';
-export const CONTROL_POLL_MS_ENV = 'BELLOWS_CONTROL_POLL_MS';
 
 /**
  * The names the runner's own contract claims — WORKDIR is the working directory dockerArgs itself
@@ -155,11 +155,13 @@ export const RESERVED_ENV_NAMES = [
     'WORKDIR',
     'BELLOWS_GATE_URL',
     'BELLOWS_GATE_TOKEN',
-    // The run-control channel the loop mints per launched attempt (issue #442): where the
-    // runner's stop poller reads the board's Stop, and how often.
+    // The run-control channel the loop mints per launched attempt (issue #442): the agent's own
+    // publish/review pair, and the task supervisor's pair — a member value under the supervisor's
+    // names would reach the agent by the same Secret key the supervisor's credential lives under.
     CONTROL_URL_ENV,
     CONTROL_TOKEN_ENV,
-    CONTROL_POLL_MS_ENV,
+    SUPERVISOR_ENV.controlUrl,
+    SUPERVISOR_ENV.controlToken,
     'CRED_HELPER',
     'RESTORE',
     'REVIEW_REF',
@@ -381,10 +383,14 @@ const envLine = (job: BoardJob, name: string, value: string): string => {
     return `${name}=${value}`;
 };
 
-/** The `--env-file` body carrying only the named gate-env values — the transcript exporter's control pair. */
-export function gateEnvFileBody(job: BoardJob, names: readonly string[]): string {
-    const lines = names.flatMap((name) => {
-        const value = job.gateEnv?.[name];
+/**
+ * The `--env-file` body carrying the supervisor's control pair under the names a container reads it
+ * by: the supervisor's own (`name` = `source`) or the exporter's (`BELLOWS_CONTROL_*`). Nothing
+ * else of the claim rides it — these two lines are the whole credential.
+ */
+export function supervisorEnvFileBody(job: BoardJob, pairs: readonly { name: string; source: string }[]): string {
+    const lines = pairs.flatMap(({ name, source }) => {
+        const value = job.supervisorEnv?.[source];
         return value === undefined ? [] : [envLine(job, name, value)];
     });
     return lines.length ? `${lines.join('\n')}\n` : '';

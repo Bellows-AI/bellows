@@ -1,5 +1,14 @@
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -9,7 +18,9 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /*
  * The runner end of AskUserQuestion (issue #226): docker/claude-executor/claude-bridge.cjs run
- * against a fake `claude` on PATH and a fake control server on loopback. The fake CLI records its
+ * against a fake `claude` on PATH and the task supervisor's mailbox played by the test — the bridge
+ * holds no control credential and never speaks HTTP, it writes a question file and reads an answer
+ * file. The fake CLI records its
  * argv and stdin, emits scripted stream-json, waits for one control_response per control_request
  * it emitted, then ends the turn with a `result` line and exits when its stdin closes. FAKE_LATER
  * scripts one more turn the CLI starts on its own after that `result` — the one a background
@@ -76,52 +87,58 @@ reader.on('close', () => {
 });
 `;
 
-interface Reply {
-    status: number;
-    body?: unknown;
-    drop?: boolean;
-}
-interface Control {
-    url: string;
-    posts: { authorization: string | undefined; body: Record<string, unknown> }[];
-    gets: number;
-    close: () => Promise<void>;
+/**
+ * The supervisor's side of the mailbox, played by the test: the two directories the bridge is
+ * handed, what it wrote into `out`, and a way to answer into `in` the way the supervisor does
+ * (atomically, as a file named for the question).
+ */
+interface Mailbox {
+    inDir: string;
+    outDir: string;
+    /** The question file the bridge wrote, once it did. */
+    asked: () => Record<string, unknown> | null;
+    answer: (body: unknown) => void;
+    /** Writes the answer file torn in half, the way a reader that is not atomic would find it. */
+    answerTorn: () => void;
+    /** Runs `act` once the question file appears. */
+    whenAsked: (act: (box: Mailbox) => void) => void;
 }
 
-/** A control server: POST /question answers `post`; GET /question/<id> walks `gets`, repeating the last. */
-async function startControl(opts: { post?: Reply; gets?: Reply[]; onGet?: (count: number) => void }): Promise<Control> {
-    const control = { posts: [], gets: 0 } as unknown as Control;
-    control.posts = [];
-    const server: Server = createServer((request, response) => {
-        const chunks: Buffer[] = [];
-        request.on('data', (chunk: Buffer) => chunks.push(chunk));
-        request.on('end', () => {
-            const reply = (r: Reply) => {
-                if (r.drop) return request.socket.destroy();
-                response.statusCode = r.status;
-                response.setHeader('content-type', 'application/json');
-                response.end(JSON.stringify(r.body ?? {}));
-            };
-            if (request.method === 'POST' && request.url === '/question') {
-                control.posts.push({
-                    authorization: request.headers.authorization,
-                    body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
-                });
-                return reply(opts.post ?? { status: 200, body: {} });
-            }
-            if (request.method === 'GET' && request.url === `/question/${TOOL_USE_ID}`) {
-                control.gets += 1;
-                opts.onGet?.(control.gets);
-                const sequence = opts.gets ?? [{ status: 200, body: { state: 'pending' } }];
-                return reply(sequence[Math.min(control.gets, sequence.length) - 1]!);
-            }
-            reply({ status: 404 });
-        });
-    });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    control.url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    control.close = () => new Promise<void>((resolve) => server.close(() => resolve()));
-    return control;
+const mailboxes: Mailbox[] = [];
+const timers: NodeJS.Timeout[] = [];
+afterEach(() => {
+    for (const timer of timers.splice(0)) clearInterval(timer);
+});
+
+function mailbox(): Mailbox {
+    const root = mkdtempSync(join(tmpdir(), 'claude-bridge-mailbox-'));
+    dirs.push(root);
+    const inDir = join(root, 'in');
+    const outDir = join(root, 'out');
+    mkdirSync(join(inDir, 'answers'), { recursive: true });
+    mkdirSync(outDir, { recursive: true });
+    const questionFile = join(outDir, 'questions', `${TOOL_USE_ID}.json`);
+    const answerFile = join(inDir, 'answers', `${TOOL_USE_ID}.json`);
+    const box: Mailbox = {
+        inDir,
+        outDir,
+        asked: () => readJson(questionFile),
+        answer: (body) => {
+            writeFileSync(`${answerFile}.tmp`, JSON.stringify(body));
+            renameSync(`${answerFile}.tmp`, answerFile);
+        },
+        answerTorn: () => writeFileSync(answerFile, '{"state":"answe'),
+        whenAsked(act) {
+            const timer = setInterval(() => {
+                if (!existsSync(questionFile)) return;
+                clearInterval(timer);
+                act(box);
+            }, 10);
+            timers.push(timer);
+        },
+    };
+    mailboxes.push(box);
+    return box;
 }
 
 const askRequest = (toolName = 'AskUserQuestion') => ({
@@ -148,11 +165,11 @@ interface Run {
 }
 
 const dirs: string[] = [];
-const controls: Control[] = [];
 const children: ReturnType<typeof spawn>[] = [];
+const servers: Server[] = [];
 afterEach(async () => {
     for (const child of children.splice(0)) child.kill('SIGKILL');
-    for (const control of controls.splice(0)) await control.close();
+    for (const server of servers.splice(0)) await new Promise<void>((resolve) => server.close(() => resolve()));
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -181,12 +198,12 @@ function launch(args: string[], env: Record<string, string>, dir: string, bin: s
     const child = spawn(process.execPath, [BRIDGE, ...args], {
         env: {
             ...process.env,
-            BELLOWS_CONTROL_URL: '',
-            BELLOWS_CONTROL_TOKEN: '',
+            FACTORY_CTL_IN: '',
+            FACTORY_CTL_OUT: '',
             FACTORY_STOP_MARKER: '',
             PATH: `${bin}:${process.env.PATH}`,
             FAKE_DIR: dir,
-            BELLOWS_CONTROL_POLL_MS: POLL_MS,
+            FACTORY_CTL_TICK_MS: POLL_MS,
             ...env,
         },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -208,13 +225,13 @@ async function run(opts: {
     args?: string[];
     env?: Record<string, string>;
     lines?: unknown[];
-    control?: Control;
+    mailbox?: Mailbox;
 }): Promise<Run> {
     const { dir, bin } = sandbox();
     const env: Record<string, string> = { FAKE_LINES: JSON.stringify(opts.lines ?? []), ...opts.env };
-    if (opts.control) {
-        env.BELLOWS_CONTROL_URL = opts.control.url;
-        env.BELLOWS_CONTROL_TOKEN = 'lane-token';
+    if (opts.mailbox) {
+        env.FACTORY_CTL_IN = opts.mailbox.inDir;
+        env.FACTORY_CTL_OUT = opts.mailbox.outDir;
     }
     const { exited, output } = launch(opts.args ?? ['--model', 'm', '-p', 'do the thing'], env, dir, bin);
     const { code } = await exited;
@@ -348,17 +365,13 @@ describe('claude-bridge stream', () => {
 });
 
 describe('claude-bridge can_use_tool', () => {
-    it('turns an answered question into allow with the answers merged into the input', async () => {
-        const control = await startControl({
-            gets: [
-                { status: 200, body: { state: 'pending' } },
-                { status: 200, body: answeredBlue },
-            ],
-        });
-        controls.push(control);
+    it('hands the question to the supervisor as a file, and turns its answer into allow with the answers merged in', async () => {
+        const box = mailbox();
+        box.whenAsked((b) => b.answer(answeredBlue));
 
-        const result = await run({ lines: [askRequest()], control });
+        const result = await run({ lines: [askRequest()], mailbox: box });
 
+        expect(box.asked()).toEqual({ questionId: TOOL_USE_ID, questions: QUESTIONS });
         expect(result.stdin.at(-1)).toMatchObject({
             type: 'control_response',
             response: { subtype: 'success', request_id: 'req-1' },
@@ -367,52 +380,56 @@ describe('claude-bridge can_use_tool', () => {
             behavior: 'allow',
             updatedInput: { questions: QUESTIONS, answers: { [QUESTION]: 'Blue' } },
         });
-        expect(control.posts).toEqual([
-            { authorization: 'Bearer lane-token', body: { questionId: TOOL_USE_ID, questions: QUESTIONS } },
-        ]);
-        expect(control.gets).toBe(2);
         expect(result.code).toBe(0);
     });
 
     it.each([
-        ['cancelled', { status: 200, body: { state: 'cancelled' } }, 'The task was stopped.'],
-        ['a 401', { status: 401 }, 'The task was stopped.'],
-    ])('turns %s into deny and interrupt', async (_name, reply, message) => {
-        const control = await startControl({ gets: [reply] });
-        controls.push(control);
+        ['cancelled', { state: 'cancelled' }],
+        ['gone', { state: 'gone' }],
+    ])('turns a %s answer into deny and interrupt', async (_name, answer) => {
+        const box = mailbox();
+        box.whenAsked((b) => b.answer(answer));
 
-        const result = await run({ lines: [askRequest()], control });
+        const result = await run({ lines: [askRequest()], mailbox: box });
 
-        expect(result.decision).toEqual(interrupted(message));
+        expect(result.decision).toEqual(interrupted('The task was stopped.'));
+    });
+
+    it('keeps waiting while the answer is absent or torn, and takes it whole when it lands', async () => {
+        const box = mailbox();
+        box.whenAsked((b) => {
+            b.answerTorn();
+            setTimeout(() => b.answer(answeredBlue), 120);
+        });
+
+        const result = await run({ lines: [askRequest()], mailbox: box });
+
+        expect(result.decision.behavior).toBe('allow');
     });
 
     it('stops on the stop marker, which it checks every poll', async () => {
         const { dir } = sandbox();
         const marker = join(dir, 'factory-stop');
-        const control = await startControl({ onGet: (count) => count === 2 && writeFileSync(marker, 'stop\n') });
-        controls.push(control);
+        const box = mailbox();
+        box.whenAsked(() => setTimeout(() => writeFileSync(marker, 'stop\n'), 60));
 
-        const result = await run({ lines: [askRequest()], control, env: { FACTORY_STOP_MARKER: marker } });
+        const result = await run({ lines: [askRequest()], mailbox: box, env: { FACTORY_STOP_MARKER: marker } });
 
         expect(result.decision).toEqual(interrupted('The task was stopped.'));
-        expect(control.gets).toBe(2);
     });
 
-    it('denies without interrupt when the board refuses the question (400 or 429)', async () => {
-        for (const status of [400, 429]) {
-            const control = await startControl({ post: { status } });
-            controls.push(control);
+    it.each(['refused', 'invalid'])('denies without interrupt when the supervisor answers %s', async (state) => {
+        const box = mailbox();
+        box.whenAsked((b) => b.answer({ state }));
 
-            const result = await run({ lines: [askRequest()], control });
+        const result = await run({ lines: [askRequest()], mailbox: box });
 
-            expect(result.decision).toEqual({
-                behavior: 'deny',
-                message:
-                    'This run cannot ask more questions. Continue with your best judgment and state the assumption you made.',
-                interrupt: false,
-            });
-            expect(control.gets).toBe(0);
-        }
+        expect(result.decision).toEqual({
+            behavior: 'deny',
+            message:
+                'This run cannot ask more questions. Continue with your best judgment and state the assumption you made.',
+            interrupt: false,
+        });
     });
 
     const NOT_APPROVED = "Not pre-approved by the runner's allowlist, and nobody can approve it in this run.";
@@ -431,18 +448,17 @@ describe('claude-bridge can_use_tool', () => {
                 'it as refused.',
         ],
     ])('%s', async (_label, tool, message) => {
-        const control = await startControl({});
-        controls.push(control);
+        const box = mailbox();
 
-        const result = await run({ lines: [askRequest(tool)], control });
+        const result = await run({ lines: [askRequest(tool)], mailbox: box });
 
         expect(result.decision).toEqual({ behavior: 'deny', message, interrupt: false });
-        expect(control.posts).toEqual([]);
+        expect(box.asked()).toBeNull();
     });
 
     it.each([
-        ['BELLOWS_CONTROL_URL', { BELLOWS_CONTROL_URL: '', BELLOWS_CONTROL_TOKEN: 't' }],
-        ['BELLOWS_CONTROL_TOKEN', { BELLOWS_CONTROL_URL: 'http://127.0.0.1:1', BELLOWS_CONTROL_TOKEN: '' }],
+        ['FACTORY_CTL_IN', { FACTORY_CTL_IN: '', FACTORY_CTL_OUT: '/tmp' }],
+        ['FACTORY_CTL_OUT', { FACTORY_CTL_IN: '/tmp', FACTORY_CTL_OUT: '' }],
     ])('denies a question without interrupt when %s is unset', async (_name, env) => {
         const result = await run({ lines: [askRequest()], env });
 
@@ -454,23 +470,35 @@ describe('claude-bridge can_use_tool', () => {
         });
     });
 
-    it('keeps polling through a network error and a 5xx', async () => {
-        const control = await startControl({
-            gets: [{ status: 200, drop: true }, { status: 503 }, { status: 200, body: answeredBlue }],
+    // The agent holds no control credential, so it has nothing to speak to the driver with: even a
+    // run handed a live endpoint and a token by an old environment never calls it.
+    it('never calls a control endpoint, whatever its environment names', async () => {
+        const seen: string[] = [];
+        const server = createServer((request, response) => {
+            seen.push(`${request.method} ${request.url}`);
+            response.end('{}');
         });
-        controls.push(control);
+        servers.push(server);
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+        const box = mailbox();
+        box.whenAsked((b) => b.answer(answeredBlue));
 
-        const result = await run({ lines: [askRequest()], control });
+        const result = await run({
+            lines: [askRequest()],
+            mailbox: box,
+            env: { BELLOWS_CONTROL_URL: url, BELLOWS_CONTROL_TOKEN: 'lane-token' },
+        });
 
         expect(result.decision.behavior).toBe('allow');
-        expect(control.gets).toBe(3);
+        expect(seen).toEqual([]);
     });
 
     it('never writes the question text to stderr', async () => {
-        const control = await startControl({ gets: [{ status: 200, body: answeredBlue }] });
-        controls.push(control);
+        const box = mailbox();
+        box.whenAsked((b) => b.answer(answeredBlue));
 
-        const result = await run({ lines: [askRequest()], control });
+        const result = await run({ lines: [askRequest()], mailbox: box });
 
         expect(result.stderr).not.toContain('SECRETQ');
     });

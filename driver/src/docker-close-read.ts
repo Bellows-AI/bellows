@@ -23,6 +23,8 @@ import { type DriverConfig, executorImage } from './config.js';
 import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts.js';
 import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
 import { type ExecDocker, linesOf } from './docker-runner-support.js';
+import { awaitSupervisor, supervisorLossOf } from './docker-group.js';
+import { SUPERVISOR_EXIT } from './supervisor-contract.js';
 import {
     containerName,
     workspacesMountArgs,
@@ -249,6 +251,12 @@ export async function dockerAdopt(
     const found = await exitedEarlierRunner(execDocker, job);
     if (!found) return null;
     const { prior, claimSeq, session } = found;
+    // The agent's exit is not the run's end: its supervisor may still be draining the exporter and
+    // finalizing (the dead driver never waited for it). Waited out, bounded — never swept unread —
+    // and a supervisor that ended any way but finalizing is a run the platform took away, which
+    // the sync's re-claim fence takes as ever.
+    const supervisorExit = await awaitSupervisor(execDocker, prior);
+    if (supervisorLossOf(supervisorExit, false)) return null;
     const name = containerName(prior);
     const state = JSON.parse((await execDocker(['inspect', '--format', '{{json .State}}', name])).stdout) as {
         ExitCode?: number;
@@ -260,7 +268,8 @@ export async function dockerAdopt(
     const outcome: RunOutcome = {
         exitCode: state.ExitCode ?? null,
         output: reportTail(text),
-        timedOut: false,
+        // A budget the supervisor enforced reads as the exit it caused: its own 124.
+        timedOut: supervisorExit === SUPERVISOR_EXIT.deadline,
         started: true,
         fullLog: full.content,
         logTruncated: full.truncated,
