@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    realpathSync,
+    rmSync,
+    writeFileSync,
+} from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createRequire } from 'node:module';
@@ -469,7 +478,8 @@ describe('the supervisor run: supervised steps', () => {
         const supervised = run(driver);
         await until('the answer', () => driver.answers.has('probe-1'));
         expect(driver.answers.get('probe-1')).toMatchObject({ exitCode: 3, timedOut: false });
-        expect(driver.answers.get('probe-1')?.stdout.trim()).toMatch(/tmp/);
+        // The step's cwd as the child resolves it: macOS links its temp directory through /private.
+        expect(driver.answers.get('probe-1')?.stdout.trim()).toBe(realpathSync(tmpdir()));
         supervised.agentExits(0);
         await supervised.done;
     });
