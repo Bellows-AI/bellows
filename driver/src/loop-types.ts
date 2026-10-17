@@ -67,6 +67,8 @@ export interface AttemptCtx {
      * agent, and its agent container is specced for this session.
      */
     session: RunSession | null;
+    /** Set by the first `standDown` that acted (`loop-fence.ts`): the attempt stands down once. */
+    stoodDown?: true;
     /** Set once the services step started the attempt's declared services (`loop-services.ts`). */
     servicesStarted?: true;
     /**

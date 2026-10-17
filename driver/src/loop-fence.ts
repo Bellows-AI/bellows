@@ -78,23 +78,47 @@ export function releaseAbandonedAdoption(rt: LoopRuntime, job: BoardJob, adoptin
  */
 export async function standDown(ctx: AttemptCtx, phase: string, beforePark?: () => Promise<void>): Promise<boolean> {
     if (!down(ctx.state)) return false;
+    // Once per attempt (issue #820): a stand-down that threw lands in runJob's catch, which asks
+    // again — and a second park would only repeat the call that just failed. Marked after the
+    // settle, so a release or settle that threw is finished by that second ask.
+    if (ctx.stoodDown) return true;
     await handBackFence(ctx);
     await ctx.settle();
+    ctx.stoodDown = true;
     const { rt, job, state } = ctx;
     if (state.lost) {
         rt.log(`job ${job.id}: the lease was lost during ${phase}, leaving the job to its holder`);
     } else if (state.removed) {
         rt.log(`job ${job.id}: removed during ${phase}; the queue owns the tree`);
     } else {
-        await beforePark?.();
-        const verdict = await rt.board.suspend(job);
-        rt.log(
-            verdict === 'lost'
-                ? `job ${job.id}: stopped during ${phase}, but the board had already reclaimed it`
-                : `job ${job.id}: stopped during ${phase} — nothing more ran, the board has settled the turn`
+        await beforePark?.().catch((e: Error) =>
+            rt.log(`job ${job.id}: the work before the park failed, parking anyway: ${e.message}`)
         );
+        await park(ctx, phase);
     }
     return true;
+}
+
+/**
+ * Parks a stopped attempt, retried like a verdict. A board that never takes it leaves the attempt to
+ * the lease: the claim settles a requested stop whose lease expired (`job-store-claim.ts`) and offers
+ * anything else again, so the row is recoverable and nothing here may throw — the process carries
+ * every other claim (issue #820).
+ */
+async function park(ctx: AttemptCtx, phase: string): Promise<void> {
+    const { rt, job } = ctx;
+    const verdict = await withBoardRetry(rt, `job ${job.id}: the stop was not accepted`, () =>
+        rt.board.suspend(job)
+    ).catch((e: Error) => {
+        rt.log(`job ${job.id}: the board did not take the stop, left to the lease: ${e.message}`);
+        return null;
+    });
+    if (verdict === null) return;
+    rt.log(
+        verdict === 'lost'
+            ? `job ${job.id}: stopped during ${phase}, but the board had already reclaimed it`
+            : `job ${job.id}: stopped during ${phase} — nothing more ran, the board has settled the turn`
+    );
 }
 
 /**

@@ -88,6 +88,22 @@ function claimRefusal(job: BoardJob): { log: string; output: string; config?: tr
     return null;
 }
 
+const MS_PER_SECOND = 1_000;
+
+// A non-409 failure (a board 5xx, a dropped connection) leaves the finished run without a verdict,
+// and the lease expiry would run it again after its work already published. 409 is already an
+// answer (`lost`), so only a throw is retried — for as long as the lease the verdict still holds
+// (issue #820), since past it the board answers lost anyway; the last one propagates.
+function completeWithRetry(
+    deps: Pick<LoopRuntime, 'board' | 'config' | 'log' | 'sleep'>,
+    job: BoardJob,
+    result: Parameters<Board['complete']>[1]
+) {
+    return withBoardRetry(deps, `job ${job.id}: the verdict was not accepted`, () => deps.board.complete(job, result), {
+        budgetMs: deps.config.leaseSeconds * MS_PER_SECOND,
+    });
+}
+
 /** One attempt handed over: stood down as lost, then its lease handed back as an interruption. */
 async function handOver(rt: LoopRuntime, job: BoardJob, state: JobState, reason: string): Promise<void> {
     state.handedOver = true;
@@ -212,7 +228,7 @@ export function createLoop({
      * `reclaims`), instead of syncing against a tree mid-deletion.
      */
     async function report(job: BoardJob, result: Parameters<Board['complete']>[1]): Promise<LeaseState> {
-        const verdict = await completeWithRetry(job, result);
+        const verdict = await completeWithRetry({ board, config, log, sleep }, job, result);
         if (verdict.state !== 'held' || !verdict.threadDone) return verdict.state;
         const root = job.rootJobId ?? job.id;
         // Registered before the removal starts — the set and the start are one synchronous block,
@@ -236,17 +252,12 @@ export function createLoop({
         return verdict.state;
     }
 
-    // A non-409 failure (a board 5xx, a dropped connection) leaves the finished run without a
-    // verdict, and the lease expiry would run it again after its work already published. 409 is
-    // already an answer (`lost`), so only a throw is retried; the last one propagates.
-    function completeWithRetry(job: BoardJob, result: Parameters<Board['complete']>[1]) {
-        return withBoardRetry({ log, sleep }, `job ${job.id}: the verdict was not accepted`, () =>
-            board.complete(job, result)
-        );
-    }
-
+    // Contained here (issue #820): one attempt's throw is that attempt's, logged, never a rejected
+    // `start()` or an unhandled rejection that takes every other claim down with the process.
     function track(job: BoardJob): void {
-        const promise = runJob(rt, job).finally(() => active.delete(promise));
+        const promise = runJob(rt, job)
+            .catch((e: Error) => log(`job ${job.id}: the attempt threw, leaving it to the lease: ${e.message}`))
+            .finally(() => active.delete(promise));
         active.add(promise);
     }
 

@@ -11,6 +11,7 @@ import type {
     Reclaim,
     RuntimeReport,
 } from '../src/board.js';
+import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board-retry.js';
 import { loadDriverConfig, type DriverConfig } from '../src/config.js';
 import type { AdoptedRun, DeadService, RunOutcome, RunSession, Runner, RuntimeSample } from '../src/runner.js';
 import type { GateManager, GateRun, GateRunOptions, GateServer } from '../src/gates.js';
@@ -5001,20 +5002,43 @@ describe('a verdict the board refuses with a 5xx', () => {
         expect(logs.some((l) => l.includes('could not run, leaving it to the lease'))).toBe(false);
     });
 
-    it('gives up after a bounded number of attempts and leaves the run to the lease', async () => {
+    // Issue #820: the verdict was decided when the publish landed. A board that stays down past
+    // the lease leaves it undelivered — never rewritten into a runner_error by the outer catch.
+    it.each([
+        ['an attempt with more to come', 1],
+        ['the last attempt', 3],
+    ])('retries for the lease, then leaves %s to the lease with its verdict unrewritten', async (_l, attempts) => {
         const logs: string[] = [];
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
-        let completes = 0;
-        board.board.complete = async () => {
-            completes += 1;
-            throw new Error('/api/jobs/x/complete answered 503: busy');
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory', attempts, maxAttempts: 3 }]);
+        const sent: Parameters<Board['complete']>[1][] = [];
+        board.board.complete = async (_j, result) => {
+            sent.push(result);
+            throw new BoardHttpError(503, '/api/jobs/x/complete answered 503: busy');
         };
         const runner = stubRunner(async () => ok(), { publish: landed });
 
         await drive({ ...board, runner, log: (m) => logs.push(m) });
 
-        expect(completes).toBe(5);
-        expect(logs.some((l) => l.includes('could not run, leaving it to the lease'))).toBe(true);
+        expect(sent.length).toBeGreaterThan(BOARD_CALL_ATTEMPTS);
+        expect(sent.every((result) => result.status === 'succeeded' && result.publication)).toBe(true);
+        expect(logs.some((l) => l.includes('could not run'))).toBe(false);
+        expect(logs.some((l) => l.includes('the succeeded verdict was not delivered'))).toBe(true);
+    });
+
+    it('sends a verdict the board refuses as malformed exactly once', async () => {
+        const logs: string[] = [];
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
+        let completes = 0;
+        board.board.complete = async () => {
+            completes += 1;
+            throw new BoardHttpError(400, '/api/jobs/x/complete answered 400: bad');
+        };
+        const runner = stubRunner(async () => ok(), { publish: landed });
+
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
+
+        expect(completes).toBe(1);
+        expect(logs.some((l) => l.includes('could not run'))).toBe(false);
     });
 
     it('answers publishFailed when the runner throws mid-publish', async () => {
@@ -5991,4 +6015,84 @@ describe('startup syncs of one clone (issue #559)', () => {
             expect(board.board.completed.map((c) => c.id)).toEqual([job(1).id]);
         }
     );
+});
+
+describe('a stop the board cannot take (issue #820)', () => {
+    const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown) => void unhandled.push(reason);
+
+    /** Job 1 is stopped in setup and its suspend always fails; job 2 runs to completion. */
+    function outage() {
+        const board = stubBoard([job(1), job(2)], { idleBeforeStop: 3 });
+        const rawHeartbeat = board.board.heartbeat.bind(board.board);
+        board.board.heartbeat = async (claimed) =>
+            claimed.id === job(1).id ? { result: 'held', cancelRequested: true } : rawHeartbeat(claimed);
+        let suspends = 0;
+        board.board.suspend = async () => {
+            suspends += 1;
+            throw new BoardHttpError(503, '/api/jobs/x/suspend answered 503: down');
+        };
+        const runner = stubRunner(async (claimed) => {
+            if (claimed.id === job(1).id) throw new Error('the stopped job must not spawn');
+            return ok();
+        });
+        return { board, runner, suspends: () => suspends };
+    }
+
+    it('leaves the other claim running, and the loop finishes without an unhandled rejection', async () => {
+        process.on('unhandledRejection', record);
+        try {
+            const logs: string[] = [];
+            const { board, runner, suspends } = outage();
+
+            await drive({ ...board, runner, log: (m) => logs.push(m) }, { DRIVER_CONCURRENCY: '2' });
+            for (let i = 0; i < 20; i++) await tick();
+
+            expect(unhandled).toEqual([]);
+            expect(board.board.completed.map((c) => c.id)).toEqual([job(2).id]);
+            expect(suspends()).toBe(BOARD_CALL_ATTEMPTS);
+            expect(logs.some((l) => l.includes(`job ${job(1).id}: the board did not take the stop`))).toBe(true);
+        } finally {
+            process.off('unhandledRejection', record);
+            unhandled.length = 0;
+        }
+    });
+
+    it('contains a suspend that fails only after a handover resolved start()', async () => {
+        process.on('unhandledRejection', record);
+        try {
+            const board = stubBoard([job(1)], { idleBeforeStop: 1_000 });
+            board.board.heartbeat = async () => ({ result: 'held', cancelRequested: true });
+            let fail = () => {};
+            const gate = new Promise<void>((resolve) => {
+                fail = resolve;
+            });
+            let suspends = 0;
+            board.board.suspend = async () => {
+                suspends += 1;
+                await gate;
+                throw new BoardHttpError(503, '/api/jobs/x/suspend answered 503: down');
+            };
+            const runner = stubRunner(async () => {
+                throw new Error('the stopped job must not spawn');
+            });
+            const loop = createLoop({ board: board.board, runner, config: config(), sleep });
+            board.attach(loop);
+            const started = loop.start();
+            while (suspends === 0) await tick();
+
+            loop.stop();
+            await loop.handover('drain');
+            await started;
+            fail();
+            for (let i = 0; i < 50; i++) await tick();
+
+            expect(suspends).toBe(BOARD_CALL_ATTEMPTS);
+            expect(unhandled).toEqual([]);
+        } finally {
+            process.off('unhandledRejection', record);
+            unhandled.length = 0;
+        }
+    });
 });

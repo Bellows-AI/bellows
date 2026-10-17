@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { createBoard } from '../src/board.js';
+import { createBoard, type VerdictEvidence } from '../src/board.js';
+import { BoardHttpError } from '../src/board-retry.js';
+import { COMPLETE_BODY_LIMIT_BYTES } from '../src/verdict-budget.js';
 import { boardJob } from './fixtures/board-job.js';
 
 interface Call {
@@ -592,5 +595,86 @@ describe('the complete verdict', () => {
     it('no longer carries a separate thread read — the answer travels on complete', () => {
         const board = boardOn(recorder(() => claimed()).fetch);
         expect('threadDone' in board).toBe(false);
+    });
+});
+
+describe('the complete verdict: a refusal the board means', () => {
+    it.each([400, 413])(
+        'throws a BoardHttpError carrying the %i, so the retry can tell it is deterministic',
+        async (status) => {
+            const { fetch } = recorder(() => Response.json({ error: 'no' }, { status }));
+
+            const refused = boardOn(fetch).complete(boardJob(), { status: 'succeeded', exitCode: 0, output: '' });
+
+            await expect(refused).rejects.toBeInstanceOf(BoardHttpError);
+            await expect(refused).rejects.toMatchObject({ status });
+        }
+    );
+});
+
+describe('the complete verdict: the request budget', () => {
+    /** Captures the raw request bytes, which are what the route's body limit measures. */
+    function rawRecorder() {
+        const bodies: string[] = [];
+        const fetch = (async (_url: string, init: RequestInit) => {
+            bodies.push(init.body as string);
+            return Response.json({ threadDone: false }, { status: 200 });
+        }) as unknown as typeof globalThis.fetch;
+        return { bodies, fetch };
+    }
+    const publication = {
+        repo: 'o/r',
+        prNumber: 1,
+        prUrl: 'https://github.com/o/r/pull/1',
+        headBranch: 'fix/1',
+        baseBranch: 'main',
+    };
+    const evidence = { gates: 'passed' } as unknown as VerdictEvidence;
+    const note = '\n[driver] published fix/1 — https://github.com/o/r/pull/1';
+
+    it('is the route limit the board enforces', () => {
+        const limits = readFileSync(new URL('../../server/src/routes/job-limits.ts', import.meta.url), 'utf8');
+        expect(limits).toContain('const BODY_LIMIT_KIB = 128;');
+        expect(COMPLETE_BODY_LIMIT_BYTES).toBe(128 * 1024);
+    });
+
+    it.each([
+        ['control characters, six bytes each once escaped', '\u0001'],
+        ['quotes and backslashes, two bytes each', '"\\'],
+        ['CJK text, three bytes each', '漢字'],
+    ])(
+        'fits %s plus the notes into the limit, keeping the newest output and the structured fields',
+        async (_l, unit) => {
+            const { bodies, fetch } = rawRecorder();
+            const output = `${unit.repeat(40_000)}\n[gate test] FAILED\n${unit.repeat(20_000)}${note}`;
+
+            await boardOn(fetch).complete(boardJob(), {
+                status: 'succeeded',
+                exitCode: 0,
+                output,
+                summary: 'x'.repeat(10_000),
+                failureCause: 'transport',
+                evidence,
+                publication,
+            });
+
+            expect(Buffer.byteLength(bodies[0]!)).toBeLessThanOrEqual(COMPLETE_BODY_LIMIT_BYTES);
+            const sent = JSON.parse(bodies[0]!) as Record<string, unknown>;
+            expect(sent.output).toMatch(
+                /^\[driver\] \d+ bytes of the oldest output were dropped to fit the board's request limit\n/
+            );
+            expect((sent.output as string).endsWith(note)).toBe(true);
+            expect(sent).toMatchObject({ status: 'succeeded', publication, evidence, failureCause: 'transport' });
+            expect(sent.leaseToken).toBe('token-1');
+        }
+    );
+
+    it('sends an output under the limit byte for byte — the board truncates long fields itself', async () => {
+        const { bodies, fetch } = rawRecorder();
+        const output = 'a'.repeat(100_000);
+
+        await boardOn(fetch).complete(boardJob(), { status: 'failed', exitCode: 1, output, summary: 's' });
+
+        expect(JSON.parse(bodies[0]!)).toMatchObject({ output, summary: 's' });
     });
 });
