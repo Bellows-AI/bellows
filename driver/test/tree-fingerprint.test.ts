@@ -80,4 +80,24 @@ describe.skipIf(!hasGit())('the tree fingerprint', () => {
         writeFileSync(join(gitDir, 'index.lock'), '');
         expect(probed()).toBe(moded);
     });
+
+    // ---- the evidence binding (issue #825): what moves the fingerprint is what a publish would ship -
+    it('stays put when a git-ignored artifact is written after it, and moves on publishable content', () => {
+        fx.sync();
+        writeFileSync(join(fx.worktree(), '.gitignore'), 'dist/\n');
+        git(fx.worktree(), 'add', '.gitignore');
+        git(fx.worktree(), 'commit', '-m', 'ignore dist');
+        const before = probed();
+
+        mkdirSync(join(fx.worktree(), 'dist'));
+        writeFileSync(join(fx.worktree(), 'dist', 'out.js'), 'generated\n');
+        expect(probed()).toBe(before);
+
+        writeFileSync(join(fx.worktree(), 'NEW.md'), 'untracked, not ignored\n');
+        const untracked = probed();
+        expect(untracked).not.toBe(before);
+
+        writeFileSync(join(fx.worktree(), 'README.md'), '# edited\n');
+        expect(probed()).not.toBe(untracked);
+    });
 });

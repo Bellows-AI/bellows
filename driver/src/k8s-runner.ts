@@ -132,7 +132,7 @@ async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: st
         );
         if (log.status >= HTTP_ERROR_STATUS)
             return fail(`reading the session readout's log ${answerPreview(log.status, log.body)}`);
-        return parseOpencodeRunOutcome(log.body);
+        return parseOpencodeRunOutcome(log.body, log.truncated === true);
     } catch (e) {
         return fail((e as Error).message);
     } finally {

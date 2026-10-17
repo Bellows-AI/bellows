@@ -8,6 +8,8 @@
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import { execFile, type spawn } from 'node:child_process';
 import type { writeFile, rm } from 'node:fs/promises';
+import type { Readable } from 'node:stream';
+import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
@@ -28,6 +30,20 @@ import { awaitServicesRunning, throwIfStoodDown } from './service-restart.js';
 export const run = promisify(execFile);
 
 export type Spawn = typeof spawn;
+
+/**
+ * One child stream read as text, through a decoder of its own (issue #825): a multibyte character
+ * split across two chunks decodes once, whole, never as a U+FFFD per half, and the bytes of a
+ * character the stream ended inside are flushed at its end, never dropped.
+ */
+export function readUtf8(stream: Readable | null | undefined, onText: (text: string) => void): void {
+    const decoder = new StringDecoder('utf8');
+    stream?.on('data', (chunk: Buffer | string) => onText(typeof chunk === 'string' ? chunk : decoder.write(chunk)));
+    stream?.on('end', () => {
+        const rest = decoder.end();
+        if (rest) onText(rest);
+    });
+}
 
 /**
  * Everything the runner does through the daemon other than the attached `docker start` itself —

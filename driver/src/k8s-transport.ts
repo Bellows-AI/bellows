@@ -1,8 +1,9 @@
 import { SERVICE_LABEL } from './labels.js';
 import { readFileSync } from 'node:fs';
+import type { IncomingMessage } from 'node:http';
 import { Agent, request as httpsRequest } from 'node:https';
 import type { DriverConfig } from './config.js';
-import { OUTPUT_LIMIT } from './runner.js';
+import { ARTIFACT_LIMIT } from './runner.js';
 import type { ServiceStatus } from './board.js';
 import type { RuntimeSample } from './runner.js';
 import { UUID } from './publish.js';
@@ -173,6 +174,8 @@ export const CLAIM_ROUNDS = 15;
 export interface K8sResponse {
     status: number;
     body: string;
+    /** A pod log whose head the stream buffer dropped: `body` is its tail, never the whole log. */
+    truncated?: true;
 }
 
 /**
@@ -244,11 +247,47 @@ export interface K8sDeps {
 /** The ServiceAccount volume every pod gets, holding the token and the cluster CA. */
 const SERVICE_ACCOUNT_DIR = '/var/run/secrets/kubernetes.io/serviceaccount';
 
-/** The sliding buffer a streamed response is kept within — a multiple of OUTPUT_LIMIT, not the limit itself. */
-const STREAM_BUFFER_OVERFLOW_MULTIPLE = 4;
-const STREAM_BUFFER_TAIL_MULTIPLE = 2;
-const STREAM_BUFFER_LIMIT = STREAM_BUFFER_OVERFLOW_MULTIPLE * OUTPUT_LIMIT;
-const STREAM_BUFFER_TAIL = STREAM_BUFFER_TAIL_MULTIPLE * OUTPUT_LIMIT;
+/**
+ * The sliding buffer a pod log is kept within, in UTF-16 units. A unit never encodes to less than
+ * one UTF-8 byte, so the kept tail holds at least the ARTIFACT_LIMIT bytes the verdict read keeps.
+ */
+const STREAM_BUFFER_OVERFLOW_MULTIPLE = 2;
+const STREAM_BUFFER_LIMIT = STREAM_BUFFER_OVERFLOW_MULTIPLE * ARTIFACT_LIMIT;
+const STREAM_BUFFER_TAIL = ARTIFACT_LIMIT;
+
+/**
+ * Reads one answer's body. Only a pod log (`sliding`) is kept within the stream buffer: buffering a
+ * multi-megabyte log whole would be exactly the unbounded string the docker runner's cap exists to
+ * avoid, and only its tail survives downstream. Every other answer is structured and read whole —
+ * a cut JSON body could only parse wrong (issue #825). `prefix` is the body's start, kept apart:
+ * once the tail has slid past it, the `400 Bad Request` line readVerdict and postRefusal classify
+ * on (issue #308) would be gone from the diagnosis log and the body alike.
+ */
+function collectBody(
+    res: IncomingMessage,
+    sliding: boolean,
+    done: (response: K8sResponse, prefix: string) => void
+): void {
+    let text = '';
+    let prefix = '';
+    let truncated = false;
+    res.setEncoding('utf8');
+    res.on('data', (chunk: string) => {
+        if (prefix.length < DIAGNOSIS_BODY_CHARS) prefix = (prefix + chunk).slice(0, DIAGNOSIS_BODY_CHARS);
+        text += chunk;
+        if (sliding && text.length > STREAM_BUFFER_LIMIT) {
+            text = text.slice(-STREAM_BUFFER_TAIL);
+            truncated = true;
+        }
+    });
+    res.on('end', () => {
+        const status = res.statusCode ?? 0;
+        // A cut refusal carries the prefix ahead of the tail so its start survives classification;
+        // a cut log is its tail alone, flagged — never a stitched body that reads as the whole log.
+        const body = truncated && status >= HTTP_ERROR_STATUS ? prefix + text : text;
+        done(truncated ? { status, body, truncated: true } : { status, body }, prefix);
+    });
+}
 
 interface InClusterRequestDeps {
     env?: NodeJS.ProcessEnv;
@@ -307,40 +346,14 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
                         [CONTENT_TYPE_HEADER]: method === 'PATCH' ? MERGE_PATCH_CONTENT_TYPE : JSON_CONTENT_TYPE,
                     },
                 },
-                (res) => {
-                    let text = '';
-                    // The classification prefix, kept separately: once the sliding tail below has
-                    // dropped the start of the stream, the `400 Bad Request` line readVerdict and
-                    // postRefusal classify on (issue #308) would be gone from the diagnosis log
-                    // and the resolved body alike. Bounded at the diagnosis length.
-                    let prefix = '';
-                    let truncated = false;
-                    res.setEncoding('utf8');
-                    res.on('data', (chunk: string) => {
-                        if (prefix.length < DIAGNOSIS_BODY_CHARS) {
-                            prefix = (prefix + chunk).slice(0, DIAGNOSIS_BODY_CHARS);
-                        }
-                        text += chunk;
-                        // Only the tail survives OUTPUT_LIMIT downstream, so buffering a
-                        // multi-megabyte single log line whole would be exactly the unbounded
-                        // string the docker runner's cap exists to avoid. Keep a sliding tail.
-                        if (text.length > STREAM_BUFFER_LIMIT) {
-                            text = text.slice(-STREAM_BUFFER_TAIL);
-                            truncated = true;
-                        }
-                    });
-                    res.on('end', () => {
-                        // A truncated answer carries the prefix ahead of the tail so the original
-                        // start survives classification; an untruncated one is already whole.
-                        const body = truncated ? prefix + text : text;
-                        const status = res.statusCode ?? 0;
+                (res) =>
+                    collectBody(res, POD_LOG_PATH.test(path), (response, prefix) => {
                         // The diagnosis line (issue #308): method, path, status and the API's own
                         // words — the body IS the diagnosis.
-                        const diagnosis = refusalDiagnosis(method, path, status, prefix);
+                        const diagnosis = refusalDiagnosis(method, path, response.status, prefix);
                         if (diagnosis !== null) log(diagnosis);
-                        resolve({ status, body });
-                    });
-                }
+                        resolve(response);
+                    })
             );
             // A half-open connection would otherwise hold the run forever — and the loop would
             // renew the lease around a runner nobody can observe or finish.

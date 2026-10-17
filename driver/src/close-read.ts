@@ -50,27 +50,37 @@ export interface OpencodeExport {
 
 const EXPORT_STREAMS = { raw: 'raw', normalized: 'normalized' } as const;
 
+/** One export line's stream tag and whether it is the cap's marker; null for any other line. */
+function streamTagOf(line: string): { stream: string; marker: boolean } | null {
+    if (!line.startsWith('{"stream":')) return null;
+    try {
+        const tagged = JSON.parse(line) as { stream?: unknown; truncated?: unknown };
+        return Object.hasOwn(EXPORT_STREAMS, tagged.stream as string)
+            ? { stream: tagged.stream as string, marker: tagged.truncated === true }
+            : null;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * Splits the readout's stdout into its export streams: every line tagged with a `stream` belongs
  * to that stream and is kept verbatim; a `{stream,truncated:true}` marker only sets the flag.
- * Undefined when no stream line was printed — a readout that exported nothing.
+ * Undefined when no stream line was printed — a readout that exported nothing. `headCut`: the
+ * stdout is a tail the transport kept (issue #825), so the first stream it shows lost its head.
  */
-export function parseOpencodeExport(stdout: string): OpencodeExport | undefined {
+export function parseOpencodeExport(stdout: string, headCut = false): OpencodeExport | undefined {
     const lines: Record<string, string[]> = { raw: [], normalized: [] };
     const truncated: Record<string, boolean> = { raw: false, normalized: false };
+    let first: string | null = null;
     for (const line of stdout.split('\n')) {
-        if (!line.startsWith('{"stream":')) continue;
-        let tagged: { stream?: unknown; truncated?: unknown };
-        try {
-            tagged = JSON.parse(line) as { stream?: unknown; truncated?: unknown };
-        } catch {
-            continue;
-        }
-        const stream = typeof tagged.stream === 'string' ? tagged.stream : '';
-        if (!Object.hasOwn(lines, stream)) continue;
-        if (tagged.truncated === true) truncated[stream] = true;
-        else lines[stream]?.push(line);
+        const tag = streamTagOf(line);
+        if (!tag) continue;
+        first ??= tag.stream;
+        if (tag.marker) truncated[tag.stream] = true;
+        else lines[tag.stream]?.push(line);
     }
+    if (headCut && first !== null) truncated[first] = true;
     const streamOf = (name: string): ExportStream | null => {
         const kept = lines[name] ?? [];
         return kept.length === 0 ? null : { content: kept.join('\n'), truncated: truncated[name] === true };
@@ -80,8 +90,8 @@ export function parseOpencodeExport(stdout: string): OpencodeExport | undefined 
     return raw || normalized ? { raw, normalized } : undefined;
 }
 
-const exportedOf = (stdout: string): { exported?: OpencodeExport } => {
-    const exported = parseOpencodeExport(stdout);
+const exportedOf = (stdout: string, headCut: boolean): { exported?: OpencodeExport } => {
+    const exported = parseOpencodeExport(stdout, headCut);
     return exported ? { exported } : {};
 };
 
@@ -100,8 +110,11 @@ function nonEmptyString(value: unknown): string | null {
     return typeof value === 'string' && value ? value : null;
 }
 
-/** Pulls the session id, finish reason and context stats out of the readout, tolerating anything else. */
-export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
+/**
+ * Pulls the session id, finish reason and context stats out of the readout, tolerating anything
+ * else. `headCut` as `parseOpencodeExport` reads it.
+ */
+export function parseOpencodeRunOutcome(stdout: string, headCut = false): OpencodeRunOutcome {
     const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
     const nothing = {
         sessionId: null,
@@ -142,7 +155,7 @@ export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
             summary,
             blocked,
             error,
-            ...exportedOf(stdout),
+            ...exportedOf(stdout, headCut),
         };
     } catch {
         return nothing;

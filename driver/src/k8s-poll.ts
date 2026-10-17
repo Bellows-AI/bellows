@@ -16,6 +16,7 @@ import {
     isMalformedRequest400,
     livePod,
     livePodOfItems,
+    LOG_TAIL_LINES,
     parse,
     POLL_MAX_CONSECUTIVE_FAILURES,
     POLL_MS,
@@ -241,14 +242,15 @@ export async function pollJobToTerminal(
  * so a success can only have counted an exit-0 termination. A re-claim's replaced attempt's pod
  * can still be listed while it terminates, carrying the same job-name label — skipped, so the
  * exit code and the log are always this run's. The log read has no retry at all: the pod may be
- * gone for good, and the answer is already known to be "whatever we can get".
+ * gone for good, and the answer is already known to be "whatever we can get". `tail` is the line
+ * tail the log is read at (null: the whole log); `truncated` says the transport kept only its end.
  */
 export async function readJobPodVerdict(
     deps: K8sDeps,
     jobName: string,
-    { succeeded, container }: { succeeded: boolean; container?: string },
+    { succeeded, container, tail = LOG_TAIL_LINES }: { succeeded: boolean; container?: string; tail?: number | null },
     what: string
-): Promise<{ exitCode: number | null; output: string; pods: K8sPod[] }> {
+): Promise<{ exitCode: number | null; output: string; truncated: boolean; pods: K8sPod[] }> {
     const podsResponse = await readVerdict(deps, jobPodsPath(deps.config.k8sNamespace, jobName), what);
     expectOk(podsResponse, what);
     const pods = parse<K8sPodList>(podsResponse.body).items ?? [];
@@ -257,19 +259,20 @@ export async function readJobPodVerdict(
     // agent); an aux pod's only container is read by position, as ever.
     const exitCode = containerStatusOf(pod, container)?.state?.terminated?.exitCode ?? (succeeded ? 0 : null);
     let output = '';
+    let truncated = false;
     if (pod?.metadata?.name) {
         let log: K8sResponse;
         try {
-            log = await deps.request(
-                'GET',
-                podLogPath(deps.config.k8sNamespace, pod.metadata.name, undefined, container)
-            );
+            log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name, tail, container));
         } catch {
             log = { status: 0, body: '' };
         }
-        if (log.status < HTTP_ERROR_STATUS) output = log.body;
+        if (log.status < HTTP_ERROR_STATUS) {
+            output = log.body;
+            truncated = log.truncated === true;
+        }
     }
-    return { exitCode, output, pods };
+    return { exitCode, output, truncated, pods };
 }
 
 /**
@@ -431,14 +434,17 @@ export async function readRunnerVerdict(
 }> {
     // The agent's verdict: its exit status and its log — the pod holds the supervisor and the
     // exporter beside it, whose own output is no part of the run's.
+    // The whole log, never a line tail (issue #825): it is the artifact, and a tail would upload
+    // as complete.
     const verdict = await readJobPodVerdict(
         deps,
         runnerName(job),
-        { succeeded: jobSucceeded, container: AGENT_CONTAINER },
+        { succeeded: jobSucceeded, container: AGENT_CONTAINER, tail: null },
         'listing the runner pods'
     );
     // The tail for the verdict's output field, and the full log (issue #325) tail-kept at the
-    // artifact cap for the loop's upload — both cut from the one pod log this read exists for.
+    // artifact cap for the loop's upload — both cut from the one pod log this read exists for,
+    // truncated when either the cap or the transport cut it.
     const full = tailKept(verdict.output, ARTIFACT_LIMIT);
     const supervisorExit = containerStatusOf(livePodOfItems(verdict.pods), SUPERVISOR_CONTAINER)?.state?.terminated
         ?.exitCode;
@@ -448,7 +454,7 @@ export async function readRunnerVerdict(
         exitCode: verdict.exitCode ?? report?.agentExit ?? null,
         output: reportTail(verdict.output),
         fullLog: full.content,
-        logTruncated: full.truncated,
+        logTruncated: full.truncated || verdict.truncated,
         infraLoss: jobSucceeded
             ? null
             : (runnerLossOf(verdict.pods) ?? supervisorLossOf(livePodOfItems(verdict.pods), supervisorExit)),

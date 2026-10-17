@@ -42,11 +42,11 @@ import {
 import { envFileBody } from './claim.js';
 import { snapshotTree } from './review-snapshot.js';
 import {
+    appendTailKept,
     composeRuntimeSample,
+    type KeptLog,
     reportTail,
     SERVICE_LOG_TAIL_LINES,
-    tailKept,
-    ARTIFACT_LIMIT,
     type DeadService,
     type RunOutcome,
     type Runner,
@@ -72,6 +72,7 @@ import {
     type RunnerFiles,
     type Spawn,
     type ExecDocker,
+    readUtf8,
 } from './docker-runner-support.js';
 import { OPENCODE } from './executors.js';
 import { createDeadlineRegistry, type DeadlineRegistry } from './run-deadline.js';
@@ -514,8 +515,8 @@ async function dockerRun(
                 output,
                 timedOut,
                 cacheLost: cacheState.cacheLost,
-                fullLog,
-                logTruncated,
+                fullLog: fullLog.content,
+                logTruncated: fullLog.truncated,
             });
 
         const child = spawnFn('docker', ['start', '-a', containerName(job)], {
@@ -529,24 +530,20 @@ async function dockerRun(
         // ARTIFACT_LIMIT bytes — the artifact the loop uploads at close, of which the rolling
         // tail above is only the end. Kept separately from `output`, whose window is the
         // report's, and grown by the same chunks.
-        let fullLog = '';
-        let logTruncated = false;
-        const collect = (chunk: Buffer | string) => {
-            const text = String(chunk);
+        let fullLog: KeptLog = { content: '', truncated: false };
+        const collect = (text: string) => {
             output += text;
             // Keep the tail: a run that fails says why at the end, and the head is banner.
             // Byte-true, because the report has to fit the board's body limit whatever the
             // log contained — see reportTail.
             output = reportTail(output);
-            const grown = tailKept(fullLog + text, ARTIFACT_LIMIT);
-            fullLog = grown.content;
-            logTruncated = logTruncated || grown.truncated;
+            fullLog = appendTailKept(fullLog, text);
             // The same tail a complete report would carry, handed over as it grows. Every
             // chunk calls back; throttling is the loop's business, not this runner's.
             onOutput?.(output);
         };
-        child.stdout?.on('data', collect);
-        child.stderr?.on('data', collect);
+        readUtf8(child.stdout, collect);
+        readUtf8(child.stderr, collect);
 
         // The BACKSTOP: the supervisor ends the agent at the run budget itself (its exit 124), so
         // this only fires for a group whose supervisor stopped doing that — the budget plus the
