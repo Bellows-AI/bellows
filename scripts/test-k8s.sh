@@ -3,6 +3,7 @@
 #
 #   scripts/test-k8s.sh              # lint + template only (needs helm)
 #   scripts/test-k8s.sh --cluster    # then the real thing (needs a kind cluster running)
+#   scripts/test-k8s.sh --cluster --only disruption   # the cluster setup, then node disruption alone
 #
 # Phase one is offline: helm lint, and helm template assertions that the rendered manifests carry
 # the security-relevant decisions — credentials by secretKeyRef and never by value, a
@@ -1079,6 +1080,17 @@ if [ "${1:-}" != '--cluster' ]; then
     exit
 fi
 
+# `--only disruption` skips the admission, orphan-reaper and workspace-boundary phases between the
+# setup and node disruption, for iterating on the disruption cases; it is not the lane's evidence.
+ONLY=''
+if [ "${2:-}" = '--only' ]; then
+    ONLY="${3:-}"
+    [ "$ONLY" = disruption ] || {
+        echo "test-k8s: --only takes one phase, disruption; got '$ONLY'"
+        exit 1
+    }
+fi
+
 for tool in kubectl docker openssl; do
     command -v "$tool" >/dev/null || {
         echo "test-k8s: $tool is required for the cluster phase"
@@ -1179,6 +1191,10 @@ cp docker/claude-executor/ctl-agent.cjs scripts/stub-agent.sh "$work/"
 printf '%s\n' \
     'echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}' \
     'echo "$@"' \
+    'case "$*" in *factory-stub-mark*)' \
+    '    if [ -f "$WORKDIR/.factory/stub-mark" ]; then echo "mark kept from $(cat "$WORKDIR/.factory/stub-mark") head: $(git -C "$WORKDIR" log -1 --format=%s)"; exit 0; fi' \
+    '    mkdir -p "$WORKDIR/.factory" && echo "$HOSTNAME" > "$WORKDIR/.factory/stub-mark" ;;' \
+    'esac' \
     'for arg in "$@"; do' \
     '    case "$arg" in' \
     '    *factory-stub-sleep-*)' \
@@ -1198,10 +1214,38 @@ docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >/dev/n
     exit 1
 }
 
+# Whether every node already holds <image> under its name at the id the host daemon has: `kind load`
+# copies the whole archive into each node however unchanged it is, minutes for the board image. The
+# id is the image config digest on both sides; any doubt — a digest reference, a node that cannot
+# be read, a daemon whose ids are not config digests — answers no, and the image is loaded.
+image_on_nodes() { # image_on_nodes <image>
+    local want nodes node
+    want="$(docker image inspect --format '{{.Id}}' "$1" 2>/dev/null)" || return 1
+    nodes="$(kind get nodes --name "$kind_name" 2>/dev/null)"
+    [ -n "$want" ] && [ -n "$nodes" ] || return 1
+    for node in $nodes; do
+        docker exec "$node" crictl images -o json 2>/dev/null | node -e '
+const [ref, want] = process.argv.slice(1);
+if (ref.includes("@")) process.exit(1);
+const slash = ref.indexOf("/");
+const first = slash === -1 ? "" : ref.slice(0, slash);
+const named = slash === -1 ? `docker.io/library/${ref}` : /[.:]/.test(first) || first === "localhost" ? ref : `docker.io/${ref}`;
+const full = named.slice(named.lastIndexOf("/")).includes(":") ? named : `${named}:latest`;
+let images = [];
+try { images = JSON.parse(require("node:fs").readFileSync(0, "utf8")).images ?? []; } catch { process.exit(1); }
+process.exit(images.some((i) => i.id === want && (i.repoTags ?? []).includes(full)) ? 0 : 1);
+' "$1" "$want" || return 1
+    done
+}
+
 echo "loading the images into the kind cluster $kind_name"
 # One load call per image, not one variadic invocation: every kind version accepts
 # `kind load docker-image <image> --name <cluster>`, older ones not always a list.
 for image in "$DASH_IMAGE" "$DRIVER_IMAGE" "$STUB_IMAGE" "$COLLECTOR_IMAGE"; do
+    if image_on_nodes "$image"; then
+        echo "  $image is already on every node"
+        continue
+    fi
     kind load docker-image "$image" --name "$kind_name" >/dev/null || {
         echo "test-k8s: could not load $image into the kind cluster $kind_name"
         exit 1
@@ -1565,6 +1609,9 @@ expect_contains 'the org config reached the pod' "$org_result" 'org-team-model'
 job_object="$(kubectl get jobs -l factory.job -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
 [ "${job_object:-0}" -ge 1 ] && ok 'a runner Job object exists' || bad 'a runner Job object exists' "none found"
 
+# Everything from here to node disruption is skipped by `--only disruption` (unindented: whole phases).
+if [ "$ONLY" != disruption ]; then
+
 # --- The orphan reaper (issue #301), against the real apiserver ---------------------------------
 #
 # A service fleet the way a crashed attempt would have left it: a pod and its headless Service,
@@ -1806,6 +1853,8 @@ expect_not_contains 'the volume root is not reachable above the mount' "$probe_o
 
 kubectl delete pod fs-seed fs-probe -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
 
+fi # the phases `--only disruption` skips
+
 # --- Node disruption (issue #796) ---------------------------------------------------------------
 #
 # Infrastructure loss interrupts a task, it never loses one — on a real apiserver. The release was
@@ -1825,6 +1874,8 @@ DRIVER_SEL="app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=driv
 ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
 DRAINED='the driver was drained'
 POD_LOST='infrastructure loss: the runner pod was deleted'
+# The interruption the next claim records for an attempt whose lease expired (issue #822).
+EXPIRED='the lease expired: its driver went silent'
 
 queue_job() { # queue_job <command> -> the new job's id, empty when the board refused it
     node -e "$JS_HEADERS"'
@@ -1846,6 +1897,41 @@ job_output() { # job_output <id>
     node -e "$JS_HEADERS"'
 fetch(process.argv[1], { headers }).then(async (r) => process.stdout.write(String((await r.json()).output ?? ""))).catch(() => {});
 ' "$BASE/api/jobs/$1"
+}
+
+job_session() { # job_session <id>
+    node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers }).then(async (r) => process.stdout.write(String((await r.json()).sessionId ?? ""))).catch(() => {});
+' "$BASE/api/jobs/$1"
+}
+
+last_attempt() { # last_attempt <id> -> the job allowed one attempt, so an expiry spending it would retire it dead
+    kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+        psql -q -v ON_ERROR_STOP=1 -v "id=$1" postgres://factory:factory@127.0.0.1:5432/factory_dev -f - \
+        >/dev/null 2>&1 <<'SQL'
+update job set max_attempts = 1 where id = :'id';
+SQL
+}
+
+advance_origin() { # advance_origin -> success once the origin's main has a new `lane-upstream` commit
+    local script="set -e; git clone -q /workspaces/$member_path/.smoke-origin.git /tmp/up; git -C /tmp/up -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q --allow-empty -m lane-upstream; git -C /tmp/up push -q origin HEAD:main; echo advanced"
+    kubectl run "$RELEASE-origin-advance" -n "$NAMESPACE" --image="$STUB_IMAGE" --restart=Never --command \
+        --overrides="$(
+            cat <<EOF
+{"spec":{"automountServiceAccountToken":false,
+"volumes":[{"name":"w","persistentVolumeClaim":{"claimName":"$STATE_RELEASE-workspaces"}}],
+"containers":[{"name":"advance","image":"$STUB_IMAGE","imagePullPolicy":"IfNotPresent",
+"command":["sh","-c","$script"],
+"volumeMounts":[{"name":"w","mountPath":"/workspaces"}]}]}}
+EOF
+        )" -- sh >/dev/null 2>&1
+    kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s "pod/$RELEASE-origin-advance" \
+        -n "$NAMESPACE" >/dev/null 2>&1
+    local out
+    out="$(kubectl logs "$RELEASE-origin-advance" -n "$NAMESPACE" 2>&1 || true)"
+    kubectl delete pod "$RELEASE-origin-advance" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
+    case "$out" in *advanced*) return 0 ;; esac
+    return 1
 }
 
 await_brief() { # await_brief <id> <case pattern> <seconds> -> the last brief; returns 0 once it matched
@@ -1897,7 +1983,9 @@ driver_logs() { kubectl logs -l "$DRIVER_SEL" -n "$NAMESPACE" --tail=-1 2>/dev/n
 # a. The hard kill: the lease left to expire. A forced delete is no SIGKILL — the kubelet still
 #    sends SIGTERM and kills ~2s later — so this is no drain only while the 10s handover outlasts
 #    that. The 120s lease keeps the job live, under the dead driver's claim, through the reaper check.
+#    At max_attempts 1: the claim records the expiry as claim 1's interruption and adopts.
 hard="$(queue_job 'factory-stub-sleep-10 hard kill')"
+[ -n "$hard" ] && last_attempt "$hard"
 hard_pod="$(await_runner_pod "$hard")"
 if [ -z "$hard" ] || [ -z "$hard_pod" ]; then
     bad 'the hard-kill runner is running' "job '$hard': $(job_brief "$hard")"
@@ -1922,7 +2010,7 @@ else
         bad 'the reaper spares the unread finished runner Job' 'the runner Job is gone before its adoption'
     expect_not_contains 'the reaper logs nothing for the live job' "$(driver_logs)" "reaper: job $hard"
     hard_end="$(await_brief "$hard" 'succeeded*' 240)"
-    [ "$hard_end" = "succeeded|1|1|1|$ADOPTED" ] && ok 'the replacement driver adopts the run: one attempt, one interruption' ||
+    [ "$hard_end" = "succeeded|1|1|1|$EXPIRED" ] && ok 'the replacement driver adopts the run: one attempt, one interruption' ||
         bad 'the replacement driver adopts the run: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $hard_end"
     expect_contains 'the adopted output is the first runner pod output' "$(job_output "$hard")" "slept in $hard_pod"
     expect_contains 'the replacement driver logs the adoption' "$(driver_logs)" "job $hard: $ADOPTED"
@@ -1983,9 +2071,53 @@ else
     esac
     expect_contains 'the job output is the second runner pod' "$(job_output "$evicted")" 'slept in '
     expect_not_contains 'the deleted pod produced no verdict' "$(job_output "$evicted")" "slept in $evicted_pod"
+    expect_contains 'the next attempt resumes the session' "$(job_output "$evicted")" "--resume $(job_session "$evicted")"
 fi
 
-for job in $hard $drained $evicted; do
+# d. The driver and its runner lost together (issue #822): nothing survives to adopt, so the next
+#    claim redoes the attempt in a replacement runner — in the lost attempt's session, on its tree.
+#    The first runner marks the worktree's git-ignored .factory/ and blocks; the replacement finds
+#    the mark. Restored, not synced: the origin moves while no driver holds the job, and a sync
+#    would have moved the tree onto that commit. At max_attempts 1, where an expiry spending an
+#    attempt would retire the job dead.
+lost="$(queue_job 'factory-stub-mark factory-stub-sleep-300 lost together')"
+[ -n "$lost" ] && last_attempt "$lost"
+lost_pod="$(await_runner_pod "$lost")"
+if [ -z "$lost" ] || [ -z "$lost_pod" ]; then
+    bad 'the lost-together runner is running' "job '$lost': $(job_brief "$lost")"
+else
+    ok 'the lost-together runner is running'
+    await_released "$lost_pod" && ok 'the lost-together runner released its agent' ||
+        bad 'the lost-together runner released its agent' 'no /factory/in/go within 60s'
+    marked=""
+    for _ in $(seq 1 30); do
+        kubectl exec "$lost_pod" -c agent -n "$NAMESPACE" -- sh -c 'test -f "$WORKDIR/.factory/stub-mark"' >/dev/null 2>&1 && {
+            marked=1
+            break
+        }
+        sleep 1
+    done
+    [ -n "$marked" ] && ok 'the first runner marked its tree' || bad 'the first runner marked its tree' 'no mark within 30s'
+    lost_session="$(job_session "$lost")"
+    lost_job="$(first_runner_job "$lost")"
+    kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+    kubectl delete job "$lost_job" -n "$NAMESPACE" --grace-period=0 --force --wait=false >/dev/null 2>&1
+    advance_origin && ok 'the origin moves while no driver holds the job' ||
+        bad 'the origin moves while no driver holds the job' 'the advance pod did not push'
+    kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
+    lost_end="$(await_brief "$lost" 'succeeded*' 300)"
+    [ "$lost_end" = "succeeded|1|1|1|$EXPIRED" ] && ok 'a replacement runner redoes the lost attempt: one attempt, one interruption' ||
+        bad 'a replacement runner redoes the lost attempt: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $lost_end"
+    lost_out="$(job_output "$lost")"
+    expect_contains 'the replacement resumes the lost session' "$lost_out" "--resume $lost_session"
+    expect_contains 'the replacement runs on the tree the lost runner left' "$lost_out" "mark kept from $lost_pod head: "
+    expect_not_contains 'the replacement ran on the restored tree, not a synced one' "$lost_out" 'head: lane-upstream'
+    expect_contains 'the replacement driver logs the resumed session' "$(driver_logs)" \
+        "job $lost: attempt 1 resuming session $lost_session"
+    expect_not_contains 'nothing was adopted' "$(driver_logs)" "job $lost: $ADOPTED"
+fi
+
+for job in $hard $drained $evicted $lost; do
     kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
         --ignore-not-found --wait=false >/dev/null 2>&1
 done

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import { expect } from 'vitest';
+import { INTERRUPTION_BUDGET } from '../src/db/job-store.js';
 import type { TestUser } from './harness.js';
 
 /**
@@ -54,6 +55,20 @@ export const account = async (sql: Sql, githubUserId: number, login: string): Pr
 /** Lets the job's lease lapse, so the next claim may take it over. */
 export const expireLease = (sql: Sql, id: string) =>
     sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
+
+/**
+ * Fills the job's interruption record to the budget, so its next lease expiry spends an attempt
+ * the way it did before recovery accounting (issue #822). Negative claim sequences never match a
+ * real claim's.
+ */
+export const spendInterruptionBudget = (sql: Sql, id: string) =>
+    sql`
+        update job set interruptions = (
+            select jsonb_agg(jsonb_build_object('reason', 'spent by the fixture', 'at', now(), 'claimSeq', -n))
+            from generate_series(1, ${INTERRUPTION_BUDGET}) as n
+        )
+        where id = ${id}
+    `;
 
 /**
  * Holds a lock on `id` in another transaction until `release()` — the per-thread advisory lock

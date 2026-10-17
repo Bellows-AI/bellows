@@ -9,6 +9,7 @@ import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../workspace/bellows.js';
 import type { ServiceSpec } from '../workspace/bellows-services.js';
 import type { EvidencePolicy, ReviewEvidence } from './evidence-policy.js';
+import { INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from './job-store-actions.js';
 import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-claim-executor.js';
 import { readReviewEvidence } from './job-store-evidence.js';
 import { stopReviewsOf } from './job-store-reviews.js';
@@ -58,11 +59,15 @@ export interface ClaimCandidateRow {
     has_jira_connection: boolean;
     /** The frozen target branch of the batch task the thread works (059), read in the same RETURNING; null outside a batch. */
     base_branch: string | null;
+    /** Whether this attempt's loss retires the job: attempts and interruption budget spent (issue #822). */
+    last_attempt: boolean;
 }
 
 /**
  * Retire what has burned its attempts, before looking for work. Without this a command that kills
- * its worker is reclaimed every time its lease expires, forever. The dead attempt's segment banks
+ * its worker is reclaimed every time its lease expires, forever. An expired lease is first an
+ * interruption the claim records (issue #822), so only a row whose interruption budget is spent
+ * too retires; its session stays, for the follow-up that continues it. The dead attempt's segment banks
  * here: the row ran for real before its worker went quiet, and the retirement must not erase it. A
  * stamped row never reaches this sweep — the settle in `claimJob` has already landed it `stopped`,
  * which is the verdict a stop is (issue #152): dead is for attempts that failed on their own.
@@ -74,6 +79,7 @@ async function retireExhaustedAttempts(ctx: JobStoreContext, tx: TransactionSql)
                        wall_clock_ms = ${wallTick}
         where org_id = ${orgId} and status = 'running'
           and lease_expires_at <= now() and attempts >= max_attempts
+          and jsonb_array_length(interruptions) >= ${INTERRUPTION_BUDGET}
         returning id, root_job_id
     `;
     // A retired caller's separate reviews (issue #549) have no one left to read them.
@@ -160,13 +166,23 @@ async function claimNextCandidate(
             )
         `;
 
+        /*
+         * A `running` row whose lease expired is an attempt the infrastructure lost — its driver
+         * went silent (issue #822). While the interruption budget lasts, the claim that takes it
+         * over records that loss as the superseded attempt's interruption and spends no attempt,
+         * so an expiry at the last allowed attempt stays recoverable. Unqualified on purpose: the
+         * select's only table is the candidate, and the update's SET reads the pre-update row.
+         */
+        const recovering = sql`(status = 'running' and jsonb_array_length(interruptions) < ${INTERRUPTION_BUDGET})`;
+        const expiry = sql.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString() });
+
         for (;;) {
             const [candidate] = await tx<{ id: string; root_job_id: string }[]>`
                 select j.id, j.root_job_id from job j
                 where j.org_id = ${orgId}
                   and j.status in ('queued','running')
                   and j.lease_expires_at <= now()
-                  and j.attempts < j.max_attempts
+                  and (j.attempts < j.max_attempts or ${recovering})
                   and ${sameThreadRunning(sql`j.id`, sql`j.root_job_id`)}
                 order by j.created_at, j.id
                 limit 1
@@ -217,13 +233,22 @@ async function claimNextCandidate(
                     skills: string[];
                     has_jira_connection: boolean;
                     base_branch: string | null;
+                    last_attempt: boolean;
                 }[]
             >`
                 update job set
                     status           = 'running',
                     claimed_by       = ${worker},
                     lease_token      = gen_random_uuid(),
-                    attempts         = attempts + 1,
+                    -- A lost attempt is recorded, not spent: the interruption names the claim it
+                    -- supersedes, so an adoption of that claim's runner is the same disruption.
+                    attempts         = attempts + case when ${recovering} then 0 else 1 end,
+                    interruptions    = case when ${recovering}
+                        then interruptions || jsonb_build_array(
+                            ${expiry}::jsonb || jsonb_build_object('claimSeq', claim_seq)
+                        )
+                        else interruptions
+                    end,
                     -- Never refunded (057): what orders this claim after every earlier one.
                     claim_seq        = claim_seq + 1,
                     -- Unconditional, not coalesce(started_at, now()): this must describe the
@@ -236,17 +261,8 @@ async function claimNextCandidate(
                     -- stays null, because null means "never ran" and zero would claim a
                     -- measurement that was never made.
                     wall_clock_ms    = case when started_at is null then wall_clock_ms else ${ctx.wallTick} end,
-                    -- Kept on a follow-up only, whose session IS the parent conversation it
-                    -- continues. The status read here is the row's value BEFORE this update, so
-                    -- 'running' means a lease that expired: for an ordinary job that attempt's
-                    -- session is not this one, and leaving it would show a link to a run whose
-                    -- output was thrown away. A follow-up keeps its copied session through a
-                    -- crash, because the session carries the whole conversation, not just the
-                    -- dead attempt's work.
-                    session_id       = case
-                        when parent_job_id is not null then session_id
-                        else null
-                    end,
+                    -- session_id is not written: the session a lost attempt reported is the one
+                    -- its takeover resumes (issue #822). A fresh run is a retry — a new row.
                     -- The previous attempt's vitals are not this attempt's, and a new container
                     -- starts unsampled: the started_at reset, one row down.
                     runtime          = null,
@@ -257,7 +273,7 @@ async function claimNextCandidate(
                 where org_id = ${orgId} and id = ${candidate.id}
                   and status in ('queued','running')
                   and lease_expires_at <= now()
-                  and attempts < max_attempts
+                  and (attempts < max_attempts or ${recovering})
                   -- Re-asserted under the root lock: whatever the select saw, this is the
                   -- decision the lock serializes. A same-thread claim that committed while
                   -- this transaction waited is visible here, and the candidate's own row
@@ -271,6 +287,9 @@ async function claimNextCandidate(
                 returning id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, created_by,
                           session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                           review_of, review_spec, review_ref,
+                          -- The post-update row: whether this attempt's loss would retire the job.
+                          (attempts >= max_attempts
+                           and jsonb_array_length(interruptions) >= ${INTERRUPTION_BUDGET}) as last_attempt,
                           (parent_job_id is not null and command_delivered_at is null) as follow_up,
                           (select r.command from job r
                            where r.org_id = job.org_id and r.id = job.root_job_id) as root_command,
@@ -752,6 +771,7 @@ export function buildClaimResult(
         command: row.command,
         attempts: row.attempts,
         maxAttempts: row.max_attempts,
+        lastAttempt: row.last_attempt,
         claimSeq: Number(row.claim_seq),
         leaseToken: row.lease_token,
         leaseExpiresAt: row.lease_expires_at.toISOString(),
@@ -768,7 +788,7 @@ export function buildClaimResult(
         workspacePath: claimPath,
         rootJobId,
         rootCommand: row.root_command,
-        // Survived the case above, so this claim is a resume.
+        // A follow-up's copied session, or the one a lost attempt of this row reported: a resume.
         resumeSessionId: row.session_id,
         followUp: row.follow_up,
         ...(claimEnv ? { env: claimEnv } : {}),

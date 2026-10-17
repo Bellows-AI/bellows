@@ -161,7 +161,7 @@ function workerMethods(
  * exactly the case the driver's null check exists to catch, and it only reaches it if the board is
  * honest here.
  */
-export { INTERRUPTION_BUDGET } from './job-store-actions.js';
+export { INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from './job-store-actions.js';
 
 export function createJobStore(deps: CreateJobStoreDeps): JobStore {
     const { sql, orgId, hasWorkspaces = true, ready, env, githubToken, plan: planReader, executorConfig, prs } = deps;

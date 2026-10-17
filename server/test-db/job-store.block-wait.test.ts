@@ -531,7 +531,8 @@ describe.skipIf(!enabled)('durable block waits — concurrency and cancellation'
         const reclaimed = (await store.claim('worker-2', 60)) as Claim;
         expect(reclaimed).not.toBeNull();
         expect(reclaimed.id).toBe(claim.id);
-        expect(reclaimed.attempts).toBe(2);
+        // The expiry is the lost attempt's interruption (issue #822): the claim sequence moves.
+        expect(reclaimed).toMatchObject({ attempts: 1, claimSeq: 2 });
 
         const rounds = await roundRows(root);
         expect(rounds).toHaveLength(1);
