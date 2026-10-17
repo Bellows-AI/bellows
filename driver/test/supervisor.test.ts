@@ -609,7 +609,8 @@ describe('the supervisor run: supervised steps', () => {
     it('never launches the agent for a driver that does not answer past the orphan bound', async () => {
         const driver = await startDriver();
         const supervised = run({ ...driver, url: 'http://127.0.0.1:1' }, { SUPERVISOR_ORPHAN_MS: '200' });
-        await supervised.done;
+        // Its own exit, not 0: a Job whose agent never ran must not read as a finished run to adopt.
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.lost);
         expect(supervised.saw(MAILBOX_FILES.go)).toBe(false);
         expect(supervised.report()).toMatchObject({ outcome: 'lost', cause: 'driver_lost', agentEnd: 'unlaunched' });
     });

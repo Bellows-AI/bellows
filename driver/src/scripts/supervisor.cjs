@@ -42,7 +42,8 @@
 //   SUPERVISOR_STEP_WAIT_MS   — one `GET /step` long poll (default 15000).
 //
 // Exit status: 0 finalized, 124 finalized after the run budget ended the agent, 70 the supervisor
-// itself failed. The agent's own exit code is the kubelet's (or docker's) to report, never ours.
+// itself failed, 75 the driver was lost before the agent was released (nothing ran to adopt). The
+// agent's own exit code is the kubelet's (or docker's) to report, never ours.
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
@@ -86,7 +87,8 @@ const STEP_REFUSED_EXIT = 126;
 const STEP_RESULT_ATTEMPTS = 5;
 const EXIT_DEADLINE = 124;
 const EXIT_SUPERVISOR_FAILED = 70;
-const EXIT = { finalized: 0, deadline: EXIT_DEADLINE, failed: EXIT_SUPERVISOR_FAILED };
+const EXIT_DRIVER_LOST = 75;
+const EXIT = { finalized: 0, deadline: EXIT_DEADLINE, failed: EXIT_SUPERVISOR_FAILED, lost: EXIT_DRIVER_LOST };
 const CAUSE = {
     killed: 'agent_killed',
     timeout: 'timeout',
@@ -793,7 +795,9 @@ async function supervise(env = process.env, log = (line) => process.stdout.write
         delegated: machine.delegated(),
     };
     log(`${REPORT_PREFIX}${JSON.stringify(report)}`);
-    return machine.outcome === 'timed_out' ? EXIT.deadline : EXIT.finalized;
+    if (machine.outcome === 'timed_out') return EXIT.deadline;
+    // Never released, so nothing ran: a completed Job here would be adopted as a finished run.
+    return agentEnd.how === 'unlaunched' && machine.cause === CAUSE.orphaned ? EXIT.lost : EXIT.finalized;
 }
 
 module.exports = {

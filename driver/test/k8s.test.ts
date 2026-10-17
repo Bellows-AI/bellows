@@ -5,6 +5,7 @@ import {
     EXPORTER_CONTAINER,
     GO_MARKER,
     SUPERVISOR_CONTAINER,
+    SUPERVISOR_EXIT,
     SUPERVISOR_STEPS_MS,
     SUPERVISOR_WINDDOWN_MS,
     type StepRequest,
@@ -6502,6 +6503,35 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         ).toBe(false);
         const held = await request('GET', claimPathFor(job.id));
         expect(held.status).toBe(404);
+    });
+
+    // A regression guard: the group's agent never ran, so its completed-looking end is no run to adopt.
+    it('never adopts a group whose supervisor lost its driver before the agent was released', async () => {
+        const { request, calls } = withRunners([priorItem({ failed: 1 })], {
+            pods: {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        {
+                            metadata: { name: podName },
+                            status: {
+                                phase: 'Failed',
+                                containerStatuses: [
+                                    { name: 'agent', state: { terminated: { exitCode: 0 } } },
+                                    { name: 'supervisor', state: { terminated: { exitCode: SUPERVISOR_EXIT.lost } } },
+                                ],
+                            },
+                        },
+                    ],
+                }),
+            },
+        });
+
+        expect(await runner(request).adopt!(adopter)).toBeNull();
+        expect(
+            calls.some((call) => call.method === 'DELETE' && call.path.startsWith(jobPath(namespace, priorName)))
+        ).toBe(false);
+        expect((await request('GET', claimPathFor(job.id))).status).toBe(404);
     });
 
     // A queued task's command can be edited after a handover: a run of the old command is not its run.

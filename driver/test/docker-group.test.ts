@@ -225,6 +225,9 @@ describe('waiting for the supervisor after the agent exits', () => {
         expect(supervisorLossOf(SUPERVISOR_EXIT.finalized, false)).toBeNull();
         expect(supervisorLossOf(SUPERVISOR_EXIT.deadline, false)).toBeNull();
         expect(supervisorLossOf(SUPERVISOR_EXIT.failed, false)).toMatch(/exit 70/);
+        expect(supervisorLossOf(SUPERVISOR_EXIT.lost, false)).toBe(
+            'the task supervisor lost its driver before the agent was released'
+        );
         expect(supervisorLossOf(137, false)).toMatch(/before it finalized/);
         expect(supervisorLossOf(null, false)).toMatch(/did not finalize/);
         // The backstop's own timeout is a verdict, never a loss.

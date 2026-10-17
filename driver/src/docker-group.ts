@@ -14,6 +14,7 @@ import {
     MAILBOXES,
     SUPERVISOR_CONTAINER,
     SUPERVISOR_ENV,
+    DRIVER_LOST_LOSS,
     SUPERVISOR_EXIT,
     SUPERVISOR_WINDDOWN_MS,
 } from './supervisor-contract.js';
@@ -226,6 +227,7 @@ export async function awaitSupervisor(
  */
 export function supervisorLossOf(exit: number | null, timedOut: boolean): string | null {
     if (timedOut || exit === SUPERVISOR_EXIT.finalized || exit === SUPERVISOR_EXIT.deadline) return null;
+    if (exit === SUPERVISOR_EXIT.lost) return DRIVER_LOST_LOSS;
     return exit === null
         ? 'the task supervisor did not finalize the run in time'
         : `the task supervisor ended before it finalized the run (exit ${exit})`;

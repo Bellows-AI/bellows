@@ -45,6 +45,7 @@ import { type RunnerFiles, startJobServices } from '../src/docker-runner-support
 import type { StepSink, SupervisorEndpoint } from '../src/step-control.js';
 import {
     SUPERVISOR_ENV,
+    SUPERVISOR_EXIT,
     type StepKind,
     type StepRequest,
     type StepResult,
@@ -4793,6 +4794,13 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
     it('adopts nothing and removes nothing when the earlier supervisor was lost before it finalized', async () => {
         const { exec, calls } = daemon(listing(), '137');
+
+        expect(await dockerRunner(exec).adopt!(adopter)).toBeNull();
+        expect(calls.some((args) => args[0] === 'logs' || args[0] === 'rm')).toBe(false);
+    });
+
+    it('adopts nothing when the earlier supervisor lost its driver before it released the agent', async () => {
+        const { exec, calls } = daemon(listing(), String(SUPERVISOR_EXIT.lost));
 
         expect(await dockerRunner(exec).adopt!(adopter)).toBeNull();
         expect(calls.some((args) => args[0] === 'logs' || args[0] === 'rm')).toBe(false);

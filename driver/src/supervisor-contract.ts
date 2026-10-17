@@ -159,8 +159,14 @@ export const SUPERVISOR_ORPHAN_MAX_MS = 90_000;
  */
 export const SUPERVISOR_STEPS_MS = 7_200_000;
 
-/** The supervisor's exit statuses; `EXIT` of supervisor.cjs. 124 echoes `timeout(1)`, as the gates' deadline does. */
-export const SUPERVISOR_EXIT = { finalized: 0, deadline: 124, failed: 70 } as const;
+/**
+ * The supervisor's exit statuses; `EXIT` of supervisor.cjs. 124 echoes `timeout(1)`, as the gates' deadline does.
+ * 75 (`EX_TEMPFAIL`) is a group whose driver was lost before it released the agent: the Job must not
+ * complete, or the next claim would adopt a run that never happened as a finished one.
+ */
+export const SUPERVISOR_EXIT = { finalized: 0, deadline: 124, failed: 70, lost: 75 } as const;
+/** Why a group whose supervisor exited `SUPERVISOR_EXIT.lost` is an interruption, in both executors' words. */
+export const DRIVER_LOST_LOSS = 'the task supervisor lost its driver before the agent was released';
 
 /** The supervisor's environment names. Only the supervisor container carries the control pair. */
 export const SUPERVISOR_ENV = {
