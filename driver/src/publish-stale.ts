@@ -8,13 +8,14 @@ const STALE_INFO = /stale info/;
  * push the task branch between turns, leaving the checkout's tracking ref behind: the bare lease
  * then refuses a push that is fine. On that refusal alone, refresh the tracking ref and look —
  * a remote head HEAD already contains retries as a fast-forward, a remote head HEAD lacks fails
- * naming its SHA, because forcing would discard the outside push.
+ * naming its SHA, because forcing would discard the outside push. The fetch runs the repository's
+ * hooks, so HEAD must still be `sha` — the commit the publish validated and records — before the
+ * retry pushes it (issue #825).
  */
 export async function pushWithLease(
     step: RunPublishStep,
-    branch: string,
-    credentialHelper: string,
-    push: PublishStep
+    push: PublishStep,
+    { branch, credentialHelper, sha }: { branch: string; credentialHelper: string; sha: string }
 ): Promise<void> {
     try {
         await step(push);
@@ -32,6 +33,12 @@ export async function pushWithLease(
     });
     const read = async (label: string, args: string[]): Promise<string> =>
         (await step({ label, entrypoint: 'git', args, env: false, inRepo: true })).stdout.trim();
+    const head = await read('git rev-parse HEAD', ['rev-parse', 'HEAD']);
+    if (head !== sha) {
+        throw new Error(
+            `git push: HEAD moved from ${sha} to ${head} during the stale-lease fetch — nothing was pushed`
+        );
+    }
     const remoteHead = await read('git rev-parse', ['rev-parse', tracking]);
     if ((await read('git rev-list', ['rev-list', '--count', `HEAD..${tracking}`])) !== '0') {
         throw new Error(

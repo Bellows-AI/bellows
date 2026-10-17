@@ -48,7 +48,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | Publication operation identity (`<branch>@<sha>`, `pushing` → `pushed` → `opened` in the worktree's `.factory/publication.json`) and reconciliation: the remote is read after any failed push or PR creation before it is repeated, and a clean pushed tree whose own push landed opens the missing PR | `driver/src/publish-reconcile.ts`, `publish.ts`, `driver/src/scripts/publish-ledger.cjs` | `driver/test/publish-reconcile.test.ts` |
 | Agent draft publication (`POST /publish`) | `driver/src/publish-control.ts`, `control-channel.ts`, `loop-publish.ts` | `driver/test/publish-control.test.ts` |
 | Agent-opened PR, git guard | `docker/claude-executor/git-guard.cjs`, `docker/opencode-executor/opencode-home/opencode.json`, `driver/src/publish.ts` | `driver/test/executor-images.test.ts` |
-| Evidence policy, driver side | `driver/src/evidence-policy.ts` | `driver/test/evidence-policy.test.ts` |
+| Evidence policy, driver side: evidence binds the tree fingerprint probed before the gates (ignored files and `.factory/` never move it), and a publish bound to it ships only that content — a repository hook that moves it (the switch's post-checkout, the commit's; staging runs hook-free) is refused `stale`, nothing pushed; an unbound publish binds nothing | `driver/src/evidence-policy.ts`, `publish.ts`, `publish-stale.ts`, `scripts/git-probe.cjs` | `driver/test/evidence-policy.test.ts`, `publish-checkout.test.ts`, `publish-hooks.test.ts`, `publish-stale.test.ts`, `tree-fingerprint.test.ts` |
 | Reviewer invocation (`POST /review`, snapshot ref) | `driver/src/review-control.ts`, `loop-review.ts`, `review-snapshot.ts`, `driver/src/scripts/git-review-snapshot.cjs` | `driver/test/review-control.test.ts`, `loop-review.test.ts`, `review-snapshot.test.ts`, `review-executors.test.ts` |
 | Question routes and relay; runtime budget paused until all answers arrive or Stop cancels them | `driver/src/question-control.ts`, `question-validation.ts`, `loop-questions.ts`, `run-deadline.ts` | `driver/test/gates.test.ts`, `run-deadline.test.ts`, `loop.test.ts` |
 | `AskUserQuestion` bridge; prose-question `Stop` hook | `docker/claude-executor/claude-bridge.cjs`, `docker/claude-executor/claude-home/settings.json`, `web/src/task-outcome.ts` | `driver/test/claude-bridge.test.ts`, `web/test/task-derivations.test.ts` |
@@ -124,6 +124,6 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 - A task group's supervisor holds its pod requests from the sync to `finish`, gates included, and a thread with no
   attempt reclaims in a supervisor-only group: the sync, probe, publish and helpers are no Jobs, the reclaim of a
   removed thread is the one Job a thread without an attempt gets.
-- Only the tail-kept log and the opencode transcript upload (`ARTIFACT_LIMIT`, never `complete` when cut; Claude's streams whole), and no sweeper
-  deletes a removed task's objects: `ARTIFACTS_RETENTION_DAYS` is configuration only. `driver/src/runner.ts`.
+- Only the tail-kept log and the opencode transcript upload (`ARTIFACT_LIMIT`, never `complete` when cut by it or the kubernetes transport; Claude's streams whole), and no sweeper
+  deletes a removed task's objects: `ARTIFACTS_RETENTION_DAYS` is configuration only. `driver/src/runner.ts`, `k8s-transport.ts`.
 - A custom `RUNNER_IMAGE` missing a skill's declared tool is not detected.

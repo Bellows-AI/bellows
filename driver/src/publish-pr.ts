@@ -188,22 +188,26 @@ export async function pushRecorded(
     await recordOperation(step, repo, op, { state: 'pushing' });
     await reconciled(
         () =>
-            pushWithLease(step, branch, CREDENTIAL_HELPER, {
-                label: 'git push',
-                entrypoint: 'git',
-                args: [
-                    '-c',
-                    `credential.helper=${CREDENTIAL_HELPER}`,
-                    'push',
-                    '-u',
-                    '--force-with-lease',
-                    'origin',
-                    'HEAD',
-                ],
-                env: true,
-                inRepo: true,
-                op,
-            }),
+            pushWithLease(
+                step,
+                {
+                    label: 'git push',
+                    entrypoint: 'git',
+                    args: [
+                        '-c',
+                        `credential.helper=${CREDENTIAL_HELPER}`,
+                        'push',
+                        '-u',
+                        '--force-with-lease',
+                        'origin',
+                        'HEAD',
+                    ],
+                    env: true,
+                    inRepo: true,
+                    op,
+                },
+                { branch, credentialHelper: CREDENTIAL_HELPER, sha }
+            ),
         async () => ((await remoteHeadOf(runStep, branch, CREDENTIAL_HELPER)) === sha ? undefined : null)
     );
     await recordOperation(step, repo, op, { state: 'pushed' });

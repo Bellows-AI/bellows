@@ -219,6 +219,27 @@ describe('uploadRunArtifacts', () => {
         expect(seen).toEqual(['claude-code/sess-9/log', 'claude-code/sess-9/transcript']);
     });
 
+    // Issue #825: a cut runner log and a whole streamed transcript never share a completeness.
+    it('keeps a truncated log and a complete transcript in manifests of their own', async () => {
+        // Two streams, each from offset 0: the board stores each chunk under its own stream.
+        const memory = memoryBoard({ putArtifactChunk: async () => ({ result: 'stored' }) });
+
+        await uploadRunArtifacts(
+            {
+                board: memory.board,
+                job,
+                executorType: 'claude-code',
+                outcome: { ...outcome, fullLog: 'log\n', logTruncated: true, transcript: 't\n', sessionId: 'sess-9' },
+            },
+            io()
+        );
+
+        expect(memory.manifests).toEqual([
+            expect.objectContaining({ state: 'truncated', terminalCause: UPLOAD_CAUSE.headDropped }),
+            expect.objectContaining({ state: 'complete' }),
+        ]);
+    });
+
     it('uploads nothing for a run that captured nothing', async () => {
         const memory = memoryBoard();
 

@@ -291,6 +291,10 @@ export const publishNothing = (reason: string): PublishResult => ({
 export const STALE_REVISION_REASON =
     'the checkout changed after the required evidence was taken — nothing was pushed; re-run the gates (and review) over the current work';
 
+/** Why a bound publish pushed nothing: its own git steps' hooks moved the content (issue #825). */
+export const PUBLISH_MOVED_REASON =
+    "the publish's own git steps changed the content after the required evidence was taken (a repository hook) — nothing was pushed; re-run the gates (and review) over the current work";
+
 export const publishFailed = (reason: string, cause: FailureCause | null): PublishResult => ({
     ok: false,
     published: false,
@@ -302,6 +306,9 @@ export const publishFailed = (reason: string, cause: FailureCause | null): Publi
     prNumber: null,
     cause,
 });
+
+/** A bound publish refused: the content is no longer what the evidence assessed; nothing was pushed. */
+const staleRefusal = (reason: string): PublishResult => ({ ...publishFailed(reason, null), stale: true });
 
 /**
  * The cause a publish step's own git/gh stderr names, checked in this order so a refusal that also
@@ -549,14 +556,14 @@ export async function probeTreeFingerprint(
  * Resolves the branch to publish on, switching (or creating) it when the checkout is still on
  * the default branch. A task never lands on the default branch, and an existing task branch is
  * reused — `switch -c` only when the branch is not there yet, so earlier attempts' commits
- * survive.
+ * survive. `switched`: a switch ran, and with it the repository's post-checkout hook.
  */
 async function ensureTaskBranch(
     runStep: RunPublishStep,
     step: RunPublishStep,
     state: GitState,
     plan: PublishPlan
-): Promise<string> {
+): Promise<{ branch: string; switched: boolean }> {
     const onDefault = !state.branch || state.branch === state.defaultBranch;
     const branch = onDefault ? plan.branch : state.branch;
     if (!isBranchName(branch)) {
@@ -580,18 +587,33 @@ async function ensureTaskBranch(
             });
         }
     }
-    return branch;
+    return { branch, switched: onDefault };
 }
+
+/** Runs a git step that answers one line: an object name. */
+const gitRead = async (step: RunPublishStep, label: string, args: string[]): Promise<string> =>
+    (await step({ label, entrypoint: 'git', args, env: false, inRepo: true })).stdout.trim();
 
 /**
  * Stages and commits the checkout's dirty tree. The checkout usually has no committer identity
  * (the agent does not need one to edit); a fallback is applied only when the probe found none,
- * so a member-configured identity is never overridden.
+ * so a member-configured identity is never overridden. A `bound` publish (issue #825) stages
+ * hook-free — `post-index-change` is the one hook an index write fires — so the staged tree is the
+ * verified content, and answers whether the commit, its own hooks run, still holds exactly that
+ * tree; an unbound one answers true.
  */
-async function commitDirtyTree(step: RunPublishStep, state: GitState, title: string): Promise<void> {
+async function commitDirtyTree(step: RunPublishStep, state: GitState, title: string, bound: boolean): Promise<boolean> {
+    const hookless = bound ? ['-c', 'core.hooksPath=/dev/null'] : [];
     for (const args of GIT_STAGE_STEPS) {
-        await step({ label: `git ${args[0]}`, entrypoint: 'git', args: [...args], env: false, inRepo: true });
+        await step({
+            label: `git ${args[0]}`,
+            entrypoint: 'git',
+            args: [...hookless, ...args],
+            env: false,
+            inRepo: true,
+        });
     }
+    const staged = bound ? await gitRead(step, 'git write-tree', [...hookless, 'write-tree']) : null;
     const identity = state.hasIdentity
         ? []
         : ['-c', 'user.name=factory-ai', '-c', 'user.email=factory-ai@users.noreply.github.com'];
@@ -602,6 +624,28 @@ async function commitDirtyTree(step: RunPublishStep, state: GitState, title: str
         env: false,
         inRepo: true,
     });
+    if (staged === null) return true;
+    return staged !== '' && staged === (await gitRead(step, 'git rev-parse HEAD^{tree}', ['rev-parse', 'HEAD^{tree}']));
+}
+
+/**
+ * Puts the work on its task branch and commits it. A bound publish (`revision`) ships only the
+ * content its evidence assessed (issue #825): the switch's and the commit's hooks run, and one that
+ * moved the content answers null — refused like any other move — never a branch to push.
+ */
+async function branchAndCommit(
+    runStep: RunPublishStep,
+    step: RunPublishStep,
+    work: { job: BoardJob; repo: string; state: GitState; plan: PublishPlan; revision: string | undefined }
+): Promise<string | null> {
+    const { job, repo, state, plan, revision } = work;
+    const { branch, switched } = await ensureTaskBranch(runStep, step, state, plan);
+    if (revision !== undefined && switched) {
+        const after = await probeCheckout(runStep, repo, baseBranchOf(job));
+        if (after.fingerprint !== revision) return null;
+    }
+    if (state.dirty && !(await commitDirtyTree(step, state, plan.title, revision !== undefined))) return null;
+    return branch;
 }
 
 /**
@@ -643,9 +687,8 @@ export async function publishCheckout(
         if (state.conflicts.length > 0 || state.rebasing) {
             return publishFailed(unresolvedConflictReason(state), 'conflict');
         }
-        if (options?.revision !== undefined && state.fingerprint !== options.revision) {
-            return { ...publishFailed(STALE_REVISION_REASON, null), stale: true };
-        }
+        const revision = options?.revision;
+        if (revision !== undefined && state.fingerprint !== revision) return staleRefusal(STALE_REVISION_REASON);
         const draft = options?.draft === true;
         if (!state.dirty && state.unpushed === 0) {
             return (
@@ -655,11 +698,8 @@ export async function publishCheckout(
             );
         }
 
-        const branch = await ensureTaskBranch(runStep, step, state, plan);
-
-        if (state.dirty) {
-            await commitDirtyTree(step, state, plan.title);
-        }
+        const branch = await branchAndCommit(runStep, step, { job, repo, state, plan, revision });
+        if (branch === null) return staleRefusal(PUBLISH_MOVED_REASON);
 
         // The operation is the branch at the exact commit it pushes: recorded before the push and
         // after each effect, so a retry reads what a lost attempt did instead of repeating it.

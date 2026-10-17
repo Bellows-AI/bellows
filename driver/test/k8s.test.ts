@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Board, BoardJob } from '../src/board.js';
 import { type DriverConfig, loadDriverConfig } from '../src/config.js';
 import {
+    AGENT_CONTAINER,
     EXPORTER_CONTAINER,
     GO_MARKER,
     SUPERVISOR_CONTAINER,
@@ -14,12 +15,13 @@ import {
 } from '../src/supervisor-contract.js';
 import { StepChannelClosed, type StepSink } from '../src/step-control.js';
 import { claudeTurnsScript, claudeExportScript } from '../src/container-scripts.js';
-import { commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
+import { ARTIFACT_LIMIT, commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import { lookupHelper } from '../src/helpers.js';
 import { claudeManagedSettings, opencodeOtelConfig } from '../src/telemetry-config.js';
 import type { HelperPlan } from '../src/helpers.js';
 import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import {
+    LOG_TAIL_LINES,
     POLL_MAX_CONSECUTIVE_FAILURES,
     parseDeadServicePods,
     parseServicePods,
@@ -46,6 +48,7 @@ import { claimName, jobPath, serviceDnsSpec, servicePodSpec } from '../src/k8s-a
 import { createKubernetesGateManager } from '../src/k8s-gates.js';
 import { reclaimGroupSpec } from '../src/k8s-group.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
+import { throughTransport } from './fixtures/k8s-transport-bridge.js';
 import { ServicesNotRunning } from '../src/service-restart.js';
 import {
     CREDENTIAL_HELPER,
@@ -2280,6 +2283,28 @@ describe('publishing the produced work', () => {
         expect(result.cause).toBe('denied');
     });
 
+    // Issue #825, executor parity: a bound publish's tree check rides the supervisor's steps here
+    // exactly as under docker — staged hook-free, the commit held to that tree.
+    it.each([
+        ['pushes when the commit holds the staged tree', 't'.repeat(40), true],
+        ['refuses stale, pushing nothing, when a commit hook moved it', 'b'.repeat(40), false],
+    ])('a bound publish %s', async (_case, committed, published) => {
+        const steps = scripted({
+            probe: { ...DIRTY_ON_MAIN, fingerprint: 'h:1' },
+            step: (step) => {
+                if (step.argv.includes('write-tree')) return stepOk(`${'t'.repeat(40)}\n`);
+                return step.argv.includes('HEAD^{tree}') ? stepOk(`${committed}\n`) : null;
+            },
+        });
+
+        const result = await publishing(steps).publishGit!(ISSUE_JOB, undefined, { revision: 'h:1' });
+
+        expect(result).toMatchObject(published ? { ok: true, published } : { ok: false, stale: true });
+        const argvs = publishStepsOf(steps).map((step) => step.argv);
+        expect(argvs.some((a) => a.includes('write-tree') && a.includes('core.hooksPath=/dev/null'))).toBe(true);
+        expect(argvs.some((a) => a.includes('push'))).toBe(published);
+    });
+
     // A step the supervisor never answers (the channel closed under it) is a transport failure
     // the loop can retry, never a verdict on the work.
     it('names a closed step channel a transport failure', async () => {
@@ -4332,6 +4357,98 @@ describe('the kubernetes runner', () => {
     });
 });
 
+/** The runner pod's agent log read — the verdict's, and the live tail's. */
+const isAgentLogRead = (path: string): boolean =>
+    path.startsWith(`/api/v1/namespaces/${namespace}/pods/${podName}/log`) &&
+    path.includes(`container=${AGENT_CONTAINER}`);
+
+/** The kubelet's answer to a pod log read: the whole log, or its last `tailLines` lines when asked for. */
+const kubeletLog =
+    (log: string) =>
+    (path: string): K8sResponse => {
+        const tail = new URL(path, 'http://apiserver').searchParams.get('tailLines');
+        return {
+            status: 200,
+            body:
+                tail === null
+                    ? log
+                    : log
+                          .split(/(?<=\n)/)
+                          .slice(-Number(tail))
+                          .join(''),
+        };
+    };
+
+/** A fake whose agent log reads `answer` gives, everything else as fakeRequest answers it. */
+const withAgentLog = (answer: (path: string) => K8sResponse) =>
+    routed((method, path) => (method === 'GET' && isAgentLogRead(path) ? answer(path) : undefined));
+
+const numberedLines = (count: number): string => Array.from({ length: count }, (_, i) => `line ${i}\n`).join('');
+
+describe('the runner verdict log (#825)', () => {
+    const run = (request: K8sRequest) => runner(request).run(job, { id: SESSION, resume: false });
+
+    it('uploads a log past the 1,000-line tail whole, and complete', async () => {
+        const whole = numberedLines(LOG_TAIL_LINES + 500);
+        const { request, calls } = withAgentLog(kubeletLog(whole));
+
+        const outcome = await run(request);
+
+        expect(outcome.fullLog).toBe(whole);
+        expect(outcome.logTruncated).toBe(false);
+        const reads = calls.filter((call) => isAgentLogRead(call.path));
+        expect(reads.length).toBeGreaterThan(0);
+        expect(reads.every((call) => !call.path.includes('tailLines'))).toBe(true);
+    });
+
+    it('reports a log the transport cut as truncated, whatever bytes it kept', async () => {
+        const { request } = withAgentLog(() => ({ status: 200, body: 'kept tail\n', truncated: true }));
+
+        const outcome = await run(request);
+
+        expect(outcome).toMatchObject({ fullLog: 'kept tail\n', logTruncated: true });
+    });
+
+    it('keeps a multibyte log under the cap byte-true, with no replacement character', async () => {
+        const { request } = withAgentLog(() => ({ status: 200, body: '€'.repeat(ARTIFACT_LIMIT / 2) }));
+
+        const outcome = await run(request);
+
+        expect(outcome.logTruncated).toBe(true);
+        expect(Buffer.byteLength(outcome.fullLog ?? '')).toBeLessThanOrEqual(ARTIFACT_LIMIT);
+        expect(outcome.fullLog).not.toContain('�');
+        expect(outcome.output).not.toContain('�');
+    });
+
+    it('calls a log of exactly ARTIFACT_LIMIT bytes complete, and one byte more truncated', async () => {
+        for (const [size, truncated] of [
+            [ARTIFACT_LIMIT, false],
+            [ARTIFACT_LIMIT + 1, true],
+        ] as const) {
+            const { request } = withAgentLog(() => ({ status: 200, body: 'x'.repeat(size) }));
+
+            const outcome = await run(request);
+
+            expect(outcome.logTruncated).toBe(truncated);
+            expect(Buffer.byteLength(outcome.fullLog ?? '')).toBe(ARTIFACT_LIMIT);
+        }
+    });
+
+    it('reads the verdict log of the agent container alone, never the exporter or the supervisor beside it', async () => {
+        const { request, calls } = fakeRequest();
+
+        await run(request);
+
+        const logs = calls.filter((call) =>
+            call.path.startsWith(`/api/v1/namespaces/${namespace}/pods/${podName}/log`)
+        );
+        expect(logs.some((call) => isAgentLogRead(call.path))).toBe(true);
+        for (const other of [EXPORTER_CONTAINER, SUPERVISOR_CONTAINER]) {
+            expect(logs.some((call) => call.path.includes(`container=${other}`))).toBe(false);
+        }
+    });
+});
+
 // ==============================================================================================
 // Gates under kubernetes: a gate run IS a Job — the declared image over the workspaces PVC,
 // workingDir at the checkout, env by reference. Everything security-relevant about a gate Job is
@@ -5825,7 +5942,7 @@ describe('the kubernetes runner under opencode', () => {
      * close-time readout Job runs and answers `readoutLog`. Every claim and teardown route
      * answers the boring way. The calls list is the audit.
      */
-    const opencodeFake = (readout: { status?: 'failed'; log?: string } = {}) => {
+    const opencodeFake = (readout: { status?: 'failed'; log?: string; truncated?: true } = {}) => {
         const calls: Call[] = [];
         const request: K8sRequest = (method, path, body) => {
             calls.push({ method, path, body });
@@ -5870,7 +5987,11 @@ describe('the kubernetes runner under opencode', () => {
             }
             if (path === `${ns}/pods/${podName}/log`) return Promise.resolve({ status: 200, body: 'did the work\n' });
             if (path === `${ns}/pods/${ocreadPod}/log`) {
-                return Promise.resolve({ status: 200, body: readout.log ?? '' });
+                return Promise.resolve({
+                    status: 200,
+                    body: readout.log ?? '',
+                    ...(readout.truncated ? { truncated: readout.truncated } : {}),
+                });
             }
             // The per-attempt Secret (the runner's attempt pair), created and reaped per attempt.
             if (path === `${ns}/secrets`) {
@@ -5892,6 +6013,19 @@ describe('the kubernetes runner under opencode', () => {
             request,
             async () => {}
         );
+
+    it('flags the transcript a cut readout log lost its head of (#825)', async () => {
+        const normalized = JSON.stringify({ stream: 'normalized', event: { n: 2 } });
+        const { request } = opencodeFake({
+            log: ['t":{"n":1}}', normalized, JSON.stringify({ id: 'ses_n3w' })].join('\n'),
+            truncated: true,
+        });
+
+        const outcome = await ocRunner(request).run(opencodeJob, null);
+
+        expect(outcome.transcript).toBe(normalized);
+        expect(outcome.transcriptTruncated).toBe(true);
+    });
 
     it('scrapes the session the run minted, and rides it on the outcome', async () => {
         const { request, calls } = opencodeFake({
@@ -6471,6 +6605,40 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         ]);
 
         expect((await runner(request).adopt!({ ...adopter, claimSeq: 4 }))?.claimSeq).toBe(3);
+    });
+
+    it("adopts the earlier runner's whole log, not a line tail (#825)", async () => {
+        const whole = numberedLines(LOG_TAIL_LINES + 500);
+        const { request: base } = withRunners([priorItem({ succeeded: 1 })]);
+        const request: K8sRequest = (method, path, body) =>
+            method === 'GET' && isAgentLogRead(path)
+                ? Promise.resolve(kubeletLog(whole)(path))
+                : base(method, path, body);
+
+        const adopted = await runner(request).adopt!(adopter);
+
+        expect(adopted?.outcome).toMatchObject({ fullLog: whole, logTruncated: false });
+    });
+
+    // Failure injection at the transport boundary: a runner-Job list too big for a log's stream
+    // buffer is still one whole answer — never a cut body that parses as "no earlier runner".
+    it('adopts the earlier runner when its Job list outgrows a pod log stream buffer (#825)', async () => {
+        const OLDER = '55555555-5555-4555-8555-555555555555';
+        const HEAD_PAD = 1_000;
+        const padded = (item: ReturnType<typeof priorItem>, pad: number) => ({
+            ...item,
+            metadata: { ...item.metadata, annotations: { ...item.metadata.annotations, pad: 'p'.repeat(pad) } },
+        });
+        // A body cut to its head and tail would read the finished runner's name and claim sequence
+        // with the still-running older runner's status — a runner never adopted.
+        const { request } = withRunners([
+            padded(priorItem({ succeeded: 1 }), HEAD_PAD),
+            padded(priorItem({ active: 1 }, '0', runnerJobName({ ...job, leaseToken: OLDER }), OLDER), ARTIFACT_LIMIT),
+        ]);
+
+        const adopted = await runner(throughTransport(request)).adopt!(adopter);
+
+        expect(adopted?.claimSeq).toBe(1);
     });
 
     // A runner marked at or after this claim's sequence is a newer contender's, never an earlier one.
