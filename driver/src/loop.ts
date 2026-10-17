@@ -217,10 +217,10 @@ export function createLoop({
      * follow-up's insertion: reclaim sits downstream of the verdict and runs only when the answer
      * says done-and-terminal, so a follow-up still queued keeps its tree.
      *
-     * Best-effort by contract — the verdict is already safe the moment it is on the board, so a
-     * runner that refuses the tree or a transport hiccup can cost the reclaim but never the
-     * verdict. A refused tree stays on the disk (the script it runs deletes only what the sync
-     * created) and is logged rather than turned into a bomb in the author's mouth.
+     * The order is a reclaim row claimed by this worker (issue #821), acked once the removal lands —
+     * the ack marks the tree reclaimed. A refusal, a throw or a lost ack skips the ack and the row
+     * returns to the queue when its lease expires: delayed, never lost, and never the verdict's
+     * cost. A refused tree stays on the disk (the script deletes only what the sync created).
      *
      * The removal is registered under the thread's ROOT id in the reclaim barrier BEFORE it
      * starts and the entry is dropped when it settles: a follow-up of the same thread claimed by
@@ -229,7 +229,8 @@ export function createLoop({
      */
     async function report(job: BoardJob, result: Parameters<Board['complete']>[1]): Promise<LeaseState> {
         const verdict = await completeWithRetry({ board, config, log, sleep }, job, result);
-        if (verdict.state !== 'held' || !verdict.threadDone) return verdict.state;
+        const { reclaimId } = verdict;
+        if (verdict.state !== 'held' || reclaimId === null) return verdict.state;
         const root = job.rootJobId ?? job.id;
         // Registered before the removal starts — the set and the start are one synchronous block,
         // so no claimant can observe the in-between. The entry is dropped only while it is still
@@ -239,9 +240,10 @@ export function createLoop({
         reclaim = (async () => {
             try {
                 const outcome = await runner.reclaimWorktree(job);
-                if (!outcome.ok) {
-                    log(`job ${job.id}: the task worktree could not be reclaimed: ${outcome.reason}`);
-                }
+                if (!outcome.ok)
+                    return log(`job ${job.id}: the task worktree could not be reclaimed: ${outcome.reason}`);
+                const ack = await board.ackReclaim(reclaimId, config.worker);
+                if (ack !== 'ok') log(`job ${job.id}: the reclaim ack answered ${ack}`);
             } catch (e) {
                 log(`job ${job.id}: the task worktree could not be reclaimed: ${(e as Error).message}`);
             } finally {
