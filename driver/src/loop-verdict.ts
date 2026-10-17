@@ -182,8 +182,7 @@ const setupMsOf = (job: BoardJob): { setupMs?: number } =>
 
 /** Reports the run's final verdict to the board, after settle() and any publish attempt. */
 export async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<void> {
-    const { job, outcome, failure, helperFailure, published } = finish;
-    const { log } = rt;
+    const { job, outcome, failure, published } = finish;
     const ledger = ledgerOf(finish);
     const status = statusOf(ledger);
     const exitCode = failure ? failure.exitCode : outcome.exitCode;
@@ -192,7 +191,7 @@ export async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<
     const failureKind = kindOf(ledger);
     const failureCause = causeOf(ledger);
 
-    const verdict = await report(rt, job, {
+    const verdict = await deliver(rt, job, {
         status,
         exitCode,
         output,
@@ -210,11 +209,31 @@ export async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<
         ...(finish.evidence ? { evidence: finish.evidence } : {}),
         ...(publication ? { publication } : {}),
     });
-    log(
-        verdict === 'lost'
-            ? `job ${job.id}: finished ${status}, but the board had already reclaimed it`
-            : `job ${job.id}: ${status} (exit ${exitCode}${failure ? ', gates' : ''}${helperFailure ? ', helper' : ''})`
-    );
+    if (verdict !== null) rt.log(finishLine(finish, verdict, status, exitCode));
+}
+
+/** The line a delivered verdict leaves in the log. */
+function finishLine(finish: FinishCtx, verdict: LeaseState, status: string, exitCode: number | null): string {
+    const { job, failure, helperFailure } = finish;
+    if (verdict === 'lost') return `job ${job.id}: finished ${status}, but the board had already reclaimed it`;
+    return `job ${job.id}: ${status} (exit ${exitCode}${failure ? ', gates' : ''}${helperFailure ? ', helper' : ''})`;
+}
+
+/**
+ * Reports a decided verdict, never rewritten (issue #820): one the board would not take is left to
+ * the lease as it stands — null — not handed to runJob's catch to report as a runner_error.
+ */
+async function deliver(
+    rt: LoopRuntime,
+    job: BoardJob,
+    result: Parameters<Board['complete']>[1]
+): Promise<LeaseState | null> {
+    return report(rt, job, result).catch((e: Error) => {
+        rt.log(
+            `job ${job.id}: the ${result.status} verdict was not delivered, left to the lease unrewritten: ${e.message}`
+        );
+        return null;
+    });
 }
 
 export async function report(
