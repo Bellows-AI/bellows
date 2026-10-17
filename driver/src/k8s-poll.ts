@@ -25,6 +25,7 @@ import type { K8sDeps, K8sJobStatus, K8sPod, K8sPodList, K8sResponse } from './k
 import {
     AGENT_CONTAINER,
     SUPERVISOR_CONTAINER,
+    DRIVER_LOST_LOSS,
     SUPERVISOR_EXIT,
     type SupervisorReport,
 } from './supervisor-contract.js';
@@ -467,6 +468,7 @@ export async function readRunnerVerdict(
 export function supervisorLossOf(pod: K8sPod | undefined, supervisorExit: number | undefined): string | null {
     if (supervisorExit === undefined || supervisorExit === 0 || supervisorExit === SUPERVISOR_EXIT.deadline)
         return null;
+    if (supervisorExit === SUPERVISOR_EXIT.lost) return DRIVER_LOST_LOSS;
     const detail = containerFailure(pod, SUPERVISOR_CONTAINER) ?? `exit ${supervisorExit}`;
     return `the task supervisor ended before it finalized the run (${detail})`;
 }

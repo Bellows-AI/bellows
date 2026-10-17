@@ -840,6 +840,17 @@ await_first_runner() { # await_first_runner <job-id> <status> [seconds] -> the c
     printf '%s' "$c"
 }
 
+await_released() { # await_released <runner container> -> success once the supervisor released its agent (`go`)
+    # A driver lost before `go` leaves nothing to adopt: the group ends lost (supervisor exit 75) and the run is redone.
+    local i=0
+    while [ "$i" -lt 60 ]; do
+        docker exec "$1" sh -c 'test -f /factory/in/go' >/dev/null 2>&1 && return 0
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
 interruptions_of() { # interruptions_of <job json> -> "<count>|<claimSeq of the first>|<reason of the first>"
     node -e 'try { const l = JSON.parse(process.argv[1] || "{}").interruptions ?? []; process.stdout.write(`${l.length}|${l[0]?.claimSeq ?? ""}|${l[0]?.reason ?? ""}`); } catch { process.stdout.write("?||"); }' \
         "$1"
@@ -859,6 +870,8 @@ killed="$(create_job 'sleep 8; echo "ran in $HOSTNAME"')"
 killed_runner="$(await_first_runner "$killed" running)"
 [ -n "$killed_runner" ] && ok 'the hard-kill runner is running' ||
     bad 'the hard-kill runner is running' "job: $(body "$(api GET "/api/jobs/$killed")")"
+await_released "$killed_runner" && ok 'the hard-kill runner released its agent' ||
+    bad 'the hard-kill runner released its agent' 'no /factory/in/go within 60s'
 kill -9 "$driver_pid" 2>/dev/null
 wait "$driver_pid" 2>/dev/null
 driver_pid=""

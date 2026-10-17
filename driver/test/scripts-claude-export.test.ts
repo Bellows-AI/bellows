@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, truncateSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { type AddressInfo, createServer as createTcpServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -38,7 +38,7 @@ interface Harness {
     chunks: Chunk[];
     manifests: ExportManifestRequest[];
     reports: ExportReport[];
-    board: { down: boolean };
+    board: { down: boolean; delayMs: number };
     drain: (state: 'complete' | 'partial', cause: string | null) => void;
     /** The directory shared with the supervisor, and what the exporter wrote there last. */
     exportDir: string;
@@ -76,11 +76,12 @@ async function harness(): Promise<Harness> {
     const chunks: Chunk[] = [];
     const manifests: ExportManifestRequest[] = [];
     const reports: ExportReport[] = [];
-    const board = { down: false };
+    const board = { down: false, delayMs: 0 };
     channel.open(TOKEN);
     channel.attachExporter(TOKEN, {
         putChunk: async (session, offset, bytes) => {
             if (board.down) throw new Error('the board is down');
+            await new Promise((resolve) => setTimeout(resolve, board.delayMs));
             chunks.push({ session, offset, body: Buffer.from(bytes) });
             return { result: 'stored' };
         },
@@ -379,5 +380,74 @@ describe('the continuous claude-code exporter', () => {
         appendFileSync(fileOf(h), records(2, 2));
         expect(await h.exited()).toBe(4);
         expect(h.status()).toMatchObject({ done: true, gone: true });
+    });
+    describe('a driver that accepts but never answers, as a vanished pod IP does', () => {
+        const held: Socket[] = [];
+        let silent: ReturnType<typeof createTcpServer> | null = null;
+        afterEach(() => {
+            for (const socket of held.splice(0)) socket.destroy();
+            silent?.close();
+            silent = null;
+        });
+        const silentUrl = async (): Promise<string> => {
+            silent = createTcpServer((socket) => held.push(socket));
+            await new Promise<void>((resolve) => silent!.listen(0, '127.0.0.1', resolve));
+            return `http://127.0.0.1:${(silent.address() as AddressInfo).port}`;
+        };
+        const unreachable = async (): Promise<Record<string, string>> => ({
+            BELLOWS_CONTROL_URL: await silentUrl(),
+            EXPORT_REQUEST_TIMEOUT_MS: '200',
+            EXPORT_DRAIN_GIVEUP_MS: '500',
+        });
+
+        it('finishes a drain within its bound, leaving every byte on the volume for the next claim', async () => {
+            const h = await harness();
+            const all = records(4);
+            writeFileSync(fileOf(h), all);
+            h.start(await unreachable());
+            h.drain('complete', null);
+            const began = Date.now();
+            expect(await h.exited()).toBe(0);
+            expect(Date.now() - began).toBeLessThan(5_000);
+            expect(h.status()).toMatchObject({ done: true, gone: true });
+            expect(h.manifests).toEqual([]);
+            expect(readFileSync(fileOf(h), 'utf8')).toBe(all);
+        });
+
+        it('finishes a drain with no transcript at all, its last report bounded by the request timeout', async () => {
+            const h = await harness();
+            h.start(await unreachable());
+            h.drain('complete', null);
+            const began = Date.now();
+            expect(await h.exited()).toBe(0);
+            expect(Date.now() - began).toBeLessThan(5_000);
+            expect(h.status()).toMatchObject({ done: true, pendingBytes: 0 });
+        });
+    });
+
+    it('gives a large chunk time in proportion to its size, so a slow board still stores it', async () => {
+        const h = await harness();
+        h.board.delayMs = 600;
+        const big = `${JSON.stringify({ pad: 'x'.repeat(1024 * 1024) })}\n`;
+        writeFileSync(fileOf(h), big);
+        h.start({ EXPORT_REQUEST_TIMEOUT_MS: '200', EXPORT_DRAIN_GIVEUP_MS: '200' });
+        h.drain('complete', null);
+        expect(await h.exited()).toBe(0);
+        expect(h.stored(SESSION).toString()).toBe(big);
+        expect(h.manifests[0]).toMatchObject({ state: 'complete' });
+    });
+
+    it('never abandons a drain while the driver answers, even with the board behind it down', async () => {
+        const h = await harness();
+        h.board.down = true;
+        const all = records(4);
+        writeFileSync(fileOf(h), all);
+        h.start({ EXPORT_DRAIN_GIVEUP_MS: '200' });
+        h.drain('complete', null);
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        h.board.down = false;
+        expect(await h.exited()).toBe(0);
+        expect(h.stored(SESSION).toString()).toBe(all);
+        expect(h.manifests[0]).toMatchObject({ state: 'complete' });
     });
 });

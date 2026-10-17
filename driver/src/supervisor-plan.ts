@@ -7,6 +7,9 @@ import {
     RUN_CONTROL_POLL_MS,
     SUPERVISOR_DRAIN_MS,
     SUPERVISOR_ENV,
+    SUPERVISOR_ORPHAN_LEASE_SHARE,
+    SUPERVISOR_ORPHAN_MAX_MS,
+    SUPERVISOR_ORPHAN_MIN_MS,
     SUPERVISOR_STEPS_MS,
     SUPERVISOR_WINDDOWN_MS,
 } from './supervisor-contract.js';
@@ -19,6 +22,15 @@ import {
  * only to the supervisor and the exporter, never to the agent.
  */
 
+const MS_PER_SECOND = 1000;
+
+/** How long a group whose driver stopped answering keeps going: a share of the lease, so it ends inside it. */
+export const orphanBoundMs = (config: DriverConfig): number =>
+    Math.min(
+        SUPERVISOR_ORPHAN_MAX_MS,
+        Math.max(SUPERVISOR_ORPHAN_MIN_MS, (config.leaseSeconds * MS_PER_SECOND) / SUPERVISOR_ORPHAN_LEASE_SHARE)
+    );
+
 /** The supervisor's own env literals: the budget it enforces, the paces it works at, whether an exporter waits. */
 export function supervisorLiterals(
     config: DriverConfig,
@@ -29,6 +41,7 @@ export function supervisorLiterals(
         [SUPERVISOR_ENV.controlMs, String(RUN_CONTROL_POLL_MS)],
         [SUPERVISOR_ENV.deadlineMs, String(runTimeoutMs(config, job))],
         [SUPERVISOR_ENV.drainMs, String(SUPERVISOR_DRAIN_MS)],
+        [SUPERVISOR_ENV.orphanMs, String(orphanBoundMs(config))],
         ...(group.exporting ? ([[SUPERVISOR_ENV.exports, '1']] as [string, string][]) : []),
         ...(group.agentless ? ([[SUPERVISOR_ENV.agentless, '1']] as [string, string][]) : []),
     ];

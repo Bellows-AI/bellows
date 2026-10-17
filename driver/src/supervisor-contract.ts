@@ -143,10 +143,15 @@ export const STEP_ANSWER_GRACE_MS = 30_000;
 /** The most stdout/stderr (each) a step result carries; the tail is kept. */
 export const STEP_OUTPUT_LIMIT_BYTES = 1_048_576;
 /**
- * How long a supervisor whose driver does not answer keeps serving before it finalizes: a driver
- * that died leaves its group to end by itself, so the next claim can adopt what the agent finished.
+ * How long a supervisor whose driver does not answer keeps serving before it finalizes, and how long
+ * a draining exporter tolerates that driver: a driver that died leaves its group to end by itself,
+ * inside its lease, so the next claim adopts what the agent finished instead of sweeping it. The
+ * bound is a share of the lease (`orphanBoundMs`), floored above one `GET /step` long poll and its
+ * timeout so a live driver always answers inside it.
  */
-export const SUPERVISOR_ORPHAN_MS = 90_000;
+export const SUPERVISOR_ORPHAN_LEASE_SHARE = 4;
+export const SUPERVISOR_ORPHAN_MIN_MS = 30_000;
+export const SUPERVISOR_ORPHAN_MAX_MS = 90_000;
 /**
  * What the kubelet's (or docker's) backstop allows on top of the run budget for the steps a task
  * group serves before and after its agent — the sync, the gates, the helpers, the publish. The
@@ -154,8 +159,14 @@ export const SUPERVISOR_ORPHAN_MS = 90_000;
  */
 export const SUPERVISOR_STEPS_MS = 7_200_000;
 
-/** The supervisor's exit statuses; `EXIT` of supervisor.cjs. 124 echoes `timeout(1)`, as the gates' deadline does. */
-export const SUPERVISOR_EXIT = { finalized: 0, deadline: 124, failed: 70 } as const;
+/**
+ * The supervisor's exit statuses; `EXIT` of supervisor.cjs. 124 echoes `timeout(1)`, as the gates' deadline does.
+ * 75 (`EX_TEMPFAIL`) is a group whose driver was lost before it released the agent: the Job must not
+ * complete, or the next claim would adopt a run that never happened as a finished one.
+ */
+export const SUPERVISOR_EXIT = { finalized: 0, deadline: 124, failed: 70, lost: 75 } as const;
+/** Why a group whose supervisor exited `SUPERVISOR_EXIT.lost` is an interruption, in both executors' words. */
+export const DRIVER_LOST_LOSS = 'the task supervisor lost its driver before the agent was released';
 
 /** The supervisor's environment names. Only the supervisor container carries the control pair. */
 export const SUPERVISOR_ENV = {
@@ -164,6 +175,7 @@ export const SUPERVISOR_ENV = {
     controlMs: 'SUPERVISOR_CONTROL_MS',
     deadlineMs: 'SUPERVISOR_DEADLINE_MS',
     drainMs: 'SUPERVISOR_DRAIN_MS',
+    orphanMs: 'SUPERVISOR_ORPHAN_MS',
     exports: 'SUPERVISOR_EXPORTS',
     agentless: 'SUPERVISOR_AGENTLESS',
 } as const;
