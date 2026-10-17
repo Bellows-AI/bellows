@@ -305,11 +305,12 @@ export function gateEnvArgs(
  * authored by the repository that declared it — the same trust level as the job command itself —
  * but it still travels as ONE argv element into `sh -c`, never through an interpolating shell.
  */
-export function gateExecArgs(name: string, command: string): string[] {
+export function gateExecArgs(name: string, command: string, envFile?: string): string[] {
     if (!GATE_CONTAINER.test(name)) {
         throw new Error(`refusing to exec into a container named "${name}"`);
     }
-    return ['exec', name, 'sh', '-c', command];
+    // The env file carries the run's own GitHub token: the container's was its creation's.
+    return ['exec', ...(envFile ? ['--env-file', envFile] : []), name, 'sh', '-c', command];
 }
 
 /**

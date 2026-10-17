@@ -7,6 +7,9 @@ set -eu
 
 # The GitHub helper beside this script (/usr/local/bin in the image), resolved before any `cd`.
 GITHUB_CREDENTIAL="$(cd "$(dirname "$0")" && pwd)/github-credential.cjs"
+# The agent's GitHub token is that helper's alone, renewed ahead of expiry: a value injected into
+# this container would shadow it in gh and git, and outlive its hour.
+unset GITHUB_TOKEN GH_TOKEN
 
 # The task supervisor releases the agent (issue #771). The group exists from the attempt's first
 # step, the sync, and the tree this container works in does not exist until then, so the agent waits

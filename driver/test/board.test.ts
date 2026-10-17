@@ -283,6 +283,31 @@ describe('asking for the attempt’s GitHub token (docs/connections.md)', () => 
         });
         expect(await boardOn(broken.fetch).githubCredential(job)).toBeNull();
     });
+
+    // A push with no token is a lost PR on a private repository: a transient board failure is retried.
+    it('retries a failed request, a 5xx and a 429 a bounded number of times before it answers null', async () => {
+        let n = 0;
+        const flaky = recorder(() => {
+            n += 1;
+            if (n === 1) throw new Error('board unreachable');
+            if (n === 2) return Response.json({}, { status: 502 });
+            return Response.json({ token: 'ghs_after_retry' }, { status: 200 });
+        });
+        expect(await boardOn(flaky.fetch).githubCredential(job)).toBe('ghs_after_retry');
+        expect(flaky.calls).toHaveLength(3);
+
+        const busy = recorder(() => Response.json({}, { status: 429 }));
+        expect(await boardOn(busy.fetch).githubCredential(job)).toBeNull();
+        expect(busy.calls).toHaveLength(3);
+    });
+
+    it('never retries an answer: a refused attempt or no App is asked once', async () => {
+        for (const status of [403, 409]) {
+            const answered = recorder(() => Response.json({}, { status }));
+            expect(await boardOn(answered.fetch).githubCredential(job)).toBeNull();
+            expect(answered.calls).toHaveLength(1);
+        }
+    });
 });
 
 describe('reporting an interrupted attempt (issue #792)', () => {

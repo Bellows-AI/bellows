@@ -75,6 +75,18 @@ describe('the executor branch reporter', () => {
     // shell is PID 1, so it also owns the runtime's TERM/INT: both children are tracked by PID,
     // the signal is forwarded to both, and the CLI is waited out past the trap-interrupted
     // `wait` returns so its status — a signal-death 143 included — is what the script exits with.
+    // The agent's GitHub token is the helper's alone: a value injected into the agent container
+    // (RUNNER_CREDENTIALS_SECRET carries whatever keys it holds) would shadow it in gh and git.
+    it.each(['docker/claude-executor/entrypoint.sh', 'docker/opencode-executor/entrypoint.sh'])(
+        '%s drops any GITHUB_TOKEN/GH_TOKEN before it launches anything',
+        (entrypoint) => {
+            const entry = read(entrypoint);
+            const unset = entry.indexOf('\nunset GITHUB_TOKEN GH_TOKEN\n');
+            expect(unset).toBeGreaterThan(0);
+            expect(unset).toBeLessThan(entry.indexOf('branch-reporter.cjs'));
+        }
+    );
+
     it.each([
         ['docker/claude-executor/entrypoint.sh', 'claude'],
         ['docker/opencode-executor/entrypoint.sh', 'opencode'],

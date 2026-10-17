@@ -57,6 +57,12 @@ describe('the driver config: basics', () => {
         expect(loadDriverConfig({ [name]: '' })[field]).toBe(false);
     });
 
+    // The runner's GitHub token is the board's to mint and renew (docs/connections.md): a fixed one
+    // forwarded from the driver's env would shadow the helper in the agent's git and gh.
+    it.each(['GITHUB_TOKEN', 'GH_TOKEN'])('refuses %s in RUNNER_ENV', (name) => {
+        expect(() => loadDriverConfig({ RUNNER_ENV: `A,${name}` })).toThrow(`RUNNER_ENV must not name ${name}`);
+    });
+
     it('reads RUNNER_ENV as a list of names', () => {
         expect(loadDriverConfig({ RUNNER_ENV: 'A, B ,,C' }).passEnv).toEqual(['A', 'B', 'C']);
     });

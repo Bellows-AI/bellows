@@ -43,8 +43,8 @@ export function githubCredentialRoutes({ credentialOfLease, mint }: GithubCreden
         if (request.headers[JOB_ID_HEADER] !== jobId || typeof leaseToken !== 'string') {
             return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Job id and lease token required', HTTP_FORBIDDEN);
         }
-        // A malformed id is no attempt, refused before the database's uuid cast can throw.
-        if (!UUID.test(jobId))
+        // A malformed id or lease token is no attempt, refused before the database's uuid cast can throw.
+        if (!UUID.test(jobId) || !UUID.test(leaseToken))
             return bad(reply, ERROR_CODES.CONNECTION_NOT_AUTHORIZED, ATTEMPT_REFUSED, HTTP_FORBIDDEN);
         const attempt = await credentialOfLease(jobId, leaseToken);
         if (!attempt.ok) return bad(reply, ERROR_CODES.CONNECTION_NOT_AUTHORIZED, ATTEMPT_REFUSED, HTTP_FORBIDDEN);

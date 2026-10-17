@@ -110,6 +110,17 @@ describe('the runner GitHub credential route', () => {
         expect(checks()).toBe(0);
     });
 
+    it('refuses a lease token that is not a uuid without asking the check', async () => {
+        const { app, checks } = await boot({ fresh: minted });
+        const res = await app.inject({
+            method: 'POST',
+            url: URL_PATH,
+            headers: { ...PAIR, 'x-factory-job-lease-token': 'not-a-uuid' },
+        });
+        expect(res.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(checks()).toBe(0);
+    });
+
     it('withholds the token when the attempt ended during the exchange', async () => {
         const { app, lines } = await boot({ answers: [LIVE, { ok: false }], fresh: minted });
         const res = await app.inject({ method: 'POST', url: URL_PATH, headers: PAIR });

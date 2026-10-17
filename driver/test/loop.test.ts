@@ -4741,18 +4741,26 @@ describe('a service that dies during the gates (issue #437)', () => {
  * fire the workflow's `gate-failed` edge on work that never happened (task d0a4146f).
  */
 describe('the gate environment’s GitHub token (docs/connections.md)', () => {
-    it('is fetched once at gate start and rides the gate env file, never the runner’s', async () => {
-        const board = stubBoard([{ ...gatedJob(1), publish: false }], { githubToken: 'ghs_gate' });
+    // A gate run after an hour-long agent turn must not start on the token minted before it.
+    it('is asked at each gate run’s start and rides the gate env file, never the runner’s', async () => {
+        const board = stubBoard([{ ...gatedJob(1), publish: false }]);
+        let minted = 0;
+        board.board.githubCredential = async () => {
+            minted += 1;
+            return `ghs_${minted}`;
+        };
         const runner = stubRunner(async () => ok());
         const { gates, stack } = stubGateStack();
 
         await drive({ ...board, runner, gates });
 
-        // Every acquire of the attempt's environment carries the one body built at gate start.
-        expect(new Set(stack.envBodies).size).toBe(1);
-        expect(stack.envBodies[0]).toContain('GITHUB_TOKEN=ghs_gate\n');
-        // One ask for the sync and one at gate start; none per gate.
-        expect(board.board.githubAsks).toEqual([gatedJob(1).id, gatedJob(1).id]);
+        // The sync's ask is ghs_1; the environment starts on ghs_2, and each declared gate's
+        // re-acquire carries a token of its own.
+        expect(stack.envBodies.map((body) => /GITHUB_TOKEN=(\S+)/.exec(body)?.[1])).toEqual([
+            'ghs_2',
+            'ghs_3',
+            'ghs_4',
+        ]);
         expect(stack.ran.names).toEqual(['test', 'lint']);
     });
 

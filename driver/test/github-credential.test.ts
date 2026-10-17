@@ -336,9 +336,9 @@ describe('the token cache and the runner env, on both executors', () => {
 });
 
 describe('the stated limit of a gate environment’s token', () => {
-    it('is in docs/connections.md: fetched once at gate start, never renewed', () => {
+    it('is in docs/connections.md: asked at each gate run’s start, never renewed during it', () => {
         const docs = readFileSync(join(ROOT, 'docs/connections.md'), 'utf8').replace(/\s+/g, ' ');
-        expect(docs).toContain("A gate environment's GitHub token is fetched once at gate start and never renewed");
-        expect(docs).toContain("the attempt's gate env Secret (kubernetes");
+        expect(docs).toContain("A gate run's GitHub token is asked at its start and never renewed during it");
+        expect(docs).toContain('Secret replaced for the run (`driver/src/k8s-gates.ts`)');
     });
 });

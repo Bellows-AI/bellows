@@ -4641,6 +4641,24 @@ describe('the kubernetes gate manager', () => {
         ).toBe(true);
     });
 
+    // A gate run's own GitHub token (asked at each run's start, docs/connections.md) reaches the
+    // gate Job's pod through the Secret it reads at start: a changed body replaces the Secret.
+    it('replaces the attempt env Secret when a re-acquire brings a different body, and only then', async () => {
+        const { request, calls } = gateFake();
+        const m = manager(request);
+        const secretCalls = () => calls.filter((c) => c.path?.includes('/secrets'));
+        await m.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_first\n', { job });
+        await m.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_second\n', { job });
+
+        const after = secretCalls().map((c) => c.method);
+        expect(after).toEqual(['POST', 'DELETE', 'POST']);
+        expect(secretCalls()[2]?.body).toMatchObject({ stringData: { GITHUB_TOKEN: 'ghs_second' } });
+
+        // The same body again replaces nothing: its create answers 409, and the Secret stands.
+        await m.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_second\n', { job });
+        expect(secretCalls().filter((c) => c.method === 'DELETE')).toHaveLength(1);
+    });
+
     it('runs a gate with no env at all without touching a Secret', async () => {
         const { request, calls } = gateFake();
         const m = manager(request);
