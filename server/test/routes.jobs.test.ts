@@ -175,6 +175,7 @@ function stubStore(
         interruptExhausted?: boolean;
         /** The terminality answer the store computes at the verdict moment, on the 'ok' path. */
         threadDone?: boolean;
+        reclaimId?: string | null;
         job?: Job | null;
         thread?: Job[] | null;
         followUp?: FollowUpRefusal;
@@ -430,7 +431,9 @@ function stubStore(
                 evidence: evidence ?? null,
             });
             const verdict = options.verdict ?? 'ok';
-            return verdict === 'ok' ? { result: 'ok', threadDone: options.threadDone ?? false } : { result: verdict };
+            return verdict === 'ok'
+                ? { result: 'ok', threadDone: options.threadDone ?? false, reclaimId: options.reclaimId ?? null }
+                : { result: verdict };
         },
         async gates(id, _token, results) {
             boom();
@@ -2355,16 +2358,18 @@ describe('POST /api/jobs/:id/complete', () => {
     // The verdict-moment done-ness of the job's whole thread — every member terminal AND the
     // user's done — computed in the store's complete transaction and relayed verbatim: the
     // driver's worktree reclaim (issue #47) decides on this instead of reading the thread back.
-    it('answers the 200 body with the thread done-ness, true and false', async () => {
-        const finished = await harnessWith(stubStore({ verdict: 'ok', threadDone: true }));
+    // The reclaim row a threadDone verdict queued rides beside it (issue #821).
+    it('answers the 200 body with the thread done-ness and its reclaim, true and false', async () => {
+        const reclaimId = '00000000-0000-4000-8000-0000000000aa';
+        const finished = await harnessWith(stubStore({ verdict: 'ok', threadDone: true, reclaimId }));
         const yes = await post(finished, `/api/jobs/${ID}/complete`, done);
         expect(yes.statusCode).toBe(200);
-        expect(yes.json()).toEqual({ id: ID, status: 'succeeded', threadDone: true });
+        expect(yes.json()).toEqual({ id: ID, status: 'succeeded', threadDone: true, reclaimId });
 
         const ongoing = await harnessWith(stubStore({ verdict: 'ok', threadDone: false }));
         const no = await post(ongoing, `/api/jobs/${ID}/complete`, done);
         expect(no.statusCode).toBe(200);
-        expect(no.json()).toEqual({ id: ID, status: 'succeeded', threadDone: false });
+        expect(no.json()).toEqual({ id: ID, status: 'succeeded', threadDone: false, reclaimId: null });
     });
 
     // What rides the verdict into the store: the close-time summary (truncated, blank → null), the

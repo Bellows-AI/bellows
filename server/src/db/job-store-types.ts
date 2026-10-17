@@ -752,8 +752,8 @@ export type PokeWaitResult = { result: 'ok'; woken: boolean } | 'missing' | 'no_
  * - `not_done`    no member of the thread carries the done stamp — nothing to reopen. Reopen is
  *                 deliberately NOT idempotent: the second call answers this, the state the first
  *                 left behind.
- * - `reclaimed`   the worktree was already removed (the reclaim row acked, or a threadDone verdict
- *                 issued the removal) — a follow-up would have nothing to resume in.
+ * - `reclaimed`   the worktree was already removed (the reclaim row acked) — a follow-up would have
+ *                 nothing to resume in.
  * - `reclaiming`  a driver holds a LIVE claim on the reclaim — the tree is being removed right
  *                 now. Retry once the claim settles: an ack stamps the marker (`reclaimed`), an
  *                 expired lease reverts the row to withdrawable (`ok`).
@@ -1010,7 +1010,7 @@ export interface JobStore {
      * claimed mid-transaction is refused rather than yanked from under its worker.
      *
      * Refuses once the worktree is gone (`reclaimed` — the `worktree_reclaimed_at` marker, 045:
-     * stamped at the ack and at a threadDone verdict), and while a reclaim is in flight
+     * stamped at the ack), and while a reclaim is in flight
      * (`reclaiming` — a live claim on the row; the lease expiry is what relinquishes a crashed
      * worker's claim), because a follow-up resumes a session in the tree it ran in. Not
      * idempotent: reopening a task that is not done answers `not_done`, and so does the second
@@ -1158,6 +1158,12 @@ export interface JobStore {
      * thread read so a worker credential never pulls audit data of jobs it does not hold. The
      * verdict-moment answer also closes the read-after-verdict race: a follow-up inserted after
      * the verdict commits cannot change an answer that was already given.
+     *
+     * A threadDone verdict queues the worktree reclaim claimed by the completing worker and answers
+     * its id (`reclaimId`; null when another worker holds a live claim on it, or a reopen won the
+     * race): the driver acks it after the removal, and the `worktree_reclaimed_at` marker follows
+     * that ack (issue #821). The answer is a settle receipt: the identical complete replayed under
+     * the same lease answers it again; any other request under a concluded lease answers `lost`.
      */
     complete(
         id: string,
@@ -1226,7 +1232,7 @@ export interface JobStore {
                 baseBranch: string;
             } | null;
         }
-    ): Promise<{ result: 'ok'; threadDone: boolean } | { result: 'lost' | 'missing' }>;
+    ): Promise<{ result: 'ok'; threadDone: boolean; reclaimId: string | null } | { result: 'lost' | 'missing' }>;
     /**
      * The whole follow-up chain containing `id` — the root task and every adjustment after it,
      * oldest first. Accepts ANY member of the chain (the UI keeps one URL per conversation, so a

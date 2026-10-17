@@ -100,9 +100,9 @@ function stubBoard(
         idleBeforeStop?: number;
         failClaims?: number;
         failSession?: boolean;
-        threadDone?: boolean;
+        reclaimId?: string | null;
         completeLease?: LeaseState;
-        completeFor?: (claimed: BoardJob) => { state: LeaseState; threadDone: boolean };
+        completeFor?: (claimed: BoardJob) => { state: LeaseState; reclaimId: string | null };
         cancelRequested?: boolean;
         removedOnBeat?: boolean;
         reclaims?: Reclaim[];
@@ -223,7 +223,7 @@ function stubBoard(
         async complete(claimed, result) {
             board.completed.push({ id: claimed.id, ...result });
             if (options.completeFor) return options.completeFor(claimed);
-            return { state: options.completeLease ?? 'held', threadDone: options.threadDone ?? false };
+            return { state: options.completeLease ?? 'held', reclaimId: options.reclaimId ?? null };
         },
         async gates(claimed, results) {
             board.gatesReported.push({ id: claimed.id, results });
@@ -1284,14 +1284,36 @@ describe('the poll loop', () => {
     // AND the user's done on one of them, the board says so in the same breath as the verdict —
     // the per-thread task worktree is removed. A thread that merely finished keeps its tree: the
     // tree is the user's to free, and a failed task's tree is what its next turn continues from.
-    it('reclaims the task worktree when the complete answer says the thread is done', async () => {
-        const board = stubBoard([job(1)], { threadDone: true });
+    it('reclaims the task worktree when the complete answer says the thread is done, then acks the reclaim', async () => {
+        const board = stubBoard([job(1)], { reclaimId: 'reclaim-1' });
         const runner = stubRunner(async () => ok());
 
         await drive({ ...board, runner });
 
         expect(board.board.completed[0]?.status).toBe('succeeded');
         expect(runner.reclaimed).toEqual([job(1)]);
+        // The board stamps the reclaimed marker on this ack, never on the verdict (issue #821).
+        expect(board.board.reclaimAcks).toEqual(['reclaim-1']);
+    });
+
+    // Issue #821: the verdict's answer is a settle receipt, so a complete whose response was lost
+    // is retried into the original answer — the reclaim it ordered still runs and is acked.
+    it('reclaims on the replayed answer of a verdict whose first response was lost', async () => {
+        let calls = 0;
+        const board = stubBoard([job(1)], {
+            completeFor: () => {
+                calls += 1;
+                if (calls === 1) throw new Error('socket hang up');
+                return { state: 'held', reclaimId: 'reclaim-1' };
+            },
+        });
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed).toHaveLength(2);
+        expect(runner.reclaimed).toEqual([job(1)]);
+        expect(board.board.reclaimAcks).toEqual(['reclaim-1']);
     });
 
     it('keeps the task worktree when the complete answer says the thread is not done', async () => {
@@ -1311,7 +1333,7 @@ describe('the poll loop', () => {
         // A job whose checkout cannot be synced is completed failed without ever running; the
         // reclaim is the same downstream-of-the-verdict step it is for a run.
         const repoJob = { ...job(1), repo: 'Bellows-AI/factory', workspacePath: `bellows/${USER}` };
-        const board = stubBoard([repoJob], { threadDone: true });
+        const board = stubBoard([repoJob], { reclaimId: 'reclaim-1' });
         const runner = stubRunner(async () => ok(), { sync: { ok: false, reason: 'no disk' } });
 
         await drive({ ...board, runner });
@@ -1395,7 +1417,7 @@ describe('the poll loop', () => {
         ],
     ] as const)('%s', async (_label, reclaim, thrown, logged) => {
         const logs: string[] = [];
-        const board = stubBoard([job(1)], { threadDone: true });
+        const board = stubBoard([job(1)], { reclaimId: 'reclaim-1' });
         const runner = stubRunner(async () => ok(), { reclaim });
         if (thrown) {
             runner.reclaimWorktree = async () => {
@@ -1406,6 +1428,8 @@ describe('the poll loop', () => {
 
         expect(board.board.completed[0]?.status).toBe('succeeded');
         expect(logs.some((m) => m.includes(logged))).toBe(true);
+        // Unacked: the row is the queue's again once its lease expires.
+        expect(board.board.reclaimAcks).toEqual([]);
     });
 
     it('does not reclaim a job whose verdict was lost to the board', async () => {
@@ -1435,7 +1459,9 @@ describe('the poll loop', () => {
         });
         const board = stubBoard([job(1), followUp], {
             completeFor: (claimed) =>
-                claimed.id === job(1).id ? { state: 'held', threadDone: true } : { state: 'held', threadDone: false },
+                claimed.id === job(1).id
+                    ? { state: 'held', reclaimId: 'reclaim-1' }
+                    : { state: 'held', reclaimId: null },
         });
         const runner = stubRunner(async () => ok());
         runner.reclaimWorktree = async (claimed) => {
@@ -1496,7 +1522,10 @@ describe('the poll loop', () => {
         makeGate(job(1).id);
         makeGate(firstFollowUp.id);
         const board = stubBoard([job(1), firstFollowUp, secondFollowUp], {
-            completeFor: (claimed) => ({ state: 'held', threadDone: claimed.id !== secondFollowUp.id }),
+            completeFor: (claimed) => ({
+                state: 'held',
+                reclaimId: claimed.id !== secondFollowUp.id ? `reclaim-${claimed.id}` : null,
+            }),
         });
         const runner = stubRunner(async () => ok());
         runner.reclaimWorktree = async (claimed) => {
@@ -3494,7 +3523,7 @@ describe('verification gates', () => {
     });
 
     it('reclaims the tree after a gate-environment failure once the thread is done, like every other refusal', async () => {
-        const board = stubBoard([gatedJob(1)], { threadDone: true });
+        const board = stubBoard([gatedJob(1)], { reclaimId: 'reclaim-1' });
         const stack = stubGateStack();
         stack.gates.server.listen = async () => {
             throw new Error('EADDRNOTAVAIL');
