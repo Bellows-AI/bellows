@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
     createGateManager,
@@ -11,6 +11,7 @@ import {
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { gateEnvContainerName } from '../src/docker.js';
+import { gateEnvFile, refreshGateEnv } from '../src/gate-exec.js';
 import { networkName } from '../src/services.js';
 
 /**
@@ -175,6 +176,16 @@ describe('the gate environment manager: lifecycle', () => {
         expect(seen[0]!.file).toBe('GITHUB_TOKEN=ghs_second\n');
         expect(seen[0]!.args.some((arg) => arg.includes('ghs_'))).toBe(false);
         await manager.stop();
+    });
+
+    // Two ad-hoc runs re-acquire outside the key's queue: their env files must not share a temp name.
+    it('refreshes the env file under concurrent re-acquires without either failing', async () => {
+        const entry = { name: 'factory-gateenv-concurrent-refresh-test', envBody: 'GITHUB_TOKEN=ghs_0\n' };
+        await Promise.all(
+            Array.from({ length: 8 }, (_, i) => refreshGateEnv({ ...entry }, `GITHUB_TOKEN=ghs_${i + 1}\n`))
+        );
+        expect(readFileSync(gateEnvFile(entry.name), 'utf8')).toMatch(/^GITHUB_TOKEN=ghs_[1-8]\n$/);
+        rmSync(gateEnvFile(entry.name), { force: true });
     });
 
     it('tears the container down after the cooldown, and only then', async () => {

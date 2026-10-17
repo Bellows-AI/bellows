@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,8 +16,10 @@ export const gateEnvFile = (name: string): string => join(tmpdir(), `factory-gat
  */
 export async function refreshGateEnv(entry: GateEnvEntry, envBody: string): Promise<void> {
     if (!envBody || envBody === entry.envBody) return;
-    await writeFile(`${gateEnvFile(entry.name)}.next`, envBody, { mode: 0o600 });
-    await rename(`${gateEnvFile(entry.name)}.next`, gateEnvFile(entry.name));
+    // Its own temp name: two ad-hoc runs re-acquire outside the key's queue, and may refresh at once.
+    const next = `${gateEnvFile(entry.name)}.${randomUUID()}`;
+    await writeFile(next, envBody, { mode: 0o600 });
+    await rename(next, gateEnvFile(entry.name));
     entry.envBody = envBody;
 }
 
