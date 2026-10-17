@@ -1,5 +1,6 @@
 import { artifactCalls } from './artifact-calls.js';
 import { BoardHttpError } from './board-retry.js';
+import { githubCredentialCall } from './github-credential-call.js';
 import type { EvidencePolicy, GatesOutcome, ReviewEvidence } from './evidence-policy.js';
 import { type ExecutorType, isExecutorType } from './executors.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, LEASE_LOST_CODE, NOT_FOUND_CODE } from './http.js';
@@ -510,13 +511,14 @@ export interface Board {
     /** Tells the board which agent session this attempt runs as; null clears one that never ran. */
     session(job: BoardJob, sessionId: string | null): Promise<LeaseState>;
     /**
-     * A credential to publish this job's work with, fresh enough for the push. The claim env's
-     * GITHUB_TOKEN was minted at claim time and a long run can outlive it — observed 2026-09-13:
-     * a 1h33m run's publish died on its expired claim token with the work done and the gates
-     * green. Null — a refused, lost, or failed answer, or the board holding nothing fresher —
-     * keeps the claim env; freshness is worth a request, not an error path.
+     * A GitHub token for this attempt, minted now by the board's credential endpoint
+     * (`POST /api/jobs/:id/credentials/github`, docs/connections.md) — asked right before each
+     * supervised step that reaches GitHub (the sync's fetch, a publish, a github-writing helper)
+     * and at gate start, so no step runs on an hour-old token. The attempt pair is its credential,
+     * never the board secret. Null — no App installation (409), a refused attempt, a failed ask —
+     * runs the step without one; the step then fails honestly on a private repository.
      */
-    publishToken(job: BoardJob): Promise<string | null>;
+    githubCredential(job: BoardJob): Promise<string | null>;
     /** Parks the job: its container is gone, but it is not finished and keeps its session. */
     suspend(job: BoardJob): Promise<LeaseState>;
     /**
@@ -549,14 +551,14 @@ export interface Board {
      * an unmeasured read is omitted, and the board stores null, never zero. `summary` rides
      * when the close-time read lifted the run's last words — what the run did, for the
      * recently-completed view; omitted stays null on the board. The answer carries
-     * `threadDone` — whether
-     * EVERY job of the task's thread is terminal ('succeeded'/'failed'/'dead'/'stopped') AND the user has
-     * closed the thread (a `done_at` on some member), computed by the board in the SAME
-     * lease-guarded transaction as the verdict — which is the signal a worker uses right after a
-     * verdict to decide the task worktree can be reclaimed (issue #47). A follow-up still
-     * queued or running keeps it false; so does a thread that finished but was never
-     * declared done — a failed task's tree is exactly what its next turn continues from, and the
-     * tree is the user's to free.
+     * `reclaimId` — the worktree reclaim the board queued, claimed by this worker, when EVERY job
+     * of the task's thread is terminal ('succeeded'/'failed'/'dead'/'stopped') AND the user has
+     * closed the thread (a `done_at` on some member), in the SAME lease-guarded transaction as the
+     * verdict (issues #47, #821). The worker removes the tree and acks that id; the board marks the
+     * tree reclaimed only on the ack. A follow-up still queued or running keeps it null; so does a
+     * thread that finished but was never declared done — a failed task's tree is exactly what its
+     * next turn continues from, and the tree is the user's to free. The answer is a settle receipt:
+     * the identical verdict retried after a lost response answers it again.
      */
     complete(
         job: BoardJob,
@@ -599,7 +601,7 @@ export interface Board {
                 baseBranch: string;
             } | null;
         }
-    ): Promise<{ state: LeaseState; threadDone: boolean }>;
+    ): Promise<{ state: LeaseState; reclaimId: string | null }>;
 }
 
 type Fetch = typeof globalThis.fetch;
@@ -901,6 +903,7 @@ export function createBoard({
         ...reviewCalls(post),
 
         ...artifactCalls({ url, token, fetch }),
+        ...githubCredentialCall({ url, fetch }),
 
         async claimReclaim(worker) {
             const response = await post('/api/reclaims/claim', { worker, leaseSeconds });
@@ -942,17 +945,6 @@ export function createBoard({
             return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
 
-        async publishToken(job) {
-            try {
-                const response = await post(`/api/jobs/${job.id}/publish-token`, { leaseToken: job.leaseToken });
-                if (!response.ok) return null;
-                const body = (await response.json()) as { GITHUB_TOKEN?: string | null };
-                return typeof body.GITHUB_TOKEN === 'string' && body.GITHUB_TOKEN ? body.GITHUB_TOKEN : null;
-            } catch {
-                return null;
-            }
-        },
-
         async suspend(job) {
             const response = await post(`/api/jobs/${job.id}/suspend`, { leaseToken: job.leaseToken });
             return response.status === HTTP_CONFLICT ? 'lost' : 'held';
@@ -983,13 +975,14 @@ export function createBoard({
         async complete(job, result) {
             const response = await post(`/api/jobs/${job.id}/complete`, completeWireBody(job, result));
             // 409 is a verdict, not a failure: the lease is gone and with it any say over the
-            // thread — the done answer is false, not unknown.
-            if (response.status === HTTP_CONFLICT) return { state: 'lost', threadDone: false };
-            // Read defensively, like every other board field: anything but a literal true —
-            // absent, false, a body that is not the shape we asked for — means "the user may
+            // thread — no reclaim was ordered, not an unknown one.
+            if (response.status === HTTP_CONFLICT) return { state: 'lost', reclaimId: null };
+            // Read defensively, like every other board field: anything but a non-empty string —
+            // absent, null, a body that is not the shape we asked for — means "the user may
             // still want this thread's tree", which is the only safe reading of an unclear answer.
-            const body = (await response.json()) as { threadDone?: boolean };
-            return { state: 'held', threadDone: body.threadDone === true };
+            const body = (await response.json()) as { reclaimId?: unknown };
+            const reclaimId = typeof body.reclaimId === 'string' && body.reclaimId !== '' ? body.reclaimId : null;
+            return { state: 'held', reclaimId };
         },
     };
 }

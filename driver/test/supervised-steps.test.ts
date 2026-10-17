@@ -33,7 +33,9 @@ import { lookupHelper } from '../src/helpers.js';
  */
 const USER = '44444444-4444-4444-8444-444444444444';
 const SESSION = '33333333-3333-4333-8333-333333333333';
-const PUBLISH_TOKEN = 'ghs_publish-fresh-0123456789';
+/** The board's token minted for one step (docs/connections.md). */
+const MINTED_TOKEN = 'ghs_minted-for-step-0123456789';
+/** A GitHub token a board still put on the claim: a reserved name, which the steps never forward. */
 const CLAIM_TOKEN = 'ghs_claim-time-abcdef';
 const CONTROL_TOKEN = 'supervisor-control-token-xyz';
 const config = loadDriverConfig({ EXECUTOR: 'kubernetes' });
@@ -94,16 +96,17 @@ const publishStep = (over: Partial<PublishStep> = {}): PublishStep => ({
 });
 
 describe('the publish steps over the supervisor', () => {
-    it('hands the claim env and the publish-fresh token to the step that reads them, and to no other', async () => {
+    it("hands the claim env and the board's minted token to the step that reads them, and to no other", async () => {
         const s = sink();
-        const run = supervisedStepRunner(s.host, job, { kind: 'publish', publishToken: PUBLISH_TOKEN });
+        const run = supervisedStepRunner(s.host, job, { kind: 'publish', githubToken: MINTED_TOKEN });
 
         await run(publishStep({ label: 'git push', env: true }));
         await run(publishStep({ label: 'git commit', env: false, args: ['commit'] }));
 
         const [push, commit] = s.submitted;
-        // The fresh token replaces the claim's, which a long run can have outlived; the rest of the claim env rides along.
-        expect(push!.env).toMatchObject({ GITHUB_TOKEN: PUBLISH_TOKEN, MEMBER_VAR: 'member' });
+        // The minted token is the step's; a claim value under the reserved name never rides along.
+        expect(push!.env).toMatchObject({ GITHUB_TOKEN: MINTED_TOKEN, MEMBER_VAR: 'member' });
+        expect(JSON.stringify(s.submitted)).not.toContain(CLAIM_TOKEN);
         expect(commit!.env).toEqual({});
         // Addressed to this attempt's supervisor by its control token, run in the task worktree.
         expect(s.tokens).toEqual([CONTROL_TOKEN, CONTROL_TOKEN]);
@@ -202,19 +205,30 @@ describe('the publish steps over the supervisor', () => {
 describe('the sync, the reclaim and the helpers over the supervisor', () => {
     it('syncs a starting claim with fetch credentials, the credential helper code and the paths', async () => {
         const s = sink(() => ok('{"ok":true,"reason":null,"fingerprint":"fp"}\n'));
-        const result = await runSyncStep(s.host, job);
+        const result = await runSyncStep(s.host, job, MINTED_TOKEN);
 
         expect(result).toEqual({ ok: true, reason: null, fingerprint: 'fp' });
         const [sync] = s.submitted;
         expect(sync).toMatchObject({ kind: 'sync', timeoutMs: 600_000 });
         expect(sync!.env).toMatchObject({
-            GITHUB_TOKEN: CLAIM_TOKEN,
+            GITHUB_TOKEN: MINTED_TOKEN,
             REPO: `${config.workspaceMount}/bellows/${USER}/factory`,
             WORKTREE,
             BRANCH: worktreeBranch(job),
             CRED_HELPER: CREDENTIAL_HELPER,
         });
         expect(sync!.env.RESTORE).toBeUndefined();
+    });
+
+    it('fetches plain, with neither token nor helper, when the board issued no token', async () => {
+        // A public repository's fetch must stay unauthenticated, which a helper answering an empty
+        // password would break; the claim's own GitHub value is a reserved name and never forwarded.
+        const s = sink(() => ok('{"ok":true,"reason":null}\n'));
+        await runSyncStep(s.host, job);
+        const env = s.submitted[0]!.env;
+        expect(env.GITHUB_TOKEN).toBeUndefined();
+        expect(env.CRED_HELPER).toBeUndefined();
+        expect(env.MEMBER_VAR).toBe('member');
     });
 
     it('restores a continued session with no credential at all: nothing that touches the remote', async () => {
@@ -255,7 +269,7 @@ describe('the sync, the reclaim and the helpers over the supervisor', () => {
         expect(Object.keys(s.submitted[0]!.env).sort()).toEqual(['REPO', 'WORKTREE']);
     });
 
-    it('gives a helper the claim env and the fresh token only when it writes to GitHub', async () => {
+    it("gives a helper the claim env and the board's minted token only when it writes to GitHub", async () => {
         const descriptor = lookupHelper('merge-conflict-probe');
         expect(descriptor).toBeTruthy();
         const reading = sink(() => ok('{}'));
@@ -273,9 +287,9 @@ describe('the sync, the reclaim and the helpers over the supervisor', () => {
             writing.host,
             job,
             { phase: 'pre', helperId: 'merge-conflict-probe', input: {}, githubWriting: true } as never,
-            { token: PUBLISH_TOKEN }
+            { token: MINTED_TOKEN }
         );
-        expect(writing.submitted[0]!.env.GITHUB_TOKEN).toBe(PUBLISH_TOKEN);
+        expect(writing.submitted[0]!.env.GITHUB_TOKEN).toBe(MINTED_TOKEN);
         expect(writing.submitted[0]!.cwd).toBe(WORKTREE);
     });
 
@@ -311,13 +325,15 @@ describe('the agent environment holds no publish token', () => {
     const supervisor = containers.find((c) => c.name === SUPERVISOR_CONTAINER)!;
 
     it('names the publish token nowhere in the pod spec: the token exists only as a step env', async () => {
-        // The token the loop mints at publish time never reaches a spec builder; the only way it leaves
-        // the driver is the step it rides, addressed to the supervisor.
-        expect(JSON.stringify(group)).not.toContain(PUBLISH_TOKEN);
+        // The token the board mints for a step never reaches a spec builder; the only way it leaves
+        // the driver is the step it rides, addressed to the supervisor. A claim value under the
+        // reserved name reaches neither.
+        expect(JSON.stringify(group)).not.toContain(MINTED_TOKEN);
+        expect(JSON.stringify(group)).not.toContain(CLAIM_TOKEN);
         const s = sink();
-        await supervisedStepRunner(s.host, job, { kind: 'publish', publishToken: PUBLISH_TOKEN })(publishStep());
-        expect(JSON.stringify(s.submitted)).toContain(PUBLISH_TOKEN);
-        expect(holds(agent)).not.toContain(PUBLISH_TOKEN);
+        await supervisedStepRunner(s.host, job, { kind: 'publish', githubToken: MINTED_TOKEN })(publishStep());
+        expect(JSON.stringify(s.submitted)).toContain(MINTED_TOKEN);
+        expect(holds(agent)).not.toContain(MINTED_TOKEN);
     });
 
     it('gives the agent container neither the supervisor’s credential nor a route to the step channel', () => {
@@ -347,7 +363,7 @@ describe('the agent environment holds no publish token', () => {
 
     it('holds the same line on docker: the agent container’s argv names no step credential', () => {
         const args = dockerArgs(config, job, { id: SESSION, resume: false }, { envFile: '/tmp/agent.env' }).join(' ');
-        expect(args).not.toContain(PUBLISH_TOKEN);
+        expect(args).not.toContain(MINTED_TOKEN);
         expect(args).not.toContain(CONTROL_TOKEN);
         for (const name of SUPERVISOR_CREDENTIAL_NAMES) expect(args).not.toContain(name);
         expect(args).toContain('FACTORY_CTL_GO=');

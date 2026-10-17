@@ -16,4 +16,8 @@ describe('ERROR_CODES', () => {
     it('carries the batch launch check’s unknown-executor refusal', () => {
         expect(ERROR_CODES.UNKNOWN_EXECUTOR).toBe('UNKNOWN_EXECUTOR');
     });
+
+    it('carries the runner credential endpoint’s no-App refusal, which the runner helper reads', () => {
+        expect(ERROR_CODES.GITHUB_UNAVAILABLE).toBe('GITHUB_UNAVAILABLE');
+    });
 });

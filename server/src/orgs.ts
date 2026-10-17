@@ -14,7 +14,7 @@ import { storedRepoNames } from './db/stored-repos.js';
 import { createUserExecutorStore, type UserExecutorStore } from './db/user-executor-store.js';
 import { createUserRepoStore, type UserRepoStore } from './db/user-repo-store.js';
 import { createGitHubAppClient } from './github/app-client.js';
-import { installationTokenProvider } from './github/app-token.js';
+import { installationTokenProvider, type InstallationTokenProvider } from './github/app-token.js';
 import { createRepoSource, type RepoSource } from './github/repo-source.js';
 import { trackedRepos } from './db/tracked-repos.js';
 import { createWorkflowStore, type WorkflowStore } from './db/workflow-store.js';
@@ -66,6 +66,8 @@ export interface OrgRuntime {
     artifacts?: ArtifactStore | undefined;
     /** The managed connector connections (054) a task may select; present with the other stores. */
     connections?: ConnectionStore | undefined;
+    /** The org's installation mint, behind the runner GitHub credential route; absent offline or uninstalled. */
+    githubToken?: InstallationTokenProvider | undefined;
     userRepos?: UserRepoStore | undefined;
     userExecutors?: UserExecutorStore | undefined;
     cloneQueue?: CloneQueue | undefined;
@@ -180,10 +182,9 @@ function buildOrgStores({
         // thread's base branch — never from a checkout on disk. The code-only `none` arm has no
         // client: it reads the bare mirrors under the workspace root instead (test:jobs keeps them).
         ...(planReader ? { plan: { readFor: planReader.read } } : {}),
-        // The claim mints the org's installation token under the runner env as its base
-        // layer. Per-org here is the whole point: a runner gets the installation of the
-        // org whose board it is working, and no other.
-        ...(tokens ? { githubToken: tokens } : {}),
+        // The github skill connection: the runner obtains the org's installation token from the
+        // board's credential endpoint, so a claim only needs to know the installation exists.
+        githubApp: tokens !== undefined,
         // The completion surface records the thread's publication identity in the same
         // transaction as the verdict (and cancel/remove sweep the thread's waits).
         prs,
@@ -347,6 +348,7 @@ export function createOrgRegistry({
             telemetry,
             service: createStatsService({ config, repos, telemetry }),
             ...(client ? { branchHead: (repo: string, branch: string) => client.readBranchHead(repo, branch) } : {}),
+            githubToken: tokens,
         };
 
         if (withStores) {

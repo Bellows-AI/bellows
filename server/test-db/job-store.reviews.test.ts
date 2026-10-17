@@ -64,7 +64,7 @@ const storeWith = (declared: { policy?: EvidencePolicy; reviewers?: ReviewerSpec
             }),
         },
         env: { resolveFor: async () => MEMBER_ENV },
-        githubToken: { fresh: async () => 'minted-token' },
+        githubApp: true,
     });
 
 const rowOf = async (id: string) => {
@@ -178,7 +178,8 @@ describe.runIf(enabled)('named reviewer invocation on the job store', () => {
     it('is claimable while its caller is still running, and carries only what the profile grants', async () => {
         const store = storeWith({ reviewers: [SECURITY] });
         const caller = await claimed(store);
-        expect(caller.env).toMatchObject({ GITHUB_TOKEN: 'member-pat', AWS_SECRET: 'aws', JIRA_TOKEN: 'jira' });
+        // No GitHub token either way: the App's is the runner's to obtain (docs/connections.md).
+        expect(caller.env).toEqual({ AWS_SECRET: 'aws', JIRA_TOKEN: 'jira' });
         const asked = await ask(caller);
         if (!('review' in asked)) throw new Error('no review');
 
@@ -243,11 +244,12 @@ describe.runIf(enabled)('named reviewer invocation on the job store', () => {
             exitCode: 0,
             output: `ok\n${REVIEW_VERDICT_MARKER}`,
         });
-        expect(done).toEqual({ result: 'ok', threadDone: true });
-        const [row] = await sql<{ worktree_reclaimed_at: Date | null }[]>`
-            select worktree_reclaimed_at from job where org_id = ${ORG} and id = ${claim!.id}
+        expect(done).toEqual({ result: 'ok', threadDone: true, reclaimId: expect.any(String) });
+        // Queued claimed by the review's worker; the marker follows the ack (issue #821).
+        const [row] = await sql<{ claimed_by: string | null }[]>`
+            select claimed_by from task_reclaim where org_id = ${ORG} and root_job_id = ${claim!.id}
         `;
-        expect(row!.worktree_reclaimed_at).not.toBeNull();
+        expect(row!.claimed_by).toBe('driver-2');
         // The caller's own thread is still moving: its tree is not ordered away.
         expect((await rowOf(caller.id)).status).toBe('running');
     });

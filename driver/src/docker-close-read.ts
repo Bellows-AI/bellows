@@ -22,7 +22,7 @@ import {
 import { type DriverConfig, executorImage } from './config.js';
 import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts.js';
 import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
-import { type ExecDocker, linesOf } from './docker-runner-support.js';
+import { type ExecDocker, linesOf, type Spawn, readUtf8 } from './docker-runner-support.js';
 import { awaitSupervisor, supervisorLossOf } from './docker-group.js';
 import { SUPERVISOR_EXIT } from './supervisor-contract.js';
 import {
@@ -33,13 +33,13 @@ import {
     CLOSE_READ_DEADLINE_MS,
 } from './docker.js';
 import {
-    ARTIFACT_LIMIT,
     type AdoptedRun,
+    appendTailKept,
     commandMark,
+    type KeptLog,
     type RunOutcome,
     type RunSession,
     reportTail,
-    tailKept,
 } from './runner.js';
 import { OPENCODE } from './executors.js';
 import { CLAIM_SEQ_MARK, COMMAND_MARK, JOB_LABEL, LEASE_LABEL, SESSION_MARK } from './labels.js';
@@ -236,6 +236,27 @@ async function exitedEarlierRunner(
 }
 
 /**
+ * The exited runner's whole log, streamed into the tail-kept accumulator the attached run keeps —
+ * never buffered whole through an exec, whose output cap would fail the adoption of a long run
+ * (issue #825). Rejects when `docker logs` does not exit 0.
+ */
+function readRunnerLog(spawnFn: Spawn, name: string): Promise<KeptLog> {
+    return new Promise((resolve, reject) => {
+        const child = spawnFn('docker', ['logs', name], { stdio: ['ignore', 'pipe', 'pipe'] });
+        let kept: KeptLog = { content: '', truncated: false };
+        const collect = (text: string) => {
+            kept = appendTailKept(kept, text);
+        };
+        readUtf8(child.stdout, collect);
+        readUtf8(child.stderr, collect);
+        child.on('error', reject);
+        child.on('close', (code) =>
+            code === 0 ? resolve(kept) : reject(new Error(`docker logs ${name} exited ${code ?? 'on a signal'}`))
+        );
+    });
+}
+
+/**
  * The docker `Runner.adopt` (issue #792): a driver restarted while its runner container ran on, and
  * the claim that superseded it reads the container that has since exited — its exit code, its log,
  * the close-time session readouts — exactly as the attached run would have, then runs the re-claim
@@ -244,7 +265,7 @@ async function exitedEarlierRunner(
  * with it.
  */
 export async function dockerAdopt(
-    deps: { execDocker: ExecDocker; config: DriverConfig; fence: (job: BoardJob) => Promise<void> },
+    deps: { execDocker: ExecDocker; spawnFn: Spawn; config: DriverConfig; fence: (job: BoardJob) => Promise<void> },
     job: BoardJob
 ): Promise<AdoptedRun | null> {
     const { execDocker, config } = deps;
@@ -262,12 +283,10 @@ export async function dockerAdopt(
         ExitCode?: number;
         StartedAt?: string;
     };
-    const logs = await execDocker(['logs', name]);
-    const text = `${logs.stdout}${logs.stderr ?? ''}`;
-    const full = tailKept(text, ARTIFACT_LIMIT);
+    const full = await readRunnerLog(deps.spawnFn, name);
     const outcome: RunOutcome = {
         exitCode: state.ExitCode ?? null,
-        output: reportTail(text),
+        output: reportTail(full.content),
         // A budget the supervisor enforced reads as the exit it caused: its own 124.
         timedOut: supervisorExit === SUPERVISOR_EXIT.deadline,
         started: true,

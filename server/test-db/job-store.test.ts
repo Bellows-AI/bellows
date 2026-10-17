@@ -181,7 +181,7 @@ describe.skipIf(!enabled)('job store', () => {
                         output: 'from the live one',
                     });
                     // Terminal, but nobody closed it — the tree stays until a done says otherwise.
-                    expect(accepted).toEqual({ result: 'ok', threadDone: false });
+                    expect(accepted).toEqual({ result: 'ok', threadDone: false, reclaimId: null });
                     expect(await store.get(id)).toMatchObject({
                         status: 'failed',
                         exitCode: 3,
@@ -237,17 +237,6 @@ describe.skipIf(!enabled)('job store', () => {
                 after: async (id) => {
                     expect((await store.get(id))!.questions).toEqual([]);
                 },
-            },
-            {
-                name: 'publishToken',
-                stale: 'foreign',
-                write: (id, token) =>
-                    createJobStore({ sql, orgId: ORG, githubToken: { fresh: async () => 'ghs_x' } }).publishToken(
-                        id,
-                        token
-                    ),
-                lost: { result: 'lost' },
-                missing: { result: 'missing' },
             },
             {
                 name: 'gates (the report)',

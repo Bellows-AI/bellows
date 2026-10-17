@@ -251,35 +251,62 @@ describe('the claimed job', () => {
     });
 });
 
-describe('asking for a publish-fresh credential', () => {
+describe('asking for the attempt’s GitHub token (docs/connections.md)', () => {
     const job = boardJob();
 
-    it('asks the board with the lease token and carries the credential', async () => {
-        const { calls, fetch } = recorder(() => Response.json({ GITHUB_TOKEN: 'ghs_fresh' }, { status: 200 }));
+    it('asks the credential endpoint with the attempt pair, never the board secret', async () => {
+        const { calls, fetch } = recorder(() =>
+            Response.json({ token: 'ghs_fresh', expiresAt: '2026-10-16T13:00:00.000Z' }, { status: 200 })
+        );
         const board = boardOn(fetch, 'fwt_abc');
 
-        const token = await board.publishToken(job);
+        const token = await board.githubCredential(job);
 
-        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/publish-token');
-        expect(calls[0]!.body).toEqual({ leaseToken: 'token-1' });
-        expect(calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/credentials/github');
+        expect(calls[0]!.headers).toEqual({ 'x-factory-job-id': 'job-1', 'x-factory-job-lease-token': 'token-1' });
+        expect(calls[0]!.headers.authorization).toBeUndefined();
         expect(token).toBe('ghs_fresh');
     });
 
-    it('answers null — keep the claim env — when the board holds nothing fresher, refuses, or fails', async () => {
-        const nothing = recorder(() => Response.json({ GITHUB_TOKEN: null }, { status: 200 }));
-        expect(await boardOn(nothing.fetch).publishToken(job)).toBeNull();
+    it('answers null when the board has no App, refuses the attempt, or fails', async () => {
+        const noApp = recorder(() => Response.json({ code: 'GITHUB_UNAVAILABLE' }, { status: 409 }));
+        expect(await boardOn(noApp.fetch).githubCredential(job)).toBeNull();
 
-        const lost = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
-        expect(await boardOn(lost.fetch).publishToken(job)).toBeNull();
+        const refused = recorder(() => Response.json({ code: 'CONNECTION_NOT_AUTHORIZED' }, { status: 403 }));
+        expect(await boardOn(refused.fetch).githubCredential(job)).toBeNull();
 
-        const dead = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
-        expect(await boardOn(dead.fetch).publishToken(job)).toBeNull();
+        const empty = recorder(() => Response.json({ token: '' }, { status: 200 }));
+        expect(await boardOn(empty.fetch).githubCredential(job)).toBeNull();
 
         const broken = recorder(() => {
             throw new Error('board unreachable');
         });
-        expect(await boardOn(broken.fetch).publishToken(job)).toBeNull();
+        expect(await boardOn(broken.fetch).githubCredential(job)).toBeNull();
+    });
+
+    // A push with no token is a lost PR on a private repository: a transient board failure is retried.
+    it('retries a failed request, a 5xx and a 429 a bounded number of times before it answers null', async () => {
+        let n = 0;
+        const flaky = recorder(() => {
+            n += 1;
+            if (n === 1) throw new Error('board unreachable');
+            if (n === 2) return Response.json({}, { status: 502 });
+            return Response.json({ token: 'ghs_after_retry' }, { status: 200 });
+        });
+        expect(await boardOn(flaky.fetch).githubCredential(job)).toBe('ghs_after_retry');
+        expect(flaky.calls).toHaveLength(3);
+
+        const busy = recorder(() => Response.json({}, { status: 429 }));
+        expect(await boardOn(busy.fetch).githubCredential(job)).toBeNull();
+        expect(busy.calls).toHaveLength(3);
+    });
+
+    it('never retries an answer: a refused attempt or no App is asked once', async () => {
+        for (const status of [403, 409]) {
+            const answered = recorder(() => Response.json({}, { status }));
+            expect(await boardOn(answered.fetch).githubCredential(job)).toBeNull();
+            expect(answered.calls).toHaveLength(1);
+        }
     });
 });
 
@@ -504,12 +531,15 @@ describe('the removed-thread reclaim queue', () => {
 describe('the complete verdict', () => {
     const job = boardJob();
 
-    it('carries the thread-done answer the board computed beside the lease state', async () => {
-        // The board computes threadDone in the same lease-guarded transaction as the verdict,
-        // so the driver reads both from the one complete round trip — no separate thread read to
-        // race a follow-up's insertion against.
+    it('carries the verdict-time reclaim the board queued beside the lease state', async () => {
+        // The board queues a done thread's reclaim, claimed by this worker, in the same
+        // lease-guarded transaction as the verdict (issue #821), so the driver reads both from the
+        // one complete round trip — no separate thread read to race a follow-up's insertion against.
         const { calls, fetch } = recorder(() =>
-            Response.json({ id: 'job-1', status: 'succeeded', threadDone: true }, { status: 200 })
+            Response.json(
+                { id: 'job-1', status: 'succeeded', threadDone: true, reclaimId: 'reclaim-1' },
+                { status: 200 }
+            )
         );
         const board = boardOn(fetch, 'fwt_abc');
 
@@ -517,30 +547,31 @@ describe('the complete verdict', () => {
 
         expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/complete');
         expect(calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
-        expect(verdict).toEqual({ state: 'held', threadDone: true });
+        expect(verdict).toEqual({ state: 'held', reclaimId: 'reclaim-1' });
     });
 
-    // Defensive on purpose: a board that predates the field, a body without it, or one that
-    // lies about its type all mean "a follow-up might still come" — the conservative answer.
+    // Defensive on purpose: a body without the field, or one that lies about its type, means
+    // "no reclaim was ordered" — the tree stays, the conservative answer.
     it.each<[string, Record<string, unknown>]>([
-        ['an absent', { id: 'job-1', status: 'succeeded' }],
-        ['a false', { id: 'job-1', threadDone: false }],
-        ['a non-boolean', { id: 'job-1', threadDone: 'yes' }],
-    ])('reads %s threadDone as false — keep the tree', async (_label, body) => {
+        ['an absent', { id: 'job-1', status: 'succeeded', threadDone: true }],
+        ['a null', { id: 'job-1', threadDone: false, reclaimId: null }],
+        ['a non-string', { id: 'job-1', threadDone: true, reclaimId: 7 }],
+        ['an empty', { id: 'job-1', threadDone: true, reclaimId: '' }],
+    ])('reads %s reclaimId as no reclaim — keep the tree', async (_label, body) => {
         const { fetch } = recorder(() => Response.json(body, { status: 200 }));
         expect(await boardOn(fetch).complete(job, { status: 'succeeded', exitCode: 0, output: '' })).toEqual({
             state: 'held',
-            threadDone: false,
+            reclaimId: null,
         });
     });
 
-    it('answers lost with threadDone false when the board refuses the verdict with a 409', async () => {
+    it('answers lost with no reclaim when the board refuses the verdict with a 409', async () => {
         const { fetch } = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
         const board = boardOn(fetch);
 
         expect(await board.complete(job, { status: 'failed', exitCode: 1, output: 'boom' })).toEqual({
             state: 'lost',
-            threadDone: false,
+            reclaimId: null,
         });
     });
 

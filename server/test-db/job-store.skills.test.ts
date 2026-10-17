@@ -19,14 +19,17 @@ const WORKER = 'worker-1';
 const LEASE_SECONDS = 60;
 const db = useTestDb({ orgs: [ORG], max: 8 });
 
-const GITHUB_ENV = { GITHUB_TOKEN: 'token-sentinel' };
+const PLAIN_ENV = { PLAIN: 'plain-sentinel' };
 
 let sql: Sql;
 let plain: JobStore;
 
-/** A store whose claim resolves exactly `env` for every job, the board's stacked env in miniature. */
-const storeWithEnv = (env: Record<string, string>): JobStore =>
-    createJobStore({ sql, orgId: ORG, env: { resolveFor: async () => ({ ...env }) } });
+/**
+ * A store whose claim resolves exactly `env` for every job, the board's stacked env in miniature —
+ * on an org holding a GitHub App installation (`githubApp`) unless told otherwise.
+ */
+const storeWithEnv = (env: Record<string, string>, githubApp = true): JobStore =>
+    createJobStore({ sql, orgId: ORG, env: { resolveFor: async () => ({ ...env }) }, githubApp });
 
 beforeAll(() => {
     if (!enabled) return;
@@ -66,7 +69,7 @@ async function claim(store: JobStore): Promise<Claim> {
 
 describe.skipIf(!enabled)('skill selection — database', () => {
     it('stores the selection on the root and hands the claim a prompt naming it', async () => {
-        const store = storeWithEnv(GITHUB_ENV);
+        const store = storeWithEnv(PLAIN_ENV);
         const id = await queue(store, ['jira', 'gates'], await jiraConnection());
         const [row] = await sql<{ skills: string[] }[]>`select skills from job where id = ${id}`;
         expect(row?.skills).toEqual(['jira', 'gates']);
@@ -94,29 +97,31 @@ describe.skipIf(!enabled)('skill selection — database', () => {
         expect(claimed.skillRefusal).not.toContain('site-sentinel');
     });
 
-    it('refuses an env connection the environment lacks, naming env names and no value', async () => {
-        const store = storeWithEnv({ OTHER: 'other-sentinel' });
+    it('refuses the github connection on an org with no App installation, naming no value', async () => {
+        // A member token cannot stand in: GitHub is the App's (docs/connections.md).
+        const store = storeWithEnv({ OTHER: 'other-sentinel', GITHUB_TOKEN: 'pat-sentinel' }, false);
         await queue(store, ['github']);
 
         const claimed = await claim(store);
-        expect(claimed.skillRefusal).toContain('GITHUB_TOKEN');
+        expect(claimed.skillRefusal).toContain('install the GitHub App on this organization');
         expect(claimed.skillRefusal).not.toContain('other-sentinel');
+        expect(claimed.skillRefusal).not.toContain('pat-sentinel');
     });
 
-    it('refuses a connection on a board that resolves no environment at all', async () => {
+    it('refuses the github connection on a board that resolves no environment and holds no App', async () => {
         await queue(plain, ['github']);
-        expect((await claim(plain)).skillRefusal).toContain('GITHUB_TOKEN');
+        expect((await claim(plain)).skillRefusal).toContain('install the GitHub App');
     });
 
     it('selecting a skill never changes the claim env', async () => {
-        const store = storeWithEnv(GITHUB_ENV);
+        const store = storeWithEnv(PLAIN_ENV);
         await queue(store);
         const without = (await claim(store)).env;
         await sql`delete from job`;
         await queue(store, ['jira', 'github', 'gates']);
         const withSkills = (await claim(store)).env;
         expect(withSkills).toEqual(without);
-        expect(withSkills).toEqual(GITHUB_ENV);
+        expect(withSkills).toEqual(PLAIN_ENV);
     });
 
     it('refuses a stored name the catalog no longer has, listing what is installed', async () => {
@@ -127,8 +132,8 @@ describe.skipIf(!enabled)('skill selection — database', () => {
         expect(refusal).toContain('installed: ');
     });
 
-    it('a retry keeps the root selection and sees the same refusal until the environment is fixed', async () => {
-        const broken = storeWithEnv({});
+    it('a retry keeps the root selection and sees the same refusal until the App is installed', async () => {
+        const broken = storeWithEnv({}, false);
         const root = await queue(broken, ['github']);
         const first = await claim(broken);
         expect(first.skillRefusal).not.toBeNull();
@@ -147,17 +152,17 @@ describe.skipIf(!enabled)('skill selection — database', () => {
 
         const stillBroken = await claim(broken);
         expect(stillBroken.id).toBe(retry.id);
-        expect(stillBroken.skillRefusal).toContain('GITHUB_TOKEN');
+        expect(stillBroken.skillRefusal).toContain('install the GitHub App');
         expect(stillBroken.masterPrompt).toContain('- Selected skills: github');
 
-        // The member fixes the environment: a fresh retry now runs, with the same prompt.
+        // The App is installed: a fresh retry now runs, with the same prompt.
         await broken.complete(stillBroken.id, stillBroken.leaseToken, {
             status: 'failed',
             exitCode: null,
             output: 'x',
             failureKind: 'config',
         });
-        const fixed = storeWithEnv(GITHUB_ENV);
+        const fixed = storeWithEnv(PLAIN_ENV);
         const again = await fixed.createRetry(root, null);
         if (typeof again === 'string') throw new Error(`retry refused: ${again}`);
         const ok = await claim(fixed);
@@ -182,7 +187,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
     });
 
     it('a follow-up claims with the root selection', async () => {
-        const store = storeWithEnv(GITHUB_ENV);
+        const store = storeWithEnv(PLAIN_ENV);
         const root = await queue(store, ['gates']);
         const first = await claim(store);
         await store.session(first.id, first.leaseToken, randomUUID());
@@ -197,7 +202,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
     });
 
     it('an expired-lease reclaim of the same row still carries the selection', async () => {
-        const store = storeWithEnv(GITHUB_ENV);
+        const store = storeWithEnv(PLAIN_ENV);
         const id = await queue(store, ['github']);
         const first = await claim(store);
         await expireLease(sql, id);

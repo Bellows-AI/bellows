@@ -211,16 +211,19 @@ describe('the task group of one attempt', () => {
         expect(api.created.deletedSecrets).toContain(secretName(job));
     });
 
-    it('gives the sync the claim env and the publish step the fresh token, and neither reaches a Secret', async () => {
+    it("gives the sync and the publish step the board's minted tokens, and none reaches a Secret", async () => {
         const api = cluster({ ended: true });
         const s = steps((step) => (step.kind === 'sync' ? ok('{"ok":true,"reason":null}') : ok('{"cloned":false}')));
         const k8s = runner(api.request, s.sink);
-        await k8s.syncCheckout(job, undefined, SESSION);
-        await k8s.publishGit!(job, 'ghs_publish_fresh');
+        await k8s.syncCheckout(job, undefined, SESSION, 'ghs_sync_minted');
+        await k8s.publishGit!(job, 'ghs_publish_minted');
 
         const sync = s.submitted.find((step) => step.kind === 'sync')!;
-        expect(sync.env.GITHUB_TOKEN).toBe('ghs_claim');
-        expect(JSON.stringify(api.created)).not.toContain('ghs_publish_fresh');
+        expect(sync.env.GITHUB_TOKEN).toBe('ghs_sync_minted');
+        // The claim's own value under the reserved name rides nothing.
+        expect(JSON.stringify(s.submitted)).not.toContain('ghs_claim');
+        expect(JSON.stringify(api.created)).not.toContain('ghs_sync_minted');
+        expect(JSON.stringify(api.created)).not.toContain('ghs_publish_minted');
         expect(JSON.stringify(api.created)).not.toContain('ghs_claim');
     });
 

@@ -4,7 +4,7 @@ import { Agent, globalAgent } from 'node:https';
 import type { request as httpsRequest } from 'node:https';
 import type { RequestOptions } from 'node:https';
 import { describe, expect, it, vi } from 'vitest';
-import { OUTPUT_LIMIT } from '../src/runner.js';
+import { ARTIFACT_LIMIT, OUTPUT_LIMIT } from '../src/runner.js';
 import {
     DIAGNOSIS_BODY_CHARS,
     inClusterRequest,
@@ -116,6 +116,7 @@ function fakeTransport(
 }
 
 const CLUSTER_ENV = { KUBERNETES_SERVICE_HOST: '10.0.0.1' };
+const POD_LOG = '/api/v1/namespaces/factory/pods/runner-1/log?container=agent';
 const CREDENTIALS = (() => 'credential') as unknown as typeof readFileSync;
 
 describe('the malformed-request classifier', () => {
@@ -213,16 +214,52 @@ describe('the in-cluster kubernetes transport', () => {
         await expect(request('GET', '/version')).rejects.toThrow(/API server did not answer within/);
     });
 
-    it('keeps the classification prefix ahead of a bounded response tail for an oversized log line', async () => {
-        const OVERSIZED_MULTIPLIER = 4;
-        const transport = fakeTransport([{ chunks: [`prefix-${'x'.repeat(OVERSIZED_MULTIPLIER * OUTPUT_LIMIT)}`] }]);
+    it('answers a pod log its stream buffer cut as the tail alone, flagged truncated', async () => {
+        const OVERSIZED_MULTIPLIER = 3;
+        const transport = fakeTransport([
+            { chunks: ['head-', 'x'.repeat(OVERSIZED_MULTIPLIER * ARTIFACT_LIMIT), '-end'] },
+        ]);
         const request = inClusterRequest({ env: CLUSTER_ENV, readFile: CREDENTIALS, request: transport.request });
 
-        const response = await request('GET', '/api/v1/pods/runner/log');
+        const response = await request('GET', POD_LOG);
 
-        expect(response.body).toHaveLength(DIAGNOSIS_BODY_CHARS + 2 * OUTPUT_LIMIT);
-        expect(response.body.startsWith('prefix-')).toBe(true);
-        expect(response.body.endsWith('x'.repeat(2 * OUTPUT_LIMIT))).toBe(true);
+        expect(response.truncated).toBe(true);
+        expect(response.body.startsWith('head-')).toBe(false);
+        expect(response.body.endsWith('x-end')).toBe(true);
+        expect(Buffer.byteLength(response.body)).toBeGreaterThanOrEqual(ARTIFACT_LIMIT);
+    });
+
+    it('answers a pod log inside the stream buffer whole and unflagged', async () => {
+        // Past the buffer this transport once cut at (4 × OUTPUT_LIMIT), inside the one it keeps now.
+        const body = 'y'.repeat(ARTIFACT_LIMIT + 1);
+        expect(body.length).toBeGreaterThan(4 * OUTPUT_LIMIT);
+        const transport = fakeTransport([{ chunks: [body.slice(0, OUTPUT_LIMIT), body.slice(OUTPUT_LIMIT)] }]);
+        const request = inClusterRequest({ env: CLUSTER_ENV, readFile: CREDENTIALS, request: transport.request });
+
+        await expect(request('GET', POD_LOG)).resolves.toEqual({ status: 200, body });
+    });
+
+    it('keeps at least ARTIFACT_LIMIT bytes of a multibyte pod log it cut', async () => {
+        const OVERSIZED_MULTIPLIER = 3;
+        const transport = fakeTransport([{ chunks: ['あ'.repeat(OVERSIZED_MULTIPLIER * ARTIFACT_LIMIT)] }]);
+        const request = inClusterRequest({ env: CLUSTER_ENV, readFile: CREDENTIALS, request: transport.request });
+
+        const response = await request('GET', POD_LOG);
+
+        expect(response.truncated).toBe(true);
+        expect(Buffer.byteLength(response.body)).toBeGreaterThanOrEqual(ARTIFACT_LIMIT);
+    });
+
+    it('reads a structured answer whole, however large — a cut JSON body could only parse wrong', async () => {
+        const OVERSIZED_MULTIPLIER = 3;
+        const body = JSON.stringify({ items: [{ pad: 'z'.repeat(OVERSIZED_MULTIPLIER * ARTIFACT_LIMIT) }] });
+        const transport = fakeTransport([{ chunks: [body.slice(0, OUTPUT_LIMIT), body.slice(OUTPUT_LIMIT)] }]);
+        const request = inClusterRequest({ env: CLUSTER_ENV, readFile: CREDENTIALS, request: transport.request });
+
+        const response = await request('GET', '/apis/batch/v1/namespaces/factory/jobs?labelSelector=x');
+
+        expect(response).toEqual({ status: 200, body });
+        expect(() => JSON.parse(response.body)).not.toThrow();
     });
 
     it('preserves the 400 Bad Request prefix of an oversized refusal for classification and the log', async () => {
@@ -245,10 +282,28 @@ describe('the in-cluster kubernetes transport', () => {
         const response = await request('GET', '/apis/batch/v1/namespaces/default/jobs/factory-sync-x');
 
         expect(isMalformedRequest400(response.status, response.body)).toBe(true);
-        expect(response.body).toHaveLength(DIAGNOSIS_BODY_CHARS + 2 * OUTPUT_LIMIT);
-        expect(response.body).not.toContain('x'.repeat(4 * OUTPUT_LIMIT));
+        expect(response).toEqual({ status: 400, body: refusal });
         expect(logs).toHaveLength(1);
         expect(logs[0]).toContain(refusal.slice(0, DIAGNOSIS_BODY_CHARS));
+    });
+
+    it('keeps the 400 Bad Request start ahead of the tail of a pod-log refusal it cut, flagged', async () => {
+        const OVERSIZED_MULTIPLIER = 3;
+        const refusal = `400 Bad Request: ${'x'.repeat(OVERSIZED_MULTIPLIER * ARTIFACT_LIMIT)}`;
+        const transport = fakeTransport([{ status: 400, chunks: [refusal.slice(0, 17), refusal.slice(17)] }]);
+        const request = inClusterRequest({
+            env: CLUSTER_ENV,
+            readFile: CREDENTIALS,
+            request: transport.request,
+            log: () => undefined,
+        });
+
+        const response = await request('GET', POD_LOG);
+
+        expect(response.truncated).toBe(true);
+        expect(isMalformedRequest400(response.status, response.body)).toBe(true);
+        expect(response.body.startsWith(refusal.slice(0, DIAGNOSIS_BODY_CHARS))).toBe(true);
+        expect(response.body.length).toBeLessThan(refusal.length);
     });
 
     it('answers every call through one dedicated agent, never the global one', async () => {

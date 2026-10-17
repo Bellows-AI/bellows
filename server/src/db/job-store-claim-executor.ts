@@ -1,13 +1,14 @@
 /**
- * The claim's env and executor resolution (see `job-store-claim.ts`): the stacked env, the minted
- * installation token under it, and the author's executor row merged over the runner's config env
- * name. Split out of the claim file for its size cap; a reviewer's claim (issue #549) reuses it
- * with an env grant.
+ * The claim's env and executor resolution (see `job-store-claim.ts`): the stacked env and the
+ * author's executor row merged over the runner's config env name. No GitHub credential rides it:
+ * the runner obtains one from the board (docs/connections.md). Split out of the claim file for its
+ * size cap; a reviewer's claim (issue #549) reuses it with an env grant.
  */
 
 import {
     CLAUDE_CODE,
     EXECUTOR_TYPES,
+    GITHUB_ENV_NAMES,
     executorSuspendedMessage,
     USER_SCOPE,
     type ExecutorScope,
@@ -16,7 +17,6 @@ import {
     RUNNER_MANAGED_KEYS,
 } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
-import { withMintedToken } from './job-store-org-resolvers.js';
 import type { CreateJobStoreDeps } from './job-store-types.js';
 
 export interface ResolvedClaimExecutor {
@@ -57,6 +57,16 @@ export function mergeExecutorConfigEnv(
     return { ...(claimEnv ?? {}), [envName]: JSON.stringify(rest) };
 }
 
+/**
+ * The resolved env without GitHub's credential names. They are refused at PUT and a migration
+ * deleted the stored rows; this is the claim's own guarantee that no member token reaches a runner,
+ * which obtains the App's from the board instead (docs/connections.md).
+ */
+export function withoutGithubToken(env: Record<string, string> | undefined): Record<string, string> | undefined {
+    if (env === undefined) return undefined;
+    return Object.fromEntries(Object.entries(env).filter(([name]) => !GITHUB_ENV_NAMES.includes(name)));
+}
+
 /** The entries of `env` named in `grant`, nothing else: a reviewer profile's `connections`. */
 function grantedEnv(
     env: Record<string, string> | undefined,
@@ -67,37 +77,29 @@ function grantedEnv(
 }
 
 /**
- * claim()'s env + executor resolution: the stacked env, the minted installation token under it as
- * the base layer, and the author's executor row merged over the runner's config env name.
- * Resolved ON THE TRANSACTION, so a claim holds one connection rather than two, and a resolver or
- * mint failure rolls the whole claim back (docs/env.md).
+ * claim()'s env + executor resolution: the stacked env and the author's executor row merged over
+ * the runner's config env name. Resolved ON THE TRANSACTION, so a claim holds one connection rather
+ * than two, and a resolver failure rolls the whole claim back (docs/env.md).
  */
 export async function resolveClaimExecutor(
     tx: TransactionSql,
     deps: {
         env: CreateJobStoreDeps['env'];
-        githubToken: CreateJobStoreDeps['githubToken'];
         executorConfig: CreateJobStoreDeps['executorConfig'];
         /**
-         * Set for a reviewer's claim (issue #549): ONLY these member env names reach it, and no
-         * installation token is minted for it. The executor config (the agent's own runtime
-         * settings) still travels — a reviewer needs to run — but nothing of the caller's access does.
+         * Set for a reviewer's claim (issue #549): ONLY these member env names reach it. The
+         * executor config (the agent's own runtime settings) still travels — a reviewer needs to
+         * run — but nothing of the caller's access does.
          */
         grant?: readonly string[];
     },
     row: { created_by: string | null; repo: string | null; executor: string | null; executor_scope: string | null }
 ): Promise<ResolvedClaimExecutor> {
-    const { env, githubToken, executorConfig, grant } = deps;
-    const resolvedEnv = env ? await env.resolveFor({ userId: row.created_by, repo: row.repo }, tx) : undefined;
-    // The mint fills only the gap: when the stacked env already carries a GITHUB_TOKEN, the mint
-    // would be discarded — so it is not made at all, rather than spend a GitHub call and leave a
-    // live token nothing holds. A granted claim mints nothing: a token is access the profile never named.
-    let claimEnv =
-        grant !== undefined
-            ? grantedEnv(resolvedEnv, grant)
-            : githubToken && resolvedEnv?.GITHUB_TOKEN === undefined
-              ? withMintedToken(await githubToken.fresh(row.repo), resolvedEnv)
-              : resolvedEnv;
+    const { env, executorConfig, grant } = deps;
+    const resolvedEnv = withoutGithubToken(
+        env ? await env.resolveFor({ userId: row.created_by, repo: row.repo }, tx) : undefined
+    );
+    let claimEnv = grant !== undefined ? grantedEnv(resolvedEnv, grant) : resolvedEnv;
     // The executor label a task was queued with names a row in the STAMPED SCOPE's list (issue
     // 391): the author's own rows when the stamp is 'user' — null reads as 'user', the pre-391
     // meaning — and the organization's when it is 'org', which is how a team-shared profile

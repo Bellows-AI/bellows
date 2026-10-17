@@ -18,7 +18,15 @@ import {
     parseDockerStats,
 } from '../src/docker.js';
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
-import { currentActivity, reportTail, type RunSession, stripAnsi, tailBytes } from '../src/runner.js';
+import {
+    currentActivity,
+    reportTail,
+    type RunOutcome,
+    type RunSession,
+    stripAnsi,
+    tailBytes,
+    tailKept,
+} from '../src/runner.js';
 import { claudeTurnsArgs, opencodeCacheProbeArgs } from '../src/docker-close-read.js';
 import {
     CACHE_WATCH_TURNS,
@@ -1480,17 +1488,20 @@ describe('the report tail', () => {
         const tail = tailBytes(log, 16 * 1024);
 
         expect(tail.length).toBeLessThan(log.length);
-        expect(Buffer.byteLength(tail, 'utf8')).toBeLessThanOrEqual(16 * 1024 + 3);
+        expect(Buffer.byteLength(tail, 'utf8')).toBeLessThanOrEqual(16 * 1024);
     });
 
     it('keeps the tail, not the head', () => {
         expect(tailBytes('head-head-head-tail', 4)).toBe('tail');
     });
 
-    it('still answers a string when the limit cuts a multibyte character', () => {
-        const tail = tailBytes('☕'.repeat(100), 4);
-        // One replaced character at most: the cut lands inside a three-byte one.
-        expect(tail.length).toBeLessThanOrEqual(2);
+    it('cuts at a character boundary: a multibyte character split by the limit is dropped whole (#825)', () => {
+        // Each ☕ is three bytes, so a 4-byte limit lands inside the second-to-last one.
+        expect(tailBytes('☕'.repeat(100), 4)).toBe('☕');
+        const kept = tailKept('€'.repeat(ARTIFACT_LIMIT), ARTIFACT_LIMIT);
+        expect(kept.truncated).toBe(true);
+        expect(Buffer.byteLength(kept.content, 'utf8')).toBeLessThanOrEqual(ARTIFACT_LIMIT);
+        expect(kept.content).not.toContain('�');
     });
 
     it('reportTail fits a JSON-escaped complete POST under the board body limit', () => {
@@ -1523,6 +1534,47 @@ function fakeChild(stdout: string, stderr: string, code: number | null): ChildPr
     process.nextTick(() => child.emit('close', code));
     return child;
 }
+
+/** A child whose stdout arrives as exactly these byte chunks and ends, in one tick, before it exits `code`. */
+function chunkedChild(chunks: Buffer[], code = 0): ChildProcess {
+    const child = new EventEmitter() as ChildProcess;
+    const stdout = new EventEmitter() as Readable;
+    child.stdout = stdout;
+    child.stderr = new EventEmitter() as Readable;
+    process.nextTick(() => {
+        for (const chunk of chunks) stdout.emit('data', chunk);
+        stdout.emit('end');
+        child.emit('close', code);
+    });
+    return child;
+}
+
+/** A log whose stream ends inside a `€`: its last two bytes begin a character that never completes. */
+const CUT_SHORT = [Buffer.concat([Buffer.from('ok'), Buffer.from('€').subarray(0, 2)])];
+
+/**
+ * `body` then a `€` split across two chunks after its first byte (issue #825): decoded chunk by
+ * chunk, each half would read as U+FFFD.
+ */
+const splitEuro = (body: string): Buffer[] => {
+    const euro = Buffer.from('€');
+    return [
+        Buffer.concat([Buffer.from(body), euro.subarray(0, 1)]),
+        Buffer.concat([euro.subarray(1), Buffer.from('\n')]),
+    ];
+};
+/** Below the artifact cap, and above it in multibyte text: [body, the truncated flag it earns]. */
+const SPLIT_EURO_CASES = [
+    ['a', false],
+    ['€'.repeat(ARTIFACT_LIMIT / 2), true],
+] as const;
+const expectWholeEuro = (outcome: RunOutcome | undefined, truncated: boolean): void => {
+    expect(outcome?.fullLog?.endsWith('€\n')).toBe(true);
+    expect(outcome?.fullLog).not.toContain('�');
+    expect(outcome?.output).not.toContain('�');
+    expect(Buffer.byteLength(outcome?.fullLog ?? '')).toBeLessThanOrEqual(ARTIFACT_LIMIT);
+    expect(outcome?.logTruncated).toBe(truncated);
+};
 
 /** A spawn whose every call hands back one {@link fakeChild}. */
 function spawnChild(stdout: string, stderr?: string, code?: number | null): typeof spawn {
@@ -1855,7 +1907,7 @@ describe('the docker runner', () => {
         // head was cut, and the flag says so.
         expect(outcome.logTruncated).toBe(true);
         expect(outcome.fullLog?.endsWith('body line\n')).toBe(true);
-        expect(outcome.fullLog === undefined || outcome.fullLog.length <= ARTIFACT_LIMIT + 4).toBe(true);
+        expect(Buffer.byteLength(outcome.fullLog ?? '')).toBeLessThanOrEqual(ARTIFACT_LIMIT);
         // The rolling tail is unchanged: still the report's 16 KiB window.
         expect(outcome.output.length).toBeLessThanOrEqual(16 * 1024);
         expect(outcome.output.endsWith('body line\n')).toBe(true);
@@ -1870,6 +1922,44 @@ describe('the docker runner', () => {
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome.fullLog).toBe('short run\n');
         expect(outcome.logTruncated).toBe(false);
+    });
+
+    it('calls a log of exactly ARTIFACT_LIMIT bytes complete, and one byte more truncated (#825)', async () => {
+        for (const [size, truncated] of [
+            [ARTIFACT_LIMIT, false],
+            [ARTIFACT_LIMIT + 1, true],
+        ] as const) {
+            const runner = dockerRunner(noContainer, {
+                env: { RUNNER_SERVICES: '0' },
+                spawn: spawnChild('x'.repeat(size), '', 0),
+            });
+            const outcome = await runner.run(job, { id: SESSION, resume: false });
+            expect(outcome.logTruncated).toBe(truncated);
+            expect(Buffer.byteLength(outcome.fullLog ?? '')).toBe(ARTIFACT_LIMIT);
+        }
+    });
+
+    it('keeps the bytes of a stream that ended inside a character, never drops them (#825)', async () => {
+        const runner = dockerRunner(noContainer, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: (() => chunkedChild(CUT_SHORT)) as unknown as typeof spawn,
+        });
+
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+
+        expect(outcome.fullLog).toBe('ok\uFFFD');
+        expect(outcome.logTruncated).toBe(false);
+    });
+
+    it('decodes a multibyte character split across two stream chunks once, whole — below and above the cap (#825)', async () => {
+        for (const [body, truncated] of SPLIT_EURO_CASES) {
+            const runner = dockerRunner(noContainer, {
+                env: { RUNNER_SERVICES: '0' },
+                spawn: (() => chunkedChild(splitEuro(body))) as unknown as typeof spawn,
+            });
+
+            expectWholeEuro(await runner.run(job, { id: SESSION, resume: false }), truncated);
+        }
     });
 
     // The security constraint the issue states (docs/security.md): forwarded env secrets must
@@ -3745,45 +3835,46 @@ describe('publishing the produced work', () => {
         expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
     });
 
-    // git reads no token from the environment, and the executor images ship no credential
-    // helper — so a private-repo fetch needs the same token-backed helper the push uses. It
-    // rides CONDITIONALLY: only when the claim env actually carries GITHUB_TOKEN, because a
-    // public repo must keep its plain unauthenticated fetch (a helper answering an empty
-    // password would break it). The VALUE passed is helper CODE, never the credential — the
-    // token itself travels only in the step env, where the helper reads it.
-    it('hands the sync the credential-helper code only when the claim env carries GITHUB_TOKEN', async () => {
+    // git reads no token from the environment, so a private-repo fetch needs the same token-backed
+    // helper the push uses. It rides CONDITIONALLY: only beside the token the board minted for this
+    // sync (docs/connections.md), because a public repo must keep its plain unauthenticated fetch
+    // (a helper answering an empty password would break it). The VALUE passed is helper CODE,
+    // never the credential — the token itself travels only in the step env, where the helper reads it.
+    it("hands the sync the credential-helper code only beside the board's minted token", async () => {
         const supervised = syncSteps();
         const d = labelDaemon();
         const runner = dockerRunner(d.exec, { steps: supervised.sink });
 
-        await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } });
+        await runner.syncCheckout(repoJob, undefined, null, 't0k-3n');
         const [withToken] = supervised.ofKind('sync');
         expect(withToken?.env).toMatchObject({ CRED_HELPER: CREDENTIAL_HELPER, GITHUB_TOKEN: 't0k-3n' });
         // The token itself rides the step, never argv — the step's or the daemon's.
         expect(withToken?.argv.some((arg) => arg.includes('t0k-3n'))).toBe(false);
         expect(d.calls.flat().some((arg) => arg.includes('t0k-3n'))).toBe(false);
 
-        // Any other claim env — even a non-empty one — keeps the plain fetch, no helper.
-        await runner.syncCheckout({ ...repoJob, env: { CORE_TOKEN: 'shh' } });
-        expect(supervised.ofKind('sync')[1]?.env).not.toHaveProperty('CRED_HELPER');
+        // No minted token keeps the plain fetch — and a claim value under the reserved name is no
+        // token: it is dropped, never forwarded.
+        await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: 'claim-pat', CORE_TOKEN: 'shh' } });
+        const plain = supervised.ofKind('sync')[1];
+        expect(plain?.env).not.toHaveProperty('CRED_HELPER');
+        expect(plain?.env).not.toHaveProperty('GITHUB_TOKEN');
+        expect(plain?.env).toMatchObject({ CORE_TOKEN: 'shh' });
 
-        // A PRESENT-BUT-EMPTY token is no token: the helper would answer an empty password and
-        // break the public-repo plain fetch it exists to preserve — and a private repo with an
-        // empty token fails auth either way. Property presence is not the test; the VALUE is.
-        await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: '' } });
+        // An EMPTY token is no token: the helper would answer an empty password and break the
+        // public-repo plain fetch it exists to preserve.
+        await runner.syncCheckout(repoJob, undefined, null, '');
         expect(supervised.ofKind('sync')[2]?.env).not.toHaveProperty('CRED_HELPER');
     });
 
     // A claim that CONTINUES a session — a follow-up — is mid-task, and git operations that touch
     // the remote belong to the task's beginning and end (issue #58). Its sync is a RESTORE: the
     // step runs with RESTORE=1 and carries NO claim env at all (restore talks only to the local
-    // clone — nothing to credential), and the fetch's helper code is absent even when the claim
-    // carries a token.
+    // clone — nothing to credential), and the fetch's helper code is absent even beside a token.
     it('restores a claim that continues a session instead of syncing it', async () => {
         const supervised = syncSteps();
         const runner = dockerRunner(emptyDaemon, { steps: supervised.sink });
 
-        await runner.syncCheckout({ ...repoJob, followUp: true, env: { GITHUB_TOKEN: 't0k-3n' } });
+        await runner.syncCheckout({ ...repoJob, followUp: true }, undefined, null, 't0k-3n');
         const [follow] = supervised.ofKind('sync');
         expect(follow?.env).toMatchObject({ RESTORE: '1' });
         expect(follow?.env).not.toHaveProperty('GITHUB_TOKEN');
@@ -3791,13 +3882,13 @@ describe('publishing the produced work', () => {
 
         // A claim carrying a resume session (resumeSessionId without the followUp flag) is the
         // same mid-task hazard: the session's tree must not move under it either.
-        await runner.syncCheckout({ ...repoJob, resumeSessionId: SESSION, env: { GITHUB_TOKEN: 't0k-3n' } });
+        await runner.syncCheckout({ ...repoJob, resumeSessionId: SESSION }, undefined, null, 't0k-3n');
         const parked = supervised.ofKind('sync')[1];
         expect(parked?.env).toMatchObject({ RESTORE: '1' });
         expect(parked?.env).not.toHaveProperty('GITHUB_TOKEN');
 
-        // A starting claim — even with a token — keeps the sync shape: no RESTORE, claim env on.
-        await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } });
+        // A starting claim beside a token keeps the sync shape: no RESTORE, the token on.
+        await runner.syncCheckout(repoJob, undefined, null, 't0k-3n');
         const fresh = supervised.ofKind('sync')[2];
         expect(fresh?.env).not.toHaveProperty('RESTORE');
         expect(fresh?.env).toMatchObject({ GITHUB_TOKEN: 't0k-3n' });
@@ -4127,11 +4218,9 @@ describe('publishing the produced work', () => {
         );
     });
 
-    // The claim's GITHUB_TOKEN was minted at claim time and a long run can outlive its hour — a
-    // publish pushed with a token well past expiry and failed on 401 with the work done. The loop
-    // asks the board for a fresh one; the env the steps ride must carry THAT credential, and the
-    // claim's must be gone from it.
-    it("publishes with the board's fresh credential, not the claim's hour-old token", async () => {
+    // The loop asks the board for a token right before the push (docs/connections.md); the env the
+    // steps ride must carry THAT credential, and a claim value under the reserved name never.
+    it("publishes with the board's minted token, never a claim value", async () => {
         const { steps, docker, runner } = publishRunner(DIRTY_ON_MAIN);
         const result = await runner.publishGit!(ISSUE_JOB, 'ghs_fresh');
 
@@ -4148,6 +4237,26 @@ describe('publishing the produced work', () => {
     // place — the loop, shared by both executors — so this transport must have no opinion of its
     // own. The loop tests pin that a publish:false claim never reaches publishGit; this pins the
     // other half, that the docker transport grew no gate of its own to drift against.
+    // Issue #825, executor parity: a bound publish's tree check rides the supervisor's steps here
+    // exactly as under kubernetes — staged hook-free, the commit held to that tree.
+    it.each([
+        ['pushes when the commit holds the staged tree', {}, true],
+        ['refuses stale, pushing nothing, when a commit hook moved it', { committed: 'b'.repeat(40) }, false],
+    ])('a bound publish %s', async (_case, trees, published) => {
+        const bound = { ...DIRTY_ON_MAIN, fingerprint: 'h:1' };
+        const { steps, runner } = publishRunner(bound, {
+            fail: (a) => a.includes('switch') && !a.includes('-c'),
+            trees,
+        });
+
+        const result = await runner.publishGit!(ISSUE_JOB, undefined, { revision: 'h:1' });
+
+        expect(result).toMatchObject(published ? { ok: true, published } : { ok: false, stale: true });
+        const argvs = steps.steps().map((step) => step.argv);
+        expect(argvs.some((a) => a.includes('write-tree') && a.includes('core.hooksPath=/dev/null'))).toBe(true);
+        expect(argvs.some((a) => a.includes('push'))).toBe(published);
+    });
+
     it('leaves the publish decision to the loop: publishGit ignores a publish:false claim', async () => {
         const { steps, runner } = publishRunner(DIRTY_ON_MAIN);
         const result = await runner.publishGit!({ ...ISSUE_JOB, publish: false });
@@ -4235,6 +4344,8 @@ describe('publishing the produced work', () => {
             failStderr?: string;
             summary?: Record<string, unknown>;
             exec?: (args: string[]) => Promise<{ stdout: string }>;
+            /** What a bound publish's staged and committed trees read (issue #825); default both one tree. */
+            trees?: { staged?: string; committed?: string };
         } = {}
     ) => {
         const docker: string[][] = [];
@@ -4245,6 +4356,8 @@ describe('publishing the produced work', () => {
             }
             // The publication ledger answers "never recorded", and HEAD is a commit.
             if ('LEDGER' in step.env) return ok('{}');
+            if (argv.includes('write-tree')) return ok(`${opts.trees?.staged ?? 't'.repeat(40)}\n`);
+            if (argv.includes('HEAD^{tree}')) return ok(`${opts.trees?.committed ?? 't'.repeat(40)}\n`);
             if (argv.includes('rev-parse')) return ok(`${'a'.repeat(40)}\n`);
             // The probe's marker rides INSIDE the -e script string; the git steps carry their
             // subcommand as a standalone argv element. The PR summarizer (issue #82) is the
@@ -4349,7 +4462,7 @@ describe('publishing the produced work', () => {
         const { steps, docker, runner } = publishRunner(DIRTY_ON_MAIN, {
             fail: (a) => a.includes('switch') && !a.includes('-c'),
         });
-        const result = await runner.publishGit!(ISSUE_JOB);
+        const result = await runner.publishGit!(ISSUE_JOB, 'ghs_minted');
 
         expect(result).toEqual({
             ok: true,
@@ -4386,9 +4499,10 @@ describe('publishing the produced work', () => {
         // nowhere in what the daemon was asked.
         const pushStep = steps.steps().find((step) => step.argv.includes('push'))!;
         expect(pushStep.argv).toContain('--force-with-lease');
-        expect(pushStep.env).toMatchObject({ GITHUB_TOKEN: 't0k-3n' });
-        expect(calls.flat().join(' ')).not.toContain('t0k-3n');
-        expect(docker.flat().join(' ')).not.toContain('t0k-3n');
+        expect(pushStep.env).toMatchObject({ GITHUB_TOKEN: 'ghs_minted' });
+        expect(JSON.stringify(steps.steps())).not.toContain('t0k-3n');
+        expect(calls.flat().join(' ')).not.toContain('ghs_minted');
+        expect(docker.flat().join(' ')).not.toContain('ghs_minted');
         // A step's literal envs ride as env, and a step that needs no credential carries none.
         const summary = steps.steps().find((step) => step.argv.some((x) => x.includes('shortstat')))!;
         expect(summary.env).toEqual({
@@ -4527,7 +4641,7 @@ describe('the block-helper transport (issue #207)', () => {
 
         expect(result).toEqual({ ok: true, output: { echoed: true } });
         const [step] = supervised.ofKind('helper');
-        // The fresh token overlays the claim env (withPublishToken), never the claim's own token.
+        // The minted token is the step's GitHub credential; a claim value under the name never is.
         expect(step?.env).toMatchObject({ GITHUB_TOKEN: 'fresh-install-token' });
         expect(JSON.stringify(step)).not.toContain('claim-token');
     });
@@ -4790,7 +4904,11 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     /** The fence's own listing: every container of the job by id and lease — the runner's and the exporter's. */
     const FENCE_PS = `runner-id\t${job.leaseToken}\nexporter-id\t${job.leaseToken}\n`;
 
-    const daemon = (ps: string, supervisorExit = '0') => {
+    /**
+     * The daemon, and the `docker logs` read the adoption streams through spawn — its argv recorded
+     * among the daemon calls, in order, its child printing `log` and exiting `logExit`.
+     */
+    const daemon = (ps: string, supervisorExit = '0', log: string | Buffer[] = 'did the work\n', logExit = 0) => {
         const calls: string[][] = [];
         const exec = (args: string[]) => {
             calls.push(args);
@@ -4802,16 +4920,19 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
                     stdout: '{"Status":"exited","ExitCode":0,"StartedAt":"2026-10-01T00:00:00Z"}\n',
                 });
             }
-            if (args[0] === 'logs') return Promise.resolve({ stdout: 'did the work\n', stderr: '' });
             return Promise.resolve({ stdout: '' });
         };
-        return { exec, calls };
+        const logs = ((_command: string, args: string[]) => {
+            calls.push(args);
+            return typeof log === 'string' ? fakeChild(log, '', logExit) : chunkedChild(log, logExit);
+        }) as unknown as typeof spawn;
+        return { exec, calls, logs };
     };
 
     it('reads the exit code, log and session before removing the container', async () => {
-        const { exec, calls } = daemon(listing());
+        const { exec, calls, logs } = daemon(listing());
 
-        const adopted = await dockerRunner(exec).adopt!(adopter);
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
 
         expect(adopted).toMatchObject({
             claimSeq: 1,
@@ -4830,14 +4951,14 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
     // Issue #796: a run read but never swept is no adoption — the attempt runs the job itself.
     it('rejects when the read run cannot be swept', async () => {
-        const { exec: base, calls } = daemon(listing());
+        const { exec: base, calls, logs } = daemon(listing());
         const exec = (args: string[]) => {
             if (args[0] !== 'rm') return base(args);
             calls.push(args);
             return Promise.reject(new Error('the daemon answered 503'));
         };
 
-        await expect(dockerRunner(exec).adopt!(adopter)).rejects.toThrow('the daemon answered 503');
+        await expect(dockerRunner(exec, { spawn: logs }).adopt!(adopter)).rejects.toThrow('the daemon answered 503');
 
         const read = calls.findIndex((args) => args[0] === 'logs');
         expect(read).toBeGreaterThanOrEqual(0);
@@ -4848,9 +4969,9 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     // reading a half-finished group, and a supervisor lost mid-finalize adopts nothing — and
     // sweeps nothing: the group stays for the fence the sync runs.
     it('waits for the earlier attempt’s supervisor before it reads, and reads its deadline exit as a timeout', async () => {
-        const { exec, calls } = daemon(listing(), '124');
+        const { exec, calls, logs } = daemon(listing(), '124');
 
-        const adopted = await dockerRunner(exec).adopt!(adopter);
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
 
         expect(adopted?.outcome.timedOut).toBe(true);
         const waited = calls.findIndex((args) => args[0] === 'wait');
@@ -4859,35 +4980,93 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     });
 
     it('adopts nothing and removes nothing when the earlier supervisor was lost before it finalized', async () => {
-        const { exec, calls } = daemon(listing(), '137');
+        const { exec, calls, logs } = daemon(listing(), '137');
 
-        expect(await dockerRunner(exec).adopt!(adopter)).toBeNull();
+        expect(await dockerRunner(exec, { spawn: logs }).adopt!(adopter)).toBeNull();
         expect(calls.some((args) => args[0] === 'logs' || args[0] === 'rm')).toBe(false);
     });
 
     it('adopts nothing when the earlier supervisor lost its driver before it released the agent', async () => {
-        const { exec, calls } = daemon(listing(), String(SUPERVISOR_EXIT.lost));
+        const { exec, calls, logs } = daemon(listing(), String(SUPERVISOR_EXIT.lost));
 
-        expect(await dockerRunner(exec).adopt!(adopter)).toBeNull();
+        expect(await dockerRunner(exec, { spawn: logs }).adopt!(adopter)).toBeNull();
         expect(calls.some((args) => args[0] === 'logs' || args[0] === 'rm')).toBe(false);
     });
 
     // A queued task's command can be edited after a handover: a run of the old command is not its run.
     it('never adopts a run of a command since edited', async () => {
-        const { exec, calls } = daemon(
+        const { exec, calls, logs } = daemon(
             listing('1', job.leaseToken, containerName(job), commandMark('another command'))
         );
 
-        expect(await dockerRunner(exec).adopt!(adopter)).toBeNull();
+        expect(await dockerRunner(exec, { spawn: logs }).adopt!(adopter)).toBeNull();
         expect(calls.some((args) => args[0] === 'logs')).toBe(false);
+    });
+
+    // Failure injection (#825): a log past an exec's output buffer streams; it never fails the adoption.
+    it('adopts a runner whose log outgrew an exec buffer: its tail kept, flagged truncated', async () => {
+        const EXEC_MAX_BUFFER = 1024 * 1024;
+        const line = 'body line\n';
+        const { exec: base, calls, logs } = daemon(listing(), '0', line.repeat(EXEC_MAX_BUFFER / line.length + 1));
+        const exec = (args: string[]) =>
+            args[0] === 'logs'
+                ? Promise.reject(
+                      Object.assign(new Error('stdout maxBuffer length exceeded'), {
+                          code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+                      })
+                  )
+                : base(args);
+
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+
+        expect(adopted?.outcome.logTruncated).toBe(true);
+        expect(adopted?.outcome.fullLog?.endsWith(line)).toBe(true);
+        expect(Buffer.byteLength(adopted?.outcome.fullLog ?? '')).toBeLessThanOrEqual(ARTIFACT_LIMIT);
+        expect(Buffer.byteLength(adopted?.outcome.output ?? '')).toBeLessThanOrEqual(16 * 1024);
+        const read = calls.findIndex((args) => args[0] === 'logs');
+        expect(read).toBeGreaterThanOrEqual(0);
+        expect(calls.findIndex((args) => args[0] === 'rm')).toBeGreaterThan(read);
+    });
+
+    it('adopts a short log whole and complete', async () => {
+        const { exec, logs } = daemon(listing());
+
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+
+        expect(adopted?.outcome).toMatchObject({ fullLog: 'did the work\n', logTruncated: false });
+    });
+
+    it('decodes a multibyte character split across two log chunks once, whole — below and above the cap', async () => {
+        for (const [body, truncated] of SPLIT_EURO_CASES) {
+            const { exec, logs } = daemon(listing(), '0', splitEuro(body));
+
+            const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+
+            expectWholeEuro(adopted?.outcome, truncated);
+        }
+    });
+
+    it('keeps the bytes of an adopted log that ended inside a character, never drops them', async () => {
+        const { exec, logs } = daemon(listing(), '0', CUT_SHORT);
+
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+
+        expect(adopted?.outcome).toMatchObject({ fullLog: 'ok\uFFFD', logTruncated: false });
+    });
+
+    it('rejects an adoption whose log read failed, and removes nothing', async () => {
+        const { exec, calls, logs } = daemon(listing(), '0', 'Error: No such container\n', 1);
+
+        await expect(dockerRunner(exec, { spawn: logs }).adopt!(adopter)).rejects.toThrow(/docker logs/);
+        expect(calls.some((args) => args[0] === 'rm')).toBe(false);
     });
 
     it('adopts nothing of its own claim, a newer one, or a container that is not the runner', async () => {
         const own = listing('2', adopter.leaseToken);
         const notRunner = listing('1', job.leaseToken, `factory-svc-${job.id}-db`);
-        const { exec, calls } = daemon(own + notRunner);
+        const { exec, calls, logs } = daemon(own + notRunner);
 
-        expect(await dockerRunner(exec).adopt!(adopter)).toBeNull();
+        expect(await dockerRunner(exec, { spawn: logs }).adopt!(adopter)).toBeNull();
         expect(calls.some((args) => args[0] === 'rm')).toBe(false);
     });
 

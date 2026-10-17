@@ -1,4 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import {
     chmodSync,
     existsSync,
@@ -73,6 +75,18 @@ describe('the executor branch reporter', () => {
     // shell is PID 1, so it also owns the runtime's TERM/INT: both children are tracked by PID,
     // the signal is forwarded to both, and the CLI is waited out past the trap-interrupted
     // `wait` returns so its status — a signal-death 143 included — is what the script exits with.
+    // The agent's GitHub token is the helper's alone: a value injected into the agent container
+    // (RUNNER_CREDENTIALS_SECRET carries whatever keys it holds) would shadow it in gh and git.
+    it.each(['docker/claude-executor/entrypoint.sh', 'docker/opencode-executor/entrypoint.sh'])(
+        '%s drops any GITHUB_TOKEN/GH_TOKEN before it launches anything',
+        (entrypoint) => {
+            const entry = read(entrypoint);
+            const unset = entry.indexOf('\nunset GITHUB_TOKEN GH_TOKEN\n');
+            expect(unset).toBeGreaterThan(0);
+            expect(unset).toBeLessThan(entry.indexOf('branch-reporter.cjs'));
+        }
+    );
+
     it.each([
         ['docker/claude-executor/entrypoint.sh', 'claude'],
         ['docker/opencode-executor/entrypoint.sh', 'opencode'],
@@ -600,51 +614,74 @@ describe('the entrypoint Jira connector', () => {
 });
 
 /*
- * GitHub over https: `gh` reads GITHUB_TOKEN by itself, `git push` does not — without a helper it
- * asks for a username nobody can type ("could not read Username for 'https://github.com'"). The
- * helper reads the variable when git asks, so the token is never written into the git config.
+ * GitHub over https (docs/connections.md): no token rides the runner's env. With the attempt pair
+ * present the entrypoint points git at the image's helper, which asks the board, so `git push`
+ * answers github.com with the attempt's token — and the git config holds the helper's path, never
+ * a token.
  */
 describe('the entrypoint git credential', () => {
     const ENTRYPOINTS = ['docker/claude-executor/entrypoint.sh', 'docker/opencode-executor/entrypoint.sh'];
-    const TOKEN = 'ghs_entrypoint-test-token';
-    /** Asks git for a github.com credential as `git push` would; the host's system helpers stay out. */
-    const fill = (home: string, token: string) =>
-        execFileSync('git', ['credential', 'fill'], {
-            input: 'protocol=https\nhost=github.com\n\n',
-            env: {
-                ...process.env,
-                HOME: home,
-                GITHUB_TOKEN: token,
-                GIT_CONFIG_NOSYSTEM: '1',
-                GIT_TERMINAL_PROMPT: '0',
-            },
-            encoding: 'utf8',
+    const PAIR = { RUNNER_JOB_ID: '11111111-1111-4111-8111-111111111111', RUNNER_LEASE_TOKEN: 'lease-pair' };
+    /**
+     * Asks git for a github.com credential as `git push` would, in the agent's environment (the
+     * helper reads the pair at call time); the host's system helpers stay out.
+     */
+    const fill = (home: string, env: Record<string, string>) =>
+        new Promise<string>((resolve, reject) => {
+            const child = spawn('git', ['credential', 'fill'], {
+                env: { ...process.env, ...env, HOME: home, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' },
+            });
+            let out = '';
+            child.stdout.on('data', (chunk: Buffer) => {
+                out += chunk.toString();
+            });
+            child.on('error', reject);
+            child.on('exit', () => resolve(out));
+            child.stdin.end('protocol=https\nhost=github.com\n\n');
         });
 
     it.each(ENTRYPOINTS)(
-        '%s answers github.com with GITHUB_TOKEN, read at call time and never stored',
+        '%s answers github.com through the helper, from the board, and stores no token',
         async (entrypoint) => {
+            let asks = 0;
+            const board = createServer((request, response) => {
+                asks += 1;
+                request.resume();
+                response.writeHead(200, { 'content-type': 'application/json' });
+                response.end(
+                    JSON.stringify({
+                        token: `ghs_entrypoint_${asks}`,
+                        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+                    })
+                );
+            });
+            await new Promise<void>((resolve) => board.listen(0, '127.0.0.1', resolve));
             const sandbox = makeSandbox();
             try {
-                const child = runEntrypoint(entrypoint, sandbox, { GITHUB_TOKEN: TOKEN });
+                const url = `http://127.0.0.1:${(board.address() as AddressInfo).port}`;
+                const child = runEntrypoint(entrypoint, sandbox, { FACTORY_STATS_URL: url, ...PAIR });
                 expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
                 const home = sandbox.env.HOME!;
-                expect(fill(home, TOKEN)).toContain(`username=x-access-token\npassword=${TOKEN}\n`);
-                expect(fill(home, 'ghs_refreshed')).toContain('password=ghs_refreshed\n');
-                expect(readFileSync(join(home, '.gitconfig'), 'utf8')).not.toContain(TOKEN);
+                expect(await fill(home, { FACTORY_STATS_URL: url, ...PAIR })).toMatch(
+                    /username=x-access-token\npassword=ghs_entrypoint_\d+\n/
+                );
+                const gitconfig = readFileSync(join(home, '.gitconfig'), 'utf8');
+                expect(gitconfig).toContain('github-credential.cjs');
+                expect(gitconfig).not.toContain('ghs_entrypoint');
             } finally {
                 sandbox.cleanup();
+                await new Promise((resolve) => board.close(resolve));
             }
         },
         CASE_TIMEOUT_MS
     );
 
     it.each(ENTRYPOINTS)(
-        '%s configures no helper without a GITHUB_TOKEN',
+        '%s configures no helper without the attempt pair, and reads no GITHUB_TOKEN',
         async (entrypoint) => {
             const sandbox = makeSandbox();
             try {
-                const child = runEntrypoint(entrypoint, sandbox, { GITHUB_TOKEN: '' });
+                const child = runEntrypoint(entrypoint, sandbox, { GITHUB_TOKEN: 'ghs_ignored_env_token' });
                 expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
                 const gitconfig = join(sandbox.env.HOME!, '.gitconfig');
                 expect(existsSync(gitconfig) ? readFileSync(gitconfig, 'utf8') : '').not.toContain('credential');
@@ -654,6 +691,13 @@ describe('the entrypoint git credential', () => {
         },
         CASE_TIMEOUT_MS
     );
+
+    it.each(ENTRYPOINTS)('%s clears the cached token as the run ends', (entrypoint) => {
+        const entry = read(entrypoint);
+        expect(entry).toContain('GITHUB_CREDENTIAL="$(cd "$(dirname "$0")" && pwd)/github-credential.cjs"');
+        expect(entry).toMatch(/node "\$GITHUB_CREDENTIAL" clear 2>\/dev\/null \|\| true\nexit "\$STATUS"\n$/);
+        expect(entry).not.toContain('$GITHUB_TOKEN');
+    });
 });
 
 /*

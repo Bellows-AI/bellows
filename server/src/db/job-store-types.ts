@@ -559,9 +559,8 @@ export interface Claim {
      * repo label: org < workspace < repo, the more specific scope winning. Optional — absent on a
      * board built without an env store, which the driver reads as "no environment".
      *
-     * Under an app-mode board the environment also carries the minted installation token as its
-     * BASE layer (`withMintedToken`): a `GITHUB_TOKEN` configured in any scope wins, and the mint
-     * fills only the gap.
+     * It never carries `GITHUB_TOKEN` or `GH_TOKEN` (`withoutGithubToken`): the runner obtains the
+     * App's installation token from the board's credential endpoint (docs/connections.md).
      *
      * Deliberately NOT persisted on the job row: `GET /api/jobs/:id` serves output and metadata to
      * every member, and storing the merged values there would publish the very secrets this
@@ -593,7 +592,7 @@ export interface Claim {
     review?: ReviewEvidence;
     /**
      * Present only on a named-profile review's claim (issue #549): the git ref its worktree starts
-     * from, and the wall-clock budget its profile grants. Such a claim carries no GITHUB_TOKEN and
+     * from, and the wall-clock budget its profile grants. Such a claim gets no GitHub credential and
      * no member env beyond the profile's `connections`, never publishes, runs no gates and opens
      * no publish or question relay — the board decides all of that, never the caller.
      */
@@ -758,8 +757,8 @@ export type PokeWaitResult = { result: 'ok'; woken: boolean } | 'missing' | 'no_
  * - `not_done`    no member of the thread carries the done stamp — nothing to reopen. Reopen is
  *                 deliberately NOT idempotent: the second call answers this, the state the first
  *                 left behind.
- * - `reclaimed`   the worktree was already removed (the reclaim row acked, or a threadDone verdict
- *                 issued the removal) — a follow-up would have nothing to resume in.
+ * - `reclaimed`   the worktree was already removed (the reclaim row acked) — a follow-up would have
+ *                 nothing to resume in.
  * - `reclaiming`  a driver holds a LIVE claim on the reclaim — the tree is being removed right
  *                 now. Retry once the claim settles: an ack stamps the marker (`reclaimed`), an
  *                 expired lease reverts the row to withdrawable (`ok`).
@@ -1016,7 +1015,7 @@ export interface JobStore {
      * claimed mid-transaction is refused rather than yanked from under its worker.
      *
      * Refuses once the worktree is gone (`reclaimed` — the `worktree_reclaimed_at` marker, 045:
-     * stamped at the ack and at a threadDone verdict), and while a reclaim is in flight
+     * stamped at the ack), and while a reclaim is in flight
      * (`reclaiming` — a live claim on the row; the lease expiry is what relinquishes a crashed
      * worker's claim), because a follow-up resumes a session in the tree it ran in. Not
      * idempotent: reopening a task that is not done answers `not_done`, and so does the second
@@ -1112,22 +1111,6 @@ export interface JobStore {
         answeredBy: string | null
     ): Promise<AnswerQuestionResult>;
     /**
-     * A publish credential for the run's final push. The claim mints a full-hour installation
-     * token and a run can outlive it — observed 2026-09-13 (job 43379d3a): a 1h33m run published
-     * with its claim-time token, dead for 34 minutes, and the push died on 401 with the work done
-     * and the gates green. The driver asks here, right before the push, and gets the claim's
-     * environment resolved NOW: an operator-configured `GITHUB_TOKEN` wins exactly as it does at
-     * claim time (a deliberate credential is never silently replaced), and the mint — when there
-     * is one — is fresh, not the claim's. Lease-guarded like every worker route: the credential
-     * goes only to the worker that holds the run, and only while it still does. A null token —
-     * no provider and no configured value — is an answer, not an error: there is nothing fresher
-     * than the claim env, so the driver publishes with what it holds.
-     */
-    publishToken(
-        id: string,
-        leaseToken: string
-    ): Promise<{ result: 'ok'; token: string | null } | { result: 'lost' | 'missing' }>;
-    /**
      * Ends a running job's attempt. Lease-guarded, like every other worker write. The parking IS
      * the user's stop landing — the row settles `stopped` (terminal, session kept for the follow-up
      * that continues the conversation).
@@ -1164,6 +1147,12 @@ export interface JobStore {
      * thread read so a worker credential never pulls audit data of jobs it does not hold. The
      * verdict-moment answer also closes the read-after-verdict race: a follow-up inserted after
      * the verdict commits cannot change an answer that was already given.
+     *
+     * A threadDone verdict queues the worktree reclaim claimed by the completing worker and answers
+     * its id (`reclaimId`; null when another worker holds a live claim on it, or a reopen won the
+     * race): the driver acks it after the removal, and the `worktree_reclaimed_at` marker follows
+     * that ack (issue #821). The answer is a settle receipt: the identical complete replayed under
+     * the same lease answers it again; any other request under a concluded lease answers `lost`.
      */
     complete(
         id: string,
@@ -1232,7 +1221,7 @@ export interface JobStore {
                 baseBranch: string;
             } | null;
         }
-    ): Promise<{ result: 'ok'; threadDone: boolean } | { result: 'lost' | 'missing' }>;
+    ): Promise<{ result: 'ok'; threadDone: boolean; reclaimId: string | null } | { result: 'lost' | 'missing' }>;
     /**
      * The whole follow-up chain containing `id` — the root task and every adjustment after it,
      * oldest first. Accepts ANY member of the chain (the UI keeps one URL per conversation, so a
@@ -1394,19 +1383,11 @@ export interface CreateJobStoreDeps {
         ): Promise<Record<string, string>>;
     };
     /**
-     * The GitHub App's installation-token provider, laid under the resolved env as the base layer
-     * (`withMintedToken`). Present in main.ts under the App — which is every env-booted process —
-     * and absent in the offline tooling and the tests that predate it: a board that cannot fetch
-     * mints nothing. Declared inline, like
-     * `env`, because `db/` must not import from `github/`. Each claim mints FRESH rather than
-     * reading the provider's cache, because the credential has to outlive the claim: a runner's
-     * env is written once and a run is capped at two hours, so a cached token's remaining
-     * five minutes would die mid-run. A mint failure throws, and the same rollback that guards
-     * the resolver leaves the job queued with its attempt unburned.
+     * Whether the org holds a GitHub App installation — the `github` skill connection, which the
+     * runner spends through the board's credential endpoint (docs/connections.md). Absent offline
+     * and in the tests that predate it: a skill needing GitHub is then refused at claim.
      */
-    githubToken?: {
-        fresh(repo?: string | null): Promise<string>;
-    };
+    githubApp?: boolean;
     /**
      * The execution-plan reader, when the deployment has a GitHub App installation to read through.
      * Declared inline like `env`, because `db/` imports nothing from `workspace/` at runtime — a
@@ -1526,7 +1507,7 @@ export interface JobStoreContext {
     orgId: string;
     hasWorkspaces: boolean;
     env: CreateJobStoreDeps['env'];
-    githubToken: CreateJobStoreDeps['githubToken'];
+    githubApp: boolean;
     planReader: CreateJobStoreDeps['plan'];
     executorConfig: CreateJobStoreDeps['executorConfig'];
     prs: JobStorePrs | undefined;

@@ -283,12 +283,12 @@ export interface Runner {
      * describe work that exists only in a local checkout. The loop decides WHEN this is called (a
      * succeeded run, gates passed, and nothing else); a runner that cannot publish answers the
      * refusal in the result — or does not implement the method at all, which the loop reads as
-     * "this platform does not publish". `publishToken` is the board's publish-fresh credential
-     * (the claim's can be an hour past expiry by push time); both transports lay it over the
-     * claim env through withPublishToken, so neither can drift. `draft` opens a NEW pull request as
-     * a draft (the agent's mid-run publish); an existing PR is reused whatever its state.
+     * "this platform does not publish". `githubToken` is the board's token minted for this push
+     * (docs/connections.md); both transports lay it into the publish steps' env the same way
+     * (`supervisedStepRunner`), so neither can drift. `draft` opens a NEW pull request as a draft
+     * (the agent's mid-run publish); an existing PR is reused whatever its state.
      */
-    publishGit?(job: BoardJob, publishToken?: string, options?: PublishOptions): Promise<PublishResult>;
+    publishGit?(job: BoardJob, githubToken?: string, options?: PublishOptions): Promise<PublishResult>;
     /**
      * The task tree's fingerprint now (`probeTreeFingerprint`): the probe step over the same
      * transport `publishGit` uses, read only after a declared gate failed. Null is unknown.
@@ -328,8 +328,15 @@ export interface Runner {
      * and no verdict lands. An aborted `signal` (the attempt's stand-down) detaches the docker client only: a sync
      * writes the worktree, so it is never killed mid-write, and kubernetes does not take the signal
      * at all — the abandoned sync finishes and `releaseAbandonedSync` hands its claim back.
+     * `githubToken` is the board's token minted for the starting claim's fetch; absent, the fetch
+     * runs unauthenticated.
      */
-    syncCheckout(job: BoardJob, signal?: AbortSignal, session?: RunSession | null): Promise<SyncResult>;
+    syncCheckout(
+        job: BoardJob,
+        signal?: AbortSignal,
+        session?: RunSession | null,
+        githubToken?: string
+    ): Promise<SyncResult>;
     /**
      * Ends the attempt's task group (issue #771): the supervisor that ran the sync, serves the
      * probe, the helpers and the publish, and held the agent. The group exists from the attempt's
@@ -423,15 +430,29 @@ const REPORT_BYTE_LIMIT = REPORT_LIMIT_KIB * BYTES_PER_KIB;
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder('utf-8');
 
+/** A UTF-8 continuation byte is `10xxxxxx`: it never starts a character. */
+const UTF8_LEAD_MASK = 0xc0;
+const UTF8_CONTINUATION = 0x80;
+
 /**
- * The last `limit` UTF-8 bytes of `text`, as a string. A multibyte character cut at the boundary
- * decodes to one U+FFFD — at most three extra bytes, once — which is why the bound is stated in
- * bytes and not approximated by a character count.
+ * The last `limit` bytes of `bytes`, decoded from the first character boundary inside them: a
+ * multibyte character the limit cuts is dropped whole, never decoded to a U+FFFD that re-encodes
+ * past the limit (issue #825).
+ */
+function decodeTail(bytes: Uint8Array, limit: number): string {
+    let start = bytes.length - limit;
+    while (start < bytes.length && ((bytes[start] ?? 0) & UTF8_LEAD_MASK) === UTF8_CONTINUATION) start += 1;
+    return DECODER.decode(bytes.subarray(start));
+}
+
+/**
+ * The last `limit` UTF-8 bytes of `text`, as a string, cut at a character boundary — which is why
+ * the bound is stated in bytes and not approximated by a character count.
  */
 export function tailBytes(text: string, limit: number): string {
     const bytes = ENCODER.encode(text);
     if (bytes.length <= limit) return text;
-    return DECODER.decode(bytes.subarray(bytes.length - limit));
+    return decodeTail(bytes, limit);
 }
 
 /** The tail of a runner's log that fits a complete POST, whatever the log contained. */
@@ -447,7 +468,19 @@ export function reportTail(logText: string): string {
 export function tailKept(text: string, limit: number): { content: string; truncated: boolean } {
     const bytes = ENCODER.encode(text);
     if (bytes.length <= limit) return { content: text, truncated: false };
-    return { content: DECODER.decode(bytes.subarray(bytes.length - limit)), truncated: true };
+    return { content: decodeTail(bytes, limit), truncated: true };
+}
+
+/** A streamed log tail-kept at ARTIFACT_LIMIT bytes as it grows; `truncated` once a cut was earned. */
+export interface KeptLog {
+    content: string;
+    truncated: boolean;
+}
+
+/** `kept` grown by `text`, cut back to ARTIFACT_LIMIT bytes — the full-log accumulator's step. */
+export function appendTailKept(kept: KeptLog, text: string): KeptLog {
+    const grown = tailKept(kept.content + text, ARTIFACT_LIMIT);
+    return { content: grown.content, truncated: kept.truncated || grown.truncated };
 }
 
 /**

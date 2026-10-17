@@ -4,6 +4,7 @@ import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
 import { createAuthStore } from './auth/store.js';
 import { LOCAL_ORG_ID, resolveConfig, type GitHubConfig } from './config.js';
 import { createConnectionOfLease } from './db/connection-store.js';
+import { createGithubCredentialOfLease } from './db/github-credential.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/job-store-org-resolvers.js';
 import { createAppSlugProvider } from './github/app-token.js';
 import { startBatchPrObserver } from './batch-pr-observer.js';
@@ -11,15 +12,17 @@ import { startBatchReconciler } from './batch-reconciler.js';
 import { createArtifactBackend, prepareArtifactBackend } from './artifacts/backend.js';
 import { createOrgRegistry } from './orgs.js';
 import { createFactsCache } from './workspace/facts.js';
+import type { GithubMint } from './routes/github-credential.js';
 import { createPostgresStore } from './telemetry/store.js';
 import { migrate } from './db/migrate.js';
 
 /**
  * The whole wiring, from config to `listen`. Every entry is this function plus one decision about
  * GitHub: `index.ts` reads the environment, which can only ever produce the App; `offline.ts`
- * passes the code-only `none` arm for the harnesses that run with no credential and no network.
+ * passes the code-only `none` arm for the harnesses that run with no credential and no network, and
+ * `offline-mint.ts` adds the lanes' stand-in runner-token mint to it.
  */
-export async function start(options: { github?: GitHubConfig } = {}): Promise<void> {
+export async function start(options: { github?: GitHubConfig; githubMint?: GithubMint } = {}): Promise<void> {
     const { config } = resolveConfig({ env: process.env, ...(options.github ? { github: options.github } : {}) });
     // The orgs are the App's installations now (#99) — the process is bound to none of them, which
     // is the point. The mode is what a boot should say out loud.
@@ -117,6 +120,8 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
         orgOfJob: createOrgOfJob({ sql, ready }),
         orgOfReclaim: createOrgOfReclaim({ sql, ready }),
         connectionOfLease: createConnectionOfLease({ sql, ready }),
+        githubCredentialOfLease: createGithubCredentialOfLease({ sql, ready }),
+        githubMint: options.githubMint,
         identity,
         appSlug: config.github.mode === 'app' ? createAppSlugProvider({ github: config.github }).slug : undefined,
         logger: true,

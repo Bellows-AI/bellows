@@ -1,7 +1,33 @@
+import { randomUUID } from 'node:crypto';
+import { rename, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { gateExecArgs } from './docker.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateRun } from './gates.js';
 import { reportTail } from './runner.js';
+
+/** The env file of one gate environment container: the container's at creation, every exec's after. */
+export const gateEnvFile = (name: string): string => join(tmpdir(), `factory-gateenv-${name}.env`);
+
+/**
+ * A re-acquire's newer env body — a gate run's own GitHub token (docs/connections.md) — replaces the
+ * env file every later exec reads; written aside and renamed, so an exec never reads half of it.
+ */
+export async function refreshGateEnv(entry: GateEnvEntry, envBody: string): Promise<void> {
+    if (!envBody || envBody === entry.envBody) return;
+    // Its own temp name: two ad-hoc runs re-acquire outside the key's queue, and may refresh at once.
+    const next = `${gateEnvFile(entry.name)}.${randomUUID()}`;
+    await writeFile(next, envBody, { mode: 0o600 });
+    await rename(next, gateEnvFile(entry.name));
+    entry.envBody = envBody;
+}
+
+/** What an exec needs of a gate environment: its container, and whether it has an env file. */
+export interface GateEnvEntry {
+    name: string;
+    envBody: string;
+}
 
 /** execFile's own code when a child's output outgrew `maxBuffer` — the child is killed. */
 const STDIO_MAXBUFFER_CODE = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
@@ -67,20 +93,22 @@ function gateRunFromExecError(error: DockerExecError, gateTimeoutMs: number): Ga
  */
 export async function execInContainer({
     execDocker,
-    name,
+    entry,
     script,
     gateTimeoutMs,
     onKilled,
 }: {
     execDocker: ExecDocker;
-    name: string;
+    /** The environment: its container, and — with an env body — the env file this exec reads alone. */
+    entry: GateEnvEntry;
     script: string;
     gateTimeoutMs: number;
     /** Called when the exec client was killed (timeout, output overflow) — the script lives on. */
     onKilled: () => void;
 }): Promise<GateRun> {
     try {
-        const read = await execDocker(gateExecArgs(name, script), {
+        const envFile = entry.envBody ? gateEnvFile(entry.name) : undefined;
+        const read = await execDocker(gateExecArgs(entry.name, script, envFile), {
             timeout: gateTimeoutMs,
             maxBuffer: GATE_OUTPUT_MAX_BUFFER_BYTES,
         });

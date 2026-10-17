@@ -64,7 +64,7 @@ export function SettingsOrganizationPage() {
             ) : env.data ? (
                 <EnvVarsPanel
                     title="Core (organization)"
-                    hint="Injected into every runner in this deployment. The place for shared credentials — GITHUB_TOKEN, for one."
+                    hint="Injected into every runner in this deployment. The place for shared credentials; GitHub is the App’s, never a variable here."
                     initialVars={env.data.org}
                     onSave={env.saveOrg}
                     draftId="org"

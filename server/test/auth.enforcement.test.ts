@@ -221,12 +221,6 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // gate state unstored: under AUTH_MODE=github both fell through to `user` and answered the
     // worker token 401, while the gates themselves ran and passed unseen.
     [`/api/jobs/${JOB_ID}/gates`, 'worker'],
-    // The publish credential ask is the driver's too — the loop calls it right before the
-    // push. Missing from this table is what made it answer the worker token 401 in
-    // production while the fix looked deployed (jobs 9bf1002a, 4bcfe8be and b0ac2284,
-    // 2026-09-14): the silent null sent every long run to the push with its expired
-    // claim-time token, and only runs under an hour published.
-    [`/api/jobs/${JOB_ID}/publish-token`, 'worker'],
     // The agent's questions (050, issue #531): the driver reports a question and expires it under
     // its lease; the member's answer is a person's act, so it falls through to `user` — and is
     // outside the org-token allowlist.
@@ -251,6 +245,9 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // The Jira connector proxy (issue #546): its own requirement — the attempt's pair in every
     // mode, never the worker secret, a cookie or a bearer. The runner is the only caller.
     [`/api/jobs/${JOB_ID}/connectors/jira/rest/api/3/myself`, 'connector'],
+    // The runner's GitHub credential (docs/connections.md): the same class — the attempt's pair in
+    // every mode, asked by the runner's helper and the driver's supervised steps alike.
+    [`/api/jobs/${JOB_ID}/credentials/github`, 'connector'],
     // Managing connections is a person's settings act; it falls through to `user`.
     ['/api/connections', 'user'],
     [`/api/connections/${JOB_ID}`, 'user'],
@@ -278,8 +275,8 @@ describe('the route table', () => {
         expect(requirementFor(path)).toBe(expected);
     });
 
-    // The table is hand-written beside the regex, which is how gates, publish-token
-    // and artifact each slipped through: a worker-shaped handler, absent from both, failing quietly
+    // The table is hand-written beside the regex, which is how gates and artifact each slipped
+    // through: a worker-shaped handler, absent from both, failing quietly
     // because its caller treats the answer as best-effort. Every route the job board registers
     // must be a decision recorded above.
     it('has a row for every route the job board registers', async () => {

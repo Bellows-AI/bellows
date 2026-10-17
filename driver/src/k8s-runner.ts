@@ -132,7 +132,7 @@ async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: st
         );
         if (log.status >= HTTP_ERROR_STATUS)
             return fail(`reading the session readout's log ${answerPreview(log.status, log.body)}`);
-        return parseOpencodeRunOutcome(log.body);
+        return parseOpencodeRunOutcome(log.body, log.truncated === true);
     } catch (e) {
         return fail((e as Error).message);
     } finally {
@@ -403,12 +403,12 @@ async function run(
 /**
  * The publish: the same publishCheckout workflow the docker runner runs (publish.ts), with the task
  * supervisor as its transport — every step a supervised step whose environment (the claim env and
- * the publish-fresh token) rides the step itself, never a Secret or a spec.
+ * the board's GitHub token) rides the step itself, never a Secret or a spec.
  */
 async function publishGit(
     deps: K8sDeps,
     job: BoardJob,
-    publishToken?: string,
+    githubToken?: string,
     options?: PublishOptions
 ): Promise<PublishResult> {
     const host = await stepHostFor(deps, job);
@@ -416,7 +416,7 @@ async function publishGit(
         deps.config,
         job,
         options,
-        supervisedStepRunner(host, job, { kind: 'publish', publishToken })
+        supervisedStepRunner(host, job, { kind: 'publish', githubToken })
     );
 }
 
@@ -457,7 +457,12 @@ async function runHelper(deps: K8sDeps, job: BoardJob, plan: HelperPlan, call: H
  * task worktree, so the checkout claim is taken here, and the group's own `prepare` recognizes its
  * holder and proceeds.
  */
-async function syncCheckout(deps: K8sDeps, job: BoardJob, session: RunSession | null = null): Promise<SyncResult> {
+async function syncCheckout(
+    deps: K8sDeps,
+    job: BoardJob,
+    session: RunSession | null = null,
+    githubToken?: string
+): Promise<SyncResult> {
     const clone = repoPath(deps.config, job);
     const worktree = worktreeDir(deps.config, job);
     if (!clone || !worktree) return { ok: true, reason: null }; // nothing synced, nothing to fail either
@@ -483,7 +488,7 @@ async function syncCheckout(deps: K8sDeps, job: BoardJob, session: RunSession | 
         throw e;
     }
     try {
-        const result = await runSyncStep(stepHostOf(deps), job);
+        const result = await runSyncStep(stepHostOf(deps), job, githubToken);
         // A failed sync means no runner follows — nobody else would give the checkout back.
         if (!result.ok) await failed();
         return result;
@@ -617,15 +622,15 @@ export function createKubernetesRunner(
         startServices: (job: BoardJob, signal?: AbortSignal) => startServiceFleet(deps, job, signal),
         run: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) =>
             run(deps, job, session, onOutput),
-        publishGit: (job: BoardJob, publishToken?: string, options?: PublishOptions) =>
-            publishGit(deps, job, publishToken, options),
+        publishGit: (job: BoardJob, githubToken?: string, options?: PublishOptions) =>
+            publishGit(deps, job, githubToken, options),
         probeTree: (job: BoardJob, signal?: AbortSignal) => probeTree(deps, job, signal),
         adopt: (job: BoardJob) => adoptFinishedRunner(deps, job, { scrapeClaudeCloseRead, attachOpencodeOutcome }),
         snapshotTree: (job: BoardJob, key: string, signal?: AbortSignal) => snapshotReviewTree(deps, job, key, signal),
         runHelper: (job: BoardJob, plan: HelperPlan, token?: string, signal?: AbortSignal) =>
             runHelper(deps, job, plan, { token, signal }),
-        syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null) =>
-            syncCheckout(deps, job, session ?? null),
+        syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
+            syncCheckout(deps, job, session ?? null, githubToken),
         finish: (job: BoardJob) => finishGroup(deps, job),
         reclaimWorktree: (job: BoardJob) => reclaimWorktree(deps, job),
         // The loop's one hand-back of the checkout claim (`loop-fence.ts`): a terminal setup

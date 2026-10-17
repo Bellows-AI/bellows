@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Board, BoardJob } from '../src/board.js';
 import { type DriverConfig, loadDriverConfig } from '../src/config.js';
 import {
+    AGENT_CONTAINER,
     EXPORTER_CONTAINER,
     GO_MARKER,
     SUPERVISOR_CONTAINER,
@@ -14,12 +15,13 @@ import {
 } from '../src/supervisor-contract.js';
 import { StepChannelClosed, type StepSink } from '../src/step-control.js';
 import { claudeTurnsScript, claudeExportScript } from '../src/container-scripts.js';
-import { commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
+import { ARTIFACT_LIMIT, commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import { lookupHelper } from '../src/helpers.js';
 import { claudeManagedSettings, opencodeOtelConfig } from '../src/telemetry-config.js';
 import type { HelperPlan } from '../src/helpers.js';
 import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import {
+    LOG_TAIL_LINES,
     POLL_MAX_CONSECUTIVE_FAILURES,
     parseDeadServicePods,
     parseServicePods,
@@ -46,6 +48,7 @@ import { claimName, jobPath, serviceDnsSpec, servicePodSpec } from '../src/k8s-a
 import { createKubernetesGateManager } from '../src/k8s-gates.js';
 import { reclaimGroupSpec } from '../src/k8s-group.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
+import { throughTransport } from './fixtures/k8s-transport-bridge.js';
 import { ServicesNotRunning } from '../src/service-restart.js';
 import {
     CREDENTIAL_HELPER,
@@ -1219,8 +1222,8 @@ describe('the worktree sync', () => {
         steps.submitted.find((s) => s.kind === 'sync')!;
     const syncing = (stdout: string) => fakeSteps((step) => (step.kind === 'sync' ? stepOk(stdout) : stepOk()));
     const SESSION_OF = { id: SESSION, resume: false };
-    const sync = (j: BoardJob, steps = fakeSteps(), request = fakeRequest().request) =>
-        runner(request, {}, undefined, steps.sink).syncCheckout(j, undefined, SESSION_OF);
+    const sync = (j: BoardJob, steps = fakeSteps(), request = fakeRequest().request, githubToken?: string) =>
+        runner(request, {}, undefined, steps.sink).syncCheckout(j, undefined, SESSION_OF, githubToken);
     const deletedGroup = (calls: Call[], j: BoardJob, propagation: string) =>
         calls.findIndex(
             (call) =>
@@ -1254,25 +1257,26 @@ describe('the worktree sync', () => {
     });
 
     // The sync's fetch needs a credential helper to read the token git never reads from the
-    // environment — but only when there IS a token: a public repo must keep its plain
-    // unauthenticated fetch. What travels as the literal is helper CODE, never the credential
-    // value — the token is the step's claim env alone.
-    it('passes the sync the credential-helper code only when the claim env carries GITHUB_TOKEN', async () => {
+    // environment — but only beside the token the board minted for it (docs/connections.md): a
+    // public repo must keep its plain unauthenticated fetch. What travels as the literal is helper
+    // CODE, never the credential value — the token is the step's env alone.
+    it("passes the sync the credential-helper code only beside the board's minted token", async () => {
         const withToken = fakeSteps();
-        await sync({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } }, withToken);
+        await sync(repoJob, withToken, undefined, 'ghs_minted');
         expect(syncOf(withToken).env.CRED_HELPER).toBe(CREDENTIAL_HELPER);
-        expect(syncOf(withToken).env.GITHUB_TOKEN).toBe('t0k-3n');
-        expect(syncOf(withToken).env.CRED_HELPER).not.toContain('t0k-3n');
+        expect(syncOf(withToken).env.GITHUB_TOKEN).toBe('ghs_minted');
+        expect(syncOf(withToken).env.CRED_HELPER).not.toContain('ghs_minted');
 
+        // A claim value under the reserved name is no token: dropped, never forwarded, no helper.
         const noToken = fakeSteps();
-        await sync({ ...repoJob, env: { CORE_TOKEN: 'shh' } }, noToken);
+        await sync({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n', CORE_TOKEN: 'shh' } }, noToken);
         expect(syncOf(noToken).env).not.toHaveProperty('CRED_HELPER');
+        expect(JSON.stringify(syncOf(noToken))).not.toContain('t0k-3n');
 
-        // A PRESENT-BUT-EMPTY token is no token: the helper would answer an empty password and
-        // break the public-repo plain fetch it exists to preserve. Property presence is not the
-        // test; the VALUE is.
+        // An EMPTY token is no token: the helper would answer an empty password and break the
+        // public-repo plain fetch it exists to preserve.
         const emptyToken = fakeSteps();
-        await sync({ ...repoJob, env: { GITHUB_TOKEN: '' } }, emptyToken);
+        await sync(repoJob, emptyToken, undefined, '');
         expect(syncOf(emptyToken).env).not.toHaveProperty('CRED_HELPER');
     });
 
@@ -1282,20 +1286,20 @@ describe('the worktree sync', () => {
     // token, and no claim env at all.
     it('carries RESTORE for a claim that continues a session, with no helper and no claim env', async () => {
         const followUp = fakeSteps();
-        await sync({ ...repoJob, followUp: true, env: { GITHUB_TOKEN: 't0k-3n' } }, followUp);
+        await sync({ ...repoJob, followUp: true }, followUp, undefined, 't0k-3n');
         expect(syncOf(followUp).env.RESTORE).toBe('1');
         expect(syncOf(followUp).env).not.toHaveProperty('CRED_HELPER');
         expect(JSON.stringify(syncOf(followUp))).not.toContain('t0k-3n');
 
         // A parked job resumed (resumeSessionId without followUp) is the same mid-task hazard.
         const parked = fakeSteps();
-        await sync({ ...repoJob, resumeSessionId: SESSION, env: { GITHUB_TOKEN: 't0k-3n' } }, parked);
+        await sync({ ...repoJob, resumeSessionId: SESSION }, parked, undefined, 't0k-3n');
         expect(syncOf(parked).env.RESTORE).toBe('1');
         expect(JSON.stringify(syncOf(parked))).not.toContain('t0k-3n');
 
         // A starting claim — even with a token — carries no RESTORE.
         const fresh = fakeSteps();
-        await sync({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } }, fresh);
+        await sync(repoJob, fresh, undefined, 't0k-3n');
         expect(syncOf(fresh).env).not.toHaveProperty('RESTORE');
     });
 
@@ -2156,13 +2160,13 @@ describe('publishing the produced work', () => {
         expect(JSON.stringify(commands)).not.toContain('t0k-3n');
     });
 
-    it('hands the claim env to the steps that read it, and to no other', async () => {
+    it('hands the claim env and the minted token to the steps that read them, and to no other', async () => {
         const steps = scripted();
-        await publishing(steps).publishGit!(ISSUE_JOB);
+        await publishing(steps).publishGit!(ISSUE_JOB, 'ghs_minted');
 
         const sent = publishStepsOf(steps);
         const push = sent.find((step) => step.argv.includes('push'))!;
-        expect(push.env.GITHUB_TOKEN).toBe('t0k-3n');
+        expect(push.env.GITHUB_TOKEN).toBe('ghs_minted');
         const add = sent.find((step) => step.argv.includes('add'))!;
         expect(add.env).not.toHaveProperty('GITHUB_TOKEN');
         expect(add.cwd).toBe(WT);
@@ -2172,12 +2176,10 @@ describe('publishing the produced work', () => {
         expect(probe.env).toEqual({ REPO: WT });
     });
 
-    // The claim's GITHUB_TOKEN was minted at claim time and a long run can outlive its hour — a
-    // publish pushed with a token past expiry fails on 401 with the work done. The loop asks the
-    // board for a fresh one; the step must carry THAT credential, and the claim's must be gone from
-    // it. The override lives in withPublishToken, and this is the check it did not drift. Neither
-    // token reaches an object the cluster stores for the step.
-    it("publishes with the board's fresh credential in the step env, not the claim's hour-old token", async () => {
+    // The loop asks the board for a token right before the push (docs/connections.md); the step
+    // must carry THAT credential, and a claim value under the reserved name never. Neither reaches
+    // an object the cluster stores for the step.
+    it("publishes with the board's minted token in the step env, never a claim value", async () => {
         const steps = scripted();
         const { request, calls } = fakeRequest();
         await publishing(steps, request).publishGit!(ISSUE_JOB, 'ghs_fresh');
@@ -2279,6 +2281,28 @@ describe('publishing the produced work', () => {
         expect(result.published).toBe(false);
         expect(result.reason).toContain('Permission to Bellows-AI/factory');
         expect(result.cause).toBe('denied');
+    });
+
+    // Issue #825, executor parity: a bound publish's tree check rides the supervisor's steps here
+    // exactly as under docker — staged hook-free, the commit held to that tree.
+    it.each([
+        ['pushes when the commit holds the staged tree', 't'.repeat(40), true],
+        ['refuses stale, pushing nothing, when a commit hook moved it', 'b'.repeat(40), false],
+    ])('a bound publish %s', async (_case, committed, published) => {
+        const steps = scripted({
+            probe: { ...DIRTY_ON_MAIN, fingerprint: 'h:1' },
+            step: (step) => {
+                if (step.argv.includes('write-tree')) return stepOk(`${'t'.repeat(40)}\n`);
+                return step.argv.includes('HEAD^{tree}') ? stepOk(`${committed}\n`) : null;
+            },
+        });
+
+        const result = await publishing(steps).publishGit!(ISSUE_JOB, undefined, { revision: 'h:1' });
+
+        expect(result).toMatchObject(published ? { ok: true, published } : { ok: false, stale: true });
+        const argvs = publishStepsOf(steps).map((step) => step.argv);
+        expect(argvs.some((a) => a.includes('write-tree') && a.includes('core.hooksPath=/dev/null'))).toBe(true);
+        expect(argvs.some((a) => a.includes('push'))).toBe(published);
     });
 
     // A step the supervisor never answers (the channel closed under it) is a transport failure
@@ -4333,6 +4357,98 @@ describe('the kubernetes runner', () => {
     });
 });
 
+/** The runner pod's agent log read — the verdict's, and the live tail's. */
+const isAgentLogRead = (path: string): boolean =>
+    path.startsWith(`/api/v1/namespaces/${namespace}/pods/${podName}/log`) &&
+    path.includes(`container=${AGENT_CONTAINER}`);
+
+/** The kubelet's answer to a pod log read: the whole log, or its last `tailLines` lines when asked for. */
+const kubeletLog =
+    (log: string) =>
+    (path: string): K8sResponse => {
+        const tail = new URL(path, 'http://apiserver').searchParams.get('tailLines');
+        return {
+            status: 200,
+            body:
+                tail === null
+                    ? log
+                    : log
+                          .split(/(?<=\n)/)
+                          .slice(-Number(tail))
+                          .join(''),
+        };
+    };
+
+/** A fake whose agent log reads `answer` gives, everything else as fakeRequest answers it. */
+const withAgentLog = (answer: (path: string) => K8sResponse) =>
+    routed((method, path) => (method === 'GET' && isAgentLogRead(path) ? answer(path) : undefined));
+
+const numberedLines = (count: number): string => Array.from({ length: count }, (_, i) => `line ${i}\n`).join('');
+
+describe('the runner verdict log (#825)', () => {
+    const run = (request: K8sRequest) => runner(request).run(job, { id: SESSION, resume: false });
+
+    it('uploads a log past the 1,000-line tail whole, and complete', async () => {
+        const whole = numberedLines(LOG_TAIL_LINES + 500);
+        const { request, calls } = withAgentLog(kubeletLog(whole));
+
+        const outcome = await run(request);
+
+        expect(outcome.fullLog).toBe(whole);
+        expect(outcome.logTruncated).toBe(false);
+        const reads = calls.filter((call) => isAgentLogRead(call.path));
+        expect(reads.length).toBeGreaterThan(0);
+        expect(reads.every((call) => !call.path.includes('tailLines'))).toBe(true);
+    });
+
+    it('reports a log the transport cut as truncated, whatever bytes it kept', async () => {
+        const { request } = withAgentLog(() => ({ status: 200, body: 'kept tail\n', truncated: true }));
+
+        const outcome = await run(request);
+
+        expect(outcome).toMatchObject({ fullLog: 'kept tail\n', logTruncated: true });
+    });
+
+    it('keeps a multibyte log under the cap byte-true, with no replacement character', async () => {
+        const { request } = withAgentLog(() => ({ status: 200, body: '€'.repeat(ARTIFACT_LIMIT / 2) }));
+
+        const outcome = await run(request);
+
+        expect(outcome.logTruncated).toBe(true);
+        expect(Buffer.byteLength(outcome.fullLog ?? '')).toBeLessThanOrEqual(ARTIFACT_LIMIT);
+        expect(outcome.fullLog).not.toContain('�');
+        expect(outcome.output).not.toContain('�');
+    });
+
+    it('calls a log of exactly ARTIFACT_LIMIT bytes complete, and one byte more truncated', async () => {
+        for (const [size, truncated] of [
+            [ARTIFACT_LIMIT, false],
+            [ARTIFACT_LIMIT + 1, true],
+        ] as const) {
+            const { request } = withAgentLog(() => ({ status: 200, body: 'x'.repeat(size) }));
+
+            const outcome = await run(request);
+
+            expect(outcome.logTruncated).toBe(truncated);
+            expect(Buffer.byteLength(outcome.fullLog ?? '')).toBe(ARTIFACT_LIMIT);
+        }
+    });
+
+    it('reads the verdict log of the agent container alone, never the exporter or the supervisor beside it', async () => {
+        const { request, calls } = fakeRequest();
+
+        await run(request);
+
+        const logs = calls.filter((call) =>
+            call.path.startsWith(`/api/v1/namespaces/${namespace}/pods/${podName}/log`)
+        );
+        expect(logs.some((call) => isAgentLogRead(call.path))).toBe(true);
+        for (const other of [EXPORTER_CONTAINER, SUPERVISOR_CONTAINER]) {
+            expect(logs.some((call) => call.path.includes(`container=${other}`))).toBe(false);
+        }
+    });
+});
+
 // ==============================================================================================
 // Gates under kubernetes: a gate run IS a Job — the declared image over the workspaces PVC,
 // workingDir at the checkout, env by reference. Everything security-relevant about a gate Job is
@@ -4641,6 +4757,24 @@ describe('the kubernetes gate manager', () => {
                     c.path === `/api/v1/namespaces/${namespace}/secrets/${gateEnvSecretName(job)}`
             )
         ).toBe(true);
+    });
+
+    // A gate run's own GitHub token (asked at each run's start, docs/connections.md) reaches the
+    // gate Job's pod through the Secret it reads at start: a changed body replaces the Secret.
+    it('replaces the attempt env Secret when a re-acquire brings a different body, and only then', async () => {
+        const { request, calls } = gateFake();
+        const m = manager(request);
+        const secretCalls = () => calls.filter((c) => c.path?.includes('/secrets'));
+        await m.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_first\n', { job });
+        await m.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_second\n', { job });
+
+        const after = secretCalls().map((c) => c.method);
+        expect(after).toEqual(['POST', 'DELETE', 'POST']);
+        expect(secretCalls()[2]?.body).toMatchObject({ stringData: { GITHUB_TOKEN: 'ghs_second' } });
+
+        // The same body again replaces nothing: its create answers 409, and the Secret stands.
+        await m.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_second\n', { job });
+        expect(secretCalls().filter((c) => c.method === 'DELETE')).toHaveLength(1);
     });
 
     it('runs a gate with no env at all without touching a Secret', async () => {
@@ -5826,7 +5960,7 @@ describe('the kubernetes runner under opencode', () => {
      * close-time readout Job runs and answers `readoutLog`. Every claim and teardown route
      * answers the boring way. The calls list is the audit.
      */
-    const opencodeFake = (readout: { status?: 'failed'; log?: string } = {}) => {
+    const opencodeFake = (readout: { status?: 'failed'; log?: string; truncated?: true } = {}) => {
         const calls: Call[] = [];
         const request: K8sRequest = (method, path, body) => {
             calls.push({ method, path, body });
@@ -5871,7 +6005,11 @@ describe('the kubernetes runner under opencode', () => {
             }
             if (path === `${ns}/pods/${podName}/log`) return Promise.resolve({ status: 200, body: 'did the work\n' });
             if (path === `${ns}/pods/${ocreadPod}/log`) {
-                return Promise.resolve({ status: 200, body: readout.log ?? '' });
+                return Promise.resolve({
+                    status: 200,
+                    body: readout.log ?? '',
+                    ...(readout.truncated ? { truncated: readout.truncated } : {}),
+                });
             }
             // The per-attempt Secret (the runner's attempt pair), created and reaped per attempt.
             if (path === `${ns}/secrets`) {
@@ -5893,6 +6031,19 @@ describe('the kubernetes runner under opencode', () => {
             request,
             async () => {}
         );
+
+    it('flags the transcript a cut readout log lost its head of (#825)', async () => {
+        const normalized = JSON.stringify({ stream: 'normalized', event: { n: 2 } });
+        const { request } = opencodeFake({
+            log: ['t":{"n":1}}', normalized, JSON.stringify({ id: 'ses_n3w' })].join('\n'),
+            truncated: true,
+        });
+
+        const outcome = await ocRunner(request).run(opencodeJob, null);
+
+        expect(outcome.transcript).toBe(normalized);
+        expect(outcome.transcriptTruncated).toBe(true);
+    });
 
     it('scrapes the session the run minted, and rides it on the outcome', async () => {
         const { request, calls } = opencodeFake({
@@ -6472,6 +6623,40 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         ]);
 
         expect((await runner(request).adopt!({ ...adopter, claimSeq: 4 }))?.claimSeq).toBe(3);
+    });
+
+    it("adopts the earlier runner's whole log, not a line tail (#825)", async () => {
+        const whole = numberedLines(LOG_TAIL_LINES + 500);
+        const { request: base } = withRunners([priorItem({ succeeded: 1 })]);
+        const request: K8sRequest = (method, path, body) =>
+            method === 'GET' && isAgentLogRead(path)
+                ? Promise.resolve(kubeletLog(whole)(path))
+                : base(method, path, body);
+
+        const adopted = await runner(request).adopt!(adopter);
+
+        expect(adopted?.outcome).toMatchObject({ fullLog: whole, logTruncated: false });
+    });
+
+    // Failure injection at the transport boundary: a runner-Job list too big for a log's stream
+    // buffer is still one whole answer — never a cut body that parses as "no earlier runner".
+    it('adopts the earlier runner when its Job list outgrows a pod log stream buffer (#825)', async () => {
+        const OLDER = '55555555-5555-4555-8555-555555555555';
+        const HEAD_PAD = 1_000;
+        const padded = (item: ReturnType<typeof priorItem>, pad: number) => ({
+            ...item,
+            metadata: { ...item.metadata, annotations: { ...item.metadata.annotations, pad: 'p'.repeat(pad) } },
+        });
+        // A body cut to its head and tail would read the finished runner's name and claim sequence
+        // with the still-running older runner's status — a runner never adopted.
+        const { request } = withRunners([
+            padded(priorItem({ succeeded: 1 }), HEAD_PAD),
+            padded(priorItem({ active: 1 }, '0', runnerJobName({ ...job, leaseToken: OLDER }), OLDER), ARTIFACT_LIMIT),
+        ]);
+
+        const adopted = await runner(throughTransport(request)).adopt!(adopter);
+
+        expect(adopted?.claimSeq).toBe(1);
     });
 
     // A runner marked at or after this claim's sequence is a newer contender's, never an earlier one.

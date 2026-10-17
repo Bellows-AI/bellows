@@ -1,6 +1,6 @@
 /**
  * What a leased worker reports after the claim: heartbeat, session/progress/gates reports, the gate
- * re-read, the publish token, and `complete` — whose verdict transaction also records the
+ * re-read, and `complete` — whose verdict transaction also records the
  * publication and walks the workflow to its next node (docs/workflows.md).
  */
 
@@ -9,7 +9,14 @@ import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@fa
 import type { EvidencePolicy } from './evidence-policy.js';
 import { enforceCompletionPolicy } from './job-store-evidence.js';
 import { answeredQuestionsOf } from './job-store-questions.js';
-import { exists, insertWorkflowSuccessor, runtimePatch } from './job-store-rows.js';
+import { fingerprintOf, missedSettle, recordReceipt, type SettleKey } from './job-store-receipts.js';
+import {
+    exists,
+    insertWorkflowSuccessor,
+    issueVerdictReclaim,
+    liveVerdictReclaim,
+    runtimePatch,
+} from './job-store-rows.js';
 import { stopReviewsOf } from './job-store-reviews.js';
 import type {
     JobStore,
@@ -130,31 +137,6 @@ export async function gatesReport(
     return (await exists(sql, orgId, id)) ? 'lost' : 'missing';
 }
 
-export async function publishTokenJob(
-    ctx: JobStoreContext,
-    id: string,
-    leaseToken: string
-): ReturnType<JobStore['publishToken']> {
-    const { sql, orgId, env, githubToken } = ctx;
-    // Lease-guarded like every worker route: a fresh credential goes only to the worker
-    // that holds the run, and only while it still does (the gates-reread precedent).
-    const rows = await sql<{ created_by: string | null; repo: string | null }[]>`
-        select created_by, repo
-        from job
-        where org_id = ${orgId} and id = ${id}
-          and status = 'running' and lease_token = ${leaseToken}
-    `;
-    const row = rows[0];
-    if (!row) return { result: (await exists(sql, orgId, id)) ? 'lost' : 'missing' };
-    // The claim's own assembly, answered NOW: a configured value wins over the mint —
-    // the claim-time rule, unchanged — and the mint is FRESH, because the point of this
-    // route is that the claim's token does not have to survive the whole run.
-    const resolved = env ? await env.resolveFor({ userId: row.created_by, repo: row.repo }, sql) : undefined;
-    if (resolved?.GITHUB_TOKEN !== undefined) return { result: 'ok', token: resolved.GITHUB_TOKEN };
-    if (!githubToken) return { result: 'ok', token: null };
-    return { result: 'ok', token: await githubToken.fresh(row.repo) };
-}
-
 export type CompleteResult = Parameters<JobStore['complete']>[2];
 
 /**
@@ -173,6 +155,24 @@ export interface CompleteVerdict {
         headBranch: string;
         baseBranch: string;
     } | null;
+}
+
+type CompleteAnswer = { result: 'ok'; threadDone: boolean; reclaimId: string | null };
+
+/**
+ * A complete that missed its lease-guarded update: the receipt's answer, with a reclaim order the
+ * board has since withdrawn, acked or re-leased answered as none (issue #821) — a late retry must
+ * never remove a tree a reopened thread is running in.
+ */
+async function replayComplete(
+    tx: TransactionSql,
+    key: SettleKey
+): Promise<CompleteAnswer | { result: 'lost' } | { result: 'missing' }> {
+    const answer = await missedSettle<CompleteAnswer>(tx, key);
+    if (answer.result !== 'ok' || answer.reclaimId === null) return answer;
+    return (await liveVerdictReclaim(tx, key.orgId, key.jobId, answer.reclaimId))
+        ? answer
+        : { ...answer, reclaimId: null };
 }
 
 export async function completeJob(
@@ -225,6 +225,9 @@ export async function completeJob(
     const failureCausePatch = failureCause ?? null;
     const evidencePatch = result.evidence ? sql.json(result.evidence as never) : null;
     const runtimeUpdate = context === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${context}`;
+    // The settle receipt's fingerprint (issue #821): the whole store input, so only the identical
+    // verdict replays the answer this attempt's conclusion recorded.
+    const key: SettleKey = { orgId, jobId: id, leaseToken, operation: 'complete', fingerprint: fingerprintOf(result) };
     // One transaction, because the terminality answer must describe the thread AS THE
     // VERDICT lands: the walk below runs on the same connection, where the just-updated
     // row's new status is visible and no follow-up inserted after the commit can be.
@@ -234,6 +237,7 @@ export async function completeJob(
                 id: string;
                 root_job_id: string;
                 repo: string | null;
+                claimed_by: string | null;
                 stop_pending: boolean;
                 workflow_node: string | null;
                 policy: EvidencePolicy | null;
@@ -271,14 +275,14 @@ export async function completeJob(
             where org_id = ${orgId} and id = ${id}
               and status = 'running' and lease_token = ${leaseToken}
             -- The subselect reads the row as the statement began: the stamp this UPDATE cleared.
-            returning id, root_job_id, repo, workflow_node, policy,
+            returning id, root_job_id, repo, claimed_by, workflow_node, policy,
                 (select cancel_requested_at is not null from job where org_id = ${orgId} and id = ${id}) as stop_pending
         `;
-        if (!rows[0]) {
-            // A report from a worker whose lease was reclaimed is refused, not merged: the
-            // job is someone else's now, and the two runs did different work.
-            return { result: (await exists(sql, orgId, id)) ? 'lost' : 'missing' };
-        }
+        // The identical verdict replayed after its answer was lost answers that answer again
+        // (issue #821) — read here, after the update waited out a concurrent identical one. Any
+        // other report from a worker whose lease was concluded or reclaimed is refused, not
+        // merged: the job is someone else's now, and the two runs did different work.
+        if (!rows[0]) return replayComplete(tx, key);
         const completedId = rows[0]!.id;
         const rootJobId = rows[0]!.root_job_id;
         const jobRepo = rows[0]!.repo;
@@ -359,27 +363,15 @@ export async function completeJob(
         if (!threadDone) {
             threadDone = await settleIfMergeClosed(ctx, rootJobId, tx);
         }
-        if (threadDone) {
-            // A threadDone-true verdict IS the worktree-reclaim order: the driver removes the
-            // tree directly on this answer, with no queue row and no ack — so this verdict is
-            // where the board records the removal as issued (045, issue #327), or reopen could
-            // not tell "tree gone" from "tree still there". Same transaction as the verdict,
-            // coalesce keeps the first writer's instant. A queue row queued moments earlier in
-            // this same transaction (the merge closure's inline settle, issue #390) is
-            // withdrawn — the direct order supersedes it, one tree, one work order; a row a
-            // worker holds a LIVE claim on stays (it is mid-removal right now, and the ack
-            // finishes it).
-            await tx`
-                update job set worktree_reclaimed_at = coalesce(worktree_reclaimed_at, now())
-                where org_id = ${orgId} and id = ${rootJobId}
-            `;
-            await tx`
-                delete from task_reclaim
-                where org_id = ${orgId} and root_job_id = ${rootJobId}
-                  and (claimed_by is null or lease_expires_at <= now())
-            `;
-        }
-        return { result: 'ok', threadDone };
+        // A threadDone-true verdict IS the worktree-reclaim order, queued claimed by this worker
+        // in the verdict's transaction (issue #821): the driver removes the tree on this answer
+        // and acks the row, and the ack — not this verdict — stamps `worktree_reclaimed_at`, so
+        // reopen never reads "tree gone" for a tree still on the volume, and a driver that dies
+        // mid-removal leaves the row to the queue once its lease expires.
+        const reclaimId = threadDone ? await issueVerdictReclaim(tx, ctx, rootJobId, rows[0]!.claimed_by) : null;
+        const answer = { result: 'ok', threadDone, reclaimId } as const;
+        await recordReceipt(tx, key, answer);
+        return answer;
     });
 }
 

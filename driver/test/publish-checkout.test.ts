@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { type PublishOptions, type PublishStep, publishCheckout } from '../src/publish.js';
+import { PUBLISH_MOVED_REASON, type PublishOptions, type PublishStep, publishCheckout } from '../src/publish.js';
 
 /**
  * The publish workflow both executors run (`publishCheckout`), over a fake transport: every
@@ -66,10 +66,14 @@ const nothing = (reason: string) => ({
     cause: null,
 });
 
+/** The tree a bound publish stages and, unless a test says a hook moved it, commits. */
+const TREE = 't'.repeat(40);
+
 /**
- * A fake transport: the probe answers `state`, `git switch` without `-c` finds no branch, `gh pr
- * view` finds a PR only when `prExists`, and `fail` rejects a step the way a transport does — with
- * the tool's own words. Every step is recorded, so the flow is the assertion.
+ * A fake transport: the probe answers `state` (then each of `reprobes` in turn), `git switch`
+ * without `-c` finds no branch, `gh pr view` finds a PR only when `prExists`, the staged and
+ * committed trees answer `trees`, and `fail` rejects a step the way a transport does — with the
+ * tool's own words. Every step is recorded, so the flow is the assertion.
  */
 const transport = (
     state: Record<string, unknown>,
@@ -79,14 +83,26 @@ const transport = (
         prBase?: string;
         summary?: unknown;
         fail?: (step: PublishStep) => string | null;
+        /** What the probes after the first answer, in order; the last repeats. Default: `state`. */
+        reprobes?: Record<string, unknown>[];
+        /** What `git write-tree` and `git rev-parse HEAD^{tree}` answer; default both TREE. */
+        trees?: { staged?: string; committed?: string };
     } = {}
 ) => {
     const steps: PublishStep[] = [];
+    let probes = 0;
     const run = async (step: PublishStep): Promise<{ stdout: string }> => {
         steps.push(step);
         const refused = opts.fail?.(step);
         if (refused) throw new Error(refused);
-        if (step.label === 'probe') return { stdout: `${JSON.stringify(state)}\n` };
+        if (step.label === 'probe') {
+            const answer =
+                probes === 0 ? state : (opts.reprobes?.[Math.min(probes, opts.reprobes.length) - 1] ?? state);
+            probes += 1;
+            return { stdout: `${JSON.stringify(answer)}\n` };
+        }
+        if (step.label === 'git write-tree') return { stdout: `${opts.trees?.staged ?? TREE}\n` };
+        if (step.label === 'git rev-parse HEAD^{tree}') return { stdout: `${opts.trees?.committed ?? TREE}\n` };
         // The publication's own identity (issue #771): the commit it pushes, and its ledger — pinned
         // in publish-reconcile.test.ts; here they only have to answer.
         if (step.label === 'git rev-parse HEAD') return { stdout: `${'a'.repeat(40)}\n` };
@@ -326,6 +342,82 @@ describe('the publish workflow', () => {
         expect(await publish(bound, { revision: 'h:1' })).toMatchObject({ ok: true, published: true });
         const unbound = transport({ ...DIRTY_ON_MAIN, fingerprint: 'h:2' });
         expect(await publish(unbound)).toMatchObject({ ok: true, published: true });
+    });
+});
+
+/**
+ * The publish's own git steps run the repository's hooks (issue #825): a bound publish ships only
+ * the content its evidence assessed, so a hook that moves it — the switch's post-checkout, the
+ * commit's pre- or post-commit — is refused stale, nothing pushed. The staging runs hook-free, so
+ * the staged tree is the verified content the commit is held to.
+ */
+describe('a bound publish over hooks that move its content', () => {
+    const BOUND = { ...DIRTY_ON_MAIN, fingerprint: 'h:1' };
+    const STALE = { ok: false, published: false, stale: true, reason: PUBLISH_MOVED_REASON };
+    const HOOKLESS = ['-c', 'core.hooksPath=/dev/null'];
+
+    it('pushes when the committed tree is the staged one, re-probing after its switch and staging hook-free', async () => {
+        const t = transport(BOUND);
+
+        expect(await publish(t, { revision: 'h:1' })).toEqual(LANDED);
+
+        expect(t.labels()).toEqual([
+            'probe',
+            'git switch',
+            'git switch',
+            'probe',
+            'git add',
+            'git reset',
+            'git write-tree',
+            'git commit',
+            'git rev-parse HEAD^{tree}',
+            'git push',
+            'gh pr view',
+            'pr summary',
+            'gh pr create',
+        ]);
+        for (const label of ['git add', 'git reset', 'git write-tree']) {
+            expect(t.find(label).args.slice(0, 2)).toEqual(HOOKLESS);
+        }
+        // The commit keeps the repository's hooks: they run, they just may not move the content.
+        expect(t.find('git commit').args).not.toContain('core.hooksPath=/dev/null');
+    });
+
+    it('refuses a commit whose hook moved the staged tree, before anything is pushed', async () => {
+        const t = transport(BOUND, { trees: { committed: 'b'.repeat(40) } });
+
+        expect(await publish(t, { revision: 'h:1' })).toMatchObject(STALE);
+        expect(t.labels().at(-1)).toBe('git rev-parse HEAD^{tree}');
+        expect(t.steps.some((s) => s.label === 'git push' || s.label === 'publication ledger')).toBe(false);
+    });
+
+    it('refuses a branch switch whose hook moved the fingerprint, before anything is staged', async () => {
+        const t = transport(BOUND, { reprobes: [{ ...BOUND, fingerprint: 'h:2' }] });
+
+        expect(await publish(t, { revision: 'h:1' })).toMatchObject(STALE);
+        expect(t.labels()).toEqual(['probe', 'git switch', 'git switch', 'probe']);
+    });
+
+    it('re-probes nothing when already on its task branch, and still holds the commit to the staged tree', async () => {
+        const t = transport({ ...ON_TASK_BRANCH, dirty: true, fingerprint: 'h:1' });
+
+        expect(await publish(t, { revision: 'h:1' })).toEqual(LANDED);
+        expect(t.labels().slice(0, 6)).toEqual([
+            'probe',
+            'git add',
+            'git reset',
+            'git write-tree',
+            'git commit',
+            'git rev-parse HEAD^{tree}',
+        ]);
+    });
+
+    it('leaves an unbound publish as it was: hooks live on the staging, no tree held', async () => {
+        const t = transport(DIRTY_ON_MAIN, { trees: { committed: 'b'.repeat(40) } });
+
+        expect(await publish(t)).toEqual(LANDED);
+        expect(t.find('git add').args).toEqual(['add', '-A', '--', ':/']);
+        expect(t.labels()).not.toContain('git write-tree');
     });
 });
 

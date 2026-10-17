@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createEnvVarStore, stackEnv, type EnvVarStore } from '../src/db/env-var-store.js';
@@ -13,6 +14,8 @@ const ORG = testOrg();
 const ALICE_USER = testUser('alice');
 const ALICE = ALICE_USER.id;
 const REPO = { owner: 'Bellows-AI', name: 'bellows.ai' };
+
+const RESERVE_GITHUB = new URL('../migrations/072_github_env_reserved.sql', import.meta.url);
 
 const db = useTestDb({ orgs: [ORG], users: [ALICE_USER] });
 
@@ -133,6 +136,22 @@ describe.skipIf(!enabled)('the env var store', () => {
         },
     ])('$name', async ({ insert, check }) => {
         await expect(insert()).rejects.toThrow(check);
+    });
+});
+
+describe.skipIf(!enabled)('the GitHub reservation migration (072)', () => {
+    it('deletes stored GITHUB_TOKEN and GH_TOKEN rows in every scope and keeps the rest', async () => {
+        await store.replaceOrg([
+            { name: 'GITHUB_TOKEN', value: 'ghp_org', isSecret: true },
+            { name: 'KEEP_ORG', value: '1', isSecret: false },
+        ]);
+        await store.replaceWorkspace(ALICE, [{ name: 'GH_TOKEN', value: 'ghp_mine', isSecret: true }]);
+        await store.replaceRepo(REPO.owner, REPO.name, [{ name: 'GITHUB_TOKEN', value: 'ghp_repo', isSecret: true }]);
+
+        await sql.unsafe(readFileSync(RESERVE_GITHUB, 'utf8'));
+
+        const names = await sql<{ name: string }[]>`select name from env_var where org_id = ${ORG} order by name`;
+        expect(names.map((row) => row.name)).toEqual(['KEEP_ORG']);
     });
 });
 

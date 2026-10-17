@@ -148,21 +148,6 @@ describe.runIf(enabled)('attribution', () => {
             error: 'env store down',
         },
         {
-            // The provider is back: the very next claim takes the job with the minted token.
-            name: 'the mint',
-            failing: (fail) => ({
-                githubToken: {
-                    fresh: async () => {
-                        if (fail()) throw new Error('mint down');
-                        return 'ghs_late';
-                    },
-                },
-            }),
-            executor: null,
-            error: 'mint down',
-            env: { GITHUB_TOKEN: 'ghs_late' },
-        },
-        {
             name: 'the executor reader',
             failing: (fail) => ({
                 executorConfig: {
@@ -175,139 +160,38 @@ describe.runIf(enabled)('attribution', () => {
             executor: 'main',
             error: 'executor store down',
         },
-    ])(
-        'leaves a job claimable when $name fails, without burning an attempt',
-        async ({ failing, executor, error, env }) => {
-            const userId = await account(sql, randomGithubId(), 'flaky-cat');
-            let fail = true;
-            const flaky = createJobStore({ sql, orgId: ORG, ...failing(() => fail) });
-            await mustCreate(flaky.create('echo hi', userId, { repo: null, executor }));
+    ])('leaves a job claimable when $name fails, without burning an attempt', async ({ failing, executor, error }) => {
+        const userId = await account(sql, randomGithubId(), 'flaky-cat');
+        let fail = true;
+        const flaky = createJobStore({ sql, orgId: ORG, ...failing(() => fail) });
+        await mustCreate(flaky.create('echo hi', userId, { repo: null, executor }));
 
-            await expect(flaky.claim('driver-1', LEASE_SECONDS)).rejects.toThrow(error);
+        await expect(flaky.claim('driver-1', LEASE_SECONDS)).rejects.toThrow(error);
 
-            // The dependency is back: the job is still queued, still attempt 0, and the very next
-            // claim takes it.
-            fail = false;
-            const claim = await flaky.claim('driver-2', LEASE_SECONDS);
-            expect(claim?.id).toBeTruthy();
-            expect(claim?.attempts).toBe(1);
-            if (env) expect(claim?.env).toEqual(env);
-        }
-    );
+        // The dependency is back: the job is still queued, still attempt 0, and the very next
+        // claim takes it.
+        fail = false;
+        const claim = await flaky.claim('driver-2', LEASE_SECONDS);
+        expect(claim?.id).toBeTruthy();
+        expect(claim?.attempts).toBe(1);
+    });
 
-    /** Unique per run — a shared factory_test database must not let one suite's accounts collide with another's. */
-    const mintedAccountId = (() => {
-        const BASE = 50_000;
-        const SPREAD = 100_000;
-        let next = BASE + Math.floor(Math.random() * SPREAD);
-        return () => ++next;
-    })();
-
-    it('mints the installation token onto the claim, under the stacked environment', async () => {
-        // Issue #28: executors orchestrate github workflows (PRs, commits, CI reads). Under an
-        // app-mode board the installation token rides the claim's env, minted at claim time — the
-        // seam docs/env.md reserved for exactly this.
-        const userId = await account(sql, mintedAccountId(), 'minted-cat');
+    it('carries no GitHub credential on the claim, even from a stored row', async () => {
+        // GitHub is the App's: the runner obtains a renewing token from the board's credential
+        // endpoint (docs/connections.md), so neither name reaches the claim env, whatever scope
+        // holds it — the PUT refuses both, and this is the claim's own guarantee.
+        const userId = await account(sql, randomGithubId(), 'no-pat-cat');
         const envStore = createEnvVarStore({ sql, orgId: ORG });
-        await envStore.replaceOrg([{ name: 'CORE', value: 'org-value', isSecret: true }]);
-        const minted = createJobStore({
-            sql,
-            orgId: ORG,
-            env: envStore,
-            githubToken: { fresh: async () => 'ghs_example' },
-        });
+        await envStore.replaceOrg([
+            { name: 'CORE', value: 'org-value', isSecret: true },
+            { name: 'GITHUB_TOKEN', value: 'ghp_member', isSecret: true },
+        ]);
+        await envStore.replaceWorkspace(userId, [{ name: 'GH_TOKEN', value: 'ghp_mine', isSecret: true }]);
+        const store = createJobStore({ sql, orgId: ORG, env: envStore, githubApp: true });
 
-        await mustCreate(minted.create('echo hi', userId, { repo: null, executor: null }));
-        const claim = await minted.claim('driver-1', LEASE_SECONDS);
-        // The mint is the base layer: configured values ride above it.
-        expect(claim?.env).toEqual({ GITHUB_TOKEN: 'ghs_example', CORE: 'org-value' });
-    });
-
-    it('mints a fresh token for every claim, so the credential outlives the claim', async () => {
-        /*
-         * Served from the provider's cache, a token can carry the five-minute refresh margin into
-         * a run capped at thirty minutes, and the runner has no refresh path — its env file is
-         * written once. So each claim mints for itself, and the credential starts with a full hour.
-         */
-        const userId = await account(sql, mintedAccountId(), 'fresh-mint');
-        let mints = 0;
-        const counting = createJobStore({
-            sql,
-            orgId: ORG,
-            githubToken: {
-                fresh: async () => `ghs_${++mints}`,
-            },
-        });
-
-        await mustCreate(counting.create('echo hi', userId, { repo: null, executor: null }));
-        const first = await counting.claim('driver-1', LEASE_SECONDS);
-        expect(first?.env).toEqual({ GITHUB_TOKEN: 'ghs_1' });
-
-        // The first job holds a live lease, so the second claim takes the new one — and mints again.
-        await mustCreate(counting.create('echo hi', userId, { repo: null, executor: null }));
-        const second = await counting.claim('driver-2', LEASE_SECONDS);
-        expect(second?.env).toEqual({ GITHUB_TOKEN: 'ghs_2' });
-    });
-
-    /**
-     * The publish-time credential (job 43379d3a, 2026-09-13): a claim's installation token is an
-     * hour old at best, and a run that outlives it publishes with a dead credential — the work
-     * done, the gates green, the push rejected 401. The store re-answers the claim's environment
-     * assembly NOW, to the lease holder only.
-     */
-    describe('publishToken', () => {
-        const publishAccountId = (() => {
-            const BASE = 150_000;
-            const SPREAD = 100_000;
-            let next = BASE + Math.floor(Math.random() * SPREAD);
-            return () => ++next;
-        })();
-
-        it('answers a fresh mint to the lease holder, not the claim-time token', async () => {
-            const userId = await account(sql, publishAccountId(), 'publish-mint');
-            let mints = 0;
-            const store = createJobStore({
-                sql,
-                orgId: ORG,
-                githubToken: { fresh: async () => `ghs_publish_${++mints}` },
-            });
-            await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
-            const claim = await store.claim('driver-1', LEASE_SECONDS);
-            expect(claim?.env).toEqual({ GITHUB_TOKEN: 'ghs_publish_1' });
-
-            const answer = await store.publishToken(claim!.id, claim!.leaseToken);
-            expect(answer).toEqual({ result: 'ok', token: 'ghs_publish_2' });
-        });
-
-        it('lets a configured GITHUB_TOKEN win, and does not mint for it', async () => {
-            const userId = await account(sql, publishAccountId(), 'publish-operator');
-            const envStore = createEnvVarStore({ sql, orgId: ORG });
-            await envStore.replaceOrg([{ name: 'GITHUB_TOKEN', value: 'operator-pat', isSecret: true }]);
-            let mints = 0;
-            const store = createJobStore({
-                sql,
-                orgId: ORG,
-                env: envStore,
-                githubToken: { fresh: async () => `ghs_${++mints}` },
-            });
-            await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
-            const claim = await store.claim('driver-1', LEASE_SECONDS);
-            expect(claim?.env).toEqual({ GITHUB_TOKEN: 'operator-pat' });
-
-            const answer = await store.publishToken(claim!.id, claim!.leaseToken);
-            // The deliberate credential, and no mint spent beside it — the claim-time rule.
-            expect(answer).toEqual({ result: 'ok', token: 'operator-pat' });
-            expect(mints).toBe(0);
-        });
-
-        it('answers null — nothing fresher than the claim env — with no provider and no configured value', async () => {
-            const userId = await account(sql, publishAccountId(), 'publish-bare');
-            const store = createJobStore({ sql, orgId: ORG });
-            await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
-            const claim = await store.claim('driver-1', LEASE_SECONDS);
-
-            expect(await store.publishToken(claim!.id, claim!.leaseToken)).toEqual({ result: 'ok', token: null });
-        });
+        await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
+        const claim = await store.claim('driver-1', LEASE_SECONDS);
+        expect(claim?.env).toEqual({ CORE: 'org-value' });
     });
 
     /**

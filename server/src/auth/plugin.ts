@@ -53,7 +53,7 @@ const WORKER_ROUTES: readonly RegExp[] = [
     // deleting the audit rows of jobs it never held would be the thread-read hole again.
     // to stop through the heartbeat it already holds, and the board secret moving or deleting
     // the audit rows of jobs it never held would be the thread-read hole again.
-    /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|requeue|interrupt|complete|output|gates|publish-token|question|review|review-read)$/,
+    /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|requeue|interrupt|complete|output|gates|question|review|review-read)$/,
     // Artifact uploads: the shared secret authenticates the driver, the claim sequence in the
     // request authorizes the attempt (job-handlers-artifacts.ts), and no lease is consulted.
     /^\/api\/jobs\/[^/]+\/artifact\/(chunk|manifest)$/,
@@ -66,13 +66,17 @@ const INGEST_ROUTES: readonly RegExp[] = [/^\/api\/otlp\//];
 const BRANCH_ROUTES: readonly RegExp[] = [/^\/api\/sessions\/branch$/];
 
 /**
- * The connector proxy (issue #546): a runner's calls through a managed connection. The credential
- * is the attempt's job id + lease token pair, in EVERY `AUTH_MODE` — a connection's secret is the
- * thing the proxy protects, so `none` does not open it — and nothing else is accepted: no cookie,
- * bearer, worker secret or ingest token. The route resolves the pair against the live attempt on
- * each call; the hook only insists the pair is present and names the job in the URL.
+ * The connector proxy (issue #546) and the runner's GitHub credential: a runner's calls through a
+ * managed connection. The credential is the attempt's job id + lease token pair, in EVERY
+ * `AUTH_MODE` — a connection's secret is the thing the route protects, so `none` does not open it —
+ * and nothing else is accepted: no cookie, bearer, worker secret or ingest token. The route resolves
+ * the pair against the live attempt on each call; the hook only insists the pair is present and
+ * names the job in the URL.
  */
-const CONNECTOR_ROUTES: readonly RegExp[] = [/^\/api\/jobs\/[^/]+\/connectors\//];
+const CONNECTOR_ROUTES: readonly RegExp[] = [
+    /^\/api\/jobs\/[^/]+\/connectors\//,
+    /^\/api\/jobs\/[^/]+\/credentials\/github$/,
+];
 
 export const JOB_ID_HEADER = 'x-factory-job-id';
 export const LEASE_TOKEN_HEADER = 'x-factory-job-lease-token';
