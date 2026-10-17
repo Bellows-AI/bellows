@@ -140,6 +140,10 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
         };
         held.timer = setTimeout(() => held.answer({}), Math.min(waitMs, STEP_HOLD_MAX_MS));
         heldPolls.add(held);
+        reply.once('close', () => {
+            clearTimeout(held.timer);
+            heldPolls.delete(held);
+        });
     };
     const askReply = (step, tools, messages) => {
         if (askProse && step === 1) {

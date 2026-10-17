@@ -231,6 +231,23 @@ describe('the scripted model endpoint as the step channel (issue #812)', () => {
         expect(await poll(url)).toEqual({});
     });
 
+    it('drops a held poll whose client went away, so the finish reaches the live poll', async () => {
+        const { url } = await start();
+        await poll(url);
+
+        const cancel = new AbortController();
+        const gone = fetch(`${url}/step?wait=10000`, { signal: cancel.signal }).catch(() => undefined);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        cancel.abort();
+        await gone;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        const live = poll(url, 10_000);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await post(url, '/report', { agentEnd: 'exit', drained: true });
+        expect((await live).step).toMatchObject({ kind: 'finish' });
+    });
+
     it('drives the real supervisor from go to its exit', async () => {
         const { url } = await start();
         const root = mkdtempSync(join(tmpdir(), 'lane-group-'));
