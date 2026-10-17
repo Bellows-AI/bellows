@@ -706,7 +706,7 @@ describe('the claude-executor workspace trust', () => {
         async () => {
             const sandbox = makeSandbox();
             try {
-                const repo = join(sandbox.work, 'leeloo.ai');
+                const repo = join(sandbox.work, 'repo');
                 const worktree = join(sandbox.work, '.worktrees', 'root-job');
                 mkdirSync(repo);
                 git(repo, 'init', '-q');

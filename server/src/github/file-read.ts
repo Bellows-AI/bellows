@@ -14,7 +14,7 @@ export interface RepoFileRead {
 }
 
 /** Past this a file is refused unread: the contents API inlines at most 1 MiB, and a plan file is never near it. */
-const MAX_FILE_BYTES = 65_536;
+export const MAX_FILE_BYTES = 65_536;
 
 const BASE64 = 'base64';
 

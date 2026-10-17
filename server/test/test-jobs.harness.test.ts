@@ -16,6 +16,17 @@ const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SCRIPT = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
 
 describe('the test-jobs harness', () => {
+    // The offline board reads a plan from the bare mirror under its workspace root (issue #799):
+    // every fixture write refreshes it, or the board plans from a commit the runner never sees.
+    it('mirrors the origin onto the board host on every .bellows.yaml write', () => {
+        const write = SCRIPT.slice(SCRIPT.indexOf('write_bellows() {'), SCRIPT.indexOf('\nwrite_bellows '));
+        expect(write).toContain('mirror="$work/workspaces/.origins/$SMOKE_REPO.git"');
+        expect(write).toMatch(
+            /tar -C "\/workspaces\/\$member_path\/\.smoke-origin\.git" -cf - \. \| tar -C "\$mirror" -xf -/
+        );
+        expect(SCRIPT).toContain('ORG_WORKSPACE_ROOT="$work/workspaces"');
+    });
+
     it('pins the open board mode instead of inheriting a developer or compose auth mode', () => {
         expect(SCRIPT).toContain('env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1');
     });

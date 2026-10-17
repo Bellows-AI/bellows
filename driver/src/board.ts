@@ -1,9 +1,11 @@
 import { artifactCalls } from './artifact-calls.js';
+import { BoardHttpError } from './board-retry.js';
 import { githubCredentialCall } from './github-credential-call.js';
 import type { EvidencePolicy, GatesOutcome, ReviewEvidence } from './evidence-policy.js';
 import { type ExecutorType, isExecutorType } from './executors.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, LEASE_LOST_CODE, NOT_FOUND_CODE } from './http.js';
 import type { HelperPlan } from './helpers.js';
+import { fitCompleteBody } from './verdict-budget.js';
 import type { ServiceSpec } from './services.js';
 
 /**
@@ -686,11 +688,9 @@ function completeBody({
     };
 }
 
-/** The verdict POST carries the lease token beside the payload, like every worker write. */
-const completeWireBody = (job: BoardJob, result: Parameters<Board['complete']>[1]): Record<string, unknown> => ({
-    leaseToken: job.leaseToken,
-    ...completeBody(result),
-});
+/** The verdict POST carries the lease token beside the payload, like every worker write, fit to the route's limit. */
+const completeWireBody = (job: BoardJob, result: Parameters<Board['complete']>[1]): Record<string, unknown> =>
+    fitCompleteBody({ leaseToken: job.leaseToken, ...completeBody(result) });
 
 /** A claim text field read defensively: the string the board sent, else null. */
 const textOrNull = (value: unknown): string | null => (typeof value === 'string' ? value : null);
@@ -795,7 +795,8 @@ function createPost({ url, token, fetch }: { url: string; token: string | undefi
             !(allow404 && response.status === HTTP_NOT_FOUND) &&
             !allow.includes(response.status)
         ) {
-            throw new Error(
+            throw new BoardHttpError(
+                response.status,
                 `${path} answered ${response.status}: ${(await response.text()).slice(0, ERROR_BODY_PREVIEW_LENGTH)}`
             );
         }

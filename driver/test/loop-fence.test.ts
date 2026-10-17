@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { BoardJob, LeaseState } from '../src/board.js';
+import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board-retry.js';
 import { newJobState, raceStep } from '../src/loop-attempt.js';
 import { concludeSetup, handBackFence, standDown } from '../src/loop-fence.js';
 import type { AttemptCtx, SetupHalt } from '../src/loop-types.js';
@@ -153,6 +154,45 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         expect(await standDown(ctx, 'setup')).toBe(false);
 
         expect(calls).toEqual([]);
+    });
+
+    // Issue #820: runJob's catch asks again after a stand-down that threw; the second ask is a no-op.
+    it('stands an attempt down once, however often it is asked', async () => {
+        const { ctx, calls } = fencedAttempt();
+        ctx.state.stopped = true;
+
+        expect(await standDown(ctx, 'setup')).toBe(true);
+        expect(await standDown(ctx, 'its run')).toBe(true);
+
+        expect(calls).toEqual([...CLAIM_BACK, 'suspend', 'log']);
+    });
+
+    it('retries a park the board does not take, then leaves the stop to the lease without throwing', async () => {
+        const { ctx, calls, lines } = fencedAttempt();
+        ctx.state.stopped = true;
+        Object.assign(ctx.rt, { sleep: async () => {} });
+        ctx.rt.board.suspend = async () => {
+            calls.push('suspend');
+            throw new BoardHttpError(503, '/api/jobs/job-1/suspend answered 503: down');
+        };
+
+        expect(await standDown(ctx, 'setup')).toBe(true);
+
+        expect(calls.filter((c) => c === 'suspend')).toHaveLength(BOARD_CALL_ATTEMPTS);
+        expect(lines.at(-1)).toContain('the board did not take the stop, left to the lease');
+    });
+
+    it('still parks when the pre-park hook throws', async () => {
+        const { ctx, calls, lines } = fencedAttempt();
+        ctx.state.stopped = true;
+
+        const hook = async () => {
+            throw new Error('artifact upload refused');
+        };
+        expect(await standDown(ctx, 'its run', hook)).toBe(true);
+
+        expect(calls).toEqual([...CLAIM_BACK, 'log', 'suspend', 'log']);
+        expect(lines[0]).toContain('parking anyway: artifact upload refused');
     });
 
     it.each([

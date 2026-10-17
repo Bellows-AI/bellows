@@ -640,7 +640,10 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     const onOutput = outputPump.push;
     const session = pickSession(job, executorType);
 
-    const settle = async () => {
+    // Once per attempt, however many conclusions ask (issue #820): a second call awaits the first.
+    let settling: Promise<void> | null = null;
+    const settle = () => (settling ??= settleOnce());
+    const settleOnce = async () => {
         state.finished = true;
         rt.live?.delete(job.id);
         if (state.graceTimer) clearTimeout(state.graceTimer);

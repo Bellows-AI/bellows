@@ -1921,6 +1921,15 @@ await_runner_pod() { # await_runner_pod <id> -> the claim-1 runner pod's name on
     printf '%s' "$pod"
 }
 
+await_released() { # await_released <runner pod> -> success once the supervisor released its agent (`go`)
+    # A driver lost before `go` leaves nothing to adopt: the group ends lost (supervisor exit 75) and the run is redone.
+    for _ in $(seq 1 60); do
+        kubectl exec "$1" -c agent -n "$NAMESPACE" -- sh -c 'test -f /factory/in/go' >/dev/null 2>&1 && return 0
+        sleep 1
+    done
+    return 1
+}
+
 await_job_complete() { # await_job_complete <runner Job name> <seconds>
     kubectl wait --for=condition=complete "job/$1" -n "$NAMESPACE" --timeout="$2s" >/dev/null 2>&1
 }
@@ -1936,6 +1945,8 @@ if [ -z "$hard" ] || [ -z "$hard_pod" ]; then
     bad 'the hard-kill runner is running' "job '$hard': $(job_brief "$hard")"
 else
     ok 'the hard-kill runner is running'
+    await_released "$hard_pod" && ok 'the hard-kill runner released its agent' ||
+        bad 'the hard-kill runner released its agent' 'no /factory/in/go within 60s'
     hard_job="$(first_runner_job "$hard")"
     kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
     kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
