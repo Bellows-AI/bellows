@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type { Sql } from 'postgres';
 import { createArtifactStore, type ArtifactStore } from './artifacts/artifact-store.js';
 import type { ArtifactBackend } from './artifacts/backend.js';
@@ -26,6 +27,7 @@ import { createCloneQueue, type CloneQueue } from './workspace/queue.js';
 import { createPurger, type Purger } from './workspace/purge.js';
 import { createFactsCache, type FactsCache } from './workspace/facts.js';
 import { createPlanReader } from './workspace/bellows-plan.js';
+import { createLocalPlanReader, LOCAL_ORIGINS_DIR } from './github/local-origin-plan.js';
 
 /**
  * Everything one organization needs at runtime, built lazily and cached.
@@ -162,6 +164,11 @@ function buildOrgStores({
               log: (m) => console.log(`[workspace] ${m}`),
           })
         : undefined;
+    const planReader = client
+        ? createPlanReader(client)
+        : config.github.mode === 'none' && config.workspaceRoot
+          ? createLocalPlanReader(join(config.workspaceRoot, LOCAL_ORIGINS_DIR))
+          : null;
     const jobs = createJobStore({
         sql,
         orgId,
@@ -170,9 +177,9 @@ function buildOrgStores({
         env: envVars,
         executorConfig: userExecutors,
         // The execution plan is read per claim through the org's installation, at the tip of the
-        // thread's base branch — never from a checkout on disk. Offline there is no client, so
-        // a claim carries no plan.
-        ...(client ? { plan: { readFor: createPlanReader(client).read } } : {}),
+        // thread's base branch — never from a checkout on disk. The code-only `none` arm has no
+        // client: it reads the bare mirrors under the workspace root instead (test:jobs keeps them).
+        ...(planReader ? { plan: { readFor: planReader.read } } : {}),
         // The claim mints the org's installation token under the runner env as its base
         // layer. Per-org here is the whole point: a runner gets the installation of the
         // org whose board it is working, and no other.

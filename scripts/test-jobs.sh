@@ -639,6 +639,15 @@ write_bellows() { # write_bellows <contents>
         echo 'test-jobs: could not commit the .bellows.yaml fixture'
         exit 1
     }
+    # The offline board has no GitHub: it reads the plan at claim time from a bare mirror under its
+    # workspace root (server/src/github/local-origin-plan.ts), so the origin is copied out of the volume.
+    local mirror="$work/workspaces/.origins/$SMOKE_REPO.git"
+    rm -rf "$mirror" && mkdir -p "$mirror" &&
+        docker run --rm -v "$VOLUME:/workspaces" "$IMAGE_BASE" \
+            tar -C "/workspaces/$member_path/.smoke-origin.git" -cf - . | tar -C "$mirror" -xf - || {
+        echo 'test-jobs: could not mirror the origin for the board'
+        exit 1
+    }
 }
 write_bellows 'services:
   - name: stub-svc

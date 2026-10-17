@@ -14,6 +14,7 @@ the shell). `.env.example` is the list; `server/src/config.ts` is the contract.
 | S3 credentials: static keys, then EKS Pod Identity, then IRSA; the dashboard's own ServiceAccount carries the role | `server/src/artifacts/s3-credentials.ts`, `charts/factory/templates/dashboard-serviceaccount.yaml` | `server/test/artifacts.unit.test.ts`, `scripts/test-k8s.sh` |
 | Object store backends (S3 over a minimal SigV4 client, filesystem), bucket created on boot; compose's `s3` service (RustFS) is the dev store | `server/src/artifacts/s3-store.ts`, `fs-store.ts`, `backend.ts`, `docker-compose.yml` | `server/test/artifacts.object-store.test.ts` |
 | The credential-free entry point | `server/src/offline.ts` | `server/test/routes.repos.test.ts` |
+| Its claim-time plan: bare mirrors under `<ORG_WORKSPACE_ROOT>/.origins/<owner>/<name>.git`; an unmirrored repo carries no plan | `server/src/github/local-origin-plan.ts`, `server/src/orgs.ts`, `scripts/test-jobs.sh` | `server/test/local-origin-plan.test.ts`, `server/test/test-jobs.harness.test.ts` |
 | CLI `FACTORY_*` variables over `~/.bellows/settings.json` or `--config <path>`; a settings file holding a token readable beyond `0600` is refused; a `FACTORY_URL` carrying `user:password@` is refused without echoing it | `cli/src/config.ts` | `cli/test/config.test.ts` |
 
 ## Invariants
