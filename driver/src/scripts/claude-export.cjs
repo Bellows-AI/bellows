@@ -20,6 +20,10 @@
 //   EXPORT_SUPERVISOR_LOST_MS — a supervisor heartbeat older than this drains the exporter by itself,
 //                            partial with cause `supervisor_lost`: the bytes stay on the volume either way.
 //   EXPORT_POLL_MS, EXPORT_GIVEUP_MS — the tick, and how long a dead endpoint is tolerated.
+//   EXPORT_REQUEST_TIMEOUT_MS — one request's bound, plus a second per MiB it carries (the driver
+//                            relays a chunk to the board before it answers): a vanished driver never answers.
+//   EXPORT_DRAIN_GIVEUP_MS — once drained, how long an unreachable driver is tolerated before the
+//                            exporter ends with its bytes left on the volume for the next claim.
 //
 // Protocol (all keyed by the token): PUT /export/chunk?session&offset (raw bytes) -> 200 stored, 413
 // refused {cause}, 409/400 permanent, 5xx retry; PUT /export/manifest (json) closes a session; POST
@@ -54,6 +58,10 @@ const EXIT_FAILED = 1;
 const EXIT_UNAUTHORIZED = 3;
 const EXIT_GAVE_UP = 4;
 const DEFAULT_SUPERVISOR_LOST_MS = 60_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+const MS_PER_MIB = 1000;
+const DEFAULT_DRAIN_GIVEUP_MS = 90_000;
+const EXIT_OK = 0;
 const NEWLINE = 0x0a;
 const SESSION = /^[A-Za-z0-9._-]{1,128}$/;
 
@@ -73,21 +81,51 @@ const RECORD_MAX = positive('EXPORT_RECORD_MAX_BYTES', DEFAULT_RECORD_MIB * MIB)
 const POLL_MS = positive('EXPORT_POLL_MS', DEFAULT_POLL_MS);
 const SUPERVISOR_LOST_MS = positive('EXPORT_SUPERVISOR_LOST_MS', DEFAULT_SUPERVISOR_LOST_MS);
 const GIVEUP_MS = positive('EXPORT_GIVEUP_MS', DEFAULT_GIVEUP_MINUTES * MS_PER_MINUTE);
+const REQUEST_TIMEOUT_MS = positive('EXPORT_REQUEST_TIMEOUT_MS', DEFAULT_REQUEST_TIMEOUT_MS);
+const DRAIN_GIVEUP_MS = positive('EXPORT_DRAIN_GIVEUP_MS', DEFAULT_DRAIN_GIVEUP_MS);
 const READ_BYTES = READ_MIB * MIB;
 // Bytes read ahead of the acknowledged point: past this the file itself is the spool and reading pauses.
 const HELD_MAX = 2 * RECORD_MAX;
 
 const tracks = new Map();
 const startedAt = new Date().toISOString();
-const progress = { drain: null, lastStateAt: 0, lastReported: '', outageSince: null, spoolFull: false };
+const progress = {
+    drain: null,
+    lastStateAt: 0,
+    lastReported: '',
+    outageSince: null,
+    unreachableSince: null,
+    spoolFull: false,
+};
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const UNREACHABLE = { status: 0, json: {} };
+
+// One request, answered or not within its bound: a connect to a vanished pod IP never fails by itself.
 const send = (method, target, body) =>
     new Promise((resolve) => {
+        let settled = false;
+        let req = null;
+        const settle = (answer) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(answer);
+        };
+        const bytes = body ? Buffer.byteLength(body) : 0;
+        const timer = setTimeout(
+            () => {
+                settle(UNREACHABLE);
+                req?.destroy();
+            },
+            REQUEST_TIMEOUT_MS + Math.ceil(bytes / MIB) * MS_PER_MIB
+        );
         const headers = { authorization: `Bearer ${TOKEN}` };
-        if (body) headers['content-length'] = Buffer.byteLength(body);
-        const req = http.request(new URL(target, CONTROL_URL), { method, headers }, (res) => {
+        if (body) headers['content-length'] = bytes;
+        req = http.request(new URL(target, CONTROL_URL), { method, headers }, (res) => {
+            // A response cut by the timer's destroy errors here, not on the request.
+            res.on('error', () => settle(UNREACHABLE));
             const parts = [];
             res.on('data', (part) => parts.push(part));
             res.on('end', () => {
@@ -97,25 +135,40 @@ const send = (method, target, body) =>
                 } catch {
                     json = {};
                 }
-                resolve({ status: res.statusCode ?? 0, json });
+                settle({ status: res.statusCode ?? 0, json });
             });
         });
-        req.on('error', () => resolve({ status: 0, json: {} }));
+        req.on('error', () => settle(UNREACHABLE));
         if (body) req.write(body);
         req.end();
     });
 
-// One call, with the outage clock the main loop's give-up window reads: a dead endpoint starts it, any answer stops it.
+// One call, with the clocks the give-up windows read: a dead endpoint starts the outage, a driver
+// that did not answer at all (from when the request was sent) the unreachable one; an answer stops each.
 const request = async (method, target, body) => {
+    const sentAt = Date.now();
     const answer = await send(method, target, body);
     const dead = answer.status === 0 || answer.status >= STATUS_SERVER_ERROR;
     progress.outageSince = dead ? (progress.outageSince ?? Date.now()) : null;
+    progress.unreachableSince = answer.status === 0 ? (progress.unreachableSince ?? sentAt) : null;
     return answer;
 };
 
 const bail = (code) => {
     writeStatus({ done: true, gone: true });
     process.exit(code);
+};
+
+// Drained, and the driver has not answered for the drain window: it is gone, and so is everyone the
+// manifests were for. The saved offsets and unsent bytes stay on the volume for the next claim.
+const abandonDrain = () => {
+    if (
+        progress.drain &&
+        progress.unreachableSince !== null &&
+        Date.now() - progress.unreachableSince > DRAIN_GIVEUP_MS
+    ) {
+        bail(EXIT_OK);
+    }
 };
 
 const statePath = (session) => path.join(DIR, 'export-state', `${session}.json`);
@@ -409,6 +462,7 @@ const finalize = async () => {
         const manifest = manifestOf(track);
         let answer = await request('PUT', '/export/manifest', manifest);
         while (answer.status === 0 || answer.status >= STATUS_SERVER_ERROR) {
+            abandonDrain();
             if (progress.outageSince !== null && Date.now() - progress.outageSince > GIVEUP_MS) bail(EXIT_GAVE_UP);
             await sleep(POLL_MS);
             answer = await request('PUT', '/export/manifest', manifest);
@@ -489,6 +543,7 @@ const main = async () => {
     for (;;) {
         await tick();
         pollDrain();
+        abandonDrain();
         if (progress.outageSince !== null && Date.now() - progress.outageSince > GIVEUP_MS) bail(EXIT_GAVE_UP);
         if (progress.drain && settled()) {
             await tick();
