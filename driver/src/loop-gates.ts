@@ -258,8 +258,17 @@ interface GatesRunCtx {
  * The gate environment's body with a GitHub token asked now: every gate run starts on a token of
  * its own, and a run is never renewed (docs/connections.md).
  */
-const gateEnvNow = async (rt: LoopRuntime, job: BoardJob, what: string): Promise<string> =>
-    gateEnvBody(job, await askGithubToken(rt, job, what));
+const gateEnvNow = async (rt: LoopRuntime, job: BoardJob, what: string): Promise<string> => {
+    // `beginGates` adds the gate server's own pair to `job.gateEnv` for the agent; a gate run never
+    // gets it, or a gate could call `/run` on its own checkout and wait behind itself.
+    const gateEnv = Object.fromEntries(
+        Object.entries(job.gateEnv ?? {}).filter(([name]) => !GATE_SERVER_PAIR.includes(name))
+    );
+    return gateEnvBody({ ...job, gateEnv }, await askGithubToken(rt, job, what));
+};
+
+/** The gate server's URL and token, the agent's alone. */
+const GATE_SERVER_PAIR: readonly string[] = ['BELLOWS_GATE_URL', 'BELLOWS_GATE_TOKEN'];
 
 /** One declared gate's re-acquire-then-run outcome, folding a re-acquire failure into a failed gate. */
 async function runOneGate(ctx: GatesRunCtx, gate: DeclaredGate): Promise<GateRun | null> {

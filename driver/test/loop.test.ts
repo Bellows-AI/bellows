@@ -4761,6 +4761,8 @@ describe('the gate environment’s GitHub token (docs/connections.md)', () => {
             'ghs_3',
             'ghs_4',
         ]);
+        // The gate server's own pair is the agent's: no gate run's body carries it.
+        for (const body of stack.envBodies) expect(body).not.toMatch(/BELLOWS_GATE_(URL|TOKEN)/);
         expect(stack.ran.names).toEqual(['test', 'lint']);
     });
 
