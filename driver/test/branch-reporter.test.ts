@@ -576,6 +576,59 @@ describe('the branch reporter: opencode session discovery', () => {
     });
 });
 
+// The opencode entrypoint asks before it drops a resumed `--session` (issue #822): 0 the database
+// holds the session, 1 it certainly does not — no database, or no such row — and 2 unknown. The
+// one reader of the database path and the session table, so the entrypoint carries no copy.
+describe('the branch reporter: --has-session', () => {
+    const hasSession = async (seed: (db: string) => void, env: Record<string, string> = {}) => {
+        const { url, requests } = await board();
+        const data = tempDir();
+        try {
+            mkdirSync(join(data, 'opencode'), { recursive: true });
+            seed(join(data, 'opencode', 'opencode.db'));
+            const result = await run(
+                OPENCODE_REPORTER,
+                { FACTORY_STATS_URL: url, XDG_DATA_HOME: data, BELLOWS_SESSION_ID: 'ses_handed', ...env },
+                ['--has-session', 'ses_known']
+            );
+            return { ...result, requests };
+        } finally {
+            chmodSync(join(data, 'opencode'), 0o755);
+            rmSync(data, { recursive: true, force: true });
+        }
+    };
+    const withSessions =
+        (...ids: string[]) =>
+        (file: string) => {
+            const db = new DatabaseSync(file);
+            db.exec('create table session (id text primary key, parent_id text, time_created text, directory text)');
+            for (const id of ids) db.prepare('insert into session values (?, null, ?, ?)').run(id, '1', '/work');
+            db.close();
+        };
+
+    it.each([
+        ['the database holds the session', withSessions('ses_known'), 0],
+        ['the database lacks it', withSessions('ses_other'), 1],
+        ['there is no database', () => {}, 1],
+        ['the database cannot be read', (file: string) => writeFileSync(file, 'not a database'), 2],
+    ])('exits silently, sending nothing, when %s', async (_name, seed, expected) => {
+        const { status, stdout, stderr, requests } = await hasSession(seed);
+        expect(status).toBe(expected);
+        expect(stdout).toBe('');
+        expect(stderr).toBe('');
+        expect(requests).toHaveLength(0);
+    });
+
+    // Root reads through any mode bits, so the case means nothing there.
+    it.skipIf(process.getuid?.() === 0)('is unknown when the database directory cannot be entered', async () => {
+        const { status } = await hasSession((file) => {
+            withSessions('ses_known')(file);
+            chmodSync(join(file, '..'), 0o000);
+        });
+        expect(status).toBe(2);
+    });
+});
+
 describe('the branch reporter: loop mode', () => {
     // Loop mode is what the entrypoint launches: the first report lands immediately (the run may
     // be short), the process stays alive and silent, and the close-time `--once` sample is a

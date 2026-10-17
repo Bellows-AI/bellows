@@ -202,6 +202,8 @@ function launch(args: string[], env: Record<string, string>, dir: string, bin: s
             FACTORY_CTL_IN: '',
             FACTORY_CTL_OUT: '',
             FACTORY_STOP_MARKER: '',
+            // A suite run inside a takeover's runner inherits the permission; a case grants it itself.
+            BELLOWS_RESUME_MAY_BE_UNWRITTEN: '',
             PATH: `${bin}:${process.env.PATH}`,
             FAKE_DIR: dir,
             FACTORY_CTL_TICK_MS: POLL_MS,
@@ -288,19 +290,37 @@ describe('claude-bridge argv', () => {
 
     // A driver lost between reporting the session it minted and the CLI's first transcript write
     // leaves the board an id with nothing behind it (issue #822): the recovery's `--resume` would
-    // be refused, so the bridge starts that same id instead.
+    // be refused, so on a takeover or handover — the driver's BELLOWS_RESUME_MAY_BE_UNWRITTEN —
+    // the bridge starts that same id instead.
+    const TAKEOVER = { BELLOWS_RESUME_MAY_BE_UNWRITTEN: '1' };
+
     it('starts a resumed session that left no transcript with --session-id under the same id', async () => {
         const config = mkdtempSync(join(tmpdir(), 'claude-config-'));
         dirs.push(config);
         const result = await run({
             args: ['--resume', SESSION_ID, '--model', 'm', '-p', 'do the thing'],
-            env: { CLAUDE_CONFIG_DIR: config },
+            env: { CLAUDE_CONFIG_DIR: config, ...TAKEOVER },
         });
 
         expect(result.argv).toContain('--session-id');
         expect(result.argv).not.toContain('--resume');
         expect(result.argv[result.argv.indexOf('--session-id') + 1]).toBe(SESSION_ID);
         expect(result.stderr).toContain(`session ${SESSION_ID} left no transcript`);
+    });
+
+    // A follow-up resumes its parent's conversation: starting it empty under the same id would run
+    // the bare follow-up command with no context, so its missing transcript stays the CLI's refusal.
+    it('passes a follow-up’s --resume of a session that left no transcript through untouched', async () => {
+        const config = mkdtempSync(join(tmpdir(), 'claude-config-'));
+        dirs.push(config);
+        const result = await run({
+            args: ['--resume', SESSION_ID, '--model', 'm', '-p', 'carry on'],
+            env: { CLAUDE_CONFIG_DIR: config },
+        });
+
+        expect(result.argv[result.argv.indexOf('--resume') + 1]).toBe(SESSION_ID);
+        expect(result.argv).not.toContain('--session-id');
+        expect(result.stderr).not.toContain('left no transcript');
     });
 
     it('resumes a session whose transcript is on disk', async () => {
@@ -310,7 +330,7 @@ describe('claude-bridge argv', () => {
         writeFileSync(join(config, 'projects', '-work-tree', `${SESSION_ID}.jsonl`), '{}\n');
         const result = await run({
             args: ['--resume', SESSION_ID, '--model', 'm', '-p', 'do the thing'],
-            env: { CLAUDE_CONFIG_DIR: config },
+            env: { CLAUDE_CONFIG_DIR: config, ...TAKEOVER },
         });
 
         expect(result.argv).toContain('--resume');
@@ -330,7 +350,7 @@ describe('claude-bridge argv', () => {
         try {
             const result = await run({
                 args: ['--resume', SESSION_ID, '--model', 'm', '-p', 'do the thing'],
-                env: { CLAUDE_CONFIG_DIR: config },
+                env: { CLAUDE_CONFIG_DIR: config, ...TAKEOVER },
             });
 
             expect(result.argv[result.argv.indexOf('--resume') + 1]).toBe(SESSION_ID);

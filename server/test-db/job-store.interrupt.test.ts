@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
+import { renderContinuation } from '../src/db/follow-up-recap.js';
 import { createJobStore, INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from '../src/db/job-store.js';
 import type { Claim, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
@@ -167,14 +168,28 @@ describe.skipIf(!enabled)('interrupting an attempt the infrastructure took away 
         expect(row!.interruptions).toEqual([{ at: expect.any(String), reason: 'the driver was drained', claimSeq: 1 }]);
     });
 
-    it('resumes the session of an attempt the driver handed back', async () => {
+    it('resumes the session of an attempt the driver handed back, telling it to continue', async () => {
         const id = await queue();
         const first = await claim();
         const session = randomUUID();
         await store.session(id, first.leaseToken, session);
         await store.interrupt(id, first.leaseToken, { reason: 'the driver was drained', release: true });
 
-        expect(await claim()).toMatchObject({ id, resumeSessionId: session, followUp: false });
+        expect(await claim()).toMatchObject({
+            id,
+            resumeSessionId: session,
+            followUp: false,
+            command: renderContinuation('do the thing'),
+        });
+    });
+
+    // Nothing to continue in: the claim starts the task as a first run does.
+    it('delivers the task itself to a handover that reported no session', async () => {
+        const id = await queue();
+        const first = await claim();
+        await store.interrupt(id, first.leaseToken, { reason: 'the driver was drained', release: true });
+
+        expect(await claim()).toMatchObject({ id, resumeSessionId: null, command: 'do the thing' });
     });
 });
 
@@ -234,6 +249,43 @@ describe.skipIf(!enabled)('a lease expiry is an interruption the next claim reco
 
         expect(await claim()).toMatchObject({ id, attempts: 2, claimSeq: 2 });
         expect((await store.get(id))!.interruptions).toHaveLength(INTERRUPTION_BUDGET);
+    });
+
+    // The session itself may be what kills the run — a transcript too large for the pod, a corrupt
+    // one — so the attempt a reclaim spends starts a new conversation rather than resuming it.
+    it('starts the attempt a reclaim spends in a new session, delivering the task itself', async () => {
+        const id = await queue();
+        const first = await claim();
+        await store.session(id, first.leaseToken, randomUUID());
+        await spendInterruptionBudget(sql, id);
+        await age(id);
+
+        expect(await claim()).toMatchObject({
+            id,
+            attempts: 2,
+            resumeSessionId: null,
+            followUp: false,
+            command: 'do the thing',
+        });
+        expect((await store.get(id))!.sessionId).toBeNull();
+    });
+
+    // The takeover resumes the lost attempt's conversation, so handing it the task again would
+    // have the agent repeat what it already committed, pushed or opened.
+    it('tells a takeover to continue the interrupted run, with the task for reference', async () => {
+        const id = await queue();
+        const first = await claim();
+        const session = randomUUID();
+        await store.session(id, first.leaseToken, session);
+        await age(id);
+
+        expect(await claim()).toMatchObject({
+            id,
+            resumeSessionId: session,
+            followUp: false,
+            command: renderContinuation('do the thing'),
+            rootCommand: 'do the thing',
+        });
     });
 
     it('retires a job dead once its interruption budget and its attempts are both spent', async () => {

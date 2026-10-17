@@ -2039,11 +2039,18 @@ fetch(process.argv[1], { headers }).then(async (r) => process.stdout.write(Strin
 }
 
 last_attempt() { # last_attempt <id> -> the job allowed one attempt, so an expiry spending it would retire it dead
-    kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
-        psql -q -v ON_ERROR_STOP=1 -v "id=$1" postgres://factory:factory@127.0.0.1:5432/factory_dev -f - \
-        >/dev/null 2>&1 <<'SQL'
-update job set max_attempts = 1 where id = :'id';
+    # Non-zero, printing what psql answered, unless the update returned that job: a cap that did not land proves nothing.
+    local capped
+    capped="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+        psql -qtA -v ON_ERROR_STOP=1 -v "id=$1" postgres://factory:factory@127.0.0.1:5432/factory_dev -f - \
+        2>&1 <<'SQL'
+update job set max_attempts = 1 where id = :'id' returning id;
 SQL
+    )"
+    [ "$capped" = "$1" ] || {
+        printf '%s' "${capped:-no job row changed}"
+        return 1
+    }
 }
 
 expire_claim_one() { # expire_claim_one <id> -> "1" once claim 1's live lease is expired, as waiting it out would
@@ -2109,7 +2116,10 @@ lost_release="/workspaces/$member_path/.lane-lost"
 #    At max_attempts 1: the claim records the expiry as claim 1's interruption and adopts.
 begin_phase recovery-hard-kill
 hard="$(queue_job "factory-stub-wait-$hard_release hard kill")"
-[ -n "$hard" ] && last_attempt "$hard"
+if [ -n "$hard" ]; then
+    capped="$(last_attempt "$hard")" && ok 'the hard-kill job runs at max_attempts 1' ||
+        bad 'the hard-kill job runs at max_attempts 1' "job '$hard': $capped"
+fi
 hard_pod="$(await_runner_pod "$hard")"
 if [ -z "$hard" ] || [ -z "$hard_pod" ]; then
     bad 'the hard-kill runner is running' "job '$hard': $(job_brief "$hard")"
@@ -2219,7 +2229,10 @@ fi
 #    an expiry spending an attempt would retire the job dead.
 begin_phase recovery-lost-together
 lost="$(queue_job "factory-stub-mark factory-stub-wait-$lost_release lost together")"
-[ -n "$lost" ] && last_attempt "$lost"
+if [ -n "$lost" ]; then
+    capped="$(last_attempt "$lost")" && ok 'the lost-together job runs at max_attempts 1' ||
+        bad 'the lost-together job runs at max_attempts 1' "job '$lost': $capped"
+fi
 lost_pod="$(await_runner_pod "$lost")"
 if [ -z "$lost" ] || [ -z "$lost_pod" ]; then
     bad 'the lost-together runner is running' "job '$lost': $(job_brief "$lost")"

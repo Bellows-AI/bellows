@@ -214,13 +214,15 @@ async function syncTasks(at: Tx, run: { batch: LockedBatch; now: Date }): Promis
                 where q.org_id = t.org_id and q.job_id = head.id and q.state = 'pending'
                   and q.lease_token = head.lease_token
                 order by q.asked_at desc limit 1) as pending_question,
+               -- The head's last claim asked it (074): a takeover keeps the attempt, and its settle
+               -- clears the lease token, so neither can tell the lost claim's question from its own.
                exists (select 1 from job_question q
-                       where q.org_id = t.org_id and q.job_id = head.id and q.attempt = head.attempts
+                       where q.org_id = t.org_id and q.job_id = head.id and q.claim_seq = head.claim_seq
                          and q.state in ('pending', 'expired'))
                    as unanswered
         from batch_task t
         left join lateral (
-            select j.id, j.status, j.failure_kind, j.failure_cause, j.lease_token, j.attempts from job j
+            select j.id, j.status, j.failure_kind, j.failure_cause, j.lease_token, j.claim_seq from job j
             where j.org_id = t.org_id and j.root_job_id = t.root_job_id and j.review_of is null
             order by j.created_at desc, j.id desc
             limit 1

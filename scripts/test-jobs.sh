@@ -942,6 +942,17 @@ interruptions_of() { # interruptions_of <job json> -> "<count>|<claimSeq of the 
         "$1"
 }
 
+last_attempt() { # last_attempt <id> -> the job allowed one attempt, so an expiry spending it would retire it dead
+    # Non-zero, printing what psql answered, unless the update returned that job: a cap that did not land proves nothing.
+    local capped
+    capped="$(compose exec -T postgres psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 \
+        -c "update job set max_attempts = 1 where id = '$1' returning id" 2>&1)"
+    [ "$capped" = "$1" ] || {
+        printf '%s' "${capped:-no job row changed}"
+        return 1
+    }
+}
+
 ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
 DRAINED='the driver was drained'
 # The interruption the next claim records for an attempt whose lease expired (issue #822).
@@ -956,8 +967,8 @@ ADOPT_S=150
 #    interruption and adopts it — at max_attempts 1, where an expiry used to retire the job dead.
 disruption_driver
 killed="$(create_job 'sleep 8; echo "ran in $HOSTNAME"')"
-compose exec -T postgres psql -U factory -d "$DB" \
-    -c "update job set max_attempts = 1 where id = '$killed'" >/dev/null 2>&1
+capped="$(last_attempt "$killed")" && ok 'the hard-kill job runs at max_attempts 1' ||
+    bad 'the hard-kill job runs at max_attempts 1' "job '$killed': $capped"
 killed_runner="$(await_first_runner "$killed" running)"
 [ -n "$killed_runner" ] && ok 'the hard-kill runner is running' ||
     bad 'the hard-kill runner is running' "job: $(body "$(api GET "/api/jobs/$killed")")"
@@ -1032,8 +1043,8 @@ stop_driver
 #    retire the job dead instead.
 disruption_driver
 lost="$(create_job 'cd "$WORKDIR" && mkdir -p .factory && if [ -f .factory/lane-lost.mark ]; then echo "resumed $BELLOWS_SESSION_ID from $(cat .factory/lane-lost.mark) upstream:$(grep -c lane-upstream .bellows.yaml)"; else echo "$BELLOWS_SESSION_ID" > .factory/lane-lost.mark; sleep 300; fi')"
-compose exec -T postgres psql -U factory -d "$DB" \
-    -c "update job set max_attempts = 1 where id = '$lost'" >/dev/null 2>&1
+capped="$(last_attempt "$lost")" && ok 'the lost-together job runs at max_attempts 1' ||
+    bad 'the lost-together job runs at max_attempts 1' "job '$lost': $capped"
 lost_runner="$(await_first_runner "$lost" running)"
 [ -n "$lost_runner" ] && ok 'the lost-together runner is running' ||
     bad 'the lost-together runner is running' "job: $(body "$(api GET "/api/jobs/$lost")")"

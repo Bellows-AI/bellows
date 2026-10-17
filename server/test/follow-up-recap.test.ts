@@ -1,6 +1,6 @@
 import { COMMAND_LIMIT } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
-import { type RecapTurn, renderFollowUpRecap } from '../src/db/follow-up-recap.js';
+import { type RecapTurn, renderContinuation, renderFollowUpRecap } from '../src/db/follow-up-recap.js';
 
 const turn = (over: Partial<RecapTurn> = {}): RecapTurn => ({
     status: 'succeeded',
@@ -68,5 +68,27 @@ describe('renderFollowUpRecap', () => {
         const command = 'c'.repeat(COMMAND_LIMIT);
 
         expect(renderFollowUpRecap([turn()], command)).toBe(command);
+    });
+});
+
+describe('renderContinuation', () => {
+    it('tells the resumed agent its run was interrupted, then gives the task for reference', () => {
+        const text = renderContinuation('implement X and open a PR');
+
+        expect(text).toContain('Your previous run of this task was interrupted');
+        expect(text).toContain('Continue from where this conversation left off.');
+        expect(text).toContain('check what was already done — commits, pushes, pull requests');
+        expect(text).toContain('If this conversation has no earlier turns, start the task from the beginning.');
+        expect(text.endsWith('The task, for reference:\n\nimplement X and open a PR')).toBe(true);
+    });
+
+    it('stays within the command limit, keeping the head of the task', () => {
+        const command = `head${'c'.repeat(COMMAND_LIMIT - 4)}`;
+
+        const text = renderContinuation(command);
+
+        expect(text.length).toBe(COMMAND_LIMIT);
+        expect(text).toContain('The task, for reference:\n\nheadccc');
+        expect(text.endsWith('c […]')).toBe(true);
     });
 });

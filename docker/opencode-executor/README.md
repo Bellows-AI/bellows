@@ -6,7 +6,7 @@ opencode in a container, headless only, run by the driver when a task's executor
 | Concern | Code | Test |
 | --- | --- | --- |
 | The image — Node 24, `opencode-ai`, `@gcornut/opencode-otel`, `context-mode`, `gh`, `acli` (all pinned) | `Dockerfile` | `test.sh` |
-| `ENTRYPOINT` (`/usr/local/bin/opencode-executor`): `$WORKDIR`, `XDG_DATA_HOME`, per-run allows via `OPENCODE_CONFIG_CONTENT`, a `--session` the database lacks started anew, the session that predates a fresh run named for the reporter | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
+| `ENTRYPOINT` (`/usr/local/bin/opencode-executor`): `$WORKDIR`, `XDG_DATA_HOME`, per-run allows via `OPENCODE_CONFIG_CONTENT`, on a takeover or handover (`BELLOWS_RESUME_MAY_BE_UNWRITTEN`) a `--session` the database lacks (`branch-reporter.cjs --has-session`) started anew, the session that predates a fresh run named for the reporter | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Permission policy and plugin references, baked root-owned as the global and the managed (`/etc/opencode`) copy | `opencode-home/opencode.json` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Telemetry plugin config at `OPENCODE_OTEL_CONFIG_PATH`, root-owned; the driver renders its endpoint | `otel.json`, `driver/src/telemetry-config.ts` | `test.sh`, `driver/test/telemetry-shipping.test.ts` |
 | Baked global instructions | `opencode-home/AGENTS.md` | `driver/test/executor-images.test.ts` |

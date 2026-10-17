@@ -24,7 +24,7 @@ import {
     concludeUnreported,
     handBackFence,
     handOverConflict,
-    leaveToLease,
+    interruptAttempt,
     releaseAbandonedSync,
     standDown,
 } from './loop-fence.js';
@@ -719,15 +719,14 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         }
     } catch (e) {
         // The container never ran — docker is missing, or the daemon refused. Deliberately NOT
-        // reported as a failed job: that would blame the command for the driver's problem. The
-        // lease simply expires and the job is offered again, which is visible in `attempts`.
+        // reported as a failed job: that would blame the command for the driver's problem. It goes
+        // back to the board as an interruption carrying the reason, claimable at once (issue #822).
         // A killed run can reject (the runner's own Job vanished under it): the stand-down
         // that killed it owns the settlement, not the lease.
         stopIfDraining(state);
         if (await standDown(ctx, 'its run')) return;
         // A throw is the path that would otherwise leak the claim: no runner ever launched, so none
         // of them releases it, and it would sit there until the cluster noticed (issue #469).
-        const why = (e as Error).message;
-        await leaveToLease(ctx, `could not run: ${why}`, `could not run, leaving it to the lease: ${why}`, null);
+        await interruptAttempt(ctx, `could not run: ${(e as Error).message}`, null);
     }
 }

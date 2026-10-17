@@ -19,8 +19,8 @@
  *   RUNNER_LEASE_TOKEN   that attempt's lease token. The pair rides as headers; the board
  *                        accepts it while the attempt is the job's live one.
  *   BELLOWS_SESSION_ID   the session to report. The claude runner is always told (the driver
- *                        mints the uuid); the opencode runner is told only on a follow-up, and
- *                        otherwise discovers the id live from opencode's session database.
+ *                        mints the uuid); the opencode runner is told only when it resumes one,
+ *                        and otherwise discovers the id live from opencode's session database.
  *   WORKDIR              the checkout to sample. Defaults to the current directory.
  *   XDG_DATA_HOME        where opencode keeps its session database (opencode/opencode.db).
  *   BRANCH_REPORTER_PRIOR_SESSION  the newest root session of this directory BEFORE the run
@@ -41,6 +41,9 @@
  * `--prior` prints the session discovery finds now, sends nothing and exits — the entrypoint's
  * BRANCH_REPORTER_PRIOR_SESSION, read before the CLI starts. A database that exists but cannot be
  * read exits 1 instead: an unknown baseline is not an empty one.
+ * `--has-session <id>` answers whether the session database holds that session, by exit code
+ * alone and sending nothing: 0 it does, 1 it certainly does not (no database, or no such row), 2
+ * unknown (any other read error). The entrypoint asks before it drops a resumed `--session`.
  */
 const { execFileSync } = require('node:child_process');
 const { statSync } = require('node:fs');
@@ -109,28 +112,41 @@ function resolveSessionId() {
 }
 
 /**
- * The newest root session of this directory; null with no database, a throw for one unreadable —
- * only ENOENT is absence, so a directory the run cannot enter is never mistaken for an empty one.
+ * Runs `read` over opencode's session database, open read-only; `absent` with no database, a throw
+ * for one unreadable — only ENOENT is absence, so a directory the run cannot enter is never
+ * mistaken for an empty one.
  */
-function newestRootSession() {
+function readSessions(read, absent) {
     const data = process.env.XDG_DATA_HOME;
-    if (!data) return null;
+    if (!data) return absent;
     const file = join(data, 'opencode', 'opencode.db');
     try {
         statSync(file);
     } catch (error) {
-        if (error.code === 'ENOENT') return null;
+        if (error.code === 'ENOENT') return absent;
         throw error;
     }
     const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync(file, { readOnly: true });
     try {
-        const row = db.prepare(
-            'select id from session where parent_id is null and directory = ? order by time_created desc limit 1',
-        ).get(CWD);
-        return row?.id ?? null;
+        return read(db);
     } finally {
         db.close();
+    }
+}
+
+/** The newest root session of this directory; null with no database, a throw for one unreadable. */
+function newestRootSession() {
+    const query = 'select id from session where parent_id is null and directory = ? order by time_created desc limit 1';
+    return readSessions((db) => db.prepare(query).get(CWD)?.id ?? null, null);
+}
+
+/** `--has-session <id>`'s exit code: 0 the database holds it, 1 certainly absent (no database, no row), 2 unknown. */
+function hasSession(id) {
+    try {
+        return readSessions((db) => (db.prepare('select 1 from session where id = ?').get(id) ? 0 : 1), 1);
+    } catch {
+        return 2;
     }
 }
 
@@ -189,6 +205,9 @@ async function report(sessionId) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function main() {
+    const asked = process.argv.indexOf('--has-session');
+    // Past the catch-all below too: this mode's whole answer is its exit code.
+    if (asked !== -1) process.exit(hasSession(process.argv[asked + 1]));
     if (process.argv.includes('--prior')) {
         try {
             process.stdout.write(newestRootSession() ?? '');

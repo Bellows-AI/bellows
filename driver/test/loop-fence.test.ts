@@ -49,6 +49,10 @@ function fencedAttempt(fenced = true): { ctx: AttemptCtx; calls: string[]; lines
                     calls.push(`requeue:${requeued.id}`);
                     return 'held' as LeaseState;
                 },
+                interrupt: async (interrupted: BoardJob) => {
+                    calls.push(`interrupt:${interrupted.id}`);
+                    return 'held' as LeaseState;
+                },
             },
             report: async (reported: BoardJob) => {
                 calls.push(`complete:${reported.id}`);
@@ -214,6 +218,19 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
             expect(lines.join('\n')).toContain(halt.log);
         }
     );
+
+    // Issue #822: a refusal the driver makes while alive goes back to the board as an interruption,
+    // after the claim and with no verdict — the board frees the lease at once and records why.
+    it('hands an interrupt back to the board only after the claim is back, reporting nothing', async () => {
+        const { ctx, calls, lines } = fencedAttempt();
+
+        await concludeSetup(ctx, { halt: 'interrupt', reason: 'could not start the services: daemon refused' });
+
+        expect(calls).toEqual([...CLAIM_BACK, 'interrupt:job-1', 'log']);
+        expect(lines.join('\n')).toContain(
+            'could not start the services: daemon refused, handed back as an interruption'
+        );
+    });
 
     it('releases the claim from one loop file only', () => {
         const owners = loopSources()

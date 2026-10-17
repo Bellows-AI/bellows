@@ -231,6 +231,15 @@ describe('the docker run arguments', () => {
             'NPM_CONFIG_UPDATE_NOTIFIER=false',
             'BELLOWS_SESSION_ID=ses_f86188c3dffeZGYO4yZq4atba9',
         ]);
+        expect(opencode).not.toContain('BELLOWS_RESUME_MAY_BE_UNWRITTEN=1');
+        // A takeover (issue #822): the same plan, with the permission the pod spec carries too.
+        const takeover = dockerArgs(
+            loadDriverConfig({}),
+            { ...job, resumeSessionId: SESSION },
+            { id: SESSION, resume: true },
+            { envFile: '/tmp/env-file' }
+        );
+        envBeforeImage(takeover, 'claude-executor', ['BELLOWS_RESUME_MAY_BE_UNWRITTEN=1']);
     });
 
     it("mounts the checkouts volume and starts at the AUTHOR's workspace root", () => {
@@ -516,6 +525,12 @@ describe("the board's environment", () => {
                 },
             })
         ).toEqual({});
+    });
+
+    // The driver alone grants a takeover's runner the unwritten-session fallback (issue #822): a
+    // member value would hand it to a follow-up, whose missing transcript must stay a refusal.
+    it('refuses the unwritten-resume permission from a claim', () => {
+        expect(claimEnv({ ...job, env: { BELLOWS_RESUME_MAY_BE_UNWRITTEN: '1' } })).toEqual({});
     });
 
     // A Jira credential is a managed connection the board spends (docs/connections.md): even a

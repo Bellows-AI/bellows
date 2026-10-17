@@ -61,6 +61,8 @@ export interface ClaimCandidateRow {
     base_branch: string | null;
     /** Whether this attempt's loss retires the job: attempts and interruption budget spent (issue #822). */
     last_attempt: boolean;
+    /** Whether this claim continues, in its session, the interrupted attempt it supersedes (issue #822). */
+    resumes_interrupted: boolean;
 }
 
 /**
@@ -78,8 +80,7 @@ async function retireExhaustedAttempts(ctx: JobStoreContext, tx: TransactionSql)
         update job set status = 'dead', finished_at = now(), lease_token = null,
                        wall_clock_ms = ${wallTick}
         where org_id = ${orgId} and status = 'running'
-          and lease_expires_at <= now() and attempts >= max_attempts
-          and jsonb_array_length(interruptions) >= ${INTERRUPTION_BUDGET}
+          and lease_expires_at <= now() and ${claimRules(ctx).exhausted}
         returning id, root_job_id
     `;
     // A retired caller's separate reviews (issue #549) have no one left to read them.
@@ -169,12 +170,15 @@ const NEXT_CANDIDATE = Symbol('next candidate');
  * the last allowed attempt stays recoverable. Unqualified on purpose: the reservation's only table
  * is the candidate, and the acquisition's SET reads the pre-update row.
  *
+ * `exhausted` — attempts and interruption budget both spent — is what the dead retirement retires
+ * and what the claim reports as `lastAttempt`: one definition, so the two never drift apart.
+ *
  * `baseBranch` is the frozen target branch of the batch task the thread works, joined through the
  * root, so every retry, follow-up and repair of a batch task bases on the target's branch with no
  * column to copy.
  */
-function claimRules(ctx: JobStoreContext) {
-    const { sql, orgId } = ctx;
+function claimRules({ sql, orgId }: JobStoreContext) {
+    const interruptionsSpent = sql`jsonb_array_length(interruptions) >= ${INTERRUPTION_BUDGET}`;
     return {
         sameThreadRunning: (id: string | Fragment, root: string | Fragment) => sql`
             not exists (
@@ -185,7 +189,8 @@ function claimRules(ctx: JobStoreContext) {
                   and o.status = 'running'
             )
         `,
-        recovering: sql`(status = 'running' and jsonb_array_length(interruptions) < ${INTERRUPTION_BUDGET})`,
+        recovering: sql`(status = 'running' and not ${interruptionsSpent})`,
+        exhausted: sql`(attempts >= max_attempts and ${interruptionsSpent})`,
         baseBranch: sql`(select tg.branch from batch_task t
                          join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id
                                              and tg.key = t.target_key
@@ -195,10 +200,11 @@ function claimRules(ctx: JobStoreContext) {
 
 /**
  * Reserves the next candidate, in one autocommit statement so no lock outlives it: the oldest
- * claimable row nobody reserved, with a row whose earlier preparation failed or was abandoned —
- * its `claim_deferred_until` still set — ordered behind every row that never failed, oldest failure
- * first. That ordering, not only the window, is what lets healthy work past a poison candidate
- * however long the driver sleeps between polls (`DRIVER_POLL_MS`).
+ * claimable row nobody reserved. A row whose earlier preparation failed or was abandoned — its
+ * `claim_deferred_until` still set — queues as of that window's end: behind every row queued before
+ * then, which lets healthy work past a poison candidate however long the driver sleeps between
+ * polls (`DRIVER_POLL_MS`), and ahead of every row queued after, so one failure never demotes it
+ * for good.
  */
 async function reserveCandidate(ctx: JobStoreContext): Promise<ReservedCandidate | null> {
     const { sql, orgId } = ctx;
@@ -213,7 +219,7 @@ async function reserveCandidate(ctx: JobStoreContext): Promise<ReservedCandidate
               and (j.attempts < j.max_attempts or ${recovering})
               and (j.claim_deferred_until is null or j.claim_deferred_until <= now())
               and ${sameThreadRunning(sql`j.id`, sql`j.root_job_id`)}
-            order by j.claim_deferred_until asc nulls first, j.created_at, j.id
+            order by coalesce(j.claim_deferred_until, j.created_at), j.created_at, j.id
             limit 1
             -- Below the limit in the plan, so a row another claimer is reserving is skipped
             -- rather than counted and then discarded.
@@ -270,7 +276,7 @@ async function acquireCandidate(
     gates: ResolvedClaimGates
 ): Promise<Claim | typeof NEXT_CANDIDATE> {
     const { sql, orgId } = ctx;
-    const { sameThreadRunning, recovering, baseBranch } = claimRules(ctx);
+    const { sameThreadRunning, recovering, exhausted, baseBranch } = claimRules(ctx);
     const expiry = sql.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString() });
     const rootJobId = reserved.root_job_id;
     return sql.begin(async (tx) => {
@@ -309,8 +315,10 @@ async function acquireCandidate(
                 -- stays null, because null means "never ran" and zero would claim a
                 -- measurement that was never made.
                 wall_clock_ms    = case when started_at is null then wall_clock_ms else ${ctx.wallTick} end,
-                -- session_id is not written: the session a lost attempt reported is the one
-                -- its takeover resumes (issue #822). A fresh run is a retry — a new row.
+                -- The session a lost attempt reported is the one its takeover resumes (issue
+                -- #822), and a handed-over (queued) row resumes its own. A reclaim that spends an
+                -- attempt starts a new conversation: the session may be what kills the run.
+                session_id       = case when status = 'running' and not ${recovering} then null else session_id end,
                 -- The previous attempt's vitals are not this attempt's, and a new container
                 -- starts unsampled: the started_at reset, one row down.
                 runtime          = null,
@@ -334,8 +342,12 @@ async function acquireCandidate(
                       session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                       review_of, review_spec, review_ref,
                       -- The post-update row: whether this attempt's loss would retire the job.
-                      (attempts >= max_attempts
-                       and jsonb_array_length(interruptions) >= ${INTERRUPTION_BUDGET}) as last_attempt,
+                      ${exhausted} as last_attempt,
+                      -- Continues the superseded attempt in its session: the newest interruption names
+                      -- the pre-update claim_seq — a takeover's, recorded above, or a handover's.
+                      (session_id is not null
+                       and coalesce((interruptions -> -1 ->> 'claimSeq')::bigint = claim_seq - 1, false))
+                          as resumes_interrupted,
                       (parent_job_id is not null and command_delivered_at is null) as follow_up,
                       (select r.command from job r
                        where r.org_id = job.org_id and r.id = job.root_job_id) as root_command,
@@ -621,7 +633,7 @@ async function claimReview(
     const { env, executorConfig, orgId, hasWorkspaces, rootJobId } = deps;
     const spec = row.review_spec;
     const executor = await resolveClaimExecutor(tx, { env, executorConfig, grant: spec.connections }, row);
-    const claim = buildClaimResult(row, rootJobId, {
+    const claim = buildClaimResult({ ...row, command: await claimCommand(tx, orgId, rootJobId, row) }, rootJobId, {
         ...executor,
         claimPath: workspacePathFor(orgId, hasWorkspaces, row.created_by),
         claimGates: null,
@@ -833,7 +845,8 @@ export function buildClaimResult(
         workspacePath: claimPath,
         rootJobId,
         rootCommand: row.root_command,
-        // A follow-up's copied session, or the one a lost attempt of this row reported: a resume.
+        // A follow-up's copied session, or the one an interrupted attempt of this row reported: a
+        // resume. Null after a reclaim that spent an attempt.
         resumeSessionId: row.session_id,
         followUp: row.follow_up,
         ...(claimEnv ? { env: claimEnv } : {}),

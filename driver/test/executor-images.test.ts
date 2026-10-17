@@ -339,6 +339,7 @@ const CONTAINER_GUARD_NAMES = [
     'XDG_DATA_HOME',
     'DEFAULT_BRANCH',
     'BASE_BRANCH',
+    'BELLOWS_RESUME_MAY_BE_UNWRITTEN',
 ];
 // Budgets for the cases below that run a real entrypoint under /bin/sh. One such run boots four
 // node processes serially plus a git or two; the original 10s/5s were measured on an idle box and
@@ -710,15 +711,18 @@ describe('the entrypoint git credential', () => {
 /*
  * Issue #822: a recovered opencode attempt resumes the session its predecessor reported live
  * (`run --session <id>`), but a node lost before opencode flushed that session's row leaves a
- * database without it, and opencode would refuse the run. The entrypoint checks the database the
- * driver persisted and, only when the session is certainly absent, starts a new one instead —
- * with BELLOWS_SESSION_ID unset, so the reporter discovers and reports the new id.
+ * database without it, and opencode would refuse the run. On a takeover or handover — the driver
+ * says so with BELLOWS_RESUME_MAY_BE_UNWRITTEN — the entrypoint asks the reporter
+ * (`--has-session`) and, only when the session is certainly absent, starts a new one instead —
+ * with BELLOWS_SESSION_ID unset, so the reporter discovers and reports the new id. A follow-up's
+ * missing session stays opencode's own refusal.
  */
 describe('the opencode entrypoint resumed session', () => {
     const KNOWN = 'ses_known';
     const resumeArgv = ['run', '--agent', 'factory', '--session', KNOWN, 'carry on'];
+    const TAKEOVER = { BELLOWS_RESUME_MAY_BE_UNWRITTEN: '1' };
 
-    const runResumed = async (seed: (data: string) => void) => {
+    const runResumed = async (seed: (data: string) => void, env: Record<string, string> = TAKEOVER) => {
         const sandbox = makeSandbox();
         const data = mkdtempSync(join(tmpdir(), 'opencode-data-'));
         try {
@@ -728,6 +732,7 @@ describe('the opencode entrypoint resumed session', () => {
                 ...sandbox.env,
                 XDG_DATA_HOME: data,
                 BELLOWS_SESSION_ID: KNOWN,
+                ...env,
             });
             expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
             return {
@@ -783,6 +788,23 @@ describe('the opencode entrypoint resumed session', () => {
     );
 
     it(
+        'keeps a follow-up’s --session the database lacks, for opencode to refuse',
+        async () => {
+            const { argv, session } = await runResumed(withSessions('ses_other'), {});
+            expect(argv).toEqual(resumeArgv);
+            expect(session).toBe(KNOWN);
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    // One reader of the database path and the session table: the reporter's.
+    it('asks the reporter, never the session database itself', () => {
+        const entrypoint = read('docker/opencode-executor/entrypoint.sh');
+        expect(entrypoint).toMatch(/node [^\n]*"\$BRANCH_REPORTER" --has-session "\$BELLOWS_SESSION_ID"/);
+        expect(entrypoint).not.toMatch(/sqlite|opencode\.db/);
+    });
+
+    it(
         'keeps --session when the database cannot be read',
         async () => {
             const { argv, session } = await runResumed((db) => writeFileSync(db, 'not a database'));
@@ -808,6 +830,7 @@ describe('the opencode entrypoint resumed session', () => {
                     ...sandbox.env,
                     XDG_DATA_HOME: data,
                     BELLOWS_SESSION_ID: KNOWN,
+                    ...TAKEOVER,
                 });
                 expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
                 expect(readFileSync(join(sandbox.bin, 'argv'), 'utf8').trimEnd().split('\n')).toEqual(resumeArgv);

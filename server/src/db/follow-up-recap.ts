@@ -23,6 +23,7 @@ export interface RecapTurn {
 const FIELD_LIMIT = 1_500;
 /** The whole delivered command's cap: preamble, recap and new instruction together. */
 const DELIVERED_LIMIT = COMMAND_LIMIT;
+const CUT = ' […]';
 
 const head = (text: string): string => (text.length > FIELD_LIMIT ? `${text.slice(0, FIELD_LIMIT)} […]` : text);
 const tail = (text: string): string => (text.length > FIELD_LIMIT ? `[…] ${text.slice(-FIELD_LIMIT)}` : text);
@@ -87,15 +88,43 @@ export async function readRecapTurns(
 }
 
 /**
- * The command a claim delivers: a member follow-up with no session to resume starts fresh, so the
- * earlier turns ride ahead of its command; every other claim delivers the row's own command.
+ * What a claim that continues an interrupted attempt in its session delivers (issue #822): the
+ * resumed conversation already holds the task, and handing it over afresh would have the agent
+ * repeat what the lost attempt already did. The task's command follows for reference, its tail
+ * cut to the delivered cap.
+ */
+export function renderContinuation(command: string): string {
+    const lead =
+        'Your previous run of this task was interrupted before it finished. ' +
+        'Continue from where this conversation left off. ' +
+        'Before repeating any step, check what was already done — commits, pushes, pull requests — ' +
+        'and do not redo it. ' +
+        'If this conversation has no earlier turns, start the task from the beginning.\n\n' +
+        'The task, for reference:\n\n';
+    const room = DELIVERED_LIMIT - lead.length;
+    return lead + (command.length > room ? `${command.slice(0, room - CUT.length)}${CUT}` : command);
+}
+
+/**
+ * The command a claim delivers: a claim that continues an interrupted attempt in its session is
+ * told to carry on (`renderContinuation`); a member follow-up with no session to resume starts
+ * fresh, so the earlier turns ride ahead of its command; every other claim delivers the row's own
+ * command.
  */
 export async function claimCommand(
     tx: TransactionSql,
     orgId: string,
     rootJobId: string,
-    row: { id: string; command: string; follow_up: boolean; session_id: string | null; workflow_node: string | null }
+    row: {
+        id: string;
+        command: string;
+        follow_up: boolean;
+        session_id: string | null;
+        workflow_node: string | null;
+        resumes_interrupted: boolean;
+    }
 ): Promise<string> {
+    if (row.resumes_interrupted) return renderContinuation(row.command);
     if (!row.follow_up || row.session_id !== null || row.workflow_node !== null) return row.command;
     return renderFollowUpRecap(await readRecapTurns(tx, orgId, rootJobId, row.id), row.command);
 }

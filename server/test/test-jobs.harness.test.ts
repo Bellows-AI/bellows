@@ -238,8 +238,9 @@ describe('the test-jobs harness', () => {
         const start = SCRIPT.indexOf("echo '# node disruption'");
         const phase = SCRIPT.slice(start, SCRIPT.indexOf("echo '# workflows'"));
         expect(phase).toContain("EXPIRED='the lease expired: its driver went silent'");
-        expect(phase).toContain("update job set max_attempts = 1 where id = '$killed'");
-        expect(phase).toContain("update job set max_attempts = 1 where id = '$lost'");
+        // The cap is checked, not assumed (driver/test/lane-last-attempt.test.ts).
+        expect(phase).toContain('capped="$(last_attempt "$killed")" && ok');
+        expect(phase).toContain('capped="$(last_attempt "$lost")" && ok');
         expect(phase).toContain('docker ps -aq --filter "label=factory.job=$lost" |');
         expect(phase).toContain('"job $lost: attempt 1 resuming session $lost_session"');
         expect(phase).toContain('upstream:0');

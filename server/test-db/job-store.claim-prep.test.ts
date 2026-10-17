@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
+import { CLAIM_PREPARE_SECONDS } from '../src/db/job-store-claim.js';
 import type { Claim, CreateJobStoreDeps, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
 import {
@@ -117,6 +118,13 @@ const rowOf = async (id: string) => {
     return row;
 };
 
+/** Moves every row's queue position and deferral `seconds` back: a driver sleeping that long between polls. */
+const elapse = (seconds: number) => sql`
+    update job set created_at = created_at - make_interval(secs => ${seconds}),
+                   claim_deferred_until = claim_deferred_until - make_interval(secs => ${seconds})
+    where org_id = ${ORG}
+`;
+
 /** How much of the lease is left by the database clock, read after the claim returned. */
 const leaseLeftMs = async (claim: Claim): Promise<number> => {
     const [clock] = await sql<{ now: Date }[]>`select now()`;
@@ -193,8 +201,9 @@ describe.skipIf(!enabled)('claim preparation outside the locks — database', ()
         expect(await leaseLeftMs(claim!)).toBeGreaterThanOrEqual(LEASE_SECONDS * 1000 - LEASE_SLACK_MS);
     });
 
-    // A poll that tries a poison candidate demotes it: it sorts behind every candidate that never
-    // failed, however long the driver waits between polls, until it prepares once.
+    // A failed candidate queues as of its window's end: work queued before then goes first however
+    // long the driver sleeps between polls, and a poison candidate goes to the back on every failure,
+    // so the poll after each one takes healthy work.
     it('takes the healthy task on the next poll after a candidate whose plan read fails, spending nothing of the failed one', async () => {
         let poisoned = true;
         const store = readerStore(poisonReader(() => poisoned));
@@ -204,15 +213,31 @@ describe.skipIf(!enabled)('claim preparation outside the locks — database', ()
         await expect(store.claim(WORKER, LEASE_SECONDS)).rejects.toThrow('rate limited');
         expect(await rowOf(poison)).toMatchObject({ status: 'queued', attempts: 0, deferred: true });
 
-        await lapseDeferral(sql, poison);
+        await elapse(CLAIM_PREPARE_SECONDS + 1);
         expect((await claimed(store)).id).toBe(healthy);
         const later = await queue();
+        await expect(store.claim(WORKER, LEASE_SECONDS)).rejects.toThrow('rate limited');
         expect((await claimed(store)).id).toBe(later);
-        expect(await rowOf(poison)).toMatchObject({ status: 'queued', attempts: 0, deferral_set: true });
+        expect(await rowOf(poison)).toMatchObject({ status: 'queued', attempts: 0, deferred: true });
 
         poisoned = false;
+        await elapse(CLAIM_PREPARE_SECONDS + 1);
         expect(await claimed(store)).toMatchObject({ id: poison, attempts: 1 });
         expect(await rowOf(poison)).toMatchObject({ deferral_set: false });
+    });
+
+    // One failure is a window, not a demotion: once it lapses the candidate is back in FIFO order.
+    it('takes a candidate whose plan read failed once ahead of work queued after its window lapsed', async () => {
+        let poisoned = true;
+        const store = readerStore(poisonReader(() => poisoned));
+        const older = await queue(POISON);
+        await expect(store.claim(WORKER, LEASE_SECONDS)).rejects.toThrow('rate limited');
+        poisoned = false;
+        await lapseDeferral(sql, older);
+        const newer = await queue();
+
+        expect((await claimed(store)).id).toBe(older);
+        expect((await claimed(store)).id).toBe(newer);
     });
 
     it("defers a lost attempt's takeover whose plan read fails without reviving its lease or recording an interruption", async () => {

@@ -138,6 +138,11 @@ export const GITHUB_CACHE_SIZE = { k8s: '1Mi', docker: '1m' } as const;
 /** The env names the loop mints for a launched attempt's run-control channel (issue #442). */
 export const CONTROL_URL_ENV = 'BELLOWS_CONTROL_URL';
 export const CONTROL_TOKEN_ENV = 'BELLOWS_CONTROL_TOKEN';
+/**
+ * Set to `1` by the runner plan for a takeover or handover (issue #822): the session it resumes may
+ * never have been written, and the runner may start it anew. Never for a follow-up.
+ */
+export const RESUME_MAY_BE_UNWRITTEN_ENV = 'BELLOWS_RESUME_MAY_BE_UNWRITTEN';
 
 /**
  * The names the runner's own contract claims — WORKDIR is the working directory dockerArgs itself
@@ -185,6 +190,9 @@ export const RESERVED_ENV_NAMES = [
     'RUNNER_JOB_ID',
     'RUNNER_LEASE_TOKEN',
     'BELLOWS_SESSION_ID',
+    // The driver's grant alone: a member value would let a follow-up start its parent's lost
+    // conversation empty instead of failing.
+    RESUME_MAY_BE_UNWRITTEN_ENV,
     // Jira credentials are a managed connection now (docs/connections.md), never claim env.
     'ATLASSIAN_SITE',
     'ATLASSIAN_EMAIL',
@@ -322,13 +330,14 @@ export function runnerClaimEnv(job: BoardJob): Record<string, string> {
 }
 
 /**
- * Whether the claim CONTINUES a session rather than starting a task: a follow-up. The task is
+ * Whether the claim CONTINUES a session rather than starting a task: a follow-up, or a takeover or
+ * handover of the row's own attempt, which resumes that attempt's session (issue #822). The task is
  * mid-flight, and the startup git work is a RESTORE, not a
  * sync — no fetch, no rebase onto the remote default (issue #58): the conversation's tree is
  * what the run continues from, and moving its base underneath it is the mid-task "sync with
- * main" the follow-up flow must not do. Lease-expired RE-claims of ordinary jobs are not
- * continuation: the claim clears a dead attempt's session, so the run starts — and syncs —
- * fresh. Shared with the kubernetes runner, which must restore identically.
+ * main" the follow-up flow must not do. A re-claim whose attempt reported no session, or one that
+ * spends an attempt past the interruption budget (the board clears its session), starts — and
+ * syncs — fresh. Shared with the kubernetes runner, which must restore identically.
  */
 export const claimContinuesSession = (job: BoardJob): boolean => job.followUp || job.resumeSessionId !== null;
 

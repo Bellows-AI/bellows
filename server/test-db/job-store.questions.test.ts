@@ -92,6 +92,19 @@ describe.skipIf(!enabled)('job questions — database', () => {
         expect((await store.get(id))!.questions).toHaveLength(QUESTIONS_PER_ATTEMPT);
     });
 
+    it('gives the takeover of an expired lease its own cap, though it spends no attempt', async () => {
+        const { id, claim } = await running();
+        for (let n = 1; n <= QUESTIONS_PER_ATTEMPT; n++) {
+            expect((await ask(id, claim.leaseToken, `toolu_${n}`)).result).toBe('created');
+        }
+
+        await expireLease(sql, id);
+        const takeover = (await store.claim('w2', LEASE_SECONDS)) as Claim;
+
+        expect(takeover).toMatchObject({ id, attempts: claim.attempts, claimSeq: claim.claimSeq + 1 });
+        expect(await ask(id, takeover.leaseToken, 'mine')).toMatchObject({ result: 'created' });
+    });
+
     it('cannot overshoot the cap when asks race', async () => {
         const { id, claim } = await running();
 

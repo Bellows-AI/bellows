@@ -14,11 +14,10 @@ import type { AttemptCtx, LoopRuntime, SetupHalt } from './loop-types.js';
 import { report } from './loop-verdict.js';
 
 /**
- * Why the loop reports no verdict for this outcome and leaves the job to the lease, or null when it
- * reports: a container that never started. A runner the platform took away is an interruption
- * instead (`interruptAttempt`, issue #792).
+ * Why the loop reports no verdict for this outcome, or null when it reports: a container that never
+ * started. Handed back as an interruption (`interruptAttempt`), like a runner the platform took away.
  */
-export function leaseLeftWhy(outcome: RunOutcome): string | null {
+function neverStartedWhy(outcome: RunOutcome): string | null {
     if (outcome.started) return null;
     const said = outcome.output.trim();
     return `the runner reports the container never started${said ? `: ${said}` : ''}`;
@@ -127,6 +126,7 @@ async function park(ctx: AttemptCtx, phase: string): Promise<void> {
  * completed (issue #469).
  */
 export async function concludeSetup(ctx: AttemptCtx, halt: SetupHalt): Promise<void> {
+    if (halt.halt === 'interrupt') return interruptAttempt(ctx, halt.reason, null);
     const { rt, job } = ctx;
     await handBackFence(ctx);
     await ctx.settle();
@@ -148,31 +148,42 @@ export async function concludeSetup(ctx: AttemptCtx, halt: SetupHalt): Promise<v
 }
 
 /**
- * Leaves an attempt that ended without a verdict to the lease, saying why in the log. The board
- * recovers an expired lease as an interruption while it can, and retires the job `dead` with no
- * output once it cannot, so that LAST attempt (`lastAttempt` on the claim) reports a failed verdict
- * carrying `reason` instead: the reason is what `job investigate`, the web and a batch report show.
+ * Leaves an attempt the board did not take back to the lease, saying why in the log: the fallback
+ * of `interruptAttempt` alone, for an interrupt that never landed or a spent interruption budget.
+ * The board recovers an expired lease as an interruption while it can, and retires the job `dead`
+ * with no output once it cannot, so that LAST attempt (`lastAttempt` on the claim) reports a failed
+ * verdict carrying `reason` instead: the reason is what `job investigate`, the web and a batch
+ * report show.
  */
-export async function leaveToLease(
-    ctx: AttemptCtx,
-    reason: string,
-    leaveLog: string,
-    exitCode: number | null
-): Promise<void> {
-    await concludeSetup(ctx, leaveConclusion(ctx.job, reason, leaveLog, exitCode));
+async function leaveToLease(ctx: AttemptCtx, reason: string, exitCode: number | null): Promise<void> {
+    await concludeSetup(ctx, leaveConclusion(ctx.job, reason, exitCode));
 }
 
 /**
- * Hands an attempt the infrastructure took away back to the board as an interruption (issue #792):
- * refunded and claimable at once, its reason recorded, no verdict. A spent interruption budget, or
- * a board that never answered, leaves it to the lease as before — the last attempt reports it.
+ * The longest reason the board records for an interruption: its `INTERRUPTION_REASON_MAX`
+ * (server/src/routes/job-handlers-worker.ts), copied per this package's zero-dependency rule. A
+ * longer one is refused, and would leave the attempt to the lease for its length alone.
+ */
+const INTERRUPTION_REASON_MAX = 500;
+
+/**
+ * Hands an attempt that ended without a verdict back to the board as an interruption (issues #792,
+ * #822): refunded and claimable at once, its reason recorded inside the interruption budget, no
+ * verdict. The infrastructure took its runner away, or this driver refused it while alive — could
+ * not run it, saw its container never start, could not start its services — and either way the
+ * reason belongs on the row, never in a lease period the next claim records as a silent driver.
+ * Only an interrupt that does not land (the board unreachable, a refused token) or a spent budget
+ * leaves it to the lease (`leaveToLease`), where the last attempt reports it; a lost lease is the
+ * new holder's.
  */
 export async function interruptAttempt(ctx: AttemptCtx, reason: string, exitCode: number | null): Promise<void> {
     const { rt, job } = ctx;
     await handBackFence(ctx);
     await ctx.settle();
+    const recorded =
+        reason.length > INTERRUPTION_REASON_MAX ? `${reason.slice(0, INTERRUPTION_REASON_MAX - 1)}…` : reason;
     const answer = await withBoardRetry(rt, `job ${job.id}: the interruption was not accepted`, () =>
-        rt.board.interrupt(job, { reason, release: true })
+        rt.board.interrupt(job, { reason: recorded, release: true })
     ).catch((e: Error) => {
         rt.log(`job ${job.id}: could not report the interruption: ${e.message}`);
         return null;
@@ -186,27 +197,34 @@ export async function interruptAttempt(ctx: AttemptCtx, reason: string, exitCode
         return;
     }
     const why = answer === 'exhausted' ? `${reason}, and the interruption budget is spent` : reason;
-    await leaveToLease(ctx, why, `${why}, leaving it to the lease`, exitCode);
+    await leaveToLease(ctx, why, exitCode);
 }
 
 /**
  * Lands a run that has no verdict to report, answering whether it did: a runner the platform took
- * away is an interruption (`interruptAttempt`), one that never started is left to the lease.
+ * away, or one that never started, is an interruption (`interruptAttempt`).
  */
 export async function concludeUnreported(ctx: AttemptCtx, outcome: RunOutcome): Promise<boolean> {
     if (outcome.infraLoss) {
         await interruptAttempt(ctx, `infrastructure loss: ${outcome.infraLoss}`, outcome.exitCode);
         return true;
     }
-    const why = leaseLeftWhy(outcome);
+    const why = neverStartedWhy(outcome);
     if (why === null) return false;
-    await leaveToLease(ctx, why, `${why}, leaving it to the lease`, outcome.exitCode);
+    await interruptAttempt(ctx, why, outcome.exitCode);
     return true;
 }
 
-/** `leaveToLease`'s conclusion, as data: left to the lease, or reported failed on the last attempt. */
-export function leaveConclusion(job: BoardJob, reason: string, leaveLog: string, exitCode: number | null): SetupHalt {
-    if (!job.lastAttempt) return { halt: 'leave', log: leaveLog };
+/**
+ * `leaveToLease`'s conclusion, as data: left to the lease, or reported failed on the last attempt —
+ * never an `interrupt`, so `concludeSetup` cannot hand it back to `interruptAttempt` again.
+ */
+function leaveConclusion(
+    job: BoardJob,
+    reason: string,
+    exitCode: number | null
+): Extract<SetupHalt, { halt: 'leave' | 'fault' }> {
+    if (!job.lastAttempt) return { halt: 'leave', log: `${reason}, leaving it to the lease` };
     return {
         halt: 'fault',
         log: `${reason}, and no attempts are left: reporting it`,

@@ -98,8 +98,9 @@ export interface BoardJob {
      */
     turnContext?: string;
     /**
-     * Set when this claim is a follow-up resuming its parent's session: the runner restores that
-     * session rather than starting one. Read defensively as `?? null`.
+     * Set when this claim resumes a session: a follow-up its parent's, or a takeover or handover the
+     * row's own attempt's (issue #822). The runner restores that session rather than starting one,
+     * and the tree is restored, not synced (`claimContinuesSession`). Read defensively as `?? null`.
      */
     resumeSessionId: string | null;
     /**

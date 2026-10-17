@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql, TransactionSql } from 'postgres';
+import { renderContinuation } from '../src/db/follow-up-recap.js';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
@@ -326,7 +327,8 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     });
 
     // A crashed follow-up attempt re-claims with the session kept and the command re-delivered:
-    // the conversation survives the crash, and the adjustment still reaches the agent.
+    // the conversation survives the crash, and the adjustment still reaches the agent, behind the
+    // note that its run was interrupted.
     it('re-delivers the command when a follow-up attempt is reclaimed', async () => {
         const parent = await finishWithSession('drive me');
         const { id } = await mustFollowUp(parent, 'again', null);
@@ -335,7 +337,30 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
         const second = await store.claim('w2', LEASE_SECONDS);
 
-        expect(second).toMatchObject({ id, attempts: 1, claimSeq: 2, resumeSessionId: SESSION, followUp: true });
+        expect(second).toMatchObject({
+            id,
+            attempts: 1,
+            claimSeq: 2,
+            resumeSessionId: SESSION,
+            followUp: true,
+            command: renderContinuation('again'),
+        });
+    });
+
+    // Past its interruption budget a follow-up's reclaim spends an attempt in a new session, and the
+    // parent's conversation goes with it: the claim recaps the earlier turns ahead of the command.
+    it('recaps the thread for a follow-up whose reclaim spent an attempt', async () => {
+        const parent = await finishWithSession('drive me');
+        const { id } = await mustFollowUp(parent, 'again', null);
+        await store.claim('w1', LEASE_SECONDS);
+        await spendInterruptionBudget(sql, id);
+        await expireLease(sql, id);
+
+        const second = await store.claim('w2', LEASE_SECONDS);
+
+        expect(second).toMatchObject({ id, attempts: 2, resumeSessionId: null, followUp: true });
+        expect(second!.command).toContain('Turn 1 (succeeded): drive me\nResult: done');
+        expect(second!.command.endsWith('New instruction:\n\nagain')).toBe(true);
     });
 
     // A root whose lease expired is recovered in its own session (issue #822), and the follow-up

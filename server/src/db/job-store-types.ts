@@ -543,14 +543,16 @@ export interface Claim {
      */
     rootCommand: string;
     /**
-     * Set only when this claim is a follow-up resuming the parent's session: the worker restores
-     * that session instead of starting a new one.
+     * The session this claim resumes, which the worker restores instead of starting a new one: a
+     * follow-up's copy of its parent's, or the one an interrupted attempt of this row reported — a
+     * lease-expiry takeover or a handover (issue #822). Null when the claim starts a new
+     * conversation: a first run, or a reclaim that spends an attempt.
      */
     resumeSessionId: string | null;
     /**
-     * True only when `resumeSessionId` is set AND this claim should still deliver the command into
-     * it — a follow-up's first (or crashed) attempt, where the restored transcript is the parent
-     * conversation and the command is the new adjustment. Absent on a board that predates
+     * True when this claim should still deliver a follow-up's command — its first (or crashed)
+     * attempt: into the parent conversation when `resumeSessionId` is set, behind a recap of the
+     * thread when it is not (`follow-up-recap.ts`). Absent on a board that predates
      * follow-ups, so it is read as `?? false` on the driver side.
      */
     followUp: boolean;

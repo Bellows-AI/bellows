@@ -48,7 +48,8 @@ function branchReport(body: unknown): SessionBranchReport | null {
  * An opencode report's session, recorded on the attempt its pair names (issue #822): opencode mints
  * its own id and the driver learns it only at close, so a run lost mid-flight would leave its
  * takeover nothing to resume. The write is the driver's own lease-guarded session report — the
- * pair is the credential, and an attempt no longer live changes nothing.
+ * pair is the credential, and an attempt no longer live, or a session the attempt already
+ * carries, changes nothing.
  */
 async function recordLiveSession(orgs: OrgRegistry, request: FastifyRequest, report: SessionBranchReport) {
     const jobId = request.headers[JOB_ID_HEADER];
