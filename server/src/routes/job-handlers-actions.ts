@@ -392,7 +392,8 @@ export async function handleReclaimsAck(orgs: OrgRegistry, request: FastifyReque
 // finished AND the user has closed it (a `done_at` on some member): it is the driver's only
 // worktree-reclaim signal, and it rides the lease-guarded complete rather than a thread read, so a
 // worker credential can never pull the audit data of jobs it does not hold (see docs/auth.md). A
-// thread that merely finished keeps its tree.
+// thread that merely finished keeps its tree. `reclaimId` names the reclaim row a threadDone verdict
+// queued claimed by this worker (issue #821): the driver acks it once the tree is gone.
 export async function handleCompleteJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveJobRoute(orgs, request, reply);
     if (!route) return reply;
@@ -418,7 +419,12 @@ export async function handleCompleteJob(orgs: OrgRegistry, request: FastifyReque
         if (result.value.result === 'missing') return notFoundJob(reply);
         return leaseLost(reply);
     }
-    return reply.code(HTTP_OK).send({ id, status: parsed.value.status, threadDone: result.value.threadDone });
+    return reply.code(HTTP_OK).send({
+        id,
+        status: parsed.value.status,
+        threadDone: result.value.threadDone,
+        reclaimId: result.value.reclaimId,
+    });
 }
 
 export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {

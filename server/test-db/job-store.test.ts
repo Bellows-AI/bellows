@@ -177,7 +177,7 @@ describe.skipIf(!enabled)('job store', () => {
                         output: 'from the live one',
                     });
                     // Terminal, but nobody closed it — the tree stays until a done says otherwise.
-                    expect(accepted).toEqual({ result: 'ok', threadDone: false });
+                    expect(accepted).toEqual({ result: 'ok', threadDone: false, reclaimId: null });
                     expect(await store.get(id)).toMatchObject({
                         status: 'failed',
                         exitCode: 3,

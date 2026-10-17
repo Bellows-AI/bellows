@@ -3,7 +3,7 @@
  * a parked PR wait (issue #328) — and the reclaim a thread queues once its last member is done.
  */
 
-import type { Sql, TransactionSql } from 'postgres';
+import type { Fragment, Sql, TransactionSql } from 'postgres';
 import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
 import {
     backsBatchTask,
@@ -15,10 +15,11 @@ import {
     hasRunningMember,
 } from './job-store-rows.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
+import { fingerprintOf, missedSettle, recordReceipt, settleReplayOf, type SettleKey } from './job-store-receipts.js';
 import { TERMINAL_STATUSES } from './task-summary.js';
 import { stopReviewsOf } from './job-store-reviews.js';
 import { type IdempotencyInput, replayOf, stampKey } from './job-store-idempotency.js';
-import type { EditCommandResult, JobStore, JobStoreContext, JobStatus } from './job-store-types.js';
+import type { EditCommandResult, JobStore, JobStoreContext, JobStatus, SuspendResult } from './job-store-types.js';
 import { wakeOneRound } from './workflow-blocks/runtime.js';
 
 export type CreateTarget = Parameters<JobStore['create']>[2];
@@ -545,38 +546,44 @@ export async function suspendJob(
     // it is the difference between the next poll acting on the row and it waiting out the
     // lease the dying worker held. The command is in the transcript now
     // (command_delivered_at), the stamp clears — the stop has happened — and the attempt is
-    // handed back: a park is not a failed try, so it must never exhaust max_attempts.
-    const rows = await sql<{ id: string; status: JobStatus; root_job_id: string }[]>`
-        update job set
-            status           = 'stopped',
-            finished_at      = now(),
-            -- The park ends the segment the attempt was running: the container was doing
-            -- real work up to now, and the time after this statement banks nothing.
-            wall_clock_ms    = ${wallTick},
-            lease_token      = null,
-            -- Expired on the way in, exactly as insert does it.
-            lease_expires_at = now(),
-            -- The command is in the transcript now, and this is the moment that becomes
-            -- true: the claim reads this column to keep a resumed follow-up from
-            -- re-delivering it (see claim). coalesce, so parking twice stamps once.
-            command_delivered_at = coalesce(command_delivered_at, now()),
-            -- Parking IS the deferred stop landing (the flag was set by the user's /stop
-            -- and delivered by the heartbeat): cleared now, or the settled row would keep
-            -- answering a request that already happened.
-            cancel_requested_at = null,
-            -- Hands back the attempt the claim took.
-            attempts         = greatest(attempts - 1, 0)
-        where org_id = ${orgId} and id = ${id}
-          and status = 'running' and lease_token = ${leaseToken}
-        returning id, status, root_job_id
-    `;
-    if (rows[0]) {
-        // The park settles a moving row; a merge-marked thread whose last moving member just
-        // parked is closed by it (issue #390) — the shared conditional settle.
-        await settleIfMergeClosed(ctx, rows[0].root_job_id);
-        return { result: 'ok', status: rows[0]!.status };
-    }
-    return (await exists(sql, orgId, id)) ? ({ result: 'lost' } as const) : ({ result: 'missing' } as const);
+    // handed back: a park is not a failed try, so it must never exhaust max_attempts. The park and
+    // its settle receipt (issue #821) commit together, so a replay after a lost answer gets it.
+    const key: SettleKey = { orgId, jobId: id, leaseToken, operation: 'suspend', fingerprint: fingerprintOf(null) };
+    return sql.begin(async (tx) => {
+        const rows = await tx<{ id: string; status: JobStatus; root_job_id: string }[]>`
+            update job set
+                status           = 'stopped',
+                finished_at      = now(),
+                -- The park ends the segment the attempt was running: the container was doing
+                -- real work up to now, and the time after this statement banks nothing.
+                wall_clock_ms    = ${wallTick},
+                lease_token      = null,
+                -- Expired on the way in, exactly as insert does it.
+                lease_expires_at = now(),
+                -- The command is in the transcript now, and this is the moment that becomes
+                -- true: the claim reads this column to keep a resumed follow-up from
+                -- re-delivering it (see claim). coalesce, so parking twice stamps once.
+                command_delivered_at = coalesce(command_delivered_at, now()),
+                -- Parking IS the deferred stop landing (the flag was set by the user's /stop
+                -- and delivered by the heartbeat): cleared now, or the settled row would keep
+                -- answering a request that already happened.
+                cancel_requested_at = null,
+                -- Hands back the attempt the claim took.
+                attempts         = greatest(attempts - 1, 0)
+            where org_id = ${orgId} and id = ${id}
+              and status = 'running' and lease_token = ${leaseToken}
+            returning id, status, root_job_id
+        `;
+        if (rows[0]) {
+            // The park settles a moving row; a merge-marked thread whose last moving member just
+            // parked is closed by it (issue #390) — the shared conditional settle.
+            await settleIfMergeClosed(ctx, rows[0].root_job_id, tx);
+            const answer = { result: 'ok', status: rows[0].status } as const;
+            await recordReceipt(tx, key, answer);
+            return answer;
+        }
+        return missedSettle<SuspendResult>(tx, key);
+    });
 }
 
 /**
@@ -597,28 +604,34 @@ export async function requeueJob(
     // deferral is that column set into the future. A Stop already stamped on the row wins over
     // the requeue: the row settles stopped, never queued again. Either way no agent ran: the
     // attempt is handed back, nothing banks to the wall clock, and the command stays undelivered.
-    const rows = await sql<{ status: JobStatus; root_job_id: string }[]>`
-        update job set
-            status           = case when cancel_requested_at is null then 'queued' else 'stopped' end,
-            finished_at      = case when cancel_requested_at is null then finished_at else now() end,
-            started_at       = null,
-            lease_token      = null,
-            lease_expires_at = case
-                when cancel_requested_at is null then now() + make_interval(secs => ${REQUEUE_DELAY_SECONDS}::int)
-                else now()
-            end,
-            cancel_requested_at = null,
-            attempts         = greatest(attempts - 1, 0)
-        where org_id = ${orgId} and id = ${id}
-          and status = 'running' and lease_token = ${leaseToken}
-        returning status, root_job_id
-    `;
-    const row = rows[0];
-    if (row) {
-        if (row.status === 'stopped') await settleIfMergeClosed(ctx, row.root_job_id);
-        return { result: 'ok', status: row.status };
-    }
-    return (await exists(sql, orgId, id)) ? ({ result: 'lost' } as const) : ({ result: 'missing' } as const);
+    // The settle receipt (issue #821) commits with it.
+    const key: SettleKey = { orgId, jobId: id, leaseToken, operation: 'requeue', fingerprint: fingerprintOf(null) };
+    return sql.begin(async (tx) => {
+        const rows = await tx<{ status: JobStatus; root_job_id: string }[]>`
+            update job set
+                status           = case when cancel_requested_at is null then 'queued' else 'stopped' end,
+                finished_at      = case when cancel_requested_at is null then finished_at else now() end,
+                started_at       = null,
+                lease_token      = null,
+                lease_expires_at = case
+                    when cancel_requested_at is null then now() + make_interval(secs => ${REQUEUE_DELAY_SECONDS}::int)
+                    else now()
+                end,
+                cancel_requested_at = null,
+                attempts         = greatest(attempts - 1, 0)
+            where org_id = ${orgId} and id = ${id}
+              and status = 'running' and lease_token = ${leaseToken}
+            returning status, root_job_id
+        `;
+        const row = rows[0];
+        if (row) {
+            if (row.status === 'stopped') await settleIfMergeClosed(ctx, row.root_job_id, tx);
+            const answer = { result: 'ok', status: row.status } as const;
+            await recordReceipt(tx, key, answer);
+            return answer;
+        }
+        return missedSettle<SuspendResult>(tx, key);
+    });
 }
 
 /**
@@ -644,34 +657,62 @@ export async function interruptJob(
     const recorded = sql`interruptions @> jsonb_build_array(
         jsonb_build_object('claimSeq', coalesce(${claimSeq}::bigint, claim_seq))
     )`;
-    const rows = await sql<{ status: JobStatus; root_job_id: string }[]>`
-        update job set
-            status           = case when not ${release} then status
-                                    when cancel_requested_at is null then 'queued' else 'stopped' end,
-            finished_at      = case when ${release} and cancel_requested_at is not null then now() else finished_at end,
-            wall_clock_ms    = case when ${release} then ${wallTick} else wall_clock_ms end,
-            started_at       = case when ${release} then null else started_at end,
-            lease_token      = case when ${release} then null else lease_token end,
-            lease_expires_at = case when ${release} then now() else lease_expires_at end,
-            cancel_requested_at = case when ${release} then null else cancel_requested_at end,
-            attempts         = greatest(attempts - 1, 0),
-            interruptions    = interruptions || jsonb_build_array(
-                ${entry}::jsonb || jsonb_build_object('claimSeq', coalesce(${claimSeq}::bigint, claim_seq))
-            )
-        where org_id = ${orgId} and id = ${id}
-          and status = 'running' and lease_token = ${leaseToken}
-          and jsonb_array_length(interruptions) < ${INTERRUPTION_BUDGET}
-          and not ${recorded}
-        returning status, root_job_id
-    `;
-    const row = rows[0];
-    if (row) {
-        if (row.status === 'stopped') await settleIfMergeClosed(ctx, row.root_job_id);
-        return { result: 'ok', status: row.status };
-    }
-    const [held] = await sql<{ held: boolean; recorded: boolean; status: JobStatus }[]>`
-        select status = 'running' and lease_token = ${leaseToken} as held, ${recorded} as recorded, status
-        from job where org_id = ${orgId} and id = ${id}
+    // A release concludes the attempt, so it records a settle receipt in the same transaction (issue
+    // #821); an adoption keeps the lease, and the `recorded` check above is its idempotence.
+    const key: SettleKey = {
+        orgId,
+        jobId: id,
+        leaseToken,
+        operation: 'interrupt',
+        fingerprint: fingerprintOf({ reason, release, claimSeq }),
+    };
+    return sql.begin(async (tx) => {
+        const rows = await tx<{ status: JobStatus; root_job_id: string }[]>`
+            update job set
+                status           = case when not ${release} then status
+                                        when cancel_requested_at is null then 'queued' else 'stopped' end,
+                finished_at      = case when ${release} and cancel_requested_at is not null then now() else finished_at end,
+                wall_clock_ms    = case when ${release} then ${wallTick} else wall_clock_ms end,
+                started_at       = case when ${release} then null else started_at end,
+                lease_token      = case when ${release} then null else lease_token end,
+                lease_expires_at = case when ${release} then now() else lease_expires_at end,
+                cancel_requested_at = case when ${release} then null else cancel_requested_at end,
+                attempts         = greatest(attempts - 1, 0),
+                interruptions    = interruptions || jsonb_build_array(
+                    ${entry}::jsonb || jsonb_build_object('claimSeq', coalesce(${claimSeq}::bigint, claim_seq))
+                )
+            where org_id = ${orgId} and id = ${id}
+              and status = 'running' and lease_token = ${leaseToken}
+              and jsonb_array_length(interruptions) < ${INTERRUPTION_BUDGET}
+              and not ${recorded}
+            returning status, root_job_id
+        `;
+        const row = rows[0];
+        if (row) {
+            if (row.status === 'stopped') await settleIfMergeClosed(ctx, row.root_job_id, tx);
+            const answer = { result: 'ok', status: row.status } as const;
+            if (release) await recordReceipt(tx, key, answer);
+            return answer;
+        }
+        return missedInterrupt(tx, key, recorded);
+    });
+}
+
+/**
+ * An interrupt whose update missed: a released one replayed answers its receipt (issue #821); an
+ * adoption already recorded answers ok again, without a second refund; otherwise the lease is
+ * lost, the job gone, or the budget spent.
+ */
+async function missedInterrupt(
+    tx: TransactionSql,
+    key: SettleKey,
+    recorded: Fragment
+): ReturnType<JobStore['interrupt']> {
+    const replayed = await settleReplayOf<SuspendResult>(tx, key);
+    if (replayed) return replayed;
+    const [held] = await tx<{ held: boolean; recorded: boolean; status: JobStatus }[]>`
+        select status = 'running' and lease_token = ${key.leaseToken} as held, ${recorded} as recorded, status
+        from job where org_id = ${key.orgId} and id = ${key.jobId}
     `;
     if (!held) return { result: 'missing' };
     if (!held.held) return { result: 'lost' };
@@ -719,7 +760,9 @@ export async function removeJobThread(
         `;
         // The one refusal: a member is running. The user stops it first — the per-task
         // worktree is a live runner's checkout, and tearing it out under the container would
-        // corrupt a run that was happily going.
+        // corrupt a run that was happily going. Checked before the review rows are locked: a
+        // running member's verdict holds those rows and waits on this root lock (issue #821).
+        if (hasRunningMember(members)) return 'conflict';
         // The thread's named-profile reviews (issue #549) are threads of their own, so they are
         // not in `members`: a running one is a live runner's checkout too, and they leave with it.
         const reviews = await tx<{ id: string; status: JobStatus }[]>`
@@ -897,9 +940,9 @@ export async function reopenJob(ctx: JobStoreContext, id: string): ReturnType<Jo
         await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
 
         // A removed tree is unrecoverable: a follow-up resumes a session in the tree it ran in,
-        // and there is no tree. The marker (045) is stamped at the ack and at a threadDone
-        // verdict — the queue row alone could not carry this, because ack deletes it and the
-        // verdict path never queues one. The root read doubles as the remove-lost-the-race
+        // and there is no tree. The marker (045) is stamped only at the ack (a threadDone verdict
+        // queues its reclaim claimed, issue #821) — the queue row alone could not carry this,
+        // because ack deletes it. The root read doubles as the remove-lost-the-race
         // check: remove deletes the rows under this same lock, so no root row means the thread
         // is gone, whatever the pre-lock read saw.
         const [root] = await tx<{ worktree_reclaimed_at: Date | null }[]>`

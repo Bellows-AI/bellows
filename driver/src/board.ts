@@ -544,14 +544,14 @@ export interface Board {
      * an unmeasured read is omitted, and the board stores null, never zero. `summary` rides
      * when the close-time read lifted the run's last words — what the run did, for the
      * recently-completed view; omitted stays null on the board. The answer carries
-     * `threadDone` — whether
-     * EVERY job of the task's thread is terminal ('succeeded'/'failed'/'dead'/'stopped') AND the user has
-     * closed the thread (a `done_at` on some member), computed by the board in the SAME
-     * lease-guarded transaction as the verdict — which is the signal a worker uses right after a
-     * verdict to decide the task worktree can be reclaimed (issue #47). A follow-up still
-     * queued or running keeps it false; so does a thread that finished but was never
-     * declared done — a failed task's tree is exactly what its next turn continues from, and the
-     * tree is the user's to free.
+     * `reclaimId` — the worktree reclaim the board queued, claimed by this worker, when EVERY job
+     * of the task's thread is terminal ('succeeded'/'failed'/'dead'/'stopped') AND the user has
+     * closed the thread (a `done_at` on some member), in the SAME lease-guarded transaction as the
+     * verdict (issues #47, #821). The worker removes the tree and acks that id; the board marks the
+     * tree reclaimed only on the ack. A follow-up still queued or running keeps it null; so does a
+     * thread that finished but was never declared done — a failed task's tree is exactly what its
+     * next turn continues from, and the tree is the user's to free. The answer is a settle receipt:
+     * the identical verdict retried after a lost response answers it again.
      */
     complete(
         job: BoardJob,
@@ -594,7 +594,7 @@ export interface Board {
                 baseBranch: string;
             } | null;
         }
-    ): Promise<{ state: LeaseState; threadDone: boolean }>;
+    ): Promise<{ state: LeaseState; reclaimId: string | null }>;
 }
 
 type Fetch = typeof globalThis.fetch;
@@ -978,13 +978,14 @@ export function createBoard({
         async complete(job, result) {
             const response = await post(`/api/jobs/${job.id}/complete`, completeWireBody(job, result));
             // 409 is a verdict, not a failure: the lease is gone and with it any say over the
-            // thread — the done answer is false, not unknown.
-            if (response.status === HTTP_CONFLICT) return { state: 'lost', threadDone: false };
-            // Read defensively, like every other board field: anything but a literal true —
-            // absent, false, a body that is not the shape we asked for — means "the user may
+            // thread — no reclaim was ordered, not an unknown one.
+            if (response.status === HTTP_CONFLICT) return { state: 'lost', reclaimId: null };
+            // Read defensively, like every other board field: anything but a non-empty string —
+            // absent, null, a body that is not the shape we asked for — means "the user may
             // still want this thread's tree", which is the only safe reading of an unclear answer.
-            const body = (await response.json()) as { threadDone?: boolean };
-            return { state: 'held', threadDone: body.threadDone === true };
+            const body = (await response.json()) as { reclaimId?: unknown };
+            const reclaimId = typeof body.reclaimId === 'string' && body.reclaimId !== '' ? body.reclaimId : null;
+            return { state: 'held', reclaimId };
         },
     };
 }

@@ -523,7 +523,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
                     exitCode: 0,
                     output: null,
                 })
-            ).toEqual({ result: 'ok', threadDone: false });
+            ).toEqual({ result: 'ok', threadDone: false, reclaimId: null });
         });
 
         it('refuses not_done for a thread nobody closed, and missing for an absent id', async () => {
@@ -566,24 +566,25 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             expect(await store.reopen(root)).toBe('reclaimed');
         });
 
-        it('refuses reclaimed after the verdict-time reclaim was issued', async () => {
+        it('refuses reclaiming during the verdict-time reclaim, and reclaimed once it is acked', async () => {
             const root = await finishWithSession('drive me');
             const followUp = await mustFollowUp(root, 'first adjustment', null);
             expect(await store.markDone(root, null)).toMatchObject({ status: 'succeeded' });
 
-            // The thread's last completing verdict answers threadDone — the driver removes the
-            // tree directly on it, with no queue row and no ack — and that verdict is where the
-            // board records the removal as issued.
+            // The thread's last completing verdict answers threadDone with a reclaim row claimed
+            // by its worker; the marker follows the ack, not the verdict (issue #821).
             const claim = await store.claim('w1', LEASE_SECONDS);
             expect(claim?.id).toBe(followUp.id);
-            expect(
-                await store.complete(followUp.id, claim!.leaseToken, {
-                    status: 'succeeded',
-                    exitCode: 0,
-                    output: null,
-                })
-            ).toEqual({ result: 'ok', threadDone: true });
+            const verdict = await store.complete(followUp.id, claim!.leaseToken, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: null,
+            });
+            expect(verdict).toEqual({ result: 'ok', threadDone: true, reclaimId: expect.any(String) });
 
+            expect(await store.reopen(root)).toBe('reclaiming');
+            if (verdict.result !== 'ok' || !verdict.reclaimId) throw new Error('no reclaim was issued');
+            expect(await store.ackReclaim(verdict.reclaimId, 'w1')).toBe('ok');
             expect(await store.reopen(root)).toBe('reclaimed');
         });
     });
@@ -606,7 +607,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
                 output: null,
             });
 
-            expect(result).toEqual({ result: 'ok', threadDone: false });
+            expect(result).toEqual({ result: 'ok', threadDone: false, reclaimId: null });
         });
 
         it('answers false while a follow-up is still queued, even with no done', async () => {
@@ -628,7 +629,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
                 exitCode: 0,
                 output: null,
             });
-            expect(whileQueued).toEqual({ result: 'ok', threadDone: false });
+            expect(whileQueued).toEqual({ result: 'ok', threadDone: false, reclaimId: null });
 
             const secondClaim = await store.claim('w2', LEASE_SECONDS);
             expect(secondClaim?.id).toBe(second!.id);
@@ -638,7 +639,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
                 output: null,
             });
             // All terminal now, but nobody has closed the thread — the tree stays.
-            expect(afterBoth).toEqual({ result: 'ok', threadDone: false });
+            expect(afterBoth).toEqual({ result: 'ok', threadDone: false, reclaimId: null });
         });
 
         it('answers true for a verdict that completes a thread the user already closed', async () => {
@@ -657,7 +658,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
                 output: null,
             });
 
-            expect(result).toEqual({ result: 'ok', threadDone: true });
+            expect(result).toEqual({ result: 'ok', threadDone: true, reclaimId: expect.any(String) });
         });
 
         it('counts a dead member as terminal', async () => {
@@ -681,7 +682,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
             // `dead` is the board giving up, not work continuing — but nobody closed the thread,
             // so the tree still waits for a done.
-            expect(result).toEqual({ result: 'ok', threadDone: false });
+            expect(result).toEqual({ result: 'ok', threadDone: false, reclaimId: null });
         });
     });
 

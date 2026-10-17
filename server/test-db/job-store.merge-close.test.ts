@@ -110,6 +110,13 @@ const claimOf = async (id: string): Promise<Claim> => {
 const reclaimRowsOf = async (root: string): Promise<{ root_job_id: string }[]> =>
     sql`select root_job_id from task_reclaim where org_id = ${ORG} and root_job_id = ${root}`;
 
+const reclaimedAtOf = async (root: string): Promise<Date | null> => {
+    const [row] = await sql<{ worktree_reclaimed_at: Date | null }[]>`
+        select worktree_reclaimed_at from job where org_id = ${ORG} and id = ${root}
+    `;
+    return row!.worktree_reclaimed_at;
+};
+
 const jobRowOf = async (id: string): Promise<{ status: string; done_at: Date | null; done_by: string | null }> => {
     const rows = await sql<{ status: string; done_at: Date | null; done_by: string | null }[]>`
         select status, done_at, done_by from job where org_id = ${ORG} and id = ${id}
@@ -287,7 +294,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
                 baseBranch: 'main',
             },
         });
-        expect(done).toEqual({ result: 'ok', threadDone: true });
+        expect(done).toEqual({ result: 'ok', threadDone: true, reclaimId: expect.any(String) });
 
         const members = await sql<{ n: number }[]>`
             select count(*)::int as n from job where org_id = ${ORG} and root_job_id = ${root}
@@ -297,13 +304,13 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
             select count(*)::int as n from workflow_round where org_id = ${ORG} and root_job_id = ${root}
         `;
         expect(rounds[0]!.n).toBe(0);
-        // threadDone-true verdict: the reclaim order rode the answer, so no queue row — the
-        // marker on the root is the record.
-        expect((await reclaimRowsOf(root)).length).toBe(0);
-        const [reclaimed] = await sql<{ worktree_reclaimed_at: Date | null }[]>`
-            select worktree_reclaimed_at from job where org_id = ${ORG} and id = ${root}
-        `;
-        expect(reclaimed!.worktree_reclaimed_at).not.toBeNull();
+        // threadDone-true verdict: the reclaim is queued claimed by the completing worker, and the
+        // marker waits for its ack (issue #821).
+        expect((await reclaimRowsOf(root)).length).toBe(1);
+        expect(await reclaimedAtOf(root)).toBeNull();
+        if (done.result !== 'ok' || !done.reclaimId) throw new Error('no reclaim was issued');
+        expect(await store.ackReclaim(done.reclaimId, WORKER)).toBe('ok');
+        expect(await reclaimedAtOf(root)).not.toBeNull();
         expect(await prs.publicationOf(root)).not.toBeNull();
     });
 
@@ -325,15 +332,15 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
             exitCode: 0,
             output: 'no publication',
         });
-        expect(done).toEqual({ result: 'ok', threadDone: true });
+        expect(done).toEqual({ result: 'ok', threadDone: true, reclaimId: expect.any(String) });
         const members = await sql<{ n: number }[]>`
             select count(*)::int as n from job where org_id = ${ORG} and root_job_id = ${root}
         `;
         expect(members[0]!.n).toBe(2);
-        const [reclaimed] = await sql<{ worktree_reclaimed_at: Date | null }[]>`
-            select worktree_reclaimed_at from job where org_id = ${ORG} and id = ${root}
-        `;
-        expect(reclaimed!.worktree_reclaimed_at).not.toBeNull();
+        expect(await reclaimedAtOf(root)).toBeNull();
+        if (done.result !== 'ok' || !done.reclaimId) throw new Error('no reclaim was issued');
+        expect(await store.ackReclaim(done.reclaimId, WORKER)).toBe('ok');
+        expect(await reclaimedAtOf(root)).not.toBeNull();
     });
 
     it('a stop settling the last moving member reclaims the merge-marked thread', async () => {
@@ -494,12 +501,12 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         expect(wait).toBeNull();
         expect((await jobRowOf(root)).done_at).not.toBeNull();
         // The closure's inline settle queued a reclaim row moments before the threadDone stamp;
-        // the verdict's direct order superseded it — one tree, one work order.
-        expect((await reclaimRowsOf(root)).length).toBe(0);
-        const [reclaimed] = await sql<{ worktree_reclaimed_at: Date | null }[]>`
-            select worktree_reclaimed_at from job where org_id = ${ORG} and id = ${root}
-        `;
-        expect(reclaimed!.worktree_reclaimed_at).not.toBeNull();
+        // the verdict took it over, claimed by its worker — one tree, one work order — and the
+        // marker waits for the ack (issue #821).
+        expect(await sql`select claimed_by from task_reclaim where org_id = ${ORG} and root_job_id = ${root}`).toEqual([
+            { claimed_by: WORKER },
+        ]);
+        expect(await reclaimedAtOf(root)).toBeNull();
         // A redelivery of the early GUID is a duplicate — the closure ran exactly once.
         expect(await store.closeMergedPr(REPO, PULL, 'guid-early')).toEqual({ outcome: 'duplicate', closedRoots: 0 });
     });

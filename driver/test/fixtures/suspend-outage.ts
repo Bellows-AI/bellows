@@ -42,7 +42,7 @@ const calls: Partial<Board> = {
     },
     async complete(claimed) {
         console.log(`completed ${claimed.id}`);
-        return { state: 'held', threadDone: false };
+        return { state: 'held', reclaimId: null };
     },
     async claimReclaim() {
         return null;

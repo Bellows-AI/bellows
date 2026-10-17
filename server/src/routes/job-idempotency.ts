@@ -3,6 +3,7 @@ import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { IdempotencyKeyReusedError } from '../db/job-store-idempotency.js';
 import type { IdempotentOperation } from '../db/job-store-idempotency.js';
+import { canonical } from '../db/job-store-receipts.js';
 import { bad, guard } from './helpers.js';
 import { HTTP_CONFLICT, HTTP_CREATED } from './job-limits.js';
 
@@ -18,18 +19,6 @@ export const IDEMPOTENCY_KEY_HEADER = 'idempotency-key';
 export const IDEMPOTENCY_REPLAYED_HEADER = 'idempotency-replayed';
 
 const KEY_PATTERN = /^[A-Za-z0-9._:-]{8,128}$/;
-
-/** Stable JSON: object keys sorted at every depth, so key order never changes a fingerprint. */
-function canonical(value: unknown): string {
-    if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-    if (typeof value === 'object' && value !== null) {
-        const entries = Object.entries(value as Record<string, unknown>)
-            .filter(([, v]) => v !== undefined)
-            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-        return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
-    }
-    return JSON.stringify(value) ?? 'null';
-}
 
 /**
  * The request's idempotency input, or undefined when it carries no key (the mutation is then not
