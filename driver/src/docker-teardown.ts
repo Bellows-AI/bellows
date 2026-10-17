@@ -3,9 +3,9 @@ import type { DriverConfig } from './config.js';
 import { awaitSupervisor } from './docker-group.js';
 import type { ExecDocker } from './docker-runner-support.js';
 import { linesOf } from './docker-runner-support.js';
-import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
+import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
 import { forgetDeclaredServices, networkName } from './services.js';
-import { KILL_WINDDOWN_MS } from './supervisor-contract.js';
+import { AGENT_CONTAINER, KILL_WINDDOWN_MS } from './supervisor-contract.js';
 
 /**
  * The docker runner's teardowns: this attempt's services and network, the hard kill of its whole
@@ -118,10 +118,36 @@ export async function dockerKill(deps: TeardownDeps, job: BoardJob): Promise<voi
  * exporter drain and finalizes, and the group ends by itself: this waits (bounded) for the
  * supervisor to exit, and past the bound — or when there is no supervisor to wait for — falls back
  * to the hard kill. The attached run resolves with the real outcome meanwhile.
+ *
+ * A supervisor exit is no sign the agent ended: one that crashed or was lost answers the wait at
+ * once, with nobody left to deliver the kill order. Whatever it exited with, the agent still
+ * running is killed — the agent alone, so the group stays for the close path to finish, and a lost
+ * supervisor stays an interruption for the next claim (`supervisorLossOf`), never a failed run.
+ * Never throws, like `dockerKill`: a lookup the daemon refused falls back to the hard kill, and a
+ * refused kill to force-removing the agent.
  */
 export async function dockerStopAgent(deps: TeardownDeps, job: BoardJob): Promise<void> {
     deps.killed.add(job.leaseToken);
     const exit = await awaitSupervisor(deps.execDocker, job, KILL_WINDDOWN_MS);
     if (exit === null) return dockerKill(deps, job);
+    const running = await deps
+        .execDocker([
+            'ps',
+            '-q',
+            '--filter',
+            `label=${JOB_LABEL}=${job.id}`,
+            '--filter',
+            `label=${LEASE_LABEL}=${job.leaseToken}`,
+            '--filter',
+            `label=${ROLE_LABEL}=${AGENT_CONTAINER}`,
+        ])
+        .catch(() => null);
+    if (running === null) return dockerKill(deps, job);
+    for (const id of linesOf(running.stdout)) {
+        await deps
+            .execDocker(['kill', id])
+            .catch(() => deps.execDocker(['rm', '-f', id]))
+            .catch(() => undefined);
+    }
     await dockerServiceTeardown(deps, job);
 }
