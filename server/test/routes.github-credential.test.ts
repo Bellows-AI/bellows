@@ -110,6 +110,16 @@ describe('the runner GitHub credential route', () => {
         expect(checks()).toBe(0);
     });
 
+    // A command-only task has no repository to narrow to: its mint would be installation-wide.
+    it('refuses an attempt with no repository before any mint', async () => {
+        const { app, mints } = await boot({ answers: [{ ...LIVE, repo: null }], fresh: minted });
+        const res = await app.inject({ method: 'POST', url: URL_PATH, headers: PAIR });
+        expect(res.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(res.json().code).toBe('CONNECTION_NOT_AUTHORIZED');
+        expect(res.json().error).toMatch(/no repository/);
+        expect(mints).toEqual([]);
+    });
+
     it('refuses a lease token that is not a uuid without asking the check', async () => {
         const { app, checks } = await boot({ fresh: minted });
         const res = await app.inject({

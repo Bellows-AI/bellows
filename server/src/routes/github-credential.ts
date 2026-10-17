@@ -34,20 +34,36 @@ const ATTEMPT_REFUSED =
     'This attempt may not have a GitHub token: it is no longer running, or its task is no longer authorized. Do not retry.';
 const NO_APP = 'This board holds no GitHub App installation for the organization, so it issues no GitHub token.';
 const NO_TOKEN = 'GitHub did not issue a token. Retry shortly.';
+/** A command-only task: with no repository to narrow to, its mint would reach every repository of the installation. */
+const NO_REPO = 'This task names no repository, so it has no GitHub token: a token is narrowed to one. Do not retry.';
+
+type Refusal = { code: string; message: string };
+
+/** The live attempt the request's pair names, narrowed to a repository — or why it may have no token. */
+async function attemptOf(
+    request: FastifyRequest,
+    credentialOfLease: GithubCredentialOfLease
+): Promise<{ jobId: string; leaseToken: string; orgId: string; repo: string } | Refusal> {
+    const jobId = (request.params as { id: string }).id;
+    const leaseToken = request.headers[LEASE_TOKEN_HEADER];
+    if (request.headers[JOB_ID_HEADER] !== jobId || typeof leaseToken !== 'string') {
+        return { code: ERROR_CODES.UNAUTHENTICATED, message: 'Job id and lease token required' };
+    }
+    const refused = { code: ERROR_CODES.CONNECTION_NOT_AUTHORIZED, message: ATTEMPT_REFUSED };
+    // A malformed id or lease token is no attempt, refused before the database's uuid cast can throw.
+    if (!UUID.test(jobId) || !UUID.test(leaseToken)) return refused;
+    const attempt = await credentialOfLease(jobId, leaseToken);
+    if (!attempt.ok) return refused;
+    if (attempt.repo === null) return { code: ERROR_CODES.CONNECTION_NOT_AUTHORIZED, message: NO_REPO };
+    return { jobId, leaseToken, orgId: attempt.orgId, repo: attempt.repo };
+}
 
 export function githubCredentialRoutes({ credentialOfLease, mint }: GithubCredentialDeps): FastifyPluginAsync {
     const handle = async (request: FastifyRequest, reply: FastifyReply) => {
         reply.header('cache-control', 'no-store');
-        const jobId = (request.params as { id: string }).id;
-        const leaseToken = request.headers[LEASE_TOKEN_HEADER];
-        if (request.headers[JOB_ID_HEADER] !== jobId || typeof leaseToken !== 'string') {
-            return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Job id and lease token required', HTTP_FORBIDDEN);
-        }
-        // A malformed id or lease token is no attempt, refused before the database's uuid cast can throw.
-        if (!UUID.test(jobId) || !UUID.test(leaseToken))
-            return bad(reply, ERROR_CODES.CONNECTION_NOT_AUTHORIZED, ATTEMPT_REFUSED, HTTP_FORBIDDEN);
-        const attempt = await credentialOfLease(jobId, leaseToken);
-        if (!attempt.ok) return bad(reply, ERROR_CODES.CONNECTION_NOT_AUTHORIZED, ATTEMPT_REFUSED, HTTP_FORBIDDEN);
+        const attempt = await attemptOf(request, credentialOfLease);
+        if ('code' in attempt) return bad(reply, attempt.code, attempt.message, HTTP_FORBIDDEN);
+        const { jobId, leaseToken } = attempt;
         let minted: MintedToken | null;
         try {
             minted = await mint(attempt.orgId, attempt.repo);
