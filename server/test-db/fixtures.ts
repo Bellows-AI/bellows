@@ -106,6 +106,25 @@ export const holdLock = async (
     };
 };
 
+/** Lapses the claim reservation a failed or abandoned preparation left (issue #822), as waiting it out would. */
+export const lapseDeferral = (sql: Sql, id: string) =>
+    sql`update job set claim_deferred_until = now() - interval '1 second' where id = ${id}`;
+
+/**
+ * The inverse of `expectStillLocked`: the write must land while another claim is still preparing,
+ * because nothing it waits on is held. Answers what the write answered.
+ */
+export const expectUnblocked = async <T>(pending: Promise<T>): Promise<T> => {
+    const UNBLOCKED_TIMEOUT_MS = 2000;
+    const blocked = Symbol('blocked');
+    const outcome = await Promise.race([
+        pending,
+        new Promise<typeof blocked>((resolve) => setTimeout(() => resolve(blocked), UNBLOCKED_TIMEOUT_MS)),
+    ]);
+    expect(outcome).not.toBe(blocked);
+    return outcome as T;
+};
+
 /**
  * The timer is the assertion device: the write must still be waiting when it fires, not deciding
  * against a snapshot taken before the lock was even taken.

@@ -149,6 +149,7 @@ function workerMethods(
  * honest here.
  */
 export { INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from './job-store-actions.js';
+export { CLAIM_PREPARE_SECONDS } from './job-store-claim.js';
 
 export function createJobStore(deps: CreateJobStoreDeps): JobStore {
     const {
