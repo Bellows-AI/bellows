@@ -22,6 +22,10 @@
 // evaluator too: a tool-less request carrying the hook's prompt text is answered `{"ok": false, …}` the
 // first time and `{"ok": true}` after, and is not an agent request. The next agent request then
 // calls AskUserQuestion, and the run goes on as in `--ask`. `GET /hooks` counts the evaluations.
+//
+// In every mode it plays the driver's step channel too (driver/src/step-control.ts), as much as a
+// lane group needs: `GET /step` hands out `go` on the first poll and `finish` once `POST /report`
+// arrives, and holds any other poll up to its `wait`; `POST /step/<id>` is acknowledged.
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 
@@ -32,6 +36,11 @@ const CONTROL_PATH = '/control';
 const QUESTION_PATH = '/question';
 const QUESTIONS_PATH = '/questions';
 const HOOKS_PATH = '/hooks';
+const STEP_PATH = '/step';
+const REPORT_PATH = '/report';
+/** The longest a step poll is held, whatever `wait` it asks for. */
+const STEP_HOLD_MAX_MS = 30_000;
+const orderOf = (kind) => ({ step: { id: `lane-${kind}`, kind, argv: [], env: {}, timeoutMs: 10_000 } });
 const BASH_TOOL = /^bash$/i;
 const ASK_TOOL = 'AskUserQuestion';
 const ASK_QUESTION = 'Which colour should the report use?';
@@ -102,6 +111,36 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
     let questionPolls = 0;
     /** True from the moment the first agent request arrives — what `GET /control` raises a Stop on. */
     let firstInFlight = false;
+    let goServed = false;
+    let reported = false;
+    let finishServed = false;
+    /** Step polls held open until the report arrives or their wait runs out. */
+    const heldPolls = new Set();
+    const nextOrder = () => {
+        if (!goServed) {
+            goServed = true;
+            return orderOf('go');
+        }
+        if (reported && !finishServed) {
+            finishServed = true;
+            return orderOf('finish');
+        }
+        return null;
+    };
+    const servePoll = (reply, waitMs) => {
+        reply.setHeader('content-type', 'application/json');
+        const order = nextOrder();
+        if (order || finishServed || waitMs <= 0) return reply.end(JSON.stringify(order ?? {}));
+        const held = {
+            answer: (body) => {
+                clearTimeout(held.timer);
+                heldPolls.delete(held);
+                reply.end(JSON.stringify(body));
+            },
+        };
+        held.timer = setTimeout(() => held.answer({}), Math.min(waitMs, STEP_HOLD_MAX_MS));
+        heldPolls.add(held);
+    };
     const askReply = (step, tools, messages) => {
         if (askProse && step === 1) {
             return message('msg_prose', [{ type: 'text', text: PROSE_QUESTION }], 'end_turn');
@@ -142,6 +181,19 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
         request.on('data', (chunk) => chunks.push(chunk));
         request.on('end', async () => {
             const url = (request.url ?? '').split('?')[0];
+            if (url === STEP_PATH && request.method === 'GET') {
+                const wait = Number(new URL(request.url ?? '', 'http://lane').searchParams.get('wait') ?? '0');
+                return servePoll(reply, Number.isFinite(wait) ? wait : 0);
+            }
+            if ((url.startsWith(`${STEP_PATH}/`) || url === REPORT_PATH) && request.method === 'POST') {
+                if (url === REPORT_PATH) {
+                    reported = true;
+                    const [held] = heldPolls;
+                    held?.answer(nextOrder() ?? {});
+                }
+                reply.setHeader('content-type', 'application/json');
+                return reply.end(JSON.stringify({ ok: true }));
+            }
             if (url === REQUESTS_PATH) {
                 reply.setHeader('content-type', 'application/json');
                 return reply.end(JSON.stringify({ agentRequests }));
@@ -222,7 +274,10 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
         },
         listen: (port = 0, host = '0.0.0.0') =>
             new Promise((resolve) => server.listen(port, host, () => resolve(server.address().port))),
-        close: () => new Promise((resolve) => server.close(() => resolve())),
+        close: () => {
+            for (const held of heldPolls) held.answer({});
+            return new Promise((resolve) => server.close(() => resolve()));
+        },
     };
 }
 

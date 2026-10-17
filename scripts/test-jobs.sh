@@ -838,6 +838,10 @@ interruptions_of() { # interruptions_of <job json> -> "<count>|<claimSeq of the 
 
 ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
 DRAINED='the driver was drained'
+# The adopting claim settles only once the lost driver's supervisor exits, and with no driver left to
+# order its `finish` that is SUPERVISOR_ORPHAN_MS (90s, driver/src/scripts/supervisor.cjs) after its
+# last answered call — the documented bound (driver/src/supervisor-contract.ts), plus the claim.
+ADOPT_S=150
 
 # a. The hard kill: no drain, no handover, the lease left to expire. The runner runs to its end
 #    while no driver watches it; the next driver's claim (2) adopts it.
@@ -854,7 +858,7 @@ driver_pid=""
     ok 'the runner of a killed driver runs to its end' ||
     bad 'the runner of a killed driver runs to its end' "$(docker ps -a --filter "label=factory.job=$killed" --format '{{.Names}} {{.Status}}')"
 disruption_driver
-expect_contains 'the next claim settles the killed run' "$(await_settled "$killed" 60)" succeeded
+expect_contains 'the next claim settles the killed run' "$(await_settled "$killed" "$ADOPT_S")" succeeded
 killed_body="$(body "$(api GET "/api/jobs/$killed")")"
 expect_contains 'the adopted output is the first runner output' "$(field "$killed_body" output)" "ran in $killed_runner"
 expect_field 'the killed attempt is refunded' "$killed_body" attempts 1
@@ -896,7 +900,7 @@ driver_pid=""
     ok 'the handed-over runner exits 0 on its own' ||
     bad 'the handed-over runner exits 0 on its own' "$(docker ps -a --filter "label=factory.job=$drained" --format '{{.Names}} {{.Status}}')"
 disruption_driver
-expect_contains 'the next claim adopts the handed-over run' "$(await_settled "$drained" 60)" succeeded
+expect_contains 'the next claim adopts the handed-over run' "$(await_settled "$drained" "$ADOPT_S")" succeeded
 drained_body="$(body "$(api GET "/api/jobs/$drained")")"
 expect_contains 'the handed-over output is the first runner output' "$(field "$drained_body" output)" "ran in $drained_runner"
 expect_field 'the handed-over attempt is refunded' "$drained_body" attempts 1
@@ -1097,12 +1101,14 @@ ok 'the compose driver image builds'
 # RUNNER_SERVICES=0 like every host-driven phase above: the services phase seeded a malformed
 # .bellows.yaml into the stand-in author's tree, and the services readout failing is a verdict of
 # "failed" — the lifecycle here must be settled by the driver itself, not by that leftover.
-compose -p "$COMPOSE_PROJECT" run --rm --name "$COMPOSE_DRIVER" --no-deps \
+# The supervisor pulls its steps from the advertised `http://driver`: it runs on the project network,
+# where `--use-aliases` gives this one-off container the service's name.
+compose -p "$COMPOSE_PROJECT" run --rm --use-aliases --name "$COMPOSE_DRIVER" --no-deps \
     -e JOB_BOARD_URL="http://host.docker.internal:$PORT" \
     -e CLAUDE_EXECUTOR_IMAGE="$IMAGE_OK" \
     -e OPENCODE_EXECUTOR_IMAGE="$IMAGE_OK" \
     -e WORKSPACE_VOLUME="$VOLUME" \
-    -e RUNNER_NETWORK=bridge \
+    -e RUNNER_NETWORK="${COMPOSE_PROJECT}_default" \
     -e RUNNER_SERVICES=0 \
     -e JOB_BOARD_TOKEN= \
     driver >>"$work/compose-driver.log" 2>&1 &
@@ -1247,7 +1253,8 @@ lane_group_up() { # lane_group_up <name> <image> <control-url>
 
 lane_group_agent_args() { # lane_group_agent_args <name>: the agent's half of the mailboxes, as argv words
     printf '%s\n' -v "lane-$1-in:/factory/in:ro" -v "lane-$1-out:/factory/out" \
-        -e FACTORY_CTL_IN=/factory/in -e FACTORY_CTL_OUT=/factory/out -e FACTORY_CTL_TICK_MS=200
+        -e FACTORY_CTL_IN=/factory/in -e FACTORY_CTL_OUT=/factory/out -e FACTORY_CTL_GO=/factory/in/go \
+        -e FACTORY_CTL_TICK_MS=200
 }
 
 lane_group_down() { # lane_group_down <name>: the supervisor finalizes after the agent exits; then the group goes
