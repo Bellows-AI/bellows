@@ -449,18 +449,6 @@ export function parseGitState(stdout: string): GitState {
 }
 
 /**
- * Lays a publish-fresh credential over the claim env, in one place: the claim's
- * `GITHUB_TOKEN` was minted at claim time and a long run can outlive it (observed 2026-09-13,
- * job 43379d3a — a 1h33m run's push died on its expired claim credential with the work done
- * and the gates green), so the loop asks the board for a fresh answer right before the push.
- * The docker env-file body and the kubernetes Secret are both built from `envFileBody(job)`,
- * so the override must live on the job, not in either transport. Undefined — the board held
- * nothing fresher, or the ask failed — leaves the job untouched.
- */
-export const withPublishToken = (job: BoardJob, publishToken?: string): BoardJob =>
-    publishToken ? { ...job, env: { ...job.env, GITHUB_TOKEN: publishToken } } : job;
-
-/**
  * One publish step, as the platform-agnostic workflow hands it to a platform transport. The
  * decisions the two executors must never let drift — branch reuse, the fallback identity,
  * `--force-with-lease`, PR reuse — live in `publishCheckout` below; this is only WHAT to run,

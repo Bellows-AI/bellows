@@ -125,6 +125,16 @@ export function workspacePath(job: Pick<BoardJob, 'id' | 'workspacePath'>): stri
     return path;
 }
 
+/**
+ * The agent container's memory-backed GitHub token cache (docs/connections.md): the executor
+ * images' helper writes only here (`CACHE_DIR` in each image's github-credential.cjs), and both
+ * executors mount it in the agent container alone — docker a `--tmpfs`, kubernetes an
+ * `emptyDir: {medium: Memory}` — so the helper's cached token never reaches a disk or the task volume.
+ */
+export const GITHUB_CACHE_DIR = '/run/factory-github';
+/** The cache's ceiling, one small JSON file: the kubernetes quantity and the docker tmpfs size. */
+export const GITHUB_CACHE_SIZE = { k8s: '1Mi', docker: '1m' } as const;
+
 /** The env names the loop mints for a launched attempt's run-control channel (issue #442). */
 export const CONTROL_URL_ENV = 'BELLOWS_CONTROL_URL';
 export const CONTROL_TOKEN_ENV = 'BELLOWS_CONTROL_TOKEN';
@@ -179,6 +189,10 @@ export const RESERVED_ENV_NAMES = [
     'ATLASSIAN_SITE',
     'ATLASSIAN_EMAIL',
     'ATLASSIAN_API_TOKEN',
+    // GitHub is the App's: the runner's helper and the supervised steps obtain a token from the
+    // board (docs/connections.md), so no claim value may stand in for it.
+    'GITHUB_TOKEN',
+    'GH_TOKEN',
 ] as const;
 
 /** The job fields the repo cache path is composed from. */
@@ -308,18 +322,6 @@ export function runnerClaimEnv(job: BoardJob): Record<string, string> {
 }
 
 /**
- * Whether the claim env carries a NON-EMPTY GITHUB_TOKEN — the condition under which the startup
- * sync's fetch is handed the credential-helper CODE. Git reads no token from the environment, and
- * the executor images ship no helper, so a private-repo fetch needs one; a public repo with no
- * token must keep its plain unauthenticated fetch, which a helper answering an empty password
- * would break. A present-but-empty token therefore counts as no token: the helper would break the
- * public-repo fetch it exists to preserve, and a private repo with an empty token fails auth
- * either way, honestly. Shared with the kubernetes syncJobSpec, which embeds the same code as a
- * literal.
- */
-export const claimCarriesGithubToken = (job: BoardJob): boolean => Boolean(claimEnv(job).GITHUB_TOKEN);
-
-/**
  * Whether the claim CONTINUES a session rather than starting a task: a follow-up. The task is
  * mid-flight, and the startup git work is a RESTORE, not a
  * sync — no fetch, no rebase onto the remote default (issue #58): the conversation's tree is
@@ -426,4 +428,15 @@ export function envFileBody(job: BoardJob, config?: DriverConfig): string {
         lines.push(envLine(job, 'RUNNER_LEASE_TOKEN', job.leaseToken));
     }
     return lines.length ? `${lines.join('\n')}\n` : '';
+}
+
+/**
+ * A gate environment's env-file body: the claim env's lines, then the board's GitHub token the loop
+ * fetched at gate start (docs/connections.md). Fetched once and never renewed — a gate environment
+ * that outlives the token's hour runs its later gates on an expired one (docs/connections.md). Never
+ * the runner's file: the agent's own git and gh renew through the image's helper instead.
+ */
+export function gateEnvBody(job: BoardJob, githubToken: string | null): string {
+    const body = envFileBody(job);
+    return githubToken ? `${body}${envLine(job, 'GITHUB_TOKEN', githubToken)}\n` : body;
 }

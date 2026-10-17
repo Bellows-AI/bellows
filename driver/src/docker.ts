@@ -21,6 +21,8 @@ import {
     UUID,
     GATE_UID,
     GATE_GID,
+    GITHUB_CACHE_DIR,
+    GITHUB_CACHE_SIZE,
     type CacheJob,
     gateEnv,
     opencodeDbPath,
@@ -303,11 +305,12 @@ export function gateEnvArgs(
  * authored by the repository that declared it — the same trust level as the job command itself —
  * but it still travels as ONE argv element into `sh -c`, never through an interpolating shell.
  */
-export function gateExecArgs(name: string, command: string): string[] {
+export function gateExecArgs(name: string, command: string, envFile?: string): string[] {
     if (!GATE_CONTAINER.test(name)) {
         throw new Error(`refusing to exec into a container named "${name}"`);
     }
-    return ['exec', name, 'sh', '-c', command];
+    // The env file carries the run's own GitHub token: the container's was its creation's.
+    return ['exec', ...(envFile ? ['--env-file', envFile] : []), name, 'sh', '-c', command];
 }
 
 /**
@@ -484,6 +487,10 @@ export function dockerArgs(
         // kill order — it cannot forge them) and `out` (its questions and heartbeat). Nothing of the
         // supervisor's own state, the exporter's mailbox or the control credential is mounted or set.
         ...agentMailboxArgs(job),
+        // The GitHub helper's token cache, in memory and the agent's own (docs/connections.md):
+        // never on the task volume, gone with the container.
+        '--tmpfs',
+        `${GITHUB_CACHE_DIR}:rw,noexec,nosuid,size=${GITHUB_CACHE_SIZE.docker},mode=0700,uid=${GATE_UID}`,
     ];
 
     // A gated job's runner reaches the driver's gate endpoint by the default

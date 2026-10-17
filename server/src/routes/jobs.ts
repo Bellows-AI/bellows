@@ -7,7 +7,6 @@ import {
     handleHeartbeat,
     handleLeases,
     handleOutput,
-    handlePublishToken,
     handleSession,
     handleSuspend,
     handleRequeue,
@@ -85,9 +84,6 @@ export const jobRoutes =
         );
         app.post('/api/jobs/:id/gates', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handleGates(orgs, request, reply)
-        );
-        app.post('/api/jobs/:id/publish-token', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handlePublishToken(orgs, request, reply)
         );
         app.post('/api/jobs/:id/suspend', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleSuspend(orgs, request, reply)

@@ -249,13 +249,14 @@ async function finishGroup(deps: RunnerDeps, job: BoardJob): Promise<void> {
 async function dockerSyncCheckout(
     deps: RunnerDeps,
     job: BoardJob,
-    session: RunSession | null = null
+    session: RunSession | null = null,
+    githubToken?: string
 ): Promise<SyncResult> {
     const { config } = deps;
     if (!repoPath(config, job) || !worktreeDir(config, job)) return { ok: true, reason: null }; // nothing synced
     try {
         await ensureGroup(deps, job, session);
-        return await runSyncStep(stepHostOf(deps), job);
+        return await runSyncStep(stepHostOf(deps), job, githubToken);
     } catch (e) {
         // A group that cannot exist, or a channel that closed under the sync, leaves nothing behind
         // and nothing to hand back: the loop leaves the job to its lease.
@@ -339,7 +340,7 @@ async function dockerRunHelper(
 async function dockerPublishGit(
     deps: RunnerDeps,
     job: BoardJob,
-    publishToken?: string,
+    githubToken?: string,
     options?: PublishOptions
 ): Promise<PublishResult> {
     const host = await stepHostFor(deps, job);
@@ -347,7 +348,7 @@ async function dockerPublishGit(
         deps.config,
         job,
         options,
-        supervisedStepRunner(host, job, { kind: 'publish', publishToken })
+        supervisedStepRunner(host, job, { kind: 'publish', githubToken })
     );
 }
 
@@ -695,10 +696,11 @@ export function createDockerRunner(
         kill: (job) => dockerKill(deps, job),
         pauseDeadline: async (job, paused) => deadlines.pause(job.leaseToken, paused),
         releaseServices: (job) => dockerServiceTeardown(deps, job),
-        syncCheckout: (job, _signal, session) => dockerSyncCheckout(deps, job, session ?? null),
+        syncCheckout: (job, _signal, session, githubToken) =>
+            dockerSyncCheckout(deps, job, session ?? null, githubToken),
         finish: (job) => finishGroup(deps, job),
         reclaimWorktree: (job) => dockerReclaimWorktree(deps, job),
-        publishGit: (job, publishToken, options) => dockerPublishGit(deps, job, publishToken, options),
+        publishGit: (job, githubToken, options) => dockerPublishGit(deps, job, githubToken, options),
         // The probe and the review snapshot need no claim env; like every step they run in the
         // supervisor, and a stand-down ends the wait for the answer, never the supervisor.
         ...dockerTreeSteps(deps),

@@ -1,5 +1,6 @@
 import { artifactCalls } from './artifact-calls.js';
 import { BoardHttpError } from './board-retry.js';
+import { githubCredentialCall } from './github-credential-call.js';
 import type { EvidencePolicy, GatesOutcome, ReviewEvidence } from './evidence-policy.js';
 import { type ExecutorType, isExecutorType } from './executors.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, LEASE_LOST_CODE, NOT_FOUND_CODE } from './http.js';
@@ -505,13 +506,14 @@ export interface Board {
     /** Tells the board which agent session this attempt runs as; null clears one that never ran. */
     session(job: BoardJob, sessionId: string | null): Promise<LeaseState>;
     /**
-     * A credential to publish this job's work with, fresh enough for the push. The claim env's
-     * GITHUB_TOKEN was minted at claim time and a long run can outlive it — observed 2026-09-13:
-     * a 1h33m run's publish died on its expired claim token with the work done and the gates
-     * green. Null — a refused, lost, or failed answer, or the board holding nothing fresher —
-     * keeps the claim env; freshness is worth a request, not an error path.
+     * A GitHub token for this attempt, minted now by the board's credential endpoint
+     * (`POST /api/jobs/:id/credentials/github`, docs/connections.md) — asked right before each
+     * supervised step that reaches GitHub (the sync's fetch, a publish, a github-writing helper)
+     * and at gate start, so no step runs on an hour-old token. The attempt pair is its credential,
+     * never the board secret. Null — no App installation (409), a refused attempt, a failed ask —
+     * runs the step without one; the step then fails honestly on a private repository.
      */
-    publishToken(job: BoardJob): Promise<string | null>;
+    githubCredential(job: BoardJob): Promise<string | null>;
     /** Parks the job: its container is gone, but it is not finished and keeps its session. */
     suspend(job: BoardJob): Promise<LeaseState>;
     /**
@@ -896,6 +898,7 @@ export function createBoard({
         ...reviewCalls(post),
 
         ...artifactCalls({ url, token, fetch }),
+        ...githubCredentialCall({ url, fetch }),
 
         async claimReclaim(worker) {
             const response = await post('/api/reclaims/claim', { worker, leaseSeconds });
@@ -935,17 +938,6 @@ export function createBoard({
                 sessionId,
             });
             return response.status === HTTP_CONFLICT ? 'lost' : 'held';
-        },
-
-        async publishToken(job) {
-            try {
-                const response = await post(`/api/jobs/${job.id}/publish-token`, { leaseToken: job.leaseToken });
-                if (!response.ok) return null;
-                const body = (await response.json()) as { GITHUB_TOKEN?: string | null };
-                return typeof body.GITHUB_TOKEN === 'string' && body.GITHUB_TOKEN ? body.GITHUB_TOKEN : null;
-            } catch {
-                return null;
-            }
         },
 
         async suspend(job) {

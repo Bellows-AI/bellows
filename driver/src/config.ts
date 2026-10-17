@@ -276,6 +276,17 @@ export function executorImage(config: DriverConfig, executorType: ExecutorType |
 
 /** One hour in milliseconds — the unit most of the bounds below are expressed in. */
 const MS_PER_HOUR = 3_600_000;
+/** Names the runner never takes from the driver's env: its GitHub token is the board's to mint and renew. */
+const RUNNER_ENV_REFUSED = ['GITHUB_TOKEN', 'GH_TOKEN'];
+
+/** RUNNER_ENV's names, refusing the ones a forwarded value would shadow the runner's own credential with. */
+function runnerPassEnv(raw: string | undefined): string[] {
+    const names = nameList(text(raw, 'RUNNER_ENV', DEFAULTS.passEnv));
+    const refused = names.find((name) => RUNNER_ENV_REFUSED.includes(name));
+    if (refused) throw new Error(`RUNNER_ENV must not name ${refused}: the runner's GitHub token comes from the board`);
+    return names;
+}
+
 /** The upper bound on DRIVER_LEASE_SECONDS: one hour. */
 const MAX_LEASE_SECONDS = 3600;
 /** The lower bound on DRIVER_JOB_TIMEOUT_MS. */
@@ -704,7 +715,7 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         leaseSeconds,
         jobTimeoutMs,
         skipPermissions: flag(env.RUNNER_SKIP_PERMISSIONS),
-        passEnv: nameList(text(env.RUNNER_ENV, 'RUNNER_ENV', DEFAULTS.passEnv)),
+        passEnv: runnerPassEnv(env.RUNNER_ENV),
         executor,
         k8sNamespace,
         // The Helm release this driver was installed by, when the chart set one. It labels every

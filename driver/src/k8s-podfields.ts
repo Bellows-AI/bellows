@@ -158,7 +158,7 @@ export interface RunnerMount {
  */
 export type RunnerVolume =
     | { name: string; persistentVolumeClaim: { claimName: string } }
-    | { name: string; emptyDir: Record<string, never> }
+    | { name: string; emptyDir: Record<string, never> | { medium: 'Memory'; sizeLimit: string } }
     | TelemetryConfigVolume;
 
 /**

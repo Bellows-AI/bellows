@@ -1,13 +1,11 @@
 import { execFile } from 'node:child_process';
 import { rm as rmFile, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { BoardJob, DeclaredGate } from './board.js';
 import type { DriverConfig } from './config.js';
 import { gateEnvArgs, gateEnvContainerName } from './docker.js';
-import { execInContainer, type ExecDocker } from './gate-exec.js';
+import { execInContainer, type ExecDocker, gateEnvFile, refreshGateEnv } from './gate-exec.js';
 import { startEnvContainer } from './docker-runner-support.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateRunNote } from './timeout-note.js';
@@ -290,7 +288,6 @@ export function createGateManager({
     execDocker?: ExecDocker;
 }): GateManager & { holds(containerName: string): boolean } {
     const entries = new Map<string, Entry>();
-    const envFileFor = (key: string): string => join(tmpdir(), `factory-gateenv-${gateEnvContainerName(key)}.env`);
 
     /**
      * The removal still in flight per key. Not run through `serialize`: a cancel tears the
@@ -304,7 +301,7 @@ export function createGateManager({
         entries.delete(key);
         const removal: Promise<void> = Promise.all([
             execDocker(['rm', '-f', entry.name]).catch(() => undefined),
-            rmFile(envFileFor(key)).catch(() => undefined),
+            rmFile(gateEnvFile(entry.name)).catch(() => undefined),
         ]).then(() => {
             if (removals.get(key) === removal) removals.delete(key);
         });
@@ -373,7 +370,7 @@ export function createGateManager({
             if (signal?.aborted) return cancelled;
             signal?.addEventListener('abort', cancel, { once: true });
             const exec: ContainerExec = (script, ms = gateTimeoutMs) =>
-                execInContainer({ execDocker, name: entry.name, script, gateTimeoutMs: ms, onKilled: cancel });
+                execInContainer({ execDocker, entry, script, gateTimeoutMs: ms, onKilled: cancel });
             try {
                 await joinServices(config, execDocker, entry);
                 return await work(entry, exec);
@@ -395,6 +392,7 @@ export function createGateManager({
             if (existing) {
                 if (job) setups.handOver(key, existing, job);
                 cancelTeardown(existing);
+                await refreshGateEnv(existing, envBody);
                 return;
             }
             await serialize(key, async () => {
@@ -403,6 +401,7 @@ export function createGateManager({
                 const queued = entries.get(key);
                 if (queued) {
                     if (job) setups.handOver(key, queued, job);
+                    await refreshGateEnv(queued, envBody);
                     return;
                 }
                 await removals.get(key);
@@ -411,8 +410,8 @@ export function createGateManager({
                 // because that one is gone.
                 await execDocker(['rm', '-f', gateEnvContainerName(key)]).catch(() => undefined);
                 const name = gateEnvContainerName(key);
-                if (envBody) await writeFile(envFileFor(key), envBody, { mode: 0o600 });
-                const args = gateEnvArgs(config, key, image, { envFile: envBody ? envFileFor(key) : undefined, job });
+                if (envBody) await writeFile(gateEnvFile(name), envBody, { mode: 0o600 });
+                const args = gateEnvArgs(config, key, image, { envFile: envBody ? gateEnvFile(name) : undefined, job });
                 await startEnvContainer(execDocker, name, args, attempt?.signal);
                 entries.set(key, {
                     ...newEntry(name, image, envBody, job ?? null),
@@ -481,6 +480,8 @@ export interface GateClaim {
     envBody?: string;
     job: BoardJob;
     gates: readonly DeclaredGate[];
+    /** The env body asked for when a run starts (a GitHub token of its own); absent, `envBody` stands. */
+    freshEnv?: () => Promise<string>;
     /** The dead-service note the loop's sampler last set (issue #487); set on the stored claim, never at register. */
     deadServices?: string | undefined;
 }
@@ -586,7 +587,8 @@ const runRegisteredGate = async (
     // cooldown 0 nothing would ever tear the new one down again.
     if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
     try {
-        await manager.acquire(claim.key, claim.image, claim.envBody ?? '', claim.job && { job: claim.job });
+        const envBody = claim.freshEnv ? await claim.freshEnv() : (claim.envBody ?? '');
+        await manager.acquire(claim.key, claim.image, envBody, claim.job && { job: claim.job });
     } catch (e) {
         return {
             status: HTTP_INTERNAL_SERVER_ERROR,

@@ -1,3 +1,4 @@
+import { readFileSync, rmSync } from 'node:fs';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
     createGateManager,
@@ -10,6 +11,7 @@ import {
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { gateEnvContainerName } from '../src/docker.js';
+import { gateEnvFile, refreshGateEnv } from '../src/gate-exec.js';
 import { networkName } from '../src/services.js';
 
 /**
@@ -143,6 +145,47 @@ describe('the gate environment manager: lifecycle', () => {
         expect(run).toEqual(expect.arrayContaining(['--env-file', expect.stringContaining('factory-gateenv')]));
         expect(run.some((arg) => arg.includes('board-secret'))).toBe(false);
         await manager.stop();
+    });
+
+    // The warm container keeps the env it was created with; a re-acquire's fresher token (asked at
+    // each gate run's start, docs/connections.md) reaches the gate through exec's own env file.
+    it('hands each gate the newest env body by exec env file, without recreating the container', async () => {
+        const seen: { args: string[]; file: string }[] = [];
+        const reading = exec((args) => {
+            if (args[0] === 'exec') {
+                const at = args.indexOf('--env-file');
+                seen.push({ args, file: at > 0 ? readFileSync(args[at + 1]!, 'utf8') : '' });
+            }
+            return { stdout: '', stderr: '' };
+        });
+        logs.length = 0;
+        const manager = createGateManager({
+            config,
+            cooldownMs: 1000,
+            execDocker: exec((args) => {
+                logs.push(args);
+                return reading(args);
+            }),
+        });
+        await manager.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_first\n');
+        await manager.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_second\n');
+        await manager.runGate(KEY, 'test', 'npm test');
+
+        expect(logs.filter((args) => args[0] === 'run')).toHaveLength(1);
+        expect(seen).toHaveLength(1);
+        expect(seen[0]!.file).toBe('GITHUB_TOKEN=ghs_second\n');
+        expect(seen[0]!.args.some((arg) => arg.includes('ghs_'))).toBe(false);
+        await manager.stop();
+    });
+
+    // Two ad-hoc runs re-acquire outside the key's queue: their env files must not share a temp name.
+    it('refreshes the env file under concurrent re-acquires without either failing', async () => {
+        const entry = { name: 'factory-gateenv-concurrent-refresh-test', envBody: 'GITHUB_TOKEN=ghs_0\n' };
+        await Promise.all(
+            Array.from({ length: 8 }, (_, i) => refreshGateEnv({ ...entry }, `GITHUB_TOKEN=ghs_${i + 1}\n`))
+        );
+        expect(readFileSync(gateEnvFile(entry.name), 'utf8')).toMatch(/^GITHUB_TOKEN=ghs_[1-8]\n$/);
+        rmSync(gateEnvFile(entry.name), { force: true });
     });
 
     it('tears the container down after the cooldown, and only then', async () => {
@@ -783,6 +826,41 @@ describe('the gate server', () => {
         await expect(response.json()).resolves.toEqual({ exitCode: 0, output: 'ok' });
         expect(seen).toEqual([{ key: KEY, name: 'test', command: 'npm test' }]);
         expect(acquiredFor).toEqual([JOB]);
+        await server.close();
+    });
+
+    // An ad-hoc run an hour into the agent's turn must not start on the token minted at gate setup.
+    it('acquires an ad-hoc run with the env its claim asks for now, not the one it registered', async () => {
+        const bodies: (string | undefined)[] = [];
+        const manager = {
+            acquire: async (_key: string, _image: string, envBody?: string) => {
+                bodies.push(envBody);
+            },
+            runGate: async () => ({ exitCode: 0, output: 'ok' }),
+        };
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        let asked = 0;
+        server.register('tok-fresh', {
+            key: KEY,
+            image: 'node:24',
+            job: JOB,
+            gates: [{ name: 'test', command: 'npm test' }],
+            envBody: 'GITHUB_TOKEN=ghs_setup\n',
+            freshEnv: async () => {
+                asked += 1;
+                return `GITHUB_TOKEN=ghs_run${asked}\n`;
+            },
+        });
+        const port = await server.listen();
+        for (let i = 0; i < 2; i++) {
+            const response = await fetch(`http://127.0.0.1:${port}/run`, {
+                method: 'POST',
+                headers: { authorization: 'Bearer tok-fresh' },
+                body: JSON.stringify({ gate: 'test' }),
+            });
+            expect(response.status).toBe(OK_STATUS);
+        }
+        expect(bodies).toEqual(['GITHUB_TOKEN=ghs_run1\n', 'GITHUB_TOKEN=ghs_run2\n']);
         await server.close();
     });
 

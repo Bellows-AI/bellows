@@ -1,5 +1,6 @@
 import type { BoardJob } from './board.js';
 import { evidenceDecision } from './evidence-policy.js';
+import { askGithubToken } from './loop-github.js';
 import { down, type JobState } from './loop-attempt.js';
 import type { LoopRuntime } from './loop-types.js';
 import { publishFailed } from './publish.js';
@@ -43,8 +44,7 @@ async function pushDraft(
     state: JobState,
     { revision, gone }: { revision: string | null; gone: () => boolean }
 ): Promise<PublishVerdict> {
-    const token = await rt.board.publishToken(job);
-    if (!token) rt.log(`job ${job.id}: draft publish-token ask answered nothing fresh — using the claim env`);
+    const token = await askGithubToken(rt, job, 'the draft publish');
     if (gone()) return 'gone';
     const result = await rt.runner
         .publishGit?.(job, token ?? undefined, { draft: true, ...(revision === null ? {} : { revision }) })

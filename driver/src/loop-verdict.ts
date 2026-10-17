@@ -55,18 +55,6 @@ export function publishOptionsOf(mode: 'publish' | 'draft', revision: string | n
 }
 
 /**
- * The publish-fresh token for the push: the claim's GITHUB_TOKEN was minted at claim time, and a run
- * can outlive its hour, so the board is asked for a new one. Null keeps the claim env, the shape
- * every short run still publishes with.
- */
-export async function askPublishToken(rt: LoopRuntime, job: BoardJob): Promise<string | null> {
-    const publishToken = await rt.board.publishToken(job);
-    if (!publishToken)
-        rt.log(`job ${job.id}: publish-token ask answered nothing fresh — publishing with the claim env`);
-    return publishToken;
-}
-
-/**
  * Pushes the branch and opens the PR. Deliberately NOT raced against the stand-down and not
  * abortable: a push already in flight is not a thing the driver can take back, and half a push is
  * worse than a fenced one. The caller fences before asking for the token instead (issue #472).
@@ -74,12 +62,12 @@ export async function askPublishToken(rt: LoopRuntime, job: BoardJob): Promise<s
 export async function publishBranch(
     rt: LoopRuntime,
     job: BoardJob,
-    publishToken: string | null,
+    githubToken: string | null,
     options?: PublishOptions
 ): Promise<PublishResult | null> {
     if (!rt.runner.publishGit) return null;
     return rt.runner
-        .publishGit(job, publishToken ?? undefined, options)
+        .publishGit(job, githubToken ?? undefined, options)
         .catch((e: Error) => publishFailed(`the publish threw: ${e.message}`, 'unknown'));
 }
 

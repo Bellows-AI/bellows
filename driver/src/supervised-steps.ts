@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
-import { claimCarriesGithubToken, claimEnv, claimRestoresTree, runTimeoutMs } from './claim.js';
+import { claimEnv, claimRestoresTree, runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
 import {
     HELPER_TIMEOUT_MS,
@@ -25,7 +25,6 @@ import {
     SYNC_DEADLINE_MS,
     type SyncResult,
     syncUnreadable,
-    withPublishToken,
     worktreeBranch,
     worktreeDir,
 } from './publish.js';
@@ -40,7 +39,7 @@ import { SUPERVISOR_ENV, type StepKind, type StepRequest, type StepResult } from
  * runs each as a child process of its own container, in the executor image, over the task volume it
  * mounts. Nothing here creates a Job or a container.
  *
- * Credentials ride the step and nothing else: the claim env (and a publish-fresh token) is the
+ * Credentials ride the step and nothing else: the claim env (and the board's GitHub token) is the
  * step's own environment, delivered to the supervisor over its authenticated control channel — the
  * agent container has no route to it and its spec names no such value.
  */
@@ -73,9 +72,14 @@ export function controlTokenOf(job: BoardJob): string {
     return token;
 }
 
-/** The claim env as a step's environment — the publish-fresh token laid over it when there is one. */
-const claimStepEnv = (job: BoardJob, publishToken?: string): Record<string, string> => ({
-    ...claimEnv(withPublishToken(job, publishToken)),
+/**
+ * The claim env as a step's environment, with the board's GitHub token for this step laid over it
+ * as `GITHUB_TOKEN` when the loop got one (docs/connections.md). The claim env itself never carries
+ * one: the name is reserved, so `claimEnv` drops any a board sent.
+ */
+const claimStepEnv = (job: BoardJob, githubToken?: string): Record<string, string> => ({
+    ...claimEnv(job),
+    ...(githubToken ? { GITHUB_TOKEN: githubToken } : {}),
 });
 
 const slug = (label: string): string => label.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -135,7 +139,7 @@ export function supervisedStepRunner(
     job: BoardJob,
     options: {
         kind: 'publish' | 'probe' | 'snapshot';
-        publishToken?: string | undefined;
+        githubToken?: string | undefined;
         signal?: AbortSignal | undefined;
     }
 ): RunPublishStep {
@@ -154,7 +158,7 @@ export function supervisedStepRunner(
                 cwd: publish.inRepo ? repo : null,
                 // The literals are paths and code; the claim env only for a step that reads it.
                 env: {
-                    ...(publish.env ? claimStepEnv(job, options.publishToken) : {}),
+                    ...(publish.env ? claimStepEnv(job, options.githubToken) : {}),
                     ...(publish.envLiterals ?? {}),
                 },
                 timeoutMs: PUBLISH_STEP_TIMEOUT_MS,
@@ -168,11 +172,12 @@ export function supervisedStepRunner(
 
 /**
  * The startup sync (or, for a claim that continues a session, the restore) as one supervised step:
- * a starting claim gets fetch + create-or-rebase and the claim env for the fetch's credential; a
- * continuing claim gets RESTORE=1 and no env at all — nothing that touches the remote (issue #58).
- * The step is never abandoned mid-write: a stand-down kills the group instead, which rejects it.
+ * a starting claim gets fetch + create-or-rebase, with the board's GitHub token for the fetch when
+ * the loop got one; a continuing claim gets RESTORE=1 and no env at all — nothing that touches the
+ * remote (issue #58). The step is never abandoned mid-write: a stand-down kills the group instead,
+ * which rejects it.
  */
-export async function runSyncStep(host: StepHost, job: BoardJob): Promise<SyncResult> {
+export async function runSyncStep(host: StepHost, job: BoardJob, githubToken?: string): Promise<SyncResult> {
     const { config } = host;
     const clone = repoPath(config, job);
     const worktree = worktreeDir(config, job);
@@ -186,7 +191,7 @@ export async function runSyncStep(host: StepHost, job: BoardJob): Promise<SyncRe
             id: '1',
             argv: ['node', '-e', gitWorktreeScript],
             env: {
-                ...(restore ? {} : claimStepEnv(job)),
+                ...(restore ? {} : claimStepEnv(job, githubToken)),
                 REPO: clone,
                 WORKTREE: worktree,
                 BRANCH: worktreeBranch(job),
@@ -195,8 +200,10 @@ export async function runSyncStep(host: StepHost, job: BoardJob): Promise<SyncRe
                 // A named reviewer's tree starts at the snapshot ref its caller froze (issue #549).
                 ...(job.reviewRun ? { REVIEW_REF: job.reviewRun.ref } : {}),
                 ...(base ? { BASE_BRANCH: base } : {}),
-                // The fetch's credential helper CODE; the token itself is the claim env above.
-                ...(!restore && claimCarriesGithubToken(job) ? { CRED_HELPER: CREDENTIAL_HELPER } : {}),
+                // The fetch's credential helper CODE, only beside a token: a public repo with none
+                // keeps its plain unauthenticated fetch, which a helper answering an empty password
+                // would break. The token itself is the step env above.
+                ...(!restore && githubToken ? { CRED_HELPER: CREDENTIAL_HELPER } : {}),
             },
             timeoutMs: SYNC_DEADLINE_MS,
         })

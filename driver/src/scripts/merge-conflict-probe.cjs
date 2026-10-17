@@ -15,7 +15,7 @@
 // precondition failure: there is nothing here to reconcile.
 //
 // GITHUB_TOKEN, when present (this helper always declares githubWriting: true): the fresh
-// installation token the loop mints immediately before running a github-writing helper. The
+// installation token the board mints for the loop immediately before a github-writing helper. The
 // credential-helper CODE is a literal copy of scripts/credential-helper.sh — CRED_HELPER is a
 // reserved claim env name the generic transport does not forward to a helper, and a script
 // content-passed into a container cannot require() a sibling file, so every consumer of this

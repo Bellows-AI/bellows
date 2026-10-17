@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob, VerdictEvidence } from './board.js';
 import { uploadRunArtifacts } from './artifact-upload.js';
-import { repoCacheProblem } from './claim.js';
+import { claimRestoresTree, repoCacheProblem } from './claim.js';
 import { evidenceDecision, evidencePolicyActive, type GatesOutcome, gatesEvidenceOf } from './evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from './runner.js';
 import { adoptStep } from './loop-adopt.js';
+import { askGithubToken } from './loop-github.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
 import {
@@ -32,14 +33,7 @@ import { STOOD_DOWN } from './loop-types.js';
 import type { HelperFailureReport } from './helpers.js';
 import { SYNC_FAILURE_KINDS, TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
 import { agentFaults, gatesEligible, ledgerOf, postHelperSkipWhy, skipWhyOf } from './loop-ledger.js';
-import {
-    askPublishToken,
-    publishBranch,
-    publishModeOf,
-    publishOptionsOf,
-    report,
-    reportFinish,
-} from './loop-verdict.js';
+import { publishBranch, publishModeOf, publishOptionsOf, report, reportFinish } from './loop-verdict.js';
 import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
 import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
@@ -116,7 +110,10 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     if (ctx.adopted) return null;
     const turn = await awaitSyncTurn(ctx);
     if (turn === STOOD_DOWN || 'halt' in turn) return turn;
-    const syncing = runner.syncCheckout(job, state.signal, ctx.session);
+    // A starting claim's fetch reaches GitHub; a restore, a reviewer's tree and a repo-less job do not.
+    const fetches = Boolean(job.repo) && !job.reviewRun && !claimRestoresTree(job);
+    const githubToken = fetches ? await askGithubToken(rt, job, 'the checkout sync') : null;
+    const syncing = runner.syncCheckout(job, state.signal, ctx.session, githubToken ?? undefined);
     // The turn is held until the sync's writes are over (`settled`), however the sync answered.
     turn.release(syncing.then((synced) => synced.settled).catch(() => {}));
     let syncedOut: { value: SyncResult } | null;
@@ -527,12 +524,12 @@ async function runPostHelpersAndPublish(
         // refused draft is no refusal of its own: the services fault already fails the verdict.
         const decision = evidenceDecision(job.policy, gatesEvidenceOf(outcome.evidence), job.review);
         if (!decision.ok) return { helperFailure, published, policyRefusal: mode === 'draft' ? null : decision.reason };
-        const publishToken = await askPublishToken(rt, job);
+        const githubToken = await askGithubToken(rt, job, 'the publish');
         // The fence sits BETWEEN the ask and the push: a Stop during the ask killed the runner,
         // and pushing now would outlive it. The push itself is never fenced — it cannot be
         // recalled (issue #472).
         if (await standDown(ctx, 'its publish')) return null;
-        published = await publishBranch(rt, job, publishToken, publishOptionsOf(mode, decision.revision));
+        published = await publishBranch(rt, job, githubToken, publishOptionsOf(mode, decision.revision));
         // A lease lost while the push ran stands down here WITHOUT reporting what it pushed: the
         // next holder re-runs the publish (`publishBranch` is the one call that is not abortable).
         if (await standDown(ctx, 'its publish')) return null;

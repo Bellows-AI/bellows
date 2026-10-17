@@ -143,8 +143,17 @@ describe('the test-jobs harness', () => {
             expect(line).toContain(`"$IMAGE_BASE" >${file}`);
         }
         expect(SCRIPT).toContain(
-            'docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_BASE"'
+            'docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_GH" "$IMAGE_BASE"'
         );
+    });
+
+    // The runner's GitHub token across a forced expiry (docs/connections.md): the lanes' mint board
+    // serves the runner, the open board the driver, so the file-origin sync stays credential-free.
+    it('drives the runner helper against the stand-in mint across a forced expiry', () => {
+        expect(SCRIPT).toContain('node server/dist/offline-mint.js');
+        expect(SCRIPT).toContain('RUNNER_STATS_URL="http://host.docker.internal:$MINT_PORT"');
+        expect(SCRIPT).toContain("'a token past the renewal skew is renewed'");
+        expect(SCRIPT).toContain("'no token reaches the job output'");
     });
 
     // The services readout reads the task worktree, which the sync branches from origin/main.

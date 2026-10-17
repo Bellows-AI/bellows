@@ -47,10 +47,9 @@ const REFRESH_MARGIN_MS = REFRESH_MARGIN_MINUTES * SECONDS_PER_MINUTE * MS_PER_S
 /**
  * How long a mint request may run before it is abandoned.
  *
- * A claim runs these requests inside its transaction, so GitHub answering slowly holds that claim's
- * job-row lock and one of the pool's connections for the duration — and unrelated claims,
- * heartbeats and completions all stall behind a remote request. The token POST aborts on this
- * clock; the claim surfaces the failure and its 503/retry path takes over.
+ * A runner's credential request waits on this mint, and a repo read behind it; GitHub answering
+ * slowly must not hold either open. The token POST aborts on this clock and the caller surfaces the
+ * failure.
  */
 const MINT_TIMEOUT_MS = 5000;
 
@@ -105,23 +104,27 @@ async function json(response: Response, what: string): Promise<unknown> {
     return response.json();
 }
 
+/** A narrowed runner token and the instant GitHub says it stops working (`expires_at`). */
+export interface MintedToken {
+    token: string;
+    expiresAt: string;
+}
+
 export interface InstallationTokenProvider extends TokenProvider {
     /** The installation these tokens are for, discovered on first use if it was not configured. */
     installationId(): Promise<string>;
     /**
-     * A token minted NOW, never served from the cache — for a credential that has to outlive the
-     * instant it is handed out. The claim path uses this: a runner's env is written once and the
-     * job outlives the claim, so a cached token's remaining five minutes would die mid-run. A
-     * fresh mint joins any other mint in flight FOR THE SAME REPO — concurrent claims of one repo
-     * share the one request and each still gets a full-hour token; GitHub does not invalidate the
-     * tokens it replaced.
+     * A token minted NOW for one attempt, never served from the cache and never shared with another
+     * caller: two attempts asking at once get two distinct tokens, so no attempt's credential is
+     * another's (docs/connections.md). `expiresAt` is GitHub's own `expires_at`, which the runner's
+     * helper renews ahead of.
      *
      * The token is narrowed to `repo` (`owner/name`) and to `RUNNER_TOKEN_PERMISSIONS`, so a
      * compromised run cannot push to the rest of the installation. It is therefore never what `get`
      * caches: `get` serves the repo-read path, which needs every repository. A null repo gets the
      * permission narrowing alone — there is no repository to name.
      */
-    fresh(repo?: string | null): Promise<string>;
+    fresh(repo?: string | null): Promise<MintedToken>;
 }
 
 /**
@@ -152,22 +155,19 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
 
     const installation = options.installationId;
     let cached: { token: string; expiresAt: number } | null = null;
-    // Single-flight, keyed by the scope minted for ('' is the whole installation). Two concurrent
-    // callers past a stale cache would otherwise mint two tokens and race to store one; GitHub does
-    // not invalidate the loser, but it counts against the App and the discarded token stays live
-    // for an hour. The key is the repo so one repo's in-flight mint is never handed to another.
-    const pending = new Map<string, Promise<string>>();
-    const singleFlight = (scope: string, run: () => Promise<string>): Promise<string> => {
-        let flight = pending.get(scope);
-        if (!flight) {
-            flight = run().finally(() => pending.delete(scope));
-            pending.set(scope, flight);
-        }
-        return flight;
+    // Single-flight for the cached whole-installation token. Two concurrent callers past a stale
+    // cache would otherwise mint two tokens and race to store one; GitHub does not invalidate the
+    // loser, but it counts against the App and the discarded token stays live for an hour.
+    let pending: Promise<string> | null = null;
+    const singleFlight = (run: () => Promise<string>): Promise<string> => {
+        pending ??= run().finally(() => {
+            pending = null;
+        });
+        return pending;
     };
 
     /** `scope` is the request body of a narrowed mint; null mints the whole installation. */
-    const mint = async (scope: string | null): Promise<string> => {
+    const mint = async (scope: string | null): Promise<MintedToken> => {
         const jwt = appJwt(github.appId, key, now());
 
         const response = await fetchFn(`${github.apiUrl}/app/installations/${installation}/access_tokens`, {
@@ -189,31 +189,27 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
         };
         if (!body.token) throw new GitHubAppError('installation token response carried no token');
 
-        // A scoped token cannot read the other repositories, so it is never the cache's.
-        if (scope) return body.token;
-
         // GitHub's own expiry, not now()+1h. The document says an hour; trusting the field means a
         // change on their side shortens the window here rather than producing a token this process
         // believes in for longer than it is valid.
-        const expiresAt = body.expires_at ? Date.parse(body.expires_at) : NaN;
-        cached = {
-            token: body.token,
-            expiresAt: Number.isFinite(expiresAt) ? expiresAt : now() + SECONDS_PER_HOUR * MS_PER_SECOND,
-        };
-        return body.token;
+        const parsed = body.expires_at ? Date.parse(body.expires_at) : NaN;
+        const expiresAt = Number.isFinite(parsed) ? parsed : now() + SECONDS_PER_HOUR * MS_PER_SECOND;
+        return { token: body.token, expiresAt: new Date(expiresAt).toISOString() };
     };
 
     return {
         async get() {
             if (cached && now() < cached.expiresAt - REFRESH_MARGIN_MS) return cached.token;
-            return singleFlight('', () => mint(null));
+            return singleFlight(async () => {
+                const minted = await mint(null);
+                cached = { token: minted.token, expiresAt: Date.parse(minted.expiresAt) };
+                return minted.token;
+            });
         },
 
-        async fresh(repo = null) {
-            // Single-flight per repo, since a mint bypassing it would leave the loser live for an
-            // hour, counting against the App.
-            return singleFlight(repo ?? '', () => mint(scopeBody(repo)));
-        },
+        // No single-flight: a scoped mint is one attempt's credential, and sharing an in-flight
+        // one would hand two attempts the same token.
+        fresh: async (repo = null) => mint(scopeBody(repo)),
 
         async installationId() {
             return installation;

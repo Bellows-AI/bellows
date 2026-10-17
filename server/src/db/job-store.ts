@@ -6,12 +6,12 @@
  * - `job-store-types.ts` — every shape: `Job`, `Claim`, the `JobStore` contract, results, deps.
  * - `job-store-rows.ts` — row shapes, mappers and the shared SQL fragments.
  * - `job-store-claim.ts` — the worker's claim and the reclaim claim/ack.
- * - `job-store-worker.ts` — heartbeat, reports, publish token, `complete` and the workflow walk.
+ * - `job-store-worker.ts` — heartbeat, reports, `complete` and the workflow walk.
  * - `job-store-actions.ts` — member actions: create, follow up, done, reopen, stop, suspend,
  *   remove, and the wait-control pair (issue #328).
  * - `job-store-questions.ts` — the agent's questions (050): ask, expire, answer, and their reads.
  * - `job-store-reads.ts` — get, thread, list, and the task list.
- * - `job-store-org-resolvers.ts` — org-of-lease/job/reclaim, and the minted-token base layer.
+ * - `job-store-org-resolvers.ts` — org-of-lease/job/reclaim.
  *
  * Import from the file that owns a name; there is no barrel. Read docs/jobs.md before touching any
  * of them: the decisions here look simplifiable and mostly are not.
@@ -55,14 +55,7 @@ import {
     publicationColumnsFragment,
 } from './job-store-rows.js';
 import type { CreateJobStoreDeps, JobStore, JobStoreContext, RuntimeVitals } from './job-store-types.js';
-import {
-    heartbeatJob,
-    sessionReport,
-    progressReport,
-    gatesReport,
-    publishTokenJob,
-    completeJob,
-} from './job-store-worker.js';
+import { heartbeatJob, sessionReport, progressReport, gatesReport, completeJob } from './job-store-worker.js';
 
 /**
  * The worker-report method bindings — the claim-to-verdict half of the store. Split out of
@@ -82,7 +75,6 @@ function workerMethods(
     | 'askQuestion'
     | 'requestReview'
     | 'readReview'
-    | 'publishToken'
     | 'complete'
     | 'leases'
     | 'artifactScope'
@@ -128,11 +120,6 @@ function workerMethods(
             return readReviewFor(ctx, id, leaseToken, key);
         },
 
-        async publishToken(id, leaseToken) {
-            await gate();
-            return publishTokenJob(ctx, id, leaseToken);
-        },
-
         async complete(id, leaseToken, result) {
             await gate();
             return completeJob(ctx, id, leaseToken, result);
@@ -164,7 +151,17 @@ function workerMethods(
 export { INTERRUPTION_BUDGET } from './job-store-actions.js';
 
 export function createJobStore(deps: CreateJobStoreDeps): JobStore {
-    const { sql, orgId, hasWorkspaces = true, ready, env, githubToken, plan: planReader, executorConfig, prs } = deps;
+    const {
+        sql,
+        orgId,
+        hasWorkspaces = true,
+        ready,
+        env,
+        githubApp = false,
+        plan: planReader,
+        executorConfig,
+        prs,
+    } = deps;
     const gate = async () => {
         if (ready) await ready;
     };
@@ -174,7 +171,7 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         orgId,
         hasWorkspaces,
         env,
-        githubToken,
+        githubApp,
         planReader,
         executorConfig,
         prs,

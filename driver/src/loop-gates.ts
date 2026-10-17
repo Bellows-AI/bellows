@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob, DeclaredGate } from './board.js';
-import { CONTROL_TOKEN_ENV, CONTROL_URL_ENV, envFileBody, setupTimeoutMs } from './claim.js';
+import { CONTROL_TOKEN_ENV, CONTROL_URL_ENV, gateEnvBody, setupTimeoutMs } from './claim.js';
 import { tailBytes, type DeadService } from './runner.js';
 import { declaredTimeoutMs, type GateRun } from './gates.js';
 import { clearPendingQuestions, down, raceStep } from './loop-attempt.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
 import type { JobState } from './loop-attempt.js';
+import { askGithubToken } from './loop-github.js';
 import { createPublishRelay } from './loop-publish.js';
 import { createQuestionRelay } from './loop-questions.js';
 import { createReviewRelay, reviewerQuestionRelay } from './loop-review.js';
@@ -75,9 +76,9 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
     // that names no repository has no worktree and no gates either.
     const key = worktreeRelDir(job);
     if (!key) return null;
-    // The environment starts with the claim's own env — resolved for THIS author and repo —
-    // which is exactly what a test suite needs to reach the forge.
-    const envBody = envFileBody(job);
+    // The environment starts with the claim's own env — resolved for THIS author and repo — and a
+    // GitHub token fetched now, which is what a test suite needs to reach the forge.
+    const envBody = await gateEnvNow(rt, job, 'the gate environment');
     // The job is the kubernetes gate manager's attempt context — its gate Jobs carry the
     // job and lease labels, and their names are derived from them. The docker manager joins
     // the attempt's services network by it.
@@ -91,7 +92,14 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
     try {
         const port = await gates.server.listen();
         const token = randomUUID();
-        gates.server.register(token, { key, image: job.gates.image, envBody, job, gates: job.gates.gates });
+        gates.server.register(token, {
+            key,
+            image: job.gates.image,
+            envBody,
+            job,
+            gates: job.gates.gates,
+            freshEnv: () => gateEnvNow(rt, job, 'a gate run'),
+        });
         // Beside `env`, not inside it: the reserved-name filter keeps a member-configured
         // BELLOWS_GATE_* out of the claim lines, and these are the driver's own minted values.
         // The run-control pair, minted earlier (`openRunControl`, before the sync), stays beside it.
@@ -246,13 +254,29 @@ interface GatesRunCtx {
     signal: AbortSignal;
 }
 
+/**
+ * The gate environment's body with a GitHub token asked now: every gate run starts on a token of
+ * its own, and a run is never renewed (docs/connections.md).
+ */
+const gateEnvNow = async (rt: LoopRuntime, job: BoardJob, what: string): Promise<string> => {
+    // `beginGates` adds the gate server's own pair to `job.gateEnv` for the agent; a gate run never
+    // gets it, or a gate could call `/run` on its own checkout and wait behind itself.
+    const gateEnv = Object.fromEntries(
+        Object.entries(job.gateEnv ?? {}).filter(([name]) => !GATE_SERVER_PAIR.includes(name))
+    );
+    return gateEnvBody({ ...job, gateEnv }, await askGithubToken(rt, job, what));
+};
+
+/** The gate server's URL and token, the agent's alone. */
+const GATE_SERVER_PAIR: readonly string[] = ['BELLOWS_GATE_URL', 'BELLOWS_GATE_TOKEN'];
+
 /** One declared gate's re-acquire-then-run outcome, folding a re-acquire failure into a failed gate. */
 async function runOneGate(ctx: GatesRunCtx, gate: DeclaredGate): Promise<GateRun | null> {
     const { rt, job, gateSession, state, signal } = ctx;
     const { gates } = rt;
     if (!gates) return null;
-    return gates.manager
-        .acquire(gateSession.key, gateSession.image, gateSession.envBody, { job })
+    return gateEnvNow(rt, job, `gate ${gate.name}`)
+        .then((envBody) => gates.manager.acquire(gateSession.key, gateSession.image, envBody, { job }))
         .then(() => {
             // The heartbeat can mark the lease lost — or the task stopped or removed — while
             // acquire is pending: a slow revival or cluster request outlives the beat that said
@@ -361,8 +385,8 @@ async function retryFailedSetup(ctx: GatesRunCtx): Promise<GateFailure | null> {
     const { rt, job, gateSession, state, signal } = ctx;
     const manager = rt.gates?.manager;
     if (!manager) return null;
-    const retried = manager
-        .acquire(gateSession.key, gateSession.image, gateSession.envBody, { job })
+    const retried = gateEnvNow(rt, job, 'the setup retry')
+        .then((envBody) => manager.acquire(gateSession.key, gateSession.image, envBody, { job }))
         .then(() => (down(state) ? null : manager.runSetup(gateSession.key, { signal })))
         .catch((e: Error): GateRun => ({ exitCode: REFUSED_TO_RUN_EXIT_CODE, output: e.message }));
     const outcome = (await raceStep(state.signal, retried))?.value;

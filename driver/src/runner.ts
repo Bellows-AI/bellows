@@ -283,12 +283,12 @@ export interface Runner {
      * describe work that exists only in a local checkout. The loop decides WHEN this is called (a
      * succeeded run, gates passed, and nothing else); a runner that cannot publish answers the
      * refusal in the result — or does not implement the method at all, which the loop reads as
-     * "this platform does not publish". `publishToken` is the board's publish-fresh credential
-     * (the claim's can be an hour past expiry by push time); both transports lay it over the
-     * claim env through withPublishToken, so neither can drift. `draft` opens a NEW pull request as
-     * a draft (the agent's mid-run publish); an existing PR is reused whatever its state.
+     * "this platform does not publish". `githubToken` is the board's token minted for this push
+     * (docs/connections.md); both transports lay it into the publish steps' env the same way
+     * (`supervisedStepRunner`), so neither can drift. `draft` opens a NEW pull request as a draft
+     * (the agent's mid-run publish); an existing PR is reused whatever its state.
      */
-    publishGit?(job: BoardJob, publishToken?: string, options?: PublishOptions): Promise<PublishResult>;
+    publishGit?(job: BoardJob, githubToken?: string, options?: PublishOptions): Promise<PublishResult>;
     /**
      * The task tree's fingerprint now (`probeTreeFingerprint`): the probe step over the same
      * transport `publishGit` uses, read only after a declared gate failed. Null is unknown.
@@ -328,8 +328,15 @@ export interface Runner {
      * and no verdict lands. An aborted `signal` (the attempt's stand-down) detaches the docker client only: a sync
      * writes the worktree, so it is never killed mid-write, and kubernetes does not take the signal
      * at all — the abandoned sync finishes and `releaseAbandonedSync` hands its claim back.
+     * `githubToken` is the board's token minted for the starting claim's fetch; absent, the fetch
+     * runs unauthenticated.
      */
-    syncCheckout(job: BoardJob, signal?: AbortSignal, session?: RunSession | null): Promise<SyncResult>;
+    syncCheckout(
+        job: BoardJob,
+        signal?: AbortSignal,
+        session?: RunSession | null,
+        githubToken?: string
+    ): Promise<SyncResult>;
     /**
      * Ends the attempt's task group (issue #771): the supervisor that ran the sync, serves the
      * probe, the helpers and the publish, and held the agent. The group exists from the attempt's

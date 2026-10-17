@@ -1176,11 +1176,19 @@ echo 'building the images on the host daemon'
 # points: the task supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real
 # entrypoints honor.
 cp docker/claude-executor/ctl-agent.cjs scripts/stub-agent.sh "$work/"
+cp docker/claude-executor/github-credential.cjs "$work/"
 printf '%s\n' \
     'echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}' \
     'echo "$@"' \
     'for arg in "$@"; do' \
     '    case "$arg" in' \
+    '    *factory-stub-github*)' \
+    '        node /usr/local/bin/github-credential.cjs token >/dev/null 2>/tmp/github.err; echo "github exit $?"' \
+    '        cat /tmp/github.err' \
+    '        grep -q " /run/factory-github tmpfs " /proc/mounts && echo "github cache tmpfs"' \
+    '        env | grep -q -e "^GITHUB_TOKEN=" -e "^GH_TOKEN=" || echo "github no env token"' \
+    '        break' \
+    '        ;;' \
     '    *factory-stub-sleep-*)' \
     '        n="${arg##*factory-stub-sleep-}"' \
     '        sleep "${n%%[!0-9]*}"' \
@@ -1191,7 +1199,7 @@ printf '%s\n' \
     'done' >"$work/stub.sh"
 docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >/dev/null &&
     docker build -f docker/driver.Dockerfile -q -t "$DRIVER_IMAGE" . >/dev/null &&
-    printf 'FROM public.ecr.aws/docker/library/node:24-alpine\nRUN apk add --no-cache git\nCOPY stub.sh /stub.sh\nCOPY ctl-agent.cjs stub-agent.sh /usr/local/bin/\nRUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory\nUSER node\nENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' >"$work/stub.Dockerfile" &&
+    printf 'FROM public.ecr.aws/docker/library/node:24-alpine\nRUN apk add --no-cache git\nCOPY stub.sh /stub.sh\nCOPY ctl-agent.cjs stub-agent.sh /usr/local/bin/\nCOPY github-credential.cjs /usr/local/bin/\nRUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory\nUSER node\nENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' >"$work/stub.Dockerfile" &&
     docker build -q -t "$STUB_IMAGE" -f "$work/stub.Dockerfile" "$work" >/dev/null &&
     docker pull -q "$COLLECTOR_IMAGE" >/dev/null 2>&1 || {
     echo 'test-k8s: image build or pull failed'
@@ -1564,6 +1572,40 @@ expect_contains 'the org config reached the pod' "$org_result" 'org-team-model'
 # factory.job label the spec stamps on it (the release labels belong to the chart's objects).
 job_object="$(kubectl get jobs -l factory.job -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
 [ "${job_object:-0}" -ge 1 ] && ok 'a runner Job object exists' || bad 'a runner Job object exists' "none found"
+
+# --- The runner's GitHub token (docs/connections.md) --------------------------------------------
+#
+# The cluster's board is the offline entry, which holds no App: the runner pod's image helper asks
+# the credential route with the attempt pair and is told so (409 GITHUB_UNAVAILABLE), saying it on
+# stderr. The same pod shows the helper's cache is a Memory emptyDir (tmpfs) and that no GitHub
+# token rides its env. Renewal across an expiry is the docker lane's (scripts/test-jobs.sh), whose
+# host-side board can carry the stand-in mint.
+
+echo
+echo '# github credential'
+
+gh_id="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ command: "factory-stub-github", executor: "claude", repo: process.argv[2] }) })
+    .then(async (r) => { const b = await r.json().catch(() => ({})); process.stdout.write(r.status === 201 ? String(b.id ?? "") : ""); })
+    .catch(() => {});
+' "$BASE/api/jobs" "$SMOKE_REPO")"
+gh_result=""
+for _ in $(seq 1 120); do
+    gh_result="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers })
+    .then(async (r) => { const j = await r.json(); process.stdout.write(j.status + "\t" + String(j.output ?? "")); })
+    .catch(() => process.stdout.write("queued\t"));
+' "$BASE/api/jobs/$gh_id")"
+    case "$gh_result" in
+    queued* | running*) sleep 1 ;;
+    *) break ;;
+    esac
+done
+expect_contains 'the github helper job ran to completion'          "$gh_result" 'succeeded'
+expect_contains 'the helper reaches the credential route and is refused' "$gh_result" 'github exit 1'
+expect_contains 'the refusal is the App-less board, said on stderr'  "$gh_result" 'no GitHub App installation'
+expect_contains "the helper's cache is a Memory emptyDir"           "$gh_result" 'github cache tmpfs'
+expect_contains 'the runner pod carries no GitHub token in its env'  "$gh_result" 'github no env token'
 
 # --- The orphan reaper (issue #301), against the real apiserver ---------------------------------
 #
