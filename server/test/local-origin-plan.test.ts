@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { READ_TRANSPORT } from '@factory-ai/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createLocalPlanReader, LOCAL_ORIGINS_DIR } from '../src/github/local-origin-plan.js';
 
@@ -94,6 +95,49 @@ describe('the local origin plan reader', () => {
         const { dir } = mirror('acme/web', [SERVICE]);
 
         expect((await createLocalPlanReader(dir).read('acme/web', 'release')).error).toContain('acme/web');
+    });
+
+    it('refuses a revision expression as a branch name instead of resolving it', async () => {
+        const { dir } = mirror('acme/web', [SERVICE, null]);
+
+        expect(await createLocalPlanReader(dir).read('acme/web', 'main~1')).toMatchObject({
+            revision: null,
+            services: [],
+            error: expect.stringContaining('acme/web'),
+        });
+    });
+
+    it('rejects as an outage when the mirror path cannot be checked', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'origins-'));
+        roots.push(dir);
+        mkdirSync(join(dir, 'acme'));
+        symlinkSync('web.git', join(dir, 'acme', 'web.git'));
+
+        await expect(createLocalPlanReader(dir).read('acme/web', 'main')).rejects.toMatchObject({
+            kind: READ_TRANSPORT,
+        });
+    });
+
+    it('rejects as an outage when git cannot read the mirror, for either branch form', async () => {
+        const { dir } = mirror('acme/web', [SERVICE]);
+        rmSync(join(dir, 'acme/web.git', 'HEAD'));
+
+        for (const branch of ['main', null]) {
+            await expect(createLocalPlanReader(dir).read('acme/web', branch)).rejects.toMatchObject({
+                kind: READ_TRANSPORT,
+            });
+        }
+    });
+
+    it('rejects as an outage when the branch tip tree cannot be read', async () => {
+        const { dir, tip } = mirror('acme/web', [SERVICE]);
+        const gitDir = join(dir, 'acme/web.git');
+        const tree = git(['--git-dir', gitDir, 'rev-parse', `${tip}^{tree}`]);
+        rmSync(join(gitDir, 'objects', tree.slice(0, 2), tree.slice(2)));
+
+        await expect(createLocalPlanReader(dir).read('acme/web', 'main')).rejects.toMatchObject({
+            kind: READ_TRANSPORT,
+        });
     });
 
     // Every other offline harness (verify:ui, the route tests) mirrors nothing: there a claim

@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { BELLOWS_FILE, createPlanReader, type PlanRead, type PlanReader } from '../workspace/bellows-plan.js';
-import { READ_BINDING } from '@factory-ai/core';
+import { READ_BINDING, READ_TRANSPORT } from '@factory-ai/core';
 import { MAX_FILE_BYTES, type RepoFileRead } from './file-read.js';
 import { GitHubReadError } from './pr-read.js';
 
@@ -24,43 +24,51 @@ const unplanned = (error: string | null): PlanRead => ({
     error,
 });
 
+/** Whether `path` exists: only a missing path is absence — a permission error or a symlink loop is the outage. */
 const exists = (path: string) =>
     stat(path).then(
         () => true,
-        () => false
+        (e: NodeJS.ErrnoException) => {
+            if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return false;
+            throw new GitHubReadError(`${path}: ${e.message}`, READ_TRANSPORT);
+        }
     );
 
-/** The commit `ref` names in the bare repository at `gitDir`, or null when it names none. */
-async function commitOf(gitDir: string, ref: string): Promise<string | null> {
+/**
+ * `git` against the bare repository at `gitDir`: its stdout, or null when it exits 1 (`symbolic-ref -q`
+ * on a HEAD that names no branch). Any other failure is an outage, never an absence.
+ */
+async function git(gitDir: string, args: string[]): Promise<string | null> {
     try {
-        const { stdout } = await run('git', [
-            '--git-dir',
-            gitDir,
-            'rev-parse',
-            '--verify',
-            '--quiet',
-            `${ref}^{commit}`,
-        ]);
-        return stdout.trim() || null;
-    } catch {
-        return null;
+        return (await run('git', ['--git-dir', gitDir, ...args])).stdout;
+    } catch (e) {
+        if ((e as { code?: unknown }).code === 1) return null;
+        throw new GitHubReadError(`git ${args[0]} in ${gitDir}: ${(e as Error).message}`, READ_TRANSPORT);
     }
+}
+
+/** The commit at the tip of `branch` (the default branch when null) — an exact branch ref, never a revision expression. */
+async function tipOf(gitDir: string, branch: string | null): Promise<string | null> {
+    const ref = branch ? `refs/heads/${branch}` : (await git(gitDir, ['symbolic-ref', '-q', 'HEAD']))?.trim();
+    if (!ref) return null;
+    // Exits 0 whether or not the ref exists; a pattern can match more, so only the exact name counts.
+    const refs = (await git(gitDir, ['for-each-ref', '--format=%(refname) %(objectname)', ref])) ?? '';
+    const line = refs.split('\n').find((entry) => entry.startsWith(`${ref} `));
+    return line ? line.slice(ref.length + 1) : null;
 }
 
 /** `readFileAtBranchTip` over a local bare repository, in the shape the App client answers it. */
 async function readAtBranchTip(gitDir: string, branch: string | null, path: string): Promise<RepoFileRead | null> {
-    const revision = await commitOf(gitDir, branch ? `refs/heads/${branch}` : 'HEAD');
+    const revision = await tipOf(gitDir, branch);
     if (!revision) return null;
-    let size: number;
-    try {
-        size = Number((await run('git', ['--git-dir', gitDir, 'cat-file', '-s', `${revision}:${path}`])).stdout);
-    } catch {
-        return { revision, text: null };
-    }
-    if (size > MAX_FILE_BYTES)
+    // `<mode> <type> <oid> <size>\t<path>`, or nothing at all for a path the commit does not have.
+    const entry = (await git(gitDir, ['ls-tree', '-l', revision, '--', path]))?.trim();
+    if (!entry) return { revision, text: null };
+    const [, type, oid, size] = entry.split(/\s+/);
+    if (type !== 'blob' || !oid) throw new GitHubReadError(`${path} is not a file`, READ_BINDING);
+    if (Number(size) > MAX_FILE_BYTES)
         throw new GitHubReadError(`${path} is larger than ${MAX_FILE_BYTES} bytes`, READ_BINDING);
-    const { stdout } = await run('git', ['--git-dir', gitDir, 'cat-file', 'blob', `${revision}:${path}`]);
-    return { revision, text: stdout };
+    return { revision, text: (await git(gitDir, ['cat-file', 'blob', oid])) ?? '' };
 }
 
 /**
