@@ -1,7 +1,10 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { GO_MARKER, MAILBOX_FILES, MAILBOXES } from '../src/supervisor-contract.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /*
@@ -10,6 +13,12 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
  * failure is never the stub's fault, and the lane's wiring.
  */
 const ENDPOINT = join(ROOT, 'scripts/fake-model-endpoint.mjs');
+/** The step ids the supervisor accepts (`STEP_ID` of supervisor.cjs). */
+const STEP_ID = /^[A-Za-z0-9_.:-]{1,160}$/;
+process.env.SUPERVISOR_NO_MAIN = '1';
+const supervisor = createRequire(import.meta.url)('../src/scripts/supervisor.cjs') as {
+    supervise: (env: Record<string, string>, log: (line: string) => void) => Promise<number>;
+};
 
 interface Endpoint {
     agentRequests: number;
@@ -192,6 +201,82 @@ describe('the scripted model endpoint in ask-prose mode (issue #226)', () => {
     });
 });
 
+describe('the scripted model endpoint as the step channel (issue #812)', () => {
+    const poll = async (url: string, wait = 0) =>
+        (await (await fetch(`${url}/step?wait=${wait}`)).json()) as {
+            step?: { id: string; kind: string; argv: unknown[] };
+        };
+    const post = (url: string, path: string, body: object) =>
+        fetch(`${url}${path}`, { method: 'POST', body: JSON.stringify(body) });
+
+    it('releases the agent on the first poll, then finishes once the supervisor reports', async () => {
+        const { url } = await start();
+
+        const go = await poll(url);
+        expect(go.step).toMatchObject({ kind: 'go', argv: [] });
+        expect(go.step!.id).toMatch(STEP_ID);
+        expect(await poll(url)).toEqual({});
+
+        const acked = await post(url, `/step/${go.step!.id}`, { exitCode: 0, stdout: '', stderr: '', timedOut: false });
+        expect(acked.status).toBe(200);
+        expect(await acked.json()).toEqual({ ok: true });
+
+        // A poll held open when the report lands is answered with the finish at once.
+        const held = poll(url, 10_000);
+        const reported = await post(url, '/report', { agentEnd: 'exit', drained: true });
+        expect(await reported.json()).toEqual({ ok: true });
+        const finish = await held;
+        expect(finish.step).toMatchObject({ kind: 'finish', argv: [] });
+        expect(finish.step!.id).toMatch(STEP_ID);
+        expect(await poll(url)).toEqual({});
+    });
+
+    it('drops a held poll whose client went away, so the finish reaches the live poll', async () => {
+        const { url } = await start();
+        await poll(url);
+
+        const cancel = new AbortController();
+        const gone = fetch(`${url}/step?wait=10000`, { signal: cancel.signal }).catch(() => undefined);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        cancel.abort();
+        await gone;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        const live = poll(url, 10_000);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await post(url, '/report', { agentEnd: 'exit', drained: true });
+        expect((await live).step).toMatchObject({ kind: 'finish' });
+    });
+
+    it('drives the real supervisor from go to its exit', async () => {
+        const { url } = await start();
+        const root = mkdtempSync(join(tmpdir(), 'lane-group-'));
+        const box = (name: keyof typeof MAILBOXES) => join(root, MAILBOXES[name].path.split('/').pop()!);
+        try {
+            const done = supervisor.supervise(
+                {
+                    FACTORY_CTL_ROOT: root,
+                    SUPERVISOR_CONTROL_URL: url,
+                    SUPERVISOR_CONTROL_TOKEN: 'lane',
+                    SUPERVISOR_TICK_MS: '10',
+                    SUPERVISOR_CONTROL_MS: '10',
+                    SUPERVISOR_STEP_WAIT_MS: '200',
+                    // The endpoint answers every call, so only a failed run ever reaches this: it
+                    // keeps a stray supervisor from outliving the test by the default 90s.
+                    SUPERVISOR_ORPHAN_MS: '2000',
+                },
+                () => {}
+            );
+            await vi.waitFor(() => expect(existsSync(join(box('in'), MAILBOX_FILES.go))).toBe(true), { timeout: 5000 });
+            writeFileSync(join(box('out'), MAILBOX_FILES.agentExit), '0\n');
+
+            await expect(done).resolves.toBe(0);
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+});
+
 describe('the test-jobs ask lane', () => {
     const script = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
 
@@ -216,5 +301,10 @@ describe('the test-jobs cooperative-Stop lane', () => {
         expect(script).toContain('stop_lane claude');
         expect(script).toContain('stop_lane opencode');
         expect(script).toContain('makes no model request after the stop');
+    });
+
+    // The real entrypoints wait on the go marker the endpoint's `go` order makes the supervisor write.
+    it('gives the agent the go marker its entrypoint waits on', () => {
+        expect(script).toContain(`-e FACTORY_CTL_GO=${GO_MARKER}`);
     });
 });
