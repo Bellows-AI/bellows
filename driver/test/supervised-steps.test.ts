@@ -443,7 +443,7 @@ describe('the agent environment holds no publish token', () => {
     it('specs an agentless attempt’s group, and a reclaim’s, with no agent container at all', () => {
         const agentless = runnerJobSpec(config, { ...job, agent: false } as BoardJob, null);
         expect(agentless.spec.template.spec.containers.map((c) => c.name)).toEqual([SUPERVISOR_CONTAINER]);
-        const reclaim = reclaimGroupSpec(config, job);
+        const reclaim = reclaimGroupSpec(config, job, job.leaseToken);
         expect(reclaim.spec.template.spec.containers.map((c) => c.name)).toEqual([SUPERVISOR_CONTAINER]);
         expect(reclaim.metadata.name).not.toBe(group.metadata.name);
         expect(holds(reclaim)).not.toContain(CLAIM_TOKEN);

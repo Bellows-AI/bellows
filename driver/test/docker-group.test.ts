@@ -163,7 +163,7 @@ describe('creating and starting the group', () => {
 
     it('creates the four labelled volumes, then the supervisor, then the exporter', async () => {
         const { calls, deps } = recorder();
-        await createGroup(deps, job, SESSION, START);
+        await createGroup(deps, job, SESSION, { startedAt: START });
         expect(calls.slice(0, 4)).toEqual(ctlVolumeArgs(job));
         const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
         expect(created).toEqual([supervisorName(job), exporterName(job)]);
@@ -171,7 +171,7 @@ describe('creating and starting the group', () => {
 
     it('writes only the control pair to a 0600 env file per container and removes each', async () => {
         const { written, removed, deps } = recorder();
-        await createGroup(deps, job, SESSION, START);
+        await createGroup(deps, job, SESSION, { startedAt: START });
         expect(written.map((w) => w.body)).toEqual([
             'SUPERVISOR_CONTROL_URL=http://driver:7000\nSUPERVISOR_CONTROL_TOKEN=tok-supervisor\n',
             // The exporter's script reads the names it always read; the value is the supervisor's token.
@@ -183,14 +183,14 @@ describe('creating and starting the group', () => {
 
     it('creates no exporter for a run without a transcript to export, and the supervisor still', async () => {
         const { calls, deps } = recorder();
-        await createGroup(deps, { ...job, executorType: 'opencode' }, null, START);
+        await createGroup(deps, { ...job, executorType: 'opencode' }, null, { startedAt: START });
         const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
         expect(created).toEqual([supervisorName(job)]);
     });
 
     it('removes what it created and throws when the daemon refuses a container', async () => {
         const { calls, deps } = recorder((argv) => argv[0] === 'create' && argv.includes(exporterName(job)));
-        await expect(createGroup(deps, job, SESSION, START)).rejects.toThrow('daemon said no');
+        await expect(createGroup(deps, job, SESSION, { startedAt: START })).rejects.toThrow('daemon said no');
         expect(calls).toContainEqual(['rm', '-f', supervisorName(job)]);
         for (const box of Object.values(MAILBOXES)) {
             expect(calls).toContainEqual(['volume', 'rm', '-f', ctlVolumeName(job, box)]);

@@ -1,16 +1,19 @@
 import type { BoardJob } from './board.js';
-import { GATE_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
+import { containerName } from './docker.js';
+import { GATE_LABEL, JOB_LABEL, LEASE_LABEL, RECLAIM_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
 import { networkName } from './services.js';
 import { alreadyGone, linesOf, type ExecDocker } from './docker-runner-support.js';
 import type { OrphanGroup, OrphanObject, ReaperArm } from './reaper.js';
 
 /**
- * The docker half of the orphan reaper (issue #301): label-filtered `docker ps`, container
- * removal, and the per-attempt services network's teardown — the twin of `dockerServiceTeardown`
- * and the docker fence acting on fleets whose attempt can never tear itself down. Scope is the
- * SERVICE and GATE labels (issue #667): the runner container is `--rm`ed by its own verdict path
- * and swept by the fence at the next claim; the service fleet and a dead driver's gate
- * environment are the parts observed rotting.
+ * The docker half of the orphan reaper (issue #301): label-filtered `docker ps` and `volume ls`,
+ * container and volume removal, and the per-attempt services network's teardown — the twin of
+ * `dockerServiceTeardown` and the docker fence acting on what an attempt can never tear down
+ * itself. Scope: the SERVICE and GATE labels (issue #667) and an attempt's task group (issue
+ * #821) — every container carrying the ROLE label (agent, supervisor, exporter) and every volume
+ * carrying the job and lease labels (its mailboxes and kill markers). An exited runner container
+ * is unread: the next claim adopts it. A terminal reclaim's group (`RECLAIM_LABEL`) is never in
+ * scope, and a scan any one list or inspect of which the daemon refused answers nothing.
  */
 
 /**
@@ -29,9 +32,9 @@ export function parseDockerCreatedAt(raw: string): number {
     return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-/** One `docker ps --format '{{json .}}'` row the reaper can use, or null for junk. */
+/** One listed row the reaper can use — a container or a volume — or null for junk. */
 interface PsRow {
-    id: string;
+    object: OrphanObject;
     name: string;
     jobId: string;
     leaseToken: string;
@@ -45,33 +48,75 @@ const labelOf = (labels: string, name: string): string | undefined => {
     return pair?.slice(prefix.length);
 };
 
-const parsePsRow = (line: string, scopeLabel: string): PsRow | null => {
-    let fields: { ID?: unknown; Names?: unknown; Labels?: unknown; CreatedAt?: unknown };
+/** One row's JSON fields, or null for a line that does not parse. */
+const fieldsOf = (
+    line: string
+): { ID?: unknown; Name?: unknown; Names?: unknown; Labels?: unknown; CreatedAt?: unknown; State?: unknown } | null => {
     try {
-        fields = JSON.parse(line) as typeof fields;
+        return JSON.parse(line) as Record<string, unknown>;
     } catch {
         return null;
     }
-    if (typeof fields.ID !== 'string' || !fields.ID) return null;
-    const labels = typeof fields.Labels === 'string' ? fields.Labels : '';
-    const jobId = labelOf(labels, JOB_LABEL);
-    const leaseToken = labelOf(labels, LEASE_LABEL);
-    // The service label is the arm's scope: a runner container carries only the pair above, and
-    // the fence — not the reaper — is what owns it. Checked here as well as in the argv filter,
-    // because the argv is the daemon's instruction and this is the row's proof.
-    const scoped = labelOf(labels, scopeLabel);
-    if (!jobId || !leaseToken || !scoped) return null;
-    const createdAtMs = typeof fields.CreatedAt === 'string' ? parseDockerCreatedAt(fields.CreatedAt) : 0;
-    const name = typeof fields.Names === 'string' ? fields.Names : '';
-    return { id: fields.ID, name, jobId, leaseToken, createdAtMs };
 };
 
-type Groups = Map<string, { ids: string[]; group: OrphanGroup }>;
+/** The job and lease pair a row's labels carry, or null for a row out of the reaper's scope. */
+const pairOf = (labels: string, scopeLabel: string): { jobId: string; leaseToken: string } | null => {
+    const jobId = labelOf(labels, JOB_LABEL);
+    const leaseToken = labelOf(labels, LEASE_LABEL);
+    // The scope label is checked here as well as in the argv filter, because the argv is the
+    // daemon's instruction and this is the row's proof; a reclaim group is never in scope.
+    if (!jobId || !leaseToken || !labelOf(labels, scopeLabel) || labelOf(labels, RECLAIM_LABEL)) return null;
+    return { jobId, leaseToken };
+};
+
+const parsePsRow = (line: string, scopeLabel: string): PsRow | null => {
+    const fields = fieldsOf(line);
+    if (!fields || typeof fields.ID !== 'string' || !fields.ID) return null;
+    const pair = pairOf(typeof fields.Labels === 'string' ? fields.Labels : '', scopeLabel);
+    if (!pair) return null;
+    const createdAtMs = typeof fields.CreatedAt === 'string' ? parseDockerCreatedAt(fields.CreatedAt) : 0;
+    const name = typeof fields.Names === 'string' ? fields.Names : '';
+    // The objects are named by ID, not by container name: the id is what the removal argv uses,
+    // and a name could address whatever owns it at removal time. An exited runner is the next
+    // claim's to adopt (issue #792): never reaped unread.
+    const exitedRunner =
+        scopeLabel === ROLE_LABEL &&
+        fields.State === 'exited' &&
+        name === containerName({ id: pair.jobId, leaseToken: pair.leaseToken } as BoardJob);
+    const object: OrphanObject = {
+        kind: 'container',
+        name: fields.ID,
+        ...(exitedRunner ? { unread: true as const } : {}),
+        // A task group's container: a live job's is its next claim's fence's, whatever the scan saw.
+        ...(scopeLabel === ROLE_LABEL ? { runner: true as const } : {}),
+    };
+    return { object, name, ...pair, createdAtMs };
+};
+
+type Groups = Map<string, OrphanGroup>;
+
+/** Files one row under its (job, lease) group; the group's age is its oldest object's. */
+const addRow = (groups: Groups, row: PsRow): void => {
+    const key = `${row.jobId}|${row.leaseToken}`;
+    const existing = groups.get(key);
+    if (existing) {
+        existing.objects.push(row.object);
+        if (row.createdAtMs < existing.createdAtMs) existing.createdAtMs = row.createdAtMs;
+        return;
+    }
+    groups.set(key, {
+        jobId: row.jobId,
+        leaseToken: row.leaseToken,
+        createdAtMs: row.createdAtMs,
+        objects: [row.object],
+    });
+};
 
 /**
- * One scope's rows, grouped by (job, lease). `keep` spares a row the reaper must not touch — a
- * gate environment this very driver still holds, whose creation-time labels name an attempt the
- * environment has since passed from.
+ * One scope's container rows, grouped by (job, lease). `keep` spares a row the reaper must not
+ * touch — a gate environment this very driver still holds, whose creation-time labels name an
+ * attempt the environment has since passed from. Rejects when the daemon refused the list: the
+ * daemon answering nothing is not the daemon answering "nothing is orphaned".
  */
 const scanScope = async (
     execDocker: ExecDocker,
@@ -79,44 +124,68 @@ const scanScope = async (
     keep: (row: PsRow) => boolean,
     groups: Groups
 ): Promise<void> => {
-    let stdout: string;
-    try {
-        stdout = (await execDocker(['ps', '-a', '--filter', `label=${scopeLabel}`, '--format', '{{json .}}'])).stdout;
-    } catch {
-        // The daemon answering nothing is not the daemon answering "nothing is orphaned".
-        return;
-    }
+    const { stdout } = await execDocker(['ps', '-a', '--filter', `label=${scopeLabel}`, '--format', '{{json .}}']);
     for (const line of stdout.split('\n')) {
         const row = parsePsRow(line.trim(), scopeLabel);
-        if (!row || keep(row)) continue;
-        const existing = groups.get(`${row.jobId}|${row.leaseToken}`);
-        if (existing) {
-            existing.ids.push(row.id);
-            if (row.createdAtMs < existing.group.createdAtMs) existing.group.createdAtMs = row.createdAtMs;
-        } else {
-            groups.set(`${row.jobId}|${row.leaseToken}`, {
-                ids: [row.id],
-                group: {
-                    jobId: row.jobId,
-                    leaseToken: row.leaseToken,
-                    createdAtMs: row.createdAtMs,
-                    objects: [],
-                },
-            });
-        }
+        if (row && !keep(row)) addRow(groups, row);
     }
+};
+
+/**
+ * The attempts' volumes — the mailboxes and the kill markers, both labelled with the job and the
+ * lease — each dated by its own `volume inspect`, since `volume ls` carries no creation time. A
+ * volume gone before its inspect is skipped; rejects when any other call was refused.
+ */
+const scanVolumes = async (execDocker: ExecDocker, groups: Groups): Promise<void> => {
+    const listed = await execDocker([
+        'volume',
+        'ls',
+        '--filter',
+        `label=${JOB_LABEL}`,
+        '--filter',
+        `label=${LEASE_LABEL}`,
+        '--format',
+        '{{json .}}',
+    ]);
+    const found: { name: string; pair: { jobId: string; leaseToken: string } }[] = [];
+    for (const line of linesOf(listed.stdout)) {
+        const fields = fieldsOf(line);
+        if (!fields || typeof fields.Name !== 'string' || !fields.Name) continue;
+        const pair = pairOf(typeof fields.Labels === 'string' ? fields.Labels : '', LEASE_LABEL);
+        if (pair) found.push({ name: fields.Name, pair });
+    }
+    for (const { name, pair } of found) {
+        const createdAtMs = await volumeCreatedAt(execDocker, name);
+        if (createdAtMs !== null) addRow(groups, { object: { kind: 'volume', name }, name, ...pair, createdAtMs });
+    }
+};
+
+/** One volume's creation time, 0 when unparsable, or null when it was removed since the list. */
+const volumeCreatedAt = async (execDocker: ExecDocker, name: string): Promise<number | null> => {
+    let at: string;
+    try {
+        at = (await execDocker(['volume', 'inspect', '--format', '{{.CreatedAt}}', name])).stdout.trim();
+    } catch (e) {
+        // Removed since the list: nothing left to reap. Any other refusal rejects the round.
+        if (alreadyGone(e)) return null;
+        throw e;
+    }
+    const parsed = Date.parse(at);
+    return Number.isNaN(parsed) ? 0 : parsed;
 };
 
 const scan = async (execDocker: ExecDocker, holdsGate: (containerName: string) => boolean): Promise<OrphanGroup[]> => {
     const groups: Groups = new Map();
-    await scanScope(execDocker, SERVICE_LABEL, () => false, groups);
-    await scanScope(execDocker, GATE_LABEL, (row) => holdsGate(row.name), groups);
-    // The objects are named by ID, not by container name: the id is what the removal argv
-    // uses, and a name could address whatever owns it at removal time.
-    return [...groups.values()].map(({ ids, group }) => ({
-        ...group,
-        objects: ids.map((id): OrphanObject => ({ kind: 'container', name: id })),
-    }));
+    try {
+        await scanScope(execDocker, SERVICE_LABEL, () => false, groups);
+        await scanScope(execDocker, GATE_LABEL, (row) => holdsGate(row.name), groups);
+        await scanScope(execDocker, ROLE_LABEL, () => false, groups);
+        await scanVolumes(execDocker, groups);
+    } catch {
+        // Any one list refused: the round reaps nothing rather than a group missing its pieces.
+        return [];
+    }
+    return [...groups.values()];
 };
 
 /** Removes a daemon object, reading its already-gone answer as success — the fence's tolerance. */
@@ -162,9 +231,15 @@ const reap = async (execDocker: ExecDocker, group: OrphanGroup): Promise<readonl
         const network = networkName({ id: group.jobId, leaseToken: group.leaseToken } as BoardJob);
         if (await removeNetwork(execDocker, network)) removed.push(`network ${network}`);
     }
-    for (const object of group.objects) {
+    // The containers before the volumes they mount: docker refuses to remove a volume in use.
+    for (const object of group.objects.filter((candidate) => candidate.kind === 'container')) {
         if (await removeTolerantly(execDocker, ['rm', '-f', object.name])) {
             removed.push(`container ${object.name}`);
+        }
+    }
+    for (const object of group.objects.filter((candidate) => candidate.kind === 'volume')) {
+        if (await removeTolerantly(execDocker, ['volume', 'rm', '-f', object.name])) {
+            removed.push(`volume ${object.name}`);
         }
     }
     return removed;

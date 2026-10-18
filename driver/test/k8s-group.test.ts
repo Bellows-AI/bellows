@@ -87,8 +87,9 @@ function cluster(options: { ended?: boolean; imagePull?: string; agentExit?: num
             return claim ? json({ metadata: { uid: claim.uid }, data: claim }) : { status: 404, body: '{}' };
         }
         if (path === secrets && method === 'POST') {
-            created.secrets.push((body as { metadata: { name: string } }).metadata.name);
-            return json({}, 201);
+            const name = (body as { metadata: { name: string } }).metadata.name;
+            created.secrets.push(name);
+            return json({ metadata: { uid: `uid-${name}` } }, 201);
         }
         if (path.startsWith(`${secrets}/`)) {
             created.deletedSecrets.push(path.slice(secrets.length + 1));
@@ -99,11 +100,12 @@ function cluster(options: { ended?: boolean; imagePull?: string; agentExit?: num
                 metadata: { name: string };
                 spec: { template: { spec: { containers: { name: string }[] } } };
             };
+            gone.delete(spec.metadata.name);
             created.jobs.push({
                 name: spec.metadata.name,
                 containers: spec.spec.template.spec.containers.map((c) => c.name),
             });
-            return json({}, 201);
+            return json({ metadata: { uid: `uid-${spec.metadata.name}` } }, 201);
         }
         if (path.startsWith(`${jobsPath(NAMESPACE)}/`)) {
             const name = path.slice(jobsPath(NAMESPACE).length + 1).split('?')[0]!;
@@ -112,9 +114,13 @@ function cluster(options: { ended?: boolean; imagePull?: string; agentExit?: num
                 gone.add(name);
                 return json({});
             }
+            // A merge patch (the resume of a Job created suspended) lands on a Job that exists.
+            if (method === 'PATCH') return gone.has(name) ? { status: 404, body: '{}' } : json({});
             // The attempt's group serves until finished; any other Job (a close-time readout) is long done.
             const isGroup = name === runnerJobName(job);
-            if (gone.has(name) || (isGroup && options.vanished)) return { status: 404, body: '{}' };
+            // A reclaim group's derived name never created reads 404, as the apiserver answers it.
+            const neverMade = name.startsWith('factory-reclaim-') && !created.jobs.some((made) => made.name === name);
+            if (gone.has(name) || neverMade || (isGroup && options.vanished)) return { status: 404, body: '{}' };
             return json({ status: !isGroup || options.ended ? { succeeded: 1 } : {} });
         }
         if (path.endsWith('/log')) return { status: 200, body: '' };
@@ -428,6 +434,8 @@ describe('the reclaim of a thread with no attempt', () => {
         expect(group!.containers).toEqual(['supervisor']);
         expect(group!.name).not.toBe(runnerJobName(job));
         expect(group!.name).toMatch(/^factory-reclaim-/);
+        // Once, by its uid (issue #821): the derived name held nothing before the POST, so nothing
+        // was deleted then — the group itself goes after its step.
         expect(api.created.deletedJobs).toEqual([group!.name]);
         expect(kinds(s)).toEqual(['reclaim', 'finish']);
         expect(s.tokens).toEqual(new Set(['reclaim-token']));
@@ -435,7 +443,12 @@ describe('the reclaim of a thread with no attempt', () => {
         // Its Secret is not the attempt's, and it is deleted with the group.
         expect(api.created.secrets).toHaveLength(1);
         expect(api.created.secrets[0]).not.toBe(secretName(job));
-        expect(api.created.deletedSecrets).toEqual(api.created.secrets);
+        // Its own Secret, by the uid its create answered, then its gate environment's name — both
+        // acknowledged before the Job (issue #821); a lease of its own, random per invocation.
+        const [own] = api.created.secrets;
+        expect(api.created.deletedSecrets[0]).toBe(own);
+        expect(api.created.deletedSecrets).toHaveLength(2);
+        expect(api.created.deletedSecrets[1]).toMatch(/^factory-gate-[0-9a-f]{16}-env$/);
     });
 
     it('refuses without an endpoint to serve the group from, never by running the reclaim some other way', async () => {

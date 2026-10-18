@@ -2,7 +2,7 @@ import type { BoardJob } from './board.js';
 import { executorImage } from './config.js';
 import { ARTIFACT_LIMIT, reportTail, tailKept } from './runner.js';
 import { jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
-import { vanishedRunner } from './k8s-kill.js';
+import { RunnerKilled, vanishedRunner, wasKilled } from './k8s-kill.js';
 import { runnerName } from './k8s-podspec.js';
 import {
     containerFailure,
@@ -365,6 +365,16 @@ async function tailRunnerOutput(
 }
 
 /**
+ * The runner Job's status — unless this driver killed it: the kill ends the run at once, whatever
+ * the Job still reads, since a kill whose teardown could not be confirmed (issue #821) leaves the
+ * Job suspended, listed and reporting nothing.
+ */
+function readUnlessKilled(deps: K8sDeps, job: BoardJob): Promise<JobStatusResult> {
+    if (wasKilled(runnerName(job))) return Promise.reject(new RunnerKilled(runnerName(job)));
+    return readJobStatus(deps, runnerName(job), 'reading the runner job');
+}
+
+/**
  * Poll until the runner Job reports a terminal status. The kubelet-enforced activeDeadlineSeconds
  * is what guarantees the JOB eventually reaches one — the same bound that kills the docker
  * runner's container guarantees this an exit. It does not guarantee this driver can keep READING
@@ -388,7 +398,7 @@ export async function pollRunnerJobUntilTerminal(
     const image = executorImage(deps.config, job.executorType);
     const seen = { container: false };
     const poll = async (pod: string | null): Promise<{ timedOut: boolean; jobSucceeded: boolean }> => {
-        const result = await readJobStatus(deps, runnerName(job), 'reading the runner job');
+        const result = await readUnlessKilled(deps, job);
         if (result.kind === 'notFound') {
             // Gone without this driver deleting it — fenced away or removed by hand. Its verdict can
             // never arrive, so waiting longer is holding a slot for nothing.

@@ -367,7 +367,7 @@ async function launchRun(
     // session id reported for one would name a conversation that never existed.
     await reportNewSession(rt, job, session);
     state.launched = true;
-    // The launch hands the checkout claim to the runner, which releases it when the run ends.
+    // The launch hands the checkout claim to the runner, whose group's confirmed end releases it.
     ctx.fenced = false;
 
     state.running = true;

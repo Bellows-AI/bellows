@@ -154,7 +154,7 @@ describe('the admission policy requires the pod hardening (#382)', () => {
             runnerJobSpec(config, promptedJob, { id: SESSION, resume: false }).spec.template.spec,
             // The supervisor-only group of an agentless attempt and of a reclaim: no agent container.
             runnerJobSpec(config, { ...promptedJob, agent: false }, null).spec.template.spec,
-            reclaimGroupSpec(config, { ...job, repo: 'Bellows-AI/factory' }).spec.template.spec,
+            reclaimGroupSpec(config, { ...job, repo: 'Bellows-AI/factory' }, job.leaseToken).spec.template.spec,
             servicePodSpec(config, job, { name: 'cache', image: 'redis', environment: [] }, 'uid').spec,
         ];
         for (const pod of pods) {

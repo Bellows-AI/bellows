@@ -14,13 +14,23 @@ import { LEASE_BATCH_MAX, type Board, type BoardLease, UUID_SHAPE } from './boar
 
 /** One reappable object, named the way its platform's delete call names it. */
 export interface OrphanObject {
-    kind: 'job' | 'pod' | 'service' | 'container' | 'network';
+    kind: 'job' | 'pod' | 'service' | 'container' | 'network' | 'volume';
     name: string;
     /**
      * A runner that finished after its driver died (issue #792): the next claim's to adopt, so a
      * `superseded` verdict spares its whole group — only a `gone` job's is reaped.
      */
     unread?: true;
+    /**
+     * A runner of the attempt, running or finished (issue #821): a scan is a snapshot, and one listed
+     * running may finish before its reap, so a live job's runner group is its next claim's fence's to
+     * adopt or sweep — a `superseded` verdict spares the whole group, only a `gone` job's is reaped.
+     */
+    runner?: true;
+    /** The uid the scan listed it under: its delete names that incarnation only, never one created since. */
+    uid?: string;
+    /** Kubernetes: the checkout holder a listed reclaim group serves (`HOLDER_LABEL`). */
+    holder?: string;
 }
 
 /**
@@ -122,8 +132,8 @@ const reapOne = async (
 ): Promise<void> => {
     const verdict = reapDecision(ctx.lease, group, ctx.nowMs, ctx.graceMs);
     if (verdict === null) return;
-    // A live job's next claim adopts it (issue #792): never deleted unread.
-    if (verdict === 'superseded' && group.objects.some((object) => object.unread)) return;
+    // A live job's next claim adopts it (issue #792), or its fence sweeps it: never deleted from a scan.
+    if (verdict === 'superseded' && group.objects.some((object) => object.unread || object.runner)) return;
     for (const removed of await arm.reap(group, verdict)) {
         ctx.log(`reaper: job ${group.jobId} lease ${group.leaseToken ?? 'none'} (${verdict}) — removed ${removed}`);
     }

@@ -7,12 +7,23 @@ import {
     HTTP_OK_STATUS,
     JOB_ID,
     parse,
+    wait,
+    type K8sDeps,
     type K8sRequest,
     type K8sResponse,
 } from './k8s-transport.js';
-import { claimName, configmapsPath, podsPath, secretsPath, servicesPath } from './k8s-auxspec.js';
-import { gateEnvSecretName, jobsPath, runnerJobName, secretName } from './k8s-podspec.js';
-import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
+import { claimPath, podsPath, secretsPath, servicesPath } from './k8s-auxspec.js';
+import { releaseClaimAfterGroupEnd } from './k8s-fence.js';
+import { holderGroupsOf } from './k8s-group.js';
+import {
+    finishedAgentRun,
+    gateEnvSecretName,
+    jobsPath,
+    type ListedRunnerJob,
+    runnerJobName,
+    secretName,
+} from './k8s-podspec.js';
+import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict } from './reaper.js';
 
 /**
@@ -26,7 +37,10 @@ import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict } from './reaper
  * the attempt-scoped env Secrets are reaped by DERIVED NAME, never enumerated. The runner and gate
  * env Secrets' names hash the same (job id, lease token) pair the labels carry, so every one of
  * them is derivable: the sync, publish and helper steps run in the task supervisor and have no
- * Secret of their own, which is also why no nonce-named Secret is left for this arm to miss.
+ * Secret of their own, which is also why no nonce-named Secret is left for this arm to miss. A
+ * runner Job its driver suspended because its teardown went unconfirmed (`k8s-teardown.ts`) is
+ * the anchor those names are derived from: reaped, never adopted. A gone job's checkout claim goes
+ * through the fence's one deletion (`releaseClaimAfterGroupEnd`), never on an unconfirmed end.
  */
 
 /** The two status codes a reaper delete can answer with that mean "already going away". */
@@ -40,6 +54,7 @@ const basePathOf = (config: DriverConfig): Record<OrphanObject['kind'], string> 
     // The docker-only kinds never reach this arm's table; the record must still be total.
     container: '',
     network: '',
+    volume: '',
 });
 
 /**
@@ -49,21 +64,22 @@ const basePathOf = (config: DriverConfig): Record<OrphanObject['kind'], string> 
  */
 const attemptPair = (jobId: string, leaseToken: string): BoardJob => ({ id: jobId, leaseToken }) as BoardJob;
 
-interface ListedItem {
+interface ListedItem extends ListedRunnerJob {
     metadata?: {
         name?: string;
+        uid?: string;
         labels?: Record<string, string>;
         creationTimestamp?: string;
     };
-    status?: { succeeded?: number; failed?: number };
 }
 
-/** A finished runner Job — its name is the (job, lease) hash no aux Job shares — that nobody has read yet. */
+/**
+ * A finished runner Job — its name is the (job, lease) hash no aux Job shares — that nobody has read
+ * yet. A Job its driver suspended because its teardown could not be confirmed (issue #821) is no
+ * run to adopt: it is reaped, Secrets first.
+ */
 const unreadRunner = (item: ListedItem, jobId: string, leaseToken: string): boolean =>
-    JOB_ID.test(jobId) &&
-    JOB_ID.test(leaseToken) &&
-    item.metadata?.name === runnerJobName(attemptPair(jobId, leaseToken)) &&
-    ((item.status?.succeeded ?? 0) >= 1 || (item.status?.failed ?? 0) >= 1);
+    JOB_ID.test(jobId) && JOB_ID.test(leaseToken) && finishedAgentRun(item, attemptPair(jobId, leaseToken));
 
 /** One label-selector collection GET, parsed into the fields the grouping needs. */
 const listBySelector = async (request: K8sRequest, path: string): Promise<ListedItem[] | null> => {
@@ -102,10 +118,21 @@ const groupKeyOf = (
     if (!name || !jobId || !leaseToken || created === undefined) return null;
     const createdAtMs = Date.parse(created);
     if (Number.isNaN(createdAtMs)) return null;
+    const isRunner =
+        kind === 'job' &&
+        JOB_ID.test(jobId) &&
+        JOB_ID.test(leaseToken) &&
+        name === runnerJobName(attemptPair(jobId, leaseToken));
     const object: OrphanObject = {
         kind,
         name,
         ...(kind === 'job' && unreadRunner(item, jobId, leaseToken) ? { unread: true as const } : {}),
+        // A live job's runner Job, running or not, is its next claim's fence's (issue #821).
+        ...(isRunner ? { runner: true as const } : {}),
+        // The incarnation listed: its delete names that one only.
+        ...(item.metadata?.uid ? { uid: item.metadata.uid } : {}),
+        // The checkout holder a reclaim group serves: whose claim its reap may act on.
+        ...(item.metadata?.labels?.[HOLDER_LABEL] ? { holder: item.metadata.labels[HOLDER_LABEL] } : {}),
     };
     return { jobId, leaseToken, name, object, createdAtMs };
 };
@@ -161,9 +188,14 @@ const scan = async (config: DriverConfig, request: K8sRequest): Promise<OrphanGr
  * failed — a transport rejection or an unexpected status is the next round's problem. */
 type DeleteResult = 'removed' | 'gone' | 'failed';
 
-const deleteNamed = async (request: K8sRequest, path: string): Promise<DeleteResult> => {
+const deleteNamed = async (request: K8sRequest, path: string, uid?: string): Promise<DeleteResult> => {
     try {
-        const response = await request('DELETE', path);
+        const response = await (uid
+            ? request('DELETE', path, { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid } })
+            : request('DELETE', path));
+        // A 409 under a uid precondition is another incarnation under the name, not the listed
+        // one going away: no removal, and nothing that lets the round go on to the claim.
+        if (uid && response.status === HTTP_CONFLICT) return 'failed';
         if (response.status >= HTTP_ERROR_STATUS) return GONE_STATUSES.includes(response.status) ? 'gone' : 'failed';
         return 'removed';
     } catch {
@@ -204,49 +236,55 @@ const reapDerivedSecrets = async (
     return true;
 };
 
-const reap = async (
-    config: DriverConfig,
-    request: K8sRequest,
-    group: OrphanGroup,
-    verdict: ReapVerdict
-): Promise<readonly string[]> => {
+/** The claim of the group's job as it reads now — the incarnation the claim reap may act on — or null. */
+const observedClaim = async (deps: K8sDeps, job: BoardJob): Promise<{ uid: string; holder: string } | null> => {
+    try {
+        const read = await deps.request('GET', claimPath(deps.config.k8sNamespace, job));
+        if (read.status < HTTP_OK_STATUS || read.status >= HTTP_ERROR_STATUS) return null;
+        const claim = parse<{ metadata?: { uid?: string }; data?: { holder?: string } }>(read.body);
+        const uid = claim.metadata?.uid;
+        const holder = claim.data?.holder;
+        return uid && holder ? { uid, holder } : null;
+    } catch {
+        return null;
+    }
+};
+
+const reap = async (deps: K8sDeps, group: OrphanGroup, verdict: ReapVerdict): Promise<readonly string[]> => {
+    const { config, request } = deps;
     const paths = basePathOf(config);
     const removed: string[] = [];
     if (uuidScoped(group) && !(await reapDerivedSecrets(config, request, group, removed))) return removed;
+    let failed = false;
     for (const object of group.objects) {
-        const result = await deleteNamed(request, `${paths[object.kind]}/${object.name}?propagationPolicy=Foreground`);
+        const result = await deleteNamed(
+            request,
+            `${paths[object.kind]}/${object.name}?propagationPolicy=Foreground`,
+            object.uid
+        );
         if (result === 'removed') removed.push(`${object.kind} ${object.name}`);
+        if (result === 'failed') failed = true;
     }
-    if (!uuidScoped(group)) return removed;
     // The checkout claim is JOB-scoped — the one name a replacement attempt can hold — so only a
-    // provably dead job's claim may be removed. A superseded attempt's group must never touch
-    // it: the live attempt's fence is holding it right now. Deleted the fence's own way — read
-    // first, delete THAT incarnation by uid precondition — so the removal can only ever reach
-    // the exact object this call read, never one created after it; an unreadable or
-    // unidentifiable claim is deferred to the next round rather than deleted on a maybe. (A
-    // `gone` job can hold no live attempt, so any claim here is a leftover — the precondition is
-    // what makes that argument structural instead of argued.) Answered in the log like the
-    // fleet's objects, so "is the reaper running?" stays answerable from a round that only
-    // cleaned Secrets.
-    if (verdict === 'gone') {
-        const claimPath = `${configmapsPath(config.k8sNamespace)}/${claimName(attemptPair(group.jobId, group.leaseToken))}`;
-        try {
-            const read = await request('GET', claimPath);
-            const uid =
-                read.status < HTTP_ERROR_STATUS
-                    ? parse<{ metadata?: { uid?: string } }>(read.body).metadata?.uid
-                    : undefined;
-            if (!uid) return removed;
-            const claim = `${claimPath}?propagationPolicy=Foreground`;
-            const result = await request('DELETE', claim, {
-                apiVersion: 'v1',
-                kind: 'DeleteOptions',
-                preconditions: { uid },
-            });
-            if (result.status < HTTP_ERROR_STATUS) removed.push(`claim ${claimPath.split('/').pop()}`);
-        } catch {
-            // Best effort: a leaked claim is taken over by the next claimant anyway.
-        }
+    // provably dead job's claim may be removed, and only once nothing of this round failed: a
+    // superseded attempt's group must never touch it, the live attempt's fence is holding it. It
+    // goes the one way a claim ever goes (issue #821): the incarnation read here, both groups its
+    // holder can have left ended the acknowledged way and confirmed gone, then the uid-preconditioned
+    // delete — anything short of that is deferred to a later round, never deleted on a maybe.
+    // Answered in the log like the fleet's objects, so "is the reaper running?" stays answerable
+    // from a round that only cleaned Secrets.
+    if (!uuidScoped(group) || verdict !== 'gone' || failed) return removed;
+    const job = attemptPair(group.jobId, group.leaseToken);
+    const observed = await observedClaim(deps, job);
+    if (observed === null || !JOB_ID.test(observed.holder)) return removed;
+    // Only the condemned attempt's own claim — held by its lease, or by the reclaim whose derived
+    // token it is: a holder that is neither is a replacement's (the task reopened since the board
+    // answered), and nothing of it is touched.
+    const servesHolder = group.objects.some((object) => object.holder === observed.holder);
+    if (observed.holder !== group.leaseToken && !servesHolder) return removed;
+    const groups = await holderGroupsOf(deps, job, observed.holder);
+    if (groups !== null && (await releaseClaimAfterGroupEnd(deps, job, { groups, observed }))) {
+        removed.push(`claim ${claimPath(config.k8sNamespace, job).split('/').pop()}`);
     }
     return removed;
 };
@@ -255,11 +293,21 @@ const reap = async (
  * The arm. See the file header for the posture; `scan` is three collection GETs, `reap` is the
  * derived-name Secret deletes FIRST — one failure stops the round, since nothing rediscoverable
  * would survive it — then one Foreground delete per named object and — only on a provably dead
- * job — the checkout claim.
+ * job whose holder's groups are confirmed ended — the checkout claim. `sleep` paces that
+ * confirmation.
  */
-export function createKubernetesReaper({ config, request }: { config: DriverConfig; request: K8sRequest }): ReaperArm {
+export function createKubernetesReaper({
+    config,
+    request,
+    sleep = wait,
+}: {
+    config: DriverConfig;
+    request: K8sRequest;
+    sleep?: (ms: number) => Promise<void>;
+}): ReaperArm {
+    const deps: K8sDeps = { config, request, sleep };
     return {
         scan: () => scan(config, request),
-        reap: (group, verdict) => reap(config, request, group, verdict),
+        reap: (group, verdict) => reap(deps, group, verdict),
     };
 }

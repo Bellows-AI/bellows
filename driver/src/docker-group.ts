@@ -7,7 +7,7 @@ import { claudeExportScript, supervisorScript } from './container-scripts.js';
 import { containerHardeningArgs, workspacesMountArgs } from './docker.js';
 import { ctlVolumeName, idsOf, mailboxMountArgs } from './docker-mailbox.js';
 import type { ExecDocker, RunnerFiles } from './docker-runner-support.js';
-import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL } from './labels.js';
+import { JOB_LABEL, LEASE_LABEL, RECLAIM_LABEL, ROLE_LABEL } from './labels.js';
 import type { RunSession } from './runner.js';
 import {
     EXPORTER_CONTAINER,
@@ -34,17 +34,21 @@ import { exportEnv, exportsTranscript } from './transcript-export.js';
 export const supervisorName = (job: BoardJob): string => `factory-supervisor-${idsOf(job)}`;
 export const exporterName = (job: BoardJob): string => `factory-export-${idsOf(job)}`;
 
-const labelArgs = (job: BoardJob, role: string): string[] => [
+/** The reclaim group's mark (`RECLAIM_LABEL`), on each of its objects; nothing on an attempt's. */
+const reclaimLabelArgs = (reclaim: boolean): string[] => (reclaim ? ['--label', `${RECLAIM_LABEL}=true`] : []);
+
+const labelArgs = (job: BoardJob, role: string, reclaim: boolean): string[] => [
     '--label',
     `${JOB_LABEL}=${job.id}`,
     '--label',
     `${LEASE_LABEL}=${job.leaseToken}`,
     '--label',
     `${ROLE_LABEL}=${role}`,
+    ...reclaimLabelArgs(reclaim),
 ];
 
 /** The `docker volume create` argv of each mailbox: labelled with the job and lease, so a fence can find them. */
-export const ctlVolumeArgs = (job: BoardJob): string[][] =>
+export const ctlVolumeArgs = (job: BoardJob, reclaim = false): string[][] =>
     Object.values(MAILBOXES).map((box) => [
         'volume',
         'create',
@@ -52,6 +56,7 @@ export const ctlVolumeArgs = (job: BoardJob): string[][] =>
         `${JOB_LABEL}=${job.id}`,
         '--label',
         `${LEASE_LABEL}=${job.leaseToken}`,
+        ...reclaimLabelArgs(reclaim),
         ctlVolumeName(job, box),
     ]);
 
@@ -69,7 +74,7 @@ const reachDriverArgs = (config: DriverConfig): string[] => [
 export function supervisorCreateArgs(
     config: DriverConfig,
     job: BoardJob,
-    group: { exporting: boolean; agentless: boolean },
+    group: { exporting: boolean; agentless: boolean; reclaim?: boolean },
     envFile: string | null
 ): string[] {
     return [
@@ -77,7 +82,7 @@ export function supervisorCreateArgs(
         ...containerHardeningArgs(),
         '--name',
         supervisorName(job),
-        ...labelArgs(job, SUPERVISOR_CONTAINER),
+        ...labelArgs(job, SUPERVISOR_CONTAINER, group.reclaim === true),
         ...reachDriverArgs(config),
         ...(envFile ? ['--env-file', envFile] : []),
         ...supervisorLiterals(config, job, group).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
@@ -101,7 +106,7 @@ export function exporterCreateArgs(config: DriverConfig, job: BoardJob, startedA
         ...containerHardeningArgs(),
         '--name',
         exporterName(job),
-        ...labelArgs(job, EXPORTER_CONTAINER),
+        ...labelArgs(job, EXPORTER_CONTAINER, false),
         ...workspacesMountArgs(config, workspacePath(job)),
         ...mailboxMountArgs(job, MAILBOXES.export, 'rw'),
         ...reachDriverArgs(config),
@@ -158,17 +163,18 @@ export function groupShape(job: BoardJob, session: RunSession | null): { exporti
  * Creates the group's mailboxes and its supervisor and exporter containers (not started). A
  * failure removes what was created and throws: a run whose supervisor cannot exist is an
  * infrastructure refusal the loop leaves to its lease, never a run that silently loses its record.
+ * A terminal reclaim's group (`reclaim`) carries `RECLAIM_LABEL` on every object it creates.
  */
 export async function createGroup(
     deps: GroupDeps,
     job: BoardJob,
     session: RunSession | null,
-    startedAt: string
+    { startedAt, reclaim = false }: { startedAt: string; reclaim?: boolean }
 ): Promise<void> {
-    const shape = groupShape(job, session);
+    const shape = { ...groupShape(job, session), reclaim };
     const { exporting } = shape;
     try {
-        for (const args of ctlVolumeArgs(job)) await deps.execDocker(args);
+        for (const args of ctlVolumeArgs(job, reclaim)) await deps.execDocker(args);
         const supervisorPair = [SUPERVISOR_ENV.controlUrl, SUPERVISOR_ENV.controlToken].map((name) => ({
             name,
             source: name,

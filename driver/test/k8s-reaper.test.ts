@@ -283,16 +283,21 @@ describe('the kubernetes reaper arm: reap', () => {
         const claimPath = `${configmapsPath(NAMESPACE)}/factory-job-${JOB}-claim`;
         const { request, calls } = router([
             ...emptyLists,
-            // The read the precondition is built from — the fence's own release shape.
-            ['GET', claimPath, { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-1' } }) }],
-            ['DELETE', `${claimPath}?propagationPolicy=Foreground`, { status: 200, body: '' }],
+            // The read the precondition is built from — the fence's own release shape, holder and all.
+            [
+                'GET',
+                claimPath,
+                { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-1' }, data: { holder: LEASE } }) },
+            ],
+            ['DELETE', claimPath, { status: 200, body: '' }],
         ]);
         const arm = createKubernetesReaper({ config, request });
 
         await arm.reap(group(), 'gone');
-        expect(deleteCalls(calls)).toContainEqual(`${claimPath}?propagationPolicy=Foreground`);
+        // The one way a claim goes (issue #821): its holder's groups confirmed ended, then the delete.
+        expect(deleteCalls(calls)).toContainEqual(claimPath);
         // The delete can only ever reach the exact incarnation this call read.
-        const claimDelete = calls.find((call) => call.method === 'DELETE' && call.path.startsWith(`${claimPath}?`));
+        const claimDelete = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
         expect(claimDelete?.body).toEqual({
             apiVersion: 'v1',
             kind: 'DeleteOptions',
@@ -386,6 +391,8 @@ describe('the kubernetes reaper arm: an unread finished runner', () => {
             labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE },
             creationTimestamp: '2026-10-01T00:00:00Z',
         },
+        // A Job that ran an agent: a supervisor-only group's is no run to adopt (issue #821).
+        spec: { template: { spec: { containers: [{ name: 'supervisor' }, { name: 'agent' }] } } },
         status: { succeeded: 1 },
     };
     const lists = (jobs: unknown[]): readonly (readonly [K8sMethod, string, K8sResponse])[] => [
@@ -397,10 +404,21 @@ describe('the kubernetes reaper arm: an unread finished runner', () => {
     it('marks a finished runner Job unread on the scan, and a running one not', async () => {
         const running = { ...finishedRunner, status: { active: 1 } };
         const arm = createKubernetesReaper({ config, request: router(lists([finishedRunner])).request });
-        expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, unread: true }]);
+        expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, unread: true, runner: true }]);
 
         const live = createKubernetesReaper({ config, request: router(lists([running])).request });
-        expect((await live.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob }]);
+        expect((await live.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, runner: true }]);
+    });
+
+    // A supervisor-only group's Job (an agentless node, the group an adoption made) ran no agent:
+    // no run to adopt, so nothing to spare (issue #821).
+    it('never marks a finished supervisor-only Job unread', async () => {
+        const supervisorOnly = {
+            ...finishedRunner,
+            spec: { template: { spec: { containers: [{ name: 'supervisor' }] } } },
+        };
+        const arm = createKubernetesReaper({ config, request: router(lists([supervisorOnly])).request });
+        expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, runner: true }]);
     });
 
     it('never deletes an unread finished runner of a job that is still live', async () => {
@@ -501,5 +519,250 @@ describe('paused runner recovery after a driver restart', () => {
         await reaper.sweep();
         await reaper.sweep();
         expect(attempts).toBe(2);
+    });
+});
+
+/*
+ * Issue #821: a runner Job its driver suspended because the teardown could not be confirmed is no
+ * run for the next claim to adopt — the reaper takes it, its derived Secrets first, a refused one
+ * stopping the round with the Job still listed. And the checkout claim goes the one way a claim
+ * ever goes: only once every group its holder can have left is confirmed gone.
+ */
+describe('the kubernetes reaper arm: suspended runners and confirmed claims (#821)', () => {
+    const pair = { id: JOB, leaseToken: LEASE } as BoardJob;
+    const runnerJob = runnerJobName(pair);
+    const claimPath = `${configmapsPath(NAMESPACE)}/factory-job-${JOB}-claim`;
+    const suspendedRunner = {
+        metadata: {
+            name: runnerJob,
+            labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE },
+            creationTimestamp: '2026-10-01T00:00:00Z',
+        },
+        spec: { suspend: true },
+        status: { failed: 1 },
+    };
+    const lists = (jobs: unknown[]): readonly (readonly [K8sMethod, string, K8sResponse])[] => [
+        ['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: jobs }) }],
+        ['GET', LIST_PODS, { status: 200, body: JSON.stringify({ items: [] }) }],
+        ['GET', LIST_SERVICES, { status: 200, body: JSON.stringify({ items: [] }) }],
+    ];
+    const claimRead: readonly [K8sMethod, string, K8sResponse] = [
+        'GET',
+        claimPath,
+        { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-1' }, data: { holder: LEASE } }) },
+    ];
+    const secrets = [secretName(pair), gateEnvSecretName(pair)].map((name) => `${secretsPath(NAMESPACE)}/${name}`);
+    const sweep = (request: K8sRequest) =>
+        createReaper({
+            // The job is terminal: a live job's runner Job is its next claim's fence's (issue #821).
+            board: { leases: async () => [{ id: JOB, status: 'failed', leaseToken: null }] },
+            arm: createKubernetesReaper({ config, request, sleep: async () => {} }),
+            intervalMs: 0,
+            graceMs: 0,
+            log: () => {},
+        }).sweep();
+
+    it('never marks a suspended runner Job unread', async () => {
+        const arm = createKubernetesReaper({ config, request: router(lists([suspendedRunner])).request });
+        expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, runner: true }]);
+    });
+
+    it('reaps a suspended runner of a terminal job Secrets first, the gate Secret, then the Job', async () => {
+        const { request, calls } = router([
+            ...lists([suspendedRunner]),
+            ...secrets.map((path) => ['DELETE', path, { status: 200, body: '' }] as const),
+        ]);
+        await sweep(request);
+        expect(deleteCalls(calls)).toEqual([
+            ...secrets,
+            `${jobsPath(NAMESPACE)}/${runnerJob}?propagationPolicy=Foreground`,
+        ]);
+    });
+
+    it('stops the round at a refused gate Secret delete, the suspended Job still listed', async () => {
+        const { request, calls } = router([
+            ...lists([suspendedRunner]),
+            ['DELETE', secrets[0]!, { status: 200, body: '' }],
+            ['DELETE', secrets[1]!, { status: 500, body: '' }],
+        ]);
+        await sweep(request);
+        expect(deleteCalls(calls)).toEqual(secrets);
+    });
+
+    const reapGone = async (extra: readonly (readonly [K8sMethod, string, K8sResponse])[]) => {
+        const { request, calls } = router([...extra, claimRead, ['DELETE', claimPath, { status: 200, body: '' }]]);
+        const arm = createKubernetesReaper({ config, request, sleep: async () => {} });
+        await arm.reap({ ...group(), objects: [{ kind: 'job', name: runnerJob }] }, 'gone');
+        // Any delete of the claim, whatever its query: none may be issued on an unconfirmed end.
+        return deleteCalls(calls).some((path) => path === claimPath || path.startsWith(`${claimPath}?`));
+    };
+
+    it('deletes a gone job’s claim once its holder’s groups are confirmed gone', async () => {
+        expect(await reapGone([])).toBe(true);
+    });
+
+    it('keeps the claim when the Job delete of the round failed', async () => {
+        expect(
+            await reapGone([
+                [
+                    'DELETE',
+                    `${jobsPath(NAMESPACE)}/${runnerJob}?propagationPolicy=Foreground`,
+                    { status: 500, body: '' },
+                ],
+            ])
+        ).toBe(false);
+    });
+
+    it('keeps the claim while the Job deletion is still pending through the bound', async () => {
+        expect(
+            await reapGone([
+                ['GET', `${jobsPath(NAMESPACE)}/${runnerJob}`, { status: 200, body: JSON.stringify({ status: {} }) }],
+            ])
+        ).toBe(false);
+    });
+
+    it('keeps the claim while a writer pod of the holder is still listed', async () => {
+        const writers = `${podsPath(NAMESPACE)}?labelSelector=${encodeURIComponent(`${JOB_LABEL}=${JOB},${LEASE_LABEL}=${LEASE},!factory.service`)}`;
+        expect(
+            await reapGone([
+                ['GET', writers, { status: 200, body: JSON.stringify({ items: [{ metadata: { name: 'gate' } }] }) }],
+            ])
+        ).toBe(false);
+    });
+});
+
+/*
+ * Issue #821 review, round 3: the claim a reaped group's job holds may already be a replacement's
+ * — the task reopened after the board answered terminal. The reaper acts only for the condemned
+ * attempt: a claim whose holder is neither its lease nor the reclaim token derived from it is left
+ * alone, and nothing of that holder is deleted.
+ */
+describe('the kubernetes reaper arm: only the condemned attempt’s claim (#821)', () => {
+    const OTHER = '99999999-9999-4999-8999-999999999999';
+    const claimPath = `${configmapsPath(NAMESPACE)}/factory-job-${JOB}-claim`;
+    const reapWithHolder = async (holder: string) => {
+        const { request, calls } = router([
+            [
+                'GET',
+                claimPath,
+                { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-9' }, data: { holder } }) },
+            ],
+            ['DELETE', claimPath, { status: 200, body: '' }],
+        ]);
+        await createKubernetesReaper({ config, request, sleep: async () => {} }).reap(group(), 'gone');
+        return deleteCalls(calls);
+    };
+
+    it("deletes nothing of a replacement holder's, and not its claim", async () => {
+        const deletes = await reapWithHolder(OTHER);
+        const other = { id: JOB, leaseToken: OTHER } as BoardJob;
+        expect(deletes.some((path) => path.includes(OTHER) || path.includes(runnerJobName(other)))).toBe(false);
+        expect(
+            deletes.some((path) => path.includes(secretName(other)) || path.includes(gateEnvSecretName(other)))
+        ).toBe(false);
+        expect(deletes.some((path) => path.startsWith(claimPath))).toBe(false);
+    });
+
+    it("still reaps the condemned attempt's own claim", async () => {
+        expect((await reapWithHolder(LEASE)).some((path) => path === claimPath)).toBe(true);
+    });
+});
+
+describe('the kubernetes reaper arm: a live job’s runner Job is the fence’s (#821)', () => {
+    const runnerJob = runnerJobName({ id: JOB, leaseToken: LEASE } as BoardJob);
+    const running = {
+        metadata: {
+            name: runnerJob,
+            labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE },
+            creationTimestamp: '2026-10-01T00:00:00Z',
+        },
+        spec: { template: { spec: { containers: [{ name: 'supervisor' }, { name: 'agent' }] } } },
+        status: { active: 1 },
+    };
+    const lists: readonly (readonly [K8sMethod, string, K8sResponse])[] = [
+        ['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: [running] }) }],
+        ['GET', LIST_PODS, { status: 200, body: JSON.stringify({ items: [] }) }],
+        ['GET', LIST_SERVICES, { status: 200, body: JSON.stringify({ items: [] }) }],
+    ];
+    const sweep = async (lease: { leaseToken: string | null; status: string }) => {
+        const { request, calls } = router(lists);
+        await createReaper({
+            board: { leases: async () => [{ id: JOB, ...lease }] as never },
+            arm: createKubernetesReaper({ config, request, sleep: async () => {} }),
+            intervalMs: 0,
+            graceMs: 0,
+            log: () => {},
+        }).sweep();
+        return deleteCalls(calls);
+    };
+
+    it('deletes nothing of a superseded attempt’s runner while the job lives, even one listed running', async () => {
+        expect(await sweep({ leaseToken: '99999999-9999-4999-8999-999999999999', status: 'running' })).toEqual([]);
+    });
+
+    it('reaps it, Secrets first, once the job is terminal', async () => {
+        const deletes = await sweep({ leaseToken: null, status: 'failed' });
+        expect(
+            deletes.at(-1)?.startsWith(`${jobsPath(NAMESPACE)}/${runnerJob}?`) ||
+                deletes.includes(`${jobsPath(NAMESPACE)}/${runnerJob}?propagationPolicy=Foreground`)
+        ).toBe(true);
+        expect(deletes.findIndex((path) => path.startsWith(secretsPath(NAMESPACE)))).toBe(0);
+    });
+});
+
+/*
+ * Issue #821 review, round 6: the reaper deletes the incarnation it listed, by uid, and never a
+ * reclaim group's derived-name Secret by name — the Job owns it, and goes by uid.
+ */
+describe('the kubernetes reaper arm: listed incarnations only (#821)', () => {
+    it('deletes a listed Job by the uid it was listed with', async () => {
+        const { request, calls } = router([]);
+        await createKubernetesReaper({ config, request, sleep: async () => {} }).reap(
+            { ...group(), objects: [{ kind: 'job', name: 'factory-gate-x', uid: 'listed-uid' }] },
+            'gone'
+        );
+        expect(
+            calls.find(
+                (call) => call.method === 'DELETE' && call.path.startsWith(`${jobsPath(NAMESPACE)}/factory-gate-x?`)
+            )?.body
+        ).toEqual({
+            apiVersion: 'v1',
+            kind: 'DeleteOptions',
+            preconditions: { uid: 'listed-uid' },
+        });
+    });
+
+    // A reclaim group's names are its invocation's own (random lease): its Secrets go first, like any attempt's.
+    it('deletes a reclaim group’s Secrets before its Job, by the names its own lease derives', async () => {
+        const { request, calls } = router([]);
+        await createKubernetesReaper({ config, request, sleep: async () => {} }).reap(
+            { ...group(), objects: [{ kind: 'job', name: 'factory-reclaim-0123456789abcdef', uid: 'listed-uid' }] },
+            'gone'
+        );
+        const deletes = deleteCalls(calls);
+        const jobAt = deletes.findIndex((path) => path.includes('factory-reclaim-0123456789abcdef'));
+        expect(deletes.findIndex((path) => path.startsWith(secretsPath(NAMESPACE)))).toBe(0);
+        expect(jobAt).toBeGreaterThan(0);
+    });
+});
+
+describe('the kubernetes reaper arm: a 409 on a listed uid is no removal (#821)', () => {
+    it('keeps the claim when a listed object answers its uid precondition with 409', async () => {
+        const claimPath = `${configmapsPath(NAMESPACE)}/factory-job-${JOB}-claim`;
+        const runnerJob = runnerJobName({ id: JOB, leaseToken: LEASE } as BoardJob);
+        const { request, calls } = router([
+            ['DELETE', `${jobsPath(NAMESPACE)}/${runnerJob}?propagationPolicy=Foreground`, { status: 409, body: '' }],
+            [
+                'GET',
+                claimPath,
+                { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-1' }, data: { holder: LEASE } }) },
+            ],
+            ['DELETE', claimPath, { status: 200, body: '' }],
+        ]);
+        await createKubernetesReaper({ config, request, sleep: async () => {} }).reap(
+            { ...group(), objects: [{ kind: 'job', name: runnerJob, uid: 'listed-uid' }] },
+            'gone'
+        );
+        expect(deleteCalls(calls).some((path) => path.startsWith(claimPath))).toBe(false);
     });
 });

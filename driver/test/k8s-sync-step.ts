@@ -27,7 +27,8 @@ export async function k8sSyncStep(job: BoardJob, githubToken?: string): Promise<
                 ? json({ metadata: { uid: 'claim-uid' }, data: claims.get(name ?? '') })
                 : { status: 404, body: '{}' };
         }
-        if (method === 'POST') return json({}, 201);
+        // Created, as the apiserver answers: the uid a Secret's owner reference names.
+        if (method === 'POST') return json({ metadata: { uid: 'object-uid' } }, 201);
         // The sweep's selector lists: nothing of this job is left over.
         if (method === 'GET' && path.includes('labelSelector')) return json({ items: [] });
         return json({});
