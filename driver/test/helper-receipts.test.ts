@@ -90,6 +90,8 @@ function supervisor(config: ReturnType<typeof volume>['config'], remote: { write
         },
         awaitReport: () => Promise.reject(new Error('not used')),
         contacted: () => true,
+        release: () => undefined,
+        attach: () => undefined,
     };
     const helperSteps = () => submitted.filter((s) => s.env.HELPER_INPUT !== undefined);
     return { host: { config, sink }, submitted, helperSteps };

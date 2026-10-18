@@ -5,6 +5,8 @@ import type { ExecDocker } from './docker-runner-support.js';
 import { linesOf } from './docker-runner-support.js';
 import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
 import { forgetDeclaredServices, networkName } from './services.js';
+import type { StepSink } from './step-control.js';
+import { releaseSteps } from './supervised-steps.js';
 import { AGENT_CONTAINER, KILL_WINDDOWN_MS } from './supervisor-contract.js';
 
 /**
@@ -20,6 +22,8 @@ export interface TeardownDeps {
     killed: Set<BoardJob['leaseToken']>;
     /** The attempt groups the runner remembers (`docker-runner.ts`): a killed group is gone from it. */
     groups?: Map<BoardJob['leaseToken'], unknown>;
+    /** The step channel the groups serve: a group gone leaves no step waiting on it. */
+    steps?: StepSink;
 }
 
 /**
@@ -81,6 +85,7 @@ export async function dockerKill(deps: TeardownDeps, job: BoardJob): Promise<voi
     // not read this one's cancellation.
     deps.killed.add(job.leaseToken);
     deps.groups?.delete(job.leaseToken);
+    if (deps.steps) releaseSteps({ sink: deps.steps }, job);
     // Killing the attached `docker start` process would only detach the CLI; the container keeps running
     // and the workspace keeps being written to. The daemon has to be told — by ID, resolved
     // through this attempt's own lease label, never by name: a kill that resolved a
@@ -130,6 +135,8 @@ export async function dockerStopAgent(deps: TeardownDeps, job: BoardJob): Promis
     deps.killed.add(job.leaseToken);
     const exit = await awaitSupervisor(deps.execDocker, job, KILL_WINDDOWN_MS);
     if (exit === null) return dockerKill(deps, job);
+    // The supervisor ended the group: nobody is left to answer its steps.
+    if (deps.steps) releaseSteps({ sink: deps.steps }, job);
     const running = await deps
         .execDocker([
             'ps',

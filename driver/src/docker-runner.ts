@@ -12,9 +12,11 @@ import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
 import { lookupHelper } from './helpers.js';
 import { noStepChannel, type StepSink, type SupervisorEndpoint, stepLost } from './step-control.js';
 import {
+    attachSteps,
     controlTokenOf,
     orderFinish,
     orderGo,
+    releaseSteps,
     runHelperStep,
     runReclaimStep,
     runSyncStep,
@@ -216,6 +218,8 @@ async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession 
     const known = deps.groups.get(job.leaseToken);
     if (known) return known;
     await dockerReclaimFence(deps, job);
+    // A fresh supervisor answers the token from here: not one a kill already took away.
+    attachSteps(stepHostOf(deps), job);
     const startedAt = new Date().toISOString();
     await createGroup(deps, job, session, startedAt);
     try {
@@ -621,6 +625,11 @@ async function dockerRun(
             // steps. A supervisor that exited instead of reporting says how: 124 is the budget it
             // enforced, and anything but 0 and 124 is a supervisor lost, an infrastructure loss.
             void awaitReportOrExit(execDocker, job, reported)
+                .then((ended) => {
+                    // An exit with no report taken leaves nobody to answer the steps the loop still sends.
+                    if (!ended.report) releaseSteps(host, job);
+                    return ended;
+                })
                 .then(async ({ report, supervisorExit }) => {
                     if (report?.outcome === 'timed_out' || supervisorExit === SUPERVISOR_EXIT.deadline) {
                         timedOut = true;

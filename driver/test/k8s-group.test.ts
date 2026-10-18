@@ -5,7 +5,7 @@ import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
 import { reclaimGroupName } from '../src/k8s-group.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
-import type { StepSink, SupervisorEndpoint } from '../src/step-control.js';
+import { createStepBroker, type StepBroker, type StepSink, type SupervisorEndpoint } from '../src/step-control.js';
 import {
     AGENT_CONTAINER,
     SUPERVISOR_ENV,
@@ -61,7 +61,7 @@ interface Created {
 }
 
 /** A fake apiserver that keeps the checkout claim honest and records every Job and Secret the driver creates. */
-function cluster(options: { ended?: boolean; imagePull?: string; agentExit?: number } = {}) {
+function cluster(options: { ended?: boolean; imagePull?: string; agentExit?: number; vanished?: boolean } = {}) {
     const created: Created = { jobs: [], secrets: [], deletedJobs: [], deletedSecrets: [] };
     const claims = new Map<string, { uid: string; holder: string; claimSeq: string }>();
     const gone = new Set<string>();
@@ -109,9 +109,9 @@ function cluster(options: { ended?: boolean; imagePull?: string; agentExit?: num
                 gone.add(name);
                 return json({});
             }
-            if (gone.has(name)) return { status: 404, body: '{}' };
             // The attempt's group serves until finished; any other Job (a close-time readout) is long done.
             const isGroup = name === runnerJobName(job);
+            if (gone.has(name) || (isGroup && options.vanished)) return { status: 404, body: '{}' };
             return json({ status: !isGroup || options.ended ? { succeeded: 1 } : {} });
         }
         if (path.endsWith('/log')) return { status: 200, body: '' };
@@ -157,6 +157,7 @@ function cluster(options: { ended?: boolean; imagePull?: string; agentExit?: num
 function steps(answer: (step: StepRequest) => StepResult = () => ok(), contacted = true) {
     const submitted: StepRequest[] = [];
     const tokens = new Set<string>();
+    const released: string[] = [];
     let report!: (r: SupervisorReport) => void;
     const reported = new Promise<SupervisorReport>((resolve) => {
         report = resolve;
@@ -169,13 +170,54 @@ function steps(answer: (step: StepRequest) => StepResult = () => ok(), contacted
         },
         awaitReport: () => reported,
         contacted: () => contacted,
+        release: (token) => {
+            released.push(token);
+        },
+        attach: () => undefined,
     };
-    return { sink, submitted, tokens, report };
+    return { sink, submitted, tokens, report, released };
 }
 
+/**
+ * The attempt's supervisor played over a real broker: it pulls every step and answers the ones
+ * `answer` has a result for, holding the rest unanswered — a supervisor busy with them, or gone.
+ */
+function supervisedBy(broker: StepBroker, answer: (step: StepRequest) => StepResult | null) {
+    let serving = true;
+    const pulled: StepRequest[] = [];
+    const loop = (async () => {
+        while (serving) {
+            const step = await broker.next(CONTROL_TOKEN, 20, new AbortController().signal);
+            if (!step || step === 'closed') continue;
+            pulled.push(step);
+            const result = answer(step);
+            if (result) broker.settle(CONTROL_TOKEN, step.id, step.invocation, result);
+        }
+    })();
+    return {
+        pulled,
+        stop: async () => {
+            serving = false;
+            await loop;
+        },
+    };
+}
+
+const REPORT: SupervisorReport = {
+    id: 'report-1',
+    outcome: 'completed',
+    cause: null,
+    agentExit: 0,
+    agentEnd: 'exit',
+    drained: true,
+    serving: true,
+};
+
 const FAST = async (): Promise<void> => undefined;
-const runner = (request: K8sRequest, sink: StepSink, endpoint?: SupervisorEndpoint) =>
-    createKubernetesRunner(config, request, FAST, { steps: sink, ...(endpoint ? { endpoint } : {}) });
+/** A poll pace that lets a supervisor played on timers reach the broker between polls. */
+const TICK = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 5));
+const runner = (request: K8sRequest, sink: StepSink, endpoint?: SupervisorEndpoint, sleep = FAST) =>
+    createKubernetesRunner(config, request, sleep, { steps: sink, ...(endpoint ? { endpoint } : {}) });
 
 const kinds = (s: { submitted: StepRequest[] }): string[] => s.submitted.map((step) => step.kind);
 
@@ -232,11 +274,13 @@ describe('the task group of one attempt', () => {
         const k8s = runner(api.request, s.sink);
         await k8s.syncCheckout(job, undefined, SESSION);
         const running = k8s.run(job, SESSION);
-        s.report({ outcome: 'completed', cause: null, agentExit: 0, agentEnd: 'exit', drained: true });
+        s.report(REPORT);
 
         const outcome = await running;
 
         expect(kinds(s)).toEqual(['sync', 'go']);
+        // The supervisor reported and serves on: its channel stays open for the steps after it.
+        expect(s.released).toEqual([]);
         expect(outcome).toMatchObject({ exitCode: 0, timedOut: false, started: true });
         // The Job is still the attempt's: nothing deleted it, and nothing else was created.
         // (The close-time turn readout is a Job of its own until its own issue retires it.)
@@ -250,7 +294,7 @@ describe('the task group of one attempt', () => {
         const k8s = runner(api.request, s.sink);
         await k8s.syncCheckout(job, undefined, SESSION);
         const running = k8s.run(job, SESSION);
-        s.report({ outcome: 'timed_out', cause: 'timeout', agentExit: 143, agentEnd: 'exit', drained: true });
+        s.report({ ...REPORT, outcome: 'timed_out', cause: 'timeout', agentExit: 143, serving: false });
         expect(await running).toMatchObject({ exitCode: 143, timedOut: true });
     });
 
@@ -292,6 +336,62 @@ describe('the task group of one attempt', () => {
         await k8s.publishGit!(job);
 
         expect(api.created.jobs).toEqual([{ name: runnerJobName(job), containers: ['supervisor'] }]);
+    });
+
+    /*
+     * Issue #823: a group whose supervisor is gone — it ended without a report the driver took, or
+     * a kill took it away — leaves nothing to answer a step. Its channel is released, so the probe
+     * and `finish` the loop still sends fail at once instead of waiting out each step's timeout and
+     * the answer grace, three times over.
+     */
+    it('fails the probe and `finish` at once once the group ended with no report taken', async () => {
+        const api = cluster({ ended: true });
+        const broker = createStepBroker();
+        broker.open(CONTROL_TOKEN);
+        const supervisor = supervisedBy(broker, (step) =>
+            step.kind === 'sync' ? ok('{"ok":true,"reason":null}') : ok()
+        );
+        const k8s = runner(api.request, broker, undefined, TICK);
+        try {
+            await k8s.syncCheckout(job, undefined, SESSION);
+            await k8s.run(job, SESSION);
+        } finally {
+            await supervisor.stop();
+        }
+        const asked = Date.now();
+        expect(await k8s.probeTree!(job)).toBeNull();
+        await k8s.finish!(job);
+        expect(Date.now() - asked).toBeLessThan(5_000);
+    });
+
+    it('releases the channel when the run cannot be read to its end: the Job vanished', async () => {
+        const api = cluster({ vanished: true });
+        const s = steps((step) => (step.kind === 'sync' ? ok('{"ok":true,"reason":null}') : ok()));
+        const k8s = runner(api.request, s.sink);
+        await k8s.syncCheckout(job, undefined, SESSION);
+        await expect(k8s.run(job, SESSION)).rejects.toThrow();
+        expect(s.released).toEqual([CONTROL_TOKEN]);
+    });
+
+    it('fails a step in flight at once when a kill takes the group away', async () => {
+        const api = cluster();
+        const broker = createStepBroker();
+        broker.open(CONTROL_TOKEN);
+        const supervisor = supervisedBy(broker, (step) =>
+            step.kind === 'sync' ? ok('{"ok":true,"reason":null}') : null
+        );
+        const k8s = runner(api.request, broker, undefined, TICK);
+        try {
+            await k8s.syncCheckout(job, undefined, SESSION);
+            const probing = k8s.probeTree!(job);
+            while (!supervisor.pulled.some((step) => step.kind === 'probe')) {
+                await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+            await k8s.kill(job);
+            expect(await probing).toBeNull();
+        } finally {
+            await supervisor.stop();
+        }
     });
 
     it('does not end a group it never created, and never throws for one', async () => {

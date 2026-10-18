@@ -1069,6 +1069,8 @@ function fakeSteps(answer: (step: StepRequest) => StepResult | Promise<StepResul
         },
         awaitReport: () => reported,
         contacted: () => true,
+        release: () => undefined,
+        attach: () => undefined,
     };
     return { sink, submitted, tokens, signals, report };
 }
@@ -2276,6 +2278,8 @@ describe('publishing the produced work', () => {
                     : Promise.resolve(stepOk()),
             awaitReport: () => new Promise(() => undefined),
             contacted: () => true,
+            release: () => undefined,
+            attach: () => undefined,
         };
 
         expect(await publishing({ sink }).probeTree?.(ISSUE_JOB, cancel.signal)).toBeNull();
