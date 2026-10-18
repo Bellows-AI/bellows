@@ -56,6 +56,19 @@ describe('the lane stub executor images', () => {
         expect(line).toContain('ENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]');
         expect(script.indexOf(STAGE)).toBeLessThan(script.indexOf('-f "$work/stub.Dockerfile"'));
     });
+
+    it('test-k8s: every pod runs the stub by its pushed registry ref, never the bare host name', () => {
+        const script = read('scripts/test-k8s.sh');
+        expect(script).toContain('STUB_REF="$LANE_REGISTRY/echo-executor:$RELEASE"');
+        expect(script).toContain('--set "driver.executorImages.claudeCode=$STUB_REF"');
+        expect(script).toContain('--set "driver.executorImages.opencode=$STUB_REF"');
+        expect(script).toContain('--image="$STUB_REF"');
+        expect(script).toContain('"image":"$STUB_REF"');
+        expect(script).toContain('image: $STUB_REF}');
+        for (const bare of ['=$STUB_IMAGE"', '--image="$STUB_IMAGE"', '"image":"$STUB_IMAGE"', 'image: $STUB_IMAGE']) {
+            expect(script).not.toContain(bare);
+        }
+    });
 });
 
 // Every spawn leads its own process group and is group-killed after its case, so a wrapper, its

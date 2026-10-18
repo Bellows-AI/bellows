@@ -19,7 +19,9 @@
 # generated per run; it never reads the repo's .env.
 #
 # Everything it creates it removes: two helm releases — the app and the local state it runs against
-# (charts/factory-local-state: the database and the workspaces claim) — and the state's claims.
+# (charts/factory-local-state: the database and the workspaces claim) — and the state's claims. The
+# images it pushes stay in the cluster's local registry under a per-run tag, as the layer cache the
+# next run's push skips; `make cleanup` removes the registry with the last cluster.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -83,6 +85,15 @@ NAMESPACE="${NAMESPACE:-default}"
 DASH_IMAGE="${DASH_IMAGE:-factory-ai}"
 DRIVER_IMAGE="${DRIVER_IMAGE:-factory-driver}"
 STUB_IMAGE="${STUB_IMAGE:-echo-executor}"
+# The cluster phase deploys these refs: pushed to the registry scripts/kind-cluster.sh runs, a fresh
+# tag per run so no node ever answers with a previous run's image. One fixed repository per role,
+# whatever the *_IMAGE overrides name, so no two roles can share a ref.
+LANE_REGISTRY=localhost:5001
+DASH_REPO="$LANE_REGISTRY/factory-ai"
+DRIVER_REPO="$LANE_REGISTRY/factory-driver"
+DASH_REF="$DASH_REPO:$RELEASE"
+DRIVER_REF="$DRIVER_REPO:$RELEASE"
+STUB_REF="$LANE_REGISTRY/echo-executor:$RELEASE"
 
 pass=0
 fail=0
@@ -1180,7 +1191,7 @@ kind-*)
         echo "test-k8s: refusing to run the cluster phase against '$context'."
         echo "  It deletes every runner Job in the namespace, and the context's API server"
         echo "  address could not be read — the context may be dangling or not a kind"
-        echo "  cluster's. Create one (`kind create cluster --name <name>`) and aim kubectl at it."
+        echo "  cluster's. Create one (make cluster CLUSTER=<name>) and aim kubectl at it."
         exit 1
     }
     serving=0
@@ -1201,14 +1212,17 @@ kind-*)
         echo "  '$kind_name' is serving the context's endpoint ($server): no control-plane"
         echo "  container of that cluster publishes the port the context points at. It"
         echo "  may not be a disposable kind cluster."
-        echo '  Create one (`kind create cluster --name <name>`) and aim kubectl at it.'
+        echo '  Create one (`make cluster CLUSTER=<name>`) and aim kubectl at it.'
         exit 1
     }
+    # The images reach the node through the cluster's local registry, so a cluster without it is
+    # refused before the build rather than after.
+    sh scripts/kind-cluster.sh check "$kind_name" || exit 1
     ;;
 *)
     echo "test-k8s: refusing to run the cluster phase against '$context'."
     echo '  It deletes every runner Job in the namespace. Create a disposable kind cluster'
-    echo '  (`kind create cluster --name <name>`) and aim kubectl at it — its context is'
+    echo '  (`make cluster CLUSTER=<name>`) and aim kubectl at it — its context is'
     echo '  kind-<name>.'
     exit 1
     ;;
@@ -1264,14 +1278,23 @@ collector_pull=''
 
 echo "loading the images into the kind cluster $kind_name"
 begin_phase image-load
-# One load call per image, not one variadic invocation: every kind version accepts
-# `kind load docker-image <image> --name <cluster>`, older ones not always a list.
-for image in "$DASH_IMAGE" "$DRIVER_IMAGE" "$STUB_IMAGE" "$COLLECTOR_IMAGE"; do
-    kind load docker-image "$image" --name "$kind_name" >/dev/null || {
-        echo "test-k8s: could not load $image into the kind cluster $kind_name"
+# Pushed one after another, so the shared base layers go once and only layers the registry lacks
+# go at all; the node pulls what it lacks when the pods start. The per-run tag is dropped from the
+# host daemon at once, leaving the plain name the next build reuses.
+push_ref() { # push_ref <image> <ref>
+    { docker tag "$1" "$2" && docker push -q "$2" >/dev/null && docker image rm "$2" >/dev/null; } || {
+        echo "test-k8s: could not push $1 to the kind cluster registry as $2"
         exit 1
     }
-done
+}
+push_ref "$DASH_IMAGE" "$DASH_REF"
+push_ref "$DRIVER_IMAGE" "$DRIVER_REF"
+push_ref "$STUB_IMAGE" "$STUB_REF"
+# The collector is a pinned upstream image, not rebuilt: kind skips it once the node holds it.
+kind load docker-image "$COLLECTOR_IMAGE" --name "$kind_name" >/dev/null || {
+    echo "test-k8s: could not load $COLLECTOR_IMAGE into the kind cluster $kind_name"
+    exit 1
+}
 
 echo "installing the releases $STATE_RELEASE and $RELEASE"
 begin_phase deploy
@@ -1286,10 +1309,10 @@ PORT=18080
 BASE="http://127.0.0.1:$PORT"
 auth_sets "$BASE" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)"
 helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
-    --set "dashboard.image.repository=$DASH_IMAGE" \
-    --set "driver.image.repository=$DRIVER_IMAGE" \
-    --set "driver.executorImages.claudeCode=$STUB_IMAGE" \
-    --set "driver.executorImages.opencode=$STUB_IMAGE" \
+    --set "dashboard.image.repository=$DASH_REPO" --set-string "dashboard.image.tag=$RELEASE" \
+    --set "driver.image.repository=$DRIVER_REPO" --set-string "driver.image.tag=$RELEASE" \
+    --set "driver.executorImages.claudeCode=$STUB_REF" \
+    --set "driver.executorImages.opencode=$STUB_REF" \
     --set driver.reapIntervalMs=3000 --set driver.reapGraceMs=1000 \
     --set-string driver.leaseSeconds=120 --set driver.terminationGracePeriodSeconds=70 \
     -n "$NAMESPACE" >/dev/null || {
@@ -1484,7 +1507,7 @@ git -C /tmp/seed push -q /workspaces/$member_path/.smoke-origin.git main;
 git clone -q /workspaces/$member_path/.smoke-origin.git ${SMOKE_REPO#*/};
 echo seeded"
 seed_script="$(printf '%s' "$seed_script" | tr '\n' ' ')"
-kubectl run "$RELEASE-repo-seed" -n "$NAMESPACE" --image="$STUB_IMAGE" --restart=Never --command \
+kubectl run "$RELEASE-repo-seed" -n "$NAMESPACE" --image="$STUB_REF" --restart=Never --command \
     --overrides="$(
         cat <<EOF
 {"spec":{"automountServiceAccountToken":false,
@@ -1492,7 +1515,7 @@ kubectl run "$RELEASE-repo-seed" -n "$NAMESPACE" --image="$STUB_IMAGE" --restart
 "initContainers":[{"name":"own","image":"alpine:3",
 "command":["sh","-c","mkdir -p /workspaces/$member_path && chown 1000:1000 /workspaces/$member_path"],
 "volumeMounts":[{"name":"w","mountPath":"/workspaces"}]}],
-"containers":[{"name":"seed","image":"$STUB_IMAGE","imagePullPolicy":"IfNotPresent",
+"containers":[{"name":"seed","image":"$STUB_REF","imagePullPolicy":"IfNotPresent",
 "command":["sh","-c","$seed_script"],
 "volumeMounts":[{"name":"w","mountPath":"/workspaces"}]}]}}
 EOF
@@ -1734,7 +1757,7 @@ metadata:
 spec:
     restartPolicy: Never
     automountServiceAccountToken: false
-    containers: [{name: probe, image: $STUB_IMAGE}]
+    containers: [{name: probe, image: $STUB_REF}]
 ---
 apiVersion: v1
 kind: Service

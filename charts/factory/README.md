@@ -41,10 +41,11 @@ target in every availability zone the nodes run in, and a class with `provisioni
 ## Commands
 
 ```bash
+make cluster                   # kind cluster + the local registry test:k8s --cluster pushes to
 make start                     # kind cluster, build, load, install factory-state + factory
 make stop                      # helm uninstall; keeps factory-state and the claim
 make reset                     # also uninstalls factory-state and deletes its claims
-make cleanup                   # kind delete cluster
+make cleanup                   # kind delete cluster; the registry goes with the last one
 npm run test:k8s               # helm lint/template offline; --cluster installs into kind
 git tag v1.2.3 && git push origin v1.2.3   # publishes all images (docs/ci.md)
 ```
