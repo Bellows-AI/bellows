@@ -4284,7 +4284,7 @@ describe('publishing the produced work', () => {
         const { steps, docker, runner } = publishRunner(DIRTY_ON_MAIN, {
             fail: (a) => a.includes('switch') && !a.includes('-c'),
         });
-        await runner.publishGit!(ISSUE_JOB);
+        await runner.publishGit(ISSUE_JOB);
 
         const wt = `/workspaces/bellows/${USER}/.worktrees/${job.id}`;
         expect(steps.steps().length).toBeGreaterThan(0);
@@ -4320,7 +4320,7 @@ describe('publishing the produced work', () => {
     // steps ride must carry THAT credential, and a claim value under the reserved name never.
     it("publishes with the board's minted token, never a claim value", async () => {
         const { steps, docker, runner } = publishRunner(DIRTY_ON_MAIN);
-        const result = await runner.publishGit!(ISSUE_JOB, 'ghs_fresh');
+        const result = await runner.publishGit(ISSUE_JOB, 'ghs_fresh');
 
         expect(result.ok).toBe(true);
         const credentialed = steps.steps().filter((step) => 'GITHUB_TOKEN' in step.env);
@@ -4347,7 +4347,7 @@ describe('publishing the produced work', () => {
             trees,
         });
 
-        const result = await runner.publishGit!(ISSUE_JOB, undefined, { revision: 'h:1' });
+        const result = await runner.publishGit(ISSUE_JOB, undefined, { revision: 'h:1' });
 
         expect(result).toMatchObject(published ? { ok: true, published } : { ok: false, stale: true });
         const argvs = steps.steps().map((step) => step.argv);
@@ -4357,7 +4357,7 @@ describe('publishing the produced work', () => {
 
     it('leaves the publish decision to the loop: publishGit ignores a publish:false claim', async () => {
         const { steps, runner } = publishRunner(DIRTY_ON_MAIN);
-        const result = await runner.publishGit!({ ...ISSUE_JOB, publish: false });
+        const result = await runner.publishGit({ ...ISSUE_JOB, publish: false });
 
         expect(result.ok).toBe(true);
         expect(steps.steps().length).toBeGreaterThan(0);
@@ -4517,7 +4517,7 @@ describe('publishing the produced work', () => {
     it('probes the tree fingerprint with one env-less step', async () => {
         const { steps, runner } = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:1' });
 
-        expect(await runner.probeTree?.(ISSUE_JOB)).toBe('h:1');
+        expect(await runner.probeTree(ISSUE_JOB)).toBe('h:1');
 
         expect(shapesOf(steps)).toEqual(['probe']);
         const [probe] = steps.ofKind('probe');
@@ -4543,7 +4543,7 @@ describe('publishing the produced work', () => {
         const exec = (async () => ({ stdout: '' })) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const runner = dockerRunner(exec, { spawn: spawnChild(''), steps: sink });
 
-        expect(await runner.probeTree?.(ISSUE_JOB, cancel.signal)).toBeNull();
+        expect(await runner.probeTree(ISSUE_JOB, cancel.signal)).toBeNull();
 
         expect(seen).toEqual([cancel.signal]);
     });
@@ -4553,7 +4553,7 @@ describe('publishing the produced work', () => {
         ['fails', {}, () => true],
     ])('answers null when the probe %s', async (_label, extra, fail) => {
         const { runner } = publishRunner({ ...DIRTY_ON_MAIN, ...extra }, { fail });
-        expect(await runner.probeTree?.(ISSUE_JOB)).toBeNull();
+        expect(await runner.probeTree(ISSUE_JOB)).toBeNull();
     });
 
     it('branches, commits, pushes and opens the PR — in that order', async () => {
@@ -4562,7 +4562,7 @@ describe('publishing the produced work', () => {
         const { steps, docker, runner } = publishRunner(DIRTY_ON_MAIN, {
             fail: (a) => a.includes('switch') && !a.includes('-c'),
         });
-        const result = await runner.publishGit!(ISSUE_JOB, 'ghs_minted');
+        const result = await runner.publishGit(ISSUE_JOB, 'ghs_minted');
 
         expect(result).toEqual({
             ok: true,
@@ -4621,7 +4621,7 @@ describe('publishing the produced work', () => {
             fail: (a) => a.includes('switch') && !a.includes('-c'),
         });
         await runner.syncCheckout(ISSUE_JOB);
-        await runner.publishGit!(ISSUE_JOB);
+        await runner.publishGit(ISSUE_JOB);
 
         expect(steps.steps().length).toBeGreaterThan(0);
         expect(docker.some((a) => a[0] === 'run')).toBe(false);
@@ -4635,7 +4635,7 @@ describe('publishing the produced work', () => {
             fail: (a) => a.includes('push'),
             failStderr: ' ! [rejected]        HEAD -> fix/10 (non-fast-forward)\nerror: failed to push some refs',
         });
-        const result = await runner.publishGit!(ISSUE_JOB);
+        const result = await runner.publishGit(ISSUE_JOB);
 
         expect(result).toMatchObject({ ok: false, published: false, cause: 'conflict' });
     });
@@ -4650,7 +4650,7 @@ describe('publishing the produced work', () => {
             },
         });
 
-        await expect(runner.publishGit!(ISSUE_JOB)).rejects.toThrow('no space left on device');
+        await expect(runner.publishGit(ISSUE_JOB)).rejects.toThrow('no space left on device');
         expect(steps.steps()).toEqual([]);
     });
 });
@@ -4685,7 +4685,7 @@ describe('the block-helper transport (issue #207)', () => {
     it('brackets a receipted helper with its receipt in the task worktree, and throws a lost supervisor', async () => {
         // The receipt's MAC key: a driver without a board token keeps no receipt.
         const { supervised, runner } = helperRunner(receiptedAnswer, { JOB_BOARD_TOKEN: 'board-key' });
-        await runner.runHelper!(repoJob, plan({ helperId: REVIEW_REPLY_PROBE_ID, githubWriting: true }), {
+        await runner.runHelper(repoJob, plan({ helperId: REVIEW_REPLY_PROBE_ID, githubWriting: true }), {
             token: 'fresh-install-token',
             effectId: 'effect-1',
         });
@@ -4695,12 +4695,12 @@ describe('the block-helper transport (issue #207)', () => {
         const lost = helperRunner(async () => {
             throw new StepChannelClosed('the helper');
         });
-        await expect(lost.runner.runHelper!(repoJob, plan())).rejects.toBeInstanceOf(StepChannelClosed);
+        await expect(lost.runner.runHelper(repoJob, plan())).rejects.toBeInstanceOf(StepChannelClosed);
     });
 
     it('fails an unknown helper id before any step is submitted', async () => {
         const { supervised, runner } = helperRunner();
-        const result = await runner.runHelper!(job, plan({ helperId: 'not-a-real-helper' }));
+        const result = await runner.runHelper(job, plan({ helperId: 'not-a-real-helper' }));
         expect(result).toEqual({
             ok: false,
             reason: 'unknown_helper',
@@ -4711,7 +4711,7 @@ describe('the block-helper transport (issue #207)', () => {
 
     it('runs the noop helper end to end, as one supervised step with node and the script by content', async () => {
         const { docker, supervised, runner } = helperRunner();
-        const result = await runner.runHelper!(repoJob, plan());
+        const result = await runner.runHelper(repoJob, plan());
 
         expect(result).toEqual({ ok: true, output: { echoed: true } });
         const [step] = supervised.ofKind('helper');
@@ -4731,7 +4731,7 @@ describe('the block-helper transport (issue #207)', () => {
 
     it('maps a step the supervisor timed out to a named timeout failure', async () => {
         const { runner } = helperRunner(() => ({ exitCode: null, stdout: '', stderr: '', timedOut: true }));
-        const result = await runner.runHelper!(job, plan());
+        const result = await runner.runHelper(job, plan());
         expect(result).toEqual({ ok: false, reason: 'timeout', message: expect.stringContaining('ms bound') });
     });
 
@@ -4751,7 +4751,7 @@ describe('the block-helper transport (issue #207)', () => {
         };
         const runner = dockerRunner(emptyDaemon, { steps: sink });
 
-        const result = await runner.runHelper!(job, plan(), { signal: controller.signal });
+        const result = await runner.runHelper(job, plan(), { signal: controller.signal });
 
         expect(seen).toEqual([controller.signal]);
         expect(result).toMatchObject({ ok: false, reason: 'runner_error' });
@@ -4759,7 +4759,7 @@ describe('the block-helper transport (issue #207)', () => {
 
     it('carries a fresh token in the step env, only for a github-writing helper', async () => {
         const { supervised, runner } = helperRunner();
-        const result = await runner.runHelper!(repoJob, plan({ githubWriting: true }), {
+        const result = await runner.runHelper(repoJob, plan({ githubWriting: true }), {
             token: 'fresh-install-token',
         });
 
@@ -4772,7 +4772,7 @@ describe('the block-helper transport (issue #207)', () => {
 
     it('never puts the token in the daemon’s argv or the step’s — only in the step env', async () => {
         const { docker, supervised, runner } = helperRunner();
-        await runner.runHelper!(repoJob, plan({ githubWriting: true }), { token: 'super-secret-token' });
+        await runner.runHelper(repoJob, plan({ githubWriting: true }), { token: 'super-secret-token' });
         expect(docker.flat().some((a) => a.includes('super-secret-token'))).toBe(false);
         const [step] = supervised.ofKind('helper');
         expect(step?.argv.some((a) => a.includes('super-secret-token'))).toBe(false);
@@ -4786,7 +4786,7 @@ describe('the block-helper transport (issue #207)', () => {
             stderr: 'permission denied while running the helper',
             timedOut: false,
         }));
-        const result = await runner.runHelper!(job, plan());
+        const result = await runner.runHelper(job, plan());
         expect(result).toEqual({
             ok: false,
             reason: 'runner_error',
@@ -4796,7 +4796,7 @@ describe('the block-helper transport (issue #207)', () => {
 
     it('runs a command-only job (no repo) at the member root, with no working directory', async () => {
         const { supervised, runner } = helperRunner();
-        await runner.runHelper!(job, plan());
+        await runner.runHelper(job, plan());
         expect(supervised.ofKind('helper')[0]).not.toHaveProperty('cwd');
     });
 });
@@ -4906,15 +4906,15 @@ describe('every container the driver runs is hardened (#382)', () => {
         [
             'a block helper',
             (r: ReturnType<typeof createDockerRunner>) =>
-                r.runHelper!(job, { helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false }),
+                r.runHelper(job, { helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false }),
         ],
         [
             'the publish path',
-            (r: ReturnType<typeof createDockerRunner>) => r.publishGit!({ ...job, repo: 'Bellows-AI/factory' }),
+            (r: ReturnType<typeof createDockerRunner>) => r.publishGit({ ...job, repo: 'Bellows-AI/factory' }),
         ],
         [
             'the tree probe',
-            (r: ReturnType<typeof createDockerRunner>) => r.probeTree!({ ...job, repo: 'Bellows-AI/factory' }),
+            (r: ReturnType<typeof createDockerRunner>) => r.probeTree({ ...job, repo: 'Bellows-AI/factory' }),
         ],
         [
             'the startup sync',
@@ -4990,7 +4990,7 @@ describe('a group whose supervisor is gone releases its step channel', () => {
 
     it('releases the channel when a stop finds the supervisor already exited', async () => {
         const supervised = fakeSteps();
-        await dockerRunner(exited, { steps: supervised.sink }).stopAgent!(job);
+        await dockerRunner(exited, { steps: supervised.sink }).stopAgent(job);
         expect(supervised.released).toEqual([CONTROL_TOKEN]);
     });
 
@@ -4998,12 +4998,12 @@ describe('a group whose supervisor is gone releases its step channel', () => {
         const broker = createStepBroker();
         broker.open(CONTROL_TOKEN);
         const runner = dockerRunner(emptyDaemon, { steps: broker });
-        const probing = runner.probeTree!(repoJob);
+        const probing = runner.probeTree(repoJob);
         expect(await broker.next(CONTROL_TOKEN, 5_000, new AbortController().signal)).toMatchObject({ kind: 'probe' });
         await runner.kill(repoJob);
         expect(await probing).toBeNull();
         // A later step makes the group again under the same token, and that group's supervisor serves it.
-        const again = runner.probeTree!(repoJob);
+        const again = runner.probeTree(repoJob);
         const pulled = await broker.next(CONTROL_TOKEN, 5_000, new AbortController().signal);
         expect(pulled).toMatchObject({ kind: 'probe' });
         if (pulled && pulled !== 'closed') broker.settle(CONTROL_TOKEN, pulled.id, pulled.invocation, ok('{}'));
@@ -5037,7 +5037,7 @@ describe('stopping an agent whose supervisor already exited (#805)', () => {
     it('hard-kills the still-running agent, and only it, when the supervisor exited non-zero', async () => {
         const { exec, calls } = daemon('70', 'agent-id\n');
 
-        await dockerRunner(exec).stopAgent!(job);
+        await dockerRunner(exec).stopAgent(job);
 
         expect(kills(calls)).toEqual([['kill', 'agent-id']]);
         const listed = calls.find((args) => args[0] === 'ps' && args.includes('label=factory.role=agent'));
@@ -5049,7 +5049,7 @@ describe('stopping an agent whose supervisor already exited (#805)', () => {
     it('kills nothing when the supervisor finalized and the agent is gone', async () => {
         const { exec, calls } = daemon('0', '');
 
-        await dockerRunner(exec).stopAgent!(job);
+        await dockerRunner(exec).stopAgent(job);
 
         expect(kills(calls)).toEqual([]);
     });
@@ -5058,7 +5058,7 @@ describe('stopping an agent whose supervisor already exited (#805)', () => {
     it('falls back to the hard kill of the whole group when the agent lookup fails', async () => {
         const { exec, calls } = daemon('70', 'agent-id\n', (args) => args.includes('label=factory.role=agent'));
 
-        await dockerRunner(exec).stopAgent!(job);
+        await dockerRunner(exec).stopAgent(job);
 
         expect(kills(calls)).toEqual([
             ['kill', 'agent-id'],
@@ -5070,7 +5070,7 @@ describe('stopping an agent whose supervisor already exited (#805)', () => {
     it('force-removes the agent when its kill fails', async () => {
         const { exec, calls } = daemon('70', 'agent-id\n', (args) => args[0] === 'kill');
 
-        await dockerRunner(exec).stopAgent!(job);
+        await dockerRunner(exec).stopAgent(job);
 
         expect(calls).toContainEqual(['rm', '-f', 'agent-id']);
     });
@@ -5121,7 +5121,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     it('reads the exit code, log and session before removing the container', async () => {
         const { exec, calls, logs } = daemon(listing());
 
-        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
         expect(adopted).toMatchObject({
             claimSeq: 1,
@@ -5147,7 +5147,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             return Promise.reject(new Error('the daemon answered 503'));
         };
 
-        await expect(dockerRunner(exec, { spawn: logs }).adopt!(adopter)).rejects.toThrow('the daemon answered 503');
+        await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter)).rejects.toThrow('the daemon answered 503');
 
         const read = calls.findIndex((args) => args[0] === 'logs');
         expect(read).toBeGreaterThanOrEqual(0);
@@ -5160,7 +5160,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     it('waits for the earlier attempt’s supervisor before it reads, and reads its deadline exit as a timeout', async () => {
         const { exec, calls, logs } = daemon(listing(), '124');
 
-        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
         expect(adopted?.outcome.timedOut).toBe(true);
         const waited = calls.findIndex((args) => args[0] === 'wait');
@@ -5173,14 +5173,14 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     it('adopts nothing and removes nothing when the earlier supervisor was lost before it finalized', async () => {
         const { exec, calls, logs } = daemon(listing(), '137');
 
-        expect(await dockerRunner(exec, { spawn: logs }).adopt!(adopter)).toBeNull();
+        expect(await dockerRunner(exec, { spawn: logs }).adopt(adopter)).toBeNull();
         expect(calls.some((args) => args[0] === 'logs' || args[0] === 'rm')).toBe(false);
     });
 
     it('adopts nothing when the earlier supervisor lost its driver before it released the agent', async () => {
         const { exec, calls, logs } = daemon(listing(), String(SUPERVISOR_EXIT.lost));
 
-        expect(await dockerRunner(exec, { spawn: logs }).adopt!(adopter)).toBeNull();
+        expect(await dockerRunner(exec, { spawn: logs }).adopt(adopter)).toBeNull();
         expect(calls.some((args) => args[0] === 'logs' || args[0] === 'rm')).toBe(false);
     });
 
@@ -5218,7 +5218,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const detail = reason === 'cache_lost' ? '3 consecutive turns with no prompt-cache reads' : '';
         const exec = withMarks(base, mark(reason, detail));
 
-        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
         expect(adopted?.outcome).toMatchObject({ started: true, ...fields });
         expect(adopted?.outcome).not.toHaveProperty('infraLoss');
@@ -5230,7 +5230,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const { exec: base, logs } = daemon(listing(), '0');
         const exec = withMarks(base, mark('artifact_spool_full', '2000000000 bytes'));
 
-        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
         expect(adopted?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
     });
@@ -5244,7 +5244,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             const { exec: base, calls, logs } = daemon(listing(), exit);
             const exec = withMarks(base, mark('artifact_spool_full', '2000000000 bytes'));
 
-            expect(await dockerRunner(exec, { spawn: logs }).adopt!(adopter)).toBeNull();
+            expect(await dockerRunner(exec, { spawn: logs }).adopt(adopter)).toBeNull();
             expect(calls.some((args) => args[0] === 'logs' || args[0] === 'rm')).toBe(false);
         }
     );
@@ -5253,7 +5253,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const { exec: base, logs } = daemon(listing(), '137');
         const exec = withMarks(base, mark('cache_lost', 'collapsed', '77777777-7777-4777-8777-777777777777'));
 
-        expect(await dockerRunner(exec, { spawn: logs }).adopt!(adopter)).toBeNull();
+        expect(await dockerRunner(exec, { spawn: logs }).adopt(adopter)).toBeNull();
     });
 
     // Stated limit: a stop the supervisor raised itself (its budget, its own spool watch) is in its
@@ -5261,7 +5261,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     it('reads a stop the earlier supervisor raised itself by the agent’s exit alone', async () => {
         const { exec, logs } = daemon(listing(), '0');
 
-        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
         expect(adopted?.outcome.artifactSpoolFull).toBeUndefined();
     });
@@ -5272,7 +5272,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             listing('1', job.leaseToken, containerName(job), commandMark('another command'))
         );
 
-        expect(await dockerRunner(exec, { spawn: logs }).adopt!(adopter)).toBeNull();
+        expect(await dockerRunner(exec, { spawn: logs }).adopt(adopter)).toBeNull();
         expect(calls.some((args) => args[0] === 'logs')).toBe(false);
     });
 
@@ -5290,7 +5290,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
                   )
                 : base(args);
 
-        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
         expect(adopted?.outcome.logTruncated).toBe(true);
         expect(adopted?.outcome.fullLog?.endsWith(line)).toBe(true);
@@ -5304,7 +5304,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     it('adopts a short log whole and complete', async () => {
         const { exec, logs } = daemon(listing());
 
-        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
         expect(adopted?.outcome).toMatchObject({ fullLog: 'did the work\n', logTruncated: false });
     });
@@ -5313,7 +5313,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         for (const [body, truncated] of SPLIT_EURO_CASES) {
             const { exec, logs } = daemon(listing(), '0', splitEuro(body));
 
-            const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+            const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
             expectWholeEuro(adopted?.outcome, truncated);
         }
@@ -5322,7 +5322,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     it('keeps the bytes of an adopted log that ended inside a character, never drops them', async () => {
         const { exec, logs } = daemon(listing(), '0', CUT_SHORT);
 
-        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
         expect(adopted?.outcome).toMatchObject({ fullLog: 'ok\uFFFD', logTruncated: false });
     });
@@ -5330,7 +5330,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     it('rejects an adoption whose log read failed, and removes nothing', async () => {
         const { exec, calls, logs } = daemon(listing(), '0', 'Error: No such container\n', 1);
 
-        await expect(dockerRunner(exec, { spawn: logs }).adopt!(adopter)).rejects.toThrow(/docker logs/);
+        await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter)).rejects.toThrow(/docker logs/);
         expect(calls.some((args) => args[0] === 'rm')).toBe(false);
     });
 
@@ -5339,13 +5339,13 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const notRunner = listing('1', job.leaseToken, `factory-svc-${job.id}-db`);
         const { exec, calls, logs } = daemon(own + notRunner);
 
-        expect(await dockerRunner(exec, { spawn: logs }).adopt!(adopter)).toBeNull();
+        expect(await dockerRunner(exec, { spawn: logs }).adopt(adopter)).toBeNull();
         expect(calls.some((args) => args[0] === 'rm')).toBe(false);
     });
 
     it('answers null when no earlier runner exited', async () => {
         const { exec } = daemon('');
-        expect(await dockerRunner(exec).adopt!(adopter)).toBeNull();
+        expect(await dockerRunner(exec).adopt(adopter)).toBeNull();
     });
 
     it('labels every runner container with its claim sequence and session', () => {
@@ -5402,7 +5402,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const { exec, logs } = daemon(listing('1', job.leaseToken, containerName(job), mark));
         const continuing = { ...adopter, resumeSessionId: SESSION, ownSession: true, continuesInterrupted: true };
 
-        expect(await dockerRunner(exec, { spawn: logs }).adopt!(continuing)).toMatchObject({
+        expect(await dockerRunner(exec, { spawn: logs }).adopt(continuing)).toMatchObject({
             claimSeq: 1,
             outcome: { exitCode: 0, started: true, sessionId: SESSION },
         });

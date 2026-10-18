@@ -21,7 +21,7 @@ const HTTP_BAD_GATEWAY = 502;
 /**
  * What the loop answers the route with: the publish itself, or why this attempt may not:
  * `forbidden` (the board reserves publication for another step, `job.publish === false`),
- * `unsupported` (a runner that cannot push) or `gone` (the lease is lost, a Stop landed or the run ended).
+ * `unsupported` (the attempt has no publisher) or `gone` (the lease is lost, a Stop landed or the run ended).
  */
 export type PublishVerdict = PublishResult | 'forbidden' | 'unsupported' | 'gone' | { refused: string };
 
@@ -42,7 +42,7 @@ export function publishAnswer(verdict: PublishVerdict): PublishAnswer {
         return { status: HTTP_FORBIDDEN, body: { error: 'this task publishes at its own step, not on request' } };
     }
     if (verdict === 'unsupported') {
-        return { status: HTTP_NOT_IMPLEMENTED, body: { error: 'this executor cannot publish' } };
+        return { status: HTTP_NOT_IMPLEMENTED, body: { error: 'this attempt has no publisher' } };
     }
     if (verdict === 'gone') return { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
     // The configured evidence policy refused, or the tree moved past the evidence: nothing was

@@ -30,6 +30,7 @@ import { servePublish, type PublishRelay } from '../src/publish-control.js';
 import type { ExportRelay } from '../src/export-control.js';
 import type { ReviewRelay } from '../src/review-control.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
+import type { SnapshotResult } from '../src/review-snapshot.js';
 import { StepChannelClosed } from '../src/step-control.js';
 import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
 import { createLoop, type Loop } from '../src/loop.js';
@@ -274,11 +275,11 @@ describe('the agent’s draft publication (issue #547)', () => {
             { publish: endOfRun }
         );
         const options: unknown[] = [];
-        const endOfRunPublish = runner.publishGit?.bind(runner);
+        const endOfRunPublish = runner.publishGit.bind(runner);
         runner.publishGit = async (publishedJob, token, publishOptions) => {
             options.push(publishOptions);
             return (
-                options.length === 1 && publishOptions?.draft ? LANDED : await endOfRunPublish?.(publishedJob, token)
+                options.length === 1 && publishOptions?.draft ? LANDED : await endOfRunPublish(publishedJob, token)
             ) as PublishResult;
         };
         const loop = createLoop({ board: board.board, runner, config: config(), gates, sleep });
@@ -410,13 +411,13 @@ function stubRunner(
         reclaimSequence?: ReclaimResult[];
         /** The kubernetes orphan-claim reap; recorded in `reapAttempts` (issue #344). */
         reapOrphanedClaim?: (job: BoardJob) => Promise<boolean>;
-        /** The post-gate tree probe's answer; absent leaves the runner without `probeTree`. */
+        /** The post-gate tree probe's answer, recorded in `probed`; absent probes as unknown (null). */
         probeTree?: string | null;
         /** The dead-service probe (issue #423); every call is counted in `deadServiceProbes`. */
         deadServices?: () => Promise<DeadService[]>;
         /** The pre-gate fleet restart (issue #560); every call is recorded in `restartedServices`. */
         restartServices?: (signal: AbortSignal) => Promise<void>;
-        /** A finished runner of an earlier claim to adopt (issue #792); absent leaves `adopt` unwired. */
+        /** A finished runner of an earlier claim to adopt (issue #792); absent finds none. */
         adopt?: (job: BoardJob) => Promise<AdoptedRun | null>;
     } = {}
 ): Runner & {
@@ -517,15 +518,22 @@ function stubRunner(
             if (next) return next;
             return reclaim ?? { ok: true, removed: true, reason: null };
         },
-        ...(options.probeTree !== undefined
-            ? {
-                  probeTree: async (probedJob: BoardJob) => {
-                      runner.probed.push(probedJob);
-                      return options.probeTree ?? null;
-                  },
-              }
-            : {}),
-        ...(options.adopt ? { adopt: options.adopt } : {}),
+        async probeTree(probedJob: BoardJob) {
+            if (options.probeTree === undefined) return null;
+            runner.probed.push(probedJob);
+            return options.probeTree;
+        },
+        adopt: options.adopt ?? (async () => null),
+        // A runner with no supervisor to stop through: the stop is the hard kill.
+        stopAgent: (stoppedJob: BoardJob) => runner.kill(stoppedJob),
+        async recordKill() {},
+        async finish() {},
+        async snapshotTree(): Promise<SnapshotResult> {
+            return { ok: false, reason: 'no snapshot scripted' };
+        },
+        async runHelper(): Promise<HelperResult> {
+            throw new Error('no helper scripted');
+        },
         ...(options.reapOrphanedClaim
             ? {
                   reapOrphanedClaim: async (orphanJob: BoardJob) => {
@@ -1071,20 +1079,6 @@ describe('the poll loop', () => {
         expect(board.board.sessions).toEqual([]);
         expect(runner.published).toHaveLength(1);
         expect(board.board.completed[0]?.status).toBe('succeeded');
-    });
-
-    // A runner with no publishGit at all — publishing is an optional capability the loop asks
-    // for, not one it assumes; both shipped runners carry it, a third platform need not.
-    it('reports a clean run succeeded from a runner that cannot publish', async () => {
-        const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok());
-        delete (runner as Partial<Runner>).publishGit;
-
-        await drive({ ...board, runner });
-
-        expect(board.board.completed[0]?.status).toBe('succeeded');
-        // The publish credential is the publisher's ask — no publisher, no ask.
-        expect(board.board.githubAsks).toHaveLength(0);
     });
 
     // The claim carries no GitHub token (docs/connections.md): the loop asks the board for one
@@ -4301,10 +4295,10 @@ describe('block-helper steps (issue #207)', () => {
         expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
     });
 
-    it('pays no helper work at all for a job with no declared plans, or a runner with no runHelper', async () => {
+    it('pays no helper work at all for a job with no declared plans', async () => {
         const board = stubBoard([job(1)]);
+        // The stub's runHelper throws: a call would fail the job.
         const runner = stubRunner(async () => ok());
-        expect(runner.runHelper).toBeUndefined();
 
         await drive({ ...board, runner });
 
@@ -5444,7 +5438,7 @@ describe('a stand-down after the gates (issue #427)', () => {
         const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
         const fire = armHeartbeat(board.board, 'lost');
         const runner = stubRunner(async () => ok(), { publish: landed });
-        const rawPublish = runner.publishGit!.bind(runner);
+        const rawPublish = runner.publishGit.bind(runner);
         runner.publishGit = async (publishedJob, token) => {
             const answer = await rawPublish(publishedJob, token);
             fire();

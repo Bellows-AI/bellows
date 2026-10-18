@@ -73,9 +73,28 @@ const runner = {
     async startServices() {
         return null;
     },
+    async stopAgent() {},
+    async recordKill() {},
     async pauseDeadline() {},
+    async publishGit() {
+        const nothing = { branch: null, prUrl: null, reason: null, cause: null, repository: null, baseBranch: null };
+        return { ok: true, published: false, prNumber: null, ...nothing };
+    },
+    async probeTree() {
+        return null;
+    },
+    async adopt() {
+        return null;
+    },
+    async snapshotTree() {
+        return { ok: false, reason: 'this process snapshots nothing' };
+    },
+    async finish() {},
     async reclaimWorktree() {
         return { ok: true, removed: true, reason: null };
+    },
+    async runHelper() {
+        throw new Error('this process runs no helper');
     },
 } as unknown as Runner;
 

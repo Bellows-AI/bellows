@@ -24,7 +24,6 @@ export function createPublishRelay(rt: LoopRuntime, job: BoardJob, state: JobSta
     return {
         async publish() {
             if (job.publish === false) return 'forbidden';
-            if (!rt.runner.publishGit) return 'unsupported';
             if (gone()) return 'gone';
             // A configured requirement is enforced here whatever the agent ran. Ad-hoc gate runs
             // are not evidence (they carry no assessed revision), so a draft under `gates:
@@ -47,8 +46,8 @@ async function pushDraft(
     const token = await askGithubToken(rt, job, 'the draft publish');
     if (gone()) return 'gone';
     const result = await rt.runner
-        .publishGit?.(job, token ?? undefined, { draft: true, ...(revision === null ? {} : { revision }) })
+        .publishGit(job, token ?? undefined, { draft: true, ...(revision === null ? {} : { revision }) })
         .catch((e: Error) => publishFailed(`the publish threw: ${e.message}`, 'unknown'));
-    if (result?.ok && result.published) state.draftPublication = result;
-    return result ?? 'unsupported';
+    if (result.ok && result.published) state.draftPublication = result;
+    return result;
 }

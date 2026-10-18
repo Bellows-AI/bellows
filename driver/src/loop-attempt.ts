@@ -144,11 +144,10 @@ export function newJobState(): JobState {
 }
 
 /**
- * Ends the agent of a launched attempt now. With a control endpoint open and a runner that can
- * stop an agent under its supervisor, the supervised way: the kill order is raised for the
- * supervisor (it ends the agent, has the exporter drain what it wrote and finalizes), and the
- * runner waits, bounded, for the group to wind down before it falls back to the hard kill. Without
- * either — no endpoint, a runner that supervises nothing — the hard kill, as it always was. `kill`
+ * Ends the agent of a launched attempt now. With a control endpoint open, the supervised way: the
+ * kill order is raised for the supervisor (it ends the agent, has the exporter drain what it wrote
+ * and finalizes), and the runner waits, bounded, for the group to wind down before it falls back
+ * to the hard kill. Without an endpoint, the hard kill. `kill`
  * is the reason the driver ends the run for, when it is a verdict of its own (`termination.ts`).
  */
 export async function killAgent(
@@ -159,8 +158,8 @@ export async function killAgent(
 ): Promise<void> {
     // Why the run ends, recorded first where a claim adopting it reads it back; a record that fails
     // never holds the kill back.
-    if (kill && rt.runner.recordKill) await rt.runner.recordKill(job, kill).catch(() => undefined);
-    if (control !== null && rt.gates && rt.runner.stopAgent) {
+    if (kill) await rt.runner.recordKill(job, kill).catch(() => undefined);
+    if (control !== null && rt.gates) {
         rt.gates.server.raiseKill(control);
         return rt.runner.stopAgent(job);
     }
@@ -183,7 +182,7 @@ export function updateQuestionDeadline(rt: LoopRuntime, job: BoardJob, state: Jo
             const paused = state.pendingQuestions.size > 0;
             if (state.finished || down(state) || (state.draining && paused)) return;
             if (paused === (state.questionPausedAt !== null)) return;
-            await rt.runner.pauseDeadline?.(job, paused);
+            await rt.runner.pauseDeadline(job, paused);
             if (paused) {
                 state.questionPausedAt = Date.now();
             } else if (state.questionPausedAt !== null) {

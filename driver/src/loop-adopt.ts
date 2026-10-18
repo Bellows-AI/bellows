@@ -12,7 +12,7 @@ import type { AdoptedRun } from './runner.js';
  */
 export async function adoptStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
     const { rt, job, state } = ctx;
-    if (!rt.runner.adopt || isAgentless(job)) return null;
+    if (isAgentless(job)) return null;
     const adopting = rt.runner.adopt(job);
     let adoptedOut: { value: AdoptedRun | null } | null;
     try {

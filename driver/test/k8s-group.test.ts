@@ -237,11 +237,11 @@ describe('the task group of one attempt', () => {
         const k8s = runner(api.request, s.sink);
 
         expect(await k8s.syncCheckout(job, undefined, SESSION)).toMatchObject({ ok: true });
-        await k8s.probeTree!(job);
-        await k8s.snapshotTree!(job, 'review-1');
-        await k8s.runHelper!(job, { phase: 'pre', helperId: 'noop', input: {}, githubWriting: false } as never);
-        await k8s.publishGit!(job, 'ghs_publish_fresh');
-        await k8s.finish!(job);
+        await k8s.probeTree(job);
+        await k8s.snapshotTree(job, 'review-1');
+        await k8s.runHelper(job, { phase: 'pre', helperId: 'noop', input: {}, githubWriting: false } as never);
+        await k8s.publishGit(job, 'ghs_publish_fresh');
+        await k8s.finish(job);
 
         // One Job: the attempt's group — and every step went to its supervisor.
         expect(api.created.jobs).toEqual([
@@ -260,7 +260,7 @@ describe('the task group of one attempt', () => {
         const s = steps((step) => (step.kind === 'sync' ? ok('{"ok":true,"reason":null}') : ok('{"cloned":false}')));
         const k8s = runner(api.request, s.sink);
         await k8s.syncCheckout(job, undefined, SESSION, 'ghs_sync_minted');
-        await k8s.publishGit!(job, 'ghs_publish_minted');
+        await k8s.publishGit(job, 'ghs_publish_minted');
 
         const sync = s.submitted.find((step) => step.kind === 'sync')!;
         expect(sync.env.GITHUB_TOKEN).toBe('ghs_sync_minted');
@@ -336,7 +336,7 @@ describe('the task group of one attempt', () => {
         const s = steps(() => ok('{"cloned":false}'));
         const k8s = runner(api.request, s.sink);
 
-        await k8s.publishGit!(job);
+        await k8s.publishGit(job);
 
         expect(api.created.jobs).toEqual([{ name: runnerJobName(job), containers: ['supervisor'] }]);
     });
@@ -362,8 +362,8 @@ describe('the task group of one attempt', () => {
             await supervisor.stop();
         }
         const asked = Date.now();
-        expect(await k8s.probeTree!(job)).toBeNull();
-        await k8s.finish!(job);
+        expect(await k8s.probeTree(job)).toBeNull();
+        await k8s.finish(job);
         expect(Date.now() - asked).toBeLessThan(5_000);
     });
 
@@ -387,7 +387,7 @@ describe('the task group of one attempt', () => {
         const k8s = runner(api.request, broker, undefined, TICK);
         try {
             await k8s.syncCheckout(job, undefined, SESSION);
-            const probing = k8s.probeTree!(job);
+            const probing = k8s.probeTree(job);
             while (!supervisor.pulled.some((step) => step.kind === 'probe')) {
                 await new Promise((resolve) => setTimeout(resolve, 10));
             }
@@ -401,7 +401,7 @@ describe('the task group of one attempt', () => {
     it('does not end a group it never created, and never throws for one', async () => {
         const api = cluster();
         const s = steps();
-        await runner(api.request, s.sink).finish!(job);
+        await runner(api.request, s.sink).finish(job);
         expect(s.submitted).toEqual([]);
         expect(api.created.deletedJobs).toEqual([]);
     });
