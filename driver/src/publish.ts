@@ -39,6 +39,15 @@ export const gitWorktreeScript = script('git-worktree.cjs');
 /** The terminal reclaim's node script: see scripts/git-worktree-remove.cjs. */
 export const gitWorktreeRemoveScript = script('git-worktree-remove.cjs');
 
+/** The tool uid's release of the tree before that reclaim (issue #814): see scripts/tool-tree-release.cjs. */
+export const toolTreeReleaseScript = script('tool-tree-release.cjs');
+
+/** Its kubernetes wrapper, bounded and always 0: see scripts/tool-tree-release-bounded.sh. */
+export const toolTreeReleaseBoundedScript = script('tool-tree-release-bounded.sh');
+
+/** How long the tool uid's release of a tree may walk it before the reclaim goes on without it. */
+export const RELEASE_DEADLINE_MS = 300_000;
+
 /** What the board intends to publish for one job. */
 export interface PublishPlan {
     /** The task branch: `fix/<issue>` when the command names an issue, `task/<date>` otherwise. */

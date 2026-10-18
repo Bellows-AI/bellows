@@ -207,6 +207,7 @@ export {
     ENV_NAME_LIMIT,
     ENV_VALUE_LIMIT,
     GITHUB_ENV_NAMES,
+    isReservedEnvName,
     MAX_ENV_VARS_PER_SCOPE,
     RESERVED_ENV_NAMES,
 } from './env.js';

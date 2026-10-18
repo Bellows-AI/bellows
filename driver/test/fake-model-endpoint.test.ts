@@ -1,10 +1,12 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { GO_MARKER, MAILBOX_FILES, MAILBOXES } from '../src/supervisor-contract.js';
+import { AGENT_MAILBOX_DIR, GO_MARKER, MAILBOX_FILES, MAILBOXES } from '../src/supervisor-contract.js';
+import { agentLaunchArgs, containerHardeningArgs } from '../src/docker.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /*
@@ -30,7 +32,9 @@ afterEach(async () => {
     for (const endpoint of open.splice(0)) await endpoint.close();
 });
 
-async function start(options: { firstDelayMs?: number; toolSteps?: number; ask?: boolean; askProse?: boolean } = {}) {
+async function start(
+    options: { firstDelayMs?: number; toolSteps?: number; ask?: boolean; askProse?: boolean; killTools?: boolean } = {}
+) {
     const { createFakeModelEndpoint } = (await import(pathToFileURL(ENDPOINT).href)) as {
         createFakeModelEndpoint: (options: object) => Endpoint;
     };
@@ -92,6 +96,49 @@ describe('the scripted model endpoint', () => {
         await pending;
         expect(endpoint.agentRequests).toBe(1);
         await expect((await fetch(`${url}/requests`)).json()).resolves.toEqual({ agentRequests: 1 });
+    });
+});
+
+describe('the scripted model endpoint in kill-tools mode (issue #814)', () => {
+    const KILLING_STEP =
+        /^kill -TERM 1 2>\/dev\/null; kill -KILL -1 2>\/dev\/null; echo FACTORY_TOOL_OK; touch step-1$/;
+    const toolResult = (id: string, text: string) => ({
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: id, content: text }],
+    });
+    const killRequest = (url: string, messages: unknown[]) =>
+        fetch(`${url}/v1/messages`, {
+            method: 'POST',
+            body: JSON.stringify({ stream: false, tools: [{ name: 'Bash' }], messages }),
+        }).then((response) => response.json() as Promise<{ content: { input?: { command: string } }[] }>);
+
+    it('has each scripted tool call kill everything its uid may signal, then report and mark the step', async () => {
+        const { url } = await start({ killTools: true, toolSteps: 2 });
+        const first = await killRequest(url, []);
+        expect(first.content[0]!.input?.command).toMatch(KILLING_STEP);
+    });
+
+    it('counts each tool result that came back with the marker once, however often the history resends it', async () => {
+        const { url } = await start({ killTools: true, toolSteps: 3 });
+        const results = async () =>
+            ((await (await fetch(`${url}/tool-results`)).json()) as { toolResults: number }).toolResults;
+        await killRequest(url, []);
+        await killRequest(url, [toolResult('toolu_1', 'FACTORY_TOOL_OK')]);
+        await killRequest(url, [toolResult('toolu_1', 'FACTORY_TOOL_OK'), toolResult('toolu_2', 'Killed')]);
+        await killRequest(url, [
+            toolResult('toolu_1', 'FACTORY_TOOL_OK'),
+            toolResult('toolu_2', 'Killed'),
+            { role: 'assistant', content: [{ type: 'text', text: 'next' }] },
+            toolResult('toolu_3', 'FACTORY_TOOL_OK'),
+            { role: 'user', content: 'a reminder after the result' },
+        ]);
+        expect(await results()).toBe(2);
+    });
+
+    it('never raises a Stop: the run must end on its own', async () => {
+        const { url } = await start({ killTools: true });
+        await killRequest(url, []);
+        expect(((await (await fetch(`${url}/control`)).json()) as { stop: boolean }).stop).toBe(false);
     });
 });
 
@@ -267,8 +314,13 @@ describe('the scripted model endpoint as the step channel (issue #812)', () => {
                 },
                 () => {}
             );
-            await vi.waitFor(() => expect(existsSync(join(box('in'), MAILBOX_FILES.go))).toBe(true), { timeout: 5000 });
-            writeFileSync(join(box('out'), MAILBOX_FILES.agentExit), '0\n');
+            await vi.waitFor(
+                () => expect(existsSync(join(box('in'), AGENT_MAILBOX_DIR, MAILBOX_FILES.go))).toBe(true),
+                {
+                    timeout: 5000,
+                }
+            );
+            writeFileSync(join(box('out'), AGENT_MAILBOX_DIR, MAILBOX_FILES.agentExit), '0\n');
 
             await expect(done).resolves.toBe(0);
         } finally {
@@ -306,5 +358,61 @@ describe('the test-jobs cooperative-Stop lane', () => {
     // The real entrypoints wait on the go marker the endpoint's `go` order makes the supervisor write.
     it('gives the agent the go marker its entrypoint waits on', () => {
         expect(script).toContain(`-e FACTORY_CTL_GO=${GO_MARKER}`);
+    });
+});
+
+describe('the tool-isolation lanes (issue #814)', () => {
+    const script = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
+    const checks = readFileSync(join(ROOT, 'docker/tool-isolation-checks.sh'), 'utf8');
+    /** The flag pairs the driver starts the agent container with (dockerArgs). */
+    const driverPairs = (() => {
+        const argv = [...containerHardeningArgs(), ...agentLaunchArgs()];
+        return argv.flatMap((arg, i) => (i % 2 === 0 ? [`${arg} ${argv[i + 1]}`] : []));
+    })();
+    const lanePairs = (source: string) => {
+        const line = source.split('\n').find((l) => l.startsWith('AGENT_FLAGS=('))!;
+        const argv = line.slice('AGENT_FLAGS=('.length, -1).split(' ');
+        return argv.flatMap((arg, i) => (i % 2 === 0 ? [`${arg} ${argv[i + 1]}`] : [])).sort();
+    };
+
+    it('runs both real CLIs isolated and as the honest control, in kill-tools mode', () => {
+        for (const run of ['claude control', 'claude isolated', 'opencode control', 'opencode isolated']) {
+            expect(script).toContain(`kill_lane ${run}`);
+        }
+        expect(script).toContain('fake-model-endpoint.mjs --kill-tools --tool-steps 2');
+    });
+
+    it('starts the agent with exactly the driver’s own agent flags, in the lane and in the image checks', () => {
+        expect(lanePairs(script)).toEqual([...driverPairs].sort());
+        expect(lanePairs(checks)).toEqual([...driverPairs].sort());
+    });
+
+    /** kill_lane's verdict for the control, run in bash with `ok`/`bad` stubbed to name which fired. */
+    const controlVerdict = (status: number, counts: string, markers: string[]) => {
+        const lane = script.slice(script.indexOf('kill_lane() {'), script.indexOf('\nkill_lane claude control'));
+        const verdict = lane.slice(lane.indexOf('    if [ "$mode" = isolated ]; then\n'), lane.lastIndexOf('\n}'));
+        const dir = mkdtempSync(join(tmpdir(), 'kill-lane-'));
+        try {
+            for (const marker of markers) writeFileSync(join(dir, marker), '');
+            return execFileSync('bash', ['-c', `ok() { echo ok; }\nbad() { echo bad; }\n${verdict}`], {
+                env: { ...process.env, mode: 'control', cli: 'claude', status: String(status), counts, dir },
+                encoding: 'utf8',
+            }).trim();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    };
+
+    // A CLI that fails before its first model request kills nothing, one that reports the first
+    // tool's result outlived it, and one the lane's own timeout ended (124) hung rather than died.
+    // The first tool's own marker is not required: dying with PID 1 can end its shell before
+    // `touch step-1`.
+    it('passes the control only on a signal death after one agent request and no tool result', () => {
+        expect(controlVerdict(1, '0 0', [])).toBe('bad');
+        expect(controlVerdict(137, '2 1', ['step-1'])).toBe('bad');
+        expect(controlVerdict(124, '1 0', [])).toBe('bad');
+        expect(controlVerdict(1, '1 0', [])).toBe('bad');
+        expect(controlVerdict(137, '1 0', [])).toBe('ok');
+        expect(controlVerdict(143, '1 0', ['step-1'])).toBe('ok');
     });
 });

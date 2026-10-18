@@ -64,6 +64,13 @@ const TRANSITIONS = {
 /** How an attempt ended; only `completed` may be followed by a driver-side verification. */
 const OUTCOMES = ['completed', 'failed', 'cancelled', 'timed_out', 'lost'];
 
+/**
+ * The agent's own directory inside `in` and `out` (`AGENT_MAILBOX_DIR` of supervisor-contract.ts),
+ * created owner-only before the agent is released: its tools run as their own uid (issue #814).
+ */
+const AGENT_DIR = 'agent';
+const AGENT_DIR_MODE = 0o700;
+
 const FILES = {
     stop: 'stop',
     kill: 'kill',
@@ -84,6 +91,8 @@ const STEP_ID = /^[A-Za-z0-9_.:-]{1,160}$/;
 const STEP_OUTPUT_LIMIT = 1_048_576;
 /** The exit a step the supervisor refused (or could not start) answers with: `sh`'s "cannot execute". */
 const STEP_REFUSED_EXIT = 126;
+/** A step writes the tree the tool uid shares through group 1000 (issue #814). */
+const STEP_UMASK = 0o002;
 const STEP_RESULT_ATTEMPTS = 5;
 const EXIT_DEADLINE = 124;
 const EXIT_SUPERVISOR_FAILED = 70;
@@ -215,18 +224,22 @@ function settingsOf(env) {
 
 /** Where each file of the mailboxes lives, from the settings' directories. */
 function filesOf({ dirs }) {
+    const agentIn = path.join(dirs.in, AGENT_DIR);
+    const agentOut = path.join(dirs.out, AGENT_DIR);
     return {
-        stop: path.join(dirs.in, FILES.stop),
-        kill: path.join(dirs.in, FILES.kill),
-        answers: path.join(dirs.in, FILES.answers),
-        questions: path.join(dirs.out, FILES.questions),
-        agentAlive: path.join(dirs.out, FILES.agentAlive),
-        agentExit: path.join(dirs.out, FILES.agentExit),
-        alive: [path.join(dirs.in, FILES.supervisorAlive), path.join(dirs.export, FILES.supervisorAlive)],
+        agentIn,
+        agentOut,
+        stop: path.join(agentIn, FILES.stop),
+        kill: path.join(agentIn, FILES.kill),
+        answers: path.join(agentIn, FILES.answers),
+        questions: path.join(agentOut, FILES.questions),
+        agentAlive: path.join(agentOut, FILES.agentAlive),
+        agentExit: path.join(agentOut, FILES.agentExit),
+        alive: [path.join(agentIn, FILES.supervisorAlive), path.join(dirs.export, FILES.supervisorAlive)],
         drain: path.join(dirs.export, FILES.drain),
         exportStatus: path.join(dirs.export, FILES.exportStatus),
         state: path.join(dirs.own, FILES.state),
-        go: path.join(dirs.in, FILES.go),
+        go: path.join(agentIn, FILES.go),
         ledger: path.join(dirs.own, FILES.steps),
     };
 }
@@ -317,6 +330,9 @@ function spawnStep(run, step) {
     return new Promise((resolve) => {
         const [exe, ...args] = step.argv;
         let child;
+        // The agent's tools run as their own uid in group 1000 (issue #814), so a step writes the
+        // tree group-writable. The child takes the umask at its fork; this process keeps its own.
+        const umask = process.umask(STEP_UMASK);
         try {
             child = spawn(exe, args, {
                 cwd: step.cwd || undefined,
@@ -327,6 +343,8 @@ function spawnStep(run, step) {
         } catch (error) {
             resolve(stepResult(STEP_REFUSED_EXIT, '', String(error?.message ?? error)));
             return;
+        } finally {
+            process.umask(umask);
         }
         let stdout = '';
         let stderr = '';
@@ -751,9 +769,13 @@ async function supervise(env = process.env, log = (line) => process.stdout.write
     const run = newRun(settingsOf(env), now, log);
     // prepare: the mailbox exists before anything reads it.
     const { dirs } = run.settings;
-    for (const dir of [dirs.in, dirs.out, dirs.export, dirs.own, run.file.answers, run.file.questions]) {
+    for (const dir of [dirs.in, dirs.out, dirs.export, dirs.own, run.file.agentIn, run.file.agentOut]) {
         fs.mkdirSync(dir, { recursive: true });
     }
+    // Set, not created with: a mode on mkdir passes through the umask, and an adopted group's
+    // directory already exists.
+    for (const dir of [run.file.agentIn, run.file.agentOut]) fs.chmodSync(dir, AGENT_DIR_MODE);
+    for (const dir of [run.file.answers, run.file.questions]) fs.mkdirSync(dir, { recursive: true });
     beat(run);
     run.machine.enter('setup'); // delegated: the gate environment's setup is the driver's
     persist(run);
@@ -801,6 +823,7 @@ async function supervise(env = process.env, log = (line) => process.stdout.write
 }
 
 module.exports = {
+    AGENT_DIR,
     STAGES,
     DELEGATED,
     TRANSITIONS,

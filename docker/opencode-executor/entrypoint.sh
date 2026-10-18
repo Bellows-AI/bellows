@@ -52,6 +52,10 @@ if [ -n "${FACTORY_STATS_URL:-}" ] && [ -n "${RUNNER_JOB_ID:-}" ] && [ -n "${RUN
         2>/dev/null || echo "opencode-executor: could not configure the git credential helper" >&2
 fi
 
+# The tool uid shares node's group and the tree's umask, and reads this file through its own
+# (issue #814): readable, never writable, by the commands the agent runs.
+if [ -f "$HOME/.gitconfig" ]; then chmod 0644 "$HOME/.gitconfig" 2>/dev/null || true; fi
+
 # Jira (docs/connections.md): JIRA_API is the board's connector proxy for THIS attempt, never
 # Atlassian itself — the credential stays on the board, which checks the attempt's lease and the
 # task's selected connection on every call. Derived here, never inherited: a stale value would
@@ -82,6 +86,9 @@ if [ "$DEFAULT_BRANCH" = main ]; then DEFAULT_BRANCH=''; fi
 MEMBER_ROOT=''
 if [ -n "${XDG_DATA_HOME:-}" ]; then
     mkdir -p "$XDG_DATA_HOME"
+    # The session database is the CLI's uid's alone: the agent's tools run as their own uid in its
+    # group (issue #814).
+    chmod 0700 "$XDG_DATA_HOME" 2>/dev/null || true
 
     # The driver's shape is <mount>/<org>/<user>/.factory/opencode/<task>, so the member's own
     # tree — checkouts, .worktrees, .factory — is derivable here. The baked fence denies everything outside the
@@ -162,13 +169,24 @@ CLI_PID=''
 REPORTER_PID=''
 WATCHER_PID=''
 CTL_PID=''
+PROXY_PID=''
 TERM_PENDING=''
 on_term() {
     TERM_PENDING=1
     # shellcheck disable=SC2086 # deliberately unquoted: an unset pid must vanish, not empty-arg
-    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID $CTL_PID 2>/dev/null || true
+    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID $CTL_PID $PROXY_PID 2>/dev/null || true
 }
 trap on_term TERM INT
+
+# The run-control proxy (issue #814): the agent's tools run as their own uid and never hold the
+# run-control token. The proxy keeps it and serves the two routes the baked skills call on a socket
+# a tool can reach; the token leaves this shell's environment before the CLI starts. A sibling like
+# the reporter, stdio discarded.
+if [ -n "${BELLOWS_CONTROL_URL:-}" ] && [ -n "${BELLOWS_CONTROL_TOKEN:-}" ]; then
+    node /usr/local/bin/control-proxy.cjs >/dev/null 2>&1 &
+    PROXY_PID=$!
+fi
+unset BELLOWS_CONTROL_TOKEN
 
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
 REPORTER_PID=$!
@@ -207,7 +225,7 @@ WATCHER_PID=$!
 
 if [ -n "$TERM_PENDING" ]; then
     # shellcheck disable=SC2086 # same reason as on_term
-    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID $CTL_PID 2>/dev/null || true
+    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID $CTL_PID $PROXY_PID 2>/dev/null || true
 fi
 
 set +e
@@ -233,6 +251,10 @@ fi
 # which is the last thing that runs.
 kill -TERM "$REPORTER_PID" "$WATCHER_PID" "$CTL_PID" 2>/dev/null || true
 wait "$REPORTER_PID" "$WATCHER_PID" "$CTL_PID" 2>/dev/null || true
+if [ -n "$PROXY_PID" ]; then
+    kill -TERM "$PROXY_PID" 2>/dev/null || true
+    wait "$PROXY_PID" 2>/dev/null || true
+fi
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs --once >/dev/null 2>&1 || true
 # The supervisor's word that the agent is over, written last and atomically: the exit status the
 # runtime reports is still the verdict, this only lets the supervisor start finalizing at once.
@@ -240,6 +262,7 @@ if [ -n "${FACTORY_CTL_OUT:-}" ]; then
     printf '%s\n' "$STATUS" > "$FACTORY_CTL_OUT/agent.exit.tmp" 2>/dev/null \
         && mv "$FACTORY_CTL_OUT/agent.exit.tmp" "$FACTORY_CTL_OUT/agent.exit" 2>/dev/null || true
 fi
-# The cached GitHub token goes with the run; the memory-backed mount goes with the container.
-node "$GITHUB_CREDENTIAL" clear 2>/dev/null || true
+# The cached GitHub token goes with the run; the memory-backed mount goes with the container. The
+# tool uid owns the cache (git and gh run as it), so the clear runs through the tool shell too.
+"${SHELL:-/bin/sh}" -c 'node "$1" clear' clear "$GITHUB_CREDENTIAL" 2>/dev/null || true
 exit "$STATUS"

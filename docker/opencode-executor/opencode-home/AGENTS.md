@@ -80,18 +80,13 @@ anything you could not do.
 
 ## Context discipline
 
-The `context-mode` plugin's `ctx_*` tools are available. An overgrown session triggers compaction,
-which costs minutes per cycle.
+An overgrown session triggers compaction, which costs minutes per cycle.
 
-- **Search order for codebase questions: `ctx_search` → `grep` → `read`.** An open-ended "where
-  does X live / how does Y work" question goes to `ctx_search` first. Keep `grep` for an exact
-  symbol or string. `read` is for a file you are about to edit — not for open-ended
-  investigation, and never re-read a file you have not changed.
+- **Search order for codebase questions: `grep` → `read`.** Find the place with `grep` first.
+  `read` is for a file you are about to edit — not for open-ended investigation, and never re-read
+  a file you have not changed.
 - **Bound what a shell search can print.** When you shell out, narrow it (`--include`, a path
   prefix, `| head`) rather than running a bare `grep -rn` over the whole tree.
-- **`ctx_batch_execute` is an offload valve, not a default.** Reach for it only when raw output
-  would exceed ~20KB, cap `queries` at 3, and grep narrowly rather than `cat` — it repeats every
-  matched section once per query, so `cat`-ing whole files multiplies them by the query count.
 - **Trim what you print.** Summarize test and gate output (the summary lines, the failing files,
   `tail`) rather than pasting a full suite run into the session.
 

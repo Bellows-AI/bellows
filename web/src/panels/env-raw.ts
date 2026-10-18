@@ -18,13 +18,7 @@
  * name matching one is refused).
  */
 
-import {
-    ENV_NAME,
-    ENV_NAME_LIMIT,
-    ENV_VALUE_LIMIT,
-    MAX_ENV_VARS_PER_SCOPE,
-    RESERVED_ENV_NAMES,
-} from '@factory-ai/core';
+import { ENV_NAME, ENV_NAME_LIMIT, ENV_VALUE_LIMIT, isReservedEnvName, MAX_ENV_VARS_PER_SCOPE } from '@factory-ai/core';
 
 /** The structural subset of the panel's EnvVarDraft the editor works on. */
 export interface EnvVarRow {
@@ -67,7 +61,7 @@ function parseEnvLine(
     }
     if (name.length > ENV_NAME_LIMIT)
         return { ok: false, error: `line ${lineNo}: name exceeds ${ENV_NAME_LIMIT} characters` };
-    if (RESERVED_ENV_NAMES.includes(name)) {
+    if (isReservedEnvName(name)) {
         return { ok: false, error: `line ${lineNo}: "${name}" is reserved by the runner` };
     }
     if (value.includes('\n')) {
