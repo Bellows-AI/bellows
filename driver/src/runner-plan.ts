@@ -1,6 +1,14 @@
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { npmQuietEnv, opencodeDataDir, repoCacheEnv, SESSION_ID, transcriptDir } from './claim.js';
+import {
+    npmQuietEnv,
+    opencodeDataDir,
+    RESUME_MAY_BE_UNWRITTEN_ENV,
+    repoCacheEnv,
+    SESSION_ID,
+    transcriptDir,
+} from './claim.js';
+import { agentPrompt } from './continuation.js';
 import { OPENCODE } from './executors.js';
 import {
     claudeSystemPromptArgs,
@@ -65,6 +73,16 @@ const baseBranchEnv = (job: BoardJob): [string, string][] => {
 };
 
 /**
+ * Issue #822: a takeover or handover of a session the row minted itself (`ownSession` — a root's,
+ * a sessionless follow-up's) may have nothing behind it, its driver lost before the CLI's first
+ * write — the runner may start that one anew (the claude bridge's `startUnwrittenResume`, the
+ * opencode entrypoint). A session inherited from an earlier row, a follow-up's parent's, was
+ * written by that row, and its missing transcript stays the CLI's refusal.
+ */
+const unwrittenResumeEnv = (job: BoardJob, session: RunSession): [string, string][] =>
+    session.resume && job.ownSession ? [[RESUME_MAY_BE_UNWRITTEN_ENV, '1']] : [];
+
+/**
  * opencode: headless only, and opencode mints its own session ids — a fresh run is `run <command>`
  * with no session at all, and a follow-up is `run --session <id> <command>` with the session
  * opencode ITSELF created on the earlier run, persisted via XDG_DATA_HOME. It cannot ADOPT an id
@@ -93,7 +111,7 @@ function opencodePlan(config: DriverConfig, job: BoardJob, session: RunSession |
         // Only a resumed run has a session here, and the reporter must name it — its tokens
         // belong to the SAME conversation the parent ran. A fresh run is discovered live by the
         // reporter from the session database XDG_DATA_HOME keeps.
-        envPairs.push(['BELLOWS_SESSION_ID', session.id]);
+        envPairs.push(['BELLOWS_SESSION_ID', session.id], ...unwrittenResumeEnv(job, session));
     }
     cliArgs.push(opencodeTurnPrompt(job));
     return { envPairs, cliArgs };
@@ -124,6 +142,7 @@ function claudePlan(config: DriverConfig, job: BoardJob, session: RunSession | n
     const envPairs: [string, string][] = [
         ['FACTORY_TRANSCRIPT_DIR', transcriptDir(config, job)],
         ['BELLOWS_SESSION_ID', session.id],
+        ...unwrittenResumeEnv(job, session),
         ...claudeTurnContextEnv(job),
         ...npmQuietEnv(job),
         ...repoCacheEnv(config, job),
@@ -135,7 +154,8 @@ function claudePlan(config: DriverConfig, job: BoardJob, session: RunSession | n
     // system-instruction channel — additive to its built-in system prompt, never a replacement.
     // It is the same text on every claim of a thread; the per-node turn context rides the env above.
     cliArgs.push(...claudeSystemPromptArgs(job));
-    cliArgs.push('-p', job.command);
+    // Framed as a continuation when the claim continues an interrupted attempt (issue #822).
+    cliArgs.push('-p', agentPrompt(job));
     return { envPairs, cliArgs };
 }
 

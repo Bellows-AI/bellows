@@ -26,11 +26,19 @@ const job = {
     masterPrompt: MASTER_PROMPT,
     resumeSessionId: null,
     followUp: false,
+    ownSession: false,
+    continuesInterrupted: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
 } as BoardJob;
 const opencodeJob: BoardJob = { ...job, executorType: 'opencode' };
 const SYSTEM_PROMPT = ['--append-system-prompt', MASTER_PROMPT, '--system-prompt-snapshot', 'off'];
+/**
+ * Issue #822: a resume of the row's own session (`ownSession`: a takeover or handover, a sessionless
+ * follow-up's included) is the one run whose session may never have been written; a session
+ * inherited from an earlier row stays a refusal when it is missing.
+ */
+const UNWRITTEN: [string, string][] = [['BELLOWS_RESUME_MAY_BE_UNWRITTEN', '1']];
 
 const plan = (j: BoardJob, session: RunSession | null, env: NodeJS.ProcessEnv = {}) =>
     runnerPlan(loadDriverConfig(env), j, session);
@@ -39,18 +47,51 @@ describe('the claude-code runner plan', () => {
     // The prompt is delivered on EVERY run, resume and follow-up included: a restored
     // conversation that receives nothing idles to the deadline. `--resume` keeps the id.
     it.each([
-        ['a fresh run', job, { id: SESSION, resume: false }, '--session-id'],
-        ['a resume', job, { id: SESSION, resume: true }, '--resume'],
-        ['a follow-up', { ...job, followUp: true }, { id: SESSION, resume: true }, '--resume'],
-    ])('runs the command as the prompt, last, on %s', (_name, j, session, flag) => {
+        { name: 'a fresh run', j: job, session: { id: SESSION, resume: false }, flag: '--session-id', unwritten: [] },
+        {
+            name: 'a takeover',
+            j: { ...job, resumeSessionId: SESSION, ownSession: true },
+            session: { id: SESSION, resume: true },
+            flag: '--resume',
+            unwritten: UNWRITTEN,
+        },
+        {
+            name: "a sessionless follow-up's takeover",
+            j: { ...job, resumeSessionId: SESSION, followUp: true, ownSession: true },
+            session: { id: SESSION, resume: true },
+            flag: '--resume',
+            unwritten: UNWRITTEN,
+        },
+        {
+            name: 'a follow-up',
+            j: { ...job, resumeSessionId: SESSION, followUp: true },
+            session: { id: SESSION, resume: true },
+            flag: '--resume',
+            unwritten: [],
+        },
+    ])('runs the command as the prompt, last, on $name', ({ j, session, flag, unwritten }) => {
         expect(plan(j, session)).toEqual({
             envPairs: [
                 ['FACTORY_TRANSCRIPT_DIR', TRANSCRIPTS],
                 ['BELLOWS_SESSION_ID', SESSION],
+                ...unwritten,
                 ['NPM_CONFIG_UPDATE_NOTIFIER', 'false'],
             ],
             cliArgs: [flag, SESSION, ...SYSTEM_PROMPT, '-p', 'fix the failing build'],
         });
+    });
+
+    // Issue #822: a claim continuing an interrupted attempt is told so in its prompt alone, the
+    // whole command behind the lead; a takeover the board does not flag is delivered the bare command.
+    it('frames the prompt as a continuation only for a claim that continues an interrupted attempt', () => {
+        const session = { id: SESSION, resume: true };
+        const resumed = { ...job, resumeSessionId: SESSION, ownSession: true };
+
+        const prompt = plan({ ...resumed, continuesInterrupted: true }, session).cliArgs.at(-1)!;
+
+        expect(prompt.startsWith('Your previous run of this task was interrupted')).toBe(true);
+        expect(prompt.endsWith('The task, for reference:\n\nfix the failing build')).toBe(true);
+        expect(plan(resumed, session).cliArgs.slice(-2)).toEqual(['-p', 'fix the failing build']);
     });
 
     // Issue #545: a skill selection rides the master prompt verbatim.
@@ -116,13 +157,18 @@ describe('the opencode runner plan', () => {
     });
 
     // A follow-up continues the session opencode ITSELF created, and the reporter names it.
-    it('continues its own session with the new command on a follow-up', () => {
+    it.each([
+        ['a follow-up', { ...opencodeJob, followUp: true }, []],
+        ['a takeover', { ...opencodeJob, ownSession: true }, UNWRITTEN],
+        ["a sessionless follow-up's takeover", { ...opencodeJob, followUp: true, ownSession: true }, UNWRITTEN],
+    ])('continues its own session with the command on %s', (_name, j, unwritten) => {
         const session = { id: 'ses_f86188c3dffeZGYO4yZq4atba9', resume: true };
-        expect(plan({ ...opencodeJob, followUp: true }, session)).toEqual({
+        expect(plan({ ...j, resumeSessionId: session.id }, session)).toEqual({
             envPairs: [
                 ['XDG_DATA_HOME', `/workspaces/bellows/${USER}/.factory/opencode/${opencodeJob.id}`],
                 ['NPM_CONFIG_UPDATE_NOTIFIER', 'false'],
                 ['BELLOWS_SESSION_ID', session.id],
+                ...unwritten,
             ],
             cliArgs: ['run', '--agent', 'factory', '--session', session.id, 'fix the failing build'],
         });
@@ -133,6 +179,20 @@ describe('the opencode runner plan', () => {
         expect(plan({ ...opencodeJob, turnContext }, null).cliArgs.at(-1)).toBe(
             `${turnContext}\n\nfix the failing build`
         );
+    });
+
+    // Issue #822: the continuation rides the turn prompt behind the turn context; only a claim the
+    // board flags as continuing an interrupted attempt is framed.
+    it('frames the prompt as a continuation only for a claim that continues an interrupted attempt', () => {
+        const session = { id: 'ses_f86188c3dffeZGYO4yZq4atba9', resume: true };
+        const turnContext = 'Factory turn context\n- Current node: implement';
+        const resumed = { ...opencodeJob, resumeSessionId: session.id, ownSession: true, turnContext };
+
+        const prompt = plan({ ...resumed, continuesInterrupted: true }, session).cliArgs.at(-1)!;
+
+        expect(prompt.startsWith(`${turnContext}\n\nYour previous run of this task was interrupted`)).toBe(true);
+        expect(prompt.endsWith('The task, for reference:\n\nfix the failing build')).toBe(true);
+        expect(plan(resumed, session).cliArgs.at(-1)).toBe(`${turnContext}\n\nfix the failing build`);
     });
 
     it.each([

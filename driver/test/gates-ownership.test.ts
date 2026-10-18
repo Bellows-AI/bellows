@@ -41,6 +41,7 @@ const JOB = (lease: string): BoardJob => ({
     rootCommand: 'fix the failing build',
     attempts: 1,
     maxAttempts: 3,
+    lastAttempt: false,
     claimSeq: 1,
     leaseToken: lease,
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
@@ -51,6 +52,8 @@ const JOB = (lease: string): BoardJob => ({
     masterPrompt: 'You are running inside Factory.',
     resumeSessionId: null,
     followUp: false,
+    ownSession: false,
+    continuesInterrupted: false,
     userId: '44444444-4444-4444-8444-444444444444',
     workspacePath: 'bellows/44444444-4444-4444-8444-444444444444',
 });

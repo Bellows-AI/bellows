@@ -6,11 +6,11 @@ import { createBatchStore, type BatchStore } from '../src/db/batch-store.js';
 import { claimDue, commitObservation } from '../src/db/batch-store-observation.js';
 import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { createJobStore } from '../src/db/job-store.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import type { Claim, JobStore } from '../src/db/job-store-types.js';
 import { createOrgRegistry } from '../src/orgs.js';
 import { testConfig } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
-import { testOrg, testUser } from './fixtures.js';
+import { expireLease, testOrg, testUser } from './fixtures.js';
 import {
     batchPlan,
     headOf as sharedHeadOf,
@@ -1152,10 +1152,10 @@ describe.skipIf(!enabled)('bounded recovery', () => {
         await setStatus(root, 'running');
         const head = await headOf(root);
         const lease = randomUUID();
-        await sql`update job set lease_token = ${lease}, attempts = 1 where id = ${head.id}`;
+        await sql`update job set lease_token = ${lease}, attempts = 1, claim_seq = 1 where id = ${head.id}`;
         await sql`
-            insert into job_question (org_id, job_id, question_id, attempt, lease_token, questions, state)
-            values (${ORG}, ${head.id}, 'q1', 1, ${lease}, ${sql.json([{ question: 'which db?' }])}, 'pending')
+            insert into job_question (org_id, job_id, question_id, attempt, claim_seq, lease_token, questions, state)
+            values (${ORG}, ${head.id}, 'q1', 1, 1, ${lease}, ${sql.json([{ question: 'which db?' }])}, 'pending')
         `;
         await store.reconcile(id);
         let tasks = await stateOf(id);
@@ -1189,10 +1189,10 @@ describe.skipIf(!enabled)('bounded recovery', () => {
         await setStatus(root, 'running');
         const head = await headOf(root);
         const lease = randomUUID();
-        await sql`update job set lease_token = ${lease}, attempts = 1 where id = ${head.id}`;
+        await sql`update job set lease_token = ${lease}, attempts = 1, claim_seq = 1 where id = ${head.id}`;
         await sql`
-            insert into job_question (org_id, job_id, question_id, attempt, lease_token, questions, state)
-            values (${ORG}, ${head.id}, 'q1', 1, ${lease}, ${sql.json([{ question: 'which db?' }])}, 'pending')
+            insert into job_question (org_id, job_id, question_id, attempt, claim_seq, lease_token, questions, state)
+            values (${ORG}, ${head.id}, 'q1', 1, 1, ${lease}, ${sql.json([{ question: 'which db?' }])}, 'pending')
         `;
         await store.reconcile(id);
         expect((await stateOf(id)).a).toMatchObject({ attention: 'question' });
@@ -1201,19 +1201,45 @@ describe.skipIf(!enabled)('bounded recovery', () => {
         await store.reconcile(id);
         expect((await stateOf(id)).a!.attention).toBeNull();
 
-        // A reclaimed attempt holds a new lease: the old question is closed, so a gate failure is repaired.
+        // A reclaimed attempt holds a new lease under the next claim, in the same attempt when the
+        // claim recovered a lost one: the old question is closed, so a gate failure is repaired.
         const reclaimed = await frozen(planWith([{ key: 'one', tasks: [task('a')] }]));
         await store.reconcile(reclaimed);
         const second = (await stateOf(reclaimed)).a!.rootJobId!;
         const asker = await headOf(second);
-        await sql`update job set lease_token = ${randomUUID()}, attempts = 2 where id = ${asker.id}`;
+        await sql`update job set lease_token = ${randomUUID()}, attempts = 1, claim_seq = 2 where id = ${asker.id}`;
         await sql`
-            insert into job_question (org_id, job_id, question_id, attempt, lease_token, questions, state)
-            values (${ORG}, ${asker.id}, 'q1', 1, ${randomUUID()}, ${sql.json([{ question: 'old?' }])}, 'pending')
+            insert into job_question (org_id, job_id, question_id, attempt, claim_seq, lease_token, questions, state)
+            values (${ORG}, ${asker.id}, 'q1', 1, 1, ${randomUUID()}, ${sql.json([{ question: 'old?' }])}, 'pending')
         `;
         await failWith(second, 'gate', 'failed', 'verification');
         await store.reconcile(reclaimed);
         expect(await kindsOf('a', reclaimed)).toEqual(['launch', 'repair']);
+    });
+
+    it('repairs the takeover of an expired lease whose lost claim left its question unanswered', async () => {
+        const id = await frozen(planWith([{ key: 'one', tasks: [task('a')] }]));
+        await store.reconcile(id);
+        const root = (await stateOf(id)).a!.rootJobId!;
+        const lost = (await jobs.claim('w1', 300)) as Claim;
+        expect(lost.id).toBe(root);
+        const ask = {
+            questionId: 'q1',
+            questions: [{ question: 'which db?', header: 'DB', multiSelect: false, options: [] }],
+        };
+        expect(await jobs.askQuestion(root, lost.leaseToken, ask)).toMatchObject({ result: 'created' });
+
+        await expireLease(sql, root);
+        const takeover = (await jobs.claim('w2', 300)) as Claim;
+        expect(takeover).toMatchObject({ id: root, attempts: lost.attempts });
+        await failWith(root, 'gate', 'failed', 'verification');
+        await store.reconcile(id);
+
+        const a = (await stateOf(id)).a!;
+        expect({ kinds: await kindsOf('a', id), attention: a.attention }).toEqual({
+            kinds: ['launch', 'repair'],
+            attention: null,
+        });
     });
 
     it('cannot reset a budget or repeat a repair across a restart', async () => {

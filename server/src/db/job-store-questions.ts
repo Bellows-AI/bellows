@@ -15,7 +15,7 @@ import type {
     JobStoreContext,
 } from './job-store-types.js';
 
-/** How many question rows one attempt may hold; the next ask is refused. */
+/** How many question rows one claim may hold (074, keyed by `claim_seq`); the next ask is refused. */
 export const QUESTIONS_PER_ATTEMPT = 5;
 
 type Answers = Record<string, string>;
@@ -129,22 +129,23 @@ export async function askQuestionReport(
     return sql.begin(async (tx): Promise<AskQuestionResult> => {
         // The lease guard and the serializer in one: the row lock makes the count below and the
         // insert one step per job, so two concurrent asks cannot both see room for the last slot.
-        const [job] = await tx<{ attempts: number }[]>`
-            select attempts from job
+        const [job] = await tx<{ attempts: number; claim_seq: string }[]>`
+            select attempts, claim_seq from job
             where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
             for update
         `;
         if (!job) return { result: (await exists(tx, orgId, id)) ? 'lost' : 'missing' };
         const stored = await readQuestion(tx, orgId, id, ask.questionId);
         if (stored) return { result: 'existing', question: stored };
+        // Counted per claim, not per attempt: a takeover of an expired lease keeps the attempt.
         const [held] = await tx<{ held: number }[]>`
             select count(*)::int as held from job_question
-            where org_id = ${orgId} and job_id = ${id} and attempt = ${job.attempts}
+            where org_id = ${orgId} and job_id = ${id} and claim_seq = ${job.claim_seq}
         `;
         if ((held?.held ?? 0) >= QUESTIONS_PER_ATTEMPT) return { result: 'limit' };
         await tx`
-            insert into job_question (org_id, job_id, question_id, attempt, lease_token, questions)
-            values (${orgId}, ${id}, ${ask.questionId}, ${job.attempts}, ${leaseToken},
+            insert into job_question (org_id, job_id, question_id, attempt, claim_seq, lease_token, questions)
+            values (${orgId}, ${id}, ${ask.questionId}, ${job.attempts}, ${job.claim_seq}, ${leaseToken},
                     ${tx.json(ask.questions as never)})
         `;
         const question = await readQuestion(tx, orgId, id, ask.questionId);

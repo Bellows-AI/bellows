@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { createJobStore, INTERRUPTION_BUDGET } from '../src/db/job-store.js';
+import { createJobStore, INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from '../src/db/job-store.js';
 import type { Claim, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { testOrg } from './fixtures.js';
+import { spendInterruptionBudget, testOrg } from './fixtures.js';
 
 /**
  * Issue #792: an attempt the infrastructure interrupted (a node drained under the driver, a runner
@@ -48,7 +48,7 @@ describe.skipIf(!enabled)('interrupting an attempt the infrastructure took away 
     it('refunds the attempt, frees the lease at once and records why', async () => {
         const id = await queue();
         const first = await claim();
-        expect(first).toMatchObject({ id, attempts: 1, claimSeq: 1 });
+        expect(first).toMatchObject({ id, attempts: 1, claimSeq: 1, continuesInterrupted: false });
 
         expect(
             await store.interrupt(id, first.leaseToken, { reason: 'the driver was drained', release: true })
@@ -59,6 +59,8 @@ describe.skipIf(!enabled)('interrupting an attempt the infrastructure took away 
         expect(row!.interruptions).toEqual([{ at: expect.any(String), reason: 'the driver was drained', claimSeq: 1 }]);
         // Claimable now — no lease to wait out.
         expect(await claim()).toMatchObject({ id, attempts: 1, claimSeq: 2 });
+        // A released row is queued, not an expired lease: the claim records nothing of its own.
+        expect((await store.get(id))!.interruptions).toHaveLength(1);
     });
 
     it('banks the interrupted segment on the wall clock, and the next claim never banks it twice', async () => {
@@ -104,21 +106,26 @@ describe.skipIf(!enabled)('interrupting an attempt the infrastructure took away 
         expect(row).toEqual({ status: 'running', lease_token: last.leaseToken, attempts: 1 });
     });
 
-    it('records an adopted interruption in place: the attempt refunded, the lease kept', async () => {
+    // The lease expired under claim 1, so claim 2 recorded the interruption as it took the row
+    // over; the adoption that follows names claim 1 and is the same disruption: no second refund.
+    it('answers an adoption after a lease expiry with the interruption the claim already recorded', async () => {
         const id = await queue();
         const stale = await claim();
         await age(id);
         const adopter = await claim();
-        expect(adopter.attempts).toBe(2);
+        expect(adopter).toMatchObject({ attempts: 1, claimSeq: 2 });
 
         expect(
-            await store.interrupt(id, adopter.leaseToken, { reason: 'adopted the runner of claim 1', release: false })
+            await store.interrupt(id, adopter.leaseToken, {
+                reason: 'adopted the runner of claim 1',
+                release: false,
+                claimSeq: 1,
+            })
         ).toEqual({ result: 'ok', status: 'running' });
 
-        const [row] = await sql<{ status: string; lease_token: string; attempts: number }[]>`
-            select status, lease_token, attempts from job where id = ${id}
-        `;
-        expect(row).toEqual({ status: 'running', lease_token: adopter.leaseToken, attempts: 1 });
+        const row = await store.get(id);
+        expect(row).toMatchObject({ status: 'running', attempts: 1 });
+        expect(row!.interruptions).toEqual([{ at: expect.any(String), reason: LEASE_EXPIRED_REASON, claimSeq: 1 }]);
         expect(await store.interrupt(id, stale.leaseToken, { reason: 'late', release: true })).toEqual({
             result: 'lost',
         });
@@ -158,5 +165,192 @@ describe.skipIf(!enabled)('interrupting an attempt the infrastructure took away 
         const row = await store.get(id);
         expect(row).toMatchObject({ status: 'running', attempts: 1 });
         expect(row!.interruptions).toEqual([{ at: expect.any(String), reason: 'the driver was drained', claimSeq: 1 }]);
+    });
+
+    // The command is what the first claim got, so the runner that claim launched stays adoptable
+    // (its `COMMAND_MARK`); the driver frames the continuation into the prompt alone.
+    it('resumes the session of an attempt the driver handed back, flagged as continuing it', async () => {
+        const id = await queue();
+        const first = await claim();
+        const session = randomUUID();
+        await store.session(id, first.leaseToken, session);
+        await store.interrupt(id, first.leaseToken, { reason: 'the driver was drained', release: true });
+
+        expect(await claim()).toMatchObject({
+            id,
+            resumeSessionId: session,
+            followUp: false,
+            ownSession: true,
+            continuesInterrupted: true,
+            command: 'do the thing',
+        });
+    });
+
+    // Nothing to continue in: the claim starts the task as a first run does.
+    it('delivers the task itself to a handover that reported no session', async () => {
+        const id = await queue();
+        const first = await claim();
+        await store.interrupt(id, first.leaseToken, { reason: 'the driver was drained', release: true });
+
+        expect(await claim()).toMatchObject({
+            id,
+            resumeSessionId: null,
+            continuesInterrupted: false,
+            command: 'do the thing',
+        });
+    });
+
+    // A retry is a new row that resumes nothing: no interrupted attempt of its own to continue.
+    it('never flags a retry of a task as continuing an interrupted attempt', async () => {
+        const id = await queue();
+        const first = await claim();
+        await store.session(id, first.leaseToken, randomUUID());
+        await store.complete(id, first.leaseToken, { status: 'failed', exitCode: 1, output: 'no' });
+        const retry = await store.createRetry(id, null);
+        if (typeof retry === 'string') throw new Error(`createRetry refused: ${retry}`);
+
+        expect(await claim()).toMatchObject({
+            id: retry.id,
+            resumeSessionId: null,
+            continuesInterrupted: false,
+            command: 'do the thing',
+        });
+    });
+});
+
+/**
+ * Issue #822: an expired lease is the infrastructure losing an attempt — its driver went silent —
+ * so the claim that takes the row over records it as that attempt's interruption, inside the same
+ * budget, rather than spending a `max_attempts` slot; and the session the lost attempt reported is
+ * the one the takeover resumes.
+ */
+describe.skipIf(!enabled)('a lease expiry is an interruption the next claim records — database', () => {
+    const lastAttempt = async (): Promise<string> => {
+        const id = await queue();
+        await sql`update job set max_attempts = 1 where id = ${id}`;
+        return id;
+    };
+
+    it('records a lease expiry at the last allowed attempt as an interruption and hands the job out again', async () => {
+        const id = await lastAttempt();
+        expect(await claim()).toMatchObject({ id, attempts: 1, claimSeq: 1 });
+        await age(id);
+
+        expect(await claim()).toMatchObject({ id, attempts: 1, maxAttempts: 1, claimSeq: 2 });
+        const row = await store.get(id);
+        expect(row).toMatchObject({ status: 'running', attempts: 1 });
+        expect(row!.interruptions).toEqual([{ at: expect.any(String), reason: LEASE_EXPIRED_REASON, claimSeq: 1 }]);
+    });
+
+    // The driver reports a failed verdict for an attempt it cannot run only when the board would not
+    // recover its loss: at the last allowed attempt a lost driver is still an interruption.
+    it('tells the claim it is the last attempt only once its attempts and the interruption budget are spent', async () => {
+        const recoverable = await lastAttempt();
+        expect(await claim()).toMatchObject({ id: recoverable, attempts: 1, maxAttempts: 1, lastAttempt: false });
+
+        const spent = await lastAttempt();
+        await spendInterruptionBudget(sql, spent);
+        expect(await claim()).toMatchObject({ id: spent, attempts: 1, maxAttempts: 1, lastAttempt: true });
+    });
+
+    it('spends no attempt on lease expiries while the interruption budget lasts', async () => {
+        const id = await queue();
+        await claim();
+        for (let round = 0; round < INTERRUPTION_BUDGET; round += 1) {
+            await age(id);
+            expect(await claim()).toMatchObject({ id, attempts: 1, claimSeq: round + 2 });
+        }
+        const row = await store.get(id);
+        expect(row!.interruptions.map((i) => i.claimSeq)).toEqual(
+            Array.from({ length: INTERRUPTION_BUDGET }, (_, n) => n + 1)
+        );
+    });
+
+    it('spends an attempt on an expiry once the budget is spent', async () => {
+        const id = await queue();
+        await claim();
+        await spendInterruptionBudget(sql, id);
+        await age(id);
+
+        expect(await claim()).toMatchObject({ id, attempts: 2, claimSeq: 2 });
+        expect((await store.get(id))!.interruptions).toHaveLength(INTERRUPTION_BUDGET);
+    });
+
+    // The session itself may be what kills the run — a transcript too large for the pod, a corrupt
+    // one — so the attempt a reclaim spends starts a new conversation rather than resuming it.
+    it('starts the attempt a reclaim spends in a new session, delivering the task itself', async () => {
+        const id = await queue();
+        const first = await claim();
+        await store.session(id, first.leaseToken, randomUUID());
+        await spendInterruptionBudget(sql, id);
+        await age(id);
+
+        expect(await claim()).toMatchObject({
+            id,
+            attempts: 2,
+            resumeSessionId: null,
+            followUp: false,
+            ownSession: false,
+            continuesInterrupted: false,
+            command: 'do the thing',
+        });
+        expect((await store.get(id))!.sessionId).toBeNull();
+    });
+
+    // The takeover resumes the lost attempt's conversation, so handing it the task again would
+    // have the agent repeat what it already committed, pushed or opened: the claim says it
+    // continues, and the driver frames the prompt. The command stays the first claim's, the text
+    // the lost runner is marked with, so a runner that finished meanwhile is adopted.
+    it('flags a takeover as continuing the interrupted run, delivering the command the first claim got', async () => {
+        const id = await queue();
+        const first = await claim();
+        const session = randomUUID();
+        await store.session(id, first.leaseToken, session);
+        await age(id);
+
+        expect(await claim()).toMatchObject({
+            id,
+            resumeSessionId: session,
+            followUp: false,
+            ownSession: true,
+            continuesInterrupted: true,
+            command: first.command,
+            rootCommand: 'do the thing',
+        });
+    });
+
+    it('retires a job dead once its interruption budget and its attempts are both spent', async () => {
+        const id = await lastAttempt();
+        await claim();
+        await spendInterruptionBudget(sql, id);
+        await age(id);
+
+        expect(await store.claim(WORKER, 60)).toBeNull();
+        expect(await store.get(id)).toMatchObject({ status: 'dead', attempts: 1 });
+    });
+
+    // The bound ends the task, never its state: the session the lost attempts resumed stays on the
+    // row a follow-up continues from, and the checkout stays on the workspaces volume.
+    it('keeps the session of a job retired dead, and a follow-up continues it', async () => {
+        const id = await lastAttempt();
+        const first = await claim();
+        const session = randomUUID();
+        await store.session(id, first.leaseToken, session);
+        for (let round = 0; round < INTERRUPTION_BUDGET; round += 1) {
+            await age(id);
+            expect(await claim()).toMatchObject({ id, attempts: 1, resumeSessionId: session });
+        }
+        await age(id);
+        expect(await store.claim(WORKER, 60)).toBeNull();
+        expect(await store.get(id)).toMatchObject({ status: 'dead', sessionId: session });
+
+        const followUp = await store.createFollowUp(id, 'carry on', null);
+        if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
+        expect(await claim()).toMatchObject({
+            id: followUp.id,
+            resumeSessionId: session,
+            followUp: true,
+            ownSession: false,
+        });
     });
 });

@@ -122,8 +122,8 @@ recorded acceptance.
   `attention` and park that task only; siblings keep running. `core/test/batch-recovery.test.ts`,
   `server/test-db/batch-dispatch.test.ts`.
 - **Questions are never answered or extended by the board:** a pending one shows as `attention`
-  with its id and the answer route; a run that dies holding one is not retried automatically.
-  `server/src/db/batch-store-schedule.ts` (`syncQuestion`).
+  with its id and the answer route; a run whose last claim (`claim_seq`) dies holding one is not
+  retried automatically. `server/src/db/batch-store-schedule.ts` (`syncQuestion`, `syncTasks`).
 - **The time limit is a fence like cancel:** the pass that finds `deadline_at` passed stamps
   `expired_at` once, cancels work that never launched, stops moving work, and queues no recovery or
   advance behind it; manual retry answers `409 BATCH_EXPIRED`, while merges and acceptances that

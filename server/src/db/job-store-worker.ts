@@ -80,15 +80,23 @@ export async function sessionReport(
     sessionId: string | null
 ): ReturnType<JobStore['session']> {
     const { sql, orgId } = ctx;
+    // The opencode reporter re-posts its session every sample (routes/ingest.ts): a session the row
+    // already carries is no write, and the answer is the lease's whether or not anything changed.
     const rows = await sql<{ id: string }[]>`
         update job set
             session_id = ${sessionId}
         where org_id = ${orgId} and id = ${id}
           and status = 'running' and lease_token = ${leaseToken}
+          and session_id is distinct from ${sessionId}
         returning id
     `;
     if (rows[0]) return 'ok';
-    return (await exists(sql, orgId, id)) ? 'lost' : 'missing';
+    const lease = await sql<{ held: boolean | null }[]>`
+        select status = 'running' and lease_token = ${leaseToken} as held
+        from job where org_id = ${orgId} and id = ${id}
+    `;
+    if (!lease[0]) return 'missing';
+    return lease[0].held ? 'ok' : 'lost';
 }
 
 export async function progressReport(

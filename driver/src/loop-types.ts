@@ -90,6 +90,9 @@ export type VerdictBody = Parameters<Board['complete']>[1];
  * - `fault` — a named failure, reported `failed`. The agent never runs.
  * - `leave` — infrastructure, not a verdict: the claim stays with its lease and the lease decides
  *   (a sync that threw).
+ * - `interrupt` — a refusal this driver makes while alive (a services start the daemon or cluster
+ *   refused, issue #822): handed back as an interruption carrying `reason` (`interruptAttempt`),
+ *   left to the lease only when that does not land. No verdict.
  * - `requeue` — checkout contention another driver or a concurrent git caused (issue #559): the
  *   pre-run claim goes back to the board at once, its attempt refunded and its next claim
  *   deferred. No verdict — no agent ran.
@@ -99,6 +102,7 @@ export type VerdictBody = Parameters<Board['complete']>[1];
 export type SetupHalt =
     | { halt: 'fault'; log: string; verdict: VerdictBody }
     | { halt: 'leave'; log: string }
+    | { halt: 'interrupt'; reason: string }
     | { halt: 'requeue'; log: string }
     | { halt: 'concluded'; log: string; verdict: VerdictBody };
 

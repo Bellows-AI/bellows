@@ -1,4 +1,4 @@
-import { leaseLeftWhy } from '../../src/loop-fence.js';
+import { neverStartedWhy } from '../../src/loop-fence.js';
 import { agentFaults, kindOf } from '../../src/loop-ledger.js';
 import type { RunOutcome } from '../../src/runner.js';
 
@@ -21,10 +21,12 @@ export const TERMINATION_TABLE = {
 
 export type TerminationRow = keyof typeof TERMINATION_TABLE;
 
-/** The loop's decision on a run's outcome, in its own order (`loop-run.ts`: interruption, lease, ledger). */
+/**
+ * The loop's decision on a run's outcome, in its own order (`concludeUnreported`, then the ledger):
+ * an infrastructure loss and a container that never started are both handed back as an interruption.
+ */
 export function decisionOf(outcome: RunOutcome): string {
-    if (outcome.infraLoss) return 'interruption';
-    if (leaseLeftWhy(outcome)) return 'lease';
+    if (outcome.infraLoss || neverStartedWhy(outcome)) return 'interruption';
     return kindOf(agentFaults(outcome)) ?? 'succeeded';
 }
 

@@ -10,6 +10,8 @@ GITHUB_CREDENTIAL="$(cd "$(dirname "$0")" && pwd)/github-credential.cjs"
 # The agent's GitHub token is that helper's alone, renewed ahead of expiry: a value injected into
 # this container would shadow it in gh and git, and outlive its hour.
 unset GITHUB_TOKEN GH_TOKEN
+# The branch reporter beside it, resolved the same way.
+BRANCH_REPORTER="$(cd "$(dirname "$0")" && pwd)/branch-reporter.cjs"
 
 # The task supervisor releases the agent (issue #771). The group exists from the attempt's first
 # step, the sync, and the tree this container works in does not exist until then, so the agent waits
@@ -99,6 +101,50 @@ if [ -n "${XDG_DATA_HOME:-}" ]; then
     case "$XDG_DATA_HOME" in
     */.factory/opencode/*) MEMBER_ROOT="${XDG_DATA_HOME%/.factory/opencode/*}" ;;
     esac
+fi
+
+# A takeover or handover (`--session <id>`, the id also in BELLOWS_SESSION_ID) resumes the session
+# its predecessor reported live (issue #822); a node lost before opencode flushed that row leaves a
+# database without it, and opencode would refuse the run. Only there — the driver grants it with
+# BELLOWS_RESUME_MAY_BE_UNWRITTEN, never to a session inherited from an earlier row (a follow-up's
+# parent's), whose missing session stays opencode's refusal — and only when the reporter finds the
+# session certainly absent (`--has-session` exits 1: no database, or no such row), the pair is
+# dropped and a new session starts, BELLOWS_SESSION_ID unset so the reporter discovers it. One that
+# cannot be read (exit 2) keeps it.
+if [ "${BELLOWS_RESUME_MAY_BE_UNWRITTEN:-}" = 1 ] && [ -n "${BELLOWS_SESSION_ID:-}" ] && [ -n "${XDG_DATA_HOME:-}" ]; then
+    known=0
+    node --disable-warning=ExperimentalWarning "$BRANCH_REPORTER" --has-session "$BELLOWS_SESSION_ID" || known=$?
+    if [ "$known" = 1 ]; then
+        echo "opencode-executor: session $BELLOWS_SESSION_ID is not in the session database; starting a new one" >&2
+        resumed="$BELLOWS_SESSION_ID"
+        unset BELLOWS_SESSION_ID
+        pending=''
+        first=1
+        for arg do
+            if [ "$first" = 1 ]; then set --; first=''; fi
+            if [ -n "$pending" ]; then
+                pending=''
+                [ "$arg" = "$resumed" ] && continue
+                set -- "$@" --session
+            fi
+            if [ "$arg" = --session ]; then pending=1; continue; fi
+            set -- "$@" "$arg"
+        done
+        if [ -n "$pending" ]; then set -- "$@" --session; fi
+    fi
+fi
+
+# A fresh run of a task that already ran — a retry — shares the task's directory and session
+# database, so until opencode creates this run's session the newest one there is an earlier
+# attempt's. Named here, before the CLI starts, the reporter never reports it as this run's; a
+# database `--prior` cannot read leaves the baseline unknown, and the reporter discovers nothing.
+if [ -z "${BELLOWS_SESSION_ID:-}" ]; then
+    if BRANCH_REPORTER_PRIOR_SESSION="$(node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs --prior 2>/dev/null)"; then
+        export BRANCH_REPORTER_PRIOR_SESSION
+    else
+        BRANCH_REPORTER_PRIOR_UNKNOWN=1
+        export BRANCH_REPORTER_PRIOR_UNKNOWN
+    fi
 fi
 
 if [ -n "$DEFAULT_BRANCH$MEMBER_ROOT" ]; then

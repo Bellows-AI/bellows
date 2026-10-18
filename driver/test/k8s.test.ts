@@ -88,6 +88,7 @@ const job: BoardJob = {
     command: 'fix the failing build',
     attempts: 1,
     maxAttempts: 1,
+    lastAttempt: false,
     claimSeq: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
@@ -98,6 +99,8 @@ const job: BoardJob = {
     masterPrompt: MASTER_PROMPT,
     resumeSessionId: null,
     followUp: false,
+    ownSession: false,
+    continuesInterrupted: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
     rootCommand: 'fix the failing build',
@@ -5940,6 +5943,58 @@ describe('the runner job spec under opencode', () => {
     });
 });
 
+// Issue #822: the permission to start a resumed session that was never written reaches the pod
+// as a literal value, on both executors, for a resume of the row's own session (`ownSession`) and
+// never for one inherited from an earlier row — docker renders the same plan (docker.test.ts).
+describe('the runner pod of a resumed attempt', () => {
+    const k8sConfig = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
+    const UNWRITTEN = { name: 'BELLOWS_RESUME_MAY_BE_UNWRITTEN', value: '1' };
+    const podEnv = (claimed: BoardJob, session: string) =>
+        runnerJobSpec(k8sConfig, { ...claimed, resumeSessionId: session }, { id: session, resume: true }).spec.template
+            .spec.containers[0]!.env;
+
+    it.each([
+        ['claude-code', job, SESSION],
+        ['opencode', opencodeJob, 'ses_abc123'],
+    ])(
+        'tells a %s resume of its own session, never an inherited one, that it may be unwritten',
+        (_name, claimed, session) => {
+            expect(podEnv({ ...claimed, ownSession: true }, session)).toContainEqual(UNWRITTEN);
+            // A sessionless follow-up's takeover: the session its own first attempt minted.
+            expect(podEnv({ ...claimed, followUp: true, ownSession: true }, session)).toContainEqual(UNWRITTEN);
+            // A follow-up resuming its parent's session.
+            expect(
+                podEnv({ ...claimed, followUp: true, ownSession: false }, session).map((entry) => entry.name)
+            ).not.toContain(UNWRITTEN.name);
+        }
+    );
+
+    // A claim continuing an interrupted attempt is framed in its prompt alone: the Job is marked
+    // with the unframed command (`COMMAND_MARK`), as the interrupted attempt's runner Job was.
+    it.each([
+        ['claude-code', job, SESSION, { id: SESSION, resume: false }],
+        ['opencode', opencodeJob, 'ses_abc123', null],
+    ])(
+        'frames a %s continuation into its prompt alone, marking the Job with the command the first claim ran',
+        (_name, claimed, session, firstSession) => {
+            const first = runnerJobSpec(k8sConfig, claimed, firstSession);
+            const continuing = runnerJobSpec(
+                k8sConfig,
+                { ...claimed, claimSeq: 2, resumeSessionId: session, ownSession: true, continuesInterrupted: true },
+                { id: session, resume: true }
+            );
+
+            const prompt = continuing.spec.template.spec.containers[0]!.args?.at(-1);
+            expect(prompt?.startsWith('Your previous run of this task was interrupted')).toBe(true);
+            expect(prompt?.endsWith(`The task, for reference:\n\n${claimed.command}`)).toBe(true);
+            expect(continuing.metadata.annotations?.['factory.command']).toBe(commandMark(claimed.command));
+            expect(continuing.metadata.annotations?.['factory.command']).toBe(
+                first.metadata.annotations?.['factory.command']
+            );
+        }
+    );
+});
+
 describe('the opencode session readout job', () => {
     const config = loadDriverConfig({
         EXECUTOR: 'kubernetes',
@@ -6929,6 +6984,21 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
     it('never adopts a run of a command since edited', async () => {
         const { request } = withRunners([priorItem({ succeeded: 1 })]);
         expect(await runner(request).adopt!({ ...adopter, command: 'another command' })).toBeNull();
+    });
+
+    // Issue #822: the runner of an interrupted attempt finished while its takeover or handover was
+    // being claimed. The continuing claim carries the command the first claim ran, so the marks
+    // that runner's Job was created with are its own, and the run is adopted, never redone.
+    it('adopts, for a claim continuing an interrupted attempt, the runner its first claim launched', async () => {
+        const listed = priorItem({ succeeded: 1 });
+        const launched = { ...listed, metadata: { ...listed.metadata, annotations: spec().metadata.annotations } };
+        const { request } = withRunners([launched]);
+        const continuing = { ...adopter, resumeSessionId: SESSION, ownSession: true, continuesInterrupted: true };
+
+        expect(await runner(request).adopt!(continuing)).toMatchObject({
+            claimSeq: 1,
+            outcome: { exitCode: 0, started: true, sessionId: SESSION },
+        });
     });
 
     it('answers null when this job has no earlier runner', async () => {

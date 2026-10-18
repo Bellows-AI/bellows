@@ -51,6 +51,7 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
     rootCommand: `job ${n}`,
     attempts: 1,
     maxAttempts: 3,
+    lastAttempt: false,
     claimSeq: 1,
     leaseToken: `0000000${n}-2222-4222-8222-222222222222`,
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
@@ -61,6 +62,8 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
     masterPrompt: MASTER_PROMPT,
     resumeSessionId,
     followUp: false,
+    ownSession: false,
+    continuesInterrupted: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
 });
@@ -2024,11 +2027,14 @@ describe('the poll loop', () => {
                 command: '',
                 attempts: 1,
                 maxAttempts: 1,
+                lastAttempt: true,
                 claimSeq: 1,
                 leaseToken: rowId,
                 leaseExpiresAt: '2026-08-21T12:05:00.000Z',
                 resumeSessionId: null,
                 followUp: false,
+                ownSession: false,
+                continuesInterrupted: false,
                 userId: null,
                 workspacePath: `bellows/${USER}`,
                 rootJobId: root,
@@ -2491,7 +2497,8 @@ describe('the poll loop', () => {
     // The board retires a job whose attempts ran out with no output, so the attempt that burns the
     // last one reports the daemon's reason as the verdict (issue #664).
     it('reports the reason a runner never started on the last attempt', async () => {
-        const board = stubBoard([{ ...job(1), attempts: 3 }]);
+        // The last attempt is one whose interruption budget is spent, so the board answers that.
+        const board = stubBoard([{ ...job(1), attempts: 3, lastAttempt: true }], { interruptVerdict: 'exhausted' });
         const reason =
             'docker: conflicting options: cannot attach both user-defined and non-user-defined network-modes';
         const runner = stubRunner(async () => ok({ exitCode: 125, output: reason, started: false }));
@@ -2504,18 +2511,50 @@ describe('the poll loop', () => {
         expect(logs.some((m) => m.includes(reason))).toBe(true);
     });
 
+    // Issue #822: a run that threw may still have a runner — a force-deleted driver pod keeps
+    // running with its apiserver token revoked, and reading its own runner Job answers 401 while the
+    // runner works on. Handing that attempt back would free the lease, and the reaper would sweep
+    // the runner the next claim should adopt (the kind lane's hard-kill case): it is left to the
+    // lease, whatever the board would have answered an interrupt.
+    it('leaves a run it could not run to the lease, never handing it back, so a surviving runner is adopted', async () => {
+        const board = stubBoard([{ ...job(1), attempts: 3, lastAttempt: false }]);
+        const runner = stubRunner(async () => {
+            throw new Error('reading the runner job answered 401: Unauthorized');
+        });
+        const logs: string[] = [];
+
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
+
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.interrupted).toEqual([]);
+        expect(logs.some((m) => m.includes('could not run: reading the runner job answered 401'))).toBe(true);
+        expect(logs.some((m) => m.includes('leaving it to the lease'))).toBe(true);
+    });
+
     // The kubernetes twin: the runner throws when the apiserver refuses the Job, so the reason
     // rides the rejection instead of the outcome.
     it('reports the reason a run could not start on the last attempt', async () => {
-        const board = stubBoard([{ ...job(1), attempts: 3 }]);
+        const board = stubBoard([{ ...job(1), attempts: 3, lastAttempt: true }]);
         const runner = stubRunner(async () => {
             throw new Error('creating the runner job answered 403: pods "x" is forbidden: exceeded quota');
         });
 
         await drive({ ...board, runner });
 
+        expect(board.board.interrupted).toEqual([]);
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
         expect(board.board.completed[0]?.output).toContain('exceeded quota');
+    });
+
+    // The board records one driver sentence: a longer reason would be refused, and the attempt left
+    // to the lease for its length alone.
+    it('cuts an interruption reason to what the board records', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok({ exitCode: 125, output: 'x'.repeat(2000), started: false }));
+
+        await drive({ ...board, runner });
+
+        expect(board.board.interrupted[0]?.reason).toHaveLength(500);
     });
 
     // A runner the platform took away — its pod deleted, evicted or its node removed — never gave
@@ -2699,7 +2738,7 @@ describe('the poll loop', () => {
 
     // A spent interruption budget falls back to the lease, and the last attempt reports the loss.
     it('leaves an infrastructure loss to the lease once the interruption budget is spent', async () => {
-        const board = stubBoard([{ ...job(1), attempts: 3 }], { interruptVerdict: 'exhausted' });
+        const board = stubBoard([{ ...job(1), attempts: 3, lastAttempt: true }], { interruptVerdict: 'exhausted' });
         const runner = stubRunner(async () =>
             ok({ exitCode: null, output: '', infraLoss: 'the runner pod was deleted before it exited (Evicted)' })
         );
@@ -2711,14 +2750,22 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.output).toContain('infrastructure loss');
     });
 
-    // A container that never started is not an interruption: no agent ran, the lease decides.
-    it('never reports an interruption for a runner that never started', async () => {
+    // A container that never started is the daemon's refusal, said by a live driver (issue #822):
+    // handed back with its reason, like a run that could not start.
+    it('hands a runner that never started back as an interruption', async () => {
         const board = stubBoard([job(1)]);
         const runner = stubRunner(async () => ok({ exitCode: 125, output: 'no such image', started: false }));
 
         await drive({ ...board, runner });
 
-        expect(board.board.interrupted).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.interrupted).toEqual([
+            {
+                id: job(1).id,
+                reason: 'the runner reports the container never started: no such image',
+                release: true,
+            },
+        ]);
     });
 
     // The mirror case, and why classification lives in the runner rather than in an exit code
@@ -3392,7 +3439,9 @@ describe('environment.setup before the agent starts', () => {
         expect(runner.servicesReleased).toEqual([setupJob(1).id]);
     });
 
-    it('leaves a service start the daemon or cluster refused to the lease', async () => {
+    // Issue #822: the daemon's or the cluster's refusal, said by a live driver — handed back with its
+    // reason inside the interruption budget, never left to a lease the board records as silence.
+    it('hands a service start the daemon or cluster refused back as an interruption', async () => {
         const board = stubBoard([setupJob(1)]);
         const { stack, gates } = stubGateStack();
         const logs: string[] = [];
@@ -3407,7 +3456,33 @@ describe('environment.setup before the agent starts', () => {
 
         expect(stack.acquired).toEqual([]);
         expect(board.board.completed).toEqual([]);
-        expect(logs.some((line) => line.includes('could not start the services') && line.includes('lease'))).toBe(true);
+        expect(board.board.interrupted).toEqual([
+            {
+                id: setupJob(1).id,
+                reason: 'could not start the services: could not create the services network: daemon refused',
+                release: true,
+            },
+        ]);
+        expect(
+            logs.some((line) => line.includes('could not start the services') && line.includes('interruption'))
+        ).toBe(true);
+    });
+
+    it('reports a refused service start on the last attempt, once the interruption budget is spent', async () => {
+        const board = stubBoard([{ ...setupJob(1), lastAttempt: true }], { interruptVerdict: 'exhausted' });
+        const { gates } = stubGateStack();
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must not spawn');
+        });
+        runner.startServices = async () => {
+            throw new Error('could not create the services network: daemon refused');
+        };
+
+        await drive({ ...board, runner, gates });
+
+        expect(board.board.interrupted).toHaveLength(1);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+        expect(board.board.completed[0]?.output).toContain('could not start the services');
     });
 
     it('releases the started services even when the setup conclusion itself throws', async () => {

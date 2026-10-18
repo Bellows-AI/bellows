@@ -1,6 +1,5 @@
 import type { BoardJob } from './board.js';
 import { raceStep } from './loop-attempt.js';
-import { leaveConclusion } from './loop-fence.js';
 import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import type { DeadService, RunOutcome } from './runner.js';
@@ -17,7 +16,8 @@ const release = (rt: LoopRuntime, job: BoardJob): Promise<void> =>
  * gate environment and its `environment.setup` (which may migrate or seed one), and so before the
  * runner, which starts none. Raced against the stand-down: a start the attempt stopped
  * waiting on is torn down once it settles, so a Stop leaks no fleet. An author's refusal fails the
- * run with the verdict a refused start always had; a daemon or cluster refusal is left to the lease.
+ * run with the verdict a refused start always had; a daemon or cluster refusal is handed back as an
+ * interruption carrying its reason.
  */
 export async function startServicesStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
     const { rt, job, state } = ctx;
@@ -42,8 +42,7 @@ export async function startServicesStep(ctx: AttemptCtx): Promise<SetupConclusio
             };
         }
         // An infrastructure refusal: the start tore its partial fleet down itself.
-        const reason = `could not start the services: ${(e as Error).message}`;
-        return leaveConclusion(job, reason, `${reason}, leaving it to the lease`, null);
+        return { halt: 'interrupt', reason: `could not start the services: ${(e as Error).message}` };
     }
     if (raced === null) {
         void starting.catch(() => null).then(() => release(rt, job));

@@ -271,6 +271,7 @@ describe('the driver config: runner resources', () => {
         rootCommand: 'fix the failing build',
         attempts: 1,
         maxAttempts: 3,
+        lastAttempt: false,
         claimSeq: 1,
         leaseToken: '22222222-2222-4222-8222-222222222222',
         leaseExpiresAt: '2026-08-29T12:05:00.000Z',
@@ -281,6 +282,8 @@ describe('the driver config: runner resources', () => {
         masterPrompt: 'Factory execution context',
         resumeSessionId: null,
         followUp: false,
+        ownSession: false,
+        continuesInterrupted: false,
         userId: USER,
         workspacePath: `bellows/${USER}`,
     };

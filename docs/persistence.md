@@ -10,7 +10,7 @@ the in-memory stores in `server/test/helpers*.ts`.
 | Schema (ingest and views: [telemetry.md](telemetry.md)) | `server/migrations/*.sql` | `server/test-db/telemetry.sql.test.ts`, the `job-store.*` suites |
 | Read cache warm-up and degradation | `server/src/stats-service.ts` | `server/test/routes.stats.get.test.ts` |
 | Job and thread reads and writes | `server/src/db/job-store*.ts` | `server/test-db/job-store.*.test.ts` |
-| Agent questions persist until answered or their run closes (migration 050) | `server/migrations/050_job_question.sql`, `server/src/db/job-store-questions.ts` | `server/test-db/job-store.questions.test.ts` |
+| Agent questions persist until answered or their run closes, stamped with the asking claim's `claim_seq` that the per-claim cap counts by (migrations 050, 074) | `server/migrations/050_job_question.sql`, `server/migrations/074_job_question_claim_seq.sql`, `server/src/db/job-store-questions.ts` | `server/test-db/job-store.questions.test.ts` |
 | Named-profile reviews, a job row of its own thread linked by `review_of` and unique per caller and key, plus the profiles stamped on the caller (migration 056) | `server/migrations/056_job_review.sql`, `server/src/db/job-store-reviews.ts` | `server/test-db/job-store.reviews.test.ts` |
 | The never-refunded claim sequence the kubernetes checkout claim orders by (migration 057) | `server/migrations/057_job_claim_seq.sql`, `server/src/db/job-store-claim.ts` | `server/test-db/job-store.requeue.test.ts` |
 | Idempotency keys, stamped on the `job` row a create, follow-up or retry inserted and unique per org, caller and operation (migration 058) | `server/migrations/058_job_idempotency.sql`, `server/src/db/job-store-idempotency.ts` | `server/test-db/job-store.idempotency.test.ts` |

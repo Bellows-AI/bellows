@@ -447,6 +447,12 @@ export interface Claim {
     command: string;
     attempts: number;
     maxAttempts: number;
+    /**
+     * Whether a loss of this attempt ends the job (issue #822): its attempts and its interruption
+     * budget are both spent, so the board retires it `dead` when this lease expires. Until then a
+     * lost attempt is an interruption, and a driver that cannot run it leaves it to the lease.
+     */
+    lastAttempt: boolean;
     /** The row's claim sequence (057): bumped by every claim, never refunded like `attempts`. */
     claimSeq: number;
     leaseToken: string;
@@ -537,17 +543,34 @@ export interface Claim {
      */
     rootCommand: string;
     /**
-     * Set only when this claim is a follow-up resuming the parent's session: the worker restores
-     * that session instead of starting a new one.
+     * The session this claim resumes, which the worker restores instead of starting a new one: a
+     * follow-up's copy of its parent's, or the one an interrupted attempt of this row reported — a
+     * lease-expiry takeover or a handover (issue #822). Null when the claim starts a new
+     * conversation: a first run, or a reclaim that spends an attempt.
      */
     resumeSessionId: string | null;
     /**
-     * True only when `resumeSessionId` is set AND this claim should still deliver the command into
-     * it — a follow-up's first (or crashed) attempt, where the restored transcript is the parent
-     * conversation and the command is the new adjustment. Absent on a board that predates
+     * True when this claim should still deliver a follow-up's command — its first (or crashed)
+     * attempt: into the parent conversation when `resumeSessionId` is set, behind a recap of the
+     * thread when it is not (`follow-up-recap.ts`). Absent on a board that predates
      * follow-ups, so it is read as `?? false` on the driver side.
      */
     followUp: boolean;
+    /**
+     * Whether `resumeSessionId` was minted by an attempt of THIS row — a root's, a fresh workflow
+     * node's, a sessionless follow-up's — rather than inherited from an earlier row of the thread
+     * (issue #822). Only such a session can be lost unwritten, with a driver gone before the CLI's
+     * first write, so only its resume may start that id anew (`BELLOWS_RESUME_MAY_BE_UNWRITTEN`).
+     * False when there is no session.
+     */
+    ownSession: boolean;
+    /**
+     * Whether this claim continues, in its session, the interrupted attempt it supersedes — a
+     * lease-expiry takeover or a handover (issue #822). `command` stays what that attempt's first
+     * claim was delivered, the text its runner is marked with for adoption; the driver frames the
+     * prompt as a continuation (`driver/src/continuation.ts`).
+     */
+    continuesInterrupted: boolean;
     /**
      * The environment the runner starts with, resolved at claim time for THIS job's author and
      * repo label: org < workspace < repo, the more specific scope winning. Optional — absent on a

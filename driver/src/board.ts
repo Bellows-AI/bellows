@@ -44,8 +44,13 @@ export interface BoardJob {
     id: string;
     command: string;
     attempts: number;
-    /** The attempts the board allows; the attempt that burns the last one reports what ends the job. */
+    /** The attempts the board allows. */
     maxAttempts: number;
+    /**
+     * Whether a loss of this attempt ends the job: its attempts and the board's interruption budget
+     * are both spent (issue #822). Only then does an attempt that cannot run report what ends it.
+     */
+    lastAttempt: boolean;
     /**
      * The board's claim sequence for this row: bumped by every claim and never refunded, unlike
      * `attempts` (issue #559). What the kubernetes checkout claim orders contenders by.
@@ -93,8 +98,9 @@ export interface BoardJob {
      */
     turnContext?: string;
     /**
-     * Set when this claim is a follow-up resuming its parent's session: the runner restores that
-     * session rather than starting one. Read defensively as `?? null`.
+     * Set when this claim resumes a session: a follow-up its parent's, or a takeover or handover the
+     * row's own attempt's (issue #822). The runner restores that session rather than starting one,
+     * and the tree is restored, not synced (`claimContinuesSession`). Read defensively as `?? null`.
      */
     resumeSessionId: string | null;
     /**
@@ -104,6 +110,20 @@ export interface BoardJob {
      * Read defensively like everything else here: a board that predates follow-ups omits it.
      */
     followUp: boolean;
+    /**
+     * Whether `resumeSessionId` was minted by an attempt of this row rather than inherited from an
+     * earlier row of the thread (issue #822): only such a session can have been lost before the
+     * CLI's first write, so only its resume may start the id anew (`runner-plan.ts`). False when
+     * there is no session.
+     */
+    ownSession: boolean;
+    /**
+     * Whether this claim continues, in its session, the interrupted attempt it supersedes — a
+     * takeover or a handover (issue #822). The agent's prompt alone is framed as a continuation
+     * (`continuation.ts`); `command` is what every claim of the attempt carries, so the runner's
+     * adoption mark, helper receipts and commit title read the same text on each.
+     */
+    continuesInterrupted: boolean;
     /**
      * The account that queued the job, or null for an unattributed one.
      *

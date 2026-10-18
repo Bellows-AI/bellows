@@ -88,14 +88,29 @@ export async function readRecapTurns(
 
 /**
  * The command a claim delivers: a member follow-up with no session to resume starts fresh, so the
- * earlier turns ride ahead of its command; every other claim delivers the row's own command.
+ * earlier turns ride ahead of its command; every other claim delivers the row's own command. A
+ * claim that continues an interrupted attempt in its session (issue #822) is delivered exactly what
+ * that attempt's first claim was — the recap too when the session is the row's own, minted by a
+ * first claim that ran sessionless — never wrapped: the runner that claim launched is marked with
+ * this text (`COMMAND_MARK`) and adopted on it, and the driver frames the continuation itself.
  */
 export async function claimCommand(
     tx: TransactionSql,
     orgId: string,
     rootJobId: string,
-    row: { id: string; command: string; follow_up: boolean; session_id: string | null; workflow_node: string | null }
+    row: {
+        id: string;
+        command: string;
+        follow_up: boolean;
+        session_id: string | null;
+        own_session: boolean;
+        workflow_node: string | null;
+        resumes_interrupted: boolean;
+    }
 ): Promise<string> {
-    if (!row.follow_up || row.session_id !== null || row.workflow_node !== null) return row.command;
+    // Whether the attempt's first claim ran sessionless: for a continuation, when the session it
+    // resumes is one that first claim minted (`own_session`).
+    const sessionless = row.resumes_interrupted ? row.own_session : row.session_id === null;
+    if (!row.follow_up || row.workflow_node !== null || !sessionless) return row.command;
     return renderFollowUpRecap(await readRecapTurns(tx, orgId, rootJobId, row.id), row.command);
 }

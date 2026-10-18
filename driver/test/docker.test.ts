@@ -99,6 +99,7 @@ const job: BoardJob = {
     rootCommand: 'fix the failing build',
     attempts: 1,
     maxAttempts: 3,
+    lastAttempt: false,
     claimSeq: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
@@ -109,6 +110,8 @@ const job: BoardJob = {
     masterPrompt: MASTER_PROMPT,
     resumeSessionId: null,
     followUp: false,
+    ownSession: false,
+    continuesInterrupted: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
     supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: CONTROL_TOKEN },
@@ -250,6 +253,15 @@ describe('the docker run arguments', () => {
             'NPM_CONFIG_UPDATE_NOTIFIER=false',
             'BELLOWS_SESSION_ID=ses_f86188c3dffeZGYO4yZq4atba9',
         ]);
+        expect(opencode).not.toContain('BELLOWS_RESUME_MAY_BE_UNWRITTEN=1');
+        // A takeover (issue #822): the same plan, with the permission the pod spec carries too.
+        const takeover = dockerArgs(
+            loadDriverConfig({}),
+            { ...job, resumeSessionId: SESSION, ownSession: true },
+            { id: SESSION, resume: true },
+            { envFile: '/tmp/env-file' }
+        );
+        envBeforeImage(takeover, 'claude-executor', ['BELLOWS_RESUME_MAY_BE_UNWRITTEN=1']);
     });
 
     it("mounts the checkouts volume and starts at the AUTHOR's workspace root", () => {
@@ -535,6 +547,12 @@ describe("the board's environment", () => {
                 },
             })
         ).toEqual({});
+    });
+
+    // The driver alone grants a takeover's runner the unwritten-session fallback (issue #822): a
+    // member value would hand it to a follow-up, whose missing transcript must stay a refusal.
+    it('refuses the unwritten-resume permission from a claim', () => {
+        expect(claimEnv({ ...job, env: { BELLOWS_RESUME_MAY_BE_UNWRITTEN: '1' } })).toEqual({});
     });
 
     // A Jira credential is a managed connection the board spends (docs/connections.md): even a
@@ -5347,6 +5365,47 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
                 `factory.command=${commandMark(job.command)}`,
             ])
         );
+    });
+
+    // Issue #822: a claim continuing an interrupted attempt is framed in its prompt alone; the
+    // container is labelled with the unframed command, as the interrupted attempt's runner was.
+    it.each([
+        ['claude-code', job, SESSION],
+        ['opencode', opencodeJob, 'ses_abc123'],
+    ])(
+        'frames a %s continuation into its prompt alone, labelling the container with the unframed command',
+        (_name, claimed, session) => {
+            const line = dockerArgs(
+                loadDriverConfig({}),
+                { ...claimed, claimSeq: 2, resumeSessionId: session, ownSession: true, continuesInterrupted: true },
+                { id: session, resume: true },
+                { envFile: '/tmp/env-file' }
+            );
+
+            expect(line.at(-1)?.startsWith('Your previous run of this task was interrupted')).toBe(true);
+            expect(line.at(-1)?.endsWith(`The task, for reference:\n\n${claimed.command}`)).toBe(true);
+            expect(line).toContain(`factory.command=${commandMark(claimed.command)}`);
+        }
+    );
+
+    // Issue #822: the runner of an interrupted attempt exited while its takeover or handover was
+    // being claimed. The continuing claim carries the command the first claim ran, so the label
+    // that runner was started with is its own, and the run is adopted, never redone.
+    it('adopts, for a claim continuing an interrupted attempt, the runner its first claim started', async () => {
+        const started = dockerArgs(
+            loadDriverConfig({}),
+            job,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
+        const mark = started.find((arg) => arg.startsWith('factory.command='))!.slice('factory.command='.length);
+        const { exec, logs } = daemon(listing('1', job.leaseToken, containerName(job), mark));
+        const continuing = { ...adopter, resumeSessionId: SESSION, ownSession: true, continuesInterrupted: true };
+
+        expect(await dockerRunner(exec, { spawn: logs }).adopt!(continuing)).toMatchObject({
+            claimSeq: 1,
+            outcome: { exitCode: 0, started: true, sessionId: SESSION },
+        });
     });
 });
 
