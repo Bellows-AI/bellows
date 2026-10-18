@@ -557,6 +557,14 @@ export interface Claim {
      */
     followUp: boolean;
     /**
+     * Whether `resumeSessionId` was minted by an attempt of THIS row — a root's, a fresh workflow
+     * node's, a sessionless follow-up's — rather than inherited from an earlier row of the thread
+     * (issue #822). Only such a session can be lost unwritten, with a driver gone before the CLI's
+     * first write, so only its resume may start that id anew (`BELLOWS_RESUME_MAY_BE_UNWRITTEN`).
+     * False when there is no session.
+     */
+    ownSession: boolean;
+    /**
      * The environment the runner starts with, resolved at claim time for THIS job's author and
      * repo label: org < workspace < repo, the more specific scope winning. Optional — absent on a
      * board built without an env store, which the driver reads as "no environment".

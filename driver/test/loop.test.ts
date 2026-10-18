@@ -61,6 +61,7 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
     masterPrompt: MASTER_PROMPT,
     resumeSessionId,
     followUp: false,
+    ownSession: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
 });
@@ -2005,6 +2006,7 @@ describe('the poll loop', () => {
                 leaseExpiresAt: '2026-08-21T12:05:00.000Z',
                 resumeSessionId: null,
                 followUp: false,
+                ownSession: false,
                 userId: null,
                 workspacePath: `bellows/${USER}`,
                 rootJobId: root,

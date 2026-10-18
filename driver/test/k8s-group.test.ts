@@ -43,6 +43,7 @@ const job = {
         'Factory execution contract (factory-master-prompt/v1)\n\nFactory execution context\n- Mode: standalone',
     resumeSessionId: null,
     followUp: false,
+    ownSession: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
     rootCommand: 'fix the failing build',

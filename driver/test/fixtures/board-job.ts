@@ -18,6 +18,7 @@ export const boardJob = (over: { attempts?: number; claimSeq?: number } = {}): B
     masterPrompt: null,
     resumeSessionId: null,
     followUp: false,
+    ownSession: false,
     userId: null,
     workspacePath: null,
     ...over,

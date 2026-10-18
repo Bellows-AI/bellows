@@ -85,6 +85,7 @@ describe('the docker runner kill timer', () => {
             'Factory execution contract (factory-master-prompt/v1)\n\nFactory execution context\n- Mode: standalone',
         resumeSessionId: null,
         followUp: false,
+        ownSession: false,
         userId: '44444444-4444-4444-8444-444444444444',
         workspacePath: 'bellows/44444444-4444-4444-8444-444444444444',
         supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: 'tok' },

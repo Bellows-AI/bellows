@@ -93,6 +93,7 @@ const job: BoardJob = {
     masterPrompt: MASTER_PROMPT,
     resumeSessionId: null,
     followUp: false,
+    ownSession: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
     rootCommand: 'fix the failing build',
@@ -5811,8 +5812,8 @@ describe('the runner job spec under opencode', () => {
 });
 
 // Issue #822: the permission to start a resumed session that was never written reaches the pod
-// as a literal value, on both executors, for a takeover or handover and never for a follow-up —
-// docker renders the same plan (docker.test.ts).
+// as a literal value, on both executors, for a resume of the row's own session (`ownSession`) and
+// never for one inherited from an earlier row — docker renders the same plan (docker.test.ts).
 describe('the runner pod of a resumed attempt', () => {
     const k8sConfig = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
     const UNWRITTEN = { name: 'BELLOWS_RESUME_MAY_BE_UNWRITTEN', value: '1' };
@@ -5823,12 +5824,18 @@ describe('the runner pod of a resumed attempt', () => {
     it.each([
         ['claude-code', job, SESSION],
         ['opencode', opencodeJob, 'ses_abc123'],
-    ])('tells a %s takeover, never a follow-up, that its session may be unwritten', (_name, claimed, session) => {
-        expect(podEnv(claimed, session)).toContainEqual(UNWRITTEN);
-        expect(podEnv({ ...claimed, followUp: true }, session).map((entry) => entry.name)).not.toContain(
-            UNWRITTEN.name
-        );
-    });
+    ])(
+        'tells a %s resume of its own session, never an inherited one, that it may be unwritten',
+        (_name, claimed, session) => {
+            expect(podEnv({ ...claimed, ownSession: true }, session)).toContainEqual(UNWRITTEN);
+            // A sessionless follow-up's takeover: the session its own first attempt minted.
+            expect(podEnv({ ...claimed, followUp: true, ownSession: true }, session)).toContainEqual(UNWRITTEN);
+            // A follow-up resuming its parent's session.
+            expect(
+                podEnv({ ...claimed, followUp: true, ownSession: false }, session).map((entry) => entry.name)
+            ).not.toContain(UNWRITTEN.name);
+        }
+    );
 });
 
 describe('the opencode session readout job', () => {

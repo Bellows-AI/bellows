@@ -38,6 +38,7 @@ const base: BoardJob = {
     masterPrompt: 'Factory execution contract (factory-master-prompt/v1)',
     resumeSessionId: null,
     followUp: false,
+    ownSession: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
     repo: 'Bellows-AI/factory',

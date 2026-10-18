@@ -308,9 +308,10 @@ describe('claude-bridge argv', () => {
         expect(result.stderr).toContain(`session ${SESSION_ID} left no transcript`);
     });
 
-    // A follow-up resumes its parent's conversation: starting it empty under the same id would run
-    // the bare follow-up command with no context, so its missing transcript stays the CLI's refusal.
-    it('passes a follow-up’s --resume of a session that left no transcript through untouched', async () => {
+    // A session inherited from an earlier row (a follow-up's parent's) holds that row's conversation:
+    // starting it empty under the same id would run the bare command with no context, so its missing
+    // transcript stays the CLI's refusal — the driver grants no env for it.
+    it('passes an inherited session’s --resume of a session that left no transcript through untouched', async () => {
         const config = mkdtempSync(join(tmpdir(), 'claude-config-'));
         dirs.push(config);
         const result = await run({

@@ -26,14 +26,16 @@ const job = {
     masterPrompt: MASTER_PROMPT,
     resumeSessionId: null,
     followUp: false,
+    ownSession: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
 } as BoardJob;
 const opencodeJob: BoardJob = { ...job, executorType: 'opencode' };
 const SYSTEM_PROMPT = ['--append-system-prompt', MASTER_PROMPT, '--system-prompt-snapshot', 'off'];
 /**
- * Issue #822: a takeover or handover (no follow-up, a session to resume) is the one run whose
- * resumed session may never have been written; a follow-up's missing session stays a refusal.
+ * Issue #822: a resume of the row's own session (`ownSession`: a takeover or handover, a sessionless
+ * follow-up's included) is the one run whose session may never have been written; a session
+ * inherited from an earlier row stays a refusal when it is missing.
  */
 const UNWRITTEN: [string, string][] = [['BELLOWS_RESUME_MAY_BE_UNWRITTEN', '1']];
 
@@ -47,7 +49,14 @@ describe('the claude-code runner plan', () => {
         { name: 'a fresh run', j: job, session: { id: SESSION, resume: false }, flag: '--session-id', unwritten: [] },
         {
             name: 'a takeover',
-            j: { ...job, resumeSessionId: SESSION },
+            j: { ...job, resumeSessionId: SESSION, ownSession: true },
+            session: { id: SESSION, resume: true },
+            flag: '--resume',
+            unwritten: UNWRITTEN,
+        },
+        {
+            name: "a sessionless follow-up's takeover",
+            j: { ...job, resumeSessionId: SESSION, followUp: true, ownSession: true },
             session: { id: SESSION, resume: true },
             flag: '--resume',
             unwritten: UNWRITTEN,
@@ -136,7 +145,8 @@ describe('the opencode runner plan', () => {
     // A follow-up continues the session opencode ITSELF created, and the reporter names it.
     it.each([
         ['a follow-up', { ...opencodeJob, followUp: true }, []],
-        ['a takeover', opencodeJob, UNWRITTEN],
+        ['a takeover', { ...opencodeJob, ownSession: true }, UNWRITTEN],
+        ["a sessionless follow-up's takeover", { ...opencodeJob, followUp: true, ownSession: true }, UNWRITTEN],
     ])('continues its own session with the command on %s', (_name, j, unwritten) => {
         const session = { id: 'ses_f86188c3dffeZGYO4yZq4atba9', resume: true };
         expect(plan({ ...j, resumeSessionId: session.id }, session)).toEqual({

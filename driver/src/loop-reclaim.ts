@@ -35,6 +35,7 @@ function reclaimJob(reclaim: Reclaim): BoardJob {
         leaseExpiresAt: reclaim.leaseExpiresAt,
         resumeSessionId: null,
         followUp: false,
+        ownSession: false,
         userId: null,
         workspacePath: reclaim.workspacePath,
         rootJobId: reclaim.rootJobId,

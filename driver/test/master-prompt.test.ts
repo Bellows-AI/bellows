@@ -30,6 +30,7 @@ const baseJob = (masterPrompt: BoardJob['masterPrompt']): BoardJob => ({
     masterPrompt,
     resumeSessionId: null,
     followUp: false,
+    ownSession: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
     rootJobId: '11111111-1111-4111-8111-111111111111',

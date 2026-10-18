@@ -282,6 +282,7 @@ describe('the driver config: runner resources', () => {
         masterPrompt: 'Factory execution context',
         resumeSessionId: null,
         followUp: false,
+        ownSession: false,
         userId: USER,
         workspacePath: `bellows/${USER}`,
     };

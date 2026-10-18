@@ -111,6 +111,13 @@ export interface BoardJob {
      */
     followUp: boolean;
     /**
+     * Whether `resumeSessionId` was minted by an attempt of this row rather than inherited from an
+     * earlier row of the thread (issue #822): only such a session can have been lost before the
+     * CLI's first write, so only its resume may start the id anew (`runner-plan.ts`). False when
+     * there is no session.
+     */
+    ownSession: boolean;
+    /**
      * The account that queued the job, or null for an unattributed one.
      *
      * Still not read here — the per-user Claude credential is what will read it. `workspacePath`

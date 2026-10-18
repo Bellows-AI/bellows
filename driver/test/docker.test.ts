@@ -103,6 +103,7 @@ const job: BoardJob = {
     masterPrompt: MASTER_PROMPT,
     resumeSessionId: null,
     followUp: false,
+    ownSession: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
     supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: CONTROL_TOKEN },
@@ -235,7 +236,7 @@ describe('the docker run arguments', () => {
         // A takeover (issue #822): the same plan, with the permission the pod spec carries too.
         const takeover = dockerArgs(
             loadDriverConfig({}),
-            { ...job, resumeSessionId: SESSION },
+            { ...job, resumeSessionId: SESSION, ownSession: true },
             { id: SESSION, resume: true },
             { envFile: '/tmp/env-file' }
         );

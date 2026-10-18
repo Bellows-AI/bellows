@@ -179,6 +179,7 @@ describe.skipIf(!enabled)('interrupting an attempt the infrastructure took away 
             id,
             resumeSessionId: session,
             followUp: false,
+            ownSession: true,
             command: renderContinuation('do the thing'),
         });
     });
@@ -265,6 +266,7 @@ describe.skipIf(!enabled)('a lease expiry is an interruption the next claim reco
             attempts: 2,
             resumeSessionId: null,
             followUp: false,
+            ownSession: false,
             command: 'do the thing',
         });
         expect((await store.get(id))!.sessionId).toBeNull();
@@ -283,6 +285,7 @@ describe.skipIf(!enabled)('a lease expiry is an interruption the next claim reco
             id,
             resumeSessionId: session,
             followUp: false,
+            ownSession: true,
             command: renderContinuation('do the thing'),
             rootCommand: 'do the thing',
         });
@@ -315,6 +318,11 @@ describe.skipIf(!enabled)('a lease expiry is an interruption the next claim reco
 
         const followUp = await store.createFollowUp(id, 'carry on', null);
         if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
-        expect(await claim()).toMatchObject({ id: followUp.id, resumeSessionId: session, followUp: true });
+        expect(await claim()).toMatchObject({
+            id: followUp.id,
+            resumeSessionId: session,
+            followUp: true,
+            ownSession: false,
+        });
     });
 });

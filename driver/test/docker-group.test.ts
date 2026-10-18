@@ -47,6 +47,7 @@ const job: BoardJob = {
         'Factory execution contract (factory-master-prompt/v1)\n\nFactory execution context\n- Mode: standalone',
     resumeSessionId: null,
     followUp: false,
+    ownSession: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
     gateEnv: { BELLOWS_CONTROL_URL: 'http://driver:7000', BELLOWS_CONTROL_TOKEN: 'tok-agent', OTHER: 'x' },

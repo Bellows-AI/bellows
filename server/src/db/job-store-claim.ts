@@ -24,46 +24,13 @@ import type {
     JobStorePrs,
     ReviewerSpec,
 } from './job-store-types.js';
+import type { ClaimCandidateRow } from './job-store-claim-row.js';
 import { claimCommand } from './follow-up-recap.js';
 import { reviewerPrompts } from './review-prompt.js';
 import { resolveMasterPrompt, resolveTurnContext } from './master-prompt.js';
 import { skillCatalog } from '../skills.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from './workflow-blocks/runtime.js';
 import { type WorkflowDefinition, isAgentlessNode, isPublishNode, nodeOf, nodeSkipsGates } from './workflow-schema.js';
-
-export interface ClaimCandidateRow {
-    id: string;
-    command: string;
-    attempts: number;
-    max_attempts: number;
-    claim_seq: string;
-    lease_token: string;
-    lease_expires_at: Date;
-    created_by: string | null;
-    session_id: string | null;
-    repo: string | null;
-    parent_job_id: string | null;
-    executor: string | null;
-    follow_up: boolean;
-    workflow_node: string | null;
-    workflow_name: string | null;
-    mode: JobMode;
-    root_command: string;
-    /** Set only on a named-profile review's row (issue #549): the profile it runs as and the ref it starts from. */
-    review_of: string | null;
-    review_spec: ReviewerSpec | null;
-    review_ref: string | null;
-    /** The thread ROOT's selected skills (055), read in the claim's RETURNING. */
-    skills: string[];
-    /** Whether the thread ROOT selected a managed Jira connection (054), read in the same RETURNING. */
-    has_jira_connection: boolean;
-    /** The frozen target branch of the batch task the thread works (059), read in the same RETURNING; null outside a batch. */
-    base_branch: string | null;
-    /** Whether this attempt's loss retires the job: attempts and interruption budget spent (issue #822). */
-    last_attempt: boolean;
-    /** Whether this claim continues, in its session, the interrupted attempt it supersedes (issue #822). */
-    resumes_interrupted: boolean;
-}
 
 /**
  * Retire what has burned its attempts, before looking for work. Without this a command that kills
@@ -176,6 +143,13 @@ const NEXT_CANDIDATE = Symbol('next candidate');
  * `baseBranch` is the frozen target branch of the batch task the thread works, joined through the
  * root, so every retry, follow-up and repair of a batch task bases on the target's branch with no
  * column to copy.
+ *
+ * `ownSession` is whether the row's session was minted by one of its own attempts (issue #822),
+ * read in the acquisition's RETURNING off the post-update row. Every inherited session is copied
+ * from an earlier row of the thread — a follow-up's from its parent or the workflow's primary
+ * session (`followUpInTx`), a resume node's from the primary session (`insertWorkflowSuccessor`,
+ * a block-wait wake's round) — so a minted one is on no row created at or before this one: one
+ * indexed lookup by root, like the exclusion.
  */
 function claimRules({ sql, orgId }: JobStoreContext) {
     const interruptionsSpent = sql`jsonb_array_length(interruptions) >= ${INTERRUPTION_BUDGET}`;
@@ -195,6 +169,10 @@ function claimRules({ sql, orgId }: JobStoreContext) {
                          join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id
                                              and tg.key = t.target_key
                          where t.org_id = job.org_id and t.root_job_id = job.root_job_id)`,
+        ownSession: sql`(session_id is not null and not exists (
+                            select 1 from job o
+                            where o.org_id = job.org_id and o.root_job_id = job.root_job_id and o.id <> job.id
+                              and o.created_at <= job.created_at and o.session_id = job.session_id))`,
     };
 }
 
@@ -276,7 +254,7 @@ async function acquireCandidate(
     gates: ResolvedClaimGates
 ): Promise<Claim | typeof NEXT_CANDIDATE> {
     const { sql, orgId } = ctx;
-    const { sameThreadRunning, recovering, exhausted, baseBranch } = claimRules(ctx);
+    const { sameThreadRunning, recovering, exhausted, baseBranch, ownSession } = claimRules(ctx);
     const expiry = sql.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString() });
     const rootJobId = reserved.root_job_id;
     return sql.begin(async (tx) => {
@@ -348,6 +326,7 @@ async function acquireCandidate(
                       (session_id is not null
                        and coalesce((interruptions -> -1 ->> 'claimSeq')::bigint = claim_seq - 1, false))
                           as resumes_interrupted,
+                      ${ownSession} as own_session,
                       (parent_job_id is not null and command_delivered_at is null) as follow_up,
                       (select r.command from job r
                        where r.org_id = job.org_id and r.id = job.root_job_id) as root_command,
@@ -849,6 +828,7 @@ export function buildClaimResult(
         // resume. Null after a reclaim that spent an attempt.
         resumeSessionId: row.session_id,
         followUp: row.follow_up,
+        ownSession: row.own_session,
         ...(claimEnv ? { env: claimEnv } : {}),
         ...(row.repo !== null ? { repo: row.repo } : {}),
         ...(row.base_branch ? { baseBranch: row.base_branch } : {}),

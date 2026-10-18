@@ -303,6 +303,7 @@ describe('the token cache and the runner env, on both executors', () => {
             'Factory execution contract (factory-master-prompt/v1)\n\nFactory execution context\n- Mode: standalone',
         resumeSessionId: null,
         followUp: false,
+        ownSession: false,
         userId: USER,
         workspacePath: `bellows/${USER}`,
         repo: 'Bellows-AI/factory',

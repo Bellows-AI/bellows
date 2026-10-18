@@ -308,7 +308,13 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         const claim = await store.claim('w1', LEASE_SECONDS);
 
         // Resuming carries the conversation itself, so the command goes out verbatim — no recap.
-        expect(claim).toMatchObject({ id, resumeSessionId: SESSION, followUp: true, command: 'again' });
+        expect(claim).toMatchObject({
+            id,
+            resumeSessionId: SESSION,
+            followUp: true,
+            ownSession: false,
+            command: 'again',
+        });
     });
 
     // A STOPPED parent's follow-up claim carries the same pair (issue #152): the stop kept the
@@ -337,14 +343,49 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
         const second = await store.claim('w2', LEASE_SECONDS);
 
+        // The parent's session, inherited: its first attempt was delivered the bare command.
         expect(second).toMatchObject({
             id,
             attempts: 1,
             claimSeq: 2,
             resumeSessionId: SESSION,
             followUp: true,
+            ownSession: false,
             command: renderContinuation('again'),
         });
+    });
+
+    // A follow-up of a sessionless parent minted its own session, which a driver lost before the
+    // CLI's first write leaves unwritten (`ownSession`); its first attempt was delivered the recap,
+    // so the takeover continues that, never the bare command.
+    it('continues a sessionless follow-up in the session it minted, with the recap it was delivered', async () => {
+        const { id: parent } = await queue('fix the login bug');
+        const ran = await store.claim('w1', LEASE_SECONDS);
+        await store.complete(parent, ran!.leaseToken, {
+            status: 'failed',
+            exitCode: 1,
+            output: 'tail',
+            summary: 'Found the bug in auth.ts',
+        });
+        const { id } = await mustFollowUp(parent, 'try again', null);
+        const first = await store.claim('w1', LEASE_SECONDS);
+        expect(first).toMatchObject({ id, resumeSessionId: null, followUp: true, ownSession: false });
+        const minted = randomUUID();
+        await store.session(id, first!.leaseToken, minted);
+        await expireLease(sql, id);
+
+        const takeover = await store.claim('w2', LEASE_SECONDS);
+
+        expect(takeover).toMatchObject({
+            id,
+            attempts: 1,
+            resumeSessionId: minted,
+            followUp: true,
+            ownSession: true,
+            command: renderContinuation(first!.command),
+        });
+        expect(takeover!.command).toContain('Found the bug in auth.ts');
+        expect(takeover!.command.endsWith('New instruction:\n\ntry again')).toBe(true);
     });
 
     // Past its interruption budget a follow-up's reclaim spends an attempt in a new session, and the

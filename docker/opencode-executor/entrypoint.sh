@@ -99,10 +99,11 @@ fi
 # A takeover or handover (`--session <id>`, the id also in BELLOWS_SESSION_ID) resumes the session
 # its predecessor reported live (issue #822); a node lost before opencode flushed that row leaves a
 # database without it, and opencode would refuse the run. Only there — the driver grants it with
-# BELLOWS_RESUME_MAY_BE_UNWRITTEN, never to a follow-up, whose missing session stays opencode's
-# refusal — and only when the reporter finds the session certainly absent (`--has-session` exits 1:
-# no database, or no such row), the pair is dropped and a new session starts, BELLOWS_SESSION_ID
-# unset so the reporter discovers it. One that cannot be read (exit 2) keeps it.
+# BELLOWS_RESUME_MAY_BE_UNWRITTEN, never to a session inherited from an earlier row (a follow-up's
+# parent's), whose missing session stays opencode's refusal — and only when the reporter finds the
+# session certainly absent (`--has-session` exits 1: no database, or no such row), the pair is
+# dropped and a new session starts, BELLOWS_SESSION_ID unset so the reporter discovers it. One that
+# cannot be read (exit 2) keeps it.
 if [ "${BELLOWS_RESUME_MAY_BE_UNWRITTEN:-}" = 1 ] && [ -n "${BELLOWS_SESSION_ID:-}" ] && [ -n "${XDG_DATA_HOME:-}" ]; then
     known=0
     node --disable-warning=ExperimentalWarning "$BRANCH_REPORTER" --has-session "$BELLOWS_SESSION_ID" || known=$?

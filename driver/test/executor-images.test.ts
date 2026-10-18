@@ -711,11 +711,11 @@ describe('the entrypoint git credential', () => {
 /*
  * Issue #822: a recovered opencode attempt resumes the session its predecessor reported live
  * (`run --session <id>`), but a node lost before opencode flushed that session's row leaves a
- * database without it, and opencode would refuse the run. On a takeover or handover — the driver
- * says so with BELLOWS_RESUME_MAY_BE_UNWRITTEN — the entrypoint asks the reporter
- * (`--has-session`) and, only when the session is certainly absent, starts a new one instead —
- * with BELLOWS_SESSION_ID unset, so the reporter discovers and reports the new id. A follow-up's
- * missing session stays opencode's own refusal.
+ * database without it, and opencode would refuse the run. On a takeover or handover of a session
+ * the row minted itself — the driver says so with BELLOWS_RESUME_MAY_BE_UNWRITTEN — the entrypoint
+ * asks the reporter (`--has-session`) and, only when the session is certainly absent, starts a new
+ * one instead — with BELLOWS_SESSION_ID unset, so the reporter discovers and reports the new id. A
+ * session inherited from an earlier row (a follow-up's parent's) stays opencode's own refusal.
  */
 describe('the opencode entrypoint resumed session', () => {
     const KNOWN = 'ses_known';

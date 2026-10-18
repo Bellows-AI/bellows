@@ -90,9 +90,10 @@ async function decide(request) {
  * A `--resume` of a session that left no transcript (issue #822) becomes `--session-id` under the
  * same id: a driver lost between reporting the id it minted and the CLI's first write leaves the
  * board holding a session with nothing behind it, and the CLI refuses to resume that. Only on a
- * takeover or handover, which the driver grants with BELLOWS_RESUME_MAY_BE_UNWRITTEN: a follow-up
- * resumes its parent's conversation, and starting that empty would run the bare command with no
- * context, so its missing transcript stays the CLI's refusal. The lookup is the turn reader's
+ * resume of a session the row minted itself, which the driver grants with
+ * BELLOWS_RESUME_MAY_BE_UNWRITTEN: a session inherited from an earlier row (a follow-up's parent's)
+ * holds that row's conversation, and starting it empty would run the bare command with no context,
+ * so its missing transcript stays the CLI's refusal. The lookup is the turn reader's
  * (driver/src/scripts/claude-turns.cjs); anything that cannot be read for any other reason than
  * absence (ENOENT) keeps the resume.
  */

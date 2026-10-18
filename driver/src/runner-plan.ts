@@ -72,13 +72,14 @@ const baseBranchEnv = (job: BoardJob): [string, string][] => {
 };
 
 /**
- * Issue #822: a takeover or handover resumes the row's OWN session, and a driver lost before the
- * CLI's first write leaves one with nothing behind it — the runner may start that one anew (the
- * claude bridge's `startUnwrittenResume`, the opencode entrypoint). A follow-up delivering its
- * command resumes its parent's conversation, whose missing transcript stays the CLI's refusal.
+ * Issue #822: a takeover or handover of a session the row minted itself (`ownSession` — a root's,
+ * a sessionless follow-up's) may have nothing behind it, its driver lost before the CLI's first
+ * write — the runner may start that one anew (the claude bridge's `startUnwrittenResume`, the
+ * opencode entrypoint). A session inherited from an earlier row, a follow-up's parent's, was
+ * written by that row, and its missing transcript stays the CLI's refusal.
  */
 const unwrittenResumeEnv = (job: BoardJob, session: RunSession): [string, string][] =>
-    session.resume && !job.followUp ? [[RESUME_MAY_BE_UNWRITTEN_ENV, '1']] : [];
+    session.resume && job.ownSession ? [[RESUME_MAY_BE_UNWRITTEN_ENV, '1']] : [];
 
 /**
  * opencode: headless only, and opencode mints its own session ids — a fresh run is `run <command>`

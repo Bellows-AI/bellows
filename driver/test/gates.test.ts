@@ -75,6 +75,7 @@ const JOB: BoardJob = {
     masterPrompt: 'You are running inside Factory.',
     resumeSessionId: null,
     followUp: false,
+    ownSession: false,
     userId: '44444444-4444-4444-8444-444444444444',
     workspacePath: 'bellows/44444444-4444-4444-8444-444444444444',
 };

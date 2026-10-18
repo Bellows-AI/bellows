@@ -23,7 +23,6 @@ export interface RecapTurn {
 const FIELD_LIMIT = 1_500;
 /** The whole delivered command's cap: preamble, recap and new instruction together. */
 const DELIVERED_LIMIT = COMMAND_LIMIT;
-const CUT = ' […]';
 
 const head = (text: string): string => (text.length > FIELD_LIMIT ? `${text.slice(0, FIELD_LIMIT)} […]` : text);
 const tail = (text: string): string => (text.length > FIELD_LIMIT ? `[…] ${text.slice(-FIELD_LIMIT)}` : text);
@@ -35,8 +34,11 @@ function renderTurn(turn: RecapTurn, index: number): string {
     return `Turn ${index + 1} (${turn.status}): ${what}\nResult: ${result ? tail(result) : '(none recorded)'}`;
 }
 
-/** The command to deliver: the recap of `turns`, then the new command. No turns, no recap. */
-export function renderFollowUpRecap(turns: RecapTurn[], command: string): string {
+/**
+ * The command to deliver: the recap of `turns`, then the new command, within `limit` — less than
+ * the whole cap when it rides inside a continuation. No turns, no recap.
+ */
+export function renderFollowUpRecap(turns: RecapTurn[], command: string, limit = DELIVERED_LIMIT): string {
     if (turns.length === 0) return command;
     const rendered = turns.map(renderTurn);
     const preamble =
@@ -48,7 +50,7 @@ export function renderFollowUpRecap(turns: RecapTurn[], command: string): string
     for (let first = 0; first < rendered.length; first += 1) {
         const omitted = first > 0 ? [`(${first} earlier turn${first === 1 ? '' : 's'} omitted)`] : [];
         const delivered = [preamble, ...omitted, ...rendered.slice(first), instruction].join('\n\n');
-        if (delivered.length <= DELIVERED_LIMIT) return delivered;
+        if (delivered.length <= limit) return delivered;
     }
     return command;
 }
@@ -87,29 +89,35 @@ export async function readRecapTurns(
     }));
 }
 
+const CONTINUATION_LEAD =
+    'Your previous run of this task was interrupted before it finished. ' +
+    'Continue from where this conversation left off. ' +
+    'Before repeating any step, check what was already done — commits, pushes, pull requests — ' +
+    'and do not redo it. ' +
+    'If this conversation has no earlier turns, start the task from the beginning.\n\n' +
+    'The task, for reference:\n\n';
+
 /**
  * What a claim that continues an interrupted attempt in its session delivers (issue #822): the
  * resumed conversation already holds the task, and handing it over afresh would have the agent
- * repeat what the lost attempt already did. The task's command follows for reference, its tail
- * cut to the delivered cap.
+ * repeat what the lost attempt already did. What that attempt was delivered follows for reference
+ * — the command, behind `recap` when it carried one, trimmed by the recap's own rule to the room
+ * the lead leaves. A command that leaves the lead no room is delivered without it, never cut: on
+ * the unwritten-session fallback this text is all the agent gets, and its last instruction counts.
  */
-export function renderContinuation(command: string): string {
-    const lead =
-        'Your previous run of this task was interrupted before it finished. ' +
-        'Continue from where this conversation left off. ' +
-        'Before repeating any step, check what was already done — commits, pushes, pull requests — ' +
-        'and do not redo it. ' +
-        'If this conversation has no earlier turns, start the task from the beginning.\n\n' +
-        'The task, for reference:\n\n';
-    const room = DELIVERED_LIMIT - lead.length;
-    return lead + (command.length > room ? `${command.slice(0, room - CUT.length)}${CUT}` : command);
+export function renderContinuation(command: string, recap: RecapTurn[] = []): string {
+    const task = renderFollowUpRecap(recap, command, DELIVERED_LIMIT - CONTINUATION_LEAD.length);
+    if (CONTINUATION_LEAD.length + task.length <= DELIVERED_LIMIT) return CONTINUATION_LEAD + task;
+    return renderFollowUpRecap(recap, command);
 }
 
 /**
  * The command a claim delivers: a claim that continues an interrupted attempt in its session is
  * told to carry on (`renderContinuation`); a member follow-up with no session to resume starts
  * fresh, so the earlier turns ride ahead of its command; every other claim delivers the row's own
- * command.
+ * command. A continuation wraps what the attempt that started its session was delivered: the recap
+ * too when that session is the row's own and the row a member follow-up — that attempt started
+ * sessionless, so it carried the recap.
  */
 export async function claimCommand(
     tx: TransactionSql,
@@ -120,11 +128,16 @@ export async function claimCommand(
         command: string;
         follow_up: boolean;
         session_id: string | null;
+        own_session: boolean;
         workflow_node: string | null;
         resumes_interrupted: boolean;
     }
 ): Promise<string> {
-    if (row.resumes_interrupted) return renderContinuation(row.command);
-    if (!row.follow_up || row.session_id !== null || row.workflow_node !== null) return row.command;
+    const memberFollowUp = row.follow_up && row.workflow_node === null;
+    if (row.resumes_interrupted) {
+        const recapped = memberFollowUp && row.own_session;
+        return renderContinuation(row.command, recapped ? await readRecapTurns(tx, orgId, rootJobId, row.id) : []);
+    }
+    if (!memberFollowUp || row.session_id !== null) return row.command;
     return renderFollowUpRecap(await readRecapTurns(tx, orgId, rootJobId, row.id), row.command);
 }
