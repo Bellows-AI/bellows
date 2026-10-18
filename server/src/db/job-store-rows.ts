@@ -460,7 +460,7 @@ export async function issueVerdictReclaim(
         await tx`
             delete from task_reclaim
             where org_id = ${orgId} and root_job_id = ${rootJobId} and id <> ${taken.id}
-              and (claim_token is null or lease_expires_at <= now())
+              and claim_token is null
         `;
         return taken.id;
     }

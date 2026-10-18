@@ -339,4 +339,23 @@ describe.skipIf(!enabled)('the verdict-time worktree reclaim — database', () =
             { id: queued!.id, claimed_by: WORKER, claim_token: lease.leaseToken },
         ]);
     });
+
+    it('a verdict taking over an unclaimed reclaim never withdraws an expired acquisition of its root', async () => {
+        // The acquired row's group may still be deleting: only its ack removes it.
+        const { root, followUp, lease } = await doneThreadRunning();
+        const [queued] = await sql<{ id: string }[]>`
+            insert into task_reclaim (org_id, root_job_id, created_at)
+            values (${ORG}, ${root}, now() - interval '1 minute') returning id
+        `;
+        const [acquired] = await sql<{ id: string }[]>`
+            insert into task_reclaim (org_id, root_job_id, claimed_by, claim_token, lease_expires_at)
+            values (${ORG}, ${root}, 'worker-2', ${OTHER_TOKEN}, now() - interval '1 minute')
+            returning id
+        `;
+        expect(await store.complete(followUp, lease.leaseToken, succeeded)).toMatchObject({ reclaimId: queued!.id });
+        expect(await reclaimRows(root)).toEqual(
+            expect.arrayContaining([{ id: acquired!.id, claimed_by: 'worker-2', claim_token: OTHER_TOKEN }])
+        );
+        expect(await store.ackReclaim(acquired!.id, OTHER_TOKEN)).toBe('ok');
+    });
 });
