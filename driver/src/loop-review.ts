@@ -27,7 +27,6 @@ export function createReviewRelay(rt: LoopRuntime, job: BoardJob, state: JobStat
     const gone = (): boolean => state.finished || state.draining || down(state);
     return {
         async request(key, profile) {
-            if (!rt.runner.snapshotTree || !rt.runner.probeTree) return 'unsupported';
             if (gone()) return 'gone';
             const revision = await rt.runner.probeTree(job, state.signal).catch(() => null);
             if (revision === null)

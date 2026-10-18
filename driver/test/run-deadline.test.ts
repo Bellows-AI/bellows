@@ -130,14 +130,14 @@ describe('the docker runner kill timer', () => {
         expect(spawned).toHaveBeenCalledTimes(1);
 
         await vi.advanceTimersByTimeAsync(4 * SECOND);
-        await runner.pauseDeadline?.(job, true);
+        await runner.pauseDeadline(job, true);
         // Even a two-day wait consumes no runtime budget.
         await vi.advanceTimersByTimeAsync(48 * HOUR);
         expect(killed()).toBe(false);
 
         // Only six seconds of active runtime remain, and then the wind-down the supervisor is given
         // to end the agent and finalize before this backstop kills the whole group.
-        await runner.pauseDeadline?.(job, false);
+        await runner.pauseDeadline(job, false);
         await vi.advanceTimersByTimeAsync(6 * SECOND + SUPERVISOR_WINDDOWN_MS - 1);
         expect(killed()).toBe(false);
         await vi.advanceTimersByTimeAsync(1);
@@ -181,6 +181,6 @@ describe('the docker runner kill timer', () => {
 
     it('pausing a run that is not in flight does nothing', async () => {
         const runner = createDockerRunner(loadDriverConfig({}), vi.fn() as unknown as typeof spawn, vi.fn());
-        await expect(runner.pauseDeadline?.(job, true)).resolves.toBeUndefined();
+        await expect(runner.pauseDeadline(job, true)).resolves.toBeUndefined();
     });
 });

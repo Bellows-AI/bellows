@@ -49,7 +49,6 @@ curl -sf --unix-socket /run/factory-control/control.sock http://control/review/s
 - `403` — this run may not invoke a reviewer (a reviewer's own run, for one).
 - `409` with a reason — refused: the name is not declared in the repository, this task walks a
   workflow graph that reviews at its own step, or a request is already running. Read the reason.
-- `501` — this environment cannot freeze a tree for review.
 - `401` — your run is over; stop asking.
 
 If `BELLOWS_CONTROL_URL` is unset this environment cannot invoke a reviewer. Say so; do not guess

@@ -21,21 +21,14 @@ const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
 const HTTP_CONFLICT = 409;
-const HTTP_NOT_IMPLEMENTED = 501;
 
 /**
  * What the loop answers a route with: the review (`created` when this request started it), or why
- * not — `forbidden` (this run is itself a reviewer, or the board gave it no way to ask),
- * `unsupported` (a runner that cannot snapshot), `gone` (the lease is lost, a Stop landed or the
- * run ended) or the board's own `refused` reason (an undeclared profile, a workflow task, a tree
- * that could not be measured).
+ * not — `forbidden` (this run is itself a reviewer, or the board gave it no way to ask), `gone`
+ * (the lease is lost, a Stop landed or the run ended) or the board's own `refused` reason (an
+ * undeclared profile, a workflow task, a tree that could not be measured).
  */
-export type ReviewVerdict =
-    | { review: ReviewReport; created: boolean }
-    | 'forbidden'
-    | 'unsupported'
-    | 'gone'
-    | { refused: string };
+export type ReviewVerdict = { review: ReviewReport; created: boolean } | 'forbidden' | 'gone' | { refused: string };
 
 export interface ReviewRelay {
     request(key: string, profile: string): Promise<ReviewVerdict>;
@@ -54,9 +47,6 @@ const SETTLED: readonly BoardJobStatus[] = ['succeeded', 'failed', 'dead', 'stop
 export function reviewAnswer(verdict: ReviewVerdict): ReviewAnswer {
     if (verdict === 'forbidden') {
         return { status: HTTP_FORBIDDEN, body: { error: 'this run cannot invoke a reviewer' } };
-    }
-    if (verdict === 'unsupported') {
-        return { status: HTTP_NOT_IMPLEMENTED, body: { error: 'this executor cannot offer a reviewer' } };
     }
     if (verdict === 'gone') return { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
     if ('refused' in verdict) return { status: HTTP_CONFLICT, body: { error: verdict.refused } };

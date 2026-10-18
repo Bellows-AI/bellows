@@ -29,23 +29,21 @@ import { timeoutNote } from './timeout-note.js';
 
 /**
  * Whether this attempt's ledger calls for a publish at all: succeeded, ungated or passed, publish
- * not disabled, and a runner that can push. The caller fences around the two halves below.
+ * not disabled. The caller fences around the two halves below.
  */
-function publishDue(rt: LoopRuntime, job: BoardJob, ledger: Ledger): boolean {
-    return publishEligible(ledger) && job.publish !== false && Boolean(rt.runner.publishGit);
+function publishDue(job: BoardJob, ledger: Ledger): boolean {
+    return publishEligible(ledger) && job.publish !== false;
 }
 
 /**
  * What this ledger publishes: the end-of-run publish, a draft of finished work the services or
  * gates alone failed — kept recoverable rather than stranded (issues #560, #573) — or nothing.
  */
-export function publishModeOf(rt: LoopRuntime, job: BoardJob, ledger: Ledger): 'publish' | 'draft' | null {
-    if (publishDue(rt, job, ledger)) return 'publish';
+export function publishModeOf(job: BoardJob, ledger: Ledger): 'publish' | 'draft' | null {
+    if (publishDue(job, ledger)) return 'publish';
     // An objective claim carries no `publish` key; a workflow node's publish is the graph's to
     // order, so its failed gate still fires the `gate-failed` edge instead of shipping a draft.
-    return draftable(ledger, job.publish === undefined) && job.publish !== false && rt.runner.publishGit
-        ? 'draft'
-        : null;
+    return draftable(ledger, job.publish === undefined) && job.publish !== false ? 'draft' : null;
 }
 
 /** The push's options for `mode`, bound to `revision` when the policy named one; none for a plain publish. */
@@ -64,8 +62,7 @@ export async function publishBranch(
     job: BoardJob,
     githubToken: string | null,
     options?: PublishOptions
-): Promise<PublishResult | null> {
-    if (!rt.runner.publishGit) return null;
+): Promise<PublishResult> {
     return rt.runner
         .publishGit(job, githubToken ?? undefined, options)
         .catch((e: Error) => publishFailed(`the publish threw: ${e.message}`, 'unknown'));

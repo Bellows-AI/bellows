@@ -26,10 +26,8 @@ import { stepLost } from './step-control.js';
  * answers a NAMED failure without ever launching the agent — the loop's own contract for this
  * phase. A pre-helper that succeeds with `control: 'conclude'` (issue #230) answers a conclusion:
  * the job is done right here — no agent, no gates, no post-helpers, no publish. A job with no
- * declared pre-helpers, or a runner that does not implement `runHelper` (docker before this issue,
- * or any future platform that has not grown one), pays no extra work at all — the ordinary case
- * for every workflow-less and `agent`-node task today (docs/workflows.md: no producer wires a real
- * plan onto a claim yet).
+ * declared pre-helpers pays no extra work at all — the ordinary case for every workflow-less and
+ * `agent`-node task today (docs/workflows.md: no producer wires a real plan onto a claim yet).
  *
  * It only answers: `runPhases` (`loop-run.ts`) acts on a conclusion through `concludeSetup`, so a
  * helper refusal cannot release the kubernetes checkout fence and forget to settle — the fence has
@@ -39,7 +37,7 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<SetupConclusion | 
     const { rt, job, state } = ctx;
     const { runner } = rt;
     const plans = (job.helperPlans ?? []).filter((plan) => plan.phase === 'pre');
-    if (!plans.length || !runner.runHelper) return null;
+    if (!plans.length) return null;
 
     // Applied to every child call a plan makes — one for a plain script plan, several in
     // declared order for a composite — so a stop or lost lease mid-composite is observed between
@@ -54,7 +52,7 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<SetupConclusion | 
             const effectId = helperEffectId(job, childPlan, planIndex, childIndex);
             const resultOut = await raceStep(
                 state.signal,
-                runner.runHelper!(job, childPlan, { token, signal: state.signal, effectId })
+                runner.runHelper(job, childPlan, { token, signal: state.signal, effectId })
             );
             return resultOut === null || down(state) ? null : resultOut.value;
         };
@@ -106,7 +104,7 @@ export async function runPostHelperPhase(
     const { rt, job, state } = ctx;
     const { runner, log } = rt;
     const plans = (job.helperPlans ?? []).filter((plan) => plan.phase === 'post');
-    if (!plans.length || !runner.runHelper) return null;
+    if (!plans.length) return null;
     if (skipReason !== null) {
         log(`job ${job.id}: post-run helpers skipped — ${skipReason}`);
         return null;
@@ -121,7 +119,7 @@ export async function runPostHelperPhase(
                 : undefined;
             if (down(state)) return null;
             const effectId = helperEffectId(job, childPlan, planIndex, childIndex);
-            return runner.runHelper!(job, childPlan, { token, signal: state.signal, effectId });
+            return runner.runHelper(job, childPlan, { token, signal: state.signal, effectId });
         };
 
     for (const [planIndex, plan] of plans.entries()) {

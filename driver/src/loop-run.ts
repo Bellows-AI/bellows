@@ -517,7 +517,7 @@ async function runPostHelpersAndPublish(
     const ledger = ledgerOf({ ...outcome, helperFailure, published: null });
     let published: PublishResult | null = null;
     const policyRefusal: string | null = null;
-    const mode = publishModeOf(rt, job, ledger);
+    const mode = publishModeOf(job, ledger);
     if (mode !== null) {
         // The configured evidence is enforced HERE, whatever the agent chose to run: a refusal
         // pushes nothing, and an authorisation binds the push to the revision it assessed. A
@@ -556,13 +556,13 @@ async function reportNewSession(
 
 /**
  * The task tree's fingerprint as the run left it, before the gates; compared with the startup
- * sync's to answer whether the tree moved. Null when unknown: no before-fingerprint, no probe, or
- * a probe that failed.
+ * sync's to answer whether the tree moved. Null when unknown: no before-fingerprint, or a probe
+ * that failed.
  */
 async function probeTreeNow(ctx: AttemptCtx): Promise<string | null> {
     const { rt, job, treeBefore, state } = ctx;
     // An adopted run has no synced fingerprint, but its tree is still the revision evidence binds to.
-    if ((treeBefore === null && !ctx.adopted) || !rt.runner.probeTree) return null;
+    if (treeBefore === null && !ctx.adopted) return null;
     // The attempt's own signal is the probe's transport abort AND the race: a stand-down cancels
     // the request in flight and stops waiting on it, and the caller rechecks (issue #472).
     const raced = await raceStep(
@@ -653,7 +653,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         // exit: its supervisor serves the probe, the helpers and the publish. It ends while the
         // control channel its order travels is still open — and never for an attempt handed over by
         // a drain, whose runner is left for the next claim to adopt.
-        if (!state.handedOver) await rt.runner.finish?.(job).catch(() => undefined);
+        if (!state.handedOver) await rt.runner.finish(job).catch(() => undefined);
         closeRunControl(rt, state);
     };
 

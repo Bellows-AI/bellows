@@ -175,12 +175,11 @@ describe('the publish relay: what an attempt may publish', () => {
         const state = newJobState();
         const runner = {
             publishGit:
-                'publishGit' in over
-                    ? over.publishGit
-                    : async (_job: BoardJob, token?: string, options?: PublishOptions) => {
-                          calls.published.push({ token, options });
-                          return LANDED;
-                      },
+                over.publishGit ??
+                (async (_job: BoardJob, token?: string, options?: PublishOptions) => {
+                    calls.published.push({ token, options });
+                    return LANDED;
+                }),
         };
         const rt = {
             runner,
@@ -214,11 +213,6 @@ describe('the publish relay: what an attempt may publish', () => {
         await expect(relay.publish()).resolves.toBe('forbidden');
         expect(calls.asks).toBe(0);
         expect(calls.published).toEqual([]);
-    });
-
-    it('is unsupported on a runner that cannot push', async () => {
-        const { relay } = relayFor({ publishGit: undefined });
-        await expect(relay.publish()).resolves.toBe('unsupported');
     });
 
     it.each(['stopped', 'lost', 'removed', 'draining', 'finished'] as const)(

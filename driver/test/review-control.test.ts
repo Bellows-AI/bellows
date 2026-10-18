@@ -17,7 +17,6 @@ const FORBIDDEN_STATUS = 403;
 const NOT_FOUND_STATUS = 404;
 const CONFLICT_STATUS = 409;
 const PAYLOAD_TOO_LARGE_STATUS = 413;
-const NOT_IMPLEMENTED_STATUS = 501;
 
 const JOB = {
     id: '00000001-1111-4111-8111-111111111111',
@@ -112,7 +111,6 @@ describe('the control server: POST /review and GET /review/:key', () => {
     // The refused row also pins the board's own reason as the request's answer.
     it.each<[ReviewVerdict, number, { error: string }?]>([
         ['forbidden', FORBIDDEN_STATUS],
-        ['unsupported', NOT_IMPLEMENTED_STATUS],
         ['gone', UNAUTHORIZED_STATUS],
         [
             { refused: 'No reviewer named "x" is declared' },
@@ -215,8 +213,6 @@ describe('the review relay: what an attempt may ask for', () => {
             tree?: string | null;
             snapshot?: SnapshotResult;
             answer?: ReviewAnswer;
-            noSnapshot?: boolean;
-            noProbe?: boolean;
             boardThrows?: boolean;
         } = {}
     ) => {
@@ -226,22 +222,14 @@ describe('the review relay: what an attempt may ask for', () => {
         const runner = {
             // A lost lease or a removal stands the attempt down, which kills its runner.
             kill: async () => {},
-            ...(over.noProbe
-                ? {}
-                : {
-                      probeTree: async () => {
-                          calls.measured += 1;
-                          return 'tree' in over ? over.tree : 'abc:def';
-                      },
-                  }),
-            ...(over.noSnapshot
-                ? {}
-                : {
-                      snapshotTree: async (_job: BoardJob, key: string) => {
-                          calls.snapshots.push(key);
-                          return over.snapshot ?? { ok: true as const, ref: SNAPSHOT_REF };
-                      },
-                  }),
+            probeTree: async () => {
+                calls.measured += 1;
+                return 'tree' in over ? over.tree : 'abc:def';
+            },
+            snapshotTree: async (_job: BoardJob, key: string) => {
+                calls.snapshots.push(key);
+                return over.snapshot ?? { ok: true as const, ref: SNAPSHOT_REF };
+            },
         };
         const board = {
             requestReview: async (_job: BoardJob, request: ReviewRequest) => {
@@ -299,11 +287,6 @@ describe('the review relay: what an attempt may ask for', () => {
             refused: 'the review snapshot failed: no space',
         });
         expect(failed.calls.requests).toEqual([]);
-    });
-
-    it('is unsupported on a runner that cannot measure or snapshot', async () => {
-        await expect(relayFor({ noSnapshot: true }).relay.request('k', 'p')).resolves.toBe('unsupported');
-        await expect(relayFor({ noProbe: true }).relay.request('k', 'p')).resolves.toBe('unsupported');
     });
 
     it.each(['stopped', 'lost', 'removed', 'draining', 'finished'] as const)(
