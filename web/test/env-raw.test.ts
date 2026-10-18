@@ -21,6 +21,13 @@ describe('the raw .env editor parser', () => {
         }
     });
 
+    it('refuses a loader variable by its LD_ prefix, as the server does', () => {
+        expect(parseEnvRaw('LD_AUDIT=/w/evil.so', noSecrets)).toEqual({
+            ok: false,
+            errors: ['line 1: "LD_AUDIT" is reserved by the runner'],
+        });
+    });
+
     it('parses KEY=value pairs', () => {
         expect(parseEnvRaw('LOG_LEVEL=debug\nPORT=8080', noSecrets)).toEqual(
             ok([variable('LOG_LEVEL', 'debug'), variable('PORT', '8080')])

@@ -34,7 +34,7 @@ export const REQUIRED_FIELDS: Record<ExecutorType, readonly string[]> = {
  *
  * The copy is contractual, not decorative (issue 183): claude-code configs are merged into the
  * runner's settings.json with `hooks`, `enabledPlugins` and `extraKnownMarketplaces` stripped
- * board-side (the git guard hook and the baked context-mode plugin install), and opencode configs
+ * board-side (the git guard hook, and no plugin the image does not bake), and opencode configs
  * are merged over the runner's baked configuration with `permission` stripped board-side to
  * preserve the runner fence (see docs/workspace.md). The `Record` shape is the same exhaustiveness
  * guard REQUIRED_FIELDS uses: a new EXECUTOR_TYPES entry cannot compile until it declares its own

@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
@@ -10,12 +10,14 @@ import {
     readFileSync,
     realpathSync,
     rmSync,
+    statSync,
     writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { TOOL_UID } from '../src/claim.js';
 import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.js';
 
 /*
@@ -301,6 +303,8 @@ SLEEP_PID=$!
 echo "$SLEEP_PID" > "$STUB_DIR/sleep-pid"
 printf '%s' "\${JIRA_API-unset}" > "$STUB_DIR/jira-api"
 printf '%s' "\${OPENCODE_CONFIG_CONTENT-unset}" > "$STUB_DIR/opencode-config-content"
+printf '%s' "\${BELLOWS_CONTROL_TOKEN-unset}" > "$STUB_DIR/control-token"
+printf '%s' "\${BELLOWS_CONTROL_URL-unset}" > "$STUB_DIR/control-url"
 echo started > "$STUB_DIR/started"
 wait "$SLEEP_PID"
 exit "\${STUB_STATUS:-0}"
@@ -692,7 +696,10 @@ describe('the entrypoint git credential', () => {
     it.each(ENTRYPOINTS)('%s clears the cached token as the run ends', (entrypoint) => {
         const entry = read(entrypoint);
         expect(entry).toContain('GITHUB_CREDENTIAL="$(cd "$(dirname "$0")" && pwd)/github-credential.cjs"');
-        expect(entry).toMatch(/node "\$GITHUB_CREDENTIAL" clear 2>\/dev\/null \|\| true\nexit "\$STATUS"\n$/);
+        // As the tool uid, which owns the cache (issue #814): through the tool shell.
+        expect(entry).toMatch(
+            /"\$\{SHELL:-\/bin\/sh\}" -c 'node "\$1" clear' clear "\$GITHUB_CREDENTIAL" 2>\/dev\/null \|\| true\nexit "\$STATUS"\n$/
+        );
         expect(entry).not.toContain('$GITHUB_TOKEN');
     });
 });
@@ -943,27 +950,23 @@ describe('the claude-executor managed settings', () => {
     });
 });
 
-// `claude plugin install` bakes context-mode without its node_modules, and the plugin's MCP boot
-// then installs them on every runner start — past Claude Code's 30s connect timeout, so the ctx_*
-// tools never connect. The image suite proves the connection offline; this pins both halves where
-// `npm test` sees them.
-describe('the claude-executor context-mode plugin', () => {
-    it("bakes the plugin's run-time dependencies, at its own declared versions, and probes the native binding", () => {
-        const dockerfile = read('docker/claude-executor/Dockerfile');
-        const install = dockerfile.indexOf('claude plugin install context-mode@context-mode');
-        const deps = dockerfile.indexOf("['better-sqlite3', 'turndown', 'turndown-plugin-gfm', '@mixmark-io/domino']");
-        expect(install).toBeGreaterThan(-1);
-        expect(deps).toBeGreaterThan(install);
-        expect(dockerfile).toMatch(/require\('\$\{p\}package\.json'\)\.dependencies/);
-        expect(dockerfile).toMatch(/mv node_modules "\$\{p\}node_modules"/);
-        expect(dockerfile).toMatch(/new \(require\('\$\{p\}node_modules\/better-sqlite3'\)\)\(':memory:'\)\.close\(\)/);
-    });
-
-    it('is proven connected by the image suite offline, inside the connect budget', () => {
-        const suite = read('docker/claude-executor/test.sh');
-        expect(suite).toMatch(/--network none --entrypoint sh "\$IMAGE"[^\n]*timeout 10 node/);
-        expect(suite).toContain("'claude connects to context-mode offline' '✔ Connected'");
-        expect(suite).toContain('CLAUDE_CONFIG_DIR=/tmp/thread claude mcp list | grep context-mode');
+// Issue #841: context-mode's executions cannot run as the agent's tool uid (#814) — its shell
+// runtime writes each script to a 0700 directory only the CLI uid reads, its other runtimes spawn
+// as the CLI uid — so neither image bakes it until they can.
+describe('the runner images carry no context-mode', () => {
+    it('is neither installed nor configured in either image', () => {
+        for (const file of [
+            'docker/claude-executor/Dockerfile',
+            'docker/opencode-executor/Dockerfile',
+            'docker/opencode-executor/opencode-home/opencode.json',
+            'docker/opencode-executor/opencode-home/AGENTS.md',
+            'docker/claude-executor/claude-home/CLAUDE.md',
+            'docker/claude-executor/claude-home/settings.json',
+        ]) {
+            expect(read(file), file).not.toMatch(/mksglu|context-mode@|node_modules\/context-mode|ctx_[a-z]/);
+        }
+        expect(read('docker/claude-executor/Dockerfile')).not.toContain('claude plugin install');
+        expect(read('docker/opencode-executor/opencode-home/opencode.json')).not.toContain('context-mode');
     });
 });
 
@@ -993,14 +996,12 @@ describe('the opencode-executor managed config', () => {
     });
 
     // The global copy is the first config layer, so its key order is what every later layer merges
-    // into: root-owned, directory and skills included, with the plugin's data directory the one
-    // writable spot.
-    it('bakes the global config directory root-owned, its plugin data directory aside', () => {
+    // into: root-owned, directory and skills included.
+    it('bakes the global config directory root-owned', () => {
         const dockerfile = read('docker/opencode-executor/Dockerfile');
         expect(dockerfile).toContain('COPY opencode-home/ /home/node/.config/opencode/\n');
         expect(dockerfile).toContain('COPY --from=skills . /home/node/.config/opencode/skills/\n');
         expect(dockerfile).not.toMatch(/--chown[^\n]*\/home\/node\/\.config\/opencode/);
-        expect(dockerfile).toContain('RUN install -d -o node -g node /home/node/.config/opencode/context-mode\n');
         // Its parents sticky and root-owned, or node could rename the directory aside and plant its own.
         expect(dockerfile).toContain(
             'RUN chown root:root /home/node && chmod 1777 /home/node && install -d -m 1777 -o root -g root /home/node/.config\n'
@@ -1456,5 +1457,194 @@ describe('the ad-hoc gate limit in the agent instructions', () => {
             expect(text).toContain('`on_demand: true`');
             expect(text).toContain('runs only when you call it');
         }
+    );
+});
+
+// Issue #814: the agent's commands run as their own uid. The launcher in front of each image's
+// entrypoint starts the tool broker as root and drops for good; the entrypoints keep the CLI's own
+// state from the tool uid, which shares its group and its umask.
+describe('the agent launcher (issue #814)', () => {
+    const LAUNCH = read('docker/claude-executor/factory-launch.sh');
+
+    it.each([
+        ['claude', 'docker/claude-executor/Dockerfile'],
+        ['opencode', 'docker/opencode-executor/Dockerfile'],
+    ])('is the %s image ENTRYPOINT, in front of the image’s own', (cli, file) => {
+        const dockerfile = read(file);
+        expect(dockerfile).toContain(
+            `ENTRYPOINT ["/usr/local/bin/factory-launch", "/usr/local/bin/${cli}-executor"]\n`
+        );
+        expect(dockerfile).toContain('COPY factory-launch.sh /usr/local/bin/factory-launch\n');
+        expect(dockerfile).toContain('COPY factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs\n');
+        expect(dockerfile).toContain('COPY tool-bash.sh /usr/local/libexec/factory-tool/bash\n');
+        // The mailbox mount points a docker volume takes its mode from, closed to the tool uid.
+        expect(dockerfile).toContain('chmod 0700 /factory/in /factory/out\n');
+        // The image's last USER stays node: every other container the driver starts from it.
+        expect(dockerfile.match(/^USER .*$/gm)?.at(-1)).toBe('USER node');
+    });
+
+    it('creates the same users and directories in both images, the tool uid the driver’s', () => {
+        const block = (file: string) => {
+            const text = read(file);
+            return text.slice(
+                text.indexOf('RUN groupadd -g 1002 factory-agent'),
+                text.indexOf('COPY factory-launch.sh')
+            );
+        };
+        const claude = block('docker/claude-executor/Dockerfile');
+        expect(claude).toContain(`useradd -u ${TOOL_UID} -g node`);
+        expect(claude).toContain('install -d -o root -g factory-agent -m 2750 /run/factory-tool');
+        expect(claude).toContain('install -d -o factory-tool -g node -m 0700 /home/factory-tool');
+        expect(block('docker/opencode-executor/Dockerfile')).toBe(claude);
+    });
+
+    it('starts the broker under an empty environment, then drops root and every capability for good', () => {
+        expect(LAUNCH).toContain(
+            '/usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin NODE_DISABLE_COMPILE_CACHE=1 \\\n' +
+                '    /usr/local/bin/node /usr/local/lib/factory-tool/factory-tool.cjs serve &'
+        );
+        expect(LAUNCH).toContain(
+            'exec /usr/bin/setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all -- "$@"'
+        );
+        expect(LAUNCH.indexOf('factory-tool.cjs serve')).toBeLessThan(LAUNCH.indexOf('exec /usr/bin/setpriv'));
+        expect(LAUNCH).toContain('umask 002');
+        expect(LAUNCH).not.toMatch(/ambient/);
+        // Root runs nothing by PATH: every command past the uid check is absolute or a builtin.
+        const rootPart = LAUNCH.slice(LAUNCH.indexOf('umask 002'));
+        for (const word of rootPart.match(/^\s*([a-z][\w-]*)\b/gm) ?? []) {
+            expect(['umask', 'if', 'fi', 'done', 'while', 'echo', 'exit', 'kill', 'export', 'exec', 'then']).toContain(
+                word.trim()
+            );
+        }
+    });
+
+    it('runs its argument unchanged when it is not root, as an image run by hand', () => {
+        const ran = spawnSync(
+            '/bin/sh',
+            [join(ROOT, 'docker/claude-executor/factory-launch.sh'), 'sh', '-c', 'echo "$0 ran"'],
+            {
+                encoding: 'utf8',
+            }
+        );
+        expect(ran.stdout).toBe('sh ran\n');
+    });
+
+    it('is byte-identical in both images, and nothing sets a shell prefix the hooks would run through', () => {
+        expect(read('docker/opencode-executor/factory-launch.sh')).toBe(LAUNCH);
+        for (const file of [
+            'docker/claude-executor/factory-launch.sh',
+            'docker/claude-executor/managed-settings.json',
+            'docker/claude-executor/entrypoint.sh',
+            'docker/claude-executor/claude-home/settings.json',
+        ]) {
+            expect(read(file), file).not.toContain('CLAUDE_CODE_SHELL_PREFIX');
+        }
+    });
+
+    it('points the CLI shell at the tool shell, pinned in claude’s managed settings', () => {
+        expect(LAUNCH).toContain('CLAUDE_CODE_SHELL=/usr/local/libexec/factory-tool/bash');
+        expect(LAUNCH).toContain('SHELL=/usr/local/libexec/factory-tool/bash');
+        const managed = JSON.parse(read('docker/claude-executor/managed-settings.json')) as {
+            env: Record<string, string>;
+        };
+        expect(managed.env.CLAUDE_CODE_SHELL).toBe('/usr/local/libexec/factory-tool/bash');
+        expect(managed.env.SHELL).toBe('/usr/local/libexec/factory-tool/bash');
+    });
+
+    it('leaves no skill or guide the run-control token: the two skills that call the board use the proxy', () => {
+        const proxy = createRequire(import.meta.url)(join(ROOT, 'docker/claude-executor/control-proxy.cjs')) as {
+            SOCKET: string;
+        };
+        for (const dir of [
+            'docker/skills',
+            'docker/claude-executor/claude-home',
+            'docker/opencode-executor/opencode-home',
+        ]) {
+            expect(
+                spawnSync('grep', ['-rl', 'BELLOWS_CONTROL_TOKEN', join(ROOT, dir)], { encoding: 'utf8' }).stdout
+            ).toBe('');
+        }
+        for (const skill of ['docker/skills/review/SKILL.md', 'docker/skills/github/SKILL.md']) {
+            expect(read(skill)).toContain(`--unix-socket ${proxy.SOCKET} http://control/`);
+        }
+    });
+});
+
+describe('the entrypoints under the tool uid (issue #814)', () => {
+    const ENTRYPOINTS = ['docker/claude-executor/entrypoint.sh', 'docker/opencode-executor/entrypoint.sh'];
+    /** The entrypoint as factory-launch leaves it: under umask 002. */
+    const runShared = (entrypoint: string, sandbox: Sandbox, stubEnv: Record<string, string>) =>
+        spawnDetached(['-c', 'umask 002 && exec /bin/sh "$0" "$@"', join(ROOT, entrypoint), '-p', 'test run'], {
+            ...sandbox.env,
+            ...stubEnv,
+        });
+
+    it.each(ENTRYPOINTS)(
+        '%s hands the CLI the control URL and never the token, which only its proxy holds',
+        async (entrypoint) => {
+            const sandbox = makeSandbox();
+            try {
+                const child = runShared(entrypoint, sandbox, {
+                    BELLOWS_CONTROL_URL: 'http://127.0.0.1:9',
+                    BELLOWS_CONTROL_TOKEN: 'agent-secret',
+                });
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                expect(readFileSync(join(sandbox.bin, 'control-token'), 'utf8')).toBe('unset');
+                expect(readFileSync(join(sandbox.bin, 'control-url'), 'utf8')).toBe('http://127.0.0.1:9');
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it.each(ENTRYPOINTS)(
+        '%s leaves its git config readable and never writable by the tool uid, even under umask 002',
+        async (entrypoint) => {
+            const sandbox = makeSandbox();
+            try {
+                const child = runShared(entrypoint, sandbox, {
+                    FACTORY_STATS_URL: 'http://127.0.0.1:9',
+                    RUNNER_JOB_ID: '11111111-1111-4111-8111-111111111111',
+                    RUNNER_LEASE_TOKEN: 'lease',
+                });
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                expect(statSync(join(sandbox.env.HOME!, '.gitconfig')).mode & 0o777).toBe(0o644);
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it(
+        'claude: keeps its config dir — transcripts, credentials, the exporter state — the CLI uid’s alone',
+        async () => {
+            const sandbox = makeSandbox();
+            try {
+                const child = runShared('docker/claude-executor/entrypoint.sh', sandbox, {});
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                expect(statSync(sandbox.env.CLAUDE_CONFIG_DIR!).mode & 0o777).toBe(0o700);
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it(
+        'opencode: keeps its session database the CLI uid’s alone',
+        async () => {
+            const sandbox = makeSandbox();
+            try {
+                const data = join(sandbox.work, '..', 'data');
+                const child = runShared('docker/opencode-executor/entrypoint.sh', sandbox, { XDG_DATA_HOME: data });
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                expect(statSync(data).mode & 0o777).toBe(0o700);
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
     );
 });

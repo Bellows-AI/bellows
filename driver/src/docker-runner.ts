@@ -38,6 +38,7 @@ import {
     parseDockerServiceExit,
     parseDockerServicePs,
     parseDockerStats,
+    toolTreeReleaseArgs,
 } from './docker.js';
 import { envFileBody } from './claim.js';
 import { snapshotTree } from './review-snapshot.js';
@@ -91,6 +92,8 @@ interface GroupState {
 
 /** How long `finish` waits for the group's supervisor to exit by itself before it kills the group. */
 const GROUP_END_WAIT_MS = 20_000;
+/** How long the tool uid's release of a tree may walk it before the reclaim goes on without it. */
+const RELEASE_DEADLINE_MS = 300_000;
 
 /** Everything a docker-runner method needs: the daemon transport, the config, and the per-attempt kill set. */
 interface RunnerDeps {
@@ -290,6 +293,9 @@ async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<R
         supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: opened.url, [SUPERVISOR_ENV.controlToken]: opened.token },
     };
     try {
+        // Issue #814: the tool uid first gives back what it closed; the reclaim's verdict decides.
+        const release = toolTreeReleaseArgs(config, job);
+        if (release) await deps.execDocker(release, { timeout: RELEASE_DEADLINE_MS }).catch(() => undefined);
         await createGroup(deps, group, null, new Date().toISOString());
         await startGroup(deps.execDocker, group, null);
         return await runReclaimStep(stepHostOf(deps), group);

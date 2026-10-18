@@ -3,8 +3,8 @@ import {
     ENV_NAME_LIMIT,
     ENV_VALUE_LIMIT,
     ERROR_CODES,
+    isReservedEnvName,
     MAX_ENV_VARS_PER_SCOPE,
-    RESERVED_ENV_NAMES,
 } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
@@ -64,7 +64,7 @@ function parseVarEntry(entry: unknown): EnvVarEntry | string {
     if (!ENV_NAME.test(item.name)) {
         return `"${item.name}" is not a legal environment variable name`;
     }
-    if (RESERVED_ENV_NAMES.includes(item.name)) {
+    if (isReservedEnvName(item.name)) {
         return `"${item.name}" is reserved by the runner`;
     }
     if (item.value !== null && (item.value.length > ENV_VALUE_LIMIT || /[\r\n]/.test(item.value))) {

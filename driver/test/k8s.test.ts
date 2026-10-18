@@ -14,7 +14,7 @@ import {
     type SupervisorReport,
 } from '../src/supervisor-contract.js';
 import { StepChannelClosed, type StepSink } from '../src/step-control.js';
-import { claudeTurnsScript, claudeExportScript } from '../src/container-scripts.js';
+import { claudeTurnsScript, claudeExportScript, gateShellScript } from '../src/container-scripts.js';
 import { ARTIFACT_LIMIT, commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import { lookupHelper } from '../src/helpers.js';
 import { claudeManagedSettings, opencodeOtelConfig } from '../src/telemetry-config.js';
@@ -55,6 +55,7 @@ import {
     gitProbeScript,
     gitWorktreeRemoveScript,
     gitWorktreeScript,
+    toolTreeReleaseScript,
     TRANSIENT_SYNC_REASON,
 } from '../src/publish.js';
 import { forgetDeclaredServices, type ServiceSpec } from '../src/services.js';
@@ -299,8 +300,8 @@ describe('the runner job spec', () => {
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
             // The two mailbox paths the agent finds its supervisor through — paths, no credential.
-            { name: 'FACTORY_CTL_IN', value: '/factory/in' },
-            { name: 'FACTORY_CTL_OUT', value: '/factory/out' },
+            { name: 'FACTORY_CTL_IN', value: '/factory/in/agent' },
+            { name: 'FACTORY_CTL_OUT', value: '/factory/out/agent' },
             { name: 'FACTORY_CTL_GO', value: GO_MARKER },
         ]);
     });
@@ -362,8 +363,8 @@ describe('the runner job spec', () => {
             },
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
-            { name: 'FACTORY_CTL_IN', value: '/factory/in' },
-            { name: 'FACTORY_CTL_OUT', value: '/factory/out' },
+            { name: 'FACTORY_CTL_IN', value: '/factory/in/agent' },
+            { name: 'FACTORY_CTL_OUT', value: '/factory/out/agent' },
             { name: 'FACTORY_CTL_GO', value: GO_MARKER },
         ]);
     });
@@ -428,8 +429,8 @@ describe('the runner job spec', () => {
             },
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
-            { name: 'FACTORY_CTL_IN', value: '/factory/in' },
-            { name: 'FACTORY_CTL_OUT', value: '/factory/out' },
+            { name: 'FACTORY_CTL_IN', value: '/factory/in/agent' },
+            { name: 'FACTORY_CTL_OUT', value: '/factory/out/agent' },
             { name: 'FACTORY_CTL_GO', value: GO_MARKER },
         ]);
     });
@@ -763,6 +764,33 @@ describe('the pod hardening on every pod the driver specs (#382)', () => {
     // a regression reaches for one at a time.
     it.each(POD_NAMES)('refuses privilege escalation on %s', (name) => {
         expect(everyPodSpec()[name]().pod.containers[0]!.securityContext?.allowPrivilegeEscalation).toBe(false);
+    });
+
+    // Issue #814: the agent starts as root to launch its tool broker, with exactly the two
+    // capabilities a uid switch needs; factory-launch drops both before the CLI starts.
+    it('starts the agent as root with SETUID and SETGID added, and nothing else', () => {
+        expect(
+            containerView(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), job, AGENT_CONTAINER)
+                .pod.containers[0]!.securityContext
+        ).toEqual({
+            allowPrivilegeEscalation: false,
+            capabilities: { drop: ['ALL'], add: ['SETUID', 'SETGID'] },
+            runAsUser: 0,
+            runAsGroup: 0,
+        });
+    });
+
+    it.each(POD_NAMES)('adds no capability to any other container of %s, nor starts one as root', (name) => {
+        const { pod } = everyPodSpec()[name]();
+        const spec = pod as typeof pod & { initContainers?: typeof pod.containers };
+        const others = [...spec.containers, ...(spec.initContainers ?? [])].filter(
+            (container) => (container as { name?: string }).name !== AGENT_CONTAINER
+        );
+        for (const container of others) {
+            const context = container.securityContext as { capabilities?: { add?: string[] }; runAsUser?: number };
+            expect(context?.capabilities?.add).toBeUndefined();
+            expect(context?.runAsUser).not.toBe(0);
+        }
     });
 
     // Pod level, not container level: seccomp is a property of the whole pod's containers, and
@@ -1744,6 +1772,31 @@ describe('the worktree reclaim', () => {
         });
         // The claim env is never the group's: not in its Secret, not in its spec.
         expect(JSON.stringify(calls.map((call) => call.body))).not.toContain('t0k-3n');
+    });
+
+    // Issue #814: before the supervisor, the tool uid gives what it closed group rwx, so the uid-1000
+    // reclaim can empty it — hardened, no capability, the tree's path and nothing else.
+    it('releases the tree as the tool uid in an init container before the supervisor starts', async () => {
+        const { request, calls } = fakeRequest();
+        await reclaimer(request).reclaimWorktree(repoJob);
+
+        const [release, ...others] = groupOf(calls).spec.template.spec.initContainers ?? [];
+        expect(others).toEqual([]);
+        expect(release).toMatchObject({
+            name: 'release',
+            command: ['node', '-e', toolTreeReleaseScript],
+            env: [{ name: 'WORKTREE', value: WORKTREE }],
+            securityContext: {
+                allowPrivilegeEscalation: false,
+                capabilities: { drop: ['ALL'] },
+                runAsUser: 1001,
+                runAsGroup: 1000,
+            },
+        });
+        expect(release!.securityContext.capabilities).not.toHaveProperty('add');
+        expect(release!.volumeMounts).toEqual(
+            groupOf(calls).spec.template.spec.containers[0]!.volumeMounts.filter((mount) => mount.name === 'workspaces')
+        );
     });
 
     it('reclaims nothing for a worktree path it cannot assert', async () => {
@@ -4481,10 +4534,16 @@ describe('the gate job spec', () => {
         expect(gateSpec(2).metadata.name).not.toBe(gateSpec(1).metadata.name);
     });
 
-    // The command travels as ONE argv element into `sh -c` — the same single element docker
+    // The command travels as ONE argv element after the gate shell — the same single element docker
     // exec's gate runs receive. It is never interpolated into a larger shell line.
-    it('runs the declared command via sh -c as one argv element', () => {
-        expect(gateSpec().spec.template.spec.containers[0]!.command).toEqual(['sh', '-c', 'npm test']);
+    it('runs the declared command through the gate shell as one argv element', () => {
+        expect(gateSpec().spec.template.spec.containers[0]!.command).toEqual([
+            'sh',
+            '-c',
+            gateShellScript,
+            'gate',
+            'npm test',
+        ]);
     });
 
     it('works at the checkout the coding agent edits — the same tree, via the same PVC', () => {

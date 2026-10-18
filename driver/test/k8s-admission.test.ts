@@ -3,12 +3,13 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { servicePodSpec } from '../src/k8s-auxspec.js';
-import { workspacePath } from '../src/claim.js';
+import { AGENT_LAUNCH_CAPS, workspacePath } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
 import { UNHARDENED_LABEL } from '../src/labels.js';
 import { gateEnvSecretName, runnerJobSpec, secretName } from '../src/k8s-podspec.js';
 import { reclaimGroupSpec } from '../src/k8s-group.js';
 import { WORKSPACE_PATH } from '../src/publish.js';
+import { AGENT_CONTAINER } from '../src/supervisor-contract.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
@@ -158,8 +159,23 @@ describe('the admission policy requires the pod hardening (#382)', () => {
         ];
         for (const pod of pods) {
             expect(pod.securityContext?.seccompProfile?.type).toBe('RuntimeDefault');
-            expect(pod.containers[0]!.securityContext?.allowPrivilegeEscalation).toBe(false);
-            expect(pod.containers[0]!.securityContext?.capabilities?.drop).toContain('ALL');
+            const containers = [...pod.containers, ...(('initContainers' in pod && pod.initContainers) || [])];
+            for (const container of containers) {
+                const context = container.securityContext;
+                expect(context?.allowPrivilegeEscalation, container.name).toBe(false);
+                expect(context?.capabilities?.drop, container.name).toContain('ALL');
+                const added = (context?.capabilities as { add?: string[] } | undefined)?.add ?? [];
+                if (container.name !== AGENT_CONTAINER) expect(added, container.name).toEqual([]);
+                expect(added.every((cap) => (AGENT_LAUNCH_CAPS as readonly string[]).includes(cap))).toBe(true);
+            }
         }
+    });
+
+    // Issue #814: the agent's launch pair is the one capability add the policy admits, named in it as
+    // the driver states it, on the container the driver names.
+    it('admits the agent launch pair on the agent container alone', () => {
+        expect(template).toContain(`c.name == '${AGENT_CONTAINER}'`);
+        expect(template).toContain(`a in [${AGENT_LAUNCH_CAPS.map((cap) => `'${cap}'`).join(', ')}]`);
+        expect(template).toContain("request.kind.kind == 'Job' && c.name ==");
     });
 });

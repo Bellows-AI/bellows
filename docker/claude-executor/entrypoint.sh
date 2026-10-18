@@ -45,6 +45,10 @@ fi
 if [ ! -f "$CLAUDE_CONFIG_DIR/settings.json" ] && [ -d /opt/claude-home ]; then
     cp -a /opt/claude-home/. "$CLAUDE_CONFIG_DIR/"
 fi
+# The CLI's config dir — its transcripts, settings and credentials, the exporter's state beside them
+# — is the CLI's uid's alone: the agent's tools run as their own uid in its group (issue #814). After
+# the seed, whose `cp -a` of the directory itself lays the baked mode back over it.
+chmod 0700 "$CLAUDE_CONFIG_DIR" 2>/dev/null || true
 
 # The seed above runs once, but the directory outlives the container and the agent can edit its
 # settings.json — stripping the git guard hook there would disarm it for every later run of the
@@ -88,6 +92,10 @@ if [ -n "${FACTORY_STATS_URL:-}" ] && [ -n "${RUNNER_JOB_ID:-}" ] && [ -n "${RUN
         2>/dev/null || echo "claude-executor: could not configure the git credential helper" >&2
 fi
 
+# The tool uid shares node's group and the tree's umask, and reads this file through its own
+# (issue #814): readable, never writable, by the commands the agent runs.
+if [ -f "$HOME/.gitconfig" ]; then chmod 0644 "$HOME/.gitconfig" 2>/dev/null || true; fi
+
 # Workspace trust. An untrusted workspace makes the CLI ignore the checkout's .claude/settings.json
 # ("Ignoring N permissions.allow entries … this workspace has not been trusted"), and nobody can
 # accept the trust dialog in an unattended container. The CLI files trust under the repository's
@@ -126,7 +134,7 @@ fi
 # replacing it outright. Telemetry is not in this file at all: it lives in managed settings, which
 # outrank user settings, so a member cannot disable it or turn on prompt/response/tool-detail
 # logging from here. `hooks`, `enabledPlugins` and `extraKnownMarketplaces` are the
-# runner's fence — the git guard hook and the baked context-mode plugin install — the board
+# runner's fence — the git guard hook, and no plugin the image does not bake — the board
 # already strips them before this env var is set; stripped again here in case a value ever
 # arrives some other way.
 if [ -n "${CLAUDE_CODE_CONFIG_CONTENT:-}" ]; then
@@ -199,13 +207,24 @@ CLI_PID=''
 REPORTER_PID=''
 PROGRESS_PID=''
 CTL_PID=''
+PROXY_PID=''
 TERM_PENDING=''
 on_term() {
     TERM_PENDING=1
     # shellcheck disable=SC2086 # deliberately unquoted: an unset pid must vanish, not empty-arg
-    kill -TERM $CLI_PID $REPORTER_PID $PROGRESS_PID $CTL_PID 2>/dev/null || true
+    kill -TERM $CLI_PID $REPORTER_PID $PROGRESS_PID $CTL_PID $PROXY_PID 2>/dev/null || true
 }
 trap on_term TERM INT
+
+# The run-control proxy (issue #814): the agent's tools run as their own uid and never hold the
+# run-control token. The proxy keeps it and serves the two routes the baked skills call on a socket
+# a tool can reach; the token leaves this shell's environment before the CLI starts. A sibling like
+# the reporter, stdio discarded.
+if [ -n "${BELLOWS_CONTROL_URL:-}" ] && [ -n "${BELLOWS_CONTROL_TOKEN:-}" ]; then
+    node /usr/local/bin/control-proxy.cjs >/dev/null 2>&1 &
+    PROXY_PID=$!
+fi
+unset BELLOWS_CONTROL_TOKEN
 
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
 REPORTER_PID=$!
@@ -250,7 +269,7 @@ CLI_PID=$!
 
 if [ -n "$TERM_PENDING" ]; then
     # shellcheck disable=SC2086 # same reason as on_term
-    kill -TERM $CLI_PID $REPORTER_PID $PROGRESS_PID $CTL_PID 2>/dev/null || true
+    kill -TERM $CLI_PID $REPORTER_PID $PROGRESS_PID $CTL_PID $PROXY_PID 2>/dev/null || true
 fi
 
 set +e
@@ -270,6 +289,10 @@ kill -TERM "$REPORTER_PID" 2>/dev/null || true
 wait "$REPORTER_PID" 2>/dev/null || true
 kill -TERM "$CTL_PID" 2>/dev/null || true
 wait "$CTL_PID" 2>/dev/null || true
+if [ -n "$PROXY_PID" ]; then
+    kill -TERM "$PROXY_PID" 2>/dev/null || true
+    wait "$PROXY_PID" 2>/dev/null || true
+fi
 kill -TERM "$PROGRESS_PID" 2>/dev/null || true
 wait "$PROGRESS_PID" 2>/dev/null || true
 rm -rf "$PROGRESS_DIR"
@@ -280,6 +303,7 @@ if [ -n "${FACTORY_CTL_OUT:-}" ]; then
     printf '%s\n' "$STATUS" > "$FACTORY_CTL_OUT/agent.exit.tmp" 2>/dev/null \
         && mv "$FACTORY_CTL_OUT/agent.exit.tmp" "$FACTORY_CTL_OUT/agent.exit" 2>/dev/null || true
 fi
-# The cached GitHub token goes with the run; the memory-backed mount goes with the container.
-node "$GITHUB_CREDENTIAL" clear 2>/dev/null || true
+# The cached GitHub token goes with the run; the memory-backed mount goes with the container. The
+# tool uid owns the cache (git and gh run as it), so the clear runs through the tool shell too.
+"${SHELL:-/bin/sh}" -c 'node "$1" clear' clear "$GITHUB_CREDENTIAL" 2>/dev/null || true
 exit "$STATUS"

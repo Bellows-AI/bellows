@@ -703,6 +703,11 @@ expect_contains 'the admission policy requires every capability dropped' "$admis
     "'ALL' in c.securityContext.capabilities.drop"
 expect_contains 'the admission policy exempts only a labelled declared service' "$admission" \
     "variables.podLabels['factory.unhardened'] == 'true'"
+# Issue #814: the one capability add admitted, the agent's launch pair, on a runner Job's agent alone.
+expect_contains 'the admission policy admits the launch pair on a runner Job agent alone' "$admission" \
+    "request.kind.kind == 'Job' && c.name == 'agent' &&"
+expect_contains 'the admission policy admits no capability past the launch pair' "$admission" \
+    "c.securityContext.capabilities.add.all(a, a in ['SETUID', 'SETGID'])"
 
 # The chart-pod egress, split per component and port-scoped (#382). A runner reached every port on
 # all three before; now the dashboard is its serving port and the collector its two OTLP ports.
@@ -1168,14 +1173,16 @@ npm run build -w core >/dev/null 2>&1 && npm run build -w server >/dev/null 2>&1
 echo 'building the images on the host daemon'
 # The stub echoes the claude config content and its argv, and nothing else — unless an argument
 # carries `factory-stub-sleep-<n>`: then it sleeps n seconds and names its pod, which is what lets
-# the node-disruption section lose a driver or a pod while a runner is still running. It stands on
+# the node-disruption section lose a driver or a pod while a runner is still running; with
+# `factory-stub-kill-tools` its one tool signals everything it may (the tool-isolation section). It stands on
 # node + git as the uid-1000 `node` user, like the executor images: the startup sync and the other
 # supervised steps run IN the job's executor image (the task supervisor's container,
 # `driver/src/scripts/supervisor.cjs`), and every task has a checkout to sync (issue #263). It
 # starts through scripts/stub-agent.sh, beside ctl-agent.cjs, over the node-owned mailbox mount
 # points: the task supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real
 # entrypoints honor.
-cp docker/claude-executor/ctl-agent.cjs scripts/stub-agent.sh "$work/"
+cp docker/claude-executor/ctl-agent.cjs docker/claude-executor/factory-launch.sh docker/claude-executor/factory-tool.cjs \
+    docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/stub-runner.Dockerfile "$work/"
 cp docker/claude-executor/github-credential.cjs "$work/"
 printf '%s\n' \
     'echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}' \
@@ -1189,6 +1196,11 @@ printf '%s\n' \
     '        env | grep -q -e "^GITHUB_TOKEN=" -e "^GH_TOKEN=" || echo "github no env token"' \
     '        break' \
     '        ;;' \
+    '    *factory-stub-kill-tools*)' \
+    '        "$SHELL" -c '"'"'kill -TERM 1 2>/dev/null; kill -KILL -1 2>/dev/null; echo "the tool ran as $(id -u)"'"'" \
+    '        echo "agent survived"' \
+    '        break' \
+    '        ;;' \
     '    *factory-stub-sleep-*)' \
     '        n="${arg##*factory-stub-sleep-}"' \
     '        sleep "${n%%[!0-9]*}"' \
@@ -1199,7 +1211,8 @@ printf '%s\n' \
     'done' >"$work/stub.sh"
 docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >/dev/null &&
     docker build -f docker/driver.Dockerfile -q -t "$DRIVER_IMAGE" . >/dev/null &&
-    printf 'FROM public.ecr.aws/docker/library/node:24-alpine\nRUN apk add --no-cache git\nCOPY stub.sh /stub.sh\nCOPY ctl-agent.cjs stub-agent.sh /usr/local/bin/\nCOPY github-credential.cjs /usr/local/bin/\nRUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory\nUSER node\nENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' >"$work/stub.Dockerfile" &&
+    docker build -q -t "$STUB_IMAGE-base" -f "$work/stub-runner.Dockerfile" "$work" >/dev/null &&
+    printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile" &&
     docker build -q -t "$STUB_IMAGE" -f "$work/stub.Dockerfile" "$work" >/dev/null &&
     docker pull -q "$COLLECTOR_IMAGE" >/dev/null 2>&1 || {
     echo 'test-k8s: image build or pull failed'
@@ -1739,6 +1752,34 @@ container_unconfined="$(probe_pod cseccomp \
 expect_contains 'the policy refuses a container that overrides the pod seccomp profile' \
     "$container_unconfined" 'may not override the pod seccomp profile'
 
+# Issue #814: the one capability add the policy admits — SETUID and SETGID, on a runner Job's
+# `agent` — and nothing past it: another capability, another container, or a bare Pod.
+probe_job() { # probe_job <name> <container name> <capabilities to add>
+    cat <<EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+    name: admission-probe-$1
+    labels: {factory.job: admission-probe}
+spec:
+    template:
+        metadata: {labels: {factory.job: admission-probe}}
+        spec:
+            automountServiceAccountToken: false
+            restartPolicy: Never
+            securityContext: $HARD_POD
+            containers: [{name: $2, image: alpine, securityContext: {allowPrivilegeEscalation: false, runAsUser: 0, capabilities: {drop: [ALL], add: [$3]}}}]
+EOF
+}
+launch="$(probe_job launch agent 'SETUID, SETGID' | as_driver)"
+expect_contains 'the policy admits the agent launch pair on a runner Job' "$launch" 'created (server dry run)'
+launch_more="$(probe_job launchmore agent 'SETUID, NET_RAW' | as_driver)"
+expect_contains 'the policy refuses any other capability on the agent' "$launch_more" 'may not be privileged or add capabilities'
+launch_other="$(probe_job launchother supervisor 'SETUID' | as_driver)"
+expect_contains 'the policy refuses the launch pair on any other container' "$launch_other" 'may not be privileged or add capabilities'
+launch_pod="$(probe_pod launchpod '    containers: [{name: agent, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL], add: [SETUID]}}}]' | as_driver)"
+expect_contains 'the policy refuses the launch pair on a bare Pod' "$launch_pod" 'may not be privileged or add capabilities'
+
 no_drop="$(probe_pod nodrop \
     '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: []}}}]' |
     as_driver)"
@@ -1924,7 +1965,8 @@ await_runner_pod() { # await_runner_pod <id> -> the claim-1 runner pod's name on
 await_released() { # await_released <runner pod> -> success once the supervisor released its agent (`go`)
     # A driver lost before `go` leaves nothing to adopt: the group ends lost (supervisor exit 75) and the run is redone.
     for _ in $(seq 1 60); do
-        kubectl exec "$1" -c agent -n "$NAMESPACE" -- sh -c 'test -f /factory/in/go' >/dev/null 2>&1 && return 0
+        # From the supervisor: the agent container runs as root without DAC_OVERRIDE (issue #814).
+        kubectl exec "$1" -c supervisor -n "$NAMESPACE" -- sh -c 'test -f /factory/in/agent/go' >/dev/null 2>&1 && return 0
         sleep 1
     done
     return 1
@@ -1946,7 +1988,7 @@ if [ -z "$hard" ] || [ -z "$hard_pod" ]; then
 else
     ok 'the hard-kill runner is running'
     await_released "$hard_pod" && ok 'the hard-kill runner released its agent' ||
-        bad 'the hard-kill runner released its agent' 'no /factory/in/go within 60s'
+        bad 'the hard-kill runner released its agent' 'no /factory/in/agent/go within 60s'
     hard_job="$(first_runner_job "$hard")"
     kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
     kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
@@ -2027,7 +2069,25 @@ else
     expect_not_contains 'the deleted pod produced no verdict' "$(job_output "$evicted")" "slept in $evicted_pod"
 fi
 
-for job in $hard $drained $evicted; do
+# --- The agent's tool isolation (issue #814), on the real kubelet ----------------------------------
+#
+# The stub's one tool runs through the CLI's shell — the tool broker — and signals everything its
+# uid may: `kill -TERM 1; kill -KILL -1`. Under the agent container's own securityContext (root, the
+# launch pair, factory-launch's drop), it reaches only its own processes, and the run succeeds.
+
+echo
+echo '# tool isolation'
+
+isolated="$(queue_job 'factory-stub-kill-tools')"
+isolated_end="$(await_brief "$isolated" 'succeeded|*' 180)"
+case "$isolated_end" in
+"succeeded|1|"*) ok 'a run whose tool signals everything it may succeeds in one attempt' ;;
+*) bad 'a run whose tool signals everything it may succeeds in one attempt' "status|attempts|…: $isolated_end" ;;
+esac
+expect_contains 'the agent survived its tool' "$(job_output "$isolated")" 'agent survived'
+expect_contains 'the tool ran as the tool uid' "$(job_output "$isolated")" 'the tool ran as 1001'
+
+for job in $hard $drained $evicted $isolated; do
     kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
         --ignore-not-found --wait=false >/dev/null 2>&1
 done

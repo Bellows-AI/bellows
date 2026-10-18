@@ -37,6 +37,14 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
 /** GitHub's credential names: the App's alone, never a member's (docs/connections.md). */
 export const GITHUB_ENV_NAMES: readonly string[] = ['GITHUB_TOKEN', 'GH_TOKEN'];
 
+/**
+ * The runner's agent container starts as root to launch its tool broker (issue #814), and the glibc
+ * loader reads these for that root shell before any line of it runs: every `LD_` name, plus glibc's
+ * other loadable-code and file names. A member value in one is code run with the launch capabilities.
+ */
+const LOADER_ENV_PREFIX = 'LD_';
+const LOADER_ENV_NAMES: readonly string[] = ['GCONV_PATH', 'GLIBC_TUNABLES', 'LOCPATH', 'NLSPATH', 'MALLOC_TRACE'];
+
 export const RESERVED_ENV_NAMES: readonly string[] = [
     'WORKDIR',
     'BELLOWS_GATE_URL',
@@ -64,7 +72,13 @@ export const RESERVED_ENV_NAMES: readonly string[] = [
     'ATLASSIAN_EMAIL',
     'ATLASSIAN_API_TOKEN',
     ...GITHUB_ENV_NAMES,
+    ...LOADER_ENV_NAMES,
 ];
+
+/** Whether the runner claims `name`: one of RESERVED_ENV_NAMES, or any loader `LD_` name. */
+export function isReservedEnvName(name: string): boolean {
+    return RESERVED_ENV_NAMES.includes(name) || name.startsWith(LOADER_ENV_PREFIX);
+}
 
 /**
  * A per-value ceiling (32 KiB). Far past any real variable, and the bound that keeps one value

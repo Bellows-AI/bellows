@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -39,6 +39,15 @@ describe('ensureUserWorkspace', () => {
         provision(root);
         expect(provision(root)).toBe(join(root, 'acme', USER));
         expect(existsSync(join(root, 'acme', USER))).toBe(true);
+    });
+
+    // Issue #814: the agent's tools run as their own uid in group 1000 and create the member's
+    // `.cache` and `.worktrees` beside the checkouts, so the member directory is group-writable.
+    it('creates the member directory group-writable, whatever the process umask', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'factory-provision-'));
+        const member = provision(join(dir, 'workspaces')) as string;
+
+        expect(statSync(member).mode & 0o070).toBe(0o070);
     });
 
     it('is a no-op without a configured root, creating nothing', () => {

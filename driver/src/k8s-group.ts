@@ -11,8 +11,13 @@ import {
     runnerName,
     secretBody,
     secretName,
+    workspaceMount,
     type RunnerJobSpec,
+    type RunnerPodContainer,
 } from './k8s-podspec.js';
+import { containerHardeningField } from './k8s-podfields.js';
+import { GATE_GID, TOOL_UID, workspacePath } from './claim.js';
+import { toolTreeReleaseScript, worktreeDir } from './publish.js';
 import { readImagePullStatus, readJobStatus, unpullableImage } from './k8s-poll.js';
 import { expectOk, POLL_MS } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
@@ -57,10 +62,38 @@ const RECLAIM_GROUP_SECONDS = 1200;
 
 export function reclaimGroupSpec(config: DriverConfig, job: BoardJob): RunnerJobSpec {
     const spec = runnerJobSpec(config, { ...job, agent: false }, null);
+    const worktree = worktreeDir(config, job);
+    const pod = spec.spec.template.spec;
     return {
         ...spec,
         metadata: { ...spec.metadata, name: reclaimGroupName(job) },
-        spec: { ...spec.spec, activeDeadlineSeconds: RECLAIM_GROUP_SECONDS },
+        spec: {
+            ...spec.spec,
+            activeDeadlineSeconds: RECLAIM_GROUP_SECONDS,
+            template: {
+                ...spec.spec.template,
+                spec: { ...pod, ...(worktree ? { initContainers: [releaseContainer(config, job, worktree)] } : {}) },
+            },
+        },
+    };
+}
+
+/**
+ * The tool uid's release of the tree (issue #814), before the supervisor starts and so before the
+ * reclaim step: a directory a tool closed with an explicit mode is one the uid-1000 reclaim cannot
+ * empty. Hardened like every container, as the tool uid, the tree's path its only input; it exits 0
+ * whatever it found, and the reclaim's own verdict decides.
+ */
+function releaseContainer(config: DriverConfig, job: BoardJob, worktree: string): RunnerPodContainer {
+    const hardened = containerHardeningField().securityContext;
+    return {
+        name: 'release',
+        image: executorImage(config, job.executorType),
+        imagePullPolicy: config.imagePullPolicy,
+        securityContext: { ...hardened, runAsUser: TOOL_UID, runAsGroup: GATE_GID },
+        command: ['node', '-e', toolTreeReleaseScript],
+        env: [{ name: 'WORKTREE', value: worktree }],
+        volumeMounts: [workspaceMount(config, workspacePath(job))],
     };
 }
 

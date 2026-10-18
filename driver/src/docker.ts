@@ -21,6 +21,8 @@ import {
     UUID,
     GATE_UID,
     GATE_GID,
+    TOOL_UID,
+    AGENT_LAUNCH_CAPS,
     GITHUB_CACHE_DIR,
     GITHUB_CACHE_SIZE,
     type CacheJob,
@@ -30,10 +32,10 @@ import {
     runWorkingDir,
     runnerClaimEnv,
 } from './claim.js';
-import { opencodeReadoutScript } from './container-scripts.js';
+import { gateShellArgv, opencodeReadoutScript } from './container-scripts.js';
 import type { ServiceStatus } from './board.js';
 import { BYTES_PER_KIB, commandMark, OPENCODE_EXPORT_LIMIT, type RuntimeSample, type RunSession } from './runner.js';
-import { GATE_IMAGE, GATE_KEY } from './publish.js';
+import { GATE_IMAGE, GATE_KEY, toolTreeReleaseScript, worktreeDir } from './publish.js';
 import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
 import { agentMailboxArgs, agentRoleArgs } from './docker-mailbox.js';
 
@@ -91,6 +93,16 @@ export const workspacesMountArgs = (config: DriverConfig, subPath: string, readO
  * process builds, and one caller pushing onto it would disarm all of them.
  */
 export const containerHardeningArgs = (): string[] => ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges'];
+
+/**
+ * The agent container's start (issue #814): root, with the two capabilities its tool broker keeps,
+ * on top of `containerHardeningArgs`. factory-launch drops both, and root, before the CLI starts.
+ */
+export const agentLaunchArgs = (): string[] => [
+    '--user',
+    '0:0',
+    ...AGENT_LAUNCH_CAPS.flatMap((cap) => ['--cap-add', cap]),
+];
 
 const PERCENT = /^([0-9.]+)%/;
 const MEMORY = /^([0-9.]+)\s*([A-Za-z]+)/;
@@ -303,14 +315,40 @@ export function gateEnvArgs(
 /**
  * One gate, inside the environment container. Pure and exported for the pinning; the command is
  * authored by the repository that declared it — the same trust level as the job command itself —
- * but it still travels as ONE argv element into `sh -c`, never through an interpolating shell.
+ * but it still travels as ONE argv element after the gate shell, never through an interpolating shell.
  */
 export function gateExecArgs(name: string, command: string, envFile?: string): string[] {
     if (!GATE_CONTAINER.test(name)) {
         throw new Error(`refusing to exec into a container named "${name}"`);
     }
     // The env file carries the run's own GitHub token: the container's was its creation's.
-    return ['exec', ...(envFile ? ['--env-file', envFile] : []), name, 'sh', '-c', command];
+    return ['exec', ...(envFile ? ['--env-file', envFile] : []), name, ...gateShellArgv(command)];
+}
+
+/**
+ * The tool uid's release of a task tree before its terminal reclaim (issue #814): one throwaway
+ * container over the member's subtree, as the uid the agent's tools ran as, giving what a tool
+ * closed with an explicit mode group rwx so the uid-1000 reclaim can empty it. Hardened, no
+ * capability, the tree's path its only input. Null for a job with no tree to release.
+ */
+export function toolTreeReleaseArgs(config: DriverConfig, job: BoardJob): string[] | null {
+    const worktree = worktreeDir(config, job);
+    if (!worktree) return null;
+    return [
+        'run',
+        ...containerHardeningArgs(),
+        '--rm',
+        '--user',
+        `${TOOL_UID}:${GATE_GID}`,
+        ...workspacesMountArgs(config, workspacePath(job)),
+        '-e',
+        `WORKTREE=${worktree}`,
+        '--entrypoint',
+        'node',
+        executorImage(config, job.executorType),
+        '-e',
+        toolTreeReleaseScript,
+    ];
 }
 
 /**
@@ -447,6 +485,7 @@ export function dockerArgs(
     const args = [
         'create',
         ...containerHardeningArgs(),
+        ...agentLaunchArgs(),
         '--name',
         containerName(job),
         // Two labels, two jobs. `factory.job` is shared by every attempt of the job: it is what
@@ -490,7 +529,8 @@ export function dockerArgs(
         // The GitHub helper's token cache, in memory and the agent's own (docs/connections.md):
         // never on the task volume, gone with the container.
         '--tmpfs',
-        `${GITHUB_CACHE_DIR}:rw,noexec,nosuid,size=${GITHUB_CACHE_SIZE.docker},mode=0700,uid=${GATE_UID}`,
+        // The tool uid's: git and gh run as it (issue #814).
+        `${GITHUB_CACHE_DIR}:rw,noexec,nosuid,size=${GITHUB_CACHE_SIZE.docker},mode=0700,uid=${TOOL_UID}`,
     ];
 
     // A gated job's runner reaches the driver's gate endpoint by the default

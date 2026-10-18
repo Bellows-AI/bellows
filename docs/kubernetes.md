@@ -11,9 +11,9 @@ Helm chart that deploys the whole factory.
 | Executor-neutral state: paths, claim env, outcome parsing, container scripts, argv plan | `driver/src/claim.ts`, `close-read.ts`, `container-scripts.ts`, `runner-plan.ts` | `driver/test/scripts.test.ts`, `runner-plan.test.ts`, `close-read.test.ts` |
 | Wire types, the transport (a pod log past its stream buffer is answered as its tail, flagged `truncated`; every other answer is read whole), protocol constants and status thresholds | `driver/src/k8s-transport.ts` | `driver/test/k8s-transport.test.ts` |
 | Job specs: runner, gates, readouts (the opencode readout also exports its session; no `.bellows.yaml` readout exists, the claim carries the plan), service, the runner pod's three containers (supervisor, agent, claude transcript exporter) and its four `emptyDir` mailboxes, per-attempt Secret names, resource and scheduling fields | `driver/src/k8s-podspec.ts`, `k8s-auxspec.ts`, `k8s-podfields.ts` | `driver/test/k8s.test.ts` |
-| The task group: one Job per attempt, created by its first step (the sync) and ended by the loop's `finish`, not by the agent's exit; the agent container waits on `in/go`; a thread with no attempt reclaims in a supervisor-only group | `driver/src/k8s-group.ts`, `k8s-runner.ts`, `k8s-podspec.ts` | `driver/test/k8s-group.test.ts`, `driver/test/k8s.test.ts` |
+| The task group: one Job per attempt, created by its first step (the sync) and ended by the loop's `finish`, not by the agent's exit; the agent container waits on `in/agent/go`; a thread with no attempt reclaims in a supervisor-only group | `driver/src/k8s-group.ts`, `k8s-runner.ts`, `k8s-podspec.ts` | `driver/test/k8s-group.test.ts`, `driver/test/k8s.test.ts` |
 | The re-claim fence, the polling it brackets, and what a Stop mid-run leaves | `driver/src/k8s-fence.ts`, `k8s-poll.ts`, `k8s-kill.ts` | `driver/test/k8s.test.ts` |
-| The cooperative Stop and draft publication: the supervisor's `SUPERVISOR_CONTROL_*` rides the per-attempt Secret into the supervisor and exporter containers only and polls the driver pod's IP; the agent holds only its publish/review `BELLOWS_CONTROL_*` and the supervisor has no ServiceAccount token | `driver/src/k8s-podspec.ts`, `loop-gates.ts`, `loop-publish.ts` | `driver/test/k8s.test.ts`, `driver/test/publish-control.test.ts` |
+| The cooperative Stop and draft publication: the supervisor's `SUPERVISOR_CONTROL_*` rides the per-attempt Secret into the supervisor and exporter containers only and polls the driver pod's IP; the agent's publish/review `BELLOWS_CONTROL_*` reaches its control proxy alone, never a tool, and the supervisor has no ServiceAccount token | `driver/src/k8s-podspec.ts`, `loop-gates.ts`, `loop-publish.ts` | `driver/test/k8s.test.ts`, `driver/test/publish-control.test.ts` |
 | Gates as Jobs, a gate's `timeout:` its Job's `activeDeadlineSeconds`; declared services (the claim's `services`, never a file read) as owned pods under the attempt's headless Service, started before the setup Job and spared by the runner's sweep (`factory.lease!=`); a vanished pod's newest event | `driver/src/k8s-gates.ts`, `k8s-services.ts`, `charts/factory/templates/driver-rbac.yaml` | `driver/test/k8s.test.ts`, `scripts/test-k8s.sh` |
 | Gate pod sizing: `GATE_*` (chart `runner.gateResources`) over `RUNNER_*`, slot by slot; the docker gate container renders the same | `driver/src/config.ts`, `k8s-podspec.ts` (`gateJobSpec`), `docker.ts` (`gateEnvArgs`) | `driver/test/k8s.test.ts`, `driver/test/docker.test.ts`, `scripts/test-k8s.sh` |
 | Supervised steps: the sync, tree probe, review snapshot, publish steps and allowlisted helpers are requests the supervisor pulls (`GET /step`) and runs in its own container, never a Job or container of their own; credentials ride the step, not a spec | `driver/src/supervised-steps.ts`, `step-control.ts`, `control-channel.ts`, `scripts/supervisor.cjs` | `driver/test/supervised-steps.test.ts`, `driver/test/step-control.test.ts`, `driver/test/supervisor.test.ts` |
@@ -25,7 +25,7 @@ Helm chart that deploys the whole factory.
 | Orphan Jobs (including paused runners), service resources and attempt Secrets; a finished runner Job (marked `factory.claim-seq`/`factory.session`) is adopted by the next claim, never reaped unread; a lost supervisor leaves the attempt interrupted for that claim, never failed | `driver/src/reaper.ts`, `driver/src/k8s-reaper.ts`, `driver/src/k8s-adopt.ts` | `driver/test/k8s-reaper.test.ts`, `driver/test/k8s.test.ts`, `scripts/test-k8s.sh` |
 | Every `EXECUTOR`, `K8S_*`, `RUNNER_*` and `GATE_*` variable, with its boot-time validation | `driver/src/config.ts` | `driver/test/config.test.ts` |
 | The app chart: dashboard, driver, collector, RBAC, PDBs, Ingress, `LimitRange` | `charts/factory/` ([README](../charts/factory/README.md)) | `scripts/test-k8s.sh` |
-| The admission policies that fence the driver | `charts/factory/templates/driver-admission.yaml` | `driver/test/k8s-admission.test.ts` |
+| The admission policies that fence the driver, admitting one capability add: `SETUID`/`SETGID` on a runner Job's `agent` | `charts/factory/templates/driver-admission.yaml`, `driver/src/k8s-podfields.ts` | `driver/test/k8s-admission.test.ts`, `scripts/test-k8s.sh --cluster` |
 | Runner network confinement | `charts/factory/templates/runner-networkpolicy.yaml` | `scripts/test-k8s.sh --netpol` |
 | Local Postgres, the workspaces claim, the `.env`-fed local values, `make start`/`reset` | `charts/factory-local-state/`, `scripts/k8s-local-values.mjs`, `Makefile` | `scripts/test-k8s.sh` |
 
@@ -58,9 +58,9 @@ What a run does — sync, gates, services, publish, helpers, reclaim — is one 
   the job redone (refunded when the drain handed it over); a finished one is adoptable only until its Job's
   one-hour `ttlSecondsAfterFinished`. Docker's fence removes a still-running container the same way.
   `driver/src/k8s-adopt.ts`, `driver/src/k8s-fence.ts`, `driver/src/docker-runner.ts`.
-- Stated limit: a thread with no attempt reclaims in a supervisor-only group (one Job, no agent), because nothing
-  else holds the task volume; the group's pod requests are held while the gates run. `driver/src/k8s-group.ts`
-  (`reclaimInGroup`).
+- Stated limit: a thread with no attempt reclaims in a supervisor-only group (one Job, no agent; the tool uid's
+  `release` init container first), because nothing else holds the task volume; its pod requests are held while
+  the gates run. `driver/src/k8s-group.ts` (`reclaimInGroup`, `reclaimGroupSpec`).
 - Stated limit: the kubernetes question round trip (a real claude CLI through the bridge)
   is not run on a kind cluster — the cluster lane installs the stub executor image. The relay is pinned offline in
   `driver/test/k8s.test.ts`; docker's lane is `ask_roundtrip_lane` in `scripts/test-jobs.sh`.
@@ -107,9 +107,9 @@ has **never been installed on EKS**. The single-AZ `ReadWriteOnce` fallback need
 
 ## Isolation: assumptions and residuals
 
-Controls, and the statement that none of this is kernel or VM isolation: [security.md](security.md). The deployment
-must provide **A CNI that enforces NetworkPolicy**, **ValidatingAdmissionPolicy, Kubernetes ≥ 1.30**, and the IMDS
-defence above. Residuals:
+Controls, why Pod Security `restricted` cannot admit the agent container, and that none of this is kernel or VM
+isolation: [security.md](security.md). The deployment must provide **A CNI that enforces NetworkPolicy**,
+**ValidatingAdmissionPolicy, Kubernetes ≥ 1.30**, and the IMDS defence above. Residuals:
 
 - **IPv6 egress is not covered**; every rule is IPv4.
 - A runner can **reach the driver pod on any port** (the gate endpoint has an ephemeral port). Cross-attempt
