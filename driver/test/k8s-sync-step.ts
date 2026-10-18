@@ -40,6 +40,8 @@ export async function k8sSyncStep(job: BoardJob, githubToken?: string): Promise<
         },
         awaitReport: () => new Promise(() => undefined),
         contacted: () => true,
+        release: () => undefined,
+        attach: () => undefined,
     };
     const supervised: BoardJob = {
         ...job,

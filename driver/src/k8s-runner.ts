@@ -15,7 +15,15 @@ import type { RunOutcome, RunSession, Runner } from './runner.js';
 import { adoptFinishedRunner } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from './close-read.js';
 import { type HelperCall, type HelperPlan, type HelperResult, lookupHelper } from './helpers.js';
-import { KILLED_EXIT_CODE, markKilled, RunnerKilled, RunnerVanished, recordRunnerKill, wasKilled } from './k8s-kill.js';
+import {
+    killedOutcome,
+    markKilled,
+    RunnerKilled,
+    RunnerVanished,
+    recordRunnerKill,
+    vanishedOutcome,
+    wasKilled,
+} from './k8s-kill.js';
 import {
     claimName,
     claimPath,
@@ -66,9 +74,16 @@ import { publishCheckout, type PublishOptions, repoPath, worktreeDir } from './p
 import type { PublishResult, ReclaimResult, SyncResult } from './publish.js';
 import { probeTreeFingerprint } from './publish.js';
 import { snapshotTree, type SnapshotResult } from './review-snapshot.js';
-import type { StepSink, SupervisorEndpoint } from './step-control.js';
+import { type StepSink, type SupervisorEndpoint, stepLost } from './step-control.js';
 import { infraLossOf, type KillRecord } from './termination.js';
-import { controlTokenOf, orderGo, runHelperStep, runSyncStep, supervisedStepRunner } from './supervised-steps.js';
+import {
+    controlTokenOf,
+    orderGo,
+    releaseSteps,
+    runHelperStep,
+    runSyncStep,
+    supervisedStepRunner,
+} from './supervised-steps.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
 import { KILL_WINDDOWN_MS, type SupervisorReport } from './supervisor-contract.js';
 
@@ -225,6 +240,7 @@ async function killRunner(deps: K8sDeps, job: BoardJob): Promise<void> {
     // The group is gone with its pod: a step still running in its supervisor (a pre-helper writing
     // to GitHub, a publish) dies with it, and its waiters see the channel close.
     groupsOf(deps).delete(job.leaseToken);
+    releaseSteps(stepHostOf(deps), job);
     await deleteJob(deps, runnerName(job));
     // The attempt's Secret outlives `run` now (the group's steps are its supervisor's), so a kill —
     // the one path that takes the group away without `finish` — takes it too. By its own name:
@@ -246,6 +262,8 @@ async function stopAgent(deps: K8sDeps, job: BoardJob): Promise<void> {
         const read = await readJobStatus(deps, runnerName(job), 'reading the runner job').catch(() => null);
         if (!read) break;
         if (read.kind === 'notFound' || read.kind === 'terminal') {
+            // The supervisor ended the group: nobody is left to answer its steps.
+            releaseSteps(stepHostOf(deps), job);
             await teardownServices(deps, job);
             return;
         }
@@ -351,14 +369,19 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     } catch (e) {
         // A Stop deleted the Job: the loop parks a resolved outcome (docker's killed container
         // resolves exit 137), where a rejection would be left to the lease.
-        if (e instanceof RunnerKilled)
-            return { exitCode: KILLED_EXIT_CODE, output: '', timedOut: false, started: true };
+        if (e instanceof RunnerKilled) return killedOutcome();
+        // The run cannot be read to its end — the Job vanished, or the cluster refused: nothing
+        // more is asked of the group but `finish`, and nothing left may make it wait.
+        releaseSteps(host, job);
         // Deleted under the run by anything else: the platform took the runner away, as docker's
         // removed container — an interruption for the next claim, never a run the lease redoes —
         // unless the budget had already ended the agent, as the supervisor's report says.
         if (e instanceof RunnerVanished) return vanishedOutcome(e, watch.report);
         throw e;
     }
+    // The Job ended with no report taken — its supervisor finalized unheard, or was lost: nobody is
+    // left to answer the probe, the publish or the `finish` the loop still sends.
+    if (watch.report === null) releaseSteps(host, job);
     const { jobSucceeded } = polled;
     const { exitCode, output, fullLog, logTruncated, vanished, unfinalized, supervisorDeadline } =
         await readRunnerVerdict(deps, job, jobSucceeded, watch.report);
@@ -387,25 +410,6 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
         mergeClaudeCloseRead(outcome, read);
     }
     return outcome;
-}
-
-/** A run whose runner Job was deleted under it, by `infraLossOf` over what the supervisor reported. */
-function vanishedOutcome(e: RunnerVanished, report: SupervisorReport | null): RunOutcome {
-    const timedOut = report?.outcome === 'timed_out';
-    const infraLoss = infraLossOf({
-        killedByDriver: false,
-        timedOut,
-        reported: report !== null,
-        vanished: e.message,
-        unfinalized: null,
-    });
-    return {
-        exitCode: report?.agentExit ?? null,
-        output: '',
-        timedOut,
-        started: true,
-        ...(infraLoss ? { infraLoss } : {}),
-    };
 }
 
 // Every throw after create() succeeded — poll exhaustion, a vanished Job, a failed verdict read —
@@ -468,11 +472,12 @@ async function snapshotReviewTree(
 /** One allowlisted helper step, in the attempt's supervisor. */
 async function runHelper(deps: K8sDeps, job: BoardJob, plan: HelperPlan, call: HelperCall): Promise<HelperResult> {
     // An unknown helper id creates nothing (`runHelperStep` refuses it first), and a group the
-    // cluster refuses is a failed helper, never a throw.
+    // cluster refuses is a failed helper; only a lost supervisor (`stepLost`) is thrown.
     if (!lookupHelper(plan.helperId)) return runHelperStep(stepHostOf(deps), job, plan, call);
     try {
         return await runHelperStep(await stepHostFor(deps, job), job, plan, call);
     } catch (e) {
+        if (stepLost(e)) throw e;
         return { ok: false, reason: 'runner_error', message: (e as Error).message };
     }
 }
@@ -656,8 +661,7 @@ export function createKubernetesRunner(
         probeTree: (job: BoardJob, signal?: AbortSignal) => probeTree(deps, job, signal),
         adopt: (job: BoardJob) => adoptFinishedRunner(deps, job, { scrapeClaudeCloseRead, attachOpencodeOutcome }),
         snapshotTree: (job: BoardJob, key: string, signal?: AbortSignal) => snapshotReviewTree(deps, job, key, signal),
-        runHelper: (job: BoardJob, plan: HelperPlan, token?: string, signal?: AbortSignal) =>
-            runHelper(deps, job, plan, { token, signal }),
+        runHelper: (job: BoardJob, plan: HelperPlan, call: HelperCall = {}) => runHelper(deps, job, plan, call),
         syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
             syncCheckout(deps, job, session ?? null, githubToken),
         finish: (job: BoardJob) => finishGroup(deps, job),

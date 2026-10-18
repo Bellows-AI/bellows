@@ -86,7 +86,7 @@ function world(options: { dirty?: boolean } = {}) {
                 const record = {
                     ...state.ledger.get(op),
                     state: step.envLiterals!.STATE,
-                    prUrl: step.envLiterals!.PR_URL,
+                    ...(JSON.parse(step.envLiterals!.DATA ?? '{}') as { prUrl?: string }),
                 };
                 state.ledger.set(op, record as { state?: string; prUrl?: string });
                 return { stdout: `${JSON.stringify(record)}\n` };

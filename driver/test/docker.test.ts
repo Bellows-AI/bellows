@@ -54,7 +54,9 @@ import {
     serviceRunArgs,
 } from '../src/services.js';
 import { type RunnerFiles, startJobServices } from '../src/docker-runner-support.js';
-import type { StepSink, SupervisorEndpoint } from '../src/step-control.js';
+import { createStepBroker, StepChannelClosed, type StepSink, type SupervisorEndpoint } from '../src/step-control.js';
+import { REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
+import { receiptedAnswer, receiptOrder } from './fixtures/helper-receipt-steps.js';
 import {
     SUPERVISOR_ENV,
     SUPERVISOR_EXIT,
@@ -113,7 +115,15 @@ const job: BoardJob = {
 };
 
 const ok = (stdout = ''): StepResult => ({ exitCode: 0, stdout, stderr: '', timedOut: false });
-const FINALIZED: SupervisorReport = { outcome: null, cause: null, agentExit: 0, agentEnd: 'exited', drained: true };
+const FINALIZED: SupervisorReport = {
+    id: 'report-1',
+    outcome: null,
+    cause: null,
+    agentExit: 0,
+    agentEnd: 'exited',
+    drained: true,
+    serving: true,
+};
 
 /**
  * The supervised-step channel stood in: every step is recorded (with the token it was submitted
@@ -125,6 +135,7 @@ function fakeSteps(
     reported: SupervisorReport | Promise<SupervisorReport> = FINALIZED
 ) {
     const submitted: { token: string; step: StepRequest }[] = [];
+    const released: string[] = [];
     const sink: StepSink = {
         submit: async (token, step) => {
             submitted.push({ token, step });
@@ -132,9 +143,13 @@ function fakeSteps(
         },
         awaitReport: () => Promise.resolve(reported),
         contacted: () => true,
+        release: (token) => {
+            released.push(token);
+        },
+        attach: () => undefined,
     };
     const ofKind = (kind: StepKind) => submitted.filter((entry) => entry.step.kind === kind).map((entry) => entry.step);
-    return { sink, submitted, steps: () => submitted.map((entry) => entry.step), ofKind };
+    return { sink, submitted, released, steps: () => submitted.map((entry) => entry.step), ofKind };
 }
 
 /** A supervisor that answers every step with the sync's `stdout` — by default, a clean sync. */
@@ -4085,6 +4100,8 @@ describe('publishing the produced work', () => {
             submit: () => Promise.reject(new Error('the task supervisor channel closed before its step was answered')),
             awaitReport: () => Promise.resolve(FINALIZED),
             contacted: () => true,
+            release: () => undefined,
+            attach: () => undefined,
         };
         const runner = dockerRunner(d.exec, { steps: sink });
 
@@ -4502,6 +4519,8 @@ describe('publishing the produced work', () => {
             },
             awaitReport: () => Promise.resolve(FINALIZED),
             contacted: () => true,
+            release: () => undefined,
+            attach: () => undefined,
         };
         const exec = (async () => ({ stdout: '' })) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const runner = dockerRunner(exec, { spawn: spawnChild(''), steps: sink });
@@ -4631,15 +4650,35 @@ describe('the block-helper transport (issue #207)', () => {
     });
 
     /** A runner whose supervisor answers each helper step with `answer`; the daemon's every argv is kept. */
-    const helperRunner = (answer: (step: StepRequest) => StepResult | Promise<StepResult> = () => ok(NOOP_VERDICT)) => {
+    const helperRunner = (
+        answer: (step: StepRequest) => StepResult | Promise<StepResult> = () => ok(NOOP_VERDICT),
+        env: Record<string, string> = {}
+    ) => {
         const docker: string[][] = [];
         const supervised = fakeSteps(answer);
         const exec = vitest.fn(async (args: string[]) => {
             docker.push(args);
             return { stdout: args[0] === 'wait' ? '0\n' : '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        return { docker, supervised, runner: dockerRunner(exec, { steps: supervised.sink }) };
+        return { docker, supervised, runner: dockerRunner(exec, { env, steps: supervised.sink }) };
     };
+
+    // Issue #826: the same receipt bracket and the same loss rule as the kubernetes runner.
+    it('brackets a receipted helper with its receipt in the task worktree, and throws a lost supervisor', async () => {
+        // The receipt's MAC key: a driver without a board token keeps no receipt.
+        const { supervised, runner } = helperRunner(receiptedAnswer, { JOB_BOARD_TOKEN: 'board-key' });
+        await runner.runHelper!(repoJob, plan({ helperId: REVIEW_REPLY_PROBE_ID, githubWriting: true }), {
+            token: 'fresh-install-token',
+            effectId: 'effect-1',
+        });
+        expect(receiptOrder(supervised.steps())).toEqual(['read', 'started', 'helper', 'done']);
+        expect(supervised.steps()[0]!.env.LEDGER).toMatch(/\/\.worktrees\/[^/]+\/\.factory\/helpers\.json$/);
+
+        const lost = helperRunner(async () => {
+            throw new StepChannelClosed('the helper');
+        });
+        await expect(lost.runner.runHelper!(repoJob, plan())).rejects.toBeInstanceOf(StepChannelClosed);
+    });
 
     it('fails an unknown helper id before any step is submitted', async () => {
         const { supervised, runner } = helperRunner();
@@ -4689,10 +4728,12 @@ describe('the block-helper transport (issue #207)', () => {
             },
             awaitReport: () => Promise.resolve(FINALIZED),
             contacted: () => true,
+            release: () => undefined,
+            attach: () => undefined,
         };
         const runner = dockerRunner(emptyDaemon, { steps: sink });
 
-        const result = await runner.runHelper!(job, plan(), undefined, controller.signal);
+        const result = await runner.runHelper!(job, plan(), { signal: controller.signal });
 
         expect(seen).toEqual([controller.signal]);
         expect(result).toMatchObject({ ok: false, reason: 'runner_error' });
@@ -4700,7 +4741,9 @@ describe('the block-helper transport (issue #207)', () => {
 
     it('carries a fresh token in the step env, only for a github-writing helper', async () => {
         const { supervised, runner } = helperRunner();
-        const result = await runner.runHelper!(repoJob, plan({ githubWriting: true }), 'fresh-install-token');
+        const result = await runner.runHelper!(repoJob, plan({ githubWriting: true }), {
+            token: 'fresh-install-token',
+        });
 
         expect(result).toEqual({ ok: true, output: { echoed: true } });
         const [step] = supervised.ofKind('helper');
@@ -4711,7 +4754,7 @@ describe('the block-helper transport (issue #207)', () => {
 
     it('never puts the token in the daemon’s argv or the step’s — only in the step env', async () => {
         const { docker, supervised, runner } = helperRunner();
-        await runner.runHelper!(repoJob, plan({ githubWriting: true }), 'super-secret-token');
+        await runner.runHelper!(repoJob, plan({ githubWriting: true }), { token: 'super-secret-token' });
         expect(docker.flat().some((a) => a.includes('super-secret-token'))).toBe(false);
         const [step] = supervised.ofKind('helper');
         expect(step?.argv.some((a) => a.includes('super-secret-token'))).toBe(false);
@@ -4899,6 +4942,54 @@ describe('every container the driver runs is hardened (#382)', () => {
 
     it('passes no --user to a service that declared none', () => {
         expect(serviceRunArgs(job, { name: 'db', image: 'postgres:17', environment: [] })).not.toContain('--user');
+    });
+});
+
+/*
+ * Issue #823: a group whose supervisor is gone — it exited without a report the driver took, or a
+ * kill took the group away — leaves nothing to answer a step. Its channel is released, so the
+ * probe and `finish` the loop still sends fail at once instead of waiting out each step's timeout
+ * and the answer grace, three times over.
+ */
+describe('a group whose supervisor is gone releases its step channel', () => {
+    const exited = (args: string[]) => {
+        if (args[0] === 'inspect') return Promise.reject(new Error('Error: No such object'));
+        return Promise.resolve({ stdout: args[0] === 'wait' ? '0\n' : '' });
+    };
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+
+    it('releases the channel when the run sees the supervisor exit with no report taken', async () => {
+        const supervised = fakeSteps(() => ok(), new Promise<SupervisorReport>(() => undefined));
+        await dockerRunner(exited, { steps: supervised.sink }).run(job, { id: SESSION, resume: false });
+        expect(supervised.released).toEqual([CONTROL_TOKEN]);
+    });
+
+    it('keeps the channel of a supervisor that reported and serves on', async () => {
+        const supervised = fakeSteps();
+        await dockerRunner(exited, { steps: supervised.sink }).run(job, { id: SESSION, resume: false });
+        expect(supervised.released).toEqual([]);
+    });
+
+    it('releases the channel when a stop finds the supervisor already exited', async () => {
+        const supervised = fakeSteps();
+        await dockerRunner(exited, { steps: supervised.sink }).stopAgent!(job);
+        expect(supervised.released).toEqual([CONTROL_TOKEN]);
+    });
+
+    it('fails a step in flight at once when a kill takes the group away, and serves a group made again', async () => {
+        const broker = createStepBroker();
+        broker.open(CONTROL_TOKEN);
+        const runner = dockerRunner(emptyDaemon, { steps: broker });
+        const probing = runner.probeTree!(repoJob);
+        expect(await broker.next(CONTROL_TOKEN, 5_000, new AbortController().signal)).toMatchObject({ kind: 'probe' });
+        await runner.kill(repoJob);
+        expect(await probing).toBeNull();
+        // A later step makes the group again under the same token, and that group's supervisor serves it.
+        const again = runner.probeTree!(repoJob);
+        const pulled = await broker.next(CONTROL_TOKEN, 5_000, new AbortController().signal);
+        expect(pulled).toMatchObject({ kind: 'probe' });
+        if (pulled && pulled !== 'closed') broker.settle(CONTROL_TOKEN, pulled.id, pulled.invocation, ok('{}'));
+        await again;
     });
 });
 
@@ -5309,7 +5400,7 @@ describe('how a started run ends, on docker (the conformance table)', () => {
         'an agent its run budget ended': {
             code: 137,
             supervisorExit: '124',
-            report: { outcome: 'timed_out', cause: 'timeout', agentExit: 137, agentEnd: 'killed', drained: true },
+            report: { ...FINALIZED, outcome: 'timed_out', cause: 'timeout', agentExit: 137, agentEnd: 'killed' },
         },
         'a group the driver hard-killed mid-run': { code: 137, supervisorExit: '137', kill: true },
         'a runner the platform took away mid-run': { code: 137, supervisorExit: '137', removed: true },
@@ -5317,7 +5408,7 @@ describe('how a started run ends, on docker (the conformance table)', () => {
             code: 137,
             supervisorExit: '137',
             removed: true,
-            report: { outcome: 'timed_out', cause: 'timeout', agentExit: 137, agentEnd: 'killed', drained: true },
+            report: { ...FINALIZED, outcome: 'timed_out', cause: 'timeout', agentExit: 137, agentEnd: 'killed' },
         },
         'a supervisor that ended without finalizing, nothing initiating it': { code: 0, supervisorExit: '70' },
         'a supervisor that reported, then crashed before the verdict read': {

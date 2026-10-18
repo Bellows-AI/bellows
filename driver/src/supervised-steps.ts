@@ -2,9 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
 import { claimEnv, claimRestoresTree, runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
+import { withHelperReceipt } from './helper-receipts.js';
 import {
     HELPER_TIMEOUT_MS,
     type HelperCall,
+    type HelperDescriptor,
     type HelperPlan,
     type HelperResult,
     helperInputValue,
@@ -28,7 +30,7 @@ import {
     worktreeBranch,
     worktreeDir,
 } from './publish.js';
-import { StepTimedOut, type StepSink } from './step-control.js';
+import { StepTimedOut, type StepSink, stepLost } from './step-control.js';
 import { SUPERVISOR_ENV, type StepKind, type StepRequest, type StepResult } from './supervisor-contract.js';
 
 /**
@@ -84,11 +86,23 @@ const claimStepEnv = (job: BoardJob, githubToken?: string): Record<string, strin
 
 const slug = (label: string): string => label.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
+/** The group serving the attempt ended or was taken away: its waiting and later steps fail at once. */
+export function releaseSteps(host: Pick<StepHost, 'sink'>, job: BoardJob): void {
+    const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
+    if (token) host.sink.release(token);
+}
+
+/** A group is being made for the attempt: its supervisor starts with no contact, report or refusal. */
+export function attachSteps(host: Pick<StepHost, 'sink'>, job: BoardJob): void {
+    const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
+    if (token) host.sink.attach(token);
+}
+
 /**
- * Submits one step and answers its result. An unanswered step — its answer lost, the supervisor
- * slow — is asked again under the SAME id: the supervisor answers one that already succeeded from
- * its ledger instead of running it twice. A closed channel (the attempt is gone) and every other
- * failure propagate; none of them is a verdict on the step.
+ * Submits one step — one call — and answers its result. An unanswered call — its answer lost, the
+ * supervisor slow — is delivered again as the SAME call (same id, same invocation): the supervisor
+ * answers it from its ledger instead of running it twice. A closed channel (the attempt is gone)
+ * and every other failure propagate; none of them is a verdict on the step.
  */
 export async function submitStep(
     host: Pick<StepHost, 'sink'>,
@@ -120,6 +134,8 @@ const request = (
     parts: { id: string; argv?: string[]; cwd?: string | null; env?: Record<string, string>; timeoutMs: number }
 ): StepRequest => ({
     id: `${kind}-${attemptKey(job)}-${parts.id}`,
+    // One call: the deliveries `submitStep` makes of this request share it, and nothing else does.
+    invocation: randomUUID(),
     kind,
     argv: parts.argv ?? [],
     ...(parts.cwd ? { cwd: parts.cwd } : {}),
@@ -131,14 +147,17 @@ const request = (
  * The publish-shaped steps (publish, tree probe, review snapshot) as a `RunPublishStep` over the
  * supervisor: the workflows in `publish.ts` and `review-snapshot.ts` decide WHAT runs; this is
  * their transport. A step carrying a publication operation (`PublishStep.op`) has an identity
- * derived from it — a retried publish asks the same push the same way and is answered, not rerun —
- * and every other step gets a fresh one, since a probe must read the tree as it is now.
+ * derived from it — a push that landed is answered, not rerun, however often it is asked — and
+ * every other step gets a fresh one, since a probe must read the tree as it is now. Each call is a
+ * new invocation: a caller that asks the same push again (the stale-lease recovery, after it
+ * refreshed the remote) runs it unless it landed. A helper's receipt steps (`helper-receipts.ts`)
+ * ride it as `helper` steps.
  */
 export function supervisedStepRunner(
     host: StepHost,
     job: BoardJob,
     options: {
-        kind: 'publish' | 'probe' | 'snapshot';
+        kind: 'publish' | 'probe' | 'snapshot' | 'helper';
         githubToken?: string | undefined;
         signal?: AbortSignal | undefined;
     }
@@ -258,13 +277,15 @@ export async function runReclaimStep(host: StepHost, job: BoardJob): Promise<Rec
 /**
  * One block-helper step (issue #207): an allowlisted, board-owned script, run in the task worktree
  * with its bounded input as a literal. Only a github-writing helper gets the claim env, with the
- * fresh token the loop minted laid over it; an unknown id fails before anything is submitted.
+ * fresh token the loop minted laid over it; an unknown id fails before anything is submitted. A
+ * receipted helper given its effect runs bracketed by its receipt (`helper-receipts.ts`, issue
+ * #826). A lost supervisor is thrown (`stepLost`): no verdict on the helper, the attempt's loss.
  */
 export async function runHelperStep(
     host: StepHost,
     job: BoardJob,
     plan: HelperPlan,
-    { token, signal }: HelperCall = {}
+    { token, signal, effectId }: HelperCall = {}
 ): Promise<HelperResult> {
     const descriptor = lookupHelper(plan.helperId);
     if (!descriptor) {
@@ -274,6 +295,21 @@ export async function runHelperStep(
             message: `no allowlisted helper is registered as "${plan.helperId}"`,
         };
     }
+    const worktree = worktreeDir(host.config, job);
+    // The receipt's MAC key: with none, a receipt anyone could forge is never kept at all.
+    const key = host.config.boardToken;
+    const run = () => submitHelper(host, job, { plan, descriptor }, { token, signal });
+    if (!descriptor.receipted || !effectId || !worktree || !key) return run();
+    const ledger = supervisedStepRunner(host, job, { kind: 'helper', signal });
+    return withHelperReceipt(ledger, { worktree, key, effectId }, run);
+}
+
+async function submitHelper(
+    host: StepHost,
+    job: BoardJob,
+    { plan, descriptor }: { plan: HelperPlan; descriptor: HelperDescriptor },
+    { token, signal }: HelperCall
+): Promise<HelperResult> {
     try {
         const result = await submitStep(
             host,
@@ -298,6 +334,7 @@ export async function runHelperStep(
         }
         return parseHelperOutput(descriptor, result.stdout);
     } catch (e) {
+        if (stepLost(e)) throw e;
         return { ok: false, reason: 'runner_error', message: (e as Error).message };
     }
 }

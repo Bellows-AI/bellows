@@ -17,6 +17,8 @@ import { StepChannelClosed, type StepSink } from '../src/step-control.js';
 import { claudeTurnsScript, claudeExportScript, gateShellScript } from '../src/container-scripts.js';
 import { ARTIFACT_LIMIT, commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import { lookupHelper } from '../src/helpers.js';
+import { REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
+import { receiptedAnswer, receiptOrder } from './fixtures/helper-receipt-steps.js';
 import { claudeManagedSettings, opencodeOtelConfig } from '../src/telemetry-config.js';
 import type { HelperPlan } from '../src/helpers.js';
 import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
@@ -1069,6 +1071,8 @@ function fakeSteps(answer: (step: StepRequest) => StepResult | Promise<StepResul
         },
         awaitReport: () => reported,
         contacted: () => true,
+        release: () => undefined,
+        attach: () => undefined,
     };
     return { sink, submitted, tokens, signals, report };
 }
@@ -2276,6 +2280,8 @@ describe('publishing the produced work', () => {
                     : Promise.resolve(stepOk()),
             awaitReport: () => new Promise(() => undefined),
             contacted: () => true,
+            release: () => undefined,
+            attach: () => undefined,
         };
 
         expect(await publishing({ sink }).probeTree?.(ISSUE_JOB, cancel.signal)).toBeNull();
@@ -4345,7 +4351,15 @@ describe('the kubernetes runner', () => {
     // The supervisor's report is its finalization: a crash after it is no loss of the run, as on docker.
     it('takes a supervisor that reported and then crashed as finalized, never a loss', async () => {
         const steps = fakeSteps();
-        steps.report({ outcome: null, cause: null, agentExit: 0, agentEnd: 'exited', drained: true });
+        steps.report({
+            id: 'report-1',
+            outcome: null,
+            cause: null,
+            agentExit: 0,
+            agentEnd: 'exited',
+            drained: true,
+            serving: true,
+        });
         // The runner Job still serves the attempt's steps; every other Job (the close-time read) ends.
         const active = { status: 200, body: JSON.stringify({ status: { active: 1 } }) };
         const { request } = routed(
@@ -6308,10 +6322,31 @@ describe('the block-helper transport (issue #207)', () => {
         await runner(fakeRequest().request, {}, undefined, writing.sink).runHelper!(
             repoJob,
             plan({ githubWriting: true }),
-            'fresh-install-token'
+            { token: 'fresh-install-token' }
         );
         expect(helperStepsOf(writing)[0]!.env).toMatchObject({ GITHUB_TOKEN: 'fresh-install-token' });
         expect(JSON.stringify(helperStepsOf(writing)[0]!.env)).not.toContain('claim-token');
+    });
+
+    // Issue #826: a receipted helper given its effect runs bracketed by its receipt on the task
+    // volume, and a lost supervisor is the attempt's loss, never a failed helper.
+    it('brackets a receipted helper with its receipt in the task worktree, and throws a lost supervisor', async () => {
+        const steps = fakeSteps(receiptedAnswer);
+        // The receipt's MAC key: a driver without a board token keeps no receipt.
+        await runner(fakeRequest().request, { JOB_BOARD_TOKEN: 'board-key' }, undefined, steps.sink).runHelper!(
+            repoJob,
+            plan({ helperId: REVIEW_REPLY_PROBE_ID, githubWriting: true }),
+            { token: 'fresh-install-token', effectId: 'effect-1' }
+        );
+        expect(receiptOrder(steps.submitted)).toEqual(['read', 'started', 'helper', 'done']);
+        expect(steps.submitted[0]!.env).toMatchObject({ LEDGER: `${WT}/.factory/helpers.json`, OP: 'effect-1' });
+
+        const lost = fakeSteps(async () => {
+            throw new StepChannelClosed('the helper');
+        });
+        await expect(
+            runner(fakeRequest().request, {}, undefined, lost.sink).runHelper!(repoJob, plan())
+        ).rejects.toBeInstanceOf(StepChannelClosed);
     });
 
     it('fails an unknown helper id before any step is submitted', async () => {
@@ -6349,8 +6384,7 @@ describe('the block-helper transport (issue #207)', () => {
         const result = await runner(fakeRequest().request, {}, undefined, steps.sink).runHelper!(
             repoJob,
             plan({ githubWriting: true }),
-            'fresh-install-token',
-            AbortSignal.abort()
+            { token: 'fresh-install-token', signal: AbortSignal.abort() }
         );
         expect(result).toEqual({ ok: false, reason: 'runner_error', message: expect.stringContaining('cancelled') });
         expect(helperStepsOf(steps)).toEqual([]);
@@ -6359,11 +6393,9 @@ describe('the block-helper transport (issue #207)', () => {
     it('never puts the fresh token in a Job, a Secret or any request body — only in the step', async () => {
         const steps = answering();
         const { request, calls } = fakeRequest();
-        await runner(request, {}, undefined, steps.sink).runHelper!(
-            repoJob,
-            plan({ githubWriting: true }),
-            'super-secret-token'
-        );
+        await runner(request, {}, undefined, steps.sink).runHelper!(repoJob, plan({ githubWriting: true }), {
+            token: 'super-secret-token',
+        });
         expect(JSON.stringify(calls.map((c) => c.body))).not.toContain('super-secret-token');
         expect(helperStepsOf(steps)[0]!.env.GITHUB_TOKEN).toBe('super-secret-token');
     });
@@ -6588,7 +6620,7 @@ describe('a Stop on kubernetes (issue #427)', () => {
         };
         const r = runner(request);
         const helperPlan: HelperPlan = { helperId: 'noop', phase: 'pre', input: null, githubWriting: true };
-        const running = r.runHelper!(helperJob, helperPlan, 'ghs_fresh');
+        const running = r.runHelper!(helperJob, helperPlan, { token: 'ghs_fresh' });
         try {
             while (helperName === null) await new Promise((resolve) => setTimeout(resolve, 1));
             await r.kill(helperJob); // the heartbeat's Stop
@@ -6981,7 +7013,15 @@ describe('how a started run ends, on kubernetes (the conformance table)', () => 
 
     const reportedThenCrashed = () => {
         const steps = fakeSteps();
-        steps.report({ outcome: null, cause: null, agentExit: 0, agentEnd: 'exited', drained: true });
+        steps.report({
+            id: 'report-1',
+            outcome: null,
+            cause: null,
+            agentExit: 0,
+            agentEnd: 'exited',
+            drained: true,
+            serving: true,
+        });
         const { request } = routed(onlyRunner(ACTIVE), { pods: podWith(70) });
         return runner(request, {}, undefined, steps.sink).run(job, session);
     };
@@ -6989,7 +7029,15 @@ describe('how a started run ends, on kubernetes (the conformance table)', () => 
     /** The supervisor reports the budget ended the agent; the Job then reads 404 under the poll. */
     const vanishedAfterBudget = () => {
         const steps = fakeSteps();
-        steps.report({ outcome: 'timed_out', cause: 'timeout', agentExit: 137, agentEnd: 'killed', drained: true });
+        steps.report({
+            id: 'report-1',
+            outcome: 'timed_out',
+            cause: 'timeout',
+            agentExit: 137,
+            agentEnd: 'killed',
+            drained: true,
+            serving: true,
+        });
         return runner(fakeRequest({ job: GONE }).request, {}, undefined, steps.sink).run(job, session);
     };
 

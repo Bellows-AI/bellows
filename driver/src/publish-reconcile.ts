@@ -1,5 +1,5 @@
-import { containerScript } from './container-scripts.js';
-import type { PublishStep, RunPublishStep } from './publish.js';
+import { type Ledger, readLedger, writeLedger } from './operation-ledger.js';
+import type { RunPublishStep } from './publish.js';
 
 /**
  * Publication reconciliation (issue #771). A publish is a chain of effects on a remote — the push,
@@ -7,19 +7,19 @@ import type { PublishStep, RunPublishStep } from './publish.js';
  * a supervisor that died after the remote accepted). Retrying blind would push or open twice, and a
  * retry that only trusts the local tree would never open a pull request whose push already landed.
  * So a publication carries a persisted operation identity, `<branch>@<commit sha>`, recorded in the
- * task worktree's `.factory/` namespace (scripts/publish-ledger.cjs) as it moves through `pushing`,
- * `pushed` and `opened`; and after any failed or uncertain effect the remote is asked what it has
- * before anything is repeated. The ledger lives on the task volume, so an adopted or retried
- * attempt — a new pod, a new driver — reads what the lost one did.
+ * task worktree's operation ledger (`operation-ledger.ts`) as it moves through `pushing`, `pushed`
+ * and `opened`; and after any failed or uncertain effect the remote is asked what it has before
+ * anything is repeated.
  */
 
-/** The ledger script: see scripts/publish-ledger.cjs. */
-const publishLedgerScript = containerScript('publish-ledger.cjs');
-
-/** The ledger's file, in the worktree's own `.factory/` namespace (never staged: the sync excludes it). */
-const LEDGER_FILE = '.factory/publication.json';
-
 export type OperationState = 'pushing' | 'pushed' | 'opened';
+
+/** The publication ledger, in the worktree's own `.factory/` namespace (never staged: the sync excludes it). */
+const PUBLICATION_LEDGER: Ledger = {
+    label: 'publication ledger',
+    file: '.factory/publication.json',
+    states: ['pushing', 'pushed', 'opened'] satisfies OperationState[],
+};
 
 /** What the ledger holds for one operation; empty when the operation was never recorded. */
 export interface OperationRecord {
@@ -45,24 +45,13 @@ export async function headSha(step: RunPublishStep): Promise<string | null> {
     return SHA.test(sha) ? sha : null;
 }
 
-const ledgerStep = (repo: string, op: string, extra: Record<string, string>): PublishStep => ({
-    label: 'publication ledger',
-    entrypoint: 'node',
-    args: ['-e', publishLedgerScript],
-    env: false,
-    envLiterals: { LEDGER: `${repo}/${LEDGER_FILE}`, OP: op, ...extra },
-    inRepo: false,
-});
-
 /** What the ledger says about an operation; unreadable reads as "never recorded", never as progress. */
 export async function readOperation(step: RunPublishStep, repo: string, op: string): Promise<OperationRecord> {
-    const read = await step(ledgerStep(repo, op, { ACTION: 'read' })).catch(() => null);
-    try {
-        const record = JSON.parse(read?.stdout.trim().split('\n').pop() ?? '{}') as OperationRecord;
-        return { ...(record.state ? { state: record.state } : {}), ...(record.prUrl ? { prUrl: record.prUrl } : {}) };
-    } catch {
-        return {};
-    }
+    // A read the supervisor lost reads as never recorded here too: the remote read reconciles it.
+    const record = (await readLedger({ step, repo, ledger: PUBLICATION_LEDGER }, op).catch(
+        () => ({})
+    )) as OperationRecord;
+    return { ...(record.state ? { state: record.state } : {}), ...(record.prUrl ? { prUrl: record.prUrl } : {}) };
 }
 
 /**
@@ -75,13 +64,8 @@ export async function recordOperation(
     op: string,
     progress: { state: OperationState; prUrl?: string }
 ): Promise<void> {
-    await step({
-        ...ledgerStep(repo, op, {
-            ACTION: 'write',
-            STATE: progress.state,
-            ...(progress.prUrl ? { PR_URL: progress.prUrl } : {}),
-        }),
-    });
+    const data = progress.prUrl ? { prUrl: progress.prUrl } : undefined;
+    await writeLedger({ step, repo, ledger: PUBLICATION_LEDGER }, op, progress.state, data);
 }
 
 /** The commit the remote holds for `branch`, or null when it has none or cannot be asked. */

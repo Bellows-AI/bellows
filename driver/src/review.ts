@@ -95,6 +95,8 @@ export interface ReviewCollection {
     reviews: SubmittedReview[];
     inline: ReviewCommentItem[];
     threads: ReviewThread[];
+    /** The item keys a Factory reply already answered, read from every comment before the caps (issue #826). */
+    addressed: string[];
     requestedReviewers: { users: string[]; teams: string[] };
     decision: string | null;
     /** The head commit's check runs not yet completed. */
@@ -274,6 +276,7 @@ const errorCollection = (o: Record<string, unknown>, fallback: string): ReviewCo
     reviews: [],
     inline: [],
     threads: [],
+    addressed: [],
     requestedReviewers: { users: [], teams: [] },
     decision: null,
     pendingChecks: 0,
@@ -306,6 +309,9 @@ export function parseReviewCollection(stdout: string): ReviewCollection {
         reviews: arr(o.reviews).map(asReview),
         inline: arr(o.inline).map(asComment),
         threads: arr(o.threads).map(asThread),
+        addressed: arr(o.addressed)
+            .map((k) => str(k))
+            .filter((k): k is string => k !== null),
         requestedReviewers: {
             users: arr(reviewers.users)
                 .map((u) => str(u))

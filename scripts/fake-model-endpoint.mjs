@@ -48,7 +48,7 @@ const STEP_PATH = '/step';
 const REPORT_PATH = '/report';
 /** The longest a step poll is held, whatever `wait` it asks for. */
 const STEP_HOLD_MAX_MS = 30_000;
-const orderOf = (kind) => ({ step: { id: `lane-${kind}`, kind, argv: [], env: {}, timeoutMs: 10_000 } });
+const orderOf = (kind) => ({ step: { id: `lane-${kind}`, invocation: 'lane-1', kind, argv: [], env: {}, timeoutMs: 10_000 } });
 const BASH_TOOL = /^bash$/i;
 const ASK_TOOL = 'AskUserQuestion';
 const ASK_QUESTION = 'Which colour should the report use?';
