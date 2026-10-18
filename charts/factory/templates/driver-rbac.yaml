@@ -42,8 +42,8 @@ metadata:
 rules:
     # `list` on jobs and services is the re-claim fence: its sweep is a collection GET, and a
     # collection GET needs the list verb — a rule without it makes every fence round a 403.
-    # `patch` is the question deadline extension: a merge patch of the runner Job's
-    # `activeDeadlineSeconds`, nothing else.
+    # `patch` is the question deadline extension — a merge patch of the runner Job's
+    # `activeDeadlineSeconds` — and the reason the driver ended a run, an annotation on that Job.
     - apiGroups: ['batch']
       resources: ['jobs']
       verbs: ['create', 'get', 'delete', 'list', 'patch']

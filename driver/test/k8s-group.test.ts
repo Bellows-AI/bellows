@@ -369,7 +369,8 @@ describe('the task group of one attempt', () => {
         const s = steps((step) => (step.kind === 'sync' ? ok('{"ok":true,"reason":null}') : ok()));
         const k8s = runner(api.request, s.sink);
         await k8s.syncCheckout(job, undefined, SESSION);
-        await expect(k8s.run(job, SESSION)).rejects.toThrow();
+        // A Job deleted under the run is an infrastructure loss the loop parks, not a rejection.
+        expect((await k8s.run(job, SESSION)).infraLoss).toMatch(/deleted before it exited/);
         expect(s.released).toEqual([CONTROL_TOKEN]);
     });
 

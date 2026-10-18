@@ -15,7 +15,15 @@ import type { RunOutcome, RunSession, Runner } from './runner.js';
 import { adoptFinishedRunner } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from './close-read.js';
 import { type HelperCall, type HelperPlan, type HelperResult, lookupHelper } from './helpers.js';
-import { KILLED_EXIT_CODE, markKilled, RunnerKilled } from './k8s-kill.js';
+import {
+    killedOutcome,
+    markKilled,
+    RunnerKilled,
+    RunnerVanished,
+    recordRunnerKill,
+    vanishedOutcome,
+    wasKilled,
+} from './k8s-kill.js';
 import {
     claimName,
     claimPath,
@@ -67,6 +75,7 @@ import type { PublishResult, ReclaimResult, SyncResult } from './publish.js';
 import { probeTreeFingerprint } from './publish.js';
 import { snapshotTree, type SnapshotResult } from './review-snapshot.js';
 import { type StepSink, type SupervisorEndpoint, stepLost } from './step-control.js';
+import { infraLossOf, type KillRecord } from './termination.js';
 import {
     controlTokenOf,
     orderGo,
@@ -358,31 +367,36 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     try {
         polled = await pollRunnerJobUntilTerminal(deps, job, { onOutput, over: () => watch.report !== null });
     } catch (e) {
-        if (!(e instanceof RunnerKilled)) {
-            // The run cannot be read to its end — the Job vanished, or the cluster refused: nothing
-            // more is asked of the group but `finish`, and nothing left may make it wait.
-            releaseSteps(host, job);
-            throw e;
-        }
         // A Stop deleted the Job: the loop parks a resolved outcome (docker's killed container
         // resolves exit 137), where a rejection would be left to the lease.
-        return { exitCode: KILLED_EXIT_CODE, output: '', timedOut: false, started: true };
+        if (e instanceof RunnerKilled) return killedOutcome();
+        // The run cannot be read to its end — the Job vanished, or the cluster refused: nothing
+        // more is asked of the group but `finish`, and nothing left may make it wait.
+        releaseSteps(host, job);
+        // Deleted under the run by anything else: the platform took the runner away, as docker's
+        // removed container — an interruption for the next claim, never a run the lease redoes —
+        // unless the budget had already ended the agent, as the supervisor's report says.
+        if (e instanceof RunnerVanished) return vanishedOutcome(e, watch.report);
+        throw e;
     }
     // The Job ended with no report taken — its supervisor finalized unheard, or was lost: nobody is
     // left to answer the probe, the publish or the `finish` the loop still sends.
     if (watch.report === null) releaseSteps(host, job);
     const { jobSucceeded } = polled;
-    const { exitCode, output, fullLog, logTruncated, infraLoss, supervisorDeadline } = await readRunnerVerdict(
-        deps,
-        job,
-        jobSucceeded,
-        watch.report
-    );
+    const { exitCode, output, fullLog, logTruncated, vanished, unfinalized, supervisorDeadline } =
+        await readRunnerVerdict(deps, job, jobSucceeded, watch.report);
     // The run budget ends the agent through the supervisor (its report, then its exit 124), the
     // kubelet's deadline only a supervisor that stopped doing so: either is the timeout's verdict.
-    const timedOut = polled.timedOut || supervisorDeadline;
     // A deadline kill deletes the pod too: that is the timeout's verdict, never a loss.
-    if (infraLoss && !timedOut) return { exitCode, output, timedOut, started: true, infraLoss };
+    const timedOut = polled.timedOut || supervisorDeadline;
+    const infraLoss = infraLossOf({
+        killedByDriver: wasKilled(runnerName(job)),
+        timedOut,
+        reported: watch.report !== null,
+        vanished,
+        unfinalized,
+    });
+    if (infraLoss) return { exitCode, output, timedOut, started: true, infraLoss };
 
     const outcome: RunOutcome = { exitCode, output, timedOut, started: true, fullLog, logTruncated };
 
@@ -634,6 +648,7 @@ export function createKubernetesRunner(
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
         kill: (job: BoardJob) => killRunner(deps, job),
         stopAgent: (job: BoardJob) => stopAgent(deps, job),
+        recordKill: (job: BoardJob, kill: KillRecord) => recordRunnerKill(deps, job, kill),
         pauseDeadline: (job: BoardJob, paused: boolean) => pauseRunnerDeadline(deps, job, paused),
         releaseServices: (job: BoardJob) => teardownServices(deps, job),
         deadServices: (job: BoardJob) => deadServices(deps, job),

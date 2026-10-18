@@ -18,6 +18,9 @@ export const idsOf = (job: BoardJob): string => {
     return `${job.id}-${job.leaseToken}`;
 };
 
+/** The marker volume one reason the driver ended the attempt for is recorded on (`termination.ts`), attempt-scoped by name. */
+export const killMarkName = (job: BoardJob, reason: string): string => `factory-kill-${reason}-${idsOf(job)}`;
+
 /** One mailbox's volume, attempt-scoped by name like every container: a sibling attempt's can never be this one's. */
 export const ctlVolumeName = (job: BoardJob, box: Mailbox): string => `factory-${box.name}-${idsOf(job)}`;
 

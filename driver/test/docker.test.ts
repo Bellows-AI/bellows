@@ -6,6 +6,8 @@ import type { ChildProcess, spawn } from 'node:child_process';
 import type { Readable } from 'node:stream';
 import type { BoardJob } from '../src/board.js';
 import { executorImage, loadDriverConfig } from '../src/config.js';
+import { killMarkName } from '../src/docker-mailbox.js';
+import { decisionOf, TERMINATION_ROWS, type TerminationRow } from './fixtures/termination-table.js';
 import {
     containerName,
     dockerArgs,
@@ -1166,6 +1168,8 @@ describe('the cache watch', () => {
             if (args[0] === 'ps' && args.some((a) => a.startsWith('label=factory.lease'))) {
                 return { stdout: 'runner-1\n' };
             }
+            // The hard kill takes the supervisor down with the agent: its exit is the kill's 137.
+            if (args[0] === 'wait') return { stdout: '137\n' };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const { spawn: childSpawn, close } = openChild();
@@ -1175,6 +1179,8 @@ describe('the cache watch', () => {
                 RUNNER_CACHE_WATCH_POLL_MS: '250',
             },
             spawn: childSpawn,
+            // The supervisor dies in the kill: no report ever comes.
+            steps: fakeSteps(undefined, new Promise<never>(() => undefined)).sink,
         });
 
         const pending = runner.run({ ...opencodeJob, followUp: false }, null);
@@ -1185,6 +1191,13 @@ describe('the cache watch', () => {
         expect(outcome.exitCode).toBe(137);
         expect(outcome.cacheLost).toContain('3 consecutive turns with no prompt-cache reads');
         expect(outcome.timedOut).toBe(false);
+        // The driver's own kill is the run's end, never a supervisor the platform took away.
+        expect(outcome).not.toHaveProperty('infraLoss');
+        // The reason is recorded on the attempt before the kill, for a claim adopting the run.
+        const mark = `factory.kill.cache_lost=${outcome.cacheLost as string}`;
+        const recorded = calls.findIndex((a) => a[0] === 'volume' && a[1] === 'create' && a.includes(mark));
+        expect(recorded).toBeGreaterThanOrEqual(0);
+        expect(recorded).toBeLessThan(calls.findIndex((a) => a[0] === 'kill'));
     });
 
     it('leaves the daemon alone while the watch is off', async () => {
@@ -5137,6 +5150,8 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         expect(calls.findIndex((args) => args[0] === 'logs')).toBeGreaterThan(waited);
     });
 
+    // A killed supervisor with no recorded reason is a supervisor lost — also where a record the
+    // daemon refused leaves a run its driver killed: the job runs again, its checkout and session kept.
     it('adopts nothing and removes nothing when the earlier supervisor was lost before it finalized', async () => {
         const { exec, calls, logs } = daemon(listing(), '137');
 
@@ -5149,6 +5164,88 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         expect(await dockerRunner(exec, { spawn: logs }).adopt!(adopter)).toBeNull();
         expect(calls.some((args) => args[0] === 'logs' || args[0] === 'rm')).toBe(false);
+    });
+
+    /** The daemon of `daemon`, holding the kill marker volumes `marks` (name → labels); any other is no such volume. */
+    const withMarks =
+        (base: (args: string[]) => Promise<{ stdout: string }>, marks: Record<string, Record<string, string>>) =>
+        (args: string[]) => {
+            if (args[0] !== 'volume' || args[1] !== 'inspect') return base(args);
+            const labels = marks[args.at(-1) as string];
+            if (labels) return Promise.resolve({ stdout: `${JSON.stringify(labels)}\n` });
+            const refused = Object.assign(new Error('docker volume inspect exited 1'), {
+                stderr: 'Error response from daemon: get factory-kill: no such volume',
+            });
+            return Promise.reject(refused);
+        };
+    const mark = (reason: string, detail: string, lease = job.leaseToken) => ({
+        [killMarkName(job, reason)]: {
+            'factory.job': job.id,
+            'factory.lease': lease,
+            [`factory.kill.${reason}`]: detail,
+        },
+    });
+
+    // Why the lost driver ended the run was recorded on the attempt before its kill: the adoption
+    // reads the verdict the attached run would have, never the supervisor the kill took down.
+    it.each<[string, string, Record<string, unknown>]>([
+        [
+            'a cache loss',
+            'cache_lost',
+            { cacheLost: '3 consecutive turns with no prompt-cache reads', timedOut: false },
+        ],
+        ['a timeout', 'timeout', { timedOut: true }],
+    ])('adopts a run its lost driver hard-killed for %s as that verdict', async (_what, reason, fields) => {
+        const { exec: base, calls, logs } = daemon(listing(), '137');
+        const detail = reason === 'cache_lost' ? '3 consecutive turns with no prompt-cache reads' : '';
+        const exec = withMarks(base, mark(reason, detail));
+
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+
+        expect(adopted?.outcome).toMatchObject({ started: true, ...fields });
+        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        // The record is the earlier attempt's, read before the fence sweeps it with the rest.
+        expect(calls.some((args) => args[0] === 'rm' && args.includes('runner-id'))).toBe(true);
+    });
+
+    it('adopts a supervised stop its lost driver recorded for a full spool, with the spool fault', async () => {
+        const { exec: base, logs } = daemon(listing(), '0');
+        const exec = withMarks(base, mark('artifact_spool_full', '2000000000 bytes'));
+
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+
+        expect(adopted?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
+    });
+
+    // A full spool rides a supervised stop, so its record never explains how the supervisor ended:
+    // one lost after it (#805), or taken down when the stop fell back to the hard kill — which on
+    // kubernetes deletes the Job and its record — is run again, on both executors.
+    it.each(['70', '137'])(
+        'never takes a recorded full spool for the end of a supervisor that exited %s',
+        async (exit) => {
+            const { exec: base, calls, logs } = daemon(listing(), exit);
+            const exec = withMarks(base, mark('artifact_spool_full', '2000000000 bytes'));
+
+            expect(await dockerRunner(exec, { spawn: logs }).adopt!(adopter)).toBeNull();
+            expect(calls.some((args) => args[0] === 'logs' || args[0] === 'rm')).toBe(false);
+        }
+    );
+
+    it('never reads a record of another attempt as this one’s', async () => {
+        const { exec: base, logs } = daemon(listing(), '137');
+        const exec = withMarks(base, mark('cache_lost', 'collapsed', '77777777-7777-4777-8777-777777777777'));
+
+        expect(await dockerRunner(exec, { spawn: logs }).adopt!(adopter)).toBeNull();
+    });
+
+    // Stated limit: a stop the supervisor raised itself (its budget, its own spool watch) is in its
+    // report, which the adoption does not read — the agent's exit is the verdict.
+    it('reads a stop the earlier supervisor raised itself by the agent’s exit alone', async () => {
+        const { exec, logs } = daemon(listing(), '0');
+
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt!(adopter);
+
+        expect(adopted?.outcome.artifactSpoolFull).toBeUndefined();
     });
 
     // A queued task's command can be edited after a handover: a run of the old command is not its run.
@@ -5250,5 +5347,78 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
                 `factory.command=${commandMark(job.command)}`,
             ])
         );
+    });
+});
+
+describe('how a started run ends, on docker (the conformance table)', () => {
+    interface End {
+        code: number;
+        supervisorExit: string;
+        report?: SupervisorReport;
+        removed?: boolean;
+        kill?: boolean;
+    }
+    /** One attached run ended as `end` says: the agent's close, the supervisor's exit, its report. */
+    const endOnDocker = async (end: End): Promise<RunOutcome> => {
+        const child = new EventEmitter() as ChildProcess;
+        child.stdout = new EventEmitter() as Readable;
+        child.stderr = new EventEmitter() as Readable;
+        let spawned!: () => void;
+        const started = new Promise<void>((resolve) => {
+            spawned = resolve;
+        });
+        const exec = (async (args: string[]) => {
+            // The supervisor's exit lands after its report, as it does for a supervisor that reports.
+            if (args[0] === 'wait') {
+                await new Promise((resolve) => setTimeout(resolve, 10));
+                return { stdout: `${end.supervisorExit}\n` };
+            }
+            if (args[0] === 'inspect' && end.removed) {
+                throw Object.assign(new Error('docker inspect exited 1'), { stderr: 'Error: No such container: x' });
+            }
+            if (args[0] === 'inspect') return { stdout: '{"Status":"exited"}' };
+            if (args[0] === 'ps' && args.some((a) => a.startsWith('label=factory.lease')))
+                return { stdout: 'runner-1\n' };
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = dockerRunner(exec, {
+            spawn: (() => {
+                spawned();
+                return child;
+            }) as unknown as typeof spawn,
+            steps: fakeSteps(undefined, end.report ?? new Promise<never>(() => undefined)).sink,
+        });
+        const pending = runner.run(job, { id: SESSION, resume: false });
+        await started;
+        if (end.kill) await runner.kill(job);
+        process.nextTick(() => child.emit('close', end.code));
+        return pending;
+    };
+
+    const ends: Record<TerminationRow, End> = {
+        'an agent that exits 0 under a finalizing supervisor': { code: 0, supervisorExit: '0', report: FINALIZED },
+        'an agent its run budget ended': {
+            code: 137,
+            supervisorExit: '124',
+            report: { ...FINALIZED, outcome: 'timed_out', cause: 'timeout', agentExit: 137, agentEnd: 'killed' },
+        },
+        'a group the driver hard-killed mid-run': { code: 137, supervisorExit: '137', kill: true },
+        'a runner the platform took away mid-run': { code: 137, supervisorExit: '137', removed: true },
+        'a runner the platform took away after the budget ended its agent': {
+            code: 137,
+            supervisorExit: '137',
+            removed: true,
+            report: { ...FINALIZED, outcome: 'timed_out', cause: 'timeout', agentExit: 137, agentEnd: 'killed' },
+        },
+        'a supervisor that ended without finalizing, nothing initiating it': { code: 0, supervisorExit: '70' },
+        'a supervisor that reported, then crashed before the verdict read': {
+            code: 0,
+            supervisorExit: '70',
+            report: FINALIZED,
+        },
+    };
+
+    it.each(TERMINATION_ROWS)('%s: %s', async (row, expected) => {
+        expect(decisionOf(await endOnDocker(ends[row]))).toBe(expected);
     });
 });

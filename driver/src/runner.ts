@@ -10,6 +10,7 @@ import type { BoardJob, ServiceStatus } from './board.js';
 import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
 import type { PublishOptions, PublishResult, SyncResult, ReclaimResult } from './publish.js';
 import type { SnapshotResult } from './review-snapshot.js';
+import type { KillRecord } from './termination.js';
 
 /** What the board is told afterwards. `timedOut` is reported as a failure, with a reason. */
 export interface RunOutcome {
@@ -268,6 +269,12 @@ export interface Runner {
      * `kill`. Never throws.
      */
     stopAgent?(job: BoardJob): Promise<void>;
+    /**
+     * Records on the attempt why the driver is ending its run (`termination.ts`), where the claim
+     * adopting the run after this driver's loss reads it back (`adopt`). Rejects when the platform
+     * refuses; the caller never holds the kill back for it.
+     */
+    recordKill?(job: BoardJob, kill: KillRecord): Promise<void>;
     /** Stops/resumes the runtime budget while questions are pending. */
     pauseDeadline?(job: BoardJob, paused: boolean): Promise<void>;
     /**

@@ -27,7 +27,7 @@ const outcome = (over: Partial<RunOutcome> = {}): RunOutcome => ({
     ...over,
 });
 
-function setup(options: { supervised?: boolean } = {}) {
+function setup(options: { supervised?: boolean; records?: boolean } = {}) {
     const run = newExportRun();
     const board = {
         putArtifactChunk: vi.fn(async () => ({ result: 'stored' as const })),
@@ -36,9 +36,14 @@ function setup(options: { supervised?: boolean } = {}) {
     const kill = vi.fn(async () => {});
     const stopAgent = vi.fn(async () => {});
     const raiseKill = vi.fn();
+    const recordKill = vi.fn(async () => {});
     const rt = {
         board,
-        runner: { kill, ...(options.supervised === false ? {} : { stopAgent }) },
+        runner: {
+            kill,
+            ...(options.supervised === false ? {} : { stopAgent }),
+            ...(options.records ? { recordKill } : {}),
+        },
         gates: { server: { raiseKill } },
         log: vi.fn(),
     } as unknown as LoopRuntime;
@@ -46,7 +51,8 @@ function setup(options: { supervised?: boolean } = {}) {
     state.control = 'token';
     state.transcriptExport = run;
     const ctx = { rt, job, state } as unknown as AttemptCtx;
-    return { run, board, kill, stopAgent, raiseKill, rt, ctx, relay: createExportRelay(rt, job, run, 'token') };
+    const relay = createExportRelay(rt, job, run, 'token');
+    return { run, board, kill, stopAgent, raiseKill, recordKill, rt, ctx, relay };
 }
 
 describe('attaching the export to a control token', () => {
@@ -115,6 +121,17 @@ describe('the export relay', () => {
         expect(raiseKill).toHaveBeenCalledExactlyOnceWith('token');
         expect(stopAgent).toHaveBeenCalledTimes(1);
         expect(kill).not.toHaveBeenCalled();
+    });
+
+    it('records a full spool on the runner before the kill order, for a claim adopting the run', async () => {
+        const { relay, stopAgent, raiseKill, recordKill } = setup({ records: true });
+        relay.report({ pendingBytes: 2_000_000_000, oldestUnackedMs: 9, spoolFull: true, done: false });
+        await vi.waitFor(() => expect(stopAgent).toHaveBeenCalledTimes(1));
+        expect(recordKill).toHaveBeenCalledExactlyOnceWith(job, {
+            reason: 'artifact_spool_full',
+            detail: '2000000000 bytes',
+        });
+        expect(recordKill.mock.invocationCallOrder[0]).toBeLessThan(raiseKill.mock.invocationCallOrder[0] as number);
     });
 
     it('falls back to the hard kill on a runner that supervises nothing', () => {
