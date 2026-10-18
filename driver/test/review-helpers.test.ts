@@ -76,6 +76,44 @@ function emptyFixture(
     });
 }
 
+const emptyThreads = () => ({
+    data: {
+        repository: {
+            pullRequest: {
+                reviewDecision: null,
+                headRefOid: 'a'.repeat(40),
+                reviewThreads: { totalCount: 0, nodes: [] },
+            },
+        },
+    },
+});
+
+/** A worktree whose digest presents `keys` and whose repair agent declared `intents`. */
+function replyState(keys: string[], intents: { key: string; reply: string; resolve: boolean }[]): string {
+    const cwd = tempCwd();
+    const stateDir = join(cwd, '.factory', 'review-reconcile');
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+        join(stateDir, 'digest.json'),
+        JSON.stringify({ schema: 'review-reconcile-digest/v1', version: 1, items: keys.map((key) => ({ key })) })
+    );
+    writeFileSync(
+        join(stateDir, 'intents.json'),
+        JSON.stringify({ schema: 'review-reconcile-intents/v1', items: intents })
+    );
+    return cwd;
+}
+
+/** The gh calls that write to the PR: a posted comment, a reply, a thread resolve. */
+const writesOf = (args: string[][]): string[][] =>
+    args.filter((a) => {
+        const joined = a.join(' ');
+        return (
+            (joined.includes('/comments') && a.includes('-f')) ||
+            (joined.includes('graphql') && a.some((x) => x.includes('resolveReviewThread')))
+        );
+    });
+
 describe('the review-collect-probe helper', () => {
     it('registers with the generic helper transport under its own schema', () => {
         const descriptor = HELPER_REGISTRY.get(REVIEW_COLLECT_PROBE_ID);
@@ -304,6 +342,170 @@ describe('the review-reply-probe helper', () => {
             output: 'REVIEW-REPLIED',
             control: 'conclude',
         });
+    });
+
+    it('never re-posts a reply whose addressed marker the live PR carries past the collection caps', async () => {
+        // A replayed reply (issue #826): the first run's writes landed, its answer was lost. Each
+        // marker sits past the section the collection keeps (50 general/inline rows, 10 comments
+        // per thread) while the item it answers is still inside it.
+        const marked = (id: number, key: string) => ({
+            id,
+            user: { login: 'factory[bot]' },
+            body: `done\n\n<!-- factory-review-reconcile addressed ${key} -->`,
+            path: 'src/parse.ts',
+            line: 5,
+            diff_hunk: '@@',
+            created_at: '2026-09-04T10:00:00Z',
+            in_reply_to_id: null,
+            pull_request_review_id: 23,
+        });
+        const filler = (from: number) =>
+            Array.from({ length: 49 }, (_, i) => ({
+                ...marked(from + i, 'none'),
+                user: { login: 'watcher' },
+                body: 'noted',
+            }));
+        const threadComments = Array.from({ length: 10 }, (_, i) => ({
+            id: `IC_${i}`,
+            databaseId: 111 + i,
+            author: { login: 'naysayer' },
+            body: 'still null',
+            createdAt: '2026-09-03T13:01:00Z',
+        }));
+        const gh = writeFixture({
+            general: [
+                { ...marked(401, 'none'), user: { login: 'commenter' }, body: 'add a test' },
+                ...filler(500),
+                marked(600, 'general:401'),
+                marked(601, 'review:23'),
+            ],
+            reviews: [{ id: 23, user: { login: 'naysayer' }, state: 'COMMENTED', body: 'see inline' }],
+            inline: [
+                { ...marked(301, 'none'), user: { login: 'naysayer' }, body: 'rename this' },
+                ...filler(700),
+                marked(800, 'inline:301'),
+                { ...marked(801, 'thread:T_a'), in_reply_to_id: 111 },
+            ],
+            requested: { users: [], teams: [] },
+            reply: { id: 999, body: 'ok', html_url: 'https://example.test/comment/999' },
+            threads: {
+                data: {
+                    repository: {
+                        pullRequest: {
+                            reviewDecision: 'CHANGES_REQUESTED',
+                            headRefOid: 'a'.repeat(40),
+                            reviewThreads: {
+                                totalCount: 1,
+                                nodes: [
+                                    {
+                                        id: 'T_a',
+                                        isResolved: false,
+                                        isOutdated: false,
+                                        path: 'src/parse.ts',
+                                        line: 5,
+                                        comments: { totalCount: 11, nodes: threadComments },
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        });
+        const keys = ['general:401', 'review:23', 'inline:301', 'thread:T_a'];
+        const cwd = replyState(
+            keys,
+            keys.map((key) => ({ key, reply: 'addressed', resolve: false }))
+        );
+        const { run, verdict } = await probe(REVIEW_REPLY_PROBE_ID, { GH_FIXTURES: gh }, { cwd });
+        expect(writesOf(run.args)).toEqual([]);
+        expect(verdict).toMatchObject({ ok: true, output: 'REVIEW-REPLIED' });
+    });
+
+    it('resolves a marked thread whose resolve never landed, without replying to it again', async () => {
+        // The reply and the resolve are two writes: a run lost between them leaves the marker on an
+        // unresolved thread, and the replay owes exactly the resolve.
+        const gh = writeFixture({
+            general: [],
+            reviews: [],
+            inline: [],
+            requested: { users: [], teams: [] },
+            resolve: { data: { resolveReviewThread: { thread: { id: 'T_a', isResolved: true } } } },
+            threads: {
+                data: {
+                    repository: {
+                        pullRequest: {
+                            reviewDecision: 'CHANGES_REQUESTED',
+                            headRefOid: 'a'.repeat(40),
+                            reviewThreads: {
+                                totalCount: 1,
+                                nodes: [
+                                    {
+                                        id: 'T_a',
+                                        isResolved: false,
+                                        isOutdated: false,
+                                        path: 'src/parse.ts',
+                                        line: 5,
+                                        comments: {
+                                            totalCount: 2,
+                                            nodes: [
+                                                {
+                                                    id: 'IC_a1',
+                                                    databaseId: 111,
+                                                    author: { login: 'naysayer' },
+                                                    body: 'null here blows up',
+                                                    createdAt: '2026-09-03T13:01:00Z',
+                                                },
+                                                {
+                                                    id: 'IC_a2',
+                                                    databaseId: 112,
+                                                    author: { login: 'factory[bot]' },
+                                                    body: 'fixed\n\n<!-- factory-review-reconcile addressed thread:T_a -->',
+                                                    createdAt: '2026-09-03T13:05:00Z',
+                                                },
+                                            ],
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        });
+        const cwd = replyState(['thread:T_a'], [{ key: 'thread:T_a', reply: 'fixed', resolve: true }]);
+        const { run, verdict } = await probe(REVIEW_REPLY_PROBE_ID, { GH_FIXTURES: gh }, { cwd });
+        expect(verdict).toMatchObject({ ok: true, output: 'REVIEW-REPLIED' });
+        expect(writesOf(run.args).map((a) => (a.join(' ').includes('graphql') ? 'resolve' : 'post'))).toEqual([
+            'resolve',
+        ]);
+    });
+
+    it('fails (never REVIEW-REPLIED) when the live collection collapsed past its output bound', async () => {
+        // A collapsed collection carries no section at all: planning against it would answer every
+        // intent "gone" and acknowledge replies that were never written.
+        const big = (id: number) => ({
+            id,
+            user: { login: 'bulk' },
+            body: '汉'.repeat(2000),
+            path: 'src/a.ts',
+            line: 1,
+            diff_hunk: 'x'.repeat(500),
+            created_at: '2026-09-03T10:00:00Z',
+            in_reply_to_id: null,
+            pull_request_review_id: null,
+        });
+        const gh = writeFixture({
+            general: Array.from({ length: 50 }, (_, i) => big(1000 + i)),
+            reviews: [],
+            inline: Array.from({ length: 50 }, (_, i) => big(2000 + i)),
+            requested: { users: [], teams: [] },
+            threads: emptyThreads(),
+        });
+        const cwd = replyState(['general:1000'], [{ key: 'general:1000', reply: 'done', resolve: false }]);
+        const { run, verdict } = await probe(REVIEW_REPLY_PROBE_ID, { GH_FIXTURES: gh }, { cwd });
+        expect(verdict.ok).toBe(false);
+        expect(writesOf(run.args)).toEqual([]);
     });
 
     it('fails the helper (never concludes) when the underlying collect fetch fails', async () => {

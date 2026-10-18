@@ -2,9 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
 import { claimEnv, claimRestoresTree, runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
+import { withHelperReceipt } from './helper-receipts.js';
 import {
     HELPER_TIMEOUT_MS,
     type HelperCall,
+    type HelperDescriptor,
     type HelperPlan,
     type HelperResult,
     helperInputValue,
@@ -28,7 +30,7 @@ import {
     worktreeBranch,
     worktreeDir,
 } from './publish.js';
-import { StepTimedOut, type StepSink } from './step-control.js';
+import { StepTimedOut, type StepSink, stepLost } from './step-control.js';
 import { SUPERVISOR_ENV, type StepKind, type StepRequest, type StepResult } from './supervisor-contract.js';
 
 /**
@@ -132,13 +134,14 @@ const request = (
  * supervisor: the workflows in `publish.ts` and `review-snapshot.ts` decide WHAT runs; this is
  * their transport. A step carrying a publication operation (`PublishStep.op`) has an identity
  * derived from it — a retried publish asks the same push the same way and is answered, not rerun —
- * and every other step gets a fresh one, since a probe must read the tree as it is now.
+ * and every other step gets a fresh one, since a probe must read the tree as it is now. A helper's
+ * receipt steps (`helper-receipts.ts`) ride it as `helper` steps.
  */
 export function supervisedStepRunner(
     host: StepHost,
     job: BoardJob,
     options: {
-        kind: 'publish' | 'probe' | 'snapshot';
+        kind: 'publish' | 'probe' | 'snapshot' | 'helper';
         githubToken?: string | undefined;
         signal?: AbortSignal | undefined;
     }
@@ -258,13 +261,15 @@ export async function runReclaimStep(host: StepHost, job: BoardJob): Promise<Rec
 /**
  * One block-helper step (issue #207): an allowlisted, board-owned script, run in the task worktree
  * with its bounded input as a literal. Only a github-writing helper gets the claim env, with the
- * fresh token the loop minted laid over it; an unknown id fails before anything is submitted.
+ * fresh token the loop minted laid over it; an unknown id fails before anything is submitted. A
+ * receipted helper given its effect runs bracketed by its receipt (`helper-receipts.ts`, issue
+ * #826). A lost supervisor is thrown (`stepLost`): no verdict on the helper, the attempt's loss.
  */
 export async function runHelperStep(
     host: StepHost,
     job: BoardJob,
     plan: HelperPlan,
-    { token, signal }: HelperCall = {}
+    { token, signal, effectId }: HelperCall = {}
 ): Promise<HelperResult> {
     const descriptor = lookupHelper(plan.helperId);
     if (!descriptor) {
@@ -274,6 +279,21 @@ export async function runHelperStep(
             message: `no allowlisted helper is registered as "${plan.helperId}"`,
         };
     }
+    const worktree = worktreeDir(host.config, job);
+    // The receipt's MAC key: with none, a receipt anyone could forge is never kept at all.
+    const key = host.config.boardToken;
+    const run = () => submitHelper(host, job, { plan, descriptor }, { token, signal });
+    if (!descriptor.receipted || !effectId || !worktree || !key) return run();
+    const ledger = supervisedStepRunner(host, job, { kind: 'helper', signal });
+    return withHelperReceipt(ledger, { worktree, key, effectId }, run);
+}
+
+async function submitHelper(
+    host: StepHost,
+    job: BoardJob,
+    { plan, descriptor }: { plan: HelperPlan; descriptor: HelperDescriptor },
+    { token, signal }: HelperCall
+): Promise<HelperResult> {
     try {
         const result = await submitStep(
             host,
@@ -298,6 +318,7 @@ export async function runHelperStep(
         }
         return parseHelperOutput(descriptor, result.stdout);
     } catch (e) {
+        if (stepLost(e)) throw e;
         return { ok: false, reason: 'runner_error', message: (e as Error).message };
     }
 }

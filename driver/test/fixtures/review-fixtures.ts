@@ -117,6 +117,7 @@ export const collection = (over: Partial<ReviewCollection> = {}): ReviewCollecti
             ],
         },
     ],
+    addressed: [],
     requestedReviewers: { users: ['reviewer-a'], teams: ['qa-team'] },
     decision: 'CHANGES_REQUESTED',
     pendingChecks: 2,

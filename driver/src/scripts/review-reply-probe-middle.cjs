@@ -78,12 +78,14 @@ function __rrpGeneralTarget(intent) {
     };
 }
 
-/** The (up to two) plan targets one `thread:` intent produces: a reply, and/or a resolve. */
-function __rrpThreadTargets(thread, id, intent) {
+/**
+ * The (up to two) plan targets one `thread:` intent produces: a reply, and/or a resolve. Each is
+ * reconciled on its own (issue #826): a run lost between the two writes owes only the resolve.
+ */
+function __rrpThreadTargets(thread, id, intent, replied) {
     const targets = [];
-    if (__rrpThreadIsAlreadyMarked(thread, intent.key)) return targets;
     const wantsReply = typeof intent.reply === 'string' && intent.reply.trim();
-    if (wantsReply) {
+    if (wantsReply && !replied) {
         const anchor = thread.comments[0] && thread.comments[0].databaseId;
         if (typeof anchor === 'number') {
             // `id` reports which digest item this target answers; the REST reply mutation itself
@@ -115,15 +117,23 @@ function __rrpThreadTargets(thread, id, intent) {
     return targets;
 }
 
-/** One digest-presented intent -> zero or more plan targets, validated against LIVE collection ids. */
+/**
+ * One digest-presented intent -> zero or more plan targets, validated against LIVE collection ids.
+ * A reply whose marker the live PR already carries is never planned again (issue #826): the run
+ * that wrote it may have been lost before anyone heard.
+ */
 function __rrpTargetsFor(intent, live) {
     const sep = intent.key.indexOf(':');
     const kind = intent.key.slice(0, sep);
     const id = intent.key.slice(sep + 1);
+    const replied = live.addressed.has(intent.key);
     if (kind === 'thread') {
         const thread = live.threadsById.get(id);
-        return thread ? __rrpThreadTargets(thread, id, intent) : [];
+        return thread
+            ? __rrpThreadTargets(thread, id, intent, replied || __rrpThreadIsAlreadyMarked(thread, intent.key))
+            : [];
     }
+    if (replied) return [];
     if (kind === 'general' && live.generalIds.has(id)) return [__rrpGeneralTarget(intent)];
     if (kind === 'inline' && live.inlineIds.has(id)) {
         return [
@@ -164,10 +174,11 @@ function __rrpLiveIndex(collection) {
         generalIds: new Set((collection.general || []).map((c) => String(c.id))),
         inlineIds: new Set((collection.inline || []).map((c) => String(c.id))),
         reviewIds: new Set((collection.reviews || []).map((r) => String(r.id))),
+        addressed: new Set(Array.isArray(collection.addressed) ? collection.addressed : []),
     };
 }
 
-function __rrpEmitSkipFailure(collection) {
+function __rrpEmitSkipFailure(error) {
     __reviewReplyProbeSkip = true;
     console.log(
         JSON.stringify({
@@ -175,10 +186,7 @@ function __rrpEmitSkipFailure(collection) {
             version: __rrpProbeVersion,
             ok: false,
             reason: 'runner_error',
-            error: String((collection && collection.error) || 'unreadable collection verdict').slice(
-                0,
-                __rrpProbeErrorMax
-            ),
+            error: String(error).slice(0, __rrpProbeErrorMax),
         })
     );
 }
@@ -192,7 +200,13 @@ function __rrpEmitSkipFailure(collection) {
         collection = null;
     }
     if (!collection || collection.ok === false) {
-        __rrpEmitSkipFailure(collection);
+        __rrpEmitSkipFailure((collection && collection.error) || 'unreadable collection verdict');
+        return;
+    }
+    // A collection collapsed past its output bound carries no section: every intent would read as
+    // gone, and the round would conclude replied without having written or checked a thing.
+    if (collection.truncated && collection.truncated.total) {
+        __rrpEmitSkipFailure('the live review state exceeded the collection bound, so no reply was reconciled');
         return;
     }
 

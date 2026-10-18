@@ -30,6 +30,7 @@ import { servePublish, type PublishRelay } from '../src/publish-control.js';
 import type { ExportRelay } from '../src/export-control.js';
 import type { ReviewRelay } from '../src/review-control.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
+import { StepChannelClosed } from '../src/step-control.js';
 import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
 import { createLoop, type Loop } from '../src/loop.js';
 import { type SyncQueue, type SyncTurn, syncQueue } from '../src/sync-queue.js';
@@ -3983,7 +3984,7 @@ describe('block-helper steps (issue #207)', () => {
         const runner = stubRunner(run);
         const calls: { jobId: string; plan: HelperPlan; token: string | undefined }[] = [];
         const queue = [...results];
-        runner.runHelper = async (helperJob, plan, token) => {
+        runner.runHelper = async (helperJob, plan, { token } = {}) => {
             calls.push({ jobId: helperJob.id, plan, token });
             return queue.shift() ?? { ok: true, output: null };
         };
@@ -4099,6 +4100,53 @@ describe('block-helper steps (issue #207)', () => {
         expect(runner.published).toEqual([]);
     });
 
+    // Issue #826: the claim that adopts a finished agent runs its post-helpers again, under a new
+    // lease. The effect each one names must be the same one the lost claim named, or no receipt
+    // the lost claim left could ever answer it.
+    it('names a post-helper effect the same on the claim that ran the agent and the claim that adopted it', async () => {
+        const plans = [helperPlan({ phase: 'post' })];
+        const effects: (string | undefined)[] = [];
+        const record = (runner: ReturnType<typeof stubRunner>) => {
+            runner.runHelper = async (_job, _plan, { effectId } = {}) => {
+                effects.push(effectId);
+                return { ok: true, output: null };
+            };
+        };
+        const ran = stubRunner(async () => ok());
+        record(ran);
+        await drive({ ...stubBoard([{ ...job(1), helperPlans: plans }]), runner: ran });
+
+        const replacement = { ...job(1), helperPlans: plans, attempts: 2, claimSeq: 2, leaseToken: job(2).leaseToken };
+        const adopting = stubRunner(async () => ok(), {
+            adopt: async () => ({ outcome: ok(), claimSeq: 1 }),
+        });
+        record(adopting);
+        await drive({ ...stubBoard([replacement]), runner: adopting });
+
+        expect(effects).toHaveLength(2);
+        expect(effects[0]).toEqual(expect.any(String));
+        expect(effects[1]).toBe(effects[0]);
+        expect(effects[0]).not.toContain(job(1).leaseToken);
+    });
+
+    it.each<['pre' | 'post']>([['pre'], ['post']])(
+        'hands a %s-helper whose supervisor was lost back as an interruption, never a failed verdict',
+        async (phase) => {
+            const board = stubBoard([{ ...job(1), helperPlans: [helperPlan({ phase })] }]);
+            const runner = stubRunner(async () => ok());
+            runner.runHelper = async () => {
+                throw new StepChannelClosed('the helper');
+            };
+
+            await drive({ ...board, runner });
+
+            expect(board.board.completed).toEqual([]);
+            expect(board.board.interrupted).toEqual([
+                { id: job(1).id, reason: expect.stringContaining('infrastructure loss'), release: true },
+            ]);
+        }
+    );
+
     it('a non-zero exit is named after the agent, not a post-helper failure', async () => {
         const { kindOf, ledgerOf } = await import('../src/loop-ledger.js');
         const helperFailure = {
@@ -4176,7 +4224,7 @@ describe('block-helper steps (issue #207)', () => {
             released.push(fencedJob.id);
         };
         let seen: AbortSignal | undefined;
-        runner.runHelper = async (_job, _plan, _token, signal) => {
+        runner.runHelper = async (_job, _plan, { signal } = {}) => {
             // The stop lands while the pre-helper is in flight.
             seen = signal;
             options.cancelRequested = true;
