@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
+import { createOrgOfReclaim } from '../src/db/job-store-org-resolvers.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
 import {
@@ -32,6 +33,15 @@ const AUTHOR = AUTHOR_USER.id;
 
 /** A lease long enough that nothing in this suite outlives it by accident. */
 const LEASE_SECONDS = 300;
+
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+const reclaimedAt = async (root: string): Promise<Date | null> => {
+    const [row] = await sql<{ worktree_reclaimed_at: Date | null }[]>`
+        select worktree_reclaimed_at from job where org_id = ${ORG} and id = ${root}
+    `;
+    return row!.worktree_reclaimed_at;
+};
 
 const db = useTestDb({ max: 8, users: [AUTHOR_USER] });
 
@@ -253,28 +263,105 @@ describe.skipIf(!enabled)('the reclaim queue', () => {
         expect(second?.rootJobId).toBe(a);
     });
 
-    it('acks only the worker that holds the claim, deleting the row on success', async () => {
+    it('mints a fresh ownership token on every acquisition of the same row', async () => {
         const a = await craft();
         await store.removeThread(a, null);
-        const claim = await store.claimReclaim('w1', LEASE_SECONDS);
 
-        expect(await store.ackReclaim(claim!.id, 'w2')).toBe('lost');
-        expect(await store.claimReclaim('w2', LEASE_SECONDS)).toBeNull();
+        const first = await store.claimReclaim('w1', LEASE_SECONDS);
+        await sql`update task_reclaim set lease_expires_at = now() - interval '1 second' where id = ${first!.id}`;
+        const second = await store.claimReclaim('w1', LEASE_SECONDS);
 
-        expect(await store.ackReclaim(claim!.id, 'w1')).toBe('ok');
+        expect(second?.id).toBe(first?.id);
+        expect(first?.token).toMatch(UUID_SHAPE);
+        expect(second?.token).toMatch(UUID_SHAPE);
+        expect(second?.token).not.toBe(first?.token);
     });
 
-    it('says missing on a double ack — the row is already gone', async () => {
+    it('refuses an ack under a superseded token, leaving the marker unset, and acks under the live one', async () => {
+        const root = await craft({ status: 'succeeded' });
+        await store.markDone(root, null);
+        const first = await store.claimReclaim('w1', LEASE_SECONDS);
+        await sql`update task_reclaim set lease_expires_at = now() - interval '1 second' where id = ${first!.id}`;
+        const second = await store.claimReclaim('w2', LEASE_SECONDS);
+
+        expect(await store.ackReclaim(first!.id, first!.token)).toBe('lost');
+        expect(await reclaimedAt(root)).toBeNull();
+        expect(await store.ackReclaim(second!.id, second!.token)).toBe('ok');
+        expect(await reclaimedAt(root)).not.toBeNull();
+    });
+
+    it('answers an identical ack replay ok, a stale one lost, and an unknown row missing', async () => {
+        const a = await craft();
+        await store.removeThread(a, null);
+        const first = await store.claimReclaim('w1', LEASE_SECONDS);
+        await sql`update task_reclaim set lease_expires_at = now() - interval '1 second' where id = ${first!.id}`;
+        const second = await store.claimReclaim('w2', LEASE_SECONDS);
+
+        expect(await store.ackReclaim(second!.id, second!.token)).toBe('ok');
+        expect(await store.ackReclaim(second!.id, second!.token)).toBe('ok');
+        expect(await store.ackReclaim(first!.id, first!.token)).toBe('lost');
+        expect(await store.ackReclaim(randomUUID(), second!.token)).toBe('missing');
+    });
+
+    it("still resolves an acked reclaim's org, so a replayed ack reaches its board", async () => {
         const a = await craft();
         await store.removeThread(a, null);
         const claim = await store.claimReclaim('w1', LEASE_SECONDS);
+        const orgOf = createOrgOfReclaim({ sql });
+        expect(await orgOf(claim!.id)).toBe(ORG);
+        expect(await store.ackReclaim(claim!.id, claim!.token)).toBe('ok');
+        expect(await orgOf(claim!.id)).toBe(ORG);
+        expect(await orgOf(randomUUID())).toBeNull();
+    });
 
-        expect(await store.ackReclaim(claim!.id, 'w1')).toBe('ok');
-        expect(await store.ackReclaim(claim!.id, 'w1')).toBe('missing');
+    it('answers an identical ack replay ok whatever the case its token is spelled in', async () => {
+        const a = await craft();
+        await store.removeThread(a, null);
+        const claim = await store.claimReclaim('w1', LEASE_SECONDS);
+        const upper = claim!.token.toUpperCase();
+
+        expect(await store.ackReclaim(claim!.id, upper)).toBe('ok');
+        expect(await store.ackReclaim(claim!.id, upper)).toBe('ok');
+        expect(await store.ackReclaim(claim!.id, randomUUID().toUpperCase())).toBe('lost');
     });
 
     it('says missing for a reclaim that never existed', async () => {
-        expect(await store.ackReclaim(randomUUID(), 'w1')).toBe('missing');
+        expect(await store.ackReclaim(randomUUID(), randomUUID())).toBe('missing');
+    });
+
+    it('renews only under the live token, and a renewed row is missing once acked', async () => {
+        const a = await craft();
+        await store.removeThread(a, null);
+        const first = await store.claimReclaim('w1', 60);
+
+        const renewed = await store.renewReclaim(first!.id, first!.token, LEASE_SECONDS);
+        expect(renewed).toMatchObject({ result: 'ok' });
+        if (renewed.result !== 'ok') throw new Error(renewed.result);
+        expect(Date.parse(renewed.leaseExpiresAt)).toBeGreaterThan(Date.parse(first!.leaseExpiresAt));
+
+        await sql`update task_reclaim set lease_expires_at = now() - interval '1 second' where id = ${first!.id}`;
+        const second = await store.claimReclaim('w2', LEASE_SECONDS);
+        expect(await store.renewReclaim(first!.id, first!.token, LEASE_SECONDS)).toEqual({ result: 'lost' });
+        expect(await store.renewReclaim(second!.id, second!.token, LEASE_SECONDS)).toMatchObject({ result: 'ok' });
+
+        expect(await store.ackReclaim(second!.id, second!.token)).toBe('ok');
+        expect(await store.renewReclaim(second!.id, second!.token, LEASE_SECONDS)).toEqual({ result: 'missing' });
+        expect(await store.renewReclaim(randomUUID(), second!.token, LEASE_SECONDS)).toEqual({ result: 'missing' });
+    });
+
+    it('renews a still-owned row whose lease passed, and the renewed row is not offered to the next poller', async () => {
+        const a = await craft();
+        await store.removeThread(a, null);
+        const claim = await store.claimReclaim('w1', LEASE_SECONDS);
+        await sql`update task_reclaim set lease_expires_at = now() - interval '1 second' where id = ${claim!.id}`;
+
+        const renewed = await store.renewReclaim(claim!.id, claim!.token, LEASE_SECONDS);
+        expect(renewed).toMatchObject({ result: 'ok' });
+        if (renewed.result !== 'ok') throw new Error(renewed.result);
+        expect(Date.parse(renewed.leaseExpiresAt)).toBeGreaterThan(Date.now());
+
+        expect(await store.claimReclaim('w2', LEASE_SECONDS)).toBeNull();
+        expect(await store.ackReclaim(claim!.id, claim!.token)).toBe('ok');
     });
 });
 

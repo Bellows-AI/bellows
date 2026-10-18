@@ -9,6 +9,7 @@ import type {
     ArtifactManifest,
     QuestionVerdict,
     Reclaim,
+    ReclaimRenewal,
     RuntimeReport,
 } from '../src/board.js';
 import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board-retry.js';
@@ -33,13 +34,15 @@ import type { ReviewRelay } from '../src/review-control.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
 import { StepChannelClosed } from '../src/step-control.js';
 import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
-import { createLoop, type Loop } from '../src/loop.js';
+import { createLoop, type Loop, wait } from '../src/loop.js';
 import { type SyncQueue, type SyncTurn, syncQueue } from '../src/sync-queue.js';
 import { processReclaim, type ReclaimContext } from '../src/loop-reclaim.js';
 import type { GateStack, LoopRuntime } from '../src/loop-types.js';
 import { newJobState, RUN_CONTROL_POLL_MS, watchOutput } from '../src/loop-attempt.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
+/** A queue row's acquisition token, never its id (issue #821). */
+const ROW_TOKEN = '77777777-7777-4777-8777-777777777777';
 
 /** A fixed, valid Factory execution context — the shape master-prompt.test.ts pins; only its
  *  presence matters to this file's own tests, none of which assert its exact text. */
@@ -84,6 +87,10 @@ interface BoardStub extends Board {
     githubAsks: string[];
     reclaimGrants: Reclaim[];
     reclaimAcks: string[];
+    /** The token every ack rode under, in ack order (issue #821). */
+    reclaimAckTokens: string[];
+    /** Every reclaim renew the loop sent, with the token it rode under (issue #821). */
+    reclaimRenewals: { id: string; token: string }[];
     leaseLookups: string[][];
     /** Every question report the loop sent (issue #226) — ids only, never text. */
     questionsReported: string[];
@@ -114,6 +121,10 @@ function stubBoard(
         reclaims?: Reclaim[];
         ackReclaimLease?: 'ok' | 'lost' | 'missing';
         failAckReclaim?: boolean;
+        /** Acks that throw before one lands — a response lost on the way back (issue #821). */
+        failAckReclaimTimes?: number;
+        /** The board's answer to a reclaim renew; held when absent (issue #821). */
+        renewReclaim?: (id: string, token: string, signal?: AbortSignal) => Promise<ReclaimRenewal>;
         githubToken?: string | null;
         /** The board's answer to `leases` — null models a refused lookup (issue #344). */
         leaseRows?: BoardLease[] | null | undefined;
@@ -130,6 +141,7 @@ function stubBoard(
     let failures = options.failClaims ?? 0;
     const queue = [...jobs];
     const reclaimQueue = options.reclaims ? [...options.reclaims] : [];
+    let ackFailures = options.failAckReclaimTimes ?? 0;
 
     const board: BoardStub = {
         completed: [],
@@ -143,6 +155,8 @@ function stubBoard(
         githubAsks: [],
         reclaimGrants: [],
         reclaimAcks: [],
+        reclaimAckTokens: [],
+        reclaimRenewals: [],
         leaseLookups: [],
         questionsReported: [],
         artifactChunks: [],
@@ -217,10 +231,19 @@ function stubBoard(
             if (next) board.reclaimGrants.push(next);
             return next ?? null;
         },
-        async ackReclaim(id) {
+        async ackReclaim(id, token) {
             if (options.failAckReclaim) throw new Error('board unreachable');
+            if (ackFailures > 0) {
+                ackFailures -= 1;
+                throw new Error('socket hang up');
+            }
             board.reclaimAcks.push(id);
+            board.reclaimAckTokens.push(token);
             return options.ackReclaimLease ?? 'ok';
+        },
+        async renewReclaim(id, token, signal) {
+            board.reclaimRenewals.push({ id, token });
+            return options.renewReclaim ? options.renewReclaim(id, token, signal) : 'held';
         },
         async githubCredential(claimed) {
             board.githubAsks.push(claimed.id);
@@ -2012,6 +2035,7 @@ describe('the poll loop', () => {
             reclaims: [
                 {
                     id: rowId,
+                    token: ROW_TOKEN,
                     rootJobId: root,
                     repo: 'Bellows-AI/factory',
                     workspacePath: `bellows/${USER}`,
@@ -2025,7 +2049,8 @@ describe('the poll loop', () => {
 
         expect(board.board.reclaimGrants).toHaveLength(1);
         // The tree is reclaimed under the thread's identity — the job is the removed root, the
-        // row id rides as the lease token, exactly what keys the removal under kubernetes.
+        // acquisition's own token rides as the lease token, never the row id: what holds the
+        // checkout under kubernetes is this acquisition, not every acquisition of the row.
         expect(runner.reclaimed).toEqual([
             {
                 id: root,
@@ -2034,7 +2059,7 @@ describe('the poll loop', () => {
                 maxAttempts: 1,
                 lastAttempt: true,
                 claimSeq: 1,
-                leaseToken: rowId,
+                leaseToken: ROW_TOKEN,
                 leaseExpiresAt: '2026-08-21T12:05:00.000Z',
                 resumeSessionId: null,
                 followUp: false,
@@ -2053,6 +2078,8 @@ describe('the poll loop', () => {
             },
         ]);
         expect(board.board.reclaimAcks).toEqual([rowId]);
+        expect(board.board.reclaimAckTokens).toEqual([ROW_TOKEN]);
+        expect(board.board.reclaimRenewals[0]).toEqual({ id: rowId, token: ROW_TOKEN });
     });
 
     it('leaves a refused reclaim to its lease instead of acking it', async () => {
@@ -2064,6 +2091,7 @@ describe('the poll loop', () => {
             reclaims: [
                 {
                     id: rowId,
+                    token: ROW_TOKEN,
                     rootJobId: root,
                     repo: null,
                     workspacePath: null,
@@ -2093,6 +2121,7 @@ describe('the poll loop', () => {
             reclaims: [
                 {
                     id: rowId,
+                    token: ROW_TOKEN,
                     rootJobId: root,
                     repo: null,
                     workspacePath: null,
@@ -2117,11 +2146,292 @@ describe('the poll loop', () => {
      * lease lookup, never a clock; the reap is uid-preconditioned in the runner; and the failure
      * lines throttle to state changes so a stuck row does not log an identical line every poll.
      */
+    /*
+     * Reclaim ownership (issue #821): every acquisition of a reclaim row holds it under a token of
+     * its own, and a removal can run far longer than the lease its claim granted — so the loop
+     * renews the row under that token, once before the removal starts (the gate: a row this
+     * acquisition no longer owns is never touched) and at the heartbeat's pace while it runs.
+     */
+    describe('reclaim ownership', () => {
+        const rowId = '55555555-5555-4555-8555-555555555555';
+        const root = job(1).id;
+        const row: Reclaim = {
+            id: rowId,
+            token: ROW_TOKEN,
+            rootJobId: root,
+            repo: 'Bellows-AI/factory',
+            workspacePath: `bellows/${USER}`,
+            leaseExpiresAt: '2026-08-21T12:05:00.000Z',
+        };
+        const removedOk: ReclaimResult = { ok: true, removed: true, reason: null };
+        const ctxOf = (board: BoardStub, runner: Runner, logs: string[]): ReclaimContext => ({
+            board,
+            runner,
+            config: config(),
+            log: (m) => logs.push(m),
+            sleep,
+            failureLog: new Map(),
+            inFlightReclaim: () => false,
+        });
+        /** A removal that runs until released, recording when it started. */
+        const gatedRemoval = (runner: ReturnType<typeof stubRunner>, events: string[]) => {
+            let release!: () => void;
+            const held = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+            runner.reclaimWorktree = async (removed) => {
+                runner.reclaimed.push(removed);
+                events.push('removal');
+                await held;
+                return removedOk;
+            };
+            return () => release();
+        };
+
+        it('renews the row under its acquisition token before the removal and while it runs, never after it settles', async () => {
+            const events: string[] = [];
+            const logs: string[] = [];
+            const { board } = stubBoard([], {
+                renewReclaim: async () => {
+                    events.push('renew');
+                    return 'held';
+                },
+            });
+            const runner = stubRunner(async () => ok());
+            const release = gatedRemoval(runner, events);
+
+            const processing = processReclaim(ctxOf(board, runner, logs), row);
+            while (board.reclaimRenewals.length < 4) await sleep();
+            release();
+            await processing;
+            const settled = board.reclaimRenewals.length;
+            for (let i = 0; i < 5; i += 1) await sleep();
+
+            expect(events.slice(0, 2)).toEqual(['renew', 'removal']);
+            expect(board.reclaimRenewals.length).toBe(settled);
+            expect(new Set(board.reclaimRenewals.map((renewal) => renewal.token))).toEqual(new Set([ROW_TOKEN]));
+            expect(runner.reclaimed.map((removed) => removed.leaseToken)).toEqual([ROW_TOKEN]);
+            expect(board.reclaimAckTokens).toEqual([ROW_TOKEN]);
+        });
+
+        it('cancels the pending renew sleep once the removal settles, leaving no timer behind', async () => {
+            const periods: { ended: boolean }[] = [];
+            const { board } = stubBoard([]);
+            const runner = stubRunner(async () => ok());
+            const release = gatedRemoval(runner, []);
+            const ctx: ReclaimContext = {
+                ...ctxOf(board, runner, []),
+                // A period that never ends by itself: only its `until` ends it.
+                sleep: (_ms, until) => {
+                    const period = { ended: false };
+                    periods.push(period);
+                    return new Promise<void>((resolve) => {
+                        until?.then(() => {
+                            period.ended = true;
+                            resolve();
+                        });
+                    });
+                },
+            };
+
+            const processing = processReclaim(ctx, row);
+            while (periods.length === 0) await sleep();
+            release();
+            await processing;
+
+            expect(periods.length).toBeGreaterThan(0);
+            expect(periods.every((period) => period.ended)).toBe(true);
+        });
+
+        it("the loop's sleep clears its timer once its until settles", async () => {
+            vi.useFakeTimers();
+            try {
+                let end!: () => void;
+                const until = new Promise<void>((resolve) => {
+                    end = resolve;
+                });
+                const sleeping = wait(100_000, until);
+                expect(vi.getTimerCount()).toBe(1);
+                end();
+                await sleeping;
+                expect(vi.getTimerCount()).toBe(0);
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('returns and acks at once when the removal settles under a renew that never answers', async () => {
+            const signals: (AbortSignal | undefined)[] = [];
+            const { board } = stubBoard([], {
+                renewReclaim: (_id, _token, signal) => {
+                    signals.push(signal);
+                    // The first renew, the gate, answers; the next stalls like an unbounded fetch.
+                    return signals.length === 1 ? Promise.resolve('held') : new Promise<ReclaimRenewal>(() => {});
+                },
+            });
+            const runner = stubRunner(async () => ok());
+            const release = gatedRemoval(runner, []);
+
+            const processing = processReclaim(ctxOf(board, runner, []), row);
+            while (signals.length < 2) await sleep();
+            release();
+            const settled = await Promise.race([
+                processing.then(() => 'settled'),
+                new Promise((resolve) => setTimeout(() => resolve('stalled'), 500)),
+            ]);
+            for (let i = 0; i < 5; i += 1) await sleep();
+
+            expect(settled).toBe('settled');
+            expect(board.reclaimAcks).toEqual([rowId]);
+            // No renew starts after the removal settled, and each one is bounded by a deadline.
+            expect(signals).toHaveLength(2);
+            expect(signals.every((signal) => signal instanceof AbortSignal)).toBe(true);
+        });
+
+        it('stops renewing once the renew answers lost, and the removal in flight still settles', async () => {
+            const logs: string[] = [];
+            let renews = 0;
+            const { board } = stubBoard([], {
+                renewReclaim: async () => {
+                    renews += 1;
+                    return renews === 1 ? 'held' : 'lost';
+                },
+            });
+            const runner = stubRunner(async () => ok());
+            const release = gatedRemoval(runner, []);
+
+            const processing = processReclaim(ctxOf(board, runner, logs), row);
+            while (renews < 2) await sleep();
+            for (let i = 0; i < 5; i += 1) await sleep();
+            expect(renews).toBe(2);
+            release();
+            await processing;
+
+            expect(runner.reclaimed).toHaveLength(1);
+            expect(logs.filter((m) => m.includes('renew answered lost'))).toHaveLength(1);
+        });
+
+        it.each<[string, () => Promise<ReclaimRenewal>]>([
+            ['lost', async () => 'lost'],
+            ['missing', async () => 'missing'],
+            [
+                'a throw',
+                async () => {
+                    throw new Error('board unreachable');
+                },
+            ],
+        ])('never starts a removal whose first renew answers %s', async (_label, renewReclaim) => {
+            const logs: string[] = [];
+            const { board } = stubBoard([], { renewReclaim });
+            const runner = stubRunner(async () => ok());
+
+            await processReclaim(ctxOf(board, runner, logs), row);
+
+            expect(runner.reclaimed).toEqual([]);
+            expect(board.reclaimAcks).toEqual([]);
+            expect(logs.some((m) => m.includes(`reclaim ${rowId}`))).toBe(true);
+        });
+
+        it.each([
+            ['the reap', 2, 0],
+            ['the retry', 3, 1],
+        ])(
+            'a stale acquisition whose renew answers lost before %s never goes further',
+            async (_label, lostAt, reaps) => {
+                const logs: string[] = [];
+                let renews = 0;
+                const { board } = stubBoard([], {
+                    renewReclaim: async () => {
+                        renews += 1;
+                        return renews >= lostAt ? 'lost' : 'held';
+                    },
+                });
+                const runner = stubRunner(async () => ok(), {
+                    reclaimSequence: [
+                        {
+                            ok: false,
+                            removed: false,
+                            reason: 'the checkout is held',
+                            heldClaim: {
+                                name: `factory-job-${root}-claim`,
+                                claimSeq: '1',
+                                createdMs: null,
+                                uid: 'claim-uid-1',
+                                holder: '66666666-6666-4666-8666-666666666666',
+                            },
+                        },
+                        removedOk,
+                    ],
+                    reapOrphanedClaim: async () => true,
+                });
+
+                await processReclaim(ctxOf(board, runner, logs), row);
+
+                expect(runner.reapAttempts).toHaveLength(reaps);
+                expect(runner.reclaimed).toHaveLength(1);
+                expect(board.reclaimAcks).toEqual([]);
+            }
+        );
+
+        it('replays an ack whose response was lost, logging the retry once', async () => {
+            const logs: string[] = [];
+            const { board } = stubBoard([], { failAckReclaimTimes: 1 });
+            const runner = stubRunner(async () => ok());
+
+            await processReclaim(ctxOf(board, runner, logs), row);
+
+            expect(board.reclaimAcks).toEqual([rowId]);
+            expect(logs.filter((m) => m.includes('ack'))).toHaveLength(1);
+            expect(logs.some((m) => m.includes('leaving it to the lease'))).toBe(false);
+        });
+
+        // A verdict's reclaim is granted 300 s by the board, a driver lease may be an hour: the
+        // first renewal, before the removal starts, is what carries the row past the grant.
+        it("renews a verdict-time reclaim under the attempt's lease token before removing, and acks with it", async () => {
+            const events: string[] = [];
+            const board = stubBoard([job(1)], {
+                reclaimId: 'reclaim-1',
+                renewReclaim: async () => {
+                    events.push('renew');
+                    return 'held';
+                },
+            });
+            const runner = stubRunner(async () => ok());
+            runner.reclaimWorktree = async (removed) => {
+                runner.reclaimed.push(removed);
+                events.push('removal');
+                return removedOk;
+            };
+
+            await drive({ ...board, runner }, { DRIVER_LEASE_SECONDS: '3600' });
+            for (let i = 0; i < 20 && board.board.reclaimAcks.length === 0; i += 1) await sleep();
+
+            expect(events.slice(0, 2)).toEqual(['renew', 'removal']);
+            expect(board.board.reclaimRenewals[0]).toEqual({ id: 'reclaim-1', token: job(1).leaseToken });
+            expect(board.board.reclaimAcks).toEqual(['reclaim-1']);
+            expect(board.board.reclaimAckTokens).toEqual([job(1).leaseToken]);
+        });
+
+        it('leaves a verdict-time reclaim its first renew lost to the queue, untouched', async () => {
+            const logs: string[] = [];
+            const board = stubBoard([job(1)], { reclaimId: 'reclaim-1', renewReclaim: async () => 'lost' });
+            const runner = stubRunner(async () => ok());
+
+            await drive({ ...board, runner, log: (m) => logs.push(m) });
+            for (let i = 0; i < 20 && board.board.reclaimRenewals.length === 0; i += 1) await sleep();
+            await sleep();
+
+            expect(runner.reclaimed).toEqual([]);
+            expect(board.board.reclaimAcks).toEqual([]);
+        });
+    });
+
     describe('an orphaned checkout claim', () => {
         const rowId = '55555555-5555-4555-8555-555555555555';
         const root = job(1).id;
         const heldRow: Reclaim = {
             id: rowId,
+            token: ROW_TOKEN,
             rootJobId: root,
             repo: 'Bellows-AI/factory',
             workspacePath: `bellows/${USER}`,
@@ -2241,10 +2551,12 @@ describe('the poll loop', () => {
                         throw new Error('the lookup must never be reached while the barrier holds');
                     },
                     ackReclaim: async () => 'ok',
+                    renewReclaim: async () => 'held',
                 },
                 runner,
                 config: config(),
                 log: (m) => logs.push(m),
+                sleep,
                 failureLog: new Map(),
                 inFlightReclaim: (candidate) => candidate === root,
             };

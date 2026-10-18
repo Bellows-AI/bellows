@@ -485,9 +485,12 @@ describe('the question calls', () => {
 });
 
 describe('the removed-thread reclaim queue', () => {
-    it('claims a row with the worker and lease, answering null on an empty queue', async () => {
+    const TOKEN = '66666666-6666-4666-8666-666666666666';
+
+    it("claims a row with the worker and lease, carrying the acquisition's token, and answers null on an empty queue", async () => {
         const row = {
             id: '55555555-5555-4555-8555-555555555555',
+            token: TOKEN,
             rootJobId: 'job-1',
             repo: 'Bellows-AI/factory',
             workspacePath: 'bellows/user-7',
@@ -505,26 +508,51 @@ describe('the removed-thread reclaim queue', () => {
         expect(await idleBoard.claimReclaim('driver-1')).toBeNull();
     });
 
-    it('acks a consumed row as ok, and reads 409 and 404 back as their own verdicts', async () => {
+    it('acks a consumed row under its token as ok, and reads 409 and 404 back as their own verdicts', async () => {
         const ok = recorder(() => Response.json({ id: 'row-1' }, { status: 200 }));
         const board = boardOn(ok.fetch, 'fwt_abc');
-        expect(await board.ackReclaim('row-1', 'driver-1')).toBe('ok');
+        expect(await board.ackReclaim('row-1', TOKEN)).toBe('ok');
         expect(ok.calls[0]!.url).toBe('http://board/api/reclaims/row-1/ack');
-        expect(ok.calls[0]!.body).toEqual({ worker: 'driver-1' });
+        expect(ok.calls[0]!.body).toEqual({ token: TOKEN });
         expect(ok.calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
 
         const lost = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
-        expect(await boardOn(lost.fetch).ackReclaim('row-1', 'driver-1')).toBe('lost');
+        expect(await boardOn(lost.fetch).ackReclaim('row-1', TOKEN)).toBe('lost');
 
         const gone = recorder(() => Response.json({ error: 'No such reclaim' }, { status: 404 }));
-        expect(await boardOn(gone.fetch).ackReclaim('row-1', 'driver-1')).toBe('missing');
+        expect(await boardOn(gone.fetch).ackReclaim('row-1', TOKEN)).toBe('missing');
+    });
+
+    it("renews a row under its token for the driver's lease, reading 200, 409 and 404 as held, lost and missing", async () => {
+        const held = recorder(() => Response.json({ leaseExpiresAt: '2026-08-21T12:10:00.000Z' }, { status: 200 }));
+        const board = boardOn(held.fetch, 'fwt_abc');
+        expect(await board.renewReclaim('row-1', TOKEN)).toBe('held');
+        expect(held.calls[0]!.url).toBe('http://board/api/reclaims/row-1/renew');
+        expect(held.calls[0]!.body).toEqual({ token: TOKEN, leaseSeconds: 300 });
+        expect(held.calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
+
+        let seen: AbortSignal | null | undefined;
+        const bounded = (async (_url: string, init: RequestInit) => {
+            seen = init.signal;
+            return Response.json({ leaseExpiresAt: '2026-08-21T12:10:00.000Z' }, { status: 200 });
+        }) as unknown as typeof globalThis.fetch;
+        const deadline = AbortSignal.timeout(60_000);
+        expect(await boardOn(bounded).renewReclaim('row-1', TOKEN, deadline)).toBe('held');
+        expect(seen).toBe(deadline);
+
+        const lost = recorder(() => Response.json({ error: 'Reclaim is not yours' }, { status: 409 }));
+        expect(await boardOn(lost.fetch).renewReclaim('row-1', TOKEN)).toBe('lost');
+
+        const gone = recorder(() => Response.json({ error: 'No such reclaim' }, { status: 404 }));
+        expect(await boardOn(gone.fetch).renewReclaim('row-1', TOKEN)).toBe('missing');
     });
 
     it('still throws on any other non-ok answer', async () => {
         const { fetch } = recorder(() => Response.json({ error: 'boom' }, { status: 500 }));
         const board = boardOn(fetch);
 
-        await expect(board.ackReclaim('row-1', 'driver-1')).rejects.toThrow(/500/);
+        await expect(board.ackReclaim('row-1', TOKEN)).rejects.toThrow(/500/);
+        await expect(board.renewReclaim('row-1', TOKEN)).rejects.toThrow(/500/);
     });
 });
 

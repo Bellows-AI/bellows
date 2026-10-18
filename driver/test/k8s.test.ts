@@ -1206,7 +1206,10 @@ const claimPathFor = (id: string): string => `${configmapsPath}/factory-job-${id
  * exactly the three apiserver properties the acquire/takeover/release protocol rests on.
  */
 const claimServer = () => {
-    const claims = new Map<string, { uid: string; holder: string; claimSeq: string; created: string }>();
+    const claims = new Map<
+        string,
+        { uid: string; holder: string; claimSeq: string; created: string; annotations: Record<string, string> }
+    >();
     let uids = 0;
     return (method: K8sMethod, path: string, body: unknown): K8sResponse | undefined => {
         if (method === 'POST' && path === configmapsPath) {
@@ -1220,6 +1223,7 @@ const claimServer = () => {
                 // The apiserver stamps this on every object; the orphaned-claim readout (issue
                 // #344) reports the claim's age from it.
                 created: new Date().toISOString(),
+                annotations: {},
             });
             return { status: 201, body: '{}' };
         }
@@ -1231,7 +1235,11 @@ const claimServer = () => {
                     ? {
                           status: 200,
                           body: JSON.stringify({
-                              metadata: { uid: claim.uid, creationTimestamp: claim.created },
+                              metadata: {
+                                  uid: claim.uid,
+                                  creationTimestamp: claim.created,
+                                  annotations: claim.annotations,
+                              },
                               data: { holder: claim.holder, claimSeq: claim.claimSeq },
                           }),
                       }
@@ -1244,6 +1252,17 @@ const claimServer = () => {
                     return { status: 200, body: '{}' };
                 }
                 return { status: claim ? 409 : 404, body: '{"kind":"Status"}' };
+            }
+            if (method === 'PATCH') {
+                // A merge patch whose `metadata.uid` names another incarnation is refused, as the
+                // apiserver refuses a uid it cannot match.
+                const patch = body as { metadata?: { uid?: string; annotations?: Record<string, string> } } | undefined;
+                if (!claim) return { status: 404, body: '{"kind":"Status"}' };
+                if (patch?.metadata?.uid && patch.metadata.uid !== claim.uid) {
+                    return { status: 409, body: '{"kind":"Status"}' };
+                }
+                Object.assign(claim.annotations, patch?.metadata?.annotations ?? {});
+                return { status: 200, body: '{}' };
             }
         }
         return undefined;
@@ -8685,6 +8704,218 @@ describe('teardown ownership in time and incarnation (#821)', () => {
         const claim = await cluster.request('GET', claimPathFor(repoJob.id));
         expect(claim.status).toBe(200);
         expect(JSON.parse(claim.body).metadata.uid).not.toBe('claim-uid-1');
+    });
+
+    // Per-acquisition reclaim ownership (#821): a row re-offered after its lease ran out is a
+    // different acquisition with a token of its own, so the first one's checkout claim fences it.
+    it('stands a second acquisition of the row down on the first one’s claim, touching nothing of it', async () => {
+        const cluster = incarnations();
+        const first = gated();
+        const late = reclaimRunner(cluster.request, first.steps).reclaimWorktree(repoJob);
+        while (!first.steps.submitted.some((step) => step.kind === 'reclaim')) await tick();
+
+        const before = cluster.calls.length;
+        expect(
+            await reclaimRunner(cluster.request, gated().steps).reclaimWorktree({ ...repoJob, leaseToken: NEW_TOKEN })
+        ).toMatchObject({ ok: false });
+        expect(
+            cluster.calls
+                .slice(before)
+                .filter(
+                    (call) => call.method === 'DELETE' || (call.method === 'POST' && call.path === jobsPath(namespace))
+                )
+        ).toEqual([]);
+
+        first.release();
+        expect(await late).toMatchObject({ ok: true });
+        expect(claimDeletes(cluster.calls)).toHaveLength(1);
+    });
+
+    /** The cluster above, but a Job has a pod only once it is resumed — a suspended Job has none. */
+    const podsOnResume = (cluster: ReturnType<typeof incarnations>) => {
+        const resumed = new Set<string>();
+        const resumes: { name: string; status: number }[] = [];
+        const request: K8sRequest = async (method, path, body) => {
+            if (method === 'GET' && path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                cluster.calls.push({ method, path, body });
+                const terms = decodeURIComponent(path.split('labelSelector=')[1] ?? '')
+                    .split(',')
+                    .filter((term) => term.includes('=') && !term.includes('!'))
+                    .map((term) => term.split('=') as [string, string]);
+                const items = [...cluster.jobs.entries()]
+                    .filter(
+                        ([name, job]) => resumed.has(name) && terms.every(([key, value]) => job.labels[key] === value)
+                    )
+                    .map(([name]) => ({ metadata: { name: `${name}-pod` }, status: { phase: 'Running' } }));
+                return { status: 200, body: JSON.stringify({ items }) };
+            }
+            const answer = await cluster.request(method, path, body);
+            if (method === 'PATCH' && (body as { spec?: { suspend?: boolean } } | undefined)?.spec?.suspend === false) {
+                const name = path.split('?')[0]!.split('/').pop()!;
+                resumes.push({ name, status: answer.status });
+                if (answer.status < 300) resumed.add(name);
+            }
+            return answer;
+        };
+        return { request, resumes };
+    };
+    const claimOf = async (request: K8sRequest) => {
+        const read = JSON.parse((await request('GET', claimPathFor(repoJob.id))).body);
+        return {
+            observed: { uid: read.metadata.uid as string, holder: repoJob.leaseToken },
+            annotations: (read.metadata.annotations ?? {}) as Record<string, string>,
+        };
+    };
+    const reaper = { ...repoJob, leaseToken: NEW_TOKEN };
+    const callIndex = (calls: Call[], match: (call: Call) => boolean) => calls.findIndex(match);
+
+    // The orphaned-claim reap revokes the claim before it lists the holder's groups (#821), and a
+    // reclaim verifies the claim unrevoked before its group may start: every group of the stale
+    // holder that can still be resumed existed before the reaper's list, and is ended before the
+    // claim goes.
+    it.each(['between its create and its verify', 'between its verify and its resume'] as const)(
+        'ends a stale acquisition’s group the reaper meets %s, and that group never runs',
+        async (window) => {
+            const cluster = incarnations();
+            const pods = podsOnResume(cluster);
+            let release!: () => void;
+            const held = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+            let paused = false;
+            const at = (method: K8sMethod, path: string, body: unknown) =>
+                window === 'between its create and its verify'
+                    ? method === 'GET' &&
+                      path === claimPathFor(repoJob.id) &&
+                      reclaimPosted(cluster.calls) !== undefined
+                    : method === 'PATCH' &&
+                      (body as { spec?: { suspend?: boolean } } | undefined)?.spec?.suspend === false;
+            const staleRequest: K8sRequest = async (method, path, body) => {
+                if (!paused && at(method, path, body)) {
+                    paused = true;
+                    await held;
+                }
+                return pods.request(method, path, body);
+            };
+            const stale = reclaimed();
+            const staleRun = reclaimRunner(staleRequest, stale).reclaimWorktree(repoJob);
+            while (!paused) await tick();
+
+            const { observed } = await claimOf(cluster.request);
+            const before = cluster.calls.length;
+            expect(await reclaimRunner(pods.request, reclaimed()).reapOrphanedClaim!(reaper, observed)).toBe(true);
+            const reap = cluster.calls.slice(before);
+            const posted = reclaimPosted(cluster.calls)!;
+            const revoke = callIndex(reap, (call) => call.method === 'PATCH' && call.path === claimPathFor(repoJob.id));
+            const listed = callIndex(
+                reap,
+                (call) =>
+                    call.method === 'GET' &&
+                    call.path.startsWith(`${jobsPath(namespace)}?`) &&
+                    decodeURIComponent(call.path).includes(`factory.holder=${repoJob.leaseToken}`)
+            );
+            const ended = callIndex(
+                reap,
+                (call) => call.method === 'DELETE' && call.path.startsWith(`${jobPath(namespace, posted.name)}?`)
+            );
+            const claimDeleted = callIndex(
+                reap,
+                (call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id)
+            );
+            expect(reap[revoke]?.body).toEqual({
+                metadata: { uid: observed.uid, annotations: { 'factory.revoked': NEW_TOKEN } },
+            });
+            expect(revoke).toBeGreaterThanOrEqual(0);
+            expect(listed).toBeGreaterThan(revoke);
+            expect(ended).toBeGreaterThan(listed);
+            expect(claimDeleted).toBeGreaterThan(ended);
+
+            release();
+            expect(await staleRun).toMatchObject({ ok: false });
+            expect(pods.resumes.filter((resume) => resume.status < 300)).toEqual([]);
+            expect(stale.submitted.filter((step) => step.kind === 'reclaim')).toEqual([]);
+        }
+    );
+
+    it('refuses to start a group whose claim the reaper revoked after listing nothing of it', async () => {
+        const cluster = incarnations();
+        const pods = podsOnResume(cluster);
+        let releaseCreate!: () => void;
+        const createHeld = new Promise<void>((resolve) => {
+            releaseCreate = resolve;
+        });
+        let creating = false;
+        const staleRequest: K8sRequest = async (method, path, body) => {
+            const name = (body as { metadata?: { name?: string } } | undefined)?.metadata?.name;
+            if (
+                !creating &&
+                method === 'POST' &&
+                path === jobsPath(namespace) &&
+                name?.startsWith('factory-reclaim-')
+            ) {
+                creating = true;
+                await createHeld;
+            }
+            return pods.request(method, path, body);
+        };
+        let releaseReap!: () => void;
+        const reapHeld = new Promise<void>((resolve) => {
+            releaseReap = resolve;
+        });
+        let listed = false;
+        const reaperRequest: K8sRequest = async (method, path, body) => {
+            const answer = await pods.request(method, path, body);
+            if (
+                !listed &&
+                method === 'GET' &&
+                path.startsWith(`${jobsPath(namespace)}?`) &&
+                decodeURIComponent(path).includes(`factory.holder=${repoJob.leaseToken}`)
+            ) {
+                listed = true;
+                await reapHeld;
+            }
+            return answer;
+        };
+        const stale = reclaimed();
+        const staleRun = reclaimRunner(staleRequest, stale).reclaimWorktree(repoJob);
+        while (!creating) await tick();
+        const { observed } = await claimOf(cluster.request);
+        const reaping = reclaimRunner(reaperRequest, reclaimed()).reapOrphanedClaim!(reaper, observed);
+        while (!listed) await tick();
+
+        // The stale acquisition's create lands after the reaper's list: only the revoke stops it.
+        releaseCreate();
+        expect(await staleRun).toMatchObject({ ok: false });
+        releaseReap();
+        await reaping;
+
+        expect(pods.resumes).toEqual([]);
+        expect(stale.submitted.filter((step) => step.kind === 'reclaim')).toEqual([]);
+        expect(cluster.reclaimNames()).toEqual([]);
+    });
+
+    it('reaps nothing when its revoke is refused: the claim was replaced since it was read', async () => {
+        const cluster = incarnations();
+        await cluster.request('POST', configmapsPath, {
+            metadata: { name: claimName(repoJob) },
+            data: { holder: repoJob.leaseToken, claimSeq: '1' },
+        });
+        const { observed } = await claimOf(cluster.request);
+        const before = cluster.calls.length;
+
+        expect(
+            await reclaimRunner(cluster.request, reclaimed()).reapOrphanedClaim!(reaper, {
+                ...observed,
+                uid: 'claim-uid-replaced',
+            })
+        ).toBe(false);
+
+        const reap = cluster.calls.slice(before);
+        expect(reap.filter((call) => call.method === 'DELETE')).toEqual([]);
+        expect(reap.some((call) => call.method === 'GET' && call.path.startsWith(`${jobsPath(namespace)}?`))).toBe(
+            false
+        );
+        expect((await claimOf(cluster.request)).annotations).toEqual({});
     });
 
     it('answers a read adoption whose finished lease left services whose Secrets cannot be deleted', async () => {

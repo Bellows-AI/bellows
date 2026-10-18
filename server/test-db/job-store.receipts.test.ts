@@ -11,12 +11,15 @@ import { testOrg } from './fixtures.js';
  * a released interrupt — records a receipt in the settle's own transaction, so the identical
  * request replayed after its response was lost answers the original result instead of `lost`, and
  * a different request under the concluded lease is still refused. A threadDone verdict queues its
- * worktree reclaim claimed by the completing worker, and the reclaimed marker follows the ack.
+ * worktree reclaim owned by the completing attempt's lease token, and the reclaimed marker follows
+ * the ack.
  */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const WORKER = 'worker-1';
 const LEASE_SECONDS = 300;
+/** Another acquisition's ownership token. */
+const OTHER_TOKEN = randomUUID();
 const db = useTestDb({ max: 4, orgs: [ORG] });
 
 let sql: Sql;
@@ -46,8 +49,8 @@ const receipts = (id: string) =>
     sql<{ operation: string }[]>`select operation from job_settle_receipt where org_id = ${ORG} and job_id = ${id}`;
 
 const reclaimRows = (root: string) =>
-    sql<{ id: string; claimed_by: string | null }[]>`
-        select id, claimed_by from task_reclaim where org_id = ${ORG} and root_job_id = ${root}
+    sql<{ id: string; claimed_by: string | null; claim_token: string | null }[]>`
+        select id, claimed_by, claim_token from task_reclaim where org_id = ${ORG} and root_job_id = ${root}
     `;
 
 const reclaimedAt = async (root: string): Promise<Date | null> => {
@@ -206,12 +209,14 @@ describe.skipIf(!enabled)('settle receipts — database', () => {
 });
 
 describe.skipIf(!enabled)('the verdict-time worktree reclaim — database', () => {
-    it('queues the reclaim claimed by the completing worker and leaves the marker unset', async () => {
+    it("queues the reclaim owned by the completing attempt's lease token and leaves the marker unset", async () => {
         const { root, followUp, lease } = await doneThreadRunning();
         const verdict = await store.complete(followUp, lease.leaseToken, succeeded);
         if (verdict.result !== 'ok') throw new Error(verdict.result);
         expect(verdict.threadDone).toBe(true);
-        expect(await reclaimRows(root)).toEqual([{ id: verdict.reclaimId, claimed_by: WORKER }]);
+        expect(await reclaimRows(root)).toEqual([
+            { id: verdict.reclaimId, claimed_by: WORKER, claim_token: lease.leaseToken },
+        ]);
         expect(await reclaimedAt(root)).toBeNull();
     });
 
@@ -219,7 +224,7 @@ describe.skipIf(!enabled)('the verdict-time worktree reclaim — database', () =
         const { root, followUp, lease } = await doneThreadRunning();
         const verdict = await store.complete(followUp, lease.leaseToken, succeeded);
         if (verdict.result !== 'ok' || !verdict.reclaimId) throw new Error('no reclaim was issued');
-        expect(await store.ackReclaim(verdict.reclaimId, WORKER)).toBe('ok');
+        expect(await store.ackReclaim(verdict.reclaimId, lease.leaseToken)).toBe('ok');
         expect(await reclaimedAt(root)).not.toBeNull();
         expect(await reclaimRows(root)).toHaveLength(0);
     });
@@ -229,45 +234,68 @@ describe.skipIf(!enabled)('the verdict-time worktree reclaim — database', () =
         const verdict = await store.complete(followUp, lease.leaseToken, succeeded);
         if (verdict.result !== 'ok' || !verdict.reclaimId) throw new Error('no reclaim was issued');
         expect(await store.reopen(root)).toBe('reclaiming');
-        await store.ackReclaim(verdict.reclaimId, WORKER);
+        await store.ackReclaim(verdict.reclaimId, lease.leaseToken);
         expect(await store.reopen(root)).toBe('reclaimed');
     });
 
-    it('an unacked verdict reclaim is offered to the queue once its lease expires', async () => {
+    it("a queue re-acquisition of an expired verdict reclaim fences the attempt's ack and renew", async () => {
         const { root, followUp, lease } = await doneThreadRunning();
         const verdict = await store.complete(followUp, lease.leaseToken, succeeded);
         if (verdict.result !== 'ok' || !verdict.reclaimId) throw new Error('no reclaim was issued');
         await sql`update task_reclaim set lease_expires_at = now() where org_id = ${ORG} and root_job_id = ${root}`;
-        expect(await store.claimReclaim('worker-2', LEASE_SECONDS)).toMatchObject({
-            id: verdict.reclaimId,
-            rootJobId: root,
+        const requeued = await store.claimReclaim(WORKER, LEASE_SECONDS);
+        expect(requeued).toMatchObject({ id: verdict.reclaimId, rootJobId: root });
+        expect(requeued?.token).not.toBe(lease.leaseToken);
+
+        // The same worker name, a different acquisition: the name proves nothing, the token does.
+        expect(await store.renewReclaim(verdict.reclaimId, lease.leaseToken, LEASE_SECONDS)).toEqual({
+            result: 'lost',
         });
-        expect(await store.ackReclaim(verdict.reclaimId, WORKER)).toBe('lost');
+        expect(await store.ackReclaim(verdict.reclaimId, lease.leaseToken)).toBe('lost');
         expect(await reclaimedAt(root)).toBeNull();
+        expect(await store.ackReclaim(verdict.reclaimId, requeued!.token)).toBe('ok');
+        expect(await reclaimedAt(root)).not.toBeNull();
+    });
+
+    it('a replayed threadDone verdict answers no reclaim once another acquisition owns the row', async () => {
+        const { root, followUp, lease } = await doneThreadRunning();
+        const first = await store.complete(followUp, lease.leaseToken, succeeded);
+        expect(first).toMatchObject({ reclaimId: expect.any(String) });
+        await sql`update task_reclaim set lease_expires_at = now() where org_id = ${ORG} and root_job_id = ${root}`;
+        expect(await store.claimReclaim(WORKER, LEASE_SECONDS)).not.toBeNull();
+
+        expect(await store.complete(followUp, lease.leaseToken, succeeded)).toEqual({
+            result: 'ok',
+            threadDone: true,
+            reclaimId: null,
+        });
     });
 
     it('a verdict finding a live-claimed reclaim of its root issues none of its own', async () => {
         const { root, followUp, lease } = await doneThreadRunning();
         await sql`
-            insert into task_reclaim (org_id, root_job_id, claimed_by, lease_expires_at)
-            values (${ORG}, ${root}, 'worker-2', now() + interval '5 minutes')
+            insert into task_reclaim (org_id, root_job_id, claimed_by, claim_token, lease_expires_at)
+            values (${ORG}, ${root}, 'worker-2', ${OTHER_TOKEN}, now() + interval '5 minutes')
         `;
         expect(await store.complete(followUp, lease.leaseToken, succeeded)).toEqual({
             result: 'ok',
             threadDone: true,
             reclaimId: null,
         });
-        expect(await reclaimRows(root)).toEqual([{ id: expect.any(String), claimed_by: 'worker-2' }]);
+        expect(await reclaimRows(root)).toEqual([
+            { id: expect.any(String), claimed_by: 'worker-2', claim_token: OTHER_TOKEN },
+        ]);
     });
 
-    it('a replayed verdict answers no reclaim once its order was withdrawn', async () => {
-        // The answer was lost, the reclaim lease ran out, a reopen withdrew the row and the thread
-        // moved on: the late replay must not order the tree away from under it.
+    it('a replayed verdict answers no reclaim once its order lapsed, and the lapsed order still holds reopen off', async () => {
+        // The answer was lost and the reclaim lease ran out: the late replay must not order a
+        // removal its lease no longer covers, and the row an acquisition took is never withdrawn.
         const { root, followUp, lease } = await doneThreadRunning();
         const first = await store.complete(followUp, lease.leaseToken, succeeded);
         expect(first).toMatchObject({ reclaimId: expect.any(String) });
         await sql`update task_reclaim set lease_expires_at = now() where org_id = ${ORG} and root_job_id = ${root}`;
-        expect(await store.reopen(root)).toEqual({ result: 'ok' });
+        expect(await store.reopen(root)).toBe('reclaiming');
+        expect(await reclaimRows(root)).toHaveLength(1);
 
         expect(await store.complete(followUp, lease.leaseToken, succeeded)).toEqual({
             result: 'ok',
@@ -307,6 +335,8 @@ describe.skipIf(!enabled)('the verdict-time worktree reclaim — database', () =
             threadDone: true,
             reclaimId: queued!.id,
         });
-        expect(await reclaimRows(root)).toEqual([{ id: queued!.id, claimed_by: WORKER }]);
+        expect(await reclaimRows(root)).toEqual([
+            { id: queued!.id, claimed_by: WORKER, claim_token: lease.leaseToken },
+        ]);
     });
 });

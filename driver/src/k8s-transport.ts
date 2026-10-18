@@ -154,7 +154,7 @@ export function refusalDiagnosis(method: string, path: string, status: number, b
 export const TIMEOUT_EXIT_CODE = 124;
 
 export interface K8sClaim {
-    metadata?: { uid?: string; creationTimestamp?: string };
+    metadata?: { uid?: string; creationTimestamp?: string; annotations?: Record<string, string> };
     data?: { holder?: string; claimSeq?: string };
 }
 

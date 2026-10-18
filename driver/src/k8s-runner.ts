@@ -25,7 +25,7 @@ import {
     wasKilled,
 } from './k8s-kill.js';
 import { claimName, claimPath, deleteJob, jobPath, jobPodsPath, podLogPath, podsByLeasePath } from './k8s-auxspec.js';
-import { acquireClaim, type ObservedClaim, readClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
+import { acquireClaim, type ObservedClaim, readClaim, releaseClaimAfterGroupEnd, revokeClaim } from './k8s-fence.js';
 import {
     ensureGroup,
     finishGroup,
@@ -551,13 +551,16 @@ async function heldClaim(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult['h
  * knows as live, left behind by a driver that died holding it — the one leak the fence's
  * release-by-next-claimant cannot heal, because no later claimant of that job ever comes. The
  * claim is the incarnation the refused reclaim observed (issue #821): one replaced since — a
- * reopen's live claimant — is rejected before anything is ended. Both groups its holder can have
- * left (its attempt's and its reclaim's, derived from the claim alone) are ended the acknowledged
- * way first, and the uid-preconditioned delete runs only once both are confirmed ended. Answers
- * false otherwise: the caller retries on a later offer, and a false negative costs one more
- * throttled log.
+ * reopen's live claimant — is rejected before anything is ended. The claim is revoked first
+ * (`revokeClaim`, under the reaping acquisition's token): a reclaim of the holder whose group was
+ * not yet created when the groups are listed below then refuses to start it. Both groups its
+ * holder can have left (its attempt's and its reclaim's, derived from the claim alone) are ended
+ * the acknowledged way, and the uid-preconditioned delete runs only once both are confirmed ended.
+ * Answers false otherwise — a refused revoke included: the caller retries on a later offer, and a
+ * false negative costs one more throttled log.
  */
 async function reapOrphanedClaim(deps: K8sDeps, job: BoardJob, observed: ObservedClaim): Promise<boolean> {
+    if (!(await revokeClaim(deps, job, observed))) return false;
     const groups = await holderGroupsOf(deps, job, observed.holder);
     if (groups === null) return false;
     return releaseClaimAfterGroupEnd(deps, job, { groups, observed });
@@ -590,8 +593,8 @@ async function reclaimWorktree(deps: K8sDeps, job: BoardJob): Promise<ReclaimRes
         if (claim) refused.heldClaim = claim;
         return refused;
     }
-    // The incarnation this reclaim took: its holder token is the reclaim row's, which another
-    // driver offered the same row shares, so only this uid tells this invocation's claim apart.
+    // The incarnation this reclaim took: its holder token is this acquisition's own (issue #821),
+    // and the uid tells it apart from one an earlier invocation under the same token took.
     const acquired = await readClaim(deps, job);
     if (acquired?.holder !== job.leaseToken) {
         return { ok: false, removed: false, reason: 'the checkout claim this reclaim took could not be read back' };

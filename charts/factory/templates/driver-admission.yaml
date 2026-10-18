@@ -26,7 +26,10 @@ pod — because `create pods` would otherwise be `read every Secret`:
 `-objects` fences what the driver may create and delete: only objects labelled `factory.job` (the
 label every runner-owned object carries), so the dashboard's Secret, Service and ConfigMaps are
 out of reach; Secrets only under the per-attempt names and only Opaque (a service-account-token
-Secret would mint credentials); Services only headless, never an exposure.
+Secret would mint credentials); Services only headless, never an exposure. The one update it
+admits is a checkout claim's revoke (issue #821): the Role's `patch` on configmaps is
+namespace-wide, so an update reaches only a `factory-job-<id>-claim` ConfigMap, keeps its labels
+and data, and changes no annotation but `factory.revoked`.
 
 Limits, stated: the per-attempt Secret names do not carry the release, so in a namespace shared by
 two releases one driver can still reach the other's per-attempt objects — install one release per
@@ -228,6 +231,10 @@ spec:
               apiVersions: ['v1']
               operations: ['CREATE', 'DELETE']
               resources: ['pods', 'secrets', 'configmaps', 'services']
+            - apiGroups: ['']
+              apiVersions: ['v1']
+              operations: ['UPDATE']
+              resources: ['configmaps']
             - apiGroups: ['batch']
               apiVersions: ['v1']
               operations: ['CREATE', 'DELETE']
@@ -236,12 +243,30 @@ spec:
         - name: the-driver
           expression: {{ printf "request.userInfo.username == '%s'" $user | quote }}
     variables:
-        # A DELETE carries the stored object as oldObject and no object.
+        # A DELETE carries the stored object as oldObject and no object; an UPDATE carries both.
         - name: target
           expression: "request.operation == 'DELETE' ? oldObject : object"
+        # Read only under an UPDATE (variables are lazy): the claim's annotations before and after.
+        - name: oldAnnotations
+          expression: "has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {}"
+        - name: newAnnotations
+          expression: "has(object.metadata.annotations) ? object.metadata.annotations : {}"
     validations:
         - expression: "has(variables.target.metadata.labels) && 'factory.job' in variables.target.metadata.labels"
           message: 'the driver creates and deletes only objects labelled factory.job'
+        - expression: >-
+              request.operation != 'UPDATE' ||
+              (oldObject.metadata.name.matches('^factory-job-[0-9a-f-]+-claim$') &&
+                has(oldObject.metadata.labels) && 'factory.job' in oldObject.metadata.labels)
+          message: 'the driver updates only checkout claims'
+        - expression: >-
+              request.operation != 'UPDATE' ||
+              (has(object.metadata.labels) && object.metadata.labels == oldObject.metadata.labels &&
+                has(object.data) && has(oldObject.data) && object.data == oldObject.data &&
+                variables.newAnnotations.all(k, k == 'factory.revoked' ||
+                  (k in variables.oldAnnotations && variables.oldAnnotations[k] == variables.newAnnotations[k])) &&
+                variables.oldAnnotations.all(k, k == 'factory.revoked' || k in variables.newAnnotations))
+          message: 'a checkout claim update keeps its labels and data, and changes only factory.revoked'
         - expression: >-
               request.kind.kind != 'Secret' ||
               (variables.target.metadata.name.matches({{ squote $secretName }}) &&

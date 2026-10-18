@@ -22,6 +22,7 @@ import {
     handleListJobs,
     handleReclaimsAck,
     handleReclaimsClaim,
+    handleReclaimsRenew,
     handleRemove,
     handleReopen,
     handleRetry,
@@ -133,6 +134,9 @@ export const jobRoutes =
         );
         app.post('/api/reclaims/:id/ack', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleReclaimsAck(orgs, request, reply)
+        );
+        app.post('/api/reclaims/:id/renew', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleReclaimsRenew(orgs, request, reply)
         );
         app.post('/api/jobs/:id/complete', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handleCompleteJob(orgs, request, reply)

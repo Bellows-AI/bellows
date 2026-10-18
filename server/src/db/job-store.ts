@@ -35,7 +35,7 @@ import {
 import { closeMergedPr } from './job-store-merge.js';
 import { answerQuestionBy, askQuestionReport } from './job-store-questions.js';
 import { readReviewFor, requestReviewFor } from './job-store-reviews.js';
-import { claimJob, claimReclaimRow, ackReclaimRow } from './job-store-claim.js';
+import { claimJob, claimReclaimRow, ackReclaimRow, renewReclaimRow } from './job-store-claim.js';
 import {
     threadOf,
     getJob,
@@ -276,9 +276,14 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
             return claimReclaimRow(ctx, worker, leaseSeconds);
         },
 
-        async ackReclaim(id, worker) {
+        async ackReclaim(id, token) {
             await gate();
-            return ackReclaimRow(ctx, id, worker);
+            return ackReclaimRow(ctx, id, token);
+        },
+
+        async renewReclaim(id, token, leaseSeconds) {
+            await gate();
+            return renewReclaimRow(ctx, id, token, leaseSeconds);
         },
 
         async thread(id) {

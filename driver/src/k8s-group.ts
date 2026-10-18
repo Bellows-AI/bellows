@@ -341,12 +341,15 @@ export async function reclaimInGroup(deps: K8sDeps, job: BoardJob, acquired: Obs
             },
             { identity, standDown: noStandDown }
         );
-        // The claim must still be the incarnation this invocation took before anything runs: a
-        // create delayed past its lease may land after the row's other driver retook the checkout.
+        // The claim must still be the incarnation this invocation took, unrevoked, before anything
+        // runs: a create delayed past its lease may land after the row's other driver retook the
+        // checkout, or after an orphaned-claim reap revoked it and listed this holder's groups.
         const now = await readClaim(deps, job);
         if (now?.uid !== acquired.uid || now.holder !== acquired.holder) {
             throw new Error('the checkout claim this reclaim took was replaced before its group could start');
         }
+        if (now.revoked)
+            throw new Error('the checkout claim this reclaim took was revoked before its group could start');
         await resumeJob(deps, name, identity.uids?.job, noStandDown);
         await awaitSupervisor(deps, group, name);
         result = await runReclaimStep(stepHostOf(deps), group);
