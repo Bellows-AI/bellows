@@ -104,6 +104,10 @@ mkdir -p "$(dirname "$TIMINGS_FILE")" && printf 'phase\tseconds\n' >"$TIMINGS_FI
 # check (or phase start) before it, and the pods the run started as kubelet saw them (cleanup).
 CHECKS_FILE="${TIMINGS_FILE%.tsv}.checks.tsv"
 PODS_FILE="${TIMINGS_FILE%.tsv}.pods.tsv"
+# And what the processes said, kubelet-timestamped: the smoke driver before recovery replaces it, and
+# the first smoke runner, streamed while it runs — the driver reaps a finished runner within seconds.
+DRIVER_LOG="${TIMINGS_FILE%.tsv}.driver-smoke.log"
+RUNNER_LOG="${TIMINGS_FILE%.tsv}.runner-smoke.log"
 printf 'phase\tseconds\tresult\tcheck\n' >"$CHECKS_FILE" || exit 1
 phase_name=''
 phase_started=$SECONDS
@@ -125,6 +129,11 @@ begin_phase() {
 check_timing() { # check_timing <ok|FAIL> <name>
     printf '%s\t%s\t%s\t%s\n' "$phase_name" "$((SECONDS - check_started))" "$1" "$2" >>"$CHECKS_FILE"
     check_started=$SECONDS
+}
+
+save_logs() { # save_logs <label selector> <file> — every container's whole log; bounded, never fatal
+    kubectl logs -l "$1" -n "$NAMESPACE" --all-containers --timestamps --prefix --tail=-1 \
+        --max-log-requests=50 --request-timeout=20s >"$2" 2>&1 || true
 }
 
 ok() {
@@ -162,6 +171,11 @@ cleanup() {
         kill "$pid" 2>/dev/null
         wait "$pid" 2>/dev/null
     done
+    if [ -n "${runner_log_pid:-}" ]; then
+        kill "$runner_log_pid" 2>/dev/null
+        wait "$runner_log_pid" 2>/dev/null
+        runner_log_pid=''
+    fi
     if [ -n "${pf_pid:-}" ]; then
         kill "$pf_pid" 2>/dev/null
         wait "$pf_pid" 2>/dev/null
@@ -198,8 +212,8 @@ cleanup() {
     rm -rf "$work"
     end_phase
     printf 'total\t%s\n' "$((SECONDS - lane_started))" >>"$TIMINGS_FILE"
-    printf '[timing] total: %ss; timings: %s (checks: %s, pods: %s); exit: %s\n' "$((SECONDS - lane_started))" \
-        "$TIMINGS_FILE" "$CHECKS_FILE" "$PODS_FILE" "$status"
+    printf '[timing] total: %ss; timings: %s (beside it: .checks.tsv, .pods.tsv, .driver-smoke.log, .runner-smoke.log); exit: %s\n' \
+        "$((SECONDS - lane_started))" "$TIMINGS_FILE" "$status"
 }
 trap cleanup EXIT
 
@@ -1649,6 +1663,10 @@ esac
 
 # Observe this task's real Job while its agent is held alive, before normal teardown can remove it.
 smoke_pod="$(await_runner_pod "$id")"
+if [ -n "$smoke_pod" ]; then
+    kubectl logs -f "$smoke_pod" -n "$NAMESPACE" --all-containers --timestamps --prefix >"$RUNNER_LOG" 2>&1 &
+    runner_log_pid=$!
+fi
 job_object="$(first_runner_job "$id")"
 if [ -n "$smoke_pod" ] && [ -n "$job_object" ]; then
     ok 'a runner Job object exists for the queued task'
@@ -1804,6 +1822,12 @@ kubectl wait --for=delete pod/factory-orphan-reaper-probe -n "$NAMESPACE" --time
 kubectl wait --for=delete service/factory-orphan-reaper-svc -n "$NAMESPACE" --timeout=60s >/dev/null 2>&1 &&
     ok 'the reaper removes the orphan Service' ||
     bad 'the reaper removes the orphan Service' 'the Service survived the reaper'
+save_logs "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=driver" "$DRIVER_LOG"
+if [ -n "${runner_log_pid:-}" ]; then
+    kill "$runner_log_pid" 2>/dev/null
+    wait "$runner_log_pid" 2>/dev/null
+    runner_log_pid=''
+fi
 
 if selected_phase admission; then
 begin_phase admission

@@ -360,4 +360,26 @@ describe('kind lane timing evidence', () => {
         expect(dump).toBeLessThan(cleanup.indexOf('helm uninstall'));
         expect(script.indexOf('deploy_started_at="$(date -u')).toBeGreaterThan(script.indexOf('begin_phase deploy'));
     });
+
+    it('keeps the smoke driver log before recovery replaces the driver', () => {
+        expect(script).toMatch(/--all-containers --timestamps --prefix --tail=-1/);
+        const driver = script.indexOf(
+            'save_logs "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=driver" "$DRIVER_LOG"'
+        );
+        expect(driver).toBeGreaterThan(script.indexOf("ok 'the reaper removes the orphan Service'"));
+        expect(driver).toBeLessThan(script.indexOf('begin_phase admission'));
+    });
+
+    it('streams the first smoke runner while it runs, since the driver reaps it once finished', () => {
+        const stream = script.indexOf(
+            'kubectl logs -f "$smoke_pod" -n "$NAMESPACE" --all-containers --timestamps --prefix >"$RUNNER_LOG"'
+        );
+        expect(stream).toBeGreaterThan(script.indexOf('smoke_pod="$(await_runner_pod "$id")"'));
+        expect(stream).toBeLessThan(script.indexOf('release_stub "$smoke_release"'));
+        // Stopped at the end of smoke and, on any early exit, by cleanup.
+        expect(script.slice(script.indexOf('save_logs "app.kubernetes.io/instance'))).toMatch(
+            /kill "\$runner_log_pid"/
+        );
+        expect(cleanup).toMatch(/kill "\$runner_log_pid"/);
+    });
 });
