@@ -16,6 +16,11 @@ export const SESSION_MARK = 'factory.session';
 /** The run's command, hashed (`commandMark`): a queued task's command edited since is not adopted. */
 export const COMMAND_MARK = 'factory.command';
 /**
+ * Why the driver ended a run itself (`termination.ts`), one mark per reason, its detail the value:
+ * on a kubernetes runner Job's annotations, a docker kill marker volume's labels.
+ */
+export const KILL_MARK_PREFIX = 'factory.kill.';
+/**
  * Docker only: which container of a run's group this is — `agent`, `supervisor` or `exporter`
  * (`supervisor-contract.ts`). The group's containers share the job and lease labels; this one tells
  * a kill of the agent from the teardown of the whole group.

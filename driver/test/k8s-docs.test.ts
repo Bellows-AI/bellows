@@ -156,6 +156,9 @@ describe('the executor isolation record (#382)', () => {
         expect(prose(kubernetesDocs)).toContain(
             'the job redone in its session and tree, an interruption inside the budget'
         );
+        expect(kubernetesDocs).toContain(
+            'Stated limit: why a driver ended a run is recorded on the attempt only where'
+        );
         expect(kubernetesDocs).toContain('`ttlSecondsAfterFinished`');
     });
 

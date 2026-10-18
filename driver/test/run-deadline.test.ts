@@ -98,6 +98,8 @@ describe('the docker runner kill timer', () => {
         submit: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
         awaitReport: () => new Promise(() => undefined),
         contacted: () => true,
+        release: () => undefined,
+        attach: () => undefined,
     };
 
     it('pauses until the answer and resumes its remaining budget', async () => {

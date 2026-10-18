@@ -7,7 +7,8 @@ import { supervisorCreateArgs } from '../src/docker-group.js';
 import { runnerJobSpec } from '../src/k8s-podspec.js';
 import { reclaimGroupSpec } from '../src/k8s-group.js';
 import { CREDENTIAL_HELPER, worktreeBranch, type PublishStep } from '../src/publish.js';
-import { StepChannelClosed, StepTimedOut, type StepSink } from '../src/step-control.js';
+import { pushWithLease } from '../src/publish-stale.js';
+import { createStepBroker, StepChannelClosed, StepTimedOut, type StepSink } from '../src/step-control.js';
 import {
     orderFinish,
     orderGo,
@@ -84,6 +85,8 @@ function sink(answer: (step: StepRequest, call: number) => StepResult | Error = 
         },
         awaitReport: () => Promise.reject(new Error('not used')),
         contacted: () => true,
+        release: () => undefined,
+        attach: () => undefined,
     };
     return { host: { config, sink: impl }, submitted, tokens };
 }
@@ -161,13 +164,69 @@ describe('the publish steps over the supervisor', () => {
         const result = await supervisedStepRunner(s.host, job, { kind: 'publish' })(publishStep({ op: 'fix/10@c' }));
         expect(result.stdout).toBe('landed');
         expect(calls).toBe(3);
+        // Three deliveries of one call: the same effect and the same invocation, so a supervisor that
+        // already ran it answers from its ledger.
         expect(new Set(s.submitted.map((step) => step.id)).size).toBe(1);
+        expect(new Set(s.submitted.map((step) => step.invocation)).size).toBe(1);
 
         const hopeless = sink(() => new StepTimedOut('x'));
         await expect(supervisedStepRunner(hopeless.host, job, { kind: 'publish' })(publishStep())).rejects.toThrow(
             /was not answered in time/
         );
         expect(hopeless.submitted).toHaveLength(3);
+    });
+
+    it('gives every call its own invocation, a retried publish of the same operation included', async () => {
+        const s = sink();
+        const run = supervisedStepRunner(s.host, job, { kind: 'publish' });
+        await run(publishStep({ op: 'fix/10@d' }));
+        await run(publishStep({ op: 'fix/10@d' }));
+        const [first, again] = s.submitted;
+        expect(again!.id).toBe(first!.id);
+        expect(again!.invocation).not.toBe(first!.invocation);
+        expect(first!.invocation).toMatch(/^[A-Za-z0-9_.:-]{1,160}$/);
+    });
+
+    // The stale-lease recovery asks the same push again after it refreshed the remote: a deliberate
+    // new call of the same effect, which a cached answer to the first call must never stand in for.
+    it('runs the stale-push recovery’s second push over the step channel, under the same effect', async () => {
+        const broker = createStepBroker();
+        broker.open(CONTROL_TOKEN);
+        const pushes: StepRequest[] = [];
+        let serving = true;
+        const supervisorLoop = (async () => {
+            while (serving) {
+                const pulled = await broker.next(CONTROL_TOKEN, 20, new AbortController().signal);
+                if (!pulled || pulled === 'closed') continue;
+                const [, verb] = pulled.argv;
+                let answer: StepResult = ok();
+                if (verb === 'push') {
+                    pushes.push(pulled);
+                    answer =
+                        pushes.length === 1
+                            ? { exitCode: 1, stdout: '', stderr: 'rejected (stale info)', timedOut: false }
+                            : ok();
+                }
+                if (verb === 'rev-parse')
+                    answer = ok(`${pulled.argv[2] === 'HEAD' ? 'a'.repeat(40) : 'b'.repeat(40)}\n`);
+                if (verb === 'rev-list') answer = ok('0\n');
+                broker.settle(CONTROL_TOKEN, pulled.id, pulled.invocation, answer);
+            }
+        })();
+        const run = supervisedStepRunner({ config, sink: broker }, job, { kind: 'publish' });
+        try {
+            await pushWithLease(run, publishStep({ op: 'fix/10@e', args: ['push'] }), {
+                branch: 'fix/10',
+                credentialHelper: 'helper',
+                sha: 'a'.repeat(40),
+            });
+        } finally {
+            serving = false;
+            await supervisorLoop;
+        }
+        expect(pushes).toHaveLength(2);
+        expect(pushes[1]!.id).toBe(pushes[0]!.id);
+        expect(pushes[1]!.invocation).not.toBe(pushes[0]!.invocation);
     });
 
     it('does not ask again once the attempt’s channel is closed', async () => {

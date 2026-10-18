@@ -15,12 +15,17 @@ import {
  * PULLS it (`GET /step`, a long poll) and answers it (`POST /step/:id`). A step is never a container
  * or a Job: it is a request the supervisor runs in its own container over the task volume.
  *
- * The broker keeps three promises the callers lean on:
- *  - a step id is an operation identity: submitting an id that is in flight joins it, and one that
- *    already settled answers its recorded result, so a retried call never runs a step twice;
+ * The broker keeps four promises the callers lean on:
+ *  - a step is an effect (`id`) asked by one call (`invocation`): submitting a call that is in
+ *    flight joins it, and a new call is queued afresh — whether it runs or answers from the
+ *    supervisor's ledger is the supervisor's to decide, never a cached answer here;
  *  - a closed token rejects every waiter (`StepChannelClosed`) — a finished attempt leaves no step
  *    queued for a supervisor that will never come;
- *  - the supervisor's one report (the agent is over and the exporter drained) is read, not polled.
+ *  - a group with nobody left to answer — its supervisor reported it is leaving, or the runner saw
+ *    the group end or took it away (`release`) — rejects every waiter at once, and every later step,
+ *    until a runner makes a group under the token again (`attach`);
+ *  - the supervisor's one report (the agent is over and the exporter drained) is read, not polled,
+ *    and taken once by its id however often it is redelivered.
  */
 
 /** Thrown to a waiter when its attempt's control token closes before the answer arrives. */
@@ -58,6 +63,10 @@ export interface StepSink {
     awaitReport(token: string, signal?: AbortSignal): Promise<SupervisorReport>;
     /** Whether the supervisor has ever pulled a step or posted a report on this token. */
     contacted(token: string): boolean;
+    /** The group serving the token ended or was taken away: every waiting and later step is refused. */
+    release(token: string): void;
+    /** A runner makes a group under the token: a fresh supervisor, with no contact, report or refusal yet. */
+    attach(token: string): void;
 }
 
 /**
@@ -78,10 +87,13 @@ export interface StepBroker extends StepSink {
     has(token: string): boolean;
     /** The next queued step, `null` after `waitMs` with none, or `'closed'` for an unknown or closed token. */
     next(token: string, waitMs: number, signal: AbortSignal): Promise<StepRequest | null | 'closed'>;
-    /** Records a step's result; false for an unknown token or a step nobody waits for. */
-    settle(token: string, id: string, result: StepResult): boolean;
-    /** Records the supervisor's report. */
-    report(token: string, report: SupervisorReport): void;
+    /** Records one call's result; false for an unknown token or a call nobody waits for. */
+    settle(token: string, id: string, invocation: string, result: StepResult): boolean;
+    /**
+     * Takes the supervisor's report: `accepted` the first time, or a serving report's departure under
+     * the same id; `duplicate` for a redelivery; `conflict` for another report than the one taken.
+     */
+    report(token: string, report: SupervisorReport): 'accepted' | 'duplicate' | 'conflict';
 }
 
 interface Waiter {
@@ -96,23 +108,60 @@ interface Poller {
 
 interface Slot {
     queue: StepRequest[];
+    /** By call: `callKey(id, invocation)`. */
     waiters: Map<string, Waiter>;
-    settled: Map<string, StepResult>;
     pollers: Poller[];
     contacted: boolean;
     reported: SupervisorReport | null;
     reportWaiters: { resolve: (report: SupervisorReport) => void; reject: (error: Error) => void }[];
+    /** Why nobody is left to answer a step on this token, or null while a supervisor serves it. */
+    gone: string | null;
+    /** The reports of groups a runner made again since: a late delivery of one is never the new group's. */
+    retired: Set<string>;
 }
 
 const newSlot = (): Slot => ({
     queue: [],
     waiters: new Map(),
-    settled: new Map(),
     pollers: [],
     contacted: false,
     reported: null,
     reportWaiters: [],
+    gone: null,
+    retired: new Set(),
 });
+
+const callKey = (id: string, invocation: string): string => `${id}\n${invocation}`;
+
+/** Nobody is left to answer a step on this slot: its waiters, its queue and its polls are let go at once. */
+function abandon(slot: Slot, why: string): void {
+    slot.gone = why;
+    slot.queue.length = 0;
+    const waiters = [...slot.waiters.values()];
+    slot.waiters.clear();
+    for (const waiter of waiters) waiter.reject(new StepChannelClosed(`its step was answered: ${why}`));
+    for (const poller of [...slot.pollers]) poller.resolve(null);
+}
+
+/** The report waiters of a group that is gone: its report will never come. */
+function dropReportWaiters(slot: Slot): void {
+    for (const waiter of slot.reportWaiters.splice(0)) waiter.reject(new StepChannelClosed('the supervisor reported'));
+}
+
+/** Takes one delivery of the supervisor's report into its slot (`StepBroker.report`). */
+function takeReport(slot: Slot, report: SupervisorReport): 'accepted' | 'duplicate' | 'conflict' {
+    if (slot.retired.has(report.id)) return 'conflict';
+    slot.contacted = true;
+    const taken = slot.reported;
+    if (taken && taken.id !== report.id) return 'conflict';
+    // Only the departure moves a taken report: `serving` never turns true again.
+    if (taken && (report.serving || !taken.serving)) return 'duplicate';
+    const accepted = taken ? { ...taken, serving: false } : report;
+    slot.reported = accepted;
+    for (const waiter of slot.reportWaiters.splice(0)) waiter.resolve(accepted);
+    if (!accepted.serving) abandon(slot, 'the supervisor finalized the attempt and left');
+    return 'accepted';
+}
 
 /** A signal-bound wait: rejects with the signal's reason once it aborts, and never leaks the listener. */
 function abortable<T>(promise: Promise<T>, signal: AbortSignal | undefined, what: string): Promise<T> {
@@ -140,9 +189,9 @@ export function createStepBroker(): StepBroker {
     const submit = (token: string, step: StepRequest, signal?: AbortSignal): Promise<StepResult> => {
         const slot = slots.get(token);
         if (!slot) return Promise.reject(new StepChannelClosed(`step ${step.id} was queued`));
-        const done = slot.settled.get(step.id);
-        if (done) return Promise.resolve({ ...done, replayed: true });
-        const known = slot.waiters.get(step.id);
+        if (slot.gone) return Promise.reject(new StepChannelClosed(`step ${step.id} was queued: ${slot.gone}`));
+        const key = callKey(step.id, step.invocation);
+        const known = slot.waiters.get(key);
         if (known) return abortable(known.promise, signal, `step ${step.id}`);
         let resolve!: (result: StepResult) => void;
         let reject!: (error: Error) => void;
@@ -153,8 +202,8 @@ export function createStepBroker(): StepBroker {
         // A waiter nobody joins after its caller gave up must not become an unhandled rejection.
         promise.catch(() => undefined);
         const lost = setTimeout(() => {
-            // The step leaves the queue too: a retry under the same id is queued afresh.
-            slot.waiters.delete(step.id);
+            // The step leaves the queue too: a redelivery of the same call is queued afresh.
+            slot.waiters.delete(key);
             const queued = slot.queue.indexOf(step);
             if (queued >= 0) slot.queue.splice(queued, 1);
             reject(new StepTimedOut(step.id));
@@ -163,7 +212,7 @@ export function createStepBroker(): StepBroker {
             () => clearTimeout(lost),
             () => clearTimeout(lost)
         );
-        slot.waiters.set(step.id, { resolve, reject, promise });
+        slot.waiters.set(key, { resolve, reject, promise });
         const poller = slot.pollers.shift();
         if (poller) poller.resolve(step);
         else slot.queue.push(step);
@@ -184,10 +233,25 @@ export function createStepBroker(): StepBroker {
         },
         has: (token) => slots.has(token),
         submit,
+        release(token) {
+            const slot = slots.get(token);
+            if (!slot) return;
+            abandon(slot, 'the task group ended or was taken away');
+            dropReportWaiters(slot);
+        },
+        attach(token) {
+            const slot = slots.get(token);
+            if (!slot) return;
+            dropReportWaiters(slot);
+            if (slot.reported) slot.retired.add(slot.reported.id);
+            Object.assign(slot, { contacted: false, reported: null, gone: null });
+        },
         awaitReport(token, signal) {
             const slot = slots.get(token);
             if (!slot) return Promise.reject(new StepChannelClosed('the supervisor reported'));
             if (slot.reported) return Promise.resolve(slot.reported);
+            // A group gone with no report taken never reports.
+            if (slot.gone) return Promise.reject(new StepChannelClosed('the supervisor reported'));
             const waiting = new Promise<SupervisorReport>((resolve, reject) => {
                 slot.reportWaiters.push({ resolve, reject });
             });
@@ -217,21 +281,18 @@ export function createStepBroker(): StepBroker {
                 slot.pollers.push(poller);
             });
         },
-        settle(token, id, result) {
+        settle(token, id, invocation, result) {
             const slot = slots.get(token);
-            const waiter = slot?.waiters.get(id);
+            const key = callKey(id, invocation);
+            const waiter = slot?.waiters.get(key);
             if (!slot || !waiter) return false;
-            slot.waiters.delete(id);
-            slot.settled.set(id, result);
+            slot.waiters.delete(key);
             waiter.resolve(result);
             return true;
         },
         report(token, report) {
             const slot = slots.get(token);
-            if (!slot) return;
-            slot.contacted = true;
-            slot.reported = report;
-            for (const waiter of slot.reportWaiters.splice(0)) waiter.resolve(report);
+            return slot ? takeReport(slot, report) : 'conflict';
         },
     };
 }
@@ -244,12 +305,17 @@ export const noStepChannel: StepSink = {
         ),
     awaitReport: () => Promise.reject(new Error('this attempt has no supervisor control channel')),
     contacted: () => false,
+    release: () => undefined,
+    attach: () => undefined,
 };
 
 const HTTP_OK = 200;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
+const HTTP_CONFLICT = 409;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
+/** A call's invocation, in the supervisor's step-id alphabet. */
+const INVOCATION = /^[A-Za-z0-9_.:-]{1,160}$/;
 /** A step result carries two capped streams plus a little framing; anything larger is not one. */
 const STEP_ANSWER_FRAMING_BYTES = 4096;
 const STEP_RESULT_BODY_LIMIT = STEP_OUTPUT_LIMIT_BYTES * 2 + STEP_ANSWER_FRAMING_BYTES;
@@ -280,7 +346,7 @@ export async function serveStepPoll(
     return { status: HTTP_OK, body: next ? { step: next } : {} };
 }
 
-const parseResult = (raw: string): StepResult | null => {
+const parseResult = (raw: string): { invocation: string; result: StepResult } | null => {
     let parsed: unknown;
     try {
         parsed = JSON.parse(raw);
@@ -288,13 +354,14 @@ const parseResult = (raw: string): StepResult | null => {
         return null;
     }
     if (!isRecord(parsed)) return null;
-    const { exitCode, stdout, stderr, timedOut } = parsed;
+    const { invocation, exitCode, stdout, stderr, timedOut } = parsed;
+    if (typeof invocation !== 'string' || !INVOCATION.test(invocation)) return null;
     if (exitCode !== null && typeof exitCode !== 'number') return null;
     if (typeof stdout !== 'string' || typeof stderr !== 'string' || typeof timedOut !== 'boolean') return null;
-    return { exitCode, stdout, stderr, timedOut };
+    return { invocation, result: { exitCode, stdout, stderr, timedOut } };
 };
 
-/** `POST /step/:id`: the supervisor's answer to one step. */
+/** `POST /step/:id`: the supervisor's answer to one call of a step. */
 export async function serveStepResult(
     broker: StepBroker,
     token: string,
@@ -303,11 +370,11 @@ export async function serveStepResult(
     const id = decodeURIComponent((request.url ?? '').slice(STEP_PATH.length + 1));
     const raw = await readBody(request, STEP_RESULT_BODY_LIMIT);
     if (raw === null) return { status: HTTP_PAYLOAD_TOO_LARGE, body: { error: 'body too large' } };
-    const result = parseResult(raw);
-    if (!result) return { status: HTTP_BAD_REQUEST, body: { error: 'not a step result' } };
-    // An answer for a step nobody waits for (already settled, or its caller gave up) is still
+    const answer = parseResult(raw);
+    if (!answer) return { status: HTTP_BAD_REQUEST, body: { error: 'not a step result' } };
+    // An answer for a call nobody waits for (already settled, or its caller gave up) is still
     // acknowledged: the supervisor stops resending it.
-    broker.settle(token, id, result);
+    broker.settle(token, id, answer.invocation, answer.result);
     return { status: HTTP_OK, body: { ok: true } };
 }
 
@@ -319,8 +386,11 @@ const parseReport = (raw: string): SupervisorReport | null => {
         return null;
     }
     if (!isRecord(parsed) || typeof parsed.agentEnd !== 'string' || typeof parsed.drained !== 'boolean') return null;
-    const { outcome, cause, agentExit } = parsed;
+    const { id, outcome, cause, agentExit, serving } = parsed;
+    if (typeof id !== 'string' || id === '' || typeof serving !== 'boolean') return null;
     return {
+        id,
+        serving,
         outcome: typeof outcome === 'string' ? outcome : null,
         cause: typeof cause === 'string' ? cause : null,
         agentExit: typeof agentExit === 'number' ? agentExit : null,
@@ -329,12 +399,14 @@ const parseReport = (raw: string): SupervisorReport | null => {
     };
 };
 
-/** `POST /report`: the agent is over and the exporter drained. */
+/** `POST /report`: the agent is over and the exporter drained; a redelivery is acknowledged, another report refused. */
 export async function serveReport(broker: StepBroker, token: string, request: IncomingMessage): Promise<StepAnswer> {
     const raw = await readBody(request, REPORT_BODY_LIMIT);
     if (raw === null) return { status: HTTP_PAYLOAD_TOO_LARGE, body: { error: 'body too large' } };
     const report = parseReport(raw);
     if (!report) return { status: HTTP_BAD_REQUEST, body: { error: 'not a supervisor report' } };
-    broker.report(token, report);
+    if (broker.report(token, report) === 'conflict') {
+        return { status: HTTP_CONFLICT, body: { error: 'another report was taken for this attempt' } };
+    }
     return { status: HTTP_OK, body: { ok: true } };
 }

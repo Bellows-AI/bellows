@@ -1668,6 +1668,31 @@ describe('the poll loop', () => {
         expect(board.board.completed).toEqual([]);
     });
 
+    // The Stop's own kill can leave the runner reading as lost (its supervisor taken down with it):
+    // the Stop settles first, so the job parks — never an interruption, never a verdict.
+    it('parks a stopped job whose killed runner reports an infrastructure loss', async () => {
+        const board = stubBoard([job(1)], { cancelRequested: true });
+        let finish = () => {};
+        const runner = stubRunner(
+            () =>
+                new Promise<RunOutcome>((resolve) => {
+                    finish = () =>
+                        resolve(
+                            ok({ exitCode: 137, infraLoss: 'the task supervisor ended before it finalized the run' })
+                        );
+                })
+        );
+
+        const started = drive({ ...board, runner });
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        finish();
+        await started;
+
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.interrupted).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+    });
+
     // A network blink is not evidence that the lease moved. The next heartbeat remains the
     // authority, while the in-flight runner keeps its checkout and can still report normally.
     it('keeps running through a transient heartbeat failure and recovers on the next beat', async () => {

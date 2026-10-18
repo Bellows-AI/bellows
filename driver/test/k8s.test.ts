@@ -51,6 +51,8 @@ import { createKubernetesGateManager } from '../src/k8s-gates.js';
 import { reclaimGroupSpec } from '../src/k8s-group.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
 import { throughTransport } from './fixtures/k8s-transport-bridge.js';
+import { decisionOf, TERMINATION_ROWS, type TerminationRow } from './fixtures/termination-table.js';
+import type { RunOutcome } from '../src/runner.js';
 import { ServicesNotRunning } from '../src/service-restart.js';
 import {
     CREDENTIAL_HELPER,
@@ -1072,6 +1074,8 @@ function fakeSteps(answer: (step: StepRequest) => StepResult | Promise<StepResul
         },
         awaitReport: () => reported,
         contacted: () => true,
+        release: () => undefined,
+        attach: () => undefined,
     };
     return { sink, submitted, tokens, signals, report };
 }
@@ -2279,6 +2283,8 @@ describe('publishing the produced work', () => {
                     : Promise.resolve(stepOk()),
             awaitReport: () => new Promise(() => undefined),
             contacted: () => true,
+            release: () => undefined,
+            attach: () => undefined,
         };
 
         expect(await publishing({ sink }).probeTree?.(ISSUE_JOB, cancel.signal)).toBeNull();
@@ -4320,10 +4326,69 @@ describe('the kubernetes runner', () => {
     });
 
     // A vanished Job object is not a transient failure: its verdict can never arrive, so polling
-    // on would hold a worker slot forever.
-    it('abandons the run when the job object is gone', async () => {
+    // on would hold a worker slot forever. Deleted by anything but this driver, it is a runner the
+    // platform took away — an infrastructure loss, as docker's removed container is.
+    it('reads a runner Job deleted under the run as an infrastructure loss', async () => {
         const { request } = fakeRequest({ job: { status: 404, body: '{"kind":"Status"}' } });
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/no longer exists/);
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({ started: true, exitCode: null, timedOut: false });
+        expect(outcome.infraLoss).toBe(`the runner job ${runnerJobName(job)} was deleted before it exited`);
+    });
+
+    // Why the driver ends a run is recorded on the runner Job itself, for a claim that adopts it.
+    it('records a kill reason as an annotation on the runner Job, and tolerates a Job already gone', async () => {
+        const { request, calls } = fakeRequest();
+        await runner(request).recordKill!(job, { reason: 'artifact_spool_full', detail: '2000000000 bytes' });
+        expect(calls).toContainEqual({
+            method: 'PATCH',
+            path: jobPath(namespace, runnerJobName(job)),
+            body: { metadata: { annotations: { 'factory.kill.artifact_spool_full': '2000000000 bytes' } } },
+        });
+
+        const gone = fakeRequest({ job: { status: 404, body: '{"kind":"Status"}' } });
+        await expect(
+            runner(gone.request).recordKill!(job, { reason: 'artifact_spool_full', detail: '' })
+        ).resolves.toBeUndefined();
+    });
+
+    // The supervisor's report is its finalization: a crash after it is no loss of the run, as on docker.
+    it('takes a supervisor that reported and then crashed as finalized, never a loss', async () => {
+        const steps = fakeSteps();
+        steps.report({
+            id: 'report-1',
+            outcome: null,
+            cause: null,
+            agentExit: 0,
+            agentEnd: 'exited',
+            drained: true,
+            serving: true,
+        });
+        // The runner Job still serves the attempt's steps; every other Job (the close-time read) ends.
+        const active = { status: 200, body: JSON.stringify({ status: { active: 1 } }) };
+        const { request } = routed(
+            (_method, path) => (path === jobPath(namespace, runnerJobName(job)) ? active : undefined),
+            {
+                pods: {
+                    status: 200,
+                    body: JSON.stringify({
+                        items: [
+                            {
+                                metadata: { name: podName },
+                                status: {
+                                    containerStatuses: [
+                                        { name: 'agent', state: { terminated: { exitCode: 0 } } },
+                                        { name: 'supervisor', state: { terminated: { exitCode: 70 } } },
+                                    ],
+                                },
+                            },
+                        ],
+                    }),
+                },
+            }
+        );
+        const outcome = await runner(request, {}, undefined, steps.sink).run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+        expect(outcome).not.toHaveProperty('infraLoss');
     });
 
     // The deadline is enforced by the kubelet, so the Job reports failed with the reason attached;
@@ -6858,6 +6923,63 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         expect((await request('GET', claimPathFor(job.id))).status).toBe(404);
     });
 
+    /** A listed runner Job carrying the reasons its driver recorded for ending it. */
+    const recorded = (item: ReturnType<typeof priorItem>, marks: Record<string, string>) => ({
+        ...item,
+        metadata: { ...item.metadata, annotations: { ...item.metadata.annotations, ...marks } },
+    });
+    const SPOOL_MARK = { 'factory.kill.artifact_spool_full': '2000000000 bytes' };
+
+    // Why the lost driver ended the run was recorded on its Job before the stop: the adoption reads
+    // the verdict the attached run would have.
+    it('adopts a supervised stop its lost driver recorded for a full spool, with the spool fault', async () => {
+        const { request } = withRunners([recorded(priorItem({ succeeded: 1 }), SPOOL_MARK)]);
+
+        const adopted = await runner(request).adopt!(adopter);
+
+        expect(adopted?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
+        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+    });
+
+    // A full spool rides a supervised stop: its record never explains a supervisor lost after it.
+    it('never takes a recorded full spool for the end of a supervisor that did not finalize', async () => {
+        const { request } = withRunners([recorded(priorItem({ failed: 1 }), SPOOL_MARK)], {
+            pods: {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        {
+                            metadata: { name: podName },
+                            status: {
+                                phase: 'Failed',
+                                containerStatuses: [
+                                    { name: 'agent', state: { terminated: { exitCode: 137 } } },
+                                    { name: 'supervisor', state: { terminated: { exitCode: 70 } } },
+                                ],
+                            },
+                        },
+                    ],
+                }),
+            },
+        });
+
+        expect(await runner(request).adopt!(adopter)).toBeNull();
+    });
+
+    // Stated limit: a stop that fell back to the hard kill deleted the Job, its record with it —
+    // nothing is left to adopt, and the job runs again with its checkout and session.
+    it('finds nothing to adopt after the hard kill deleted a recorded runner', async () => {
+        const { request, calls } = withRunners([recorded(priorItem({ active: 1 }), SPOOL_MARK)]);
+        const lost = runner(request);
+        await lost.recordKill!(job, { reason: 'artifact_spool_full', detail: '2000000000 bytes' });
+        await lost.kill(job);
+
+        expect(
+            calls.some((call) => call.method === 'DELETE' && call.path.startsWith(jobPath(namespace, priorName)))
+        ).toBe(true);
+        expect(await runner(request).adopt!(adopter)).toBeNull();
+    });
+
     // A queued task's command can be edited after a handover: a run of the old command is not its run.
     it('never adopts a run of a command since edited', async () => {
         const { request } = withRunners([priorItem({ succeeded: 1 })]);
@@ -6911,5 +7033,101 @@ describe('the bound a runner pod outlives a lost driver by', () => {
         const envOf = (name: string) => pod.containers.find((container) => container.name === name)?.env;
         expect(envOf(SUPERVISOR_CONTAINER)).toContainEqual({ name: 'SUPERVISOR_ORPHAN_MS', value: bound });
         expect(envOf(EXPORTER_CONTAINER)).toContainEqual({ name: 'EXPORT_DRAIN_GIVEUP_MS', value: bound });
+    });
+});
+
+describe('how a started run ends, on kubernetes (the conformance table)', () => {
+    const session = { id: SESSION, resume: false };
+    const runnerPath = () => jobPath(namespace, runnerJobName(job));
+    /** The runner Job answers `answer`; every other Job — the close-time read — ends as the fake's own. */
+    const onlyRunner = (answer: K8sResponse) => (_method: K8sMethod, path: string) =>
+        path === runnerPath() ? answer : undefined;
+    const podWith = (supervisorExit: number) => ({
+        status: 200,
+        body: JSON.stringify({
+            items: [
+                {
+                    metadata: { name: podName },
+                    status: {
+                        containerStatuses: [
+                            { name: 'agent', state: { terminated: { exitCode: 0 } } },
+                            { name: 'supervisor', state: { terminated: { exitCode: supervisorExit } } },
+                        ],
+                    },
+                },
+            ],
+        }),
+    });
+    const ACTIVE = { status: 200, body: JSON.stringify({ status: { active: 1 } }) };
+    const GONE = { status: 404, body: '{"kind":"Status"}' };
+
+    /** A Stop that lands while the run polls: the loop's kill deletes the runner Job. */
+    const killedMidRun = () => {
+        const base = fakeRequest({ job: ACTIVE });
+        let deleted = false;
+        let r: ReturnType<typeof runner> | null = null;
+        const request: K8sRequest = (method, path, body) => {
+            if (path.startsWith(runnerPath())) {
+                if (method === 'DELETE') {
+                    deleted = true;
+                    return Promise.resolve({ status: 200, body: '{}' });
+                }
+                if (method === 'GET' && !deleted) void r?.kill(job);
+                if (method === 'GET' && deleted) return Promise.resolve(GONE);
+            }
+            return base.request(method, path, body);
+        };
+        r = runner(request);
+        return r.run(job, session);
+    };
+
+    const reportedThenCrashed = () => {
+        const steps = fakeSteps();
+        steps.report({
+            id: 'report-1',
+            outcome: null,
+            cause: null,
+            agentExit: 0,
+            agentEnd: 'exited',
+            drained: true,
+            serving: true,
+        });
+        const { request } = routed(onlyRunner(ACTIVE), { pods: podWith(70) });
+        return runner(request, {}, undefined, steps.sink).run(job, session);
+    };
+
+    /** The supervisor reports the budget ended the agent; the Job then reads 404 under the poll. */
+    const vanishedAfterBudget = () => {
+        const steps = fakeSteps();
+        steps.report({
+            id: 'report-1',
+            outcome: 'timed_out',
+            cause: 'timeout',
+            agentExit: 137,
+            agentEnd: 'killed',
+            drained: true,
+            serving: true,
+        });
+        return runner(fakeRequest({ job: GONE }).request, {}, undefined, steps.sink).run(job, session);
+    };
+
+    const ends: Record<TerminationRow, () => Promise<RunOutcome>> = {
+        'an agent that exits 0 under a finalizing supervisor': () => runner(fakeRequest().request).run(job, session),
+        'an agent its run budget ended': () =>
+            runner(routed(onlyRunner(FAKE.failed as K8sResponse)).request).run(job, session),
+        'a group the driver hard-killed mid-run': killedMidRun,
+        'a runner the platform took away mid-run': () => runner(fakeRequest({ job: GONE }).request).run(job, session),
+        'a runner the platform took away after the budget ended its agent': vanishedAfterBudget,
+        'a supervisor that ended without finalizing, nothing initiating it': () =>
+            runner(
+                routed(onlyRunner({ status: 200, body: JSON.stringify({ status: { failed: 1 } }) }), {
+                    pods: podWith(70),
+                }).request
+            ).run(job, session),
+        'a supervisor that reported, then crashed before the verdict read': reportedThenCrashed,
+    };
+
+    it.each(TERMINATION_ROWS)('%s: %s', async (row, expected) => {
+        expect(decisionOf(await ends[row]())).toBe(expected);
     });
 });

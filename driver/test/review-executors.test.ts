@@ -61,6 +61,8 @@ const dockerSync = async (job: BoardJob, githubToken?: string): Promise<Record<s
         },
         awaitReport: () => new Promise(() => undefined),
         contacted: () => true,
+        release: () => undefined,
+        attach: () => undefined,
     };
     const supervised: BoardJob = {
         ...job,

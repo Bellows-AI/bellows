@@ -110,7 +110,7 @@ export function linesOf(stdout: string): string[] {
 export function alreadyGone(e: unknown): boolean {
     const err = e as { stderr?: string | Buffer; message?: string };
     const stderr = typeof err.stderr === 'string' ? err.stderr : (err.stderr?.toString('utf8') ?? '');
-    return /no such (container|network|object)|not found/i.test(`${stderr} ${err.message ?? ''}`);
+    return /no such (container|network|object|volume)|not found/i.test(`${stderr} ${err.message ?? ''}`);
 }
 
 /** Lists names by label, or throws `${what}: <the daemon's own message>`. */

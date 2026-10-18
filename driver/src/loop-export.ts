@@ -66,7 +66,8 @@ export function createExportRelay(rt: LoopRuntime, job: BoardJob, run: ExportRun
                 rt.log(
                     `job ${job.id}: ${SPOOL_FULL_CAUSE}: ${report.pendingBytes} bytes unacknowledged, stopping the run`
                 );
-                void killAgent(rt, job, control).catch(() => undefined);
+                const kill = { reason: SPOOL_FULL_CAUSE, detail: `${report.pendingBytes} bytes` } as const;
+                void killAgent(rt, job, control, kill).catch(() => undefined);
             }
             if (report.done) run.done = true;
         },

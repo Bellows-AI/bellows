@@ -7,6 +7,7 @@ import type { LoopRuntime } from './loop-types.js';
 import type { ExportRun } from './loop-export.js';
 import type { PublishResult } from './publish.js';
 import { RUN_CONTROL_POLL_MS } from './supervisor-contract.js';
+import type { KillRecord } from './termination.js';
 import type { TimeoutActivity } from './timeout-note.js';
 
 /** How often freshly arrived output is flushed to the board — the pace the dashboard polls at. */
@@ -147,9 +148,18 @@ export function newJobState(): JobState {
  * stop an agent under its supervisor, the supervised way: the kill order is raised for the
  * supervisor (it ends the agent, has the exporter drain what it wrote and finalizes), and the
  * runner waits, bounded, for the group to wind down before it falls back to the hard kill. Without
- * either — no endpoint, a runner that supervises nothing — the hard kill, as it always was.
+ * either — no endpoint, a runner that supervises nothing — the hard kill, as it always was. `kill`
+ * is the reason the driver ends the run for, when it is a verdict of its own (`termination.ts`).
  */
-export function killAgent(rt: LoopRuntime, job: BoardJob, control: string | null): Promise<void> {
+export async function killAgent(
+    rt: LoopRuntime,
+    job: BoardJob,
+    control: string | null,
+    kill?: KillRecord
+): Promise<void> {
+    // Why the run ends, recorded first where a claim adopting it reads it back; a record that fails
+    // never holds the kill back.
+    if (kill && rt.runner.recordKill) await rt.runner.recordKill(job, kill).catch(() => undefined);
     if (control !== null && rt.gates && rt.runner.stopAgent) {
         rt.gates.server.raiseKill(control);
         return rt.runner.stopAgent(job);

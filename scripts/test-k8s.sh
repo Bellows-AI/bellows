@@ -2145,6 +2145,7 @@ DRIVER_SEL="app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=driv
 ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
 DRAINED='the driver was drained'
 POD_LOST='infrastructure loss: the runner pod was deleted'
+JOB_LOST='infrastructure loss: the runner job '
 # The interruption the next claim records for an attempt whose lease expired (issue #822).
 EXPIRED='the lease expired: its driver went silent'
 
@@ -2351,11 +2352,22 @@ else
     kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
     kubectl delete job "$lost_job" -n "$NAMESPACE" --grace-period=0 --force --wait=false >/dev/null 2>&1
     kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
+    # A force-deleted driver lives on for a moment, and may see its runner Job deleted and hand the
+    # attempt back as that infrastructure loss before its lease is expired here: either is the lost
+    # attempt's one interruption, and nothing survives to adopt.
     expired="$(expire_claim_one "$lost")"
-    [ "$expired" = 1 ] && ok "the lost driver's lease is expired" || bad "the lost driver's lease is expired" "$expired"
+    case "$expired" in
+    1) lost_reason="$EXPIRED" ;;
+    0) lost_reason="$JOB_LOST" ;;
+    *) lost_reason='' ;;
+    esac
+    [ -n "$lost_reason" ] && ok "the lost driver's attempt is released, by its lease or its own report" ||
+        bad "the lost driver's attempt is released, by its lease or its own report" "$expired"
     lost_end="$(await_brief "$lost" 'succeeded*' 240)"
-    [ "$lost_end" = "succeeded|1|1|1|$EXPIRED" ] && ok 'a replacement runner redoes the lost attempt: one attempt, one interruption' ||
-        bad 'a replacement runner redoes the lost attempt: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $lost_end"
+    case "$lost_end" in
+    "succeeded|1|1|1|$lost_reason"*) ok 'a replacement runner redoes the lost attempt: one attempt, one interruption' ;;
+    *) bad 'a replacement runner redoes the lost attempt: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $lost_end" ;;
+    esac
     lost_out="$(job_output "$lost")"
     expect_contains 'the replacement resumes the lost session' "$lost_out" "--resume $lost_session"
     expect_contains 'the replacement runs on the tree the lost runner left' "$lost_out" "mark kept from $lost_pod head: "

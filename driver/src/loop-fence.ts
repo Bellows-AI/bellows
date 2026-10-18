@@ -17,7 +17,7 @@ import { report } from './loop-verdict.js';
  * Why the loop reports no verdict for this outcome, or null when it reports: a container that never
  * started. Handed back as an interruption (`interruptAttempt`), like a runner the platform took away.
  */
-function neverStartedWhy(outcome: RunOutcome): string | null {
+export function neverStartedWhy(outcome: RunOutcome): string | null {
     if (outcome.started) return null;
     const said = outcome.output.trim();
     return `the runner reports the container never started${said ? `: ${said}` : ''}`;

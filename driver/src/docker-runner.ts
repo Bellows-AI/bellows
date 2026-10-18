@@ -1,6 +1,12 @@
 import { JOB_LABEL } from './labels.js';
 import { awaitSupervisor, createGroup, removeGroup, startGroup, supervisorLossOf } from './docker-group.js';
-import { dockerKill, dockerServiceTeardown, dockerStopAgent } from './docker-teardown.js';
+import {
+    dockerKill,
+    dockerKillFor,
+    dockerServiceTeardown,
+    dockerStopAgent,
+    recordDockerKill,
+} from './docker-teardown.js';
 import { SUPERVISOR_ENV, SUPERVISOR_EXIT, type SupervisorReport } from './supervisor-contract.js';
 import { agentBackstopMs } from './supervisor-plan.js';
 import { spawn } from 'node:child_process';
@@ -12,9 +18,11 @@ import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
 import { lookupHelper } from './helpers.js';
 import { noStepChannel, type StepSink, type SupervisorEndpoint, stepLost } from './step-control.js';
 import {
+    attachSteps,
     controlTokenOf,
     orderFinish,
     orderGo,
+    releaseSteps,
     runHelperStep,
     runReclaimStep,
     runSyncStep,
@@ -78,6 +86,7 @@ import {
 } from './docker-runner-support.js';
 import { OPENCODE } from './executors.js';
 import { createDeadlineRegistry, type DeadlineRegistry } from './run-deadline.js';
+import { infraLossOf } from './termination.js';
 
 /**
  * The docker executor's stateful `RunnerDeps` methods and `createDockerRunner` itself — the
@@ -123,6 +132,8 @@ interface RunnerDeps {
      * already gone.
      */
     killed: Set<BoardJob['leaseToken']>;
+    /** The attempts whose whole group `dockerKill` took down (`TeardownDeps.hardKilled`). */
+    hardKilled: Set<BoardJob['leaseToken']>;
     deadlines: DeadlineRegistry;
 }
 
@@ -216,6 +227,8 @@ async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession 
     const known = deps.groups.get(job.leaseToken);
     if (known) return known;
     await dockerReclaimFence(deps, job);
+    // A fresh supervisor answers the token from here: not one a kill already took away.
+    attachSteps(stepHostOf(deps), job);
     const startedAt = new Date().toISOString();
     await createGroup(deps, job, session, startedAt);
     try {
@@ -558,7 +571,7 @@ async function dockerRun(
         // wind-down — and then kills all of it.
         const deadline = deps.deadlines.start(job.leaseToken, agentBackstopMs(config, job), () => {
             timedOut = true;
-            void dockerKill(deps, job);
+            void dockerKillFor(deps, job, { reason: 'timeout', detail: '' });
         });
 
         /*
@@ -572,7 +585,9 @@ async function dockerRun(
         let cacheTimer: NodeJS.Timeout | null = null;
         if (config.cacheWatch && job.executorType === OPENCODE) {
             cacheTimer = setInterval(() => {
-                void tickCacheWatch({ execDocker, config, job, kill: (j) => dockerKill(deps, j) }, cacheState);
+                const kill = (j: BoardJob) =>
+                    dockerKillFor(deps, j, { reason: 'cache_lost', detail: cacheState.cacheLost ?? '' });
+                void tickCacheWatch({ execDocker, config, job, kill }, cacheState);
             }, config.cacheWatchPollMs);
         }
 
@@ -619,15 +634,27 @@ async function dockerRun(
             // The agent's end does not end the run: the supervisor drains the exporter first and
             // reports — the budget it enforced says `timed_out` — and then serves the attempt's
             // steps. A supervisor that exited instead of reporting says how: 124 is the budget it
-            // enforced, and anything but 0 and 124 is a supervisor lost, an infrastructure loss.
+            // enforced, the driver's own hard kill explains its exit, and anything else is a
+            // supervisor lost, an infrastructure loss (`infraLossOf`).
             void awaitReportOrExit(execDocker, job, reported)
+                .then((ended) => {
+                    // An exit with no report taken leaves nobody to answer the steps the loop still sends.
+                    if (!ended.report) releaseSteps(host, job);
+                    return ended;
+                })
                 .then(async ({ report, supervisorExit }) => {
                     if (report?.outcome === 'timed_out' || supervisorExit === SUPERVISOR_EXIT.deadline) {
                         timedOut = true;
                     }
-                    const loss = report ? null : supervisorLossOf(supervisorExit, timedOut);
-                    const settled = await verdict(code);
-                    return loss && !settled.infraLoss ? { ...settled, infraLoss: loss } : settled;
+                    const { infraLoss: vanished = null, ...settled } = await verdict(code);
+                    const infraLoss = infraLossOf({
+                        killedByDriver: deps.hardKilled.has(job.leaseToken),
+                        timedOut,
+                        reported: report !== null,
+                        vanished,
+                        unfinalized: supervisorLossOf(supervisorExit, timedOut),
+                    });
+                    return infraLoss ? { ...settled, infraLoss } : settled;
                 })
                 .then((outcome) => applyCloseTimeReadout(outcome, { execDocker, config, job, startedAt }, session))
                 .then(resolve, reject);
@@ -694,6 +721,7 @@ export function createDockerRunner(
         files,
         spawnFn,
         killed: new Set(),
+        hardKilled: new Set(),
         deadlines,
         groups: new Map(),
         ...(steps ? { steps } : {}),
@@ -720,5 +748,6 @@ export function createDockerRunner(
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
         adopt: (job) => dockerAdopt({ ...deps, fence: (fenced) => dockerReclaimFence(deps, fenced) }, job),
         stopAgent: (job) => dockerStopAgent(deps, job),
+        recordKill: (job, kill) => recordDockerKill(execDocker, job, kill),
     };
 }
