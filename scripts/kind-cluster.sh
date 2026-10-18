@@ -93,7 +93,11 @@ delete)
     # Only a listing that succeeded and came back empty means no cluster still uses the registry.
     clusters="$(kind get clusters 2>/dev/null)" || exit 1
     if [ -z "$clusters" ]; then
-        docker rm -f -v "$REGISTRY_NAME" >/dev/null 2>&1 || true
+        # Absent is done; present and not removed is a failure, not a silent leftover on the port.
+        present="$(docker ps -aq --filter "name=^$REGISTRY_NAME\$")" || exit 1
+        if [ -n "$present" ]; then
+            docker rm -f -v "$REGISTRY_NAME" >/dev/null || exit 1
+        fi
     fi
     ;;
 *)

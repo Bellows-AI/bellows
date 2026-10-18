@@ -40,6 +40,8 @@ inspect)
     case "$*" in *State.Running*) echo "$STUB_REGISTRY" ;; *Networks*) echo "$STUB_NETWORK" ;; esac
     ;;
 port) [ -n "$STUB_PORT" ] || exit 1; echo "$STUB_PORT" ;;
+ps) [ -z "$STUB_PS_FAIL" ] || exit 1; [ -z "$STUB_REGISTRY" ] || echo 0123abcd ;;
+rm) [ -z "$STUB_RM_FAIL" ] || exit 1 ;;
 exec)
     case "$*" in
     *"config dump"*) echo "    config_path = $STUB_CONFIG_PATH" ;;
@@ -200,6 +202,24 @@ describe('kind cluster create and delete', () => {
         expect(result.calls).not.toContain('docker rm');
     });
 
+    it('fails when the registry it should remove cannot be removed', async () => {
+        const result = await kindCluster('delete', { ...WIRED, STUB_CLUSTERS: '', STUB_RM_FAIL: '1' });
+        expect(result.status).not.toBe(0);
+        expect(result.calls).toContain('docker rm -f -v kind-registry');
+    });
+
+    it('fails, removing nothing, when it cannot tell whether the registry exists', async () => {
+        const result = await kindCluster('delete', { ...WIRED, STUB_CLUSTERS: '', STUB_PS_FAIL: '1' });
+        expect(result.status).not.toBe(0);
+        expect(result.calls).not.toContain('docker rm');
+    });
+
+    it('has nothing to remove when the registry is already gone', async () => {
+        const result = await kindCluster('delete', { ...WIRED, STUB_CLUSTERS: '', STUB_REGISTRY: '' });
+        expect(result.status).toBe(0);
+        expect(result.calls).not.toContain('docker rm');
+    });
+
     it('keeps the registry when the cluster listing fails', async () => {
         const result = await kindCluster('delete', { ...WIRED, STUB_CLUSTERS: '', STUB_CLUSTERS_FAIL: '1' });
         expect(result.status).not.toBe(0);
@@ -251,5 +271,93 @@ describe('kind lane image load', () => {
         expect(script).toContain('--set-string "dashboard.image.tag=$RELEASE"');
         expect(script).toContain('--set "driver.image.repository=$DRIVER_REPO"');
         expect(script).toContain('--set-string "driver.image.tag=$RELEASE"');
+    });
+});
+
+describe('kind lane pod timeline', () => {
+    const SINCE = '2026-01-01T00:00:00Z';
+    const event = (name: string, reason: string, at: string, message = '') => ({
+        involvedObject: { kind: 'Pod', name },
+        reason,
+        message,
+        firstTimestamp: at,
+    });
+    const timeline = async (items: unknown[], pattern = '^(rel-|factory-runner-)') => {
+        const child = execFile('node', ['scripts/k8s-pod-timeline.mjs', SINCE, pattern], { cwd: REPO_ROOT });
+        child.stdin?.end(JSON.stringify({ items }));
+        let stdout = '';
+        child.stdout?.on('data', (d: Buffer) => {
+            stdout += d.toString();
+        });
+        const code = await new Promise<number | null>((resolve) => child.on('close', resolve));
+        expect(code).toBe(0);
+        return stdout
+            .replace(/\n$/, '')
+            .split('\n')
+            .map((line) => line.split('\t'));
+    };
+
+    it("reads kubelet's own pull time, and an image already on the node as present", async () => {
+        const rows = await timeline([
+            event('rel-factory-abc', 'Scheduled', '2026-01-01T00:00:10Z'),
+            event(
+                'rel-factory-abc',
+                'Pulled',
+                '2026-01-01T00:01:20Z',
+                'Successfully pulled image "localhost:5001/factory-ai:rel" in 1m2.5s (1m2.5s including waiting). Image size: 1 bytes.'
+            ),
+            event('rel-factory-abc', 'Started', '2026-01-01T00:01:22Z'),
+            event(
+                'factory-runner-1',
+                'Pulled',
+                '2026-01-01T00:02:00Z',
+                'Container image "localhost:5001/echo-executor:rel" already present on machine'
+            ),
+            event('factory-runner-1', 'Scheduled', '2026-01-01T00:01:59Z'),
+        ]);
+        expect(rows).toEqual([
+            ['pod', 'image', 'scheduled', 'pulled_at', 'pull_seconds', 'started'],
+            ['rel-factory-abc', 'localhost:5001/factory-ai:rel', '10', '80', '62.5', '82'],
+            ['factory-runner-1', 'localhost:5001/echo-executor:rel', '119', '120', 'present', ''],
+        ]);
+    });
+
+    it('keeps only pods the run started: matching names, at or after the start', async () => {
+        const rows = await timeline([
+            event('rel-early', 'Scheduled', '2025-12-31T23:59:59Z'),
+            event('dev-factory-xyz', 'Scheduled', '2026-01-01T00:00:05Z'),
+            {
+                ...event('rel-job', 'Scheduled', '2026-01-01T00:00:05Z'),
+                involvedObject: { kind: 'Job', name: 'rel-job' },
+            },
+            { ...event('rel-new', 'Scheduled', ''), firstTimestamp: null, eventTime: '2026-01-01T00:00:07.500000Z' },
+        ]);
+        expect(rows.map((row) => row[0])).toEqual(['pod', 'rel-new']);
+        expect(rows[1]?.[2]).toBe('8');
+    });
+});
+
+describe('kind lane timing evidence', () => {
+    const script = readRepoFile('scripts/test-k8s.sh');
+    const cleanup = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
+
+    it('records every check with the seconds since the one before it', () => {
+        // Regexes, not literals: the shell expansion reads as a template placeholder to noTemplateCurlyInString.
+        expect(script).toMatch(/CHECKS_FILE="\$\{TIMINGS_FILE%\.tsv}\.checks\.tsv"/);
+        for (const helper of ['ok() {', 'bad() {']) {
+            const body = script.slice(script.indexOf(helper), script.indexOf('\n}\n', script.indexOf(helper)));
+            expect(body).toContain('check_timing');
+        }
+    });
+
+    it('writes the pod timeline from events before cleanup uninstalls anything', () => {
+        expect(script).toMatch(/PODS_FILE="\$\{TIMINGS_FILE%\.tsv}\.pods\.tsv"/);
+        const dump = cleanup.indexOf('node scripts/k8s-pod-timeline.mjs "$deploy_started_at"');
+        // Not every factory- pod: the release name itself starts factory-, and so would a neighbour's.
+        expect(cleanup).toContain('"^($RELEASE-|factory-(runner|reclaim|gate|orphan)-)"');
+        expect(cleanup).toContain('kubectl get events -n "$NAMESPACE" -o json --request-timeout=20s');
+        expect(dump).toBeGreaterThan(-1);
+        expect(dump).toBeLessThan(cleanup.indexOf('helm uninstall'));
+        expect(script.indexOf('deploy_started_at="$(date -u')).toBeGreaterThan(script.indexOf('begin_phase deploy'));
     });
 });

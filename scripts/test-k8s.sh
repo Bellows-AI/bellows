@@ -100,8 +100,14 @@ fail=0
 work="$(mktemp -d)"
 TIMINGS_FILE="${TIMINGS_FILE:-$REPO/artifacts/k8s/$RELEASE.tsv}"
 mkdir -p "$(dirname "$TIMINGS_FILE")" && printf 'phase\tseconds\n' >"$TIMINGS_FILE" || exit 1
+# Beside the phase totals, where the time inside a phase went: each check with the seconds since the
+# check (or phase start) before it, and the pods the run started as kubelet saw them (cleanup).
+CHECKS_FILE="${TIMINGS_FILE%.tsv}.checks.tsv"
+PODS_FILE="${TIMINGS_FILE%.tsv}.pods.tsv"
+printf 'phase\tseconds\tresult\tcheck\n' >"$CHECKS_FILE" || exit 1
 phase_name=''
 phase_started=$SECONDS
+check_started=$SECONDS
 lane_started=$SECONDS
 end_phase() {
     [ -n "$phase_name" ] || return 0
@@ -114,16 +120,23 @@ begin_phase() {
     end_phase
     phase_name="$1"
     phase_started=$SECONDS
+    check_started=$SECONDS
+}
+check_timing() { # check_timing <ok|FAIL> <name>
+    printf '%s\t%s\t%s\t%s\n' "$phase_name" "$((SECONDS - check_started))" "$1" "$2" >>"$CHECKS_FILE"
+    check_started=$SECONDS
 }
 
 ok() {
     printf 'ok   %s\n' "$1"
     pass=$((pass + 1))
+    check_timing ok "$1"
 }
 
 bad() {
     printf 'FAIL %s\n     %s\n' "$1" "${2:0:400}"
     fail=$((fail + 1))
+    check_timing FAIL "$1"
 }
 
 expect_contains() { # expect_contains <name> <haystack> <needle>
@@ -154,6 +167,13 @@ cleanup() {
         wait "$pf_pid" 2>/dev/null
         pf_pid=''
     fi
+    # Before anything is uninstalled: events outlive their pods, not their namespace's cleanup.
+    if [ -n "${deploy_started_at:-}" ]; then
+        # This release's pods and the ones its driver names; bounded, so a stalled read never holds cleanup.
+        kubectl get events -n "$NAMESPACE" -o json --request-timeout=20s 2>/dev/null |
+            node scripts/k8s-pod-timeline.mjs "$deploy_started_at" \
+                "^($RELEASE-|factory-(runner|reclaim|gate|orphan)-)" >"$PODS_FILE" 2>/dev/null
+    fi
     if [ "${installed:-}" = '1' ]; then
         helm uninstall "$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1
         # The runner Jobs were created at runtime by the driver, not by the release, so the
@@ -178,7 +198,8 @@ cleanup() {
     rm -rf "$work"
     end_phase
     printf 'total\t%s\n' "$((SECONDS - lane_started))" >>"$TIMINGS_FILE"
-    printf '[timing] total: %ss; timings: %s; exit: %s\n' "$((SECONDS - lane_started))" "$TIMINGS_FILE" "$status"
+    printf '[timing] total: %ss; timings: %s (checks: %s, pods: %s); exit: %s\n' "$((SECONDS - lane_started))" \
+        "$TIMINGS_FILE" "$CHECKS_FILE" "$PODS_FILE" "$status"
 }
 trap cleanup EXIT
 
@@ -1298,6 +1319,7 @@ kind load docker-image "$COLLECTOR_IMAGE" --name "$kind_name" >/dev/null || {
 
 echo "installing the releases $STATE_RELEASE and $RELEASE"
 begin_phase deploy
+deploy_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 helm install "$STATE_RELEASE" charts/factory-local-state -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install of the state chart failed'
     exit 1
