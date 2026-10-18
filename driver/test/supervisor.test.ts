@@ -6,6 +6,7 @@ import {
     readFileSync,
     realpathSync,
     rmSync,
+    statSync,
     writeFileSync,
 } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -16,6 +17,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readRepoFile as read } from './fixtures/repo-files.js';
 import {
+    AGENT_MAILBOX_DIR,
     MAILBOX_FILES,
     MAILBOXES,
     STEP_KINDS,
@@ -43,6 +45,7 @@ interface Machine {
     delegated(): string[];
 }
 interface SupervisorModule {
+    AGENT_DIR: string;
     STAGES: string[];
     TRANSITIONS: Record<string, string[]>;
     FILES: Record<string, string>;
@@ -254,6 +257,8 @@ function run(driver: Driver | null, env: Record<string, string> = {}) {
     const dir = (box: keyof typeof MAILBOXES) => join(root, MAILBOXES[box].path.split('/').pop()!);
     const box = { in: dir('in'), out: dir('out'), export: dir('export'), own: dir('supervisor') };
     for (const path of Object.values(box)) mkdirSync(path, { recursive: true });
+    // The agent's own directories inside its two mailboxes, which the supervisor creates (issue #814).
+    const agent = { in: join(box.in, AGENT_MAILBOX_DIR), out: join(box.out, AGENT_MAILBOX_DIR) };
     const logs: string[] = [];
     const done = supervisor.supervise(
         {
@@ -271,19 +276,21 @@ function run(driver: Driver | null, env: Record<string, string> = {}) {
     };
     return {
         box,
+        agent,
         done,
         logs,
         report,
         /** The agent container's end, as its entrypoint writes it. */
-        agentExits: (code: number) => writeFileSync(join(box.out, MAILBOX_FILES.agentExit), `${code}\n`),
+        agentExits: (code: number) => writeFileSync(join(agent.out, MAILBOX_FILES.agentExit), `${code}\n`),
         agentAsks: (id: string) =>
             writeFileSync(
-                join(box.out, MAILBOX_FILES.questions, `${id}.json`),
+                join(agent.out, MAILBOX_FILES.questions, `${id}.json`),
                 JSON.stringify({ id, questions: [{ question: 'which?' }] })
             ),
         answerOf: (id: string) =>
-            JSON.parse(readFileSync(join(box.in, MAILBOX_FILES.answers, `${id}.json`), 'utf8')) as { state: string },
-        saw: (name: string, where: 'in' | 'export' | 'own' = 'in') => existsSync(join(box[where], name)),
+            JSON.parse(readFileSync(join(agent.in, MAILBOX_FILES.answers, `${id}.json`), 'utf8')) as { state: string },
+        saw: (name: string, where: 'in' | 'export' | 'own' = 'in') =>
+            existsSync(join(where === 'in' ? agent.in : box[where], name)),
         drainOrder: () =>
             JSON.parse(readFileSync(join(box.export, MAILBOX_FILES.drain), 'utf8')) as {
                 state: string;
@@ -359,7 +366,7 @@ describe('the supervisor run: agent exit with the supervisor alive', () => {
 
     it('reports a lost agent — a heartbeat that stopped — as lost, never as completed', async () => {
         const supervised = run(await startDriver(), { SUPERVISOR_AGENT_LOST_MS: '50' });
-        writeFileSync(join(supervised.box.out, MAILBOX_FILES.agentAlive), `${Date.now() - 10_000}\n`);
+        writeFileSync(join(supervised.agent.out, MAILBOX_FILES.agentAlive), `${Date.now() - 10_000}\n`);
         await supervised.done;
         expect(supervised.report()).toMatchObject({ outcome: 'lost', cause: 'agent_lost', agentEnd: 'lost' });
     });
@@ -557,6 +564,20 @@ describe('the supervisor run: supervised steps', () => {
         expect(seen.PLAIN).toBe('literal');
         expect(Object.keys(seen).filter((name) => name.startsWith('SUPERVISOR_'))).toEqual([]);
         expect(JSON.stringify(seen)).not.toContain(TOKEN);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    // Issue #814: the agent's tools run as their own uid in group 1000, so a step that writes the
+    // tree (the sync, a publish) writes it group-writable — and the supervisor's own umask is untouched.
+    it('runs every step under umask 002', async () => {
+        const driver = await startDriver();
+        const before = process.umask();
+        driver.order(step('umask-1', 'helper', ['sh', '-c', 'umask']));
+        const supervised = run(driver);
+        await until('the answer', () => driver.answers.has('umask-1'));
+        expect(driver.answers.get('umask-1')?.stdout.trim()).toBe('0002');
+        expect(process.umask()).toBe(before);
         supervised.agentExits(0);
         await supervised.done;
     });
@@ -993,7 +1014,21 @@ describe('what crosses the mailboxes', () => {
         }
     });
 
+    // Issue #814: the agent's tools run as their own uid in the agent container, which mounts `in`
+    // and `out` whole. The agent's files live in a directory only its own uid can open.
+    it('makes the agent’s own mailbox directories owner-only before it releases the agent', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        for (const where of [supervised.agent.in, supervised.agent.out]) {
+            expect(statSync(where).mode & 0o777, where).toBe(0o700);
+        }
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
     it('speaks the contract the driver and the images spell: the same file names and exit statuses', () => {
+        expect(supervisor.AGENT_DIR).toBe(AGENT_MAILBOX_DIR);
         expect(supervisor.FILES).toEqual(MAILBOX_FILES);
         expect(supervisor.EXIT).toEqual(SUPERVISOR_EXIT);
         expect(supervisor.REPORT_MS).toBe(SUPERVISOR_REPORT_MS);

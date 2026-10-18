@@ -1,3 +1,4 @@
+import { AGENT_LAUNCH_CAPS } from './claim.js';
 import type { DriverConfig } from './config.js';
 import type { ExecutorType } from './executors.js';
 import { type Mailbox, MAILBOXES } from './supervisor-contract.js';
@@ -137,11 +138,30 @@ export function podHardeningField(): { seccompProfile: { type: 'RuntimeDefault' 
  */
 export interface ContainerSecurityContext {
     allowPrivilegeEscalation: false;
-    capabilities: { drop: string[] };
+    capabilities: { drop: string[]; add?: string[] };
+    runAsUser?: number;
+    runAsGroup?: number;
 }
 
 export function containerHardeningField(): { securityContext: ContainerSecurityContext } {
     return { securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ['ALL'] } } };
+}
+
+/**
+ * The agent container's hardening (issue #814): `containerHardeningField`, started as root with the
+ * two capabilities its tool broker keeps to start each command as the tool uid. factory-launch
+ * drops both, and root, before the CLI starts; the admission policy allows them on `agent` alone.
+ */
+export function agentLaunchHardeningField(): { securityContext: ContainerSecurityContext } {
+    const { securityContext } = containerHardeningField();
+    return {
+        securityContext: {
+            ...securityContext,
+            capabilities: { ...securityContext.capabilities, add: [...AGENT_LAUNCH_CAPS] },
+            runAsUser: 0,
+            runAsGroup: 0,
+        },
+    };
 }
 
 /** A runner container's volume mount. */

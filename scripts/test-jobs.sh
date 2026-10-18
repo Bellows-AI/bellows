@@ -26,6 +26,7 @@ IMAGE_FAIL="factory-jobs-smoke-fail"
 IMAGE_SVC="factory-jobs-smoke-svc"
 IMAGE_RUN="factory-jobs-smoke-run"
 IMAGE_GH="factory-jobs-smoke-github"
+IMAGE_KILL="factory-jobs-smoke-kill"
 VOLUME="factory-jobs-smoke-workspaces"
 COMPOSE_DRIVER="factory-jobs-compose-driver"
 # The compose phase pins its own project name, so the volumes and network its `run` creates can be
@@ -75,7 +76,7 @@ cleanup() {
             -c "drop database if exists $DB" >/dev/null 2>&1
     fi
     docker volume rm "$VOLUME" >/dev/null 2>&1
-    docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_GH" "$IMAGE_BASE" >/dev/null 2>&1
+    docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_BASE" >/dev/null 2>&1
     rm -rf "$work"
 }
 trap cleanup EXIT
@@ -215,18 +216,25 @@ echo 'building the stub runner images'
 # contract a real model honours by emitting the marker last), and the one-line `echo "$@"` puts
 # the driver's `--session-id <uuid> -p` flags ahead of the prompt on that line, so every marker
 # edge missed and the stub-walk graph stalled after its first review round.
-# Every stub stands on node + git as the uid-1000 `node` user, like the executor images: the driver
-# runs the startup sync and the other git steps IN the job's executor image (`--entrypoint node`),
-# and every task now has a checkout to sync (issue #263). Each executor stub starts through
+# Every stub stands on scripts/stub-runner.Dockerfile: node + git as the uid-1000 `node` user, like
+# the executor images — the driver runs the startup sync and the other git steps IN the job's
+# executor image (`--entrypoint node`), and every task has a checkout to sync (issue #263) — and the
+# images' tool isolation (issue #814). Each executor stub starts through factory-launch and
 # scripts/stub-agent.sh, beside ctl-agent.cjs, over the node-owned mailbox mount points: the task
 # supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real entrypoints honor.
-cp docker/claude-executor/ctl-agent.cjs scripts/stub-agent.sh "$work/"
-printf 'FROM public.ecr.aws/docker/library/node:24-alpine\nRUN apk add --no-cache git\nCOPY ctl-agent.cjs stub-agent.sh /usr/local/bin/\nRUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory\nUSER node\n' >"$work/Dockerfile.base"
-printf 'FROM %s\nENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh","sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}; echo \\"$@\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' "$IMAGE_BASE" >"$work/Dockerfile.ok"
-printf 'FROM %s\nENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh","sh","-c","echo boom >&2; exit 3"]\n' "$IMAGE_BASE" >"$work/Dockerfile.fail"
-docker build -q -t "$IMAGE_BASE" -f "$work/Dockerfile.base" "$work" >/dev/null &&
+cp docker/claude-executor/ctl-agent.cjs docker/claude-executor/factory-launch.sh docker/claude-executor/factory-tool.cjs \
+    docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/stub-runner.Dockerfile "$work/"
+printf 'FROM %s\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}; echo \\"$@\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' "$IMAGE_BASE" >"$work/Dockerfile.ok"
+printf 'FROM %s\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","-c","echo boom >&2; exit 3"]\n' "$IMAGE_BASE" >"$work/Dockerfile.fail"
+# Issue #814: an agent whose one tool signals everything its uid may, through the CLI's shell.
+mkdir -p "$work/kill"
+printf '%s\n' '"$SHELL" -c '"'"'kill -TERM 1 2>/dev/null; kill -KILL -1 2>/dev/null; echo "the tool ran as $(id -u)"'"'" \
+    'echo agent survived' >"$work/kill/kill.sh"
+printf 'FROM %s\nCOPY kill.sh /kill.sh\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/kill.sh"]\n' "$IMAGE_BASE" >"$work/kill/Dockerfile"
+docker build -q -t "$IMAGE_BASE" -f "$work/stub-runner.Dockerfile" "$work" >/dev/null &&
     docker build -q -t "$IMAGE_OK" -f "$work/Dockerfile.ok" "$work" >/dev/null &&
-    docker build -q -t "$IMAGE_FAIL" -f "$work/Dockerfile.fail" "$work" >/dev/null || {
+    docker build -q -t "$IMAGE_FAIL" -f "$work/Dockerfile.fail" "$work" >/dev/null &&
+    docker build -q -t "$IMAGE_KILL" "$work/kill" >/dev/null || {
     echo 'test-jobs: could not build the stub images'
     exit 1
 }
@@ -550,6 +558,18 @@ failed_body="$(body "$(api GET "/api/jobs/$failing")")"
 expect_field    'the exit code is reported'    "$failed_body" exitCode 3
 expect_contains 'stderr is captured'           "$(field "$failed_body" output)" boom
 
+# Issue #814, through the real driver's agent flags: the agent's tool runs as the tool uid, so its
+# `kill -TERM 1; kill -KILL -1` reaches only its own processes and the run goes on to succeed.
+stop_driver
+start_driver "$IMAGE_KILL"
+
+killing="$(create_job 'a tool that kills everything it may')"
+expect_contains 'a run whose tool signals everything it may succeeds' "$(await_settled "$killing")" succeeded
+kill_body="$(body "$(api GET "/api/jobs/$killing")")"
+expect_contains 'the agent survived its tool'  "$(field "$kill_body" output)" 'agent survived'
+expect_contains 'the tool ran as the tool uid' "$(field "$kill_body" output)" 'the tool ran as 1001'
+expect_field    'one attempt was enough for it' "$kill_body" attempts 1
+
 stop_driver
 start_driver "$IMAGE_OK"
 
@@ -610,8 +630,9 @@ done
 
 mkdir -p "$work/github"
 cp docker/claude-executor/github-credential.cjs "$work/github/"
-printf '#!/bin/sh\nfor last in "$@"; do :; done\nexec sh -c "$last"\n' >"$work/github/run.sh"
-printf 'FROM %s\nCOPY github-credential.cjs /usr/local/bin/github-credential.cjs\nCOPY run.sh /run.sh\nENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh","sh","/run.sh"]\n' "$IMAGE_BASE" >"$work/github/Dockerfile"
+# Through the tool shell: git and gh run as the tool uid, which owns the cache (issue #814).
+printf '#!/bin/sh\nfor last in "$@"; do :; done\nexec "$SHELL" -c "$last"\n' >"$work/github/run.sh"
+printf 'FROM %s\nCOPY github-credential.cjs /usr/local/bin/github-credential.cjs\nCOPY run.sh /run.sh\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/run.sh"]\n' "$IMAGE_BASE" >"$work/github/Dockerfile"
 docker build -q -t "$IMAGE_GH" "$work/github" >/dev/null || {
     echo 'test-jobs: could not build the github helper stub image'
     exit 1
@@ -698,7 +719,7 @@ docker build -q -t "$IMAGE_SVC" "$work/svc" >/dev/null || {
 mkdir -p "$work/run"
 printf '#!/bin/sh\nfor last in "$@"; do :; done\nexec sh -c "$last"\n' >"$work/run/run.sh"
 # `sh /run.sh` rather than exec-ing it: a file written by this script has no exec bit to copy in.
-printf 'FROM %s\nCOPY run.sh /run.sh\nENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh","sh","/run.sh"]\n' "$IMAGE_BASE" >"$work/run/Dockerfile"
+printf 'FROM %s\nCOPY run.sh /run.sh\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/run.sh"]\n' "$IMAGE_BASE" >"$work/run/Dockerfile"
 docker build -q -t "$IMAGE_RUN" "$work/run" >/dev/null || {
     echo 'test-jobs: could not build the runner-exec stub image'
     exit 1
@@ -925,7 +946,8 @@ await_released() { # await_released <runner container> -> success once the super
     # A driver lost before `go` leaves nothing to adopt: the group ends lost (supervisor exit 75) and the run is redone.
     local i=0
     while [ "$i" -lt 60 ]; do
-        docker exec "$1" sh -c 'test -f /factory/in/go' >/dev/null 2>&1 && return 0
+        # As the agent uid: the agent container runs as root without DAC_OVERRIDE (issue #814).
+        docker exec --user 1000 "$1" sh -c 'test -f /factory/in/agent/go' >/dev/null 2>&1 && return 0
         sleep 1
         i=$((i + 1))
     done
@@ -952,7 +974,7 @@ killed_runner="$(await_first_runner "$killed" running)"
 [ -n "$killed_runner" ] && ok 'the hard-kill runner is running' ||
     bad 'the hard-kill runner is running' "job: $(body "$(api GET "/api/jobs/$killed")")"
 await_released "$killed_runner" && ok 'the hard-kill runner released its agent' ||
-    bad 'the hard-kill runner released its agent' 'no /factory/in/go within 60s'
+    bad 'the hard-kill runner released its agent' 'no /factory/in/agent/go within 60s'
 kill -9 "$driver_pid" 2>/dev/null
 wait "$driver_pid" 2>/dev/null
 driver_pid=""
@@ -1356,7 +1378,7 @@ lane_group_up() { # lane_group_up <name> <image> <control-url>
 
 lane_group_agent_args() { # lane_group_agent_args <name>: the agent's half of the mailboxes, as argv words
     printf '%s\n' -v "lane-$1-in:/factory/in:ro" -v "lane-$1-out:/factory/out" \
-        -e FACTORY_CTL_IN=/factory/in -e FACTORY_CTL_OUT=/factory/out -e FACTORY_CTL_GO=/factory/in/go \
+        -e FACTORY_CTL_IN=/factory/in/agent -e FACTORY_CTL_OUT=/factory/out/agent -e FACTORY_CTL_GO=/factory/in/agent/go \
         -e FACTORY_CTL_TICK_MS=200
 }
 
@@ -1425,6 +1447,76 @@ stop_lane() { # stop_lane <claude|opencode>
 
 stop_lane claude
 stop_lane opencode
+
+# --- The agent's tool isolation (issue #814) ------------------------------------------------------
+#
+# The real CLIs again, now under the driver's own agent flags — root, every capability dropped but
+# the launch pair, no-new-privileges — against the endpoint's `--kill-tools` mode: each of two tool
+# calls runs `kill -TERM 1; kill -KILL -1` and then marks its step. The tools run as the tool uid, so
+# the CLI survives both, sends its third request and exits 0 on its own. The control is the same run
+# without the flags — the CLI and its tools one uid — and must die: an honest probe, so the lane can
+# never pass on a tool that kills nothing.
+
+echo
+echo '# tool isolation (real agent CLIs whose tools signal everything they may)'
+
+AGENT_FLAGS=(--user 0:0 --cap-drop ALL --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges)
+
+kill_lane() { # kill_lane <claude|opencode> <isolated|control>
+    local cli="$1" mode="$2" image="$1-executor" name="kill-$1-$2" fake_pid port counts status
+    local dir="$work/$name"
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        bad "$cli under the tool uid ($mode)" "the $image image is missing — run make runners"
+        return
+    fi
+    mkdir -p "$dir"
+    chmod 777 "$dir"
+    node scripts/fake-model-endpoint.mjs --kill-tools --tool-steps 2 >"$work/fake-$name.port" &
+    fake_pid=$!
+    for _ in $(seq 1 20); do
+        [ -s "$work/fake-$name.port" ] && break
+        sleep 0.25
+    done
+    port="$(cat "$work/fake-$name.port")"
+    local host="http://host.docker.internal:$port" run=(docker run --rm --add-host host.docker.internal:host-gateway)
+    if [ "$mode" = isolated ]; then run+=("${AGENT_FLAGS[@]}"); fi
+    lane_group_up "$name" "$image" "$host"
+    run+=(-v "$dir:/workspace" -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key)
+    while IFS= read -r word; do run+=("$word"); done < <(lane_group_agent_args "$name")
+    if [ "$cli" = claude ]; then
+        run+=(-e "ANTHROPIC_BASE_URL=$host" "$image" --dangerously-skip-permissions --model fake-model
+            -p 'touch the step markers')
+    else
+        run+=(-e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
+            "$image" run 'touch the step markers')
+    fi
+    timeout 180 "${run[@]}" >"$work/$name.log" 2>&1
+    status=$?
+    lane_group_down "$name"
+    counts="$(node -e 'Promise.all(["/requests", "/tool-results"].map((p) => fetch(process.argv[1] + p).then((r) => r.json())))
+        .then(([a, b]) => console.log(`${a.agentRequests} ${b.toolResults}`))' "http://127.0.0.1:$port")"
+    kill "$fake_pid" 2>/dev/null
+    wait "$fake_pid" 2>/dev/null
+    if [ "$mode" = isolated ]; then
+        if [ "$status" = 0 ] && [ "$counts" = '3 2' ] && [ -e "$dir/step-1" ] && [ -e "$dir/step-2" ]; then
+            ok "$cli survives its tools signalling everything they may, and finishes"
+        else
+            bad "$cli survives its tools signalling everything they may, and finishes" \
+                "exit $status, agent requests and tool results: $counts: $(tail -5 "$work/$name.log")"
+        fi
+    # The control dies by the tool's own signal (137 KILL, 143 TERM): a timeout's 124 is a hang.
+    elif { [ "$status" = 137 ] || [ "$status" = 143 ]; } && [ "$counts" = '1 0' ] && [ ! -e "$dir/step-2" ]; then
+        ok "the control: $cli and its tools as one uid, and the first tool kills it"
+    else
+        bad "the control: $cli and its tools as one uid, and the first tool kills it" \
+            "exit $status, agent requests and tool results: $counts — a probe that kills nothing proves nothing"
+    fi
+}
+
+kill_lane claude control
+kill_lane claude isolated
+kill_lane opencode control
+kill_lane opencode isolated
 
 # --- AskUserQuestion answered inside the same Claude run (issue #226) ----------------------------
 #

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createGateServer } from '../src/gates.js';
 import { createStepBroker, StepChannelClosed, StepTimedOut } from '../src/step-control.js';
 import {
+    AGENT_MAILBOX_DIR,
     MAILBOX_FILES,
     STEP_ANSWER_GRACE_MS,
     type StepRequest,
@@ -363,7 +364,8 @@ describe('the whole channel against the real supervisor', () => {
             steps.submit(TOKEN, step(id, { kind, argv: ['node', '-e', code], timeoutMs: 30_000, ...over }));
         const go = (budgetMs = '60000') =>
             steps.submit(TOKEN, step('go-1', { kind: 'go', argv: [], env: { BUDGET_MS: budgetMs } }));
-        const agentExits = (code: number) => writeFileSync(join(root, 'out', MAILBOX_FILES.agentExit), `${code}\n`);
+        const agentExits = (code: number) =>
+            writeFileSync(join(root, 'out', AGENT_MAILBOX_DIR, MAILBOX_FILES.agentExit), `${code}\n`);
         return { steps, server, root, logs, done, run, go, agentExits };
     }
 
@@ -413,7 +415,7 @@ describe('the whole channel against the real supervisor', () => {
         const c = await channel({ SUPERVISOR_DRAIN_MS: '50', ...env });
         await c.go(outcome === 'timed_out' ? '100' : '60000');
         end(c);
-        const killOrder = join(c.root, 'in', MAILBOX_FILES.kill);
+        const killOrder = join(c.root, 'in', AGENT_MAILBOX_DIR, MAILBOX_FILES.kill);
         while (!existsSync(killOrder)) await new Promise((resolve) => setTimeout(resolve, 10));
         c.agentExits(137);
         expect(await c.steps.awaitReport(TOKEN)).toMatchObject({ outcome, serving: false });

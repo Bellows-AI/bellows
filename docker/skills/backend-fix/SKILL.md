@@ -208,7 +208,7 @@ a commit already on the remote.
 ### 5.13 Publish the pull request
 
 Push the task branch and open (or update) the pull request yourself with `git push` and `gh pr
-create`, or ask the driver to do it (`POST $BELLOWS_CONTROL_URL/publish`, see the github skill) —
+create`, or ask the driver to do it (see the github skill) —
 either lands on the same pull request. Run the relevant declared gates first and report any that
 fail; a failing gate does not stop you from publishing. Finish with the work committed on the task
 branch.

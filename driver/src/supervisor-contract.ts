@@ -63,14 +63,24 @@ export const MAILBOX_FILES = {
 } as const;
 
 /**
+ * The agent's own directory inside `in` and `out`, which the supervisor creates owner-only (`AGENT_DIR`
+ * of supervisor.cjs). The agent container mounts both mailboxes whole, and its tools run as their own
+ * uid (issue #814): they can neither read what the agent is told nor forge what it says.
+ */
+export const AGENT_MAILBOX_DIR = 'agent';
+/** The agent's side of `in` (`FACTORY_CTL_IN`) and of `out` (`FACTORY_CTL_OUT`). */
+export const AGENT_IN = `${MAILBOXES.in.path}/${AGENT_MAILBOX_DIR}`;
+export const AGENT_OUT = `${MAILBOXES.out.path}/${AGENT_MAILBOX_DIR}`;
+
+/**
  * The marker the supervisor writes in the agent's read-only mailbox when the driver releases the
  * agent: the group exists from the attempt's first step (the sync), and the agent's entrypoint waits
  * on this file (`FACTORY_CTL_GO`) so it never starts before its tree does.
  */
-export const GO_MARKER = `${MAILBOXES.in.path}/${MAILBOX_FILES.go}`;
+export const GO_MARKER = `${AGENT_IN}/${MAILBOX_FILES.go}`;
 
 /** The marker file the baked Stop hook and plugin read: the supervisor's `stop`, in the agent's read-only mailbox. */
-export const STOP_MARKER = `${MAILBOXES.in.path}/${MAILBOX_FILES.stop}`;
+export const STOP_MARKER = `${AGENT_IN}/${MAILBOX_FILES.stop}`;
 
 /** How often the supervisor reads the driver's run-control endpoint, and so the pace a Stop reaches the agent at. */
 export const RUN_CONTROL_POLL_MS = 5_000;

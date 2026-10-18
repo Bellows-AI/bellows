@@ -26,6 +26,7 @@ import {
 import {
     probeTreeFingerprint,
     publishCheckout,
+    RELEASE_DEADLINE_MS,
     type PublishOptions,
     type PublishResult,
     repoPath,
@@ -40,6 +41,7 @@ import {
     parseDockerServiceExit,
     parseDockerServicePs,
     parseDockerStats,
+    toolTreeReleaseArgs,
 } from './docker.js';
 import { envFileBody } from './claim.js';
 import { snapshotTree } from './review-snapshot.js';
@@ -294,6 +296,9 @@ async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<R
         supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: opened.url, [SUPERVISOR_ENV.controlToken]: opened.token },
     };
     try {
+        // Issue #814: the tool uid first gives back what it closed; the reclaim's verdict decides.
+        const release = toolTreeReleaseArgs(config, job);
+        if (release) await deps.execDocker(release, { timeout: RELEASE_DEADLINE_MS }).catch(() => undefined);
         await createGroup(deps, group, null, new Date().toISOString());
         await startGroup(deps.execDocker, group, null);
         return await runReclaimStep(stepHostOf(deps), group);

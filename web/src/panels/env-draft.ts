@@ -19,13 +19,7 @@
  *   a validation error only disables Save early, never redefines legality.
  */
 
-import {
-    ENV_NAME,
-    ENV_NAME_LIMIT,
-    ENV_VALUE_LIMIT,
-    MAX_ENV_VARS_PER_SCOPE,
-    RESERVED_ENV_NAMES,
-} from '@factory-ai/core';
+import { ENV_NAME, ENV_NAME_LIMIT, ENV_VALUE_LIMIT, isReservedEnvName, MAX_ENV_VARS_PER_SCOPE } from '@factory-ai/core';
 import { serializeEnv } from './env-raw.js';
 
 /** One editable row in the panel's draft state. `id` is a React key only — never in a payload. */
@@ -95,7 +89,7 @@ function nameErrors(name: string, nameCounts: ReadonlyMap<string, number>): stri
     const list: string[] = [];
     if (name.length > ENV_NAME_LIMIT) list.push(`Name exceeds ${ENV_NAME_LIMIT} characters.`);
     if (!ENV_NAME.test(name)) list.push(`"${name}" is not a legal environment variable name.`);
-    if (RESERVED_ENV_NAMES.includes(name)) list.push(`"${name}" is reserved by the runner.`);
+    if (isReservedEnvName(name)) list.push(`"${name}" is reserved by the runner.`);
     if ((nameCounts.get(name) ?? 0) > 1) {
         list.push(`Duplicate name "${name}" — names must be unique in this scope.`);
     }
