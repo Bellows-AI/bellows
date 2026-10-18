@@ -73,8 +73,9 @@ runners: runners-build
 # for the managed one, and values-local.yaml names its objects. `make stop` uninstalls only the app
 # release and reaps the runner Jobs (created at runtime by the driver, so not the release's) —
 # database and checkouts survive, and the next `make start` picks them up. `make reset` is `stop`
-# plus the state release and its claims: an empty database next start. `make cleanup` deletes the
-# kind cluster itself. Two state releases are the thing `make start` will not upgrade — one
+# plus the state release and its claims: an empty database next start. `make cluster` creates the
+# kind cluster with the local registry scripts/test-k8s.sh pushes to (scripts/kind-cluster.sh);
+# `make cleanup` deletes the cluster, and the registry with the last one. Two state releases are the thing `make start` will not upgrade — one
 # installed before #371, and one whose database claim was initialised before the chart set PGDATA
 # — see `state-preflight`.
 
@@ -89,7 +90,7 @@ LOCAL_VALUES = K8S_PORT=$(K8S_PORT) node scripts/k8s-local-values.mjs
 # Whatever the chart pins — read from the render, so the image loaded is the image the pod names.
 COLLECTOR_IMAGE ?= $(shell $(LOCAL_VALUES) 2>/dev/null | helm template x charts/factory -f charts/factory/values-local.yaml -f - --show-only templates/collector.yaml 2>/dev/null | awk '$$1 == "image:" { print $$2; exit }')
 
-.PHONY: build start state-preflight stop reset
+.PHONY: build cluster start state-preflight stop reset
 
 # The one upgrade `make start` must not perform. A pre-#371 state release holds the database in a
 # Deployment beside a standalone PVC named `<release>-timescale`; this chart holds it in a
@@ -144,13 +145,16 @@ build: runners-build
 		echo "make build: no release $(K8S_RELEASE) in $(CLUSTER) — images loaded; 'make start' installs it"; \
 	fi
 
+cluster:
+	@sh scripts/kind-cluster.sh create $(CLUSTER)
+
 start:
 	@for tool in docker kind helm kubectl node; do \
 		command -v $$tool >/dev/null || { echo "make start: $$tool is required"; exit 1; }; \
 	done
 	@# Before any build: a missing credential should cost a second, not an image build.
 	@$(LOCAL_VALUES) >/dev/null
-	@kind get clusters | grep -qx '$(CLUSTER)' || kind create cluster --name $(CLUSTER)
+	$(MAKE) cluster
 	@kubectl config use-context kind-$(CLUSTER)
 	$(MAKE) state-preflight
 	@echo 'building the images on the host daemon'
@@ -217,4 +221,4 @@ reset: stop
 .PHONY: cleanup
 
 cleanup:
-	kind delete cluster --name $(CLUSTER)
+	sh scripts/kind-cluster.sh delete $(CLUSTER)
