@@ -58,7 +58,7 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['tool-tree-release.cjs', 'node'],
     ['tool-tree-release-bounded.sh', 'sh'],
     ['git-review-snapshot.cjs', 'node'],
-    ['publish-ledger.cjs', 'node'],
+    ['operation-ledger.cjs', 'node'],
     ['pr-summary.cjs', 'node'],
     ['opencode-readout.cjs', 'node'],
     ['claude-turns.cjs', 'node'],

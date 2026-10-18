@@ -48,6 +48,13 @@ export class StepTimedOut extends Error {
     }
 }
 
+/**
+ * Whether a step failed because its supervisor was lost — the channel closed, or the answer never
+ * came — which is no verdict on the step itself: the attempt was interrupted (issue #826).
+ */
+export const stepLost = (error: unknown): boolean =>
+    error instanceof StepChannelClosed || error instanceof StepTimedOut;
+
 /** What the runners and the loop use: submit a step, read the supervisor's report. */
 export interface StepSink {
     /** Runs one step in the attempt's supervisor and answers its result; rejects when the channel is closed or `signal` aborts. */

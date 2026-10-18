@@ -66,7 +66,7 @@ import { publishCheckout, type PublishOptions, repoPath, worktreeDir } from './p
 import type { PublishResult, ReclaimResult, SyncResult } from './publish.js';
 import { probeTreeFingerprint } from './publish.js';
 import { snapshotTree, type SnapshotResult } from './review-snapshot.js';
-import type { StepSink, SupervisorEndpoint } from './step-control.js';
+import { type StepSink, type SupervisorEndpoint, stepLost } from './step-control.js';
 import {
     controlTokenOf,
     orderGo,
@@ -458,11 +458,12 @@ async function snapshotReviewTree(
 /** One allowlisted helper step, in the attempt's supervisor. */
 async function runHelper(deps: K8sDeps, job: BoardJob, plan: HelperPlan, call: HelperCall): Promise<HelperResult> {
     // An unknown helper id creates nothing (`runHelperStep` refuses it first), and a group the
-    // cluster refuses is a failed helper, never a throw.
+    // cluster refuses is a failed helper; only a lost supervisor (`stepLost`) is thrown.
     if (!lookupHelper(plan.helperId)) return runHelperStep(stepHostOf(deps), job, plan, call);
     try {
         return await runHelperStep(await stepHostFor(deps, job), job, plan, call);
     } catch (e) {
+        if (stepLost(e)) throw e;
         return { ok: false, reason: 'runner_error', message: (e as Error).message };
     }
 }
@@ -645,8 +646,7 @@ export function createKubernetesRunner(
         probeTree: (job: BoardJob, signal?: AbortSignal) => probeTree(deps, job, signal),
         adopt: (job: BoardJob) => adoptFinishedRunner(deps, job, { scrapeClaudeCloseRead, attachOpencodeOutcome }),
         snapshotTree: (job: BoardJob, key: string, signal?: AbortSignal) => snapshotReviewTree(deps, job, key, signal),
-        runHelper: (job: BoardJob, plan: HelperPlan, token?: string, signal?: AbortSignal) =>
-            runHelper(deps, job, plan, { token, signal }),
+        runHelper: (job: BoardJob, plan: HelperPlan, call: HelperCall = {}) => runHelper(deps, job, plan, call),
         syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
             syncCheckout(deps, job, session ?? null, githubToken),
         finish: (job: BoardJob) => finishGroup(deps, job),

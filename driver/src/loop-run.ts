@@ -512,8 +512,8 @@ async function runPostHelpersAndPublish(
     policyRefusal: string | null;
 } | null> {
     const { rt, job, state } = ctx;
-    const helperFailure = await runPostHelperPhase(rt, job, state, postHelperSkipWhy(outcome.outcome));
-    if (await standDown(ctx, 'its post-helpers')) return null;
+    const helperFailure = await runPostHelperPhase(ctx, postHelperSkipWhy(outcome.outcome));
+    if ((await standDown(ctx, 'its post-helpers')) || helperFailure === STOOD_DOWN) return null;
     const ledger = ledgerOf({ ...outcome, helperFailure, published: null });
     let published: PublishResult | null = null;
     const policyRefusal: string | null = null;

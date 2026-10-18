@@ -1,12 +1,14 @@
-import type { BoardJob, FailureKind } from './board.js';
-import type { HelperFailureReport, HelperPlan, HelperResult } from './helpers.js';
+import type { FailureKind } from './board.js';
+import { helperEffectId } from './helper-receipts.js';
+import type { HelperFailureReport, HelperPlan, HelperResult, InvokeChild } from './helpers.js';
 import { formatConcludeOutput, runHelperPlan } from './helpers.js';
 import { askGithubToken } from './loop-github.js';
 import { down, raceStep } from './loop-attempt.js';
-import type { JobState } from './loop-attempt.js';
+import { interruptAttempt } from './loop-fence.js';
 import { helperCauseOf } from './loop-ledger.js';
-import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
+import type { AttemptCtx, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
+import { stepLost } from './step-control.js';
 
 /**
  * The loop's own two ends of the block-helper transport (issue #207, extended by #230's conclude
@@ -42,18 +44,24 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<SetupConclusion | 
     // Applied to every child call a plan makes — one for a plain script plan, several in
     // declared order for a composite — so a stop or lost lease mid-composite is observed between
     // children, not just around the composite as a whole.
-    const invokeChild = async (childPlan: HelperPlan): Promise<HelperResult | null> => {
-        const token = childPlan.githubWriting
-            ? ((await askGithubToken(rt, job, `the helper ${childPlan.helperId}`)) ?? undefined)
-            : undefined;
-        if (down(state)) return null;
-        const resultOut = await raceStep(state.signal, runner.runHelper!(job, childPlan, token, state.signal));
-        return resultOut === null || down(state) ? null : resultOut.value;
-    };
+    const invokeChild =
+        (planIndex: number): InvokeChild =>
+        async (childPlan, childIndex) => {
+            const token = childPlan.githubWriting
+                ? ((await askGithubToken(rt, job, `the helper ${childPlan.helperId}`)) ?? undefined)
+                : undefined;
+            if (down(state)) return null;
+            const effectId = helperEffectId(job, childPlan, planIndex, childIndex);
+            const resultOut = await raceStep(
+                state.signal,
+                runner.runHelper!(job, childPlan, { token, signal: state.signal, effectId })
+            );
+            return resultOut === null || down(state) ? null : resultOut.value;
+        };
 
-    for (const plan of plans) {
-        const result = await runHelperPlan(plan, invokeChild);
-        if (result === null) return STOOD_DOWN;
+    for (const [planIndex, plan] of plans.entries()) {
+        const result = await runPlanFenced(ctx, plan, invokeChild(planIndex));
+        if (result === STOOD_DOWN) return STOOD_DOWN;
         if (!result.ok) {
             return {
                 halt: 'fault',
@@ -85,17 +93,17 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<SetupConclusion | 
  * after any clean run, a failed gate included, and is skipped whole when `skipReason`
  * (`postHelperSkipWhy`) names a run that did not finish cleanly — never by helper kind, which
  * this generic transport must not encode.
- * Any stand-down (`down(state)`) ends it: a stopped, lost or removed attempt has no verdict to
- * contribute, and the caller stands the attempt down rather than publishing. `conclude`
- * (issue #230) is valid only for a PRE helper — a post-helper naming it fails the verdict with a
- * NAMED reason, exactly like any other post-helper failure, rather than being silently ignored.
+ * Any stand-down (`down(state)`) ends it with STOOD_DOWN: a stopped, lost or removed attempt has no
+ * verdict to contribute, and the caller stands the attempt down rather than publishing; so does a
+ * lost supervisor, after its interruption settled the attempt. `conclude` (issue #230) is valid
+ * only for a PRE helper — a post-helper naming it fails the verdict with a NAMED reason, exactly
+ * like any other post-helper failure, rather than being silently ignored.
  */
 export async function runPostHelperPhase(
-    rt: LoopRuntime,
-    job: BoardJob,
-    state: JobState,
+    ctx: AttemptCtx,
     skipReason: string | null
-): Promise<HelperFailureReport | null> {
+): Promise<HelperFailureReport | null | typeof STOOD_DOWN> {
+    const { rt, job, state } = ctx;
     const { runner, log } = rt;
     const plans = (job.helperPlans ?? []).filter((plan) => plan.phase === 'post');
     if (!plans.length || !runner.runHelper) return null;
@@ -104,18 +112,21 @@ export async function runPostHelperPhase(
         return null;
     }
 
-    const invokeChild = async (childPlan: HelperPlan): Promise<HelperResult | null> => {
-        if (down(state)) return null;
-        const token = childPlan.githubWriting
-            ? ((await askGithubToken(rt, job, `the helper ${childPlan.helperId}`)) ?? undefined)
-            : undefined;
-        if (down(state)) return null;
-        return runner.runHelper!(job, childPlan, token, state.signal);
-    };
+    const invokeChild =
+        (planIndex: number): InvokeChild =>
+        async (childPlan, childIndex) => {
+            if (down(state)) return null;
+            const token = childPlan.githubWriting
+                ? ((await askGithubToken(rt, job, `the helper ${childPlan.helperId}`)) ?? undefined)
+                : undefined;
+            if (down(state)) return null;
+            const effectId = helperEffectId(job, childPlan, planIndex, childIndex);
+            return runner.runHelper!(job, childPlan, { token, signal: state.signal, effectId });
+        };
 
-    for (const plan of plans) {
-        const result = await runHelperPlan(plan, invokeChild);
-        if (result === null) return null;
+    for (const [planIndex, plan] of plans.entries()) {
+        const result = await runPlanFenced(ctx, plan, invokeChild(planIndex));
+        if (result === STOOD_DOWN) return STOOD_DOWN;
         if (!result.ok) {
             log(`job ${job.id}: post-run helper "${plan.helperId}" failed: ${result.reason} — ${result.message}`);
             return { helperId: plan.helperId, result };
@@ -136,4 +147,26 @@ export async function runPostHelperPhase(
         }
     }
     return null;
+}
+
+/**
+ * One declared plan run to its result, or STOOD_DOWN when the attempt is down — or when its
+ * supervisor was lost mid-step (`stepLost`, issue #826). That is an infrastructure interruption,
+ * never a helper failure: it settles the attempt here, and the receipt and the task's checkout stay
+ * on the task volume for the claim that takes the job over. Any other throw is rethrown.
+ */
+async function runPlanFenced(
+    ctx: AttemptCtx,
+    plan: HelperPlan,
+    invokeChild: InvokeChild
+): Promise<HelperResult | typeof STOOD_DOWN> {
+    try {
+        return (await runHelperPlan(plan, invokeChild)) ?? STOOD_DOWN;
+    } catch (e) {
+        if (down(ctx.state)) return STOOD_DOWN;
+        if (!stepLost(e)) throw e;
+        const reason = `infrastructure loss: a ${plan.phase}-run helper's supervisor was lost (${(e as Error).message})`;
+        await interruptAttempt(ctx, reason, null);
+        return STOOD_DOWN;
+    }
 }

@@ -149,6 +149,7 @@ const EXPECTED_COLLECTION_VERDICT: ReviewCollection = {
             ],
         },
     ],
+    addressed: [],
     requestedReviewers: { users: ['reviewer-a', 'reviewer-b'], teams: ['qa-team'] },
     decision: 'CHANGES_REQUESTED',
     pendingChecks: 0,
@@ -267,6 +268,28 @@ describe('the review collection script: section and thread caps', () => {
         );
         expect(verdict.truncated.sections).toContain('general');
         expect(verdict.truncated.total).toBe(false);
+    });
+
+    it('reads every reply marker before the caps: a capped-out reply still marks its item addressed', async () => {
+        const marked = (id: number, key: string) => ({
+            id,
+            user: { login: 'factory[bot]' },
+            body: `done\n\n<!-- factory-review-reconcile addressed ${key} -->`,
+            created_at: '2026-09-04T10:00:00Z',
+        });
+        const filler = (from: number) =>
+            Array.from({ length: GENERAL_LIMIT }, (_, i) => ({ ...marked(from + i, 'x'), body: 'noted' }));
+        const file = writeFixture({
+            general: [...filler(500), marked(600, 'review:23'), marked(601, 'general:500')],
+            reviews: [],
+            inline: [...filler(700), marked(800, 'thread:T_a')],
+            requested: { users: [], teams: [] },
+            threads: { data: { repository: { pullRequest: null } } },
+        });
+        const { stdout } = await runScript('review-collect.cjs', { REPO: 'octo/factory', PR: '7', GH_FIXTURES: file });
+        const verdict = JSON.parse(stdout.trim()) as { addressed: string[]; general: { id: number }[] };
+        expect(verdict.general.map((c) => c.id)).not.toContain(600);
+        expect(verdict.addressed).toEqual(['general:500', 'review:23', 'thread:T_a']);
     });
 
     it('caps a thread at its comment limit and reports the truncation', async () => {

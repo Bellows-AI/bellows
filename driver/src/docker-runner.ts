@@ -10,7 +10,7 @@ import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
 import { lookupHelper } from './helpers.js';
-import { noStepChannel, type StepSink, type SupervisorEndpoint } from './step-control.js';
+import { noStepChannel, type StepSink, type SupervisorEndpoint, stepLost } from './step-control.js';
 import {
     attachSteps,
     controlTokenOf,
@@ -329,7 +329,8 @@ async function stepHostFor(deps: RunnerDeps, job: BoardJob): Promise<StepHost> {
 
 /**
  * One allowlisted helper step. An unknown helper id creates nothing (`runHelperStep` refuses it
- * first), and a group the daemon refuses is a failed helper, never a throw.
+ * first), and a group the daemon refuses is a failed helper; only a lost supervisor (`stepLost`)
+ * is thrown.
  */
 async function dockerRunHelper(
     deps: RunnerDeps,
@@ -341,6 +342,7 @@ async function dockerRunHelper(
     try {
         return await runHelperStep(await stepHostFor(deps, job), job, plan, call);
     } catch (e) {
+        if (stepLost(e)) throw e;
         return { ok: false, reason: 'runner_error', message: dockerErrorDetail(e).slice(0, ERROR_DETAIL_MAX_CHARS) };
     }
 }
@@ -718,7 +720,7 @@ export function createDockerRunner(
         // The probe and the review snapshot need no claim env; like every step they run in the
         // supervisor, and a stand-down ends the wait for the answer, never the supervisor.
         ...dockerTreeSteps(deps),
-        runHelper: (job, plan, token, signal) => dockerRunHelper(deps, job, plan, { token, signal }),
+        runHelper: (job, plan, call = {}) => dockerRunHelper(deps, job, plan, call),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
         restartServices: (job, signal) => restartJobServices(job, execDocker, signal),
