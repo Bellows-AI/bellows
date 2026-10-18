@@ -1,6 +1,6 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { workspaceDir } from './reconcile.js';
+import { mkdirShared, workspaceDir } from './reconcile.js';
 
 /**
  * Creates a member's workspace directory, and nothing else.
@@ -57,7 +57,7 @@ export function ensureUserWorkspace(options: ProvisionOptions): string | null {
      * only on creation loses nothing, because the other caller is the sign-in callback, and a
      * rename is only visible at sign-in anyway.
      */
-    const created = mkdirSync(dir, { recursive: true });
+    const created = mkdirShared(dir);
     if (created !== undefined || options.rewriteBreadcrumb) {
         writeFileSync(
             join(dir, BREADCRUMB),

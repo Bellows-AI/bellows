@@ -18,6 +18,9 @@ import { CLAUDE_CODE, OPENCODE, type ExecutorType } from './executors.js';
 const READ_ONLY = 0o444;
 const DIRECTORY = 0o755;
 
+/** The agent CLI's shell in both executor images (docker/claude-executor/tool-bash.sh). */
+const TOOL_SHELL = '/usr/local/libexec/factory-tool/bash';
+
 export function claudeManagedSettings(endpoint: string): string {
     const settings = {
         $schema: 'https://json.schemastore.org/claude-code-settings.json',
@@ -32,6 +35,10 @@ export function claudeManagedSettings(endpoint: string): string {
             OTEL_LOG_USER_PROMPTS: '0',
             OTEL_LOG_ASSISTANT_RESPONSES: '0',
             OTEL_LOG_TOOL_DETAILS: '0',
+            // The tool shell (issue #814): managed outranks the checkout's own settings, so no
+            // project can point the CLI's commands back at a shell that runs them as its own uid.
+            CLAUDE_CODE_SHELL: TOOL_SHELL,
+            SHELL: TOOL_SHELL,
         },
         // A headless run's permission prompt ends in a deny; these routine commands must not ask.
         permissions: {

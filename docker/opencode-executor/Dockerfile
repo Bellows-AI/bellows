@@ -18,8 +18,7 @@ FROM public.ecr.aws/docker/library/node:24-bookworm-slim
 # What -slim drops and the rest of this file needs: git (the agent shells out to it), curl (the
 # two downloads below) and the CA bundle both verify against. Deliberately NO compiler: a
 # toolchain here would pull libc6-dev back in, and with it the `linux-libc-dev` findings this base
-# change exists to remove. context-mode's better-sqlite3 resolves a prebuilt binding for
-# linux/amd64 and linux/arm64 on node 24; the test below is what catches the day it stops.
+# change exists to remove.
 #
 # The doc/man/locale strip is in THIS layer, not a later one: deleting in a later layer leaves the
 # bytes in this one and saves nothing. Worth 0.9MB, measured — NOT the ~18MB `dpkg-query
@@ -97,14 +96,6 @@ ARG OPENCODE_OTEL_VERSION=0.4.0
 RUN npm install -g @gcornut/opencode-otel@${OPENCODE_OTEL_VERSION} \
     && npm cache clean --force
 
-# The context-mode plugin (https://github.com/mksglu/context-mode) — sandboxed ctx_* tools, session
-# memory, hook-based routing — registered by the baked opencode.json alongside the telemetry
-# plugin. Pinned like everything else here. Its install scripts must run: better-sqlite3 resolves
-# its platform binding through them, and without the binding the plugin fails at run time.
-ARG CONTEXT_MODE_VERSION=1.0.169
-RUN npm install -g context-mode@${CONTEXT_MODE_VERSION} \
-    && npm cache clean --force
-
 # Global config lives under XDG_CONFIG_HOME, and OPENCODE_CONFIG pins the file inside it. Both are
 # outside /workspace on purpose: config that resolved inside the checkout would enter its diff —
 # the same reason the claude-executor points --settings outside the worktree.
@@ -139,8 +130,7 @@ COPY otel.json /etc/opencode-otel/otel.json
 # deny globs before a catch-all allow and silently cancel them. The entrypoint's per-run allows
 # ride OPENCODE_CONFIG_CONTENT instead of editing it. Its parents are root-owned and sticky (1777),
 # like /tmp: node still creates its own entries (gh, git, caches), but can no longer rename a root
-# entry aside and plant its own config in its place. context-mode/ is the plugin's own data
-# directory, the one writable spot inside.
+# entry aside and plant its own config in its place.
 RUN chown root:root /home/node && chmod 1777 /home/node && install -d -m 1777 -o root -g root /home/node/.config
 COPY opencode-home/ /home/node/.config/opencode/
 
@@ -155,7 +145,6 @@ COPY opencode-home/opencode.json /etc/opencode/opencode.json
 # The skills, from docker/skills/ — the same SKILL.md files claude-executor bakes, in the global
 # skills directory opencode discovers (`opencode debug skill` lists them).
 COPY --from=skills . /home/node/.config/opencode/skills/
-RUN install -d -o node -g node /home/node/.config/opencode/context-mode
 
 # Bind-mounted at runtime. Owned by node so the CLI can write into the checkout.
 RUN mkdir -p /workspace && chown node:node /workspace
@@ -184,14 +173,34 @@ COPY github-credential.cjs /usr/local/bin/github-credential.cjs
 COPY gh-wrapper.sh /usr/local/bin/gh
 COPY stop-plugin/ /usr/local/lib/node_modules/factory-stop-plugin/
 RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/opencode-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/rate-limit-watch.cjs /usr/local/bin/ctl-agent.cjs
+# The agent's tools run as their own uid (issue #814). factory-launch, the ENTRYPOINT below, starts
+# the tool broker as root and drops to node for the CLI, whose shell (CLAUDE_CODE_SHELL, SHELL) asks
+# the broker to run each command as factory-tool, 1001 in node's group. Only node is in
+# factory-agent, the one group that reaches the broker's socket; the run-control proxy's socket is
+# node's and its group's. factory-tool's HOME is its own, and its git config includes node's, so the
+# credential helper and safe.directory carry over. Byte-identical in both executor Dockerfiles.
+RUN groupadd -g 1002 factory-agent && usermod -aG factory-agent node \
+    && useradd -u 1001 -g node -M -d /home/factory-tool -s /bin/bash factory-tool \
+    && install -d -o factory-tool -g node -m 0700 /home/factory-tool \
+    && printf '[include]\n\tpath = /home/node/.gitconfig\n' > /home/factory-tool/.gitconfig \
+    && chown factory-tool:node /home/factory-tool/.gitconfig \
+    && install -d -o root -g factory-agent -m 2750 /run/factory-tool \
+    && install -d -o node -g node -m 0750 /run/factory-control
+COPY factory-launch.sh /usr/local/bin/factory-launch
+COPY factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs
+COPY tool-bash.sh /usr/local/libexec/factory-tool/bash
+COPY control-proxy.cjs /usr/local/bin/control-proxy.cjs
+RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash /usr/local/bin/control-proxy.cjs
 # The task supervisor's mailbox mount points (driver/src/supervisor-contract.ts). Baked and node-
-# owned so a docker volume mounted over them inherits the owner; a kubernetes emptyDir needs no help.
-RUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory
+# owned so a docker volume mounted over them inherits the owner and mode — the agent's two closed to
+# the tool uid (issue #814); a kubernetes emptyDir is made sticky by the tool broker instead.
+RUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory \
+    && chmod 0700 /factory/in /factory/out
 
 USER node
 
 # The wrapper cds into $WORKDIR (default /workspace) before exec'ing opencode with every argument
 # given after the image name, so a caller can point one image at a subdirectory or at a second
 # mounted checkout without rebuilding.
-ENTRYPOINT ["opencode-executor"]
+ENTRYPOINT ["/usr/local/bin/factory-launch", "/usr/local/bin/opencode-executor"]
 CMD ["--help"]

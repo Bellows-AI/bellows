@@ -277,6 +277,21 @@ describe('env var validation', () => {
             { vars: [{ name: 'FACTORY_TURN_CONTEXT', value: 'spoof', isSecret: false }] },
             'RESERVED_ENV_NAME',
         ],
+        [
+            'a loader variable the root-started runner launcher would honour',
+            { vars: [{ name: 'LD_PRELOAD', value: '/w/evil.so', isSecret: false }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
+            'any LD_ name, not only the ones listed',
+            { vars: [{ name: 'LD_AUDIT', value: '/w/evil.so', isSecret: false }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
+            'a glibc tunable',
+            { vars: [{ name: 'GLIBC_TUNABLES', value: 'glibc.malloc.check=3', isSecret: false }] },
+            'RESERVED_ENV_NAME',
+        ],
         ['a null value on a non-secret', { vars: [{ name: 'PLAIN', value: null, isSecret: false }] }, 'BAD_VALUE'],
         [
             'a value with a newline',

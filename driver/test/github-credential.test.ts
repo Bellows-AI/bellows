@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
-import { envFileBody, GITHUB_CACHE_DIR, runnerClaimEnv } from '../src/claim.js';
+import { envFileBody, GITHUB_CACHE_DIR, runnerClaimEnv, TOOL_UID } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
 import { dockerArgs } from '../src/docker.js';
 import { runnerJobSpec } from '../src/k8s-podspec.js';
@@ -317,7 +317,8 @@ describe('the token cache and the runner env, on both executors', () => {
     it('docker mounts a 0700 memory tmpfs over the cache in the agent container', () => {
         const args = dockerArgs(loadDriverConfig({}), runnerJob, SESSION, { envFile: '/tmp/agent.env' });
         const at = args.indexOf('--tmpfs');
-        expect(args[at + 1]).toBe(`${GITHUB_CACHE_DIR}:rw,noexec,nosuid,size=1m,mode=0700,uid=1000`);
+        // The tool uid's: git and gh run as it (issue #814).
+        expect(args[at + 1]).toBe(`${GITHUB_CACHE_DIR}:rw,noexec,nosuid,size=1m,mode=0700,uid=${TOOL_UID}`);
         expect(args.join(' ')).not.toContain(MEMBER_TOKEN);
         expect(envFileBody(runnerJob, loadDriverConfig({}))).not.toMatch(/^(GITHUB_TOKEN|GH_TOKEN)=/m);
     });

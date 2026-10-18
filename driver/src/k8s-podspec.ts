@@ -14,13 +14,20 @@ import {
     transcriptDir,
     workspacePath,
 } from './claim.js';
-import { claudeTurnsScript, claudeExportScript, opencodeReadoutScript, supervisorScript } from './container-scripts.js';
+import {
+    claudeTurnsScript,
+    claudeExportScript,
+    gateShellArgv,
+    opencodeReadoutScript,
+    supervisorScript,
+} from './container-scripts.js';
 import { commandMark, OPENCODE_EXPORT_LIMIT, type RunSession } from './runner.js';
 import { exportEnv, exportsTranscript } from './transcript-export.js';
 import { AGENT_CONTAINER, EXPORTER_CONTAINER, MAILBOXES, SUPERVISOR_CONTAINER } from './supervisor-contract.js';
 import { agentMailboxEnv, backstopMs, supervisorControlNames, supervisorLiterals } from './supervisor-plan.js';
 import { JOB_ID, MS_PER_SECOND, TTL_SECONDS } from './k8s-transport.js';
 import {
+    agentLaunchHardeningField,
     containerHardeningField,
     doNotDisruptField,
     mailboxMount,
@@ -105,6 +112,8 @@ export interface RunnerJobSpec {
                 nodeSelector?: Record<string, string>;
                 tolerations?: Record<string, unknown>[];
                 affinity?: Record<string, unknown>;
+                /** The reclaim group's release pass (issue #814); no other group runs one. */
+                initContainers?: RunnerPodContainer[];
                 /** The agent, the supervisor beside it and, for a run that exports its transcript, the exporter. */
                 containers: RunnerPodContainer[];
                 volumes: RunnerVolume[];
@@ -296,7 +305,7 @@ function agentPart(
             // docker runner finds it.
             imagePullPolicy: config.imagePullPolicy,
             ...resourcesField(config),
-            ...containerHardeningField(),
+            ...agentLaunchHardeningField(),
             env,
             args: plan.cliArgs,
             // The workspace and the telemetry config, and of the supervisor only the two mailboxes
@@ -752,7 +761,7 @@ export function gateJobSpec(config: DriverConfig, job: BoardJob, gate: GateJobSp
             name: `gate-${hash16(`${jobName}|${command}`)}`,
             image,
             imagePullPolicy: config.imagePullPolicy,
-            command: ['sh', '-c', command],
+            command: gateShellArgv(command),
             workingDir: `${config.workspaceMount}/${key}`,
             env: gateEnv(config, job).map(([name, value]) => ({ name, value })),
             ...(envSecretName ? { envFrom: [{ secretRef: { name: envSecretName } }] } : {}),

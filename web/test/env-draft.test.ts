@@ -97,6 +97,8 @@ describe('row validation — the server rules, mirrored for early feedback', () 
         expect(long.get('A'.repeat(OVER_NAME_LIMIT))?.name[0]).toMatch(/255 characters/);
         const reserved = rowFieldErrors([storedVar('WORKDIR', '')]);
         expect(reserved.get('WORKDIR')?.name[0]).toMatch(/reserved by the runner/);
+        const loader = rowFieldErrors([storedVar('LD_PRELOAD', '')]);
+        expect(loader.get('LD_PRELOAD')?.name[0]).toMatch(/reserved by the runner/);
     });
 
     it('flags every member of a duplicate pair, on the trimmed name', () => {
