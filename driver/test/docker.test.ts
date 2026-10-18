@@ -5,7 +5,7 @@ import { rm, writeFile } from 'node:fs/promises';
 import type { ChildProcess, spawn } from 'node:child_process';
 import type { Readable } from 'node:stream';
 import type { BoardJob } from '../src/board.js';
-import { loadDriverConfig } from '../src/config.js';
+import { executorImage, loadDriverConfig } from '../src/config.js';
 import {
     containerName,
     dockerArgs,
@@ -16,6 +16,7 @@ import {
     opencodeSessionReadoutArgs,
     parseDockerServicePs,
     parseDockerStats,
+    toolTreeReleaseArgs,
 } from '../src/docker.js';
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
 import {
@@ -28,6 +29,7 @@ import {
     tailKept,
 } from '../src/runner.js';
 import { claudeTurnsArgs, opencodeCacheProbeArgs } from '../src/docker-close-read.js';
+import { gateShellScript } from '../src/container-scripts.js';
 import {
     CACHE_WATCH_TURNS,
     cacheCollapse,
@@ -74,6 +76,7 @@ import {
     publishPlan,
     repoPath,
     SYNC_DEADLINE_MS,
+    toolTreeReleaseScript,
     TRANSIENT_SYNC_REASON,
     worktreeBranch,
     worktreeDir,
@@ -608,6 +611,21 @@ describe("the board's environment", () => {
         // The turn context is board-rendered (runner-plan.ts); a member value would reach the
         // model through the UserPromptSubmit hook as Factory's own context.
         ['FACTORY_TURN_CONTEXT', { FACTORY_TURN_CONTEXT: 'spoof' }],
+        // The agent container starts as root to launch the tool broker (issue #814): the glibc
+        // loader honours these for that root /bin/sh, env and setpriv before any script line runs.
+        [
+            'loader variables',
+            {
+                LD_PRELOAD: '/w/evil.so',
+                LD_LIBRARY_PATH: '/w',
+                LD_AUDIT: '/w/evil.so',
+                GCONV_PATH: '/w',
+                GLIBC_TUNABLES: 'glibc.malloc.check=3',
+                LOCPATH: '/w',
+                NLSPATH: '/w',
+                MALLOC_TRACE: '/w/trace',
+            },
+        ],
     ])('drops a member %s from the claim env and the env file', (_name, member) => {
         const hijacked = { ...job, env: { ...member, OTHER: 'fine' } };
         expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
@@ -1348,7 +1366,7 @@ describe('the gate environment container', () => {
 
     it('execs gates as sh -c inside the named container, and refuses a strange container name', () => {
         const name = gateEnvContainerName(KEY);
-        expect(gateExecArgs(name, 'npm test')).toEqual(['exec', name, 'sh', '-c', 'npm test']);
+        expect(gateExecArgs(name, 'npm test')).toEqual(['exec', name, 'sh', '-c', gateShellScript, 'gate', 'npm test']);
         expect(() => gateExecArgs('bad name; rm -rf', 'x')).toThrow();
     });
 
@@ -3934,8 +3952,41 @@ describe('publishing the produced work', () => {
                 `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
             ])
         );
-        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
+        // Issue #814: the one throwaway container, before the group — the tool uid's release of
+        // what it closed, which the uid-1000 reclaim could not empty.
+        expect(d.calls.filter((a) => a[0] === 'run')).toEqual([toolTreeReleaseArgs(loadDriverConfig({}), repoJob)]);
+        expect(d.calls.findIndex((a) => a[0] === 'run')).toBeLessThan(d.calls.findIndex((a) => a[0] === 'create'));
         expect(d.containers.size).toBe(0);
+    });
+
+    it('releases the tree as the tool uid, hardened, naming only the tree', () => {
+        const args = toolTreeReleaseArgs(loadDriverConfig({}), repoJob) ?? [];
+        expect(args.slice(0, 1)).toEqual(['run']);
+        expect(args).toEqual(expect.arrayContaining(['--cap-drop', 'ALL', '--rm']));
+        expect(args.join(' ')).toContain('--security-opt no-new-privileges');
+        expect(args.join(' ')).toContain('--user 1001:1000');
+        expect(args).toContain(`WORKTREE=/workspaces/bellows/${USER}/.worktrees/${job.id}`);
+        expect(args.slice(-4)).toEqual([
+            'node',
+            executorImage(loadDriverConfig({}), repoJob.executorType),
+            '-e',
+            toolTreeReleaseScript,
+        ]);
+        expect(args.some((arg) => arg.includes('--cap-add'))).toBe(false);
+    });
+
+    it('reclaims even when the release container fails: the reclaim’s own verdict decides', async () => {
+        const d = labelDaemon();
+        const failing = async (args: string[]) => {
+            if (args[0] === 'run') throw new Error('no such image');
+            return d.exec(args);
+        };
+        const { endpoint } = reclaimEndpoint();
+        const supervised = fakeSteps((step) =>
+            ok(step.kind === 'reclaim' ? '{"ok":true,"removed":true,"reason":null}' : '')
+        );
+        const runner = dockerRunner(failing, { steps: supervised.sink, endpoint });
+        expect(await runner.reclaimWorktree(repoJob)).toEqual({ ok: true, removed: true, reason: null });
     });
 
     it('refuses a reclaim by saying this driver has no supervisor endpoint to run it through', async () => {
@@ -4740,10 +4791,25 @@ describe('every container the driver runs is hardened (#382)', () => {
         ],
         ['the claude transcript exporter', () => exporterCreateArgs(config(), job, START, '/tmp/export.env')],
         ['a declared service', () => serviceRunArgs(job, { name: 'cache', image: 'redis', environment: [] })],
+        ['the tool tree release', () => toolTreeReleaseArgs(config(), repoJob) ?? []],
     ];
 
     it.each(builders)('drops every capability on %s', (_name, build) => {
         expect(hasPair(build(), '--cap-drop', 'ALL')).toBe(true);
+    });
+
+    // Issue #814: the runner starts as root to launch its tool broker, with exactly the two
+    // capabilities a uid switch needs; factory-launch drops both before the CLI starts.
+    it('starts the runner as root with SETUID and SETGID added, and nothing else', () => {
+        const argv = builders[0]![1]();
+        expect(hasPair(argv, '--user', '0:0')).toBe(true);
+        expect(argv.flatMap((arg, i) => (arg === '--cap-add' ? [argv[i + 1]] : []))).toEqual(['SETUID', 'SETGID']);
+    });
+
+    it.each(builders.slice(1))('adds no capability to %s and never starts it as root', (_name, build) => {
+        const argv = build();
+        expect(argv).not.toContain('--cap-add');
+        expect(hasPair(argv, '--user', '0:0')).toBe(false);
     });
 
     it.each(builders)('refuses privilege escalation on %s', (_name, build) => {
@@ -4804,14 +4870,16 @@ describe('every container the driver runs is hardened (#382)', () => {
             'the startup sync',
             (r: ReturnType<typeof createDockerRunner>) => r.syncCheckout({ ...job, repo: 'Bellows-AI/factory' }),
         ],
-    ])('hardens every container %s creates, and runs none of its own', async (_name, drive) => {
+    ])('hardens every container %s creates or runs', async (name, drive) => {
         const { created, runs } = await containersFrom(
             drive as (r: ReturnType<typeof createDockerRunner>) => Promise<unknown>
         );
         // The load-bearing guard: a path that created nothing would pass the loop below vacuously.
         expect(created.length).toBeGreaterThan(0);
-        expect(runs).toEqual([]);
-        for (const argv of created) {
+        // A step runs in the supervisor, never in a container of its own. The one throwaway is the
+        // tool uid's release of the tree before the reclaim (issue #814), hardened like the rest.
+        expect(runs).toHaveLength(name === 'the worktree reclaim' ? 1 : 0);
+        for (const argv of [...created, ...runs]) {
             expect(hasPair(argv, '--cap-drop', 'ALL')).toBe(true);
             expect(hasPair(argv, '--security-opt', 'no-new-privileges')).toBe(true);
         }

@@ -15,6 +15,8 @@ What each credential grants, what each boundary actually holds, and where the co
 | Managed connections: the Jira credential stays on the board; the runner holds only the attempt pair | `server/src/routes/connector-jira.ts`, `server/src/db/connection-store.ts` | `server/test/routes.connector-jira.test.ts`, `server/test-db/connection-store.test.ts` |
 | Container hardening, and the admission policy that requires it | `driver/src/k8s-podfields.ts`, `driver/src/services.ts`, `charts/factory/templates/driver-admission.yaml` | `driver/test/services.test.ts`, `driver/test/k8s-docs.test.ts`, `driver/test/k8s-admission.test.ts` |
 | A service's `user: "uid:gid"` (numeric, uid never 0) tightens, capabilities still dropped | `driver/src/k8s-auxspec.ts`, `driver/src/services.ts` | `driver/test/k8s.test.ts`, `driver/test/docker.test.ts` |
+| The agent's commands run as uid 1001 in group 1000, through a root broker that keeps `CAP_SETUID`/`CAP_SETGID` for the run; the CLI and its helpers drop to uid 1000 with none, and a tool cannot signal them, open the broker's socket, the agent's mailbox directories or its config dir; `LD_*` and the glibc loader names are refused as member env; same on both executors | `docker/claude-executor/factory-launch.sh`, `factory-tool.cjs`, `tool-bash.sh`, `driver/src/docker.ts`, `driver/src/k8s-podfields.ts`, `core/src/env.ts` | `driver/test/tool-broker.test.ts`, `driver/test/executor-images.test.ts`, `docker/claude-executor/test.sh`, `docker/opencode-executor/test.sh`, `scripts/test-jobs.sh`, `scripts/test-k8s.sh --cluster` |
+| A tool reaches `POST /publish` and `/review` through the CLI uid's proxy, which adds `BELLOWS_CONTROL_TOKEN`; no tool's env holds it | `docker/claude-executor/control-proxy.cjs`, `entrypoint.sh`, `docker/skills/github/SKILL.md`, `docker/skills/review/SKILL.md` | `driver/test/control-proxy.test.ts`, `driver/test/executor-images.test.ts` |
 | Runner telemetry config, claude's managed settings (incl. the `permissions` allow-list and `autoMode` rules) and opencode's policy (global and `/etc/opencode` copies): root-owned, never written by the uid-1000 entrypoints | `driver/src/telemetry-config.ts`, `docker/claude-executor/managed-settings.json`, `docker/opencode-executor/Dockerfile` | `driver/test/telemetry-shipping.test.ts`, `driver/test/docker.test.ts`, `driver/test/k8s.test.ts`, `docker/claude-executor/test.sh`, `docker/opencode-executor/test.sh` |
 | Artifact store credentials live in the dashboard only; reads are scoped to the caller's org | `server/src/artifacts/artifact-store.ts`, `server/src/artifacts/s3-credentials.ts` | `server/test-db/artifact-store.test.ts`, `server/test/artifacts.unit.test.ts` |
 
@@ -47,7 +49,8 @@ Set by `driver/src/k8s-podfields.ts` and `driver/src/docker.ts`; on kubernetes *
 | No capabilities | `capabilities.drop: [ALL]` unless `unhardened: true` | `--cap-drop ALL` unless `unhardened: true` |
 | No escalation | `allowPrivilegeEscalation: false` | `--security-opt no-new-privileges` |
 | Seccomp | `seccompProfile: RuntimeDefault` | the daemon's default profile |
-| Non-root | `runAsNonRoot`, uid 1000 | `--user 1000` |
+| Non-root | uid 1000, the image's `USER node` | uid 1000, the image's `USER node` |
+| Agent launch, the `agent` container alone | `runAsUser: 0`, `capabilities.add: [SETUID, SETGID]`, admitted on a Job's `agent` only | `--user 0:0 --cap-add SETUID --cap-add SETGID` |
 
 `unhardened: true` on a declared `.bellows.yaml` service restores the image's default capability set (`CAP_NET_RAW`
 included) and nothing else — the **escalation bit stays off**, seccomp stays on, the uid is unchanged. There is
@@ -61,5 +64,14 @@ included) and nothing else — the **escalation bit stays off**, seccomp stays o
   NetworkPolicy cannot restrict HTTP routes — every endpoint a runner reaches authorizes the caller itself.
 - **Membership is not a sandbox**: `github` mode narrows the board to any member ([auth.md](auth.md)).
 - **No `readOnlyRootFilesystem`**: an agent run writes its caches, `HOME` and worktree.
+- **The tool uid guards the CLI against its own commands' accidents, not against a hostile tool.** A tool
+  still writes config the CLI later executes (`.git/config`, a project `.claude`, `.mcp.json`), sees the
+  CLI's processes and command lines, kills other tools, and can exhaust memory, CPU or pids — which the
+  pod limits govern. Hooks and MCP servers run as the CLI's uid; context-mode, whose shell runtime
+  cannot run as the tool uid, is not baked.
+- **The broker holds `CAP_SETUID`/`CAP_SETGID` as root for the run**, so Pod Security `restricted` cannot
+  admit the agent container; `baseline` can.
+- **The EFS access point maps both uids to 1000** ([eks-runbook.md](eks-runbook.md)): on EKS a tool
+  reads the CLI's transcripts and the exporter's state.
 - **The mount is a member boundary, never a task boundary** ([workspace.md](workspace.md)); the dashboard mounts the
   whole volume read-write as the provisioning and org-analysis plane.

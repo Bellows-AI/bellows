@@ -2,8 +2,9 @@ import type { BoardJob } from './board.js';
 import { runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
 import {
+    AGENT_IN,
+    AGENT_OUT,
     GO_MARKER,
-    MAILBOXES,
     RUN_CONTROL_POLL_MS,
     SUPERVISOR_DRAIN_MS,
     SUPERVISOR_ENV,
@@ -49,8 +50,8 @@ export function supervisorLiterals(
 
 /** The mailbox the agent container finds its supervisor through: three paths, no credential. */
 export const agentMailboxEnv = (): [string, string][] => [
-    ['FACTORY_CTL_IN', MAILBOXES.in.path],
-    ['FACTORY_CTL_OUT', MAILBOXES.out.path],
+    ['FACTORY_CTL_IN', AGENT_IN],
+    ['FACTORY_CTL_OUT', AGENT_OUT],
     // The agent's entrypoint waits for the supervisor's release before it starts (`go`).
     ['FACTORY_CTL_GO', GO_MARKER],
 ];

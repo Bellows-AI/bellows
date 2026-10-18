@@ -1,6 +1,6 @@
 ---
 name: review
-description: Ask an independent, named reviewer to review your work in a separate run, then read its findings and verdict. Use before you finish, whenever the repository requires a review, or when you want fresh eyes on your changes. Requires BELLOWS_CONTROL_URL and BELLOWS_CONTROL_TOKEN to be set.
+description: Ask an independent, named reviewer to review your work in a separate run, then read its findings and verdict. Use before you finish, whenever the repository requires a review, or when you want fresh eyes on your changes. Requires BELLOWS_CONTROL_URL to be set.
 ---
 
 # Independent review
@@ -16,8 +16,7 @@ which reviewers exist, by name, under `reviewers:` in `.bellows.yaml`; read that
 Pick a short key for this review (letters, digits, `_`, `-`; up to 64) and a reviewer name:
 
 ```bash
-curl -sf -X POST "$BELLOWS_CONTROL_URL/review" \
-    -H "authorization: Bearer $BELLOWS_CONTROL_TOKEN" \
+curl -sf -X POST --unix-socket /run/factory-control/control.sock http://control/review \
     -d '{"key":"security-1","profile":"security"}'
 ```
 
@@ -32,8 +31,7 @@ makes a resumed task safe.
 A review is not finished until `done` is `true`. Poll the key until it is:
 
 ```bash
-curl -sf "$BELLOWS_CONTROL_URL/review/security-1" \
-    -H "authorization: Bearer $BELLOWS_CONTROL_TOKEN"
+curl -sf --unix-socket /run/factory-control/control.sock http://control/review/security-1
 ```
 
 - `verdict: "clean"` — the reviewer found no blockers in the tree it was given.

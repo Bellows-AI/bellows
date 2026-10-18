@@ -151,54 +151,12 @@ else
     bad 'otel.json points at the compose collector' "$otel"
 fi
 
-# The context-mode plugin (https://github.com/mksglu/context-mode) is baked the same way as the
-# telemetry plugin: pinned package, absolute-path plugin entry. The native module must be present —
-# it resolves through install scripts, so a missing better_sqlite3.node means the install was run
-# with scripts disabled and the plugin will fail at run time. No `mcp.context-mode` entry may sit
-# beside the plugin entry: the loader then registers zero ctx_* tools (upstream-documented trap).
-# Static by intent — these assertions police the bake, not the load: opencode treats a plugin that
-# throws during init as log-and-continue, so catching that would take a live-LLM assertion, which
-# this suite refuses. The pinned-version assertion exists so a bump is a deliberate act.
-CONTEXT_MODE_VERSION="$(sed -n 's/^ARG CONTEXT_MODE_VERSION=//p' Dockerfile | head -1)"
-if [ -n "$CONTEXT_MODE_VERSION" ]; then
-    ok "the context-mode ARG is pinned ($CONTEXT_MODE_VERSION)"
+# No context-mode (issue #841): its executions cannot run as the tool uid yet, so it is not baked.
+if docker run --rm --entrypoint sh "$IMAGE" -c 'test ! -e /usr/local/lib/node_modules/context-mode' \
+    && ! grep -q context-mode opencode-home/opencode.json; then
+    ok 'context-mode is neither installed nor referenced'
 else
-    bad 'the context-mode ARG is pinned' 'no ARG CONTEXT_MODE_VERSION line in the Dockerfile'
-fi
-got="$(docker run --rm --entrypoint node "$IMAGE" \
-    -p 'require("/usr/local/lib/node_modules/context-mode/package.json").version' 2>&1)"
-if [ "$got" = "$CONTEXT_MODE_VERSION" ]; then
-    ok 'the baked context-mode is the pinned version'
-else
-    bad 'the baked context-mode is the pinned version' "wanted '$CONTEXT_MODE_VERSION', got: $got"
-fi
-if docker run --rm --entrypoint sh "$IMAGE" -c \
-    'test -f /usr/local/lib/node_modules/context-mode/build/adapters/opencode/plugin.js'; then
-    ok 'the context-mode opencode plugin entrypoint is baked into the image'
-else
-    bad 'the context-mode opencode plugin entrypoint is baked into the image' \
-        'missing build/adapters/opencode/plugin.js under /usr/local/lib/node_modules/context-mode'
-fi
-if docker run --rm --entrypoint sh "$IMAGE" -c \
-    'test -n "$(find /usr/local/lib/node_modules/context-mode -name better_sqlite3.node -print -quit)"'; then
-    ok 'the context-mode native module is built in the image'
-else
-    bad 'the context-mode native module is built in the image' \
-        'no better_sqlite3.node under /usr/local/lib/node_modules/context-mode'
-fi
-if node -e \
-    'const o = JSON.parse(process.argv[1]); process.exit(Array.isArray(o?.plugin) && o.plugin.includes("/usr/local/lib/node_modules/context-mode") ? 0 : 1)' \
-    "$policy" >/dev/null 2>&1; then
-    ok 'the baked opencode.json enables the context-mode plugin'
-else
-    bad 'the baked opencode.json enables the context-mode plugin' 'plugin array does not reference the baked package'
-fi
-if node -e \
-    'const o = JSON.parse(process.argv[1]); process.exit(o?.mcp && "context-mode" in o.mcp ? 1 : 0)' \
-    "$policy" >/dev/null 2>&1; then
-    ok 'no mcp.context-mode entry beside the plugin entry'
-else
-    bad 'no mcp.context-mode entry beside the plugin entry' 'a plugin entry and an mcp.context-mode entry together register zero ctx_* tools'
+    bad 'context-mode is neither installed nor referenced' 'the image or the baked opencode.json still carries it'
 fi
 
 # The baked policy is root-owned twice over (issue #452): the global copy, the first config layer,
@@ -426,6 +384,10 @@ if docker run --rm --entrypoint sh "$IMAGE" \
 else
     bad 'no baked auth file in the opencode data directory' 'auth.json exists in the image'
 fi
+
+# The agent's tool isolation (issue #814), the same checks in both images.
+# shellcheck source=../tool-isolation-checks.sh
+. "$HERE/../tool-isolation-checks.sh"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { UUID, type Repo } from '../config.js';
@@ -17,6 +17,20 @@ import { UUID, type Repo } from '../config.js';
  */
 
 const run = promisify(execFile);
+
+/**
+ * The agent's tools run as their own uid in group 1000 (issue #814) and write a member's tree beside
+ * every other writer of it, so what this process creates there is group-writable.
+ */
+const SHARED_UMASK = 0o002;
+const SHARED_DIR_MODE = 0o775;
+
+/** `mkdirSync(dir, { recursive: true })`, with the directory it created made group-writable. */
+export function mkdirShared(dir: string): string | undefined {
+    const created = mkdirSync(dir, { recursive: true });
+    if (created !== undefined) chmodSync(dir, SHARED_DIR_MODE);
+    return created;
+}
 
 /** The variable the credential helper below reads. Never appears on a command line. */
 const TOKEN_VAR = 'GIT_WORKSPACE_TOKEN';
@@ -67,7 +81,15 @@ function httpsUrl(repo: Repo): string {
 }
 
 async function defaultRunner(args: readonly string[], env: NodeJS.ProcessEnv): Promise<void> {
-    await run('git', [...args], { env });
+    // git takes the umask at its fork, inside `run`; this process keeps its own.
+    const umask = process.umask(SHARED_UMASK);
+    let ran: Promise<unknown>;
+    try {
+        ran = run('git', [...args], { env });
+    } finally {
+        process.umask(umask);
+    }
+    await ran;
 }
 
 /**
@@ -91,7 +113,8 @@ function gitArgs(url: string, dest: string, authenticated: boolean): string[] {
     // Not --depth 1: a reused branch has to be built on in place, which needs the history
     // (docs/workspace.md).
     // `--` so a repo name that somehow reached here as "-x" is still a path.
-    return [...args, 'clone', '--origin', 'origin', '--', url, dest];
+    // `core.sharedRepository` keeps what git creates later group-writable too (SHARED_UMASK).
+    return [...args, 'clone', '--config', 'core.sharedRepository=group', '--origin', 'origin', '--', url, dest];
 }
 
 export async function cloneRepo(options: CloneOptions): Promise<CloneOutcome> {
@@ -124,7 +147,7 @@ export async function cloneRepo(options: CloneOptions): Promise<CloneOutcome> {
     // would then fail forever. `queue.ts` sweeps the leftover staging directories at boot.
     const staging = `${dest}.tmp-${process.pid}`;
     rmSync(staging, { recursive: true, force: true });
-    mkdirSync(userDir, { recursive: true });
+    mkdirShared(userDir);
 
     log(`cloning ${repo.owner}/${repo.name}`);
     const started = Date.now();
