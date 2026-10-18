@@ -59,6 +59,7 @@ export const MAILBOX_FILES = {
     state: 'state.json',
     go: 'go',
     steps: 'steps',
+    report: 'report.json',
 } as const;
 
 /**
@@ -75,14 +76,17 @@ export const STOP_MARKER = `${MAILBOXES.in.path}/${MAILBOX_FILES.stop}`;
 export const RUN_CONTROL_POLL_MS = 5_000;
 /** How long the exporter may take to drain and close its manifests once the agent is gone. */
 export const SUPERVISOR_DRAIN_MS = 300_000;
-/** A minute for the supervisor to report once the drain is over. */
-const REPORT_GRACE_MS = 60_000;
+/**
+ * A minute for the supervisor to report once the drain is over: how long a supervisor that ends the
+ * attempt itself redelivers its departure before it finalizes unacknowledged; `REPORT_MS` of supervisor.cjs.
+ */
+export const SUPERVISOR_REPORT_MS = 60_000;
 /**
  * What the kubelet's (or docker's) backstop deadline allows on top of the run budget: the drain and
  * a minute to report. The supervisor ends the agent at the budget itself; the backstop only ends a
  * supervisor that stopped doing so.
  */
-export const SUPERVISOR_WINDDOWN_MS = SUPERVISOR_DRAIN_MS + REPORT_GRACE_MS;
+export const SUPERVISOR_WINDDOWN_MS = SUPERVISOR_DRAIN_MS + SUPERVISOR_REPORT_MS;
 /** How long a Stop's kill order may take to wind the group down before the driver deletes it outright. */
 export const KILL_WINDDOWN_MS = SUPERVISOR_WINDDOWN_MS;
 
@@ -98,9 +102,16 @@ export const KILL_WINDDOWN_MS = SUPERVISOR_WINDDOWN_MS;
 export const STEP_KINDS = ['sync', 'reclaim', 'probe', 'snapshot', 'publish', 'helper', 'go', 'finish'] as const;
 export type StepKind = (typeof STEP_KINDS)[number];
 
-/** One supervised step as the driver sends it. `id` is its persisted operation identity. */
+/**
+ * One supervised step as the driver sends it. `id` is the logical effect (a publish's push is the
+ * same `id` however often it is asked); `invocation` is one call of it. A redelivery of a call keeps
+ * its invocation and is answered from the supervisor's ledger, never run twice; a new call — a
+ * deliberate retry after the caller reconciled — is a new invocation and runs, unless the effect
+ * already landed.
+ */
 export interface StepRequest {
     id: string;
+    invocation: string;
     kind: StepKind;
     /** The executable and its arguments; empty for `go` and `finish`. */
     argv: string[];
@@ -119,13 +130,20 @@ export interface StepResult {
     replayed?: boolean;
 }
 
-/** The supervisor's report once the agent is over and the exporter drained; it serves steps until told to finish. */
+/**
+ * The supervisor's report once the agent is over and the exporter drained, redelivered under its
+ * `id` until the driver acknowledges it. `serving` says whether the group still serves steps until
+ * `finish`; it only ever turns false — the supervisor ended the attempt itself and leaves — and the
+ * driver then refuses every step still waiting on the group.
+ */
 export interface SupervisorReport {
+    id: string;
     outcome: string | null;
     cause: string | null;
     agentExit: number | null;
     agentEnd: string;
     drained: boolean;
+    serving: boolean;
 }
 
 /** The routes a supervisor reaches the driver's control endpoint by, beside `GET /control`. */

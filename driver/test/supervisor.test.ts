@@ -15,7 +15,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readRepoFile as read } from './fixtures/repo-files.js';
-import { MAILBOX_FILES, MAILBOXES, STEP_KINDS, SUPERVISOR_EXIT } from '../src/supervisor-contract.js';
+import {
+    MAILBOX_FILES,
+    MAILBOXES,
+    STEP_KINDS,
+    SUPERVISOR_EXIT,
+    SUPERVISOR_REPORT_MS,
+} from '../src/supervisor-contract.js';
 
 /*
  * The task supervisor (`scripts/supervisor.cjs`): the lifecycle machine and the run it drives. The
@@ -42,6 +48,7 @@ interface SupervisorModule {
     FILES: Record<string, string>;
     EXIT: { finalized: number; deadline: number; failed: number };
     REPORT_PREFIX: string;
+    REPORT_MS: number;
     STEP_KINDS: string[];
     createMachine(initial?: string): Machine;
     supervise(env: Record<string, string>, log: (line: string) => void): Promise<number>;
@@ -106,6 +113,7 @@ describe('the lifecycle machine', () => {
 
 interface QueuedStep {
     id: string;
+    invocation?: string;
     kind: string;
     argv: string[];
     cwd?: string;
@@ -124,18 +132,35 @@ interface Driver {
     url: string;
     stop: boolean;
     kill: boolean;
+    /** A driver that no longer knows the token: every route answers 401. */
+    closed: boolean;
     posted: { id: string; body: unknown }[];
     /** The steps still to be pulled, and the answers the supervisor posted back. */
     queue: QueuedStep[];
     answers: Map<string, StepAnswer>;
-    reports: unknown[];
+    reports: Report[];
+    /** How the n-th report delivery (from 1) is answered: a status, or `drop` — the answer is lost. */
+    reportAnswer: (n: number) => number | 'drop';
     /** Whether the driver orders `finish` as soon as the supervisor reports; off, the supervisor keeps serving. */
     autoFinish: boolean;
     order(step: QueuedStep): void;
 }
 
-const ORDER_GO: QueuedStep = { id: 'go', kind: 'go', argv: [], env: {}, timeoutMs: 1000 };
-const ORDER_FINISH: QueuedStep = { id: 'finish', kind: 'finish', argv: [], env: {}, timeoutMs: 1000 };
+interface Report {
+    id: string;
+    outcome: string | null;
+    serving: boolean;
+}
+
+const ORDER_GO: QueuedStep = { id: 'go', invocation: 'i-1', kind: 'go', argv: [], env: {}, timeoutMs: 1000 };
+const ORDER_FINISH: QueuedStep = {
+    id: 'finish',
+    invocation: 'i-1',
+    kind: 'finish',
+    argv: [],
+    env: {},
+    timeoutMs: 1000,
+};
 
 const servers: Server[] = [];
 const dirs: string[] = [];
@@ -160,10 +185,12 @@ async function startDriver({ release = true }: { release?: boolean } = {}): Prom
         url: '',
         stop: false,
         kill: false,
+        closed: false,
         posted: [],
         queue: release ? [ORDER_GO] : [],
         answers: new Map(),
         reports: [],
+        reportAnswer: () => 200,
         autoFinish: true,
         order: (step) => driver.queue.push(step),
     };
@@ -173,7 +200,7 @@ async function startDriver({ release = true }: { release?: boolean } = {}): Prom
                 response.writeHead(status, { 'content-type': 'application/json' });
                 response.end(JSON.stringify(body));
             };
-            if (request.headers.authorization !== `Bearer ${TOKEN}`) return send(401, {});
+            if (driver.closed || request.headers.authorization !== `Bearer ${TOKEN}`) return send(401, {});
             if (request.method === 'GET' && request.url === '/control') {
                 return send(200, { stop: driver.stop, kill: driver.kill });
             }
@@ -189,9 +216,11 @@ async function startDriver({ release = true }: { release?: boolean } = {}): Prom
                 return send(200, { ok: true });
             }
             if (request.method === 'POST' && request.url === '/report') {
-                driver.reports.push(JSON.parse(await readBody(request)));
-                if (driver.autoFinish) driver.order(ORDER_FINISH);
-                return send(200, { ok: true });
+                driver.reports.push(JSON.parse(await readBody(request)) as Report);
+                const answer = driver.reportAnswer(driver.reports.length);
+                if (answer === 'drop') return request.socket.destroy();
+                if (answer === 200 && driver.autoFinish) driver.order(ORDER_FINISH);
+                return send(answer, {});
             }
             if (request.method === 'POST' && request.url === '/question') {
                 const body = JSON.parse(await readBody(request)) as { id: string };
@@ -266,6 +295,17 @@ function run(driver: Driver | null, env: Record<string, string> = {}) {
             JSON.parse(readFileSync(join(box.own, MAILBOX_FILES.state), 'utf8')) as {
                 stage: string;
                 history: string[];
+            },
+        /** The report as the supervisor keeps it on its own volume, and whether the driver took it. */
+        kept: () =>
+            JSON.parse(readFileSync(join(box.own, MAILBOX_FILES.report), 'utf8')) as {
+                report: Report;
+                acknowledged: boolean;
+            },
+        /** One step's ledger entry, as the supervisor keeps it. */
+        ledger: (id: string) =>
+            JSON.parse(readFileSync(join(box.own, MAILBOX_FILES.steps, `${encodeURIComponent(id)}.json`), 'utf8')) as {
+                invocations: Record<string, { state: string }>;
             },
     };
 }
@@ -448,6 +488,7 @@ describe('the supervisor run: the budget', () => {
 
 const step = (id: string, kind: string, argv: string[], extra: Partial<QueuedStep> = {}): QueuedStep => ({
     id,
+    invocation: 'i-1',
     kind,
     argv,
     env: {},
@@ -530,24 +571,125 @@ describe('the supervisor run: supervised steps', () => {
         await supervised.done;
     });
 
-    it('answers a step id it already ran from its ledger, and never runs it twice', async () => {
+    /** A step that appends to a marker file — how many times it really ran — then exits `code`. */
+    const marked = (code = 0) => {
+        const marker = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ran');
+        dirs.push(join(marker, '..'));
+        const argv = [
+            'node',
+            '-e',
+            `require("fs").appendFileSync(${JSON.stringify(marker)}, "x"); console.log("ran"); process.exit(${code})`,
+        ];
+        return { argv, runs: () => (existsSync(marker) ? readFileSync(marker, 'utf8').length : 0) };
+    };
+
+    it('answers a step that succeeded from its ledger, for a redelivery and a new invocation alike', async () => {
+        const driver = await startDriver();
+        const push = marked();
+        driver.order(step('push-1', 'publish', push.argv));
+        const supervised = run(driver);
+        await until('the first answer', () => driver.answers.has('push-1'));
+        // The driver lost the answer and asks again under the same invocation…
+        driver.answers.clear();
+        driver.order(step('push-1', 'publish', push.argv));
+        await until('the replayed answer', () => driver.answers.has('push-1'));
+        expect(driver.answers.get('push-1')).toMatchObject({ exitCode: 0, replayed: true });
+        // …and a new call of the same effect: it landed, so running it again is the harm the ledger prevents.
+        driver.answers.clear();
+        driver.order(step('push-1', 'publish', push.argv, { invocation: 'i-2' }));
+        await until('the answer to the new call', () => driver.answers.has('push-1'));
+        expect(driver.answers.get('push-1')).toMatchObject({ exitCode: 0, replayed: true });
+        expect(push.runs()).toBe(1);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers a redelivered invocation of a failed step from its ledger, never running it twice', async () => {
+        const driver = await startDriver();
+        const push = marked(1);
+        driver.order(step('push-1', 'publish', push.argv));
+        const supervised = run(driver);
+        await until('the first answer', () => driver.answers.has('push-1'));
+        driver.answers.clear();
+        driver.order(step('push-1', 'publish', push.argv));
+        await until('the replayed answer', () => driver.answers.has('push-1'));
+        expect(driver.answers.get('push-1')).toMatchObject({ exitCode: 1, replayed: true });
+        expect(push.runs()).toBe(1);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('runs a failed step again for a new invocation, and still replays each earlier one', async () => {
+        const driver = await startDriver();
+        const push = marked(1);
+        driver.order(step('push-1', 'publish', push.argv, { invocation: 'a' }));
+        const supervised = run(driver);
+        await until('the first answer', () => driver.answers.has('push-1'));
+        driver.answers.clear();
+        // A deliberate retry after the caller reconciled: a new invocation runs.
+        driver.order(step('push-1', 'publish', push.argv, { invocation: 'b' }));
+        await until('the retry', () => driver.answers.has('push-1'));
+        expect(driver.answers.get('push-1')).toMatchObject({ exitCode: 1 });
+        expect(driver.answers.get('push-1')?.replayed).toBeUndefined();
+        expect(push.runs()).toBe(2);
+        // A late redelivery of the first call is still that call: answered, never run a third time.
+        driver.answers.clear();
+        driver.order(step('push-1', 'publish', push.argv, { invocation: 'a' }));
+        await until('the late redelivery', () => driver.answers.has('push-1'));
+        expect(driver.answers.get('push-1')).toMatchObject({ exitCode: 1, replayed: true });
+        expect(push.runs()).toBe(2);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers a redelivered invocation of a step killed at its timeout from its ledger', async () => {
         const driver = await startDriver();
         const marker = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'ran');
         dirs.push(join(marker, '..'));
-        const append = [
+        const slow = [
             'node',
             '-e',
-            `require("fs").appendFileSync(${JSON.stringify(marker)}, "x"); console.log("once")`,
+            `require("fs").appendFileSync(${JSON.stringify(marker)}, "x"); setTimeout(() => {}, 60000)`,
         ];
-        driver.order(step('push-1', 'publish', append));
+        driver.order(step('push-1', 'publish', slow, { timeoutMs: 1_000 }));
         const supervised = run(driver);
-        await until('the first answer', () => driver.answers.has('push-1'));
-        // The driver lost the answer and asks again under the same identity.
+        await until('the timeout', () => driver.answers.has('push-1'));
         driver.answers.clear();
-        driver.order(step('push-1', 'publish', append));
+        driver.order(step('push-1', 'publish', slow, { timeoutMs: 1_000 }));
         await until('the replayed answer', () => driver.answers.has('push-1'));
-        expect(driver.answers.get('push-1')).toMatchObject({ exitCode: 0, replayed: true });
-        expect(readFileSync(marker, 'utf8')).toBe('x');
+        // Possibly half-applied: the redelivery is told so, and nothing runs it again.
+        expect(driver.answers.get('push-1')).toMatchObject({ timedOut: true, replayed: true });
+        expect(existsSync(marker) ? readFileSync(marker, 'utf8') : '').not.toBe('xx');
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers an invocation its ledger left running as unknown, without running it', async () => {
+        const driver = await startDriver();
+        const push = marked();
+        const supervised = run(driver);
+        // A supervisor before this one took the call and never answered it.
+        mkdirSync(join(supervised.box.own, MAILBOX_FILES.steps), { recursive: true });
+        writeFileSync(
+            join(supervised.box.own, MAILBOX_FILES.steps, 'push-1.json'),
+            JSON.stringify({
+                id: 'push-1',
+                kind: 'publish',
+                effect: null,
+                invocations: { 'i-1': { state: 'running' } },
+            })
+        );
+        driver.order(step('push-1', 'publish', push.argv));
+        await until('the answer', () => driver.answers.has('push-1'));
+        expect(driver.answers.get('push-1')).toMatchObject({ exitCode: null });
+        expect(driver.answers.get('push-1')?.stderr).toMatch(/whether its effect landed is unknown/);
+        expect(push.runs()).toBe(0);
+        // The caller reconciles and calls again: that runs.
+        driver.answers.clear();
+        driver.order(step('push-1', 'publish', push.argv, { invocation: 'i-2' }));
+        await until('the new call', () => driver.answers.has('push-1'));
+        expect(driver.answers.get('push-1')).toMatchObject({ exitCode: 0 });
+        expect(push.runs()).toBe(1);
         supervised.agentExits(0);
         await supervised.done;
     });
@@ -574,11 +716,14 @@ describe('the supervisor run: supervised steps', () => {
 
     it('refuses a malformed step without starting anything', async () => {
         const driver = await startDriver();
-        driver.order({ id: 'bad id!', kind: 'helper', argv: ['node'], env: {}, timeoutMs: 100 });
-        driver.order({ id: 'no-such-kind', kind: 'shell', argv: ['sh'], env: {}, timeoutMs: 100 });
+        driver.order({ id: 'bad id!', invocation: 'i-1', kind: 'helper', argv: ['node'], env: {}, timeoutMs: 100 });
+        driver.order({ id: 'no-such-kind', invocation: 'i-1', kind: 'shell', argv: ['sh'], env: {}, timeoutMs: 100 });
+        // A step that does not say which call it is could be answered for another one.
+        driver.order({ id: 'anonymous', kind: 'helper', argv: ['node', '-e', ''], env: {}, timeoutMs: 100 });
         const supervised = run(driver);
-        await until('the answer', () => driver.answers.has('no-such-kind'));
+        await until('the answer', () => driver.answers.has('anonymous'));
         expect(driver.answers.get('no-such-kind')).toMatchObject({ exitCode: 126, stderr: 'malformed step' });
+        expect(driver.answers.get('anonymous')).toMatchObject({ exitCode: 126, stderr: 'malformed step' });
         supervised.agentExits(0);
         await supervised.done;
     });
@@ -663,6 +808,169 @@ describe('the supervisor run: supervised steps', () => {
     });
 });
 
+describe('the supervisor run: its report, delivered until acknowledged', () => {
+    it('redelivers its report after a 503 until the driver accepts it, keeps it, and keeps serving', async () => {
+        const driver = await startDriver();
+        driver.autoFinish = false;
+        driver.reportAnswer = (n) => (n < 3 ? 503 : 200);
+        const supervised = run(driver);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        supervised.agentExits(0);
+        await until('the accepted delivery', () => driver.reports.length === 3);
+        // One report, three deliveries: the driver takes it once by its id.
+        expect(new Set(driver.reports.map((r) => r.id)).size).toBe(1);
+        expect(driver.reports.every((r) => r.serving && r.outcome === 'completed')).toBe(true);
+        await until('the acknowledgement on the volume', () => supervised.kept().acknowledged);
+        expect(supervised.kept().report).toMatchObject({ id: driver.reports[0]!.id, serving: true });
+        // Delivered and still serving: the steps after the agent are its.
+        driver.order(step('probe-1', 'probe', ['node', '-e', 'console.log("after")']));
+        await until('the probe', () => driver.answers.has('probe-1'));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(driver.reports).toHaveLength(3);
+        driver.order(ORDER_FINISH);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+    });
+
+    it('redelivers a report whose answer was lost, under the same id', async () => {
+        const driver = await startDriver();
+        driver.reportAnswer = (n) => (n === 1 ? 'drop' : 200);
+        const supervised = run(driver);
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(driver.reports).toHaveLength(2);
+        expect(driver.reports[1]!.id).toBe(driver.reports[0]!.id);
+    });
+
+    it('stops redelivering once the driver no longer knows its token, and finalizes with the report kept', async () => {
+        const driver = await startDriver();
+        // The driver restarted as the report went out: the token it held is gone with it.
+        driver.reportAnswer = () => 401;
+        const supervised = run(driver);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(driver.reports).toHaveLength(1);
+        expect(supervised.kept()).toMatchObject({ report: { outcome: 'completed' }, acknowledged: false });
+        expect(supervised.report()).toMatchObject({ outcome: 'completed' });
+    });
+
+    it('departs under the same report id when a kill arrives while it serves, without waiting for `finish`', async () => {
+        const driver = await startDriver();
+        driver.autoFinish = false;
+        const supervised = run(driver);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        supervised.agentExits(0);
+        await until('the report', () => driver.reports.length === 1);
+        expect(driver.reports[0]).toMatchObject({ serving: true });
+        driver.kill = true;
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(driver.reports.at(-1)).toMatchObject({ id: driver.reports[0]!.id, serving: false });
+        expect(supervised.kept()).toMatchObject({ report: { serving: false }, acknowledged: true });
+    });
+
+    it('departs when a kill lands between a failed delivery and its retry', async () => {
+        const driver = await startDriver();
+        driver.autoFinish = false;
+        driver.reportAnswer = (n) => {
+            if (n > 1) return 200;
+            driver.kill = true;
+            return 503;
+        };
+        const supervised = run(driver);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        // The accepted delivery is the departure: nothing tells the driver this group still serves.
+        expect(driver.reports.at(-1)).toMatchObject({ serving: false });
+        expect(supervised.kept().acknowledged).toBe(true);
+    });
+
+    it.each([
+        ['a kill', (driver: Driver) => (driver.kill = true), {}],
+        ['the run budget', () => undefined, { SUPERVISOR_DEADLINE_MS: '100' }],
+    ])('reports `serving: false` when it ends the attempt at %s', async (_how, end, env) => {
+        const driver = await startDriver();
+        driver.autoFinish = false;
+        const supervised = run(driver, env);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        end(driver);
+        await until('the kill order', () => supervised.saw(MAILBOX_FILES.kill));
+        supervised.agentExits(137);
+        await supervised.done;
+        expect(driver.reports).toHaveLength(1);
+        expect(driver.reports[0]).toMatchObject({ serving: false });
+    });
+
+    it('bounds the departure’s delivery even while every other route answers, keeping the report', async () => {
+        const driver = await startDriver();
+        driver.reportAnswer = () => 503;
+        const supervised = run(driver, { SUPERVISOR_REPORT_MS: '300' });
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        driver.kill = true;
+        await until('the kill order', () => supervised.saw(MAILBOX_FILES.kill));
+        supervised.agentExits(137);
+        // Bounded by its own 300ms, never the default minute, however slow each delivery is.
+        const ended = Date.now();
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(Date.now() - ended).toBeLessThan(10_000);
+        expect(driver.reports.length).toBeGreaterThan(0);
+        expect(supervised.kept()).toMatchObject({ report: { serving: false }, acknowledged: false });
+    });
+});
+
+describe('the supervisor run: a step still running when it stops serving', () => {
+    const SLOW = ['node', '-e', 'setTimeout(() => {}, 60000)'];
+
+    it('interrupts it on a departure and records it unknown, never waiting out its timeout', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        driver.order(step('draft-1', 'publish', SLOW, { timeoutMs: 60_000 }));
+        await until('the step to start', () =>
+            existsSync(join(supervised.box.own, MAILBOX_FILES.steps, 'draft-1.json'))
+        );
+        driver.kill = true;
+        await until('the kill order', () => supervised.saw(MAILBOX_FILES.kill));
+        supervised.agentExits(137);
+        const ended = Date.now();
+        await supervised.done;
+        expect(Date.now() - ended).toBeLessThan(10_000);
+        expect(supervised.ledger('draft-1').invocations['i-1']).toMatchObject({ state: 'interrupted' });
+    });
+
+    it.each([
+        [
+            'the driver closes the endpoint',
+            (driver: Driver) => {
+                driver.closed = true;
+            },
+        ],
+        [
+            'the driver is lost past the orphan bound',
+            async () => {
+                for (const server of servers) server.closeAllConnections();
+                for (const server of servers.splice(0)) await new Promise((resolve) => server.close(resolve));
+            },
+        ],
+    ])('interrupts it when %s', async (_how, lose) => {
+        const driver = await startDriver();
+        driver.autoFinish = false;
+        const supervised = run(driver, { SUPERVISOR_ORPHAN_MS: '300' });
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        supervised.agentExits(0);
+        await until('the report', () => driver.reports.length === 1);
+        driver.order(step('probe-1', 'probe', SLOW, { timeoutMs: 60_000 }));
+        await until('the step to start', () =>
+            existsSync(join(supervised.box.own, MAILBOX_FILES.steps, 'probe-1.json'))
+        );
+        const lost = Date.now();
+        await lose(driver);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(Date.now() - lost).toBeLessThan(10_000);
+        expect(supervised.ledger('probe-1').invocations['i-1']).toMatchObject({ state: 'interrupted' });
+    });
+});
+
 describe('what crosses the mailboxes', () => {
     it('writes no credential into a directory the agent mounts, nor into the exporter’s', async () => {
         const driver = await startDriver();
@@ -688,6 +996,7 @@ describe('what crosses the mailboxes', () => {
     it('speaks the contract the driver and the images spell: the same file names and exit statuses', () => {
         expect(supervisor.FILES).toEqual(MAILBOX_FILES);
         expect(supervisor.EXIT).toEqual(SUPERVISOR_EXIT);
+        expect(supervisor.REPORT_MS).toBe(SUPERVISOR_REPORT_MS);
         expect(supervisor.STEP_KINDS).toEqual([...STEP_KINDS]);
     });
 

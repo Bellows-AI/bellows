@@ -84,11 +84,23 @@ const claimStepEnv = (job: BoardJob, githubToken?: string): Record<string, strin
 
 const slug = (label: string): string => label.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
+/** The group serving the attempt ended or was taken away: its waiting and later steps fail at once. */
+export function releaseSteps(host: Pick<StepHost, 'sink'>, job: BoardJob): void {
+    const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
+    if (token) host.sink.release(token);
+}
+
+/** A group is being made for the attempt: its supervisor starts with no contact, report or refusal. */
+export function attachSteps(host: Pick<StepHost, 'sink'>, job: BoardJob): void {
+    const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
+    if (token) host.sink.attach(token);
+}
+
 /**
- * Submits one step and answers its result. An unanswered step — its answer lost, the supervisor
- * slow — is asked again under the SAME id: the supervisor answers one that already succeeded from
- * its ledger instead of running it twice. A closed channel (the attempt is gone) and every other
- * failure propagate; none of them is a verdict on the step.
+ * Submits one step — one call — and answers its result. An unanswered call — its answer lost, the
+ * supervisor slow — is delivered again as the SAME call (same id, same invocation): the supervisor
+ * answers it from its ledger instead of running it twice. A closed channel (the attempt is gone)
+ * and every other failure propagate; none of them is a verdict on the step.
  */
 export async function submitStep(
     host: Pick<StepHost, 'sink'>,
@@ -120,6 +132,8 @@ const request = (
     parts: { id: string; argv?: string[]; cwd?: string | null; env?: Record<string, string>; timeoutMs: number }
 ): StepRequest => ({
     id: `${kind}-${attemptKey(job)}-${parts.id}`,
+    // One call: the deliveries `submitStep` makes of this request share it, and nothing else does.
+    invocation: randomUUID(),
     kind,
     argv: parts.argv ?? [],
     ...(parts.cwd ? { cwd: parts.cwd } : {}),
@@ -131,8 +145,10 @@ const request = (
  * The publish-shaped steps (publish, tree probe, review snapshot) as a `RunPublishStep` over the
  * supervisor: the workflows in `publish.ts` and `review-snapshot.ts` decide WHAT runs; this is
  * their transport. A step carrying a publication operation (`PublishStep.op`) has an identity
- * derived from it — a retried publish asks the same push the same way and is answered, not rerun —
- * and every other step gets a fresh one, since a probe must read the tree as it is now.
+ * derived from it — a push that landed is answered, not rerun, however often it is asked — and
+ * every other step gets a fresh one, since a probe must read the tree as it is now. Each call is a
+ * new invocation: a caller that asks the same push again (the stale-lease recovery, after it
+ * refreshed the remote) runs it unless it landed.
  */
 export function supervisedStepRunner(
     host: StepHost,

@@ -19,7 +19,7 @@ import type { K8sDeps } from './k8s-transport.js';
 import type { ReclaimResult } from './publish.js';
 import type { RunSession } from './runner.js';
 import { noStepChannel } from './step-control.js';
-import { type StepHost, orderFinish, runReclaimStep } from './supervised-steps.js';
+import { type StepHost, attachSteps, orderFinish, releaseSteps, runReclaimStep } from './supervised-steps.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
 import { secretsPath } from './k8s-auxspec.js';
 
@@ -114,6 +114,8 @@ export async function ensureGroup(
     }
     clearKilled(runnerName(job));
     await prepare(deps, job, cleanup);
+    // A fresh supervisor answers the token from here: not one a kill already took away.
+    attachSteps(stepHostOf(deps), job);
     const startedAt = new Date().toISOString();
     await launch(deps, job, runnerJobSpec(deps.config, job, session, startedAt), cleanup);
     const group: TaskGroup = { startedAt, session };
@@ -141,6 +143,7 @@ export async function stepHostFor(deps: K8sDeps, job: BoardJob): Promise<StepHos
 /** Deletes the attempt's group and its Secret now, awaited: the checkout is not handed over until nothing of it can write. */
 export async function takeGroupDown(deps: K8sDeps, job: BoardJob): Promise<void> {
     groupsOf(deps).delete(job.leaseToken);
+    releaseSteps(stepHostOf(deps), job);
     await deleteJob(deps, runnerName(job), 'Foreground');
     await deleteSecret(deps, secretName(job));
 }
