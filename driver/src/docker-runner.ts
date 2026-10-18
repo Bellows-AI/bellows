@@ -24,6 +24,7 @@ import {
 import {
     probeTreeFingerprint,
     publishCheckout,
+    RELEASE_DEADLINE_MS,
     type PublishOptions,
     type PublishResult,
     repoPath,
@@ -92,8 +93,6 @@ interface GroupState {
 
 /** How long `finish` waits for the group's supervisor to exit by itself before it kills the group. */
 const GROUP_END_WAIT_MS = 20_000;
-/** How long the tool uid's release of a tree may walk it before the reclaim goes on without it. */
-const RELEASE_DEADLINE_MS = 300_000;
 
 /** Everything a docker-runner method needs: the daemon transport, the config, and the per-attempt kill set. */
 interface RunnerDeps {

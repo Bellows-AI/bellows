@@ -22,7 +22,7 @@ import { hasGit, pathOf } from './fixtures/scripts-support.js';
  * here — an owner without write on a directory cannot unlink in it either — so the pass and the
  * reclaim are the same scripts the containers run, and only the uid split is the executors'.
  */
-describe.skipIf(!hasGit())('the tool tree release', () => {
+describe.skipIf(!hasGit() || process.getuid?.() === 0)('the tool tree release', () => {
     const ROOT = '88888888-8888-4888-8888-888888888888';
     let dir: string;
     let clone: string;

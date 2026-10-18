@@ -1504,7 +1504,8 @@ kill_lane() { # kill_lane <claude|opencode> <isolated|control>
             bad "$cli survives its tools signalling everything they may, and finishes" \
                 "exit $status, agent requests and tool results: $counts: $(tail -5 "$work/$name.log")"
         fi
-    elif [ "$status" != 0 ] && [ ! -e "$dir/step-2" ]; then
+    # The control dies by the tool's own signal (137 KILL, 143 TERM): a timeout's 124 is a hang.
+    elif { [ "$status" = 137 ] || [ "$status" = 143 ]; } && [ "$counts" = '1 0' ] && [ ! -e "$dir/step-2" ]; then
         ok "the control: $cli and its tools as one uid, and the first tool kills it"
     else
         bad "the control: $cli and its tools as one uid, and the first tool kills it" \

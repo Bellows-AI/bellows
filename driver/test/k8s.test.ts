@@ -55,6 +55,7 @@ import {
     gitProbeScript,
     gitWorktreeRemoveScript,
     gitWorktreeScript,
+    toolTreeReleaseBoundedScript,
     toolTreeReleaseScript,
     TRANSIENT_SYNC_REASON,
 } from '../src/publish.js';
@@ -1784,8 +1785,12 @@ describe('the worktree reclaim', () => {
         expect(others).toEqual([]);
         expect(release).toMatchObject({
             name: 'release',
-            command: ['node', '-e', toolTreeReleaseScript],
-            env: [{ name: 'WORKTREE', value: WORKTREE }],
+            // Bounded like docker's release, and always 0: the reclaim's own verdict decides.
+            command: ['sh', '-c', toolTreeReleaseBoundedScript, 'release', toolTreeReleaseScript],
+            env: [
+                { name: 'WORKTREE', value: WORKTREE },
+                { name: 'RELEASE_DEADLINE_SECONDS', value: '300' },
+            ],
             securityContext: {
                 allowPrivilegeEscalation: false,
                 capabilities: { drop: ['ALL'] },

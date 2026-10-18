@@ -17,9 +17,9 @@ import {
 } from './k8s-podspec.js';
 import { containerHardeningField } from './k8s-podfields.js';
 import { GATE_GID, TOOL_UID, workspacePath } from './claim.js';
-import { toolTreeReleaseScript, worktreeDir } from './publish.js';
+import { RELEASE_DEADLINE_MS, toolTreeReleaseBoundedScript, toolTreeReleaseScript, worktreeDir } from './publish.js';
 import { readImagePullStatus, readJobStatus, unpullableImage } from './k8s-poll.js';
-import { expectOk, POLL_MS } from './k8s-transport.js';
+import { expectOk, MS_PER_SECOND, POLL_MS } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
 import type { ReclaimResult } from './publish.js';
 import type { RunSession } from './runner.js';
@@ -81,8 +81,9 @@ export function reclaimGroupSpec(config: DriverConfig, job: BoardJob): RunnerJob
 /**
  * The tool uid's release of the tree (issue #814), before the supervisor starts and so before the
  * reclaim step: a directory a tool closed with an explicit mode is one the uid-1000 reclaim cannot
- * empty. Hardened like every container, as the tool uid, the tree's path its only input; it exits 0
- * whatever it found, and the reclaim's own verdict decides.
+ * empty. Hardened like every container, as the tool uid, the tree's path its only input. Bounded by
+ * docker's own deadline, well inside the wait for the supervisor, and 0 whatever happened to it: the
+ * reclaim's own verdict decides.
  */
 function releaseContainer(config: DriverConfig, job: BoardJob, worktree: string): RunnerPodContainer {
     const hardened = containerHardeningField().securityContext;
@@ -91,8 +92,11 @@ function releaseContainer(config: DriverConfig, job: BoardJob, worktree: string)
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
         securityContext: { ...hardened, runAsUser: TOOL_UID, runAsGroup: GATE_GID },
-        command: ['node', '-e', toolTreeReleaseScript],
-        env: [{ name: 'WORKTREE', value: worktree }],
+        command: ['sh', '-c', toolTreeReleaseBoundedScript, 'release', toolTreeReleaseScript],
+        env: [
+            { name: 'WORKTREE', value: worktree },
+            { name: 'RELEASE_DEADLINE_SECONDS', value: String(RELEASE_DEADLINE_MS / MS_PER_SECOND) },
+        ],
         volumeMounts: [workspaceMount(config, workspacePath(job))],
     };
 }

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -384,5 +385,34 @@ describe('the tool-isolation lanes (issue #814)', () => {
     it('starts the agent with exactly the driver’s own agent flags, in the lane and in the image checks', () => {
         expect(lanePairs(script)).toEqual([...driverPairs].sort());
         expect(lanePairs(checks)).toEqual([...driverPairs].sort());
+    });
+
+    /** kill_lane's verdict for the control, run in bash with `ok`/`bad` stubbed to name which fired. */
+    const controlVerdict = (status: number, counts: string, markers: string[]) => {
+        const lane = script.slice(script.indexOf('kill_lane() {'), script.indexOf('\nkill_lane claude control'));
+        const verdict = lane.slice(lane.indexOf('    if [ "$mode" = isolated ]; then\n'), lane.lastIndexOf('\n}'));
+        const dir = mkdtempSync(join(tmpdir(), 'kill-lane-'));
+        try {
+            for (const marker of markers) writeFileSync(join(dir, marker), '');
+            return execFileSync('bash', ['-c', `ok() { echo ok; }\nbad() { echo bad; }\n${verdict}`], {
+                env: { ...process.env, mode: 'control', cli: 'claude', status: String(status), counts, dir },
+                encoding: 'utf8',
+            }).trim();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    };
+
+    // A CLI that fails before its first model request kills nothing, one that reports the first
+    // tool's result outlived it, and one the lane's own timeout ended (124) hung rather than died.
+    // The first tool's own marker is not required: dying with PID 1 can end its shell before
+    // `touch step-1`.
+    it('passes the control only on a signal death after one agent request and no tool result', () => {
+        expect(controlVerdict(1, '0 0', [])).toBe('bad');
+        expect(controlVerdict(137, '2 1', ['step-1'])).toBe('bad');
+        expect(controlVerdict(124, '1 0', [])).toBe('bad');
+        expect(controlVerdict(1, '1 0', [])).toBe('bad');
+        expect(controlVerdict(137, '1 0', [])).toBe('ok');
+        expect(controlVerdict(143, '1 0', ['step-1'])).toBe('ok');
     });
 });

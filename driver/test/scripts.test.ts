@@ -7,6 +7,7 @@ import {
     gitWorktreeRemoveScript,
     gitWorktreeScript,
     prSummaryScript,
+    toolTreeReleaseBoundedScript,
     toolTreeReleaseScript,
 } from '../src/publish.js';
 import {
@@ -55,6 +56,7 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['git-worktree.cjs', 'node'],
     ['git-worktree-remove.cjs', 'node'],
     ['tool-tree-release.cjs', 'node'],
+    ['tool-tree-release-bounded.sh', 'sh'],
     ['git-review-snapshot.cjs', 'node'],
     ['publish-ledger.cjs', 'node'],
     ['pr-summary.cjs', 'node'],
@@ -116,6 +118,7 @@ describe('the container scripts', () => {
         expect(gitWorktreeScript).toBe(readFileSync(pathOf('git-worktree.cjs'), 'utf8'));
         expect(gitWorktreeRemoveScript).toBe(readFileSync(pathOf('git-worktree-remove.cjs'), 'utf8'));
         expect(toolTreeReleaseScript).toBe(readFileSync(pathOf('tool-tree-release.cjs'), 'utf8'));
+        expect(toolTreeReleaseBoundedScript).toBe(readFileSync(pathOf('tool-tree-release-bounded.sh'), 'utf8'));
         expect(prSummaryScript).toBe(readFileSync(pathOf('pr-summary.cjs'), 'utf8'));
         expect(opencodeReadoutScript).toBe(readFileSync(pathOf('opencode-readout.cjs'), 'utf8'));
         expect(claudeTurnsScript).toBe(readFileSync(pathOf('claude-turns.cjs'), 'utf8'));
