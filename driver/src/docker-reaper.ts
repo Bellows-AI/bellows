@@ -133,8 +133,8 @@ const scanScope = async (
 
 /**
  * The attempts' volumes — the mailboxes and the kill markers, both labelled with the job and the
- * lease — dated by one `volume inspect` over all of them, since `volume ls` carries no creation
- * time. Rejects when either call was refused.
+ * lease — each dated by its own `volume inspect`, since `volume ls` carries no creation time. A
+ * volume gone before its inspect is skipped; rejects when any other call was refused.
  */
 const scanVolumes = async (execDocker: ExecDocker, groups: Groups): Promise<void> => {
     const listed = await execDocker([
@@ -154,23 +154,24 @@ const scanVolumes = async (execDocker: ExecDocker, groups: Groups): Promise<void
         const pair = pairOf(typeof fields.Labels === 'string' ? fields.Labels : '', LEASE_LABEL);
         if (pair) found.push({ name: fields.Name, pair });
     }
-    if (found.length === 0) return;
-    const inspected = await execDocker([
-        'volume',
-        'inspect',
-        '--format',
-        '{{.Name}}\t{{.CreatedAt}}',
-        ...found.map((volume) => volume.name),
-    ]);
-    const created = new Map<string, number>();
-    for (const line of linesOf(inspected.stdout)) {
-        const [name = '', at = ''] = line.split('\t');
-        const parsed = Date.parse(at);
-        created.set(name, Number.isNaN(parsed) ? 0 : parsed);
-    }
     for (const { name, pair } of found) {
-        addRow(groups, { object: { kind: 'volume', name }, name, ...pair, createdAtMs: created.get(name) ?? 0 });
+        const createdAtMs = await volumeCreatedAt(execDocker, name);
+        if (createdAtMs !== null) addRow(groups, { object: { kind: 'volume', name }, name, ...pair, createdAtMs });
     }
+};
+
+/** One volume's creation time, 0 when unparsable, or null when it was removed since the list. */
+const volumeCreatedAt = async (execDocker: ExecDocker, name: string): Promise<number | null> => {
+    let at: string;
+    try {
+        at = (await execDocker(['volume', 'inspect', '--format', '{{.CreatedAt}}', name])).stdout.trim();
+    } catch (e) {
+        // Removed since the list: nothing left to reap. Any other refusal rejects the round.
+        if (alreadyGone(e)) return null;
+        throw e;
+    }
+    const parsed = Date.parse(at);
+    return Number.isNaN(parsed) ? 0 : parsed;
 };
 
 const scan = async (execDocker: ExecDocker, holdsGate: (containerName: string) => boolean): Promise<OrphanGroup[]> => {

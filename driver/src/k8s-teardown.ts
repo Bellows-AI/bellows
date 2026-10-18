@@ -15,8 +15,12 @@ import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js
  * against the checkout holder, and the claim is kept (`releaseClaimAfterGroupEnd`).
  */
 
-/** How long ending a group may wait for its Job and its writer pods to be gone. */
-export const GROUP_END_WAIT_MS = 20_000;
+/**
+ * How long ending a group may wait for its Job and its writer pods to be gone — above the runner
+ * pod's default 30 s termination grace period, since a Foreground delete keeps the Job readable
+ * until the kubelet has ended its pod.
+ */
+export const GROUP_END_WAIT_MS = 45_000;
 
 /**
  * How one acknowledged delete landed: removed now, already gone (404), another incarnation under

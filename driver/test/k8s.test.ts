@@ -34,7 +34,9 @@ import {
     parseDeadServicePods,
     parseServicePods,
     parsePodMetrics,
+    POLL_MS,
 } from '../src/k8s-transport.js';
+import { GROUP_END_WAIT_MS } from '../src/k8s-teardown.js';
 import { readVerdict, runnerLossOf } from '../src/k8s-poll.js';
 import { orphanBoundMs } from '../src/supervisor-plan.js';
 import {
@@ -118,6 +120,23 @@ const opencodeJob: BoardJob = { ...job, executorType: 'opencode' };
 
 const spec = (env: NodeJS.ProcessEnv = {}) =>
     runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', ...env }), job, { id: SESSION, resume: false });
+
+describe('the group-end wait', () => {
+    // A Foreground Job delete keeps the Job readable until the kubelet has ended its pod; a wait
+    // shorter than the pod's grace period reads a slow shutdown as `held` and keeps the claim.
+    it('outlasts the runner pod termination grace period by at least one poll', () => {
+        const KUBERNETES_DEFAULT_GRACE_SECONDS = 30;
+        for (const pod of [
+            spec().spec.template.spec,
+            reclaimGroupSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), job, job.leaseToken).spec.template.spec,
+        ]) {
+            const grace =
+                (pod as { terminationGracePeriodSeconds?: number }).terminationGracePeriodSeconds ??
+                KUBERNETES_DEFAULT_GRACE_SECONDS;
+            expect(GROUP_END_WAIT_MS).toBeGreaterThanOrEqual(grace * 1000 + POLL_MS);
+        }
+    });
+});
 
 describe('the runner job spec', () => {
     it('is a batch/v1 Job named after the job id and lease token, within the label bound', () => {

@@ -315,10 +315,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
             if (refuse(args)) throw new Error('Error response from daemon: 503');
             if (args[0] === 'ps' && args.includes('label=factory.role')) return { stdout: containers.join('\n') };
             if (args[0] === 'volume' && args[1] === 'ls') return { stdout: volumes.join('\n') };
-            if (args[0] === 'volume' && args[1] === 'inspect') {
-                const names = args.slice(args.indexOf('--format') + 2);
-                return { stdout: names.map((name) => `${name}\t${OLD_VOLUME}`).join('\n') };
-            }
+            if (args[0] === 'volume' && args[1] === 'inspect') return { stdout: OLD_VOLUME };
             return { stdout: '' };
         };
         return { execDocker, calls };
@@ -394,6 +391,26 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         const { execDocker } = daemon(g.containers, g.volumes, refuse);
 
         await expect(createDockerReaper(execDocker).scan()).resolves.toEqual([]);
+    });
+
+    it('tolerates a volume removed between the list and its inspect, still reaping the rest', async () => {
+        const g = group(LEASE, 'exited');
+        const gone = `factory-in-${JOB}-${LEASE}`;
+        const { execDocker } = daemon(g.containers, g.volumes);
+        const racing: ExecDocker = async (args) => {
+            if (args[0] === 'volume' && args[1] === 'inspect' && args.includes(gone)) {
+                throw Object.assign(new Error('Command failed'), { stderr: `Error: No such volume: ${gone}` });
+            }
+            return execDocker(args);
+        };
+
+        const [only] = await createDockerReaper(racing).scan();
+
+        expect(only?.objects).toEqual([
+            { kind: 'container', name: `sup-${LEASE}`, runner: true },
+            { kind: 'container', name: `agent-${LEASE}`, unread: true, runner: true },
+            { kind: 'volume', name: `factory-kill-timeout-${JOB}-${LEASE}` },
+        ]);
     });
 
     it('leaves a reclaim group out of scope, containers and volumes alike', async () => {
