@@ -14,8 +14,11 @@
  *         prompt instead of failing).
  *
  * The verdict is ONE JSON line: {version, schema, ref, general, reviews, inline, threads,
- * requestedReviewers, decision, pendingChecks, truncated, error}. Every section is deduped by
- * GitHub id, capped, and stable-sorted, so the same upstream state always produces the same bytes.
+ * addressed, requestedReviewers, decision, pendingChecks, truncated, error}. Every section is
+ * deduped by GitHub id, capped, and stable-sorted, so the same upstream state always produces the
+ * same bytes. `addressed` is the sorted keys whose Factory reply marker any general or inline
+ * comment carries, read before the caps — a thread reply is an inline comment too — so whether an
+ * item was already answered never depends on which rows a section kept (issue #826).
  * REST carries the bulk (numeric ids, full bodies, diff hunks, --paginate); GraphQL carries what REST
  * does not expose: review-thread node ids, their resolved state, the PR's review decision and its
  * head commit. `pendingChecks` counts the head's check runs not yet completed (a review bot is
@@ -39,6 +42,7 @@ const THREADS_LIMIT = 100;
 const THREAD_COMMENTS_LIMIT = 10;
 const TOTAL_OUTPUT_BYTES = 262144;
 const GH_OUTPUT_MAX_BUFFER_BYTES = 16777216;
+const ADDRESSED_MARKER = /<!-- factory-review-reconcile addressed (\S+) -->/g;
 
 const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
@@ -147,12 +151,22 @@ const asReview = (row, counts) => ({
     commitId: str(row && row.commit_id),
 });
 
+/** Every key a Factory reply marker names in `rows`' full bodies. */
+function addressedKeys(rows) {
+    const keys = new Set();
+    for (const row of rows) {
+        for (const match of (str(row && row.body) ?? '').matchAll(ADDRESSED_MARKER)) keys.add(match[1]);
+    }
+    return keys;
+}
+
 /** REST-backed sections: general PR comments, reviews, and inline (diff) comments. */
 function fetchRestSections(ref, ts, counts) {
     const pulls = `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
     const issues = `repos/${ref.owner}/${ref.repo}/issues/${ref.number}`;
 
-    const general = section(JSON.parse(gh(['api', `${issues}/comments`, '--paginate'])), {
+    const generalRows = JSON.parse(gh(['api', `${issues}/comments`, '--paginate']));
+    const general = section(generalRows, {
         map: (row) => asComment(row, counts),
         limit: GENERAL_LIMIT,
         ts,
@@ -164,13 +178,15 @@ function fetchRestSections(ref, ts, counts) {
         ts,
         name: 'reviews',
     });
-    const inline = section(JSON.parse(gh(['api', `${pulls}/comments`, '--paginate'])), {
+    const inlineRows = JSON.parse(gh(['api', `${pulls}/comments`, '--paginate']));
+    const inline = section(inlineRows, {
         map: (row) => asLine(row, counts),
         limit: INLINE_LIMIT,
         ts,
         name: 'inline',
     });
-    return { general, reviews, inline };
+    const addressed = [...new Set([...addressedKeys(generalRows), ...addressedKeys(inlineRows)])].sort();
+    return { general, reviews, inline, addressed };
 }
 
 function fetchRequestedReviewers(ref) {
@@ -286,7 +302,7 @@ function collect() {
     const ts = { sections: [], bodies: 0, diffHunks: 0, threads: 0, total: false };
     const counts = { bodies: 0, diffHunks: 0, threads: 0 };
 
-    const { general, reviews, inline } = fetchRestSections(ref, ts, counts);
+    const { general, reviews, inline, addressed } = fetchRestSections(ref, ts, counts);
     const { users, teams } = fetchRequestedReviewers(ref);
     const { threads, decision, headOid } = fetchThreads(ref, ts, counts);
     const pendingChecks = fetchPendingChecks(ref, headOid);
@@ -309,6 +325,7 @@ function collect() {
         reviews,
         inline,
         threads,
+        addressed,
         requestedReviewers: { users, teams },
         decision,
         pendingChecks,
