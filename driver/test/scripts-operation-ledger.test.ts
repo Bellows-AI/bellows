@@ -6,12 +6,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { containerScript } from '../src/container-scripts.js';
 
 /**
- * The publication ledger (scripts/publish-ledger.cjs): the persisted operation identity a retried
- * or adopted publish reads before it pushes or opens anything (issue #771). Run for real, as the
- * supervisor runs it: `node -e <script>` with the operation in its environment.
+ * The operation ledger (scripts/operation-ledger.cjs): the persisted identity a retried or adopted
+ * publish (issue #771) or block-helper effect (issue #826) reads before it repeats anything. Run for
+ * real, as the supervisor runs it: `node -e <script>` with the operation in its environment.
  */
-const SCRIPT = containerScript('publish-ledger.cjs');
+const SCRIPT = containerScript('operation-ledger.cjs');
 const OP = `fix/10@${'a'.repeat(40)}`;
+const PUBLICATION = 'pushing,pushed,opened';
 const dirs: string[] = [];
 afterEach(() => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -24,12 +25,14 @@ const ledgerFile = (): string => {
     return join(dir, '.factory', 'publication.json');
 };
 
-const run = (LEDGER: string, env: Record<string, string>): Record<string, string> =>
+const run = (LEDGER: string, env: Record<string, string>): Record<string, unknown> =>
     JSON.parse(
-        execFileSync('node', ['-e', SCRIPT], { env: { PATH: process.env.PATH!, LEDGER, ...env } }).toString()
-    ) as Record<string, string>;
+        execFileSync('node', ['-e', SCRIPT], {
+            env: { PATH: process.env.PATH!, LEDGER, STATES: PUBLICATION, ...env },
+        }).toString()
+    ) as Record<string, unknown>;
 
-describe('the publication ledger script', () => {
+describe('the operation ledger script', () => {
     it('answers an operation it never saw with nothing', () => {
         expect(run(ledgerFile(), { ACTION: 'read', OP })).toEqual({});
     });
@@ -37,7 +40,7 @@ describe('the publication ledger script', () => {
     it('records how far an operation got, and a later read answers it', () => {
         const file = ledgerFile();
         expect(run(file, { ACTION: 'write', OP, STATE: 'pushing' })).toMatchObject({ state: 'pushing' });
-        run(file, { ACTION: 'write', OP, STATE: 'opened', PR_URL: 'https://github.com/o/r/pull/7' });
+        run(file, { ACTION: 'write', OP, STATE: 'opened', DATA: '{"prUrl":"https://github.com/o/r/pull/7"}' });
         expect(run(file, { ACTION: 'read', OP })).toMatchObject({
             state: 'opened',
             prUrl: 'https://github.com/o/r/pull/7',
@@ -65,9 +68,45 @@ describe('the publication ledger script', () => {
 
     it('refuses a write that names no valid state, exiting non-zero with the reason', () => {
         const result = spawnSync('node', ['-e', SCRIPT], {
-            env: { PATH: process.env.PATH!, LEDGER: ledgerFile(), ACTION: 'write', OP, STATE: 'done' },
+            env: {
+                PATH: process.env.PATH!,
+                LEDGER: ledgerFile(),
+                STATES: PUBLICATION,
+                ACTION: 'write',
+                OP,
+                STATE: 'done',
+            },
         });
         expect(result.status).toBe(1);
         expect(result.stderr.toString()).toMatch(/not a ledger write/);
+    });
+
+    it("takes each ledger's own states: a helper effect moves started → done with its result, never back", () => {
+        const file = ledgerFile();
+        const helper = { STATES: 'started,done', OP: 'effect-1' };
+        run(file, { ...helper, ACTION: 'write', STATE: 'started' });
+        run(file, { ...helper, ACTION: 'write', STATE: 'done', DATA: '{"result":{"ok":true,"output":"X"}}' });
+        expect(run(file, { ...helper, ACTION: 'write', STATE: 'started' })).toMatchObject({ state: 'done' });
+        expect(run(file, { ...helper, ACTION: 'read' })).toMatchObject({
+            state: 'done',
+            result: { ok: true, output: 'X' },
+        });
+    });
+
+    it('refuses DATA that is not a JSON object, writing nothing', () => {
+        const file = ledgerFile();
+        const result = spawnSync('node', ['-e', SCRIPT], {
+            env: {
+                PATH: process.env.PATH!,
+                LEDGER: file,
+                STATES: PUBLICATION,
+                ACTION: 'write',
+                OP,
+                STATE: 'pushed',
+                DATA: '[1]',
+            },
+        });
+        expect(result.status).toBe(1);
+        expect(run(file, { ACTION: 'read', OP })).toEqual({});
     });
 });

@@ -52,7 +52,9 @@ import {
     serviceRunArgs,
 } from '../src/services.js';
 import { type RunnerFiles, startJobServices } from '../src/docker-runner-support.js';
-import type { StepSink, SupervisorEndpoint } from '../src/step-control.js';
+import { StepChannelClosed, type StepSink, type SupervisorEndpoint } from '../src/step-control.js';
+import { REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
+import { receiptedAnswer, receiptOrder } from './fixtures/helper-receipt-steps.js';
 import {
     SUPERVISOR_ENV,
     SUPERVISOR_EXIT,
@@ -4635,15 +4637,35 @@ describe('the block-helper transport (issue #207)', () => {
     });
 
     /** A runner whose supervisor answers each helper step with `answer`; the daemon's every argv is kept. */
-    const helperRunner = (answer: (step: StepRequest) => StepResult | Promise<StepResult> = () => ok(NOOP_VERDICT)) => {
+    const helperRunner = (
+        answer: (step: StepRequest) => StepResult | Promise<StepResult> = () => ok(NOOP_VERDICT),
+        env: Record<string, string> = {}
+    ) => {
         const docker: string[][] = [];
         const supervised = fakeSteps(answer);
         const exec = vitest.fn(async (args: string[]) => {
             docker.push(args);
             return { stdout: args[0] === 'wait' ? '0\n' : '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        return { docker, supervised, runner: dockerRunner(exec, { steps: supervised.sink }) };
+        return { docker, supervised, runner: dockerRunner(exec, { env, steps: supervised.sink }) };
     };
+
+    // Issue #826: the same receipt bracket and the same loss rule as the kubernetes runner.
+    it('brackets a receipted helper with its receipt in the task worktree, and throws a lost supervisor', async () => {
+        // The receipt's MAC key: a driver without a board token keeps no receipt.
+        const { supervised, runner } = helperRunner(receiptedAnswer, { JOB_BOARD_TOKEN: 'board-key' });
+        await runner.runHelper!(repoJob, plan({ helperId: REVIEW_REPLY_PROBE_ID, githubWriting: true }), {
+            token: 'fresh-install-token',
+            effectId: 'effect-1',
+        });
+        expect(receiptOrder(supervised.steps())).toEqual(['read', 'started', 'helper', 'done']);
+        expect(supervised.steps()[0]!.env.LEDGER).toMatch(/\/\.worktrees\/[^/]+\/\.factory\/helpers\.json$/);
+
+        const lost = helperRunner(async () => {
+            throw new StepChannelClosed('the helper');
+        });
+        await expect(lost.runner.runHelper!(repoJob, plan())).rejects.toBeInstanceOf(StepChannelClosed);
+    });
 
     it('fails an unknown helper id before any step is submitted', async () => {
         const { supervised, runner } = helperRunner();
@@ -4696,7 +4718,7 @@ describe('the block-helper transport (issue #207)', () => {
         };
         const runner = dockerRunner(emptyDaemon, { steps: sink });
 
-        const result = await runner.runHelper!(job, plan(), undefined, controller.signal);
+        const result = await runner.runHelper!(job, plan(), { signal: controller.signal });
 
         expect(seen).toEqual([controller.signal]);
         expect(result).toMatchObject({ ok: false, reason: 'runner_error' });
@@ -4704,7 +4726,9 @@ describe('the block-helper transport (issue #207)', () => {
 
     it('carries a fresh token in the step env, only for a github-writing helper', async () => {
         const { supervised, runner } = helperRunner();
-        const result = await runner.runHelper!(repoJob, plan({ githubWriting: true }), 'fresh-install-token');
+        const result = await runner.runHelper!(repoJob, plan({ githubWriting: true }), {
+            token: 'fresh-install-token',
+        });
 
         expect(result).toEqual({ ok: true, output: { echoed: true } });
         const [step] = supervised.ofKind('helper');
@@ -4715,7 +4739,7 @@ describe('the block-helper transport (issue #207)', () => {
 
     it('never puts the token in the daemon’s argv or the step’s — only in the step env', async () => {
         const { docker, supervised, runner } = helperRunner();
-        await runner.runHelper!(repoJob, plan({ githubWriting: true }), 'super-secret-token');
+        await runner.runHelper!(repoJob, plan({ githubWriting: true }), { token: 'super-secret-token' });
         expect(docker.flat().some((a) => a.includes('super-secret-token'))).toBe(false);
         const [step] = supervised.ofKind('helper');
         expect(step?.argv.some((a) => a.includes('super-secret-token'))).toBe(false);

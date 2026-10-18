@@ -47,11 +47,13 @@ export interface HelperPlan {
 
 /**
  * What one helper run carries beyond its plan, as the transports take it: the fresh GitHub token a
- * github-writing helper runs with, and the attempt's stand-down signal that cancels it (issue #488).
+ * github-writing helper runs with, the attempt's stand-down signal that cancels it (issue #488), and
+ * the logical effect it performs — the same on every claim of the job (`helperEffectId`, issue #826).
  */
 export interface HelperCall {
     token?: string | undefined;
     signal?: AbortSignal | undefined;
+    effectId?: string | undefined;
 }
 
 /** Every named, bounded way a helper run can fail — never a thrown context leak into the agent. */
@@ -104,7 +106,9 @@ export type HelperResult =
  * One allowlisted helper: its script content (read once at load time, passed to the container by
  * content — never a path, never a template string, the same rule every script in this driver
  * follows), the wire schema/version its stdout verdict must carry, and the byte cap its stdout is
- * checked against BEFORE anything attempts to parse it.
+ * checked against BEFORE anything attempts to parse it. `receipted` marks a helper whose run is an
+ * external effect: a replacement claim answers a completed one from its receipt (`helper-receipts.ts`)
+ * — never a probe, whose answer is only true of the tree and the PR as they are now.
  */
 export interface HelperDescriptor {
     id: string;
@@ -112,6 +116,7 @@ export interface HelperDescriptor {
     schema: string;
     version: 1;
     outputCapBytes: number;
+    receipted?: true;
 }
 
 const BYTES_PER_KB = 1024;
@@ -377,7 +382,7 @@ export function lookupComposite(id: string): CompositeDescriptor | null {
 export async function runComposite(
     composite: CompositeDescriptor,
     plan: HelperPlan,
-    invokeChild: (childPlan: HelperPlan) => Promise<HelperResult | null>
+    invokeChild: InvokeChild
 ): Promise<HelperResult | null> {
     if (plan.githubWriting) {
         return {
@@ -400,12 +405,10 @@ export async function runComposite(
                 message: `composite "${plan.helperId}" step ${i} planning threw: ${(e as Error).message}`,
             };
         }
-        const childResult = await invokeChild({
-            helperId: step.helperId,
-            phase: plan.phase,
-            input,
-            githubWriting: step.githubWriting,
-        });
+        const childResult = await invokeChild(
+            { helperId: step.helperId, phase: plan.phase, input, githubWriting: step.githubWriting },
+            i
+        );
         if (childResult === null) return null;
         if (!childResult.ok) return childResult;
         outputs.push(childResult.output);
@@ -423,16 +426,16 @@ export async function runComposite(
     }
 }
 
+/** One child call of a plan, with its position in the plan: 0 for a plain plan, the step index in a composite. */
+export type InvokeChild = (childPlan: HelperPlan, childIndex: number) => Promise<HelperResult | null>;
+
 /**
  * Runs one declared plan to its final result. A plain script plan is a single call through
  * `invokeChild`, unchanged from before this issue. A composite plan (issue #230) resolves the
  * registered descriptor and sequences it via `runComposite`.
  */
-export async function runHelperPlan(
-    plan: HelperPlan,
-    invokeChild: (childPlan: HelperPlan) => Promise<HelperResult | null>
-): Promise<HelperResult | null> {
+export async function runHelperPlan(plan: HelperPlan, invokeChild: InvokeChild): Promise<HelperResult | null> {
     const composite = lookupComposite(plan.helperId);
-    if (!composite) return invokeChild(plan);
+    if (!composite) return invokeChild(plan, 0);
     return runComposite(composite, plan, invokeChild);
 }

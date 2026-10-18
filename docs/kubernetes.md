@@ -27,7 +27,7 @@ Helm chart that deploys the whole factory.
 | The app chart: dashboard, driver, collector, RBAC, PDBs, Ingress, `LimitRange` | `charts/factory/` ([README](../charts/factory/README.md)) | `scripts/test-k8s.sh` |
 | The admission policies that fence the driver, admitting one capability add: `SETUID`/`SETGID` on a runner Job's `agent` | `charts/factory/templates/driver-admission.yaml`, `driver/src/k8s-podfields.ts` | `driver/test/k8s-admission.test.ts`, `scripts/test-k8s.sh --cluster` |
 | Runner network confinement | `charts/factory/templates/runner-networkpolicy.yaml` | `scripts/test-k8s.sh --netpol` |
-| Local Postgres, the workspaces claim, the `.env`-fed local values, `make start`/`reset` | `charts/factory-local-state/`, `scripts/k8s-local-values.mjs`, `Makefile` | `scripts/test-k8s.sh` |
+| Local Postgres, the workspaces claim, the `.env`-fed local values, `make start`/`reset`; the kind cluster and its local registry, `make cluster`/`cleanup` | `charts/factory-local-state/`, `scripts/k8s-local-values.mjs`, `scripts/kind-cluster.sh`, `scripts/kind-cluster.yaml`, `Makefile` | `scripts/test-k8s.sh`, `driver/test/k8s-lane.test.ts`, `core/test/makefile.kind-cluster.test.ts` |
 
 What a run does — sync, gates, services, publish, helpers, reclaim — is one contract over both executors
 ([jobs.md](jobs.md)); lanes are [executor-testing.md](executor-testing.md).

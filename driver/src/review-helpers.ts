@@ -74,5 +74,7 @@ export const REVIEW_HELPER_DESCRIPTORS: readonly HelperDescriptor[] = [
         schema: 'review-reply-probe/v1',
         version: 1,
         outputCapBytes: REVIEW_REPLY_PROBE_OUTPUT_CAP_KB * BYTES_PER_KB,
+        // Its replies and resolves are the block's external effects (issue #826).
+        receipted: true,
     },
 ];
