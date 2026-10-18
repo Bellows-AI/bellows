@@ -470,13 +470,46 @@ export const secretName = (job: BoardJob): string => {
  * agreeing. `factory.job` is what the re-claim fence sweeps by; `factory.lease` is what scopes a
  * reap to the attempt that created it.
  */
-export const secretBody = (job: BoardJob, name: string, env: Record<string, string>) => ({
+export const secretBody = (job: BoardJob, name: string, env: Record<string, string>, owner?: JobOwner) => ({
     apiVersion: 'v1',
     kind: 'Secret',
     type: 'Opaque',
-    metadata: { name, labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken } },
+    metadata: {
+        name,
+        labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken },
+        // The Job the Secret was created after (issue #821): the API server's garbage collector
+        // deletes the Secret once that Job is gone, whatever became of the driver. No
+        // `blockOwnerDeletion`, so no extra permission on the owner is needed.
+        ...(owner
+            ? { ownerReferences: [{ apiVersion: 'batch/v1', kind: 'Job', name: owner.name, uid: owner.uid }] }
+            : {}),
+    },
     stringData: env,
 });
+
+/** A created Job, as a Secret's owner: its name and the uid its create answered. */
+export interface JobOwner {
+    name: string;
+    uid: string;
+}
+
+/** A listed runner Job, as much of it as tells a finished agent run apart. */
+export interface ListedRunnerJob {
+    metadata?: { name?: string };
+    spec?: { suspend?: boolean; template?: { spec?: { containers?: { name?: string }[] } } };
+    status?: { succeeded?: number; failed?: number };
+}
+
+/**
+ * A runner Job of `pair` that ran an agent and finished — the one shape of Job a later claim may
+ * adopt (issue #792). A supervisor-only group (an agentless node, the group made after an
+ * adoption) ran no agent and is no run; a Job its driver suspended (issue #821) is no finished run.
+ */
+export const finishedAgentRun = (item: ListedRunnerJob, pair: BoardJob): boolean =>
+    item.metadata?.name === runnerJobName(pair) &&
+    item.spec?.suspend !== true &&
+    (item.spec?.template?.spec?.containers ?? []).some((container) => container.name === AGENT_CONTAINER) &&
+    ((item.status?.succeeded ?? 0) >= 1 || (item.status?.failed ?? 0) >= 1);
 
 /**
  * A batch Job this driver creates for its own auxiliary work — one gate run, or the

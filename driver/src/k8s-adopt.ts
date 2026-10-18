@@ -2,18 +2,19 @@ import type { BoardJob } from './board.js';
 import type { ClaudeCloseRead } from './close-read.js';
 import { mergeClaudeCloseRead } from './close-read.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
-import { deleteSecret, jobsSelectorPath } from './k8s-auxspec.js';
-import { acquireClaim, releaseClaim, sweepClaimedFleets } from './k8s-fence.js';
-import { runnerName, secretName } from './k8s-podspec.js';
+import { jobsSelectorPath } from './k8s-auxspec.js';
+import { acquireClaim, releaseClaimAfterGroupEnd, sweepClaimedFleets } from './k8s-fence.js';
+import { finishedAgentRun, gateEnvSecretName, type ListedRunnerJob, runnerName, secretName } from './k8s-podspec.js';
+import { deleteSecretAcked } from './k8s-teardown.js';
 import { readRunnerVerdict, timedOutOf } from './k8s-poll.js';
 import { expectOk, JOB_ID, parse } from './k8s-transport.js';
 import type { K8sDeps, K8sJobStatus } from './k8s-transport.js';
 import { CLAIM_SEQ_MARK, COMMAND_MARK, LEASE_LABEL, SESSION_MARK } from './labels.js';
-import { type AdoptedRun, commandMark, type RunOutcome } from './runner.js';
+import { AdoptionBlocked, type AdoptedRun, commandMark, type RunOutcome } from './runner.js';
 import { adoptedVerdictOf, infraLossOf, type KillRecord, killEndsGroup, killRecordsOf } from './termination.js';
 
 /** One runner Job of an earlier claim, as the label listing answers it. */
-interface ListedRunner {
+interface ListedRunner extends ListedRunnerJob {
     metadata?: { name?: string; labels?: Record<string, string>; annotations?: Record<string, string> };
     status?: K8sJobStatus & { startTime?: string };
 }
@@ -39,13 +40,13 @@ function earlierRunnerOf(job: BoardJob, item: ListedRunner): EarlierRunner | nul
     const lease = item.metadata?.labels?.[LEASE_LABEL];
     const seq = item.metadata?.annotations?.[CLAIM_SEQ_MARK] ?? '';
     const status = item.status ?? {};
-    const finished = (status.succeeded ?? 0) >= 1 || (status.failed ?? 0) >= 1;
-    if (!lease || !JOB_ID.test(lease) || !/^\d+$/.test(seq) || !finished) return null;
+    if (!lease || !JOB_ID.test(lease) || !/^\d+$/.test(seq)) return null;
     // A queued task's command edited since the run (after a handover) makes that run not its own.
     if (item.metadata?.annotations?.[COMMAND_MARK] !== commandMark(job.command)) return null;
     const prior = { ...job, leaseToken: lease };
-    // Only the runner itself: its name is the (job, lease) hash, which no aux Job shares.
-    if (item.metadata?.name !== runnerName(prior) || Number(seq) >= job.claimSeq) return null;
+    // Only a finished agent run of the runner itself (its name is the (job, lease) hash, which no
+    // aux Job shares): never a supervisor-only group, never a Job its driver suspended (issue #821).
+    if (!finishedAgentRun(item, prior) || Number(seq) >= job.claimSeq) return null;
     const annotations = item.metadata.annotations;
     return {
         prior,
@@ -114,15 +115,30 @@ export async function adoptFinishedRunner(deps: K8sDeps, job: BoardJob, reads: C
     try {
         const outcome = await readEarlierRun(deps, job, found, reads);
         if (!outcome) {
-            await releaseClaim(deps, job);
+            await releaseClaimAfterGroupEnd(deps, job);
             return null;
         }
-        await sweepClaimedFleets(deps, job);
-        // Best-effort: the run is read and swept, and the reaper takes a Secret left by name.
-        await deleteSecret(deps, secretName(found.prior)).catch(() => undefined);
+        // This attempt continues that outcome: its sweeps keep the run it read (issue #821).
+        deps.adopted ??= new Map();
+        deps.adopted.set(job.leaseToken, runnerName(found.prior));
+        // The sweep spares the run it read — the evidence the next claim adopts if this one is lost
+        // before its verdict lands (issue #821). Its Secrets go now; one that will not is cleanup for
+        // later, never a reason to run again: the Job it is derived from stays listed as its anchor
+        // for the reaper's Secret-first pass, and its owner reference takes it with the Job.
+        try {
+            await sweepClaimedFleets(deps, job);
+        } catch (e) {
+            // A leftover the sweep could not confirm gone may still write the tree: the read run is
+            // not abandoned for a fresh one, the attempt stands down to its lease.
+            throw new AdoptionBlocked(`the run was read, but ${(e as Error).message}`);
+        }
+        for (const name of [secretName(found.prior), gateEnvSecretName(found.prior)]) {
+            await deleteSecretAcked(deps, name);
+        }
         return { outcome, claimSeq: found.claimSeq };
     } catch (e) {
-        await releaseClaim(deps, job);
+        deps.adopted?.delete(job.leaseToken);
+        await releaseClaimAfterGroupEnd(deps, job);
         throw e;
     }
 }

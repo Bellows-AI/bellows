@@ -11,6 +11,7 @@ import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, MERGE_PATCH_CONTENT_TYPE } from
 import type { BoardLease } from './board.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import type { TaskGroup } from './k8s-group.js';
+import type { TeardownIdentity } from './k8s-teardown.js';
 
 /**
  * The kubernetes executor's shared low-level vocabulary: the wire types (`K8sResponse`,
@@ -242,6 +243,18 @@ export interface K8sDeps {
     endpoint?: SupervisorEndpoint;
     /** The attempt groups this runner created, by lease token (`k8s-group.ts`); created on first use. */
     groups?: Map<string, TaskGroup>;
+    /**
+     * The runner Jobs whose end could not be confirmed (`k8s-teardown.ts`), by the checkout holder
+     * whose claim they keep, then by Job name; created on first use.
+     */
+    unconfirmed?: Map<string, Map<string, TeardownIdentity>>;
+    /**
+     * The finished runner Job each attempt adopted (`k8s-adopt.ts`), by the adopting lease token:
+     * the one earlier Job its sweeps keep while it continues that outcome to its verdict.
+     */
+    adopted?: Map<string, string>;
+    /** The holders whose group another incarnation replaced (`k8s-teardown.ts`): their claim is not this runner's to give back. */
+    superseded?: Set<string>;
 }
 
 /** The ServiceAccount volume every pod gets, holding the token and the cluster CA. */

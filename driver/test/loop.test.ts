@@ -14,6 +14,7 @@ import type {
 import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board-retry.js';
 import { loadDriverConfig, type DriverConfig } from '../src/config.js';
 import type { AdoptedRun, DeadService, RunOutcome, RunSession, Runner, RuntimeSample } from '../src/runner.js';
+import { AdoptionBlocked } from '../src/runner.js';
 import type { GateManager, GateRun, GateRunOptions, GateServer } from '../src/gates.js';
 import { setupTimeoutMs } from '../src/claim.js';
 import { ServicesNotRunning } from '../src/service-restart.js';
@@ -432,6 +433,8 @@ function stubRunner(
     reclaimed: BoardJob[];
     servicesReleased: string[];
     reapAttempts: BoardJob[];
+    /** The claim incarnation each reap was handed (issue #821). */
+    reapClaims: { uid: string; holder: string }[];
     probed: BoardJob[];
     deadServiceProbes: number;
     startedServices: string[];
@@ -443,6 +446,7 @@ function stubRunner(
     const runner = {
         servicesReleased: [] as string[],
         reapAttempts: [] as BoardJob[],
+        reapClaims: [] as { uid: string; holder: string }[],
         probed: [] as BoardJob[],
         deadServiceProbes: 0,
         async deadServices() {
@@ -528,8 +532,9 @@ function stubRunner(
         ...(options.adopt ? { adopt: options.adopt } : {}),
         ...(options.reapOrphanedClaim
             ? {
-                  reapOrphanedClaim: async (orphanJob: BoardJob) => {
+                  reapOrphanedClaim: async (orphanJob: BoardJob, claim: { uid: string; holder: string }) => {
                       runner.reapAttempts.push(orphanJob);
+                      runner.reapClaims.push(claim);
                       return options.reapOrphanedClaim?.(orphanJob) ?? false;
                   },
               }
@@ -2126,6 +2131,8 @@ describe('the poll loop', () => {
             name: `factory-job-${root}-claim`,
             claimSeq: '3',
             createdMs: Date.now() - 120_000,
+            uid: 'claim-uid-1',
+            holder: '66666666-6666-4666-8666-666666666666',
         };
         const heldRefusal = (): ReclaimResult => ({
             ok: false,
@@ -2153,6 +2160,9 @@ describe('the poll loop', () => {
             // row acked, so the offer stops.
             expect(board.board.leaseLookups).toEqual([[root]]);
             expect(runner.reapAttempts.map((j) => j.id)).toEqual([root]);
+            // The incarnation the refusal read, carried through to the reap (issue #821): a claim
+            // replaced since is the runner's to reject, never one read afresh.
+            expect(runner.reapClaims).toEqual([{ ...heldClaim }]);
             expect(runner.reclaimed).toHaveLength(2);
             expect(board.board.reclaimAcks).toEqual([rowId]);
             const orphan = logs.find((m) => m.includes('orphaned'));
@@ -2734,6 +2744,32 @@ describe('the poll loop', () => {
         expect(board.board.interrupted).toEqual([]);
         expect(board.board.completed[0]?.output).toContain('the fresh run');
         expect(logs.some((m) => m.includes('could not adopt an earlier runner'))).toBe(true);
+    });
+
+    // Issue #821: an adoption whose read succeeded but whose earlier attempt left something it
+    // could not confirm gone stands down to the lease — never a fresh run over that run's tree.
+    it('leaves the job to its lease, running nothing, when an adopted run is blocked by a live writer', async () => {
+        const board = stubBoard([job(1)]);
+        let launched = 0;
+        const logs: string[] = [];
+        const runner = stubRunner(
+            async () => {
+                launched += 1;
+                return ok();
+            },
+            {
+                adopt: async () => {
+                    throw new AdoptionBlocked('a writer of an earlier attempt could not be confirmed gone');
+                },
+            }
+        );
+
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
+
+        expect(launched).toBe(0);
+        expect(runner.synced).toHaveLength(0);
+        expect(board.board.completed).toEqual([]);
+        expect(logs.some((m) => m.includes('confirmed gone'))).toBe(true);
     });
 
     // A spent interruption budget falls back to the lease, and the last attempt reports the loss.

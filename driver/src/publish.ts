@@ -254,9 +254,10 @@ export interface ReclaimResult {
      * Executor-neutral home, kubernetes-only population: docker's fence leaves no claim object
      * behind, so its refusals never carry this. The loop reads it to name the claim — and, when
      * the board proves the holder job gone or terminal, to have the runner reap it instead of
-     * retrying the same refusal forever.
+     * retrying the same refusal forever. `uid` and `holder` are the incarnation read (issue #821):
+     * the reap acts on that one only, never on a claim that replaced it since.
      */
-    heldClaim?: { name: string; claimSeq: string | null; createdMs: number | null };
+    heldClaim?: { name: string; claimSeq: string | null; createdMs: number | null; uid: string; holder: string };
 }
 
 /**

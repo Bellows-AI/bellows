@@ -6,7 +6,7 @@ import type { ChildProcess, spawn } from 'node:child_process';
 import type { Readable } from 'node:stream';
 import type { BoardJob } from '../src/board.js';
 import { executorImage, loadDriverConfig } from '../src/config.js';
-import { killMarkName } from '../src/docker-mailbox.js';
+import { ctlVolumeName, killMarkName } from '../src/docker-mailbox.js';
 import { decisionOf, TERMINATION_ROWS, type TerminationRow } from './fixtures/termination-table.js';
 import {
     containerName,
@@ -44,7 +44,7 @@ import {
 import { ARTIFACT_LIMIT, commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import { claudeTurnsScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { createDockerRunner } from '../src/docker-runner.js';
-import { exporterCreateArgs, supervisorCreateArgs, supervisorName } from '../src/docker-group.js';
+import { exporterCreateArgs, exporterName, supervisorCreateArgs, supervisorName } from '../src/docker-group.js';
 import { HELPER_TIMEOUT_MS, lookupHelper, type HelperPlan } from '../src/helpers.js';
 import {
     forgetDeclaredServices,
@@ -58,6 +58,7 @@ import { createStepBroker, StepChannelClosed, type StepSink, type SupervisorEndp
 import { REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
 import { receiptedAnswer, receiptOrder } from './fixtures/helper-receipt-steps.js';
 import {
+    MAILBOXES,
     SUPERVISOR_ENV,
     SUPERVISOR_EXIT,
     type StepKind,
@@ -4001,6 +4002,19 @@ describe('publishing the produced work', () => {
         expect(d.calls.filter((a) => a[0] === 'run')).toEqual([toolTreeReleaseArgs(loadDriverConfig({}), repoJob)]);
         expect(d.calls.findIndex((a) => a[0] === 'run')).toBeLessThan(d.calls.findIndex((a) => a[0] === 'create'));
         expect(d.containers.size).toBe(0);
+        // Issue #821 D16: the group's supervisor and every mailbox carry the reclaim mark, so the
+        // orphan reaper never reads its lease of its own as a dead attempt's.
+        const volumes = d.calls.filter((a) => a[0] === 'volume' && a[1] === 'create');
+        expect(volumes).toHaveLength(4);
+        for (const made of [create, ...volumes]) expect(made).toEqual(expect.arrayContaining(['factory.reclaim=true']));
+    });
+
+    it("marks no attempt's own group as a reclaim group (#821 D16)", async () => {
+        const d = labelDaemon();
+        await dockerRunner(d.exec, { steps: syncSteps().sink }).syncCheckout(repoJob);
+        const made = d.calls.filter((a) => a[0] === 'create' || (a[0] === 'volume' && a[1] === 'create'));
+        expect(made.length).toBeGreaterThan(0);
+        expect(made.some((args) => args.includes('factory.reclaim=true'))).toBe(false);
     });
 
     it('releases the tree as the tool uid, hardened, naming only the tree', () => {
@@ -5008,6 +5022,40 @@ describe('a group whose supervisor is gone releases its step channel', () => {
         expect(pulled).toMatchObject({ kind: 'probe' });
         if (pulled && pulled !== 'closed') broker.settle(CONTROL_TOKEN, pulled.id, pulled.invocation, ok('{}'));
         await again;
+    });
+});
+
+/*
+ * Issue #821 D16: a kill takes the group out of the runner's memory, and the `finish` that follows
+ * must still remove what the kill only stopped — the supervisor, the exporter and the four
+ * mailboxes — by this attempt's own names, without waiting on a supervisor the kill already ended.
+ */
+describe('a kill followed by finish removes the group (#821 D16)', () => {
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+
+    it('removes the supervisor, the exporter and every mailbox volume, by the killed attempt names', async () => {
+        const { exec, calls } = entrypointAnswers('');
+        const runner = dockerRunner(exec, { steps: syncSteps().sink });
+        expect((await runner.syncCheckout(repoJob)).ok).toBe(true);
+        await runner.kill(repoJob);
+        const killedAt = calls.length;
+
+        await runner.finish!(repoJob);
+
+        const after = calls.slice(killedAt);
+        expect(after).toContainEqual(['rm', '-f', supervisorName(repoJob)]);
+        expect(after).toContainEqual(['rm', '-f', exporterName(repoJob)]);
+        for (const box of Object.values(MAILBOXES)) {
+            expect(after).toContainEqual(['volume', 'rm', '-f', ctlVolumeName(repoJob, box)]);
+        }
+        // The kill already ended the group: nothing waits on its supervisor again.
+        expect(after.filter((args) => args[0] === 'wait')).toEqual([]);
+        // Attempt-scoped: every removal names this attempt, never a newer lease of the same job.
+        const newer = '55555555-5555-4555-8555-555555555555';
+        expect(after.flat().some((arg) => arg.includes(newer))).toBe(false);
+        for (const args of after.filter((a) => a[0] === 'rm' || (a[0] === 'volume' && a[1] === 'rm'))) {
+            expect(args[args.length - 1]).toContain(repoJob.leaseToken);
+        }
     });
 });
 

@@ -230,7 +230,7 @@ async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession 
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);
     const startedAt = new Date().toISOString();
-    await createGroup(deps, job, session, startedAt);
+    await createGroup(deps, job, session, { startedAt });
     try {
         await startGroup(deps.execDocker, job, session);
     } catch (e) {
@@ -242,12 +242,17 @@ async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession 
     return group;
 }
 
-/** Ends the attempt's group by order, waits (bounded) for its supervisor to exit, and removes it. Never throws. */
+/**
+ * Ends the attempt's group by order, waits (bounded) for its supervisor to exit, and removes it —
+ * every time: a group a kill already took out of `groups` was only stopped, and its supervisor,
+ * exporter and mailboxes are still this attempt's to remove (issue #821). Never throws.
+ */
 async function finishGroup(deps: RunnerDeps, job: BoardJob): Promise<void> {
-    if (!deps.groups.delete(job.leaseToken)) return;
-    await orderFinish(stepHostOf(deps), job).catch(() => undefined);
-    if ((await awaitSupervisor(deps.execDocker, job, GROUP_END_WAIT_MS)) === null) {
-        await dockerKill(deps, job);
+    if (deps.groups.delete(job.leaseToken)) {
+        await orderFinish(stepHostOf(deps), job).catch(() => undefined);
+        if ((await awaitSupervisor(deps.execDocker, job, GROUP_END_WAIT_MS)) === null) {
+            await dockerKill(deps, job);
+        }
     }
     await removeGroup(deps.execDocker, job);
 }
@@ -308,7 +313,7 @@ async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<R
         // Issue #814: the tool uid first gives back what it closed; the reclaim's verdict decides.
         const release = toolTreeReleaseArgs(config, job);
         if (release) await deps.execDocker(release, { timeout: RELEASE_DEADLINE_MS }).catch(() => undefined);
-        await createGroup(deps, group, null, new Date().toISOString());
+        await createGroup(deps, group, null, { startedAt: new Date().toISOString(), reclaim: true });
         await startGroup(deps.execDocker, group, null);
         return await runReclaimStep(stepHostOf(deps), group);
     } catch (e) {

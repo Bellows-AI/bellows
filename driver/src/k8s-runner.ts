@@ -24,27 +24,21 @@ import {
     vanishedOutcome,
     wasKilled,
 } from './k8s-kill.js';
-import {
-    claimName,
-    claimPath,
-    deleteJob,
-    deleteSecret,
-    jobPath,
-    jobPodsPath,
-    podLogPath,
-    podsByLeasePath,
-} from './k8s-auxspec.js';
-import { acquireClaim, releaseClaim, type RunCleanup } from './k8s-fence.js';
+import { claimName, claimPath, deleteJob, jobPath, jobPodsPath, podLogPath, podsByLeasePath } from './k8s-auxspec.js';
+import { acquireClaim, type ObservedClaim, readClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
 import {
     ensureGroup,
     finishGroup,
+    forgetGroup,
     groupsOf,
+    holderGroupsOf,
     reclaimInGroup,
+    runnerGroupOf,
     stepHostFor,
     stepHostOf,
     takeGroupDown,
 } from './k8s-group.js';
-import { claudeTurnsJobSpec, jobsPath, opencodeReadoutJobSpec, runnerName, secretName } from './k8s-podspec.js';
+import { claudeTurnsJobSpec, jobsPath, opencodeReadoutJobSpec, runnerName } from './k8s-podspec.js';
 import {
     auxVerdict,
     pollJobToTerminal,
@@ -95,11 +89,6 @@ import { KILL_WINDDOWN_MS, type SupervisorReport } from './supervisor-contract.j
  * here because it is the runner's own close-time bookkeeping (the opencode/claude-turns scrapes,
  * the publish steps) rather than a reusable poll/fence primitive.
  */
-
-/** Best-effort: a 404 is the ordinary end of a reaped Secret, and any other failure is the fence's business. */
-function forgetSecret(deps: K8sDeps, job: BoardJob): Promise<void> {
-    return deleteSecret(deps, secretName(job));
-}
 
 /**
  * The close-time opencode session scrape, as a Job: the same read the docker runner performs with
@@ -233,19 +222,17 @@ async function sampleRuntime(deps: K8sDeps, job: BoardJob) {
 }
 
 // The same contract as `docker kill ... .catch(() => undefined)`: a kill that finds nothing is the
-// ordinary end of a finished run, and one that fails is the kubelet's deadline doing this
-// function's work. No Secret delete here: run()'s finally owns the Secret's whole lifetime.
+// ordinary end of a finished run. The group is ended the acknowledged way (issue #821) — its
+// Secrets, then its Job, confirmed gone — and the checkout claim goes back only on that
+// confirmation; a kill whose end cannot be confirmed leaves the Job suspended and keeps the claim.
 async function killRunner(deps: K8sDeps, job: BoardJob): Promise<void> {
     markKilled(runnerName(job));
     // The group is gone with its pod: a step still running in its supervisor (a pre-helper writing
-    // to GitHub, a publish) dies with it, and its waiters see the channel close.
-    groupsOf(deps).delete(job.leaseToken);
+    // to GitHub, a publish) dies with it, and its waiters see the channel close. Its end is pending
+    // from here, before anything is awaited.
+    const known = forgetGroup(deps, job);
     releaseSteps(stepHostOf(deps), job);
-    await deleteJob(deps, runnerName(job));
-    // The attempt's Secret outlives `run` now (the group's steps are its supervisor's), so a kill —
-    // the one path that takes the group away without `finish` — takes it too. By its own name:
-    // this attempt's token cannot reach a replacement's.
-    await forgetSecret(deps, job);
+    await releaseClaimAfterGroupEnd(deps, job, { groups: [runnerGroupOf(job, known?.uids)] });
     await teardownServices(deps, job);
 }
 
@@ -300,7 +287,7 @@ async function patchRunnerDeadline(deps: K8sDeps, job: BoardJob, paused: boolean
     expectOk(read, 'reading the runner job for its deadline');
     const current = parse<{
         spec?: { activeDeadlineSeconds?: number };
-        metadata?: { annotations?: Record<string, string> };
+        metadata?: { uid?: string; annotations?: Record<string, string> };
     }>(read.body);
     const saved = current.metadata?.annotations?.[PAUSED_DEADLINE];
     if (paused && saved) return;
@@ -310,6 +297,8 @@ async function patchRunnerDeadline(deps: K8sDeps, job: BoardJob, paused: boolean
     const prior = saved ? parse<{ deadline: number; at: number }>(saved) : null;
     const patched = await deps.request('PATCH', path, {
         metadata: {
+            // The incarnation just read, by uid: never one created under the name since.
+            ...(current.metadata?.uid ? { uid: current.metadata.uid } : {}),
             annotations: {
                 [PAUSED_DEADLINE]: paused ? JSON.stringify({ deadline, at: Date.now() }) : null,
             },
@@ -325,7 +314,6 @@ async function patchRunnerDeadline(deps: K8sDeps, job: BoardJob, paused: boolean
 interface RunRequest {
     session: RunSession | null;
     onOutput: ((tail: string) => void) | undefined;
-    cleanup: RunCleanup;
 }
 
 /** Whether the supervisor has reported this attempt's agent over: set by the report wait `run0` starts. */
@@ -335,7 +323,7 @@ interface ReportWatch {
 
 // The body of run() below, split out only so its cleanup can wrap the throw paths too.
 async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunOutcome> {
-    const { session, onOutput, cleanup } = req;
+    const { session, onOutput } = req;
     // A null session is an opencode job under this executor; under claude-code every job is a
     // session, and one arriving without is refused here, BEFORE the fence takes the checkout.
     if (!session && job.executorType !== OPENCODE) {
@@ -347,7 +335,7 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     // thrown like any refused runner Job, never a run that silently loses its record. The loop
     // started this attempt's services before its gate environment and setup (`startServices`); the
     // fence's sweep spares them, and the pod finds them by DNS.
-    const { startedAt } = await ensureGroup(deps, job, session, cleanup);
+    const { startedAt } = await ensureGroup(deps, job, session);
 
     // The agent waits on the supervisor's release; the order hands the supervisor what is left of
     // the run budget. The agent's end does not end the pod: the supervisor has the exporter drain,
@@ -412,23 +400,23 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     return outcome;
 }
 
-// Every throw after create() succeeded — poll exhaustion, a vanished Job, a failed verdict read —
-// must still release the checkout claim: the loop's catch never calls kill(), and when the job
-// retires dead there is no next attempt to do it. The group itself outlives run(): the gates, the
-// publish and the helpers are its steps, and the loop's `finish` ends it. The service fleet is NOT
-// torn down here either: the declared gates run after run() and test against it, so the loop's
-// releaseServices takes it down once they are done — on every exit path, a throw included.
+// The checkout claim outlives run(): the group does — the gates, the publish and the helpers are its
+// steps — and the group's end (`finish`, a kill) is what hands the claim back, once confirmed (issue
+// #821). A run that threw before its group existed has no end to wait for: a launch that got as far
+// as its Job ended it at its stand-down, and the claim goes back unless that end is unconfirmed. The service
+// fleet is NOT torn down here either: the declared gates run after run() and test against it, so the
+// loop's releaseServices takes it down once they are done — on every exit path, a throw included.
 async function run(
     deps: K8sDeps,
     job: BoardJob,
     session: RunSession | null,
     onOutput?: (tail: string) => void
 ): Promise<RunOutcome> {
-    const cleanup: RunCleanup = { holdClaim: false };
     try {
-        return await run0(deps, job, { session, onOutput, cleanup });
-    } finally {
-        if (!cleanup.holdClaim) await releaseClaim(deps, job);
+        return await run0(deps, job, { session, onOutput });
+    } catch (e) {
+        if (!groupsOf(deps).has(job.leaseToken)) await releaseClaimAfterGroupEnd(deps, job);
+        throw e;
     }
 }
 
@@ -501,17 +489,12 @@ async function syncCheckout(
     if (!clone || !worktree) return { ok: true, reason: null }; // nothing synced, nothing to fail either
 
     await acquireClaim(deps, job);
-    const cleanup: RunCleanup = { holdClaim: false };
     // A group that could not come up (an image the node cannot pull) answers as a failed sync: the
-    // checkout could not be prepared, and the attempt fails with the cluster's reason.
-    const failed = async (): Promise<void> => {
-        // The deletion is awaited, with Foreground propagation: the claim goes back only once
-        // nothing of this group can still write the worktree.
-        await takeGroupDown(deps, job);
-        if (!cleanup.holdClaim) await releaseClaim(deps, job);
-    };
+    // checkout could not be prepared, and the attempt fails with the cluster's reason. The claim
+    // goes back only once nothing of this group can still write the worktree (`takeGroupDown`).
+    const failed = (): Promise<void> => takeGroupDown(deps, job);
     try {
-        await ensureGroup(deps, job, session, cleanup);
+        await ensureGroup(deps, job, session);
     } catch (e) {
         await failed();
         const reason = (e as Error).message;
@@ -549,11 +532,17 @@ async function heldClaim(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult['h
     }
     if (get.status < HTTP_OK_STATUS || get.status >= HTTP_ERROR_STATUS) return undefined;
     const claim = parse<K8sClaim>(get.body);
+    const uid = claim.metadata?.uid;
+    const holder = claim.data?.holder;
+    // A claim that cannot name its incarnation and holder is nothing a recovery may act on.
+    if (!uid || !holder) return undefined;
     const created = claim.metadata?.creationTimestamp ? Date.parse(claim.metadata.creationTimestamp) : NaN;
     return {
         name: claimName(job),
         claimSeq: claim.data?.claimSeq ?? null,
         createdMs: Number.isFinite(created) ? created : null,
+        uid,
+        holder,
     };
 }
 
@@ -561,32 +550,17 @@ async function heldClaim(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult['h
  * Deletes an orphaned checkout claim (issue #344): a claim whose holder job the board no longer
  * knows as live, left behind by a driver that died holding it — the one leak the fence's
  * release-by-next-claimant cannot heal, because no later claimant of that job ever comes. The
- * DELETE carries the uid precondition, exactly like every claim release: if the object was
- * replaced between this read and the delete — a live claimant's takeover — the precondition
- * answers 409 and nothing of the newer claim is touched. Absent, unreadable or refused answers
- * false: the caller retries on a later offer, and a false negative costs one more throttled log.
+ * claim is the incarnation the refused reclaim observed (issue #821): one replaced since — a
+ * reopen's live claimant — is rejected before anything is ended. Both groups its holder can have
+ * left (its attempt's and its reclaim's, derived from the claim alone) are ended the acknowledged
+ * way first, and the uid-preconditioned delete runs only once both are confirmed ended. Answers
+ * false otherwise: the caller retries on a later offer, and a false negative costs one more
+ * throttled log.
  */
-async function reapOrphanedClaim(deps: K8sDeps, job: BoardJob): Promise<boolean> {
-    const path = claimPath(deps.config.k8sNamespace, job);
-    let get: K8sResponse;
-    try {
-        get = await deps.request('GET', path);
-    } catch {
-        return false;
-    }
-    if (get.status < HTTP_OK_STATUS || get.status >= HTTP_ERROR_STATUS) return false;
-    const uid = parse<K8sClaim>(get.body).metadata?.uid;
-    if (!uid) return false;
-    try {
-        const del = await deps.request('DELETE', path, {
-            apiVersion: 'v1',
-            kind: 'DeleteOptions',
-            preconditions: { uid },
-        });
-        return del.status < HTTP_ERROR_STATUS;
-    } catch {
-        return false;
-    }
+async function reapOrphanedClaim(deps: K8sDeps, job: BoardJob, observed: ObservedClaim): Promise<boolean> {
+    const groups = await holderGroupsOf(deps, job, observed.holder);
+    if (groups === null) return false;
+    return releaseClaimAfterGroupEnd(deps, job, { groups, observed });
 }
 
 /**
@@ -616,11 +590,18 @@ async function reclaimWorktree(deps: K8sDeps, job: BoardJob): Promise<ReclaimRes
         if (claim) refused.heldClaim = claim;
         return refused;
     }
+    // The incarnation this reclaim took: its holder token is the reclaim row's, which another
+    // driver offered the same row shares, so only this uid tells this invocation's claim apart.
+    const acquired = await readClaim(deps, job);
+    if (acquired?.holder !== job.leaseToken) {
+        return { ok: false, removed: false, reason: 'the checkout claim this reclaim took could not be read back' };
+    }
     try {
-        // The group is taken down Foreground inside, awaited — THEN the claim goes.
-        return await reclaimInGroup(deps, job);
+        // The group is ended inside, acknowledged — THEN the claim goes, unless that end is
+        // unconfirmed, and only the incarnation this invocation took.
+        return await reclaimInGroup(deps, job, acquired);
     } finally {
-        await releaseClaim(deps, job);
+        await releaseClaimAfterGroupEnd(deps, job, { observed: acquired, holderWriters: true });
     }
 }
 
@@ -666,13 +647,14 @@ export function createKubernetesRunner(
             syncCheckout(deps, job, session ?? null, githubToken),
         finish: (job: BoardJob) => finishGroup(deps, job),
         reclaimWorktree: (job: BoardJob) => reclaimWorktree(deps, job),
-        // The loop's one hand-back of the checkout claim (`loop-fence.ts`): a terminal setup
-        // refusal, a stand-down and a throw all finish without runner.run, whose finally never
-        // executes, and the claim the sync took would sit on the checkout indefinitely. The same
-        // ownership-checked way releaseClaim always does.
-        releaseFence: (job: BoardJob) => releaseClaim(deps, job),
+        // The loop's hand-back of the checkout claim (`loop-fence.ts`) for an attempt that ends
+        // without a group's end to give it back: a group still live keeps it for its `finish`
+        // (issue #821), one whose end is unconfirmed keeps it for good.
+        releaseFence: async (job: BoardJob) => {
+            await releaseClaimAfterGroupEnd(deps, job);
+        },
         // The orphaned-claim reap (issue #344): uid-preconditioned, by the claim's derivable
         // name — the fence's own GET/DELETE grants, nothing new.
-        reapOrphanedClaim: (job: BoardJob) => reapOrphanedClaim(deps, job),
+        reapOrphanedClaim: (job: BoardJob, observed: ObservedClaim) => reapOrphanedClaim(deps, job, observed),
     };
 }

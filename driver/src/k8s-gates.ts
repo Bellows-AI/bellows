@@ -5,6 +5,7 @@ import { CONTAINER_GONE } from './exec-codes.js';
 import { gateDeadlineMs, keyQueue } from './gates.js';
 import type { GateManager, GateRun, GateRunOptions } from './gates.js';
 import { deleteJob, deleteSecret, secretsPath } from './k8s-auxspec.js';
+import { deleteSecretAcked } from './k8s-teardown.js';
 import { readImagePullStatus, readJobPodVerdict, readJobStatus, timedOutOf, unpullableImage } from './k8s-poll.js';
 import type { JobStatusResult } from './k8s-poll.js';
 import { envBodyToData, gateEnvSecretName, gateJobName, gateJobSpec, jobsPath, secretBody } from './k8s-podspec.js';
@@ -157,6 +158,17 @@ export function createKubernetesGateManager({
      */
     const secrets = new Map<string, string>();
     const serialize = keyQueue();
+
+    /**
+     * Deletes a lease's env Secret and forgets it only once the delete is acknowledged (issue #821):
+     * a refused one stays in `secrets`, for the next release of the lease or the driver's stop.
+     */
+    const forgetSecret = async (lease: string): Promise<void> => {
+        const secretName = secrets.get(lease);
+        if (!secretName) return;
+        if ((await deleteSecretAcked(deps, secretName)) === 'failed') return;
+        if (secrets.get(lease) === secretName) secrets.delete(lease);
+    };
 
     /** The finished Job goes, on every path — its pod has read the env Secret by then. */
     const reap = (jobName: string): void => {
@@ -311,18 +323,16 @@ export function createKubernetesGateManager({
          * its own, credentials and all, behind.
          */
         release(key, job) {
-            const secretName = secrets.get(job.leaseToken);
-            if (secretName) {
-                secrets.delete(job.leaseToken);
-                void deleteSecret(deps, secretName);
-            }
+            void forgetSecret(job.leaseToken);
             if (entries.get(key)?.job.leaseToken === job.leaseToken) entries.delete(key);
         },
 
-        /** A drained driver has no more turns coming: whatever the cooldown would have kept is moot. */
+        /**
+         * A drained driver has no more turns coming: whatever the cooldown would have kept is moot.
+         * Every Secret delete is awaited; a refused one stays for the next stop.
+         */
         async stop() {
-            for (const secretName of secrets.values()) void deleteSecret(deps, secretName);
-            secrets.clear();
+            for (const lease of [...secrets.keys()]) await forgetSecret(lease);
             entries.clear();
         },
     };
