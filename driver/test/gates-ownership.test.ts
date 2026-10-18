@@ -344,7 +344,7 @@ describe('gate setup: kubernetes runs it as its own Job once per attempt', () =>
         const request: K8sRequest = async (method, path, body) => {
             if (method === 'POST' && path === jobsPath('factory')) {
                 const spec = body as { spec: { template: { spec: { containers: { command: string[] }[] } } } };
-                lastCommand = spec.spec.template.spec.containers[0]?.command[2] ?? '';
+                lastCommand = spec.spec.template.spec.containers[0]?.command.at(-1) ?? '';
                 commands.push(lastCommand);
                 return { status: 201, body: '{}' };
             }

@@ -232,7 +232,7 @@ describe('the gate environment manager: running gates', () => {
         const GATE_FAIL_EXIT_CODE = 3;
         const gateExec = exec((args) => {
             if (args[0] === 'exec') {
-                if (args[4] === 'pass') return { stdout: 'all green\n', stderr: '' };
+                if (args.at(-1) === 'pass') return { stdout: 'all green\n', stderr: '' };
                 return fails(GATE_FAIL_EXIT_CODE, '2 problems\n');
             }
             return { stdout: '', stderr: '' };
@@ -254,7 +254,7 @@ describe('the gate environment manager: running gates', () => {
     it('runs the declared setup once per environment, before the first gate, and not again', async () => {
         const scripts: string[] = [];
         const setupExec = exec((args) => {
-            if (args[0] === 'exec') scripts.push(args[4] ?? '');
+            if (args[0] === 'exec') scripts.push(args.at(-1) ?? '');
             return { stdout: '', stderr: '' };
         });
         const manager = createGateManager({ config, cooldownMs: 1000, execDocker: setupExec });
@@ -273,8 +273,8 @@ describe('the gate environment manager: running gates', () => {
         let setupFails = true;
         const setupExec = exec((args) => {
             if (args[0] !== 'exec') return { stdout: '', stderr: '' };
-            scripts.push(args[4] ?? '');
-            if (args[4] === 'npm ci' && setupFails) return fails(SETUP_EXIT_CODE, 'registry down\n');
+            scripts.push(args.at(-1) ?? '');
+            if (args.at(-1) === 'npm ci' && setupFails) return fails(SETUP_EXIT_CODE, 'registry down\n');
             return { stdout: '', stderr: '' };
         });
         const manager = createGateManager({ config, cooldownMs: 1000, execDocker: setupExec });
@@ -300,9 +300,9 @@ describe('the gate environment manager: running gates', () => {
             const timeouts: (number | undefined)[] = [];
             const execDocker = exec((args, options) => {
                 if (args[0] !== 'exec') return { stdout: '', stderr: '' };
-                scripts.push(args[4] ?? '');
+                scripts.push(args.at(-1) ?? '');
                 timeouts.push(options?.timeout);
-                if (args[4] === 'npm ci' && setupFails()) return fails(SETUP_EXIT_CODE, 'registry down\n');
+                if (args.at(-1) === 'npm ci' && setupFails()) return fails(SETUP_EXIT_CODE, 'registry down\n');
                 return { stdout: 'installed\n', stderr: '' };
             });
             return { scripts, timeouts, execDocker };
@@ -416,8 +416,8 @@ describe('the gate environment manager: running gates', () => {
             let releaseHang!: () => void;
             const hanging = exec((args) => {
                 if (args[0] !== 'exec') return { stdout: '', stderr: '' };
-                scripts.push(args[4] ?? '');
-                if (args[4] === 'hang') {
+                scripts.push(args.at(-1) ?? '');
+                if (args.at(-1) === 'hang') {
                     return new Promise<ExecResult>((resolve) => {
                         releaseHang = () => resolve({ stdout: '', stderr: '' });
                     });

@@ -5,7 +5,13 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createGateServer } from '../src/gates.js';
 import { createStepBroker, StepChannelClosed, StepTimedOut } from '../src/step-control.js';
-import { MAILBOX_FILES, STEP_ANSWER_GRACE_MS, type StepRequest, type StepResult } from '../src/supervisor-contract.js';
+import {
+    AGENT_MAILBOX_DIR,
+    MAILBOX_FILES,
+    STEP_ANSWER_GRACE_MS,
+    type StepRequest,
+    type StepResult,
+} from '../src/supervisor-contract.js';
 
 /**
  * The supervised-step channel (issue #771): the broker the runners submit to, the control routes
@@ -255,7 +261,7 @@ describe('the whole channel against the real supervisor', () => {
         expect(midRun.stdout.trim()).toBe('only-for-this-step');
 
         // The agent ends; the supervisor reports and keeps serving.
-        writeFileSync(join(root, 'out', MAILBOX_FILES.agentExit), '0\n');
+        writeFileSync(join(root, 'out', AGENT_MAILBOX_DIR, MAILBOX_FILES.agentExit), '0\n');
         const report = await steps.awaitReport(TOKEN);
         expect(report).toMatchObject({ outcome: 'completed', agentExit: 0, agentEnd: 'exit' });
         const afterRun = await run('probe-1', 'probe', 'console.log("still here")');

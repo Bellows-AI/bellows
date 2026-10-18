@@ -5,8 +5,10 @@ this repo's application.
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| The image — Node 24, `@anthropic-ai/claude-code`, `gh`, `acli`, the `context-mode` plugin | `Dockerfile` | `test.sh` |
-| `ENTRYPOINT` (`/usr/local/bin/claude-executor`): `$WORKDIR`, `safe.directory`, `JIRA_API` export, transcript redirect | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
+| The image — Node 24, `@anthropic-ai/claude-code`, `gh`, `acli`; no plugin | `Dockerfile` | `test.sh` |
+| `ENTRYPOINT` (`/usr/local/bin/factory-launch`): as root, the tool broker, then the drop to `node` | `factory-launch.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
+| The tool shell: each command as `factory-tool` (1001) through the broker; the run-control proxy | `factory-tool.cjs`, `tool-bash.sh`, `control-proxy.cjs` | `driver/test/tool-broker.test.ts`, `driver/test/control-proxy.test.ts`, `test.sh` |
+| `/usr/local/bin/claude-executor`: `$WORKDIR`, `safe.directory`, `JIRA_API` export, transcript redirect | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Git/gh guard, wired as the `PreToolUse` hook | `git-guard.cjs`, `claude-home/settings.json` | `driver/test/executor-images.test.ts`, `git-guard.cjs --selftest` |
 | Sidecars: branch reporting to `/api/sessions/branch`; progress over the CLI's `stream-json` | `branch-reporter.cjs`, `claude-progress.cjs` | `driver/test/executor-images.test.ts`, `test.sh` |
 | The CLI launcher: `-p` rewritten to stream-json, `AskUserQuestion` relayed through the supervisor's mailbox | `claude-bridge.cjs` | `driver/test/claude-bridge.test.ts` |
@@ -29,9 +31,6 @@ precedence and `OTEL_LOG_*`: [docs/security.md](../../docs/security.md).
   (default `/workspace`) must exist or the wrapper exits `2`.
 - The driver sets `FACTORY_TRANSCRIPT_DIR` per thread on the workspaces volume; the entrypoint makes
   it `CLAUDE_CONFIG_DIR`, seeded from `/opt/claude-home`, so `--resume` finds earlier sessions.
-- A plugin's MCP server must boot from the image alone or it misses Claude Code's 30s connect
-  timeout; context-mode's run-time dependencies are baked — `test.sh` asserts the connection
-  offline, `driver/test/executor-images.test.ts` pins the bake.
 - The git guard is a guardrail, not a security boundary — the driver-side sync refusal is the last
   line of defence.
 - `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1` drops the CLI's bundled skills; the built-in

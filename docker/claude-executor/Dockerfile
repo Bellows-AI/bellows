@@ -126,9 +126,8 @@ COPY --from=skills --chown=node:node . /home/node/.claude/skills/
 # CLAUDE_CONFIG_DIR at a per-thread directory on the workspaces volume, which starts empty and
 # would hide the baked config, so the entrypoint copies this tree in on first run.
 #
-# A symlink, not the `cp -a` of the finished config this replaces. That copy wrote 34MB — nearly
-# all of it the context-mode plugin baked in below — into a second layer, for a tree the baked
-# home already holds. Nothing mutates /home/node/.claude before the seed runs: the entrypoint
+# A symlink, not the `cp -a` of the finished config this replaces: that copy wrote a second layer
+# for a tree the baked home already holds. Nothing mutates /home/node/.claude before the seed runs: the entrypoint
 # only seeds when CLAUDE_CONFIG_DIR has been pointed somewhere ELSE, and every container starts
 # from the image, so two paths naming one tree costs nothing. The entrypoint's
 # `[ -d /opt/claude-home ]` and `cp -a /opt/claude-home/.` both read through it unchanged.
@@ -161,43 +160,39 @@ COPY turn-context-hook.cjs /usr/local/bin/turn-context-hook.cjs
 COPY github-credential.cjs /usr/local/bin/github-credential.cjs
 COPY gh-wrapper.sh /usr/local/bin/gh
 RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/git-guard.cjs /usr/local/bin/claude-progress.cjs /usr/local/bin/claude-bridge.cjs /usr/local/bin/ctl-agent.cjs /usr/local/bin/stop-hook.cjs /usr/local/bin/turn-context-hook.cjs
+# The agent's tools run as their own uid (issue #814). factory-launch, the ENTRYPOINT below, starts
+# the tool broker as root and drops to node for the CLI, whose shell (CLAUDE_CODE_SHELL, SHELL) asks
+# the broker to run each command as factory-tool, 1001 in node's group. Only node is in
+# factory-agent, the one group that reaches the broker's socket; the run-control proxy's socket is
+# node's and its group's. factory-tool's HOME is its own, and its git config includes node's, so the
+# credential helper and safe.directory carry over. Byte-identical in both executor Dockerfiles.
+RUN groupadd -g 1002 factory-agent && usermod -aG factory-agent node \
+    && useradd -u 1001 -g node -M -d /home/factory-tool -s /bin/bash factory-tool \
+    && install -d -o factory-tool -g node -m 0700 /home/factory-tool \
+    && printf '[include]\n\tpath = /home/node/.gitconfig\n' > /home/factory-tool/.gitconfig \
+    && chown factory-tool:node /home/factory-tool/.gitconfig \
+    && install -d -o root -g factory-agent -m 2750 /run/factory-tool \
+    && install -d -o node -g node -m 0750 /run/factory-control
+COPY factory-launch.sh /usr/local/bin/factory-launch
+COPY factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs
+COPY tool-bash.sh /usr/local/libexec/factory-tool/bash
+COPY control-proxy.cjs /usr/local/bin/control-proxy.cjs
+RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash /usr/local/bin/control-proxy.cjs
 # The task supervisor's mailbox mount points (driver/src/supervisor-contract.ts). Baked and node-
-# owned so a docker volume mounted over them inherits the owner; a kubernetes emptyDir needs no help.
-RUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory
+# owned so a docker volume mounted over them inherits the owner and mode — the agent's two closed to
+# the tool uid (issue #814); a kubernetes emptyDir is made sticky by the tool broker instead.
+RUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory \
+    && chmod 0700 /factory/in /factory/out
 
 USER node
 
-# Baked in at build time rather than resolved on first run: a cold container would otherwise clone
-# the marketplace and install before it could answer anything, and would fail outright with no
-# network. `plugin install` rewrites settings.json in place, adding extraKnownMarketplaces and
-# enabledPlugins — which is why those two keys are absent from the committed settings.json. Runs as
-# node because it writes into CLAUDE_CONFIG_DIR; as root it would leave the files unwritable.
-RUN claude plugin marketplace add mksglu/context-mode \
-    && claude plugin install context-mode@context-mode
-
-# `plugin install` copies the plugin's files but not its node_modules, and every runner starts from
-# this image, so the plugin's MCP boot ran a blocking `npm install better-sqlite3` on every session
-# start — 60s with egress, 126s without — and Claude Code's 30s MCP connect timeout failed it every
-# time: the ctx_* tools were never there while the plugin's hooks kept pointing the agent at them.
-# These four are what that boot installs at run time (better-sqlite3 synchronously, the turndown
-# trio in the background), at the versions the installed plugin's own package.json declares, so an
-# upgraded plugin cannot drift from them. Installed in a scratch directory and moved in: an install
-# inside the plugin resolves its whole package.json, dev tooling included, for 112MB more. The
-# closing probe fails the build if the native binding does not load here.
-RUN p="$(ls -d "$CLAUDE_CONFIG_DIR"/plugins/cache/context-mode/context-mode/*/)" \
-    && deps="$(node -p "const d = require('${p}package.json').dependencies; \
-        ['better-sqlite3', 'turndown', 'turndown-plugin-gfm', '@mixmark-io/domino'].map((n) => n + '@' + d[n]).join(' ')")" \
-    && mkdir /tmp/context-mode-deps && cd /tmp/context-mode-deps \
-    && npm install --no-package-lock --no-audit --no-fund $deps \
-    && mv node_modules "${p}node_modules" \
-    && cd / && rm -rf /tmp/context-mode-deps && npm cache clean --force \
-    && node -e "new (require('${p}node_modules/better-sqlite3'))(':memory:').close()"
+# No plugin is baked (issue #841): context-mode's executions cannot run as the tool uid yet.
 
 # Mark first-run onboarding done. Without this the CLI opens the theme picker and waits for a
-# keypress, which an unattended container never sends. Merged into the file the CLI just wrote rather than replacing it, since it
-# already holds a generated machineID and userID.
+# keypress, which an unattended container never sends. Merged into whatever file is there rather
+# than replacing it; with no plugin installed above, nothing has written one yet.
 RUN node -e "const f=process.env.CLAUDE_CONFIG_DIR+'/.claude.json',fs=require('fs'); \
-    const c=JSON.parse(fs.readFileSync(f,'utf8')); c.hasCompletedOnboarding=true; \
+    const c=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,'utf8')):{}; c.hasCompletedOnboarding=true; \
     c.theme='dark'; fs.writeFileSync(f,JSON.stringify(c,null,2));"
 
 # The installs above run as root, and node creates /tmp/node-compile-cache while they run. It
@@ -213,5 +208,5 @@ USER node
 # The wrapper cds into $WORKDIR (default /workspace) before exec'ing claude with every argument
 # given after the image name, so a caller can point one image at a subdirectory or at a second
 # mounted checkout without rebuilding.
-ENTRYPOINT ["claude-executor"]
+ENTRYPOINT ["/usr/local/bin/factory-launch", "/usr/local/bin/claude-executor"]
 CMD ["--help"]

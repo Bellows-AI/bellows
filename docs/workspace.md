@@ -25,8 +25,12 @@ Mount shape and its boundary: [security.md](security.md). Task worktrees: [jobs.
 ## Invariants
 
 - **The subtree is a member boundary, not a task boundary.** Every task of the
-  same member shares that subtree and one uid 1000; the per-member `subPath`
+  same member shares that subtree and one group 1000; the per-member `subPath`
   deliberately does not touch mount code beyond that segment. `driver/src/k8s-podspec.ts`, `driver/test/k8s.test.ts`.
+- **Every writer of the tree writes it group-writable** — the CLI (uid 1000) and its tools (uid 1001) share it
+  through group 1000: provisioning and the clone (`mkdirShared`, `core.sharedRepository=group`), supervised steps,
+  gates (`gate-shell.sh`). A tree from before that needs `chmod -R g+rwX <member>` once on real-uid storage (EFS
+  maps both uids to 1000). `server/test/workspace.reconcile.test.ts`, `driver/test/scripts-gate-shell.test.ts`.
 - **The path segment is `app_user.id`, never the login.** `workspaceDir` asserts the uuid before
   joining; `driver/src/docker.ts` re-asserts `<org>/<uuid>` before putting it in an argv.
 - **An existing checkout is never touched and nothing is pruned automatically** — `.git` present

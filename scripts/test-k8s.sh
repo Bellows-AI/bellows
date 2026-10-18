@@ -770,6 +770,11 @@ expect_contains 'the admission policy requires every capability dropped' "$admis
     "'ALL' in c.securityContext.capabilities.drop"
 expect_contains 'the admission policy exempts only a labelled declared service' "$admission" \
     "variables.podLabels['factory.unhardened'] == 'true'"
+# Issue #814: the one capability add admitted, the agent's launch pair, on a runner Job's agent alone.
+expect_contains 'the admission policy admits the launch pair on a runner Job agent alone' "$admission" \
+    "request.kind.kind == 'Job' && c.name == 'agent' &&"
+expect_contains 'the admission policy admits no capability past the launch pair' "$admission" \
+    "c.securityContext.capabilities.add.all(a, a in ['SETUID', 'SETGID'])"
 
 # The chart-pod egress, split per component and port-scoped (#382). A runner reached every port on
 # all three before; now the dashboard is its serving port and the collector its two OTLP ports.
@@ -1230,17 +1235,19 @@ command -v node >/dev/null || {
 echo 'building the images on the host daemon'
 begin_phase images
 # The stub echoes the claude config content and its argv; `factory-stub-wait-<path>` holds it
-# until the harness releases that file, so disruption tests observe a running agent. It stands on
+# until the harness releases that file, so disruption tests observe a running agent, and with
+# `factory-stub-kill-tools` its one tool signals everything it may (the tool-isolation section). It stands on
 # node + git as the uid-1000 `node` user, like the executor images: the startup sync and the other
 # supervised steps run IN the job's executor image (the task supervisor's container,
 # `driver/src/scripts/supervisor.cjs`), and every task has a checkout to sync (issue #263). It
 # starts through scripts/stub-agent.sh, beside ctl-agent.cjs, over the node-owned mailbox mount
 # points: the task supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real
 # entrypoints honor.
-cp docker/claude-executor/ctl-agent.cjs scripts/stub-agent.sh "$work/"
+cp docker/claude-executor/ctl-agent.cjs docker/claude-executor/factory-launch.sh docker/claude-executor/factory-tool.cjs \
+    docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/stub-runner.Dockerfile "$work/"
 cp docker/claude-executor/github-credential.cjs "$work/"
 cp scripts/k8s-stub.sh "$work/stub.sh"
-printf 'FROM public.ecr.aws/docker/library/node:24-alpine\nRUN apk add --no-cache git\nCOPY stub.sh /stub.sh\nCOPY ctl-agent.cjs stub-agent.sh /usr/local/bin/\nCOPY github-credential.cjs /usr/local/bin/\nRUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory\nUSER node\nENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' >"$work/stub.Dockerfile"
+printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
 # Two Docker builds at once. Each process owns its log and is joined even if a sibling fails.
 docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >"$work/dashboard-build.log" 2>&1 &
 dash_build=$!
@@ -1252,7 +1259,10 @@ dash_build=''
 wait "$driver_build" || { tail -30 "$work/driver-build.log"; build_failed=1; }
 driver_build=''
 [ "$build_failed" -eq 0 ] || exit 1
-docker build -q -t "$STUB_IMAGE" -f "$work/stub.Dockerfile" "$work" >"$work/stub-build.log" 2>&1 &
+{
+    docker build -q -t "$STUB_IMAGE-base" -f "$work/stub-runner.Dockerfile" "$work" &&
+        docker build -q -t "$STUB_IMAGE" -f "$work/stub.Dockerfile" "$work"
+} >"$work/stub-build.log" 2>&1 &
 stub_build=$!
 docker image inspect "$COLLECTOR_IMAGE" >/dev/null 2>&1 || docker pull -q "$COLLECTOR_IMAGE" >"$work/collector-pull.log" 2>&1 &
 collector_pull=$!
@@ -1393,7 +1403,9 @@ await_runner_pod() { # await_runner_pod <id> -> the claim-1 runner pod's name on
 await_blocked() { # await_blocked <runner pod> <release file> -> the agent is running behind its barrier
     # Pod Running and even `go` can precede the agent: observe the stub itself before disrupting it.
     for _ in $(seq 1 60); do
-        kubectl exec "$1" -c agent -n "$NAMESPACE" -- test -f "$2.ready-$1" >/dev/null 2>&1 && return 0
+        # From the supervisor, on the same workspace: the agent container runs as root without
+        # DAC_OVERRIDE (issue #814).
+        kubectl exec "$1" -c supervisor -n "$NAMESPACE" -- test -f "$2.ready-$1" >/dev/null 2>&1 && return 0
         sleep 1
     done
     bad 'the stub agent reached its barrier' 'no ready marker within 60s'
@@ -1788,6 +1800,42 @@ kubectl wait --for=delete service/factory-orphan-reaper-svc -n "$NAMESPACE" --ti
     ok 'the reaper removes the orphan Service' ||
     bad 'the reaper removes the orphan Service' 'the Service survived the reaper'
 
+# The board's jobs, as the admission and recovery phases queue and read them.
+queue_job() { # queue_job <command> -> the new job's id, empty when the board refused it
+    node -e "$JS_HEADERS"'
+fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ command: process.argv[2], executor: "claude", repo: process.argv[3] }) })
+    .then(async (r) => { const b = await r.json().catch(() => ({})); process.stdout.write(r.status === 201 ? String(b.id ?? "") : ""); })
+    .catch(() => {});
+' "$BASE/api/jobs" "$1" "$SMOKE_REPO"
+}
+
+job_brief() { # job_brief <id> -> "status|attempts|interruptions|first claimSeq|first reason"
+    node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers })
+    .then(async (r) => { const j = await r.json(); const l = j.interruptions ?? []; process.stdout.write([j.status, j.attempts, l.length, l[0]?.claimSeq ?? "", l[0]?.reason ?? ""].join("|")); })
+    .catch(() => process.stdout.write("unread"));
+' "$BASE/api/jobs/$1"
+}
+
+job_output() { # job_output <id>
+    node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers }).then(async (r) => process.stdout.write(String((await r.json()).output ?? ""))).catch(() => {});
+' "$BASE/api/jobs/$1"
+}
+
+await_brief() { # await_brief <id> <case pattern> <seconds> -> the last brief; returns 0 once it matched
+    local i=0 b=""
+    while [ "$i" -lt "$3" ]; do
+        b="$(job_brief "$1")"
+        # shellcheck disable=SC2254 # the pattern is the point
+        case "$b" in $2) printf '%s' "$b"; return 0 ;; esac
+        sleep 1
+        i=$((i + 1))
+    done
+    printf '%s' "$b"
+    return 1
+}
+
 if selected_phase admission; then
 begin_phase admission
 # The admission policy, against the real apiserver. The job above proves it admits what the driver
@@ -1870,6 +1918,34 @@ container_unconfined="$(probe_pod cseccomp \
 expect_contains 'the policy refuses a container that overrides the pod seccomp profile' \
     "$container_unconfined" 'may not override the pod seccomp profile'
 
+# Issue #814: the one capability add the policy admits — SETUID and SETGID, on a runner Job's
+# `agent` — and nothing past it: another capability, another container, or a bare Pod.
+probe_job() { # probe_job <name> <container name> <capabilities to add>
+    cat <<EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+    name: admission-probe-$1
+    labels: {factory.job: admission-probe}
+spec:
+    template:
+        metadata: {labels: {factory.job: admission-probe}}
+        spec:
+            automountServiceAccountToken: false
+            restartPolicy: Never
+            securityContext: $HARD_POD
+            containers: [{name: $2, image: alpine, securityContext: {allowPrivilegeEscalation: false, runAsUser: 0, capabilities: {drop: [ALL], add: [$3]}}}]
+EOF
+}
+launch="$(probe_job launch agent 'SETUID, SETGID' | as_driver)"
+expect_contains 'the policy admits the agent launch pair on a runner Job' "$launch" 'created (server dry run)'
+launch_more="$(probe_job launchmore agent 'SETUID, NET_RAW' | as_driver)"
+expect_contains 'the policy refuses any other capability on the agent' "$launch_more" 'may not be privileged or add capabilities'
+launch_other="$(probe_job launchother supervisor 'SETUID' | as_driver)"
+expect_contains 'the policy refuses the launch pair on any other container' "$launch_other" 'may not be privileged or add capabilities'
+launch_pod="$(probe_pod launchpod '    containers: [{name: agent, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL], add: [SETUID]}}}]' | as_driver)"
+expect_contains 'the policy refuses the launch pair on a bare Pod' "$launch_pod" 'may not be privileged or add capabilities'
+
 no_drop="$(probe_pod nodrop \
     '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: []}}}]' |
     as_driver)"
@@ -1891,6 +1967,27 @@ opted_unconfined="$(probe_pod optsec \
     'factory.unhardened: "true"' '{seccompProfile: {type: Unconfined}}' | as_driver)"
 expect_contains 'the opt-out still runs under the default seccomp profile' "$opted_unconfined" \
     'RuntimeDefault seccomp profile'
+
+# --- The agent's tool isolation (issue #814), on the real kubelet ----------------------------------
+#
+# The stub's one tool runs through the CLI's shell — the tool broker — and signals everything its
+# uid may: `kill -TERM 1; kill -KILL -1`. Under the agent container's own securityContext (root, the
+# launch pair, factory-launch's drop), it reaches only its own processes, and the run succeeds.
+
+echo
+echo '# tool isolation'
+begin_phase tool-isolation
+
+isolated="$(queue_job 'factory-stub-kill-tools')"
+isolated_end="$(await_brief "$isolated" 'succeeded|*' 180)"
+case "$isolated_end" in
+"succeeded|1|"*) ok 'a run whose tool signals everything it may succeeds in one attempt' ;;
+*) bad 'a run whose tool signals everything it may succeeds in one attempt' "status|attempts|…: $isolated_end" ;;
+esac
+expect_contains 'the agent survived its tool' "$(job_output "$isolated")" 'agent survived'
+expect_contains 'the tool ran as the tool uid' "$(job_output "$isolated")" 'the tool ran as 1001'
+kubectl delete jobs -l "factory.job=$isolated,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
+    --ignore-not-found --wait=false >/dev/null 2>&1
 
 # --- The workspace boundary, probed from inside a pod (issue #382) ------------------------------
 fi
@@ -2010,28 +2107,6 @@ POD_LOST='infrastructure loss: the runner pod was deleted'
 # The interruption the next claim records for an attempt whose lease expired (issue #822).
 EXPIRED='the lease expired: its driver went silent'
 
-queue_job() { # queue_job <command> -> the new job's id, empty when the board refused it
-    node -e "$JS_HEADERS"'
-fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ command: process.argv[2], executor: "claude", repo: process.argv[3] }) })
-    .then(async (r) => { const b = await r.json().catch(() => ({})); process.stdout.write(r.status === 201 ? String(b.id ?? "") : ""); })
-    .catch(() => {});
-' "$BASE/api/jobs" "$1" "$SMOKE_REPO"
-}
-
-job_brief() { # job_brief <id> -> "status|attempts|interruptions|first claimSeq|first reason"
-    node -e "$JS_HEADERS"'
-fetch(process.argv[1], { headers })
-    .then(async (r) => { const j = await r.json(); const l = j.interruptions ?? []; process.stdout.write([j.status, j.attempts, l.length, l[0]?.claimSeq ?? "", l[0]?.reason ?? ""].join("|")); })
-    .catch(() => process.stdout.write("unread"));
-' "$BASE/api/jobs/$1"
-}
-
-job_output() { # job_output <id>
-    node -e "$JS_HEADERS"'
-fetch(process.argv[1], { headers }).then(async (r) => process.stdout.write(String((await r.json()).output ?? ""))).catch(() => {});
-' "$BASE/api/jobs/$1"
-}
-
 job_session() { # job_session <id>
     node -e "$JS_HEADERS"'
 fetch(process.argv[1], { headers }).then(async (r) => process.stdout.write(String((await r.json()).sessionId ?? ""))).catch(() => {});
@@ -2084,19 +2159,6 @@ EOF
     out="$(kubectl logs "$RELEASE-origin-advance" -n "$NAMESPACE" 2>&1 || true)"
     kubectl delete pod "$RELEASE-origin-advance" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
     case "$out" in *advanced*) return 0 ;; esac
-    return 1
-}
-
-await_brief() { # await_brief <id> <case pattern> <seconds> -> the last brief; returns 0 once it matched
-    local i=0 b=""
-    while [ "$i" -lt "$3" ]; do
-        b="$(job_brief "$1")"
-        # shellcheck disable=SC2254 # the pattern is the point
-        case "$b" in $2) printf '%s' "$b"; return 0 ;; esac
-        sleep 1
-        i=$((i + 1))
-    done
-    printf '%s' "$b"
     return 1
 }
 

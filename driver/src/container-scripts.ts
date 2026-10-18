@@ -31,3 +31,9 @@ export const supervisorScript = script('supervisor.cjs');
 
 /** The live cache probe: see scripts/opencode-cache-probe.cjs. */
 export const opencodeCacheProbeScript = script('opencode-cache-probe.cjs');
+
+/** A gate's shell, umask 002 for the tool uid's shared tree: see scripts/gate-shell.sh. */
+export const gateShellScript = script('gate-shell.sh');
+
+/** A gate's argv on both executors: the declared command is one element after the gate shell. */
+export const gateShellArgv = (command: string): string[] => ['sh', '-c', gateShellScript, 'gate', command];

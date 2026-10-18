@@ -13,11 +13,15 @@ import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.j
  * honors a kill order and writes agent.exit — the real entrypoints' half of the contract.
  */
 
-const MAILBOX =
-    'RUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory\\n';
-const COPY = 'COPY ctl-agent.cjs stub-agent.sh /usr/local/bin/\\n';
-const ENTRY = 'ENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh",';
-const STAGE = 'cp docker/claude-executor/ctl-agent.cjs scripts/stub-agent.sh "$work/"';
+const MAILBOX = 'mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory';
+const COPY = 'COPY ctl-agent.cjs stub-agent.sh /usr/local/bin/\n';
+// Issue #814: the driver starts every agent container as root, so every stub drops to node behind
+// the tool broker, the executor images' own launcher.
+const ENTRY = 'ENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh",';
+const STAGE =
+    'cp docker/claude-executor/ctl-agent.cjs docker/claude-executor/factory-launch.sh docker/claude-executor/factory-tool.cjs \\\n' +
+    '    docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/stub-runner.Dockerfile "$work/"';
+const BASE = read('scripts/stub-runner.Dockerfile');
 
 /** The one printf line that writes `target`. */
 const dockerfile = (script: string, target: string): string => {
@@ -26,35 +30,53 @@ const dockerfile = (script: string, target: string): string => {
     return lines[0] ?? '';
 };
 
-const expectMailboxBase = (line: string) => {
-    expect(line).toContain(COPY);
-    expect(line).toContain(MAILBOX);
-    expect(line.indexOf(COPY)).toBeLessThan(line.indexOf('USER node'));
-    expect(line.indexOf(MAILBOX)).toBeLessThan(line.indexOf('USER node'));
-};
-
 describe('the lane stub executor images', () => {
-    it('test-jobs: the base bakes the mailbox and the agent helpers, every executor stub starts through stub-agent.sh', () => {
+    it('stand on one base that bakes the mailbox, the agent helpers and the tool isolation, and ends as node', () => {
+        for (const needle of [
+            COPY,
+            MAILBOX,
+            'chmod 0700 /factory/in /factory/out',
+            'COPY factory-launch.sh /usr/local/bin/factory-launch\n',
+            'COPY factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs\n',
+            'COPY tool-bash.sh /usr/local/libexec/factory-tool/bash\n',
+            'adduser -D -u 1001 -G node -h /home/factory-tool -s /bin/bash factory-tool',
+            'addgroup -g 1002 factory-agent && addgroup node factory-agent',
+            'chmod 2750 /run/factory-tool',
+            'ln -s /bin/setpriv /usr/bin/setpriv',
+        ]) {
+            expect(BASE, needle).toContain(needle);
+        }
+        expect(BASE.trimEnd().endsWith('USER node')).toBe(true);
+    });
+
+    it('test-jobs: every executor stub builds on that base and starts through factory-launch and stub-agent.sh', () => {
         const script = read('scripts/test-jobs.sh');
         expect(script).toContain(STAGE);
-        expect(script.indexOf(STAGE)).toBeLessThan(script.indexOf('-f "$work/Dockerfile.base"'));
-        expectMailboxBase(dockerfile(script, '"$work/Dockerfile.base"'));
-        for (const target of ['"$work/Dockerfile.ok"', '"$work/Dockerfile.fail"', '"$work/run/Dockerfile"']) {
+        expect(script).toContain('-f "$work/stub-runner.Dockerfile"');
+        expect(script.indexOf(STAGE)).toBeLessThan(script.indexOf('-f "$work/stub-runner.Dockerfile"'));
+        for (const target of [
+            '"$work/Dockerfile.ok"',
+            '"$work/Dockerfile.fail"',
+            '"$work/run/Dockerfile"',
+            '"$work/kill/Dockerfile"',
+        ]) {
             expect(dockerfile(script, target)).toContain(ENTRY);
         }
         // The service stub is no agent: no supervisor watches it.
         expect(dockerfile(script, '"$work/svc/Dockerfile"')).not.toContain('stub-agent.sh');
     });
 
-    it('test-k8s: the stub bakes the mailbox and the agent helpers and starts through stub-agent.sh', () => {
+    it('test-k8s: the stub builds on that base and starts through factory-launch and stub-agent.sh', () => {
         const script = read('scripts/test-k8s.sh');
         expect(script).toContain(STAGE);
         const line = dockerfile(script, '"$work/stub.Dockerfile"');
-        expectMailboxBase(line);
+        expect(line).toContain(`${ENTRY}"sh","/stub.sh"]`);
         expect(script).toContain('cp docker/claude-executor/github-credential.cjs "$work/"');
         expect(line).toContain('COPY github-credential.cjs /usr/local/bin/\\n');
-        expect(line).toContain('ENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]');
-        expect(script.indexOf(STAGE)).toBeLessThan(script.indexOf('-f "$work/stub.Dockerfile"'));
+        expect(script.indexOf(STAGE)).toBeLessThan(script.indexOf('-f "$work/stub-runner.Dockerfile"'));
+        expect(script.indexOf('-f "$work/stub-runner.Dockerfile"')).toBeLessThan(
+            script.indexOf('-f "$work/stub.Dockerfile"')
+        );
     });
 });
 

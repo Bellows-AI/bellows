@@ -134,16 +134,23 @@ describe('the test-jobs harness', () => {
     // The driver runs the startup sync in the job's executor image with `--entrypoint node`, so a
     // bare alpine stub cannot sync the checkout every task now has.
     it("the stub runners stand on node and git as the executor images' uid-1000 user", () => {
-        const base = SCRIPT.split('\n').find((l) => l.includes('>"$work/Dockerfile.base"')) ?? '';
-        expect(base).toContain('RUN apk add --no-cache git\\n');
-        expect(base).toMatch(/\\nUSER node\\n' >"\$work\/Dockerfile\.base"$/);
-        for (const file of ['"$work/Dockerfile.ok"', '"$work/Dockerfile.fail"', '"$work/run/Dockerfile"']) {
+        const base = readFileSync(join(ROOT, 'scripts/stub-runner.Dockerfile'), 'utf8');
+        expect(base).toContain('FROM public.ecr.aws/docker/library/node:24-alpine\n');
+        expect(base).toMatch(/^RUN apk add --no-cache git /m);
+        expect(base.trimEnd().endsWith('USER node')).toBe(true);
+        expect(SCRIPT).toContain('docker build -q -t "$IMAGE_BASE" -f "$work/stub-runner.Dockerfile" "$work"');
+        for (const file of [
+            '"$work/Dockerfile.ok"',
+            '"$work/Dockerfile.fail"',
+            '"$work/run/Dockerfile"',
+            '"$work/kill/Dockerfile"',
+        ]) {
             const line = SCRIPT.split('\n').find((l) => l.includes(`>${file}`)) ?? '';
             expect(line).toMatch(/^printf 'FROM %s\\n/);
             expect(line).toContain(`"$IMAGE_BASE" >${file}`);
         }
         expect(SCRIPT).toContain(
-            'docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_GH" "$IMAGE_BASE"'
+            'docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_BASE"'
         );
     });
 

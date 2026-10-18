@@ -25,6 +25,11 @@ for arg in "$@"; do
         env | grep -q -e '^GITHUB_TOKEN=' -e '^GH_TOKEN=' || echo 'github no env token'
         break
         ;;
+    *factory-stub-kill-tools*)
+        "$SHELL" -c 'kill -TERM 1 2>/dev/null; kill -KILL -1 2>/dev/null; echo "the tool ran as $(id -u)"'
+        echo 'agent survived'
+        break
+        ;;
     *factory-stub-wait-*)
         release="${arg##*factory-stub-wait-}"
         release="${release%%[!a-zA-Z0-9_./-]*}"

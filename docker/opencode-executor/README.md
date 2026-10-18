@@ -5,8 +5,10 @@ opencode in a container, headless only, run by the driver when a task's executor
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| The image — Node 24, `opencode-ai`, `@gcornut/opencode-otel`, `context-mode`, `gh`, `acli` (all pinned) | `Dockerfile` | `test.sh` |
-| `ENTRYPOINT` (`/usr/local/bin/opencode-executor`): `$WORKDIR`, `XDG_DATA_HOME`, per-run allows via `OPENCODE_CONFIG_CONTENT`, on a takeover or handover (`BELLOWS_RESUME_MAY_BE_UNWRITTEN`) a `--session` the database lacks (`branch-reporter.cjs --has-session`) started anew, the session that predates a fresh run named for the reporter | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
+| The image — Node 24, `opencode-ai`, `@gcornut/opencode-otel`, `gh`, `acli` (all pinned); no context-mode | `Dockerfile` | `test.sh` |
+| `ENTRYPOINT` (`/usr/local/bin/factory-launch`): as root, the tool broker, then the drop to `node` | `factory-launch.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
+| The tool shell: each command as `factory-tool` (1001) through the broker; the run-control proxy | `factory-tool.cjs`, `tool-bash.sh`, `control-proxy.cjs` | `driver/test/tool-broker.test.ts`, `driver/test/control-proxy.test.ts`, `test.sh` |
+| `/usr/local/bin/opencode-executor`: `$WORKDIR`, `XDG_DATA_HOME`, per-run allows via `OPENCODE_CONFIG_CONTENT`, on a takeover or handover (`BELLOWS_RESUME_MAY_BE_UNWRITTEN`) a `--session` the database lacks (`branch-reporter.cjs --has-session`) started anew, the session that predates a fresh run named for the reporter | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Permission policy and plugin references, baked root-owned as the global and the managed (`/etc/opencode`) copy | `opencode-home/opencode.json` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Telemetry plugin config at `OPENCODE_OTEL_CONFIG_PATH`, root-owned; the driver renders its endpoint | `otel.json`, `driver/src/telemetry-config.ts` | `test.sh`, `driver/test/telemetry-shipping.test.ts` |
 | Baked global instructions | `opencode-home/AGENTS.md` | `driver/test/executor-images.test.ts` |
@@ -31,8 +33,6 @@ guard as a guardrail): [claude-executor](../claude-executor/README.md).
   `run --session <id>` works in a fresh container.
 - opencode answers prompts with **no key at all** through its free tier, so `test.sh` asserts the
   absence of credential material in the image rather than a failure without a credential.
-- An `mcp.context-mode` entry beside the plugin entry makes the loader register zero `ctx_*` tools.
-  `test.sh`.
 
 ## Commands
 

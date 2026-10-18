@@ -30,8 +30,7 @@ back. Commit on the task branch, push it, and open the pull request with `gh pr 
 Or ask the driver to do the push and the pull request:
 
 ```bash
-curl -sf -X POST "$BELLOWS_CONTROL_URL/publish" \
-    -H "authorization: Bearer $BELLOWS_CONTROL_TOKEN"
+curl -sf -X POST --unix-socket /run/factory-control/control.sock http://control/publish
 ```
 
 The driver pushes the branch and opens (or reuses) the pull request — a draft when it opens one —
