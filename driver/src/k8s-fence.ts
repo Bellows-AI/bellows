@@ -2,6 +2,7 @@ import type { BoardJob } from './board.js';
 import { runnerClaimEnv } from './claim.js';
 import type { DriverConfig } from './config.js';
 import { telemetryConfig, type TelemetryConfig } from './telemetry-config.js';
+import { LEASE_LABEL } from './labels.js';
 import {
     claimBody,
     claimPath,
@@ -14,8 +15,28 @@ import {
     servicesPath,
     servicesSelectorPath,
 } from './k8s-auxspec.js';
-import { jobsPath, runnerName, secretBody, secretName, type RunnerJobSpec } from './k8s-podspec.js';
+import {
+    finishedAgentRun,
+    gateEnvSecretName,
+    type JobOwner,
+    jobsPath,
+    type ListedRunnerJob,
+    runnerName,
+    secretBody,
+    secretName,
+    type RunnerJobSpec,
+} from './k8s-podspec.js';
 import { readVerdict } from './k8s-poll.js';
+import {
+    deleteSecretAcked,
+    endRunnerJob,
+    type GroupRef,
+    holderUnconfirmed,
+    holderWritersGone,
+    type IncarnationUids,
+    retryUnconfirmed,
+    type TeardownIdentity,
+} from './k8s-teardown.js';
 import {
     answerPreview,
     CLAIM_ROUNDS,
@@ -24,6 +45,7 @@ import {
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
     HTTP_OK_STATUS,
+    JOB_ID,
     parse,
     POLL_MS,
     refusal,
@@ -36,13 +58,8 @@ import type { K8sClaim, K8sDeps, K8sResponse } from './k8s-transport.js';
  * the pre/post-create claim verifies that bracket the runner Job POST. See docs/kubernetes.md's
  * "Re-claim fence by claiming the checkout, atomically" for the full protocol; this file is its
  * implementation, shared by the runner's `prepare`/`launch` and by `syncCheckout`/`reclaimWorktree`
- * (`k8s-runner.ts`), which run the same `acquireClaim`/`releaseClaim` pair under their own Jobs.
+ * (`k8s-runner.ts`), which run the same `acquireClaim`/`releaseClaimAfterGroupEnd` pair under their own Jobs.
  */
-
-/** True once a post-create stand-down could not prove its own Job deleted — see `k8s-runner.ts`'s `RunCleanup`. */
-export interface RunCleanup {
-    holdClaim: boolean;
-}
 
 /**
  * The Secret's contents: the claim env, the loop's minted gate credentials, the task supervisor's
@@ -63,19 +80,6 @@ const runnerEnv = (config: DriverConfig, job: BoardJob): Record<string, string> 
 });
 
 const telemetrySecretEntry = ({ file, body }: TelemetryConfig): Record<string, string> => ({ [file]: body });
-
-/**
- * Best-effort delete of THIS attempt's own Job — by its own attempt-scoped name, which is what
- * keeps it from ever reaching another attempt's objects. The ANSWER is the delete's verdict, and
- * callers act on it: true when the Job is provably going away (2xx) or provably already gone
- * (404); false for any other non-2xx status or a transport rejection, where the Job may survive
- * to the kubelet's deadline — the caller then HOLDS the checkout claim instead of releasing it.
- */
-const deleteOwnJob = (deps: K8sDeps, job: BoardJob): Promise<boolean> =>
-    deps.request('DELETE', `${jobPath(deps.config.k8sNamespace, runnerName(job))}?propagationPolicy=Foreground`).then(
-        (response) => response.status < HTTP_ERROR_STATUS || response.status === HTTP_NOT_FOUND,
-        () => false
-    );
 
 /**
  * Whether the board proves this attempt holds the job's live lease — the only proof a claim with
@@ -101,7 +105,17 @@ async function takeOverStaleClaim(deps: K8sDeps, job: BoardJob, path: string): P
     if (get.status === HTTP_NOT_FOUND) return 'retry';
     expectOk(get, 'reading the checkout claim');
     const claim = parse<K8sClaim>(get.body);
-    if (claim.data?.holder === job.leaseToken) return 'ours';
+    if (claim.data?.holder === job.leaseToken) {
+        // Our own claim, kept because a group of ours could not be confirmed ended (issue #821): a
+        // retry under the same holder — a reclaim offered again — may not start beside it.
+        if (!(await retryUnconfirmed(deps, job.leaseToken))) {
+            throw new Error(
+                `job ${job.id} stands down: a group of this holder could not be confirmed ended, ` +
+                    'so the checkout claim it keeps is not taken again'
+            );
+        }
+        return 'ours';
+    }
     // Ordered by the claim sequence, never by `attempts`: a stop or a contention requeue refunds
     // an attempt, and a replacement must still read as newer than every claim before it.
     // Digits only: `Number('')` is 0, and an empty field must never read as an ordered claim.
@@ -158,29 +172,74 @@ export async function acquireClaim(deps: K8sDeps, job: BoardJob, round = 1): Pro
     return acquireClaim(deps, job, round + 1);
 }
 
-/**
- * Give the checkout claim back — conditionally, because the only claim this attempt may ever
- * release is the exact incarnation it still holds. A claim that answers gone or held by another
- * attempt is left entirely alone: the first shape means nobody holds the checkout, the second
- * means a newer attempt took it over, and both leave nothing for this attempt to undo.
- */
-export async function releaseClaim(deps: K8sDeps, job: BoardJob): Promise<void> {
-    const path = claimPath(deps.config.k8sNamespace, job);
+/** The claim incarnation an earlier read observed: what a recovery that read it may act on. */
+export interface ObservedClaim {
+    uid: string;
+    holder: string;
+}
+
+/** One claim read, as the incarnation it names; null when gone, unreadable or unidentifiable. */
+export async function readClaim(deps: K8sDeps, job: BoardJob): Promise<ObservedClaim | null> {
     let get: K8sResponse;
     try {
-        get = await deps.request('GET', path);
+        get = await deps.request('GET', claimPath(deps.config.k8sNamespace, job));
     } catch {
-        return; // Nothing provable; a leaked claim is taken over by the next claimant.
+        return null;
     }
-    if (get.status === HTTP_NOT_FOUND || get.status >= HTTP_ERROR_STATUS) return;
+    if (get.status < HTTP_OK_STATUS || get.status >= HTTP_ERROR_STATUS) return null;
     const claim = parse<K8sClaim>(get.body);
     const uid = claim.metadata?.uid;
-    if (claim.data?.holder !== job.leaseToken || !uid) return;
-    try {
-        await deps.request('DELETE', path, { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid } });
-    } catch {
-        // Best effort: the leak's cost is one takeover by the next claimant, nothing worse.
+    const holder = claim.data?.holder;
+    return uid && holder ? { uid, holder } : null;
+}
+
+/**
+ * THE one hand-back and the one deletion of a checkout claim (issue #821): the claim goes only
+ * once every group of its holder is confirmed ended. `groups` are ended here first, through
+ * `endRunnerJob`, recorded against the holder; a group of the holder still live in this runner
+ * (`deps.groups`), or one ended before and still unconfirmed, keeps the claim too. `observed` is
+ * the incarnation a recovery read earlier — an orphaned claim, a reaped job's — and a claim
+ * replaced since is rejected before any group is ended. The delete carries the uid precondition,
+ * so it can only ever reach the incarnation read; a claim gone, held by another attempt or
+ * unreadable is left alone. Answers whether the claim was deleted. Never throws.
+ */
+export async function releaseClaimAfterGroupEnd(
+    deps: K8sDeps,
+    job: BoardJob,
+    ends: { groups?: readonly GroupRef[]; observed?: ObservedClaim; holderWriters?: boolean } = {}
+): Promise<boolean> {
+    const holder = ends.observed?.holder ?? job.leaseToken;
+    if (ends.observed) {
+        const now = await readClaim(deps, job);
+        if (now?.uid !== ends.observed.uid || now.holder !== holder) return false;
     }
+    // A recovery's claim, or a reclaim's, goes only with no reclaim group of its holder still
+    // writing — another invocation's, or a pod outliving its Job's delete.
+    if ((ends.observed || ends.holderWriters) && !(await holderWritersGone(deps, job, holder))) return false;
+    if (!(await groupsEnded(deps, holder, ends.groups ?? []))) return false;
+    const claim = await readClaim(deps, job);
+    if (claim?.holder !== holder || (ends.observed && claim.uid !== ends.observed.uid)) return false;
+    try {
+        const deleted = await deps.request('DELETE', claimPath(deps.config.k8sNamespace, job), {
+            apiVersion: 'v1',
+            kind: 'DeleteOptions',
+            preconditions: { uid: claim.uid },
+        });
+        return deleted.status >= HTTP_OK_STATUS && deleted.status < HTTP_ERROR_STATUS;
+    } catch {
+        // A leaked claim costs one takeover by the next claimant, nothing worse.
+        return false;
+    }
+}
+
+/** Ends `groups` under `holder`; true only when every group of the holder is confirmed ended and none is live here. */
+async function groupsEnded(deps: K8sDeps, holder: string, groups: readonly GroupRef[]): Promise<boolean> {
+    let held = false;
+    for (const group of groups) {
+        const end = await endRunnerJob(deps, group, holder);
+        if (end !== 'ended') held = true;
+    }
+    return !held && !deps.groups?.has(holder) && !holderUnconfirmed(deps, holder);
 }
 
 /** Whether a claim read's status/body prove the checkout still belongs to this attempt. */
@@ -199,21 +258,59 @@ function claimReadIsTakenOver(read: K8sResponse, job: BoardJob): boolean {
     );
 }
 
-/** One kind's leftover objects — a job, a pod or a service — the sweep found by label. */
+/** One kind's leftover objects — a job, a pod or a service — the sweep found by label, with the leases they carry. */
 interface SweepFleet {
     kind: string;
     basePath: string;
     names: string[];
+    /** The uid each listed object answered, by name: its delete names that incarnation only. */
+    uids: Map<string, string>;
+    leases: string[];
 }
 
-/** The named objects a label-selector list response carries — empty for anything unparseable. */
-function namedItemsOf(body: string): string[] {
-    const items = parse<{ items?: { metadata?: { name?: string } }[] }>(body).items ?? [];
-    const names: string[] = [];
-    for (const item of items) {
-        if (item.metadata?.name) names.push(item.metadata.name);
+type SweptItem = ListedRunnerJob & {
+    metadata?: { name?: string; uid?: string; labels?: Record<string, string> };
+};
+
+/**
+ * Whether the sweep leaves a listed object alone: the finished agent run THIS attempt adopted and
+ * is continuing to its verdict (`deps.adopted`), or a pod of it — the evidence a later claim adopts
+ * again if this one is lost first (issue #821). It writes nothing: its pod ran to its end. Every
+ * other finished run goes, before a fresh sync can change the tree its outcome was read against.
+ */
+function spared(deps: K8sDeps, job: BoardJob, item: SweptItem, keptJobs: Set<string>): boolean {
+    const adopted = deps.adopted?.get(job.leaseToken);
+    const lease = item.metadata?.labels?.[LEASE_LABEL];
+    if (
+        adopted !== undefined &&
+        item.metadata?.name === adopted &&
+        lease &&
+        JOB_ID.test(lease) &&
+        finishedAgentRun(item, { ...job, leaseToken: lease })
+    ) {
+        keptJobs.add(adopted);
+        return true;
     }
-    return names;
+    return keptJobs.has(item.metadata?.labels?.['job-name'] ?? '');
+}
+
+/** The named objects a label-selector list response carries, and their lease labels — empty for anything unparseable. */
+function namedItemsOf(
+    deps: K8sDeps,
+    job: BoardJob,
+    body: string,
+    keptJobs: Set<string>
+): Omit<SweepFleet, 'kind' | 'basePath'> {
+    const items = parse<{ items?: SweptItem[] }>(body).items ?? [];
+    const found: Omit<SweepFleet, 'kind' | 'basePath'> = { names: [], uids: new Map(), leases: [] };
+    for (const item of items) {
+        if (!item.metadata?.name || spared(deps, job, item, keptJobs)) continue;
+        found.names.push(item.metadata.name);
+        if (item.metadata.uid) found.uids.set(item.metadata.name, item.metadata.uid);
+        const lease = item.metadata.labels?.[LEASE_LABEL];
+        if (lease) found.leases.push(lease);
+    }
+    return found;
 }
 
 /**
@@ -223,9 +320,9 @@ function namedItemsOf(body: string): string[] {
  */
 async function probeOneFleetKind(
     deps: K8sDeps,
-    kind: string,
-    selectorPath: string,
-    basePath: string
+    job: BoardJob,
+    [kind, selectorPath, basePath]: readonly [string, string, string],
+    keptJobs: Set<string>
 ): Promise<{ fleet: SweepFleet | null; inconclusive: boolean }> {
     let probe: K8sResponse;
     try {
@@ -237,8 +334,8 @@ async function probeOneFleetKind(
     // A kind answering nothing at all has nothing of this job in it.
     if (probe.status === HTTP_NOT_FOUND) return { fleet: null, inconclusive: false };
     if (probe.status >= HTTP_OK_STATUS && probe.status < HTTP_ERROR_STATUS) {
-        const names = namedItemsOf(probe.body);
-        return { fleet: names.length > 0 ? { kind, basePath, names } : null, inconclusive: false };
+        const found = namedItemsOf(deps, job, probe.body, keptJobs);
+        return { fleet: found.names.length > 0 ? { kind, basePath, ...found } : null, inconclusive: false };
     }
     // 429/5xx/transport: inconclusive — the round cannot free the checkout.
     return { fleet: null, inconclusive: true };
@@ -256,12 +353,14 @@ async function probeLeftoverFleets(
 ): Promise<{ fleets: SweepFleet[]; conclusive: boolean }> {
     const fleets: SweepFleet[] = [];
     let conclusive = true;
-    for (const [kind, selectorPath, basePath] of [
+    // Jobs first: the finished agent runs they spare are what spares their pods.
+    const keptJobs = new Set<string>();
+    for (const kind of [
         ['job', jobsSelectorPath(deps.config.k8sNamespace, job), jobsPath(deps.config.k8sNamespace)],
         ['pod', podsSelectorPath(deps.config.k8sNamespace, job), podsPath(deps.config.k8sNamespace)],
         ['service', servicesSelectorPath(deps.config.k8sNamespace, job), servicesPath(deps.config.k8sNamespace)],
     ] as const) {
-        const { fleet, inconclusive } = await probeOneFleetKind(deps, kind, selectorPath, basePath);
+        const { fleet, inconclusive } = await probeOneFleetKind(deps, job, kind, keptJobs);
         if (fleet) fleets.push(fleet);
         if (inconclusive) conclusive = false;
     }
@@ -286,21 +385,43 @@ async function verifyClaimHeldForSweep(deps: K8sDeps, job: BoardJob): Promise<'o
     }
 }
 
-/** Deletes every named leftover of one sweep pass, answering how many deletes actually landed. */
-async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[]): Promise<number> {
-    let deleted = 0;
-    for (const fleet of fleets) {
-        for (const leftover of fleet.names) {
-            const response = await deps.request('DELETE', `${fleet.basePath}/${leftover}?propagationPolicy=Foreground`);
-            // A 404 is the ordinary end of an object another fence got to first; a 409 is a
-            // concurrent replacement's fence deleting the same object. Both mean the object is
-            // being removed. Anything else fails loud, as ever.
-            const refused = refusal(response, `deleting the leftover ${fleet.kind}s`, HTTP_NOT_FOUND, HTTP_CONFLICT);
-            if (refused) throw new Error(refused);
-            if (response.status < HTTP_ERROR_STATUS) deleted += 1;
+/**
+ * The Secrets of every leftover lease, by derived name, acknowledged — BEFORE any Job of theirs is
+ * deleted (issue #821): a Secret has no owner, and once its Job is gone nothing can derive its name
+ * again. False when any one delete failed; the round then deletes nothing.
+ */
+async function deleteLeftoverSecrets(deps: K8sDeps, job: BoardJob, fleets: SweepFleet[]): Promise<boolean> {
+    const leases = new Set(fleets.flatMap((fleet) => fleet.leases).filter((lease) => JOB_ID.test(lease)));
+    const adopted = deps.adopted?.get(job.leaseToken);
+    for (const lease of leases) {
+        const pair = { ...job, leaseToken: lease };
+        // The adopted run's lease keeps its Job listed: its Secrets stay derivable from it, and
+        // their cleanup is never what holds a recovered run back (issue #821).
+        if (adopted !== undefined && runnerName(pair) === adopted) continue;
+        for (const name of [secretName(pair), gateEnvSecretName(pair)]) {
+            if ((await deleteSecretAcked(deps, name)) === 'failed') return false;
         }
     }
-    return deleted;
+    return true;
+}
+
+/** Deletes every named leftover of one sweep pass; the next pass's list is what says they are gone. */
+async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[]): Promise<void> {
+    for (const fleet of fleets) {
+        for (const leftover of fleet.names) {
+            // The incarnation listed, by its uid: never one created under the name since.
+            const uid = fleet.uids.get(leftover);
+            const target = `${fleet.basePath}/${leftover}?propagationPolicy=Foreground`;
+            const response = await (uid
+                ? deps.request('DELETE', target, { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid } })
+                : deps.request('DELETE', target));
+            // A 404 is the ordinary end of an object another fence got to first; a 409 is a
+            // concurrent delete of it, or — on its uid precondition — another incarnation now under
+            // the name. Neither is proof it is gone: the next list says. Anything else fails loud.
+            const refused = refusal(response, `deleting the leftover ${fleet.kind}s`, HTTP_NOT_FOUND, HTTP_CONFLICT);
+            if (refused) throw new Error(refused);
+        }
+    }
 }
 
 /**
@@ -342,48 +463,39 @@ export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, waits = 0
     if (verified === 'unknown') {
         return nextRound(`the checkout claim of job ${job.id} could not be confirmed before fencing`);
     }
-    const deleted = await deleteSweepFleets(deps, fleets);
-    // Every delete came back 404/409 — another fence removed them already.
-    if (deleted === 0) return;
+    if (!(await deleteLeftoverSecrets(deps, job, fleets))) {
+        return nextRound(`the leftover secrets of job ${job.id} could not be deleted`);
+    }
+    await deleteSweepFleets(deps, fleets);
+    // No delete's answer is proof the checkout is free — a 409 on a uid precondition is another
+    // incarnation under the name (issue #821): only a fresh, conclusive empty list lets it go.
     return nextRound(`the leftover objects of job ${job.id} never disappeared after their delete`);
 }
 
 /**
- * A failed delete leaves the Job to the kubelet's deadline: hold the claim — the checkout is never
- * handed over while this attempt's runner may still be on it.
+ * A post-create stand-down ends this attempt's own Job the acknowledged way (issue #821): Secrets
+ * first, then the Job, confirmed gone. One that cannot be confirmed is held against this attempt's
+ * token, which keeps the checkout claim until a later teardown confirms it.
  */
-async function standDownOwnJob(deps: K8sDeps, job: BoardJob, cleanup: RunCleanup): Promise<void> {
-    const deleted = await deleteOwnJob(deps, job);
-    if (!deleted) cleanup.holdClaim = true;
+async function standDownOwnJob(deps: K8sDeps, identity: TeardownIdentity): Promise<void> {
+    await endRunnerJob(deps, identity);
 }
 
 /**
  * The runner's arrival: `prepare` takes the checkout claim, sweeps the leftovers of the job's
- * OTHER attempts (the loop already started this attempt's services), creates the env Secret and
- * runs the pre-create claim verify; `launch` POSTs the Job and runs the post-create verify.
+ * OTHER attempts (the loop already started this attempt's services) and runs the pre-create claim
+ * verify; `launch` creates the Job suspended, then its env Secret, runs the post-create verify and
+ * only then resumes the Job. A Secret therefore never exists without a Job the fence and the reaper
+ * can derive its name from (issue #821), and no pod starts before the claim is verified.
  */
-export async function prepare(deps: K8sDeps, job: BoardJob, _cleanup: RunCleanup): Promise<void> {
-    const env = runnerEnv(deps.config, job);
-
+export async function prepare(deps: K8sDeps, job: BoardJob): Promise<void> {
     // Step one: TAKE THE CHECKOUT.
     await acquireClaim(deps, job);
 
     // Step two: the sweep. See sweepClaimedFleets for the invariants it upholds.
     await sweepClaimedFleets(deps, job);
 
-    // Step three: the env Secret, AFTER the claim and the sweep. Before the Job, as ever: a pod
-    // that references a Secret that is not there yet is a CreateContainerConfigError and a
-    // burned attempt.
-    if (Object.keys(env).length) {
-        const secretResponse = await deps.request(
-            'POST',
-            secretsPath(deps.config.k8sNamespace),
-            secretBody(job, secretName(job), env)
-        );
-        expectOk(secretResponse, 'creating the runner secret');
-    }
-
-    // Step four: the claim must STILL be ours immediately before the Job POST — the first half
+    // Step three: the claim must STILL be ours immediately before the Job POST — the first half
     // of the bracket that fences the POST from both sides.
     const pre = await readVerdict(deps, claimPath(deps.config.k8sNamespace, job), 'reading the checkout claim');
     if (claimReadIsTakenOver(pre, job)) {
@@ -399,31 +511,104 @@ export async function prepare(deps: K8sDeps, job: BoardJob, _cleanup: RunCleanup
     }
 }
 
-// Step five: this attempt's Job, under its own attempt-scoped name.
-export async function launch(deps: K8sDeps, job: BoardJob, spec: RunnerJobSpec, cleanup: RunCleanup): Promise<void> {
-    const response = await deps.request('POST', jobsPath(deps.config.k8sNamespace), spec);
-    expectOk(response, 'creating the runner job');
+/**
+ * Creates a runner Job suspended (no pod yet), then its env Secret under `secretName`. Any failure
+ * on the way — a create whose answer was lost included — ends the Job the acknowledged way
+ * (`standDown`) and rethrows: a create the apiserver took is never left behind unreconciled.
+ */
+export async function createSuspendedWithSecret(
+    deps: K8sDeps,
+    spec: { metadata: { name: string; annotations?: Record<string, string> }; spec: object },
+    what: { job: string; secret: string; secretBody: (owner: JobOwner) => unknown },
+    { identity, standDown }: { identity: TeardownIdentity; standDown: () => Promise<unknown> }
+): Promise<void> {
+    try {
+        const created = await deps.request('POST', jobsPath(deps.config.k8sNamespace), {
+            ...spec,
+            spec: { ...spec.spec, suspend: true },
+        });
+        expectOk(created, what.job);
+        // The Secret is owned by the Job's uid: collected with it, even if this driver never ends it.
+        // Recorded the moment it answers: every teardown after this names that incarnation.
+        const uid = parse<{ metadata?: { uid?: string } }>(created.body).metadata?.uid;
+        if (!uid) throw new Error(`${what.job} answered no uid for the Job`);
+        identity.uids = { job: uid };
+        const stored = await deps.request(
+            'POST',
+            secretsPath(deps.config.k8sNamespace),
+            what.secretBody({ name: spec.metadata.name, uid })
+        );
+        expectOk(stored, what.secret);
+        const secret = parse<{ metadata?: { uid?: string } }>(stored.body).metadata?.uid;
+        if (secret) identity.uids = { job: uid, secret };
+    } catch (e) {
+        await standDown();
+        throw e;
+    }
+}
 
-    // Step six: the claim must STILL be ours once the Job exists — the second half of the
+/**
+ * Resumes a Job created suspended — the incarnation its create answered, by `metadata.uid` in the
+ * patch, so it never resumes another; a refusal ends it the acknowledged way and rethrows.
+ */
+export async function resumeJob(
+    deps: K8sDeps,
+    name: string,
+    uid: string | undefined,
+    standDown: () => Promise<unknown>
+): Promise<void> {
+    try {
+        const resumed = await deps.request('PATCH', jobPath(deps.config.k8sNamespace, name), {
+            ...(uid ? { metadata: { uid } } : {}),
+            spec: { suspend: false },
+        });
+        expectOk(resumed, `resuming the ${name} job`);
+    } catch (e) {
+        await standDown();
+        throw e;
+    }
+}
+
+// Step four: this attempt's Job, under its own attempt-scoped name, suspended, then its Secret.
+export async function launch(deps: K8sDeps, job: BoardJob, spec: RunnerJobSpec): Promise<IncarnationUids> {
+    // The runner's name hashes this claim's own lease token, which no other claim is ever handed:
+    // no other invocation can create it again, so its teardown may fall back to the name.
+    const identity: TeardownIdentity = { pair: job, jobName: runnerName(job) };
+    const standDown = () => standDownOwnJob(deps, identity);
+    await createSuspendedWithSecret(
+        deps,
+        spec,
+        {
+            job: 'creating the runner job',
+            secret: 'creating the runner secret',
+            secretBody: (owner) => secretBody(job, secretName(job), runnerEnv(deps.config, job), owner),
+        },
+        { identity, standDown }
+    );
+
+    // Step five: the claim must STILL be ours once the Job exists — the second half of the
     // bracket the pre-create verify opened. See docs/kubernetes.md for the full race analysis.
     let held: K8sResponse;
     try {
         held = await readVerdict(deps, claimPath(deps.config.k8sNamespace, job), 'reading the checkout claim');
     } catch (e) {
-        await standDownOwnJob(deps, job, cleanup);
+        await standDown();
         throw e;
     }
     if (claimReadIsTakenOver(held, job)) {
-        await standDownOwnJob(deps, job, cleanup);
+        await standDown();
         throw new Error(`job ${job.id} stands down: the checkout claim was taken over before the runner could start`);
     }
     if (!claimReadIsOurs(held, job)) {
         // Neither provably ours nor provably gone — and after the full patience, no runner stays
         // on a checkout its driver cannot verify.
-        await standDownOwnJob(deps, job, cleanup);
+        await standDown();
         throw new Error(
             `the checkout claim of job ${job.id} could not be confirmed after creating the runner job ` +
                 `(${answerPreview(held.status, held.body)})`
         );
     }
+    // Step six: the pod starts, under a verified claim with its Secret in place.
+    await resumeJob(deps, spec.metadata.name, identity.uids?.job, standDown);
+    return identity.uids!;
 }

@@ -218,6 +218,13 @@ export interface AdoptedRun {
     claimSeq: number;
 }
 
+/**
+ * Thrown by `Runner.adopt` once a finished run was read but something of an earlier attempt could
+ * not be confirmed gone (issue #821): the attempt is left to its lease, never run afresh over the
+ * tree that run left — the next claim adopts it again.
+ */
+export class AdoptionBlocked extends Error {}
+
 export interface Runner {
     /**
      * Runs the job. `onOutput` is the live-output hook: the runner calls it with its newest output
@@ -368,9 +375,10 @@ export interface Runner {
      * Hands back whatever the startup sync's fence took — the kubernetes checkout claim, which
      * syncCheckout acquires and HOLDS through the run. The loop calls this (`handBackFence`) on
      * every exit that never reaches runner.run — a terminal refusal, a stand-down, a throw — where
-     * run()'s finally, the ordinary release path, never executes; an attempt that never runs must
-     * not hold the checkout. Ownership-checked inside the runner: only the exact claim this attempt still
-     * holds is released, never one that moved on. Optional: docker's fence leaves nothing
+     * no run hands it on; an attempt that never runs must not hold the checkout. Ownership-checked
+     * inside the runner: only the exact claim this attempt still holds is released, never one that
+     * moved on, and never while the attempt's group lives or its end is unconfirmed — the group's
+     * end (`finish`) gives it back then. Optional: docker's fence leaves nothing
      * behind to release, so its runner implements nothing and a loop facing it never calls.
      */
     releaseFence?(job: BoardJob): Promise<void>;
@@ -378,12 +386,14 @@ export interface Runner {
      * Deletes the checkout claim of a job the board no longer knows as live (issue #344): a
      * driver that died holding the claim leaked it, and when the leaked holder's thread is later
      * removed, its reclaim is refused by that claim forever — nothing else can see a bare
-     * ConfigMap, so the reclaim loop is the only cleaner. Ownership-safe by construction: the
-     * delete carries the uid of the exact object this call read, and answers true only when that
-     * object is the one that went. Optional: kubernetes only — docker's fence leaves no claim
-     * object behind to reap, so its runner implements nothing and the loop never calls.
+     * ConfigMap, so the reclaim loop is the only cleaner. Ownership-safe by construction: `claim`
+     * is the incarnation the refused reclaim read, a claim replaced since is refused before
+     * anything is ended, the holder's groups are confirmed ended first, and the delete carries that
+     * uid, answering true only when that object is the one that went. Optional: kubernetes only —
+     * docker's fence leaves no claim object behind to reap, so its runner implements nothing and
+     * the loop never calls.
      */
-    reapOrphanedClaim?(job: BoardJob): Promise<boolean>;
+    reapOrphanedClaim?(job: BoardJob, claim: { uid: string; holder: string }): Promise<boolean>;
     /**
      * Runs one declared block-helper step (issue #207): an allowlisted, board-owned script an
      * expanded workflow `block` node names to run before or after its agent turn. `call.token` is a

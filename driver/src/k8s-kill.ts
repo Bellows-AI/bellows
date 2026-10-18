@@ -85,8 +85,10 @@ export function clearKilled(name: string): void {
  * has nothing to record on; any other refusal rejects.
  */
 export async function recordRunnerKill(deps: K8sDeps, job: BoardJob, kill: KillRecord): Promise<void> {
+    // The incarnation this runner created, by uid, when it knows it: never one created since.
+    const uid = deps.groups?.get(job.leaseToken)?.uids.job;
     const patched = await deps.request('PATCH', jobPath(deps.config.k8sNamespace, runnerName(job)), {
-        metadata: { annotations: { [killMarkOf(kill.reason)]: kill.detail } },
+        metadata: { ...(uid ? { uid } : {}), annotations: { [killMarkOf(kill.reason)]: kill.detail } },
     });
     if (patched.status === HTTP_NOT_FOUND) return;
     expectOk(patched, 'recording why the runner job was ended');

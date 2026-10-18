@@ -2,7 +2,7 @@ import { raceStep } from './loop-attempt.js';
 import { isAgentless } from './loop-agentless.js';
 import { releaseAbandonedAdoption } from './loop-fence.js';
 import { type AttemptCtx, type SetupConclusion, STOOD_DOWN } from './loop-types.js';
-import type { AdoptedRun } from './runner.js';
+import { AdoptionBlocked, type AdoptedRun } from './runner.js';
 
 /**
  * Adopts the finished runner an earlier claim left behind (issue #792) — before the sync, which
@@ -18,6 +18,9 @@ export async function adoptStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     try {
         adoptedOut = await raceStep(state.signal, adopting);
     } catch (e) {
+        // A read run that could not be secured is no reason to run afresh over its tree (issue #821).
+        if (e instanceof AdoptionBlocked)
+            return { halt: 'leave', log: `could not adopt the finished runner, leaving it to the lease: ${e.message}` };
         rt.log(`job ${job.id}: could not adopt an earlier runner, running the job: ${(e as Error).message}`);
         return null;
     }

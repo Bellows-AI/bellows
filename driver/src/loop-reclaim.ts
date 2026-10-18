@@ -95,7 +95,9 @@ async function clearOrphanedClaim(
     if (leases === null) return false;
     const row = leases.find((lease) => lease.id === reclaim.rootJobId);
     if (row !== undefined && !TERMINAL_JOB_STATUSES.includes(row.status)) return false;
-    if (!(await ctx.runner.reapOrphanedClaim?.(removed))) return false;
+    // The incarnation the refusal read, carried through (issue #821): a claim replaced since the
+    // refusal — a reopen's live claimant — is never the one reaped.
+    if (!(await ctx.runner.reapOrphanedClaim?.(removed, heldClaim))) return false;
     const holder = row === undefined ? 'the board has no row for it' : `its row is ${row.status}`;
     const age =
         heldClaim.createdMs === null

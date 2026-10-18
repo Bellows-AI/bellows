@@ -27,7 +27,7 @@ export function neverStartedWhy(outcome: RunOutcome): string | null {
  * Hands the kubernetes checkout claim back — the ONE release in the loop. Only a successful sync
  * ever takes it (`ctx.fenced`) and the runner owns it from its launch onwards, so a refusal that
  * came before the sync releases nothing (the sync released its own) and nothing after the spawn
- * does either (`runner.run`'s finally and `publishGit` own that).
+ * does either (the runner's group end, `finish`, owns that).
  */
 export async function handBackFence(ctx: AttemptCtx): Promise<void> {
     if (!ctx.fenced) return;
