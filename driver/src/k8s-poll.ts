@@ -428,7 +428,10 @@ export async function readRunnerVerdict(
     output: string;
     fullLog: string;
     logTruncated: boolean;
-    infraLoss: string | null;
+    /** The runner pod was taken away under the run (`runnerLossOf`). */
+    vanished: string | null;
+    /** The supervisor ended any way but finalizing (`supervisorLossOf`). */
+    unfinalized: string | null;
     /** The supervisor ended the agent at the run budget (its exit 124): the run timed out. */
     supervisorDeadline: boolean;
 }> {
@@ -455,9 +458,9 @@ export async function readRunnerVerdict(
         output: reportTail(verdict.output),
         fullLog: full.content,
         logTruncated: full.truncated || verdict.truncated,
-        infraLoss: jobSucceeded
-            ? null
-            : (runnerLossOf(verdict.pods) ?? supervisorLossOf(livePodOfItems(verdict.pods), supervisorExit)),
+        // What the run's end amounts to is `infraLossOf`'s to decide, over both executors.
+        vanished: jobSucceeded ? null : runnerLossOf(verdict.pods),
+        unfinalized: jobSucceeded ? null : supervisorLossOf(livePodOfItems(verdict.pods), supervisorExit),
         // The budget ended the agent: the supervisor's report says so while it still serves, and its
         // exit 124 says so once the group is over.
         supervisorDeadline: supervisorExit === SUPERVISOR_EXIT.deadline || report?.outcome === 'timed_out',

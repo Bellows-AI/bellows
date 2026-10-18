@@ -153,6 +153,9 @@ describe('the executor isolation record (#382)', () => {
     // case is redone, and the bound on a finished one is the Job's TTL.
     it('states that only a finished runner is adopted, and for how long', () => {
         expect(kubernetesDocs).toContain('Stated limit: a runner still RUNNING when its driver is lost');
+        expect(kubernetesDocs).toContain(
+            'Stated limit: why a driver ended a run is recorded on the attempt only where'
+        );
         expect(prose(kubernetesDocs)).toContain('the job redone (refunded when the drain handed it over)');
         expect(kubernetesDocs).toContain('`ttlSecondsAfterFinished`');
     });

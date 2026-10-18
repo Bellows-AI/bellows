@@ -15,7 +15,7 @@ import type { RunOutcome, RunSession, Runner } from './runner.js';
 import { adoptFinishedRunner } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from './close-read.js';
 import { type HelperCall, type HelperPlan, type HelperResult, lookupHelper } from './helpers.js';
-import { KILLED_EXIT_CODE, markKilled, RunnerKilled } from './k8s-kill.js';
+import { KILLED_EXIT_CODE, markKilled, RunnerKilled, RunnerVanished, recordRunnerKill, wasKilled } from './k8s-kill.js';
 import {
     claimName,
     claimPath,
@@ -67,6 +67,7 @@ import type { PublishResult, ReclaimResult, SyncResult } from './publish.js';
 import { probeTreeFingerprint } from './publish.js';
 import { snapshotTree, type SnapshotResult } from './review-snapshot.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
+import { infraLossOf, type KillRecord } from './termination.js';
 import { controlTokenOf, orderGo, runHelperStep, runSyncStep, supervisedStepRunner } from './supervised-steps.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
 import { KILL_WINDDOWN_MS, type SupervisorReport } from './supervisor-contract.js';
@@ -348,23 +349,31 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     try {
         polled = await pollRunnerJobUntilTerminal(deps, job, { onOutput, over: () => watch.report !== null });
     } catch (e) {
-        if (!(e instanceof RunnerKilled)) throw e;
         // A Stop deleted the Job: the loop parks a resolved outcome (docker's killed container
         // resolves exit 137), where a rejection would be left to the lease.
-        return { exitCode: KILLED_EXIT_CODE, output: '', timedOut: false, started: true };
+        if (e instanceof RunnerKilled)
+            return { exitCode: KILLED_EXIT_CODE, output: '', timedOut: false, started: true };
+        // Deleted under the run by anything else: the platform took the runner away, as docker's
+        // removed container — an interruption for the next claim, never a run the lease redoes —
+        // unless the budget had already ended the agent, as the supervisor's report says.
+        if (e instanceof RunnerVanished) return vanishedOutcome(e, watch.report);
+        throw e;
     }
     const { jobSucceeded } = polled;
-    const { exitCode, output, fullLog, logTruncated, infraLoss, supervisorDeadline } = await readRunnerVerdict(
-        deps,
-        job,
-        jobSucceeded,
-        watch.report
-    );
+    const { exitCode, output, fullLog, logTruncated, vanished, unfinalized, supervisorDeadline } =
+        await readRunnerVerdict(deps, job, jobSucceeded, watch.report);
     // The run budget ends the agent through the supervisor (its report, then its exit 124), the
     // kubelet's deadline only a supervisor that stopped doing so: either is the timeout's verdict.
-    const timedOut = polled.timedOut || supervisorDeadline;
     // A deadline kill deletes the pod too: that is the timeout's verdict, never a loss.
-    if (infraLoss && !timedOut) return { exitCode, output, timedOut, started: true, infraLoss };
+    const timedOut = polled.timedOut || supervisorDeadline;
+    const infraLoss = infraLossOf({
+        killedByDriver: wasKilled(runnerName(job)),
+        timedOut,
+        reported: watch.report !== null,
+        vanished,
+        unfinalized,
+    });
+    if (infraLoss) return { exitCode, output, timedOut, started: true, infraLoss };
 
     const outcome: RunOutcome = { exitCode, output, timedOut, started: true, fullLog, logTruncated };
 
@@ -378,6 +387,25 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
         mergeClaudeCloseRead(outcome, read);
     }
     return outcome;
+}
+
+/** A run whose runner Job was deleted under it, by `infraLossOf` over what the supervisor reported. */
+function vanishedOutcome(e: RunnerVanished, report: SupervisorReport | null): RunOutcome {
+    const timedOut = report?.outcome === 'timed_out';
+    const infraLoss = infraLossOf({
+        killedByDriver: false,
+        timedOut,
+        reported: report !== null,
+        vanished: e.message,
+        unfinalized: null,
+    });
+    return {
+        exitCode: report?.agentExit ?? null,
+        output: '',
+        timedOut,
+        started: true,
+        ...(infraLoss ? { infraLoss } : {}),
+    };
 }
 
 // Every throw after create() succeeded — poll exhaustion, a vanished Job, a failed verdict read —
@@ -615,6 +643,7 @@ export function createKubernetesRunner(
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
         kill: (job: BoardJob) => killRunner(deps, job),
         stopAgent: (job: BoardJob) => stopAgent(deps, job),
+        recordKill: (job: BoardJob, kill: KillRecord) => recordRunnerKill(deps, job, kill),
         pauseDeadline: (job: BoardJob, paused: boolean) => pauseRunnerDeadline(deps, job, paused),
         releaseServices: (job: BoardJob) => teardownServices(deps, job),
         deadServices: (job: BoardJob) => deadServices(deps, job),

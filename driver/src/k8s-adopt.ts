@@ -10,6 +10,7 @@ import { expectOk, JOB_ID, parse } from './k8s-transport.js';
 import type { K8sDeps, K8sJobStatus } from './k8s-transport.js';
 import { CLAIM_SEQ_MARK, COMMAND_MARK, LEASE_LABEL, SESSION_MARK } from './labels.js';
 import { type AdoptedRun, commandMark, type RunOutcome } from './runner.js';
+import { adoptedVerdictOf, infraLossOf, type KillRecord, killEndsGroup, killRecordsOf } from './termination.js';
 
 /** One runner Job of an earlier claim, as the label listing answers it. */
 interface ListedRunner {
@@ -23,6 +24,8 @@ interface EarlierRunner {
     claimSeq: number;
     session: string | null;
     status: NonNullable<ListedRunner['status']>;
+    /** Why its driver ended the run, as recorded on the Job before the kill (`recordRunnerKill`). */
+    kills: KillRecord[];
 }
 
 /** The close-time readouts `run` performs, handed in by the runner that owns them. */
@@ -43,7 +46,14 @@ function earlierRunnerOf(job: BoardJob, item: ListedRunner): EarlierRunner | nul
     const prior = { ...job, leaseToken: lease };
     // Only the runner itself: its name is the (job, lease) hash, which no aux Job shares.
     if (item.metadata?.name !== runnerName(prior) || Number(seq) >= job.claimSeq) return null;
-    return { prior, claimSeq: Number(seq), session: item.metadata.annotations?.[SESSION_MARK] ?? null, status };
+    const annotations = item.metadata.annotations;
+    return {
+        prior,
+        claimSeq: Number(seq),
+        session: annotations?.[SESSION_MARK] ?? null,
+        status,
+        kills: killRecordsOf(annotations),
+    };
 }
 
 /** The newest finished runner Job of an earlier claim of this job, by claim sequence; null when none. */
@@ -60,12 +70,27 @@ async function finishedEarlierRunner(deps: K8sDeps, job: BoardJob): Promise<Earl
 
 /** The earlier run's outcome, read the way `run` reads its own; null for a runner the platform took away. */
 async function readEarlierRun(deps: K8sDeps, job: BoardJob, found: EarlierRunner, reads: CloseReads) {
-    const { prior, session, status } = found;
+    const { prior, session, status, kills } = found;
     const verdict = await readRunnerVerdict(deps, prior, (status.succeeded ?? 0) >= 1);
-    const timedOut = timedOutOf(status) || verdict.supervisorDeadline;
-    if (verdict.infraLoss && !timedOut) return null;
+    const timedOut = timedOutOf(status) || verdict.supervisorDeadline || kills.some((k) => k.reason === 'timeout');
+    const loss = infraLossOf({
+        killedByDriver: kills.some((kill) => killEndsGroup(kill.reason)),
+        timedOut,
+        reported: false,
+        vanished: verdict.vanished,
+        unfinalized: verdict.unfinalized,
+    });
+    if (loss) return null;
     const { exitCode, output, fullLog, logTruncated } = verdict;
-    const outcome: RunOutcome = { exitCode, output, timedOut, started: true, fullLog, logTruncated };
+    const outcome: RunOutcome = {
+        exitCode,
+        output,
+        timedOut,
+        started: true,
+        fullLog,
+        logTruncated,
+        ...adoptedVerdictOf(kills),
+    };
     const startedAt = status.startTime ?? new Date(0).toISOString();
     if (job.executorType === OPENCODE) await reads.attachOpencodeOutcome(deps, prior, startedAt, outcome);
     if (job.executorType === CLAUDE_CODE && session) {

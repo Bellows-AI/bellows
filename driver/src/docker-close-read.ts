@@ -24,6 +24,8 @@ import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts
 import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
 import { type ExecDocker, linesOf, type Spawn, readUtf8 } from './docker-runner-support.js';
 import { awaitSupervisor, supervisorLossOf } from './docker-group.js';
+import { readDockerKills } from './docker-teardown.js';
+import { adoptedVerdictOf, infraLossOf, killEndsGroup } from './termination.js';
 import { SUPERVISOR_EXIT } from './supervisor-contract.js';
 import {
     containerName,
@@ -276,8 +278,19 @@ export async function dockerAdopt(
     // finalizing (the dead driver never waited for it). Waited out, bounded — never swept unread —
     // and a supervisor that ended any way but finalizing is a run the platform took away, which
     // the sync's re-claim fence takes as ever.
+    // Why the lost driver ended the run, when it did, was recorded on the attempt before its kill: a
+    // hard kill explains the supervisor's exit, and every reason is the verdict it was live.
     const supervisorExit = await awaitSupervisor(execDocker, prior);
-    if (supervisorLossOf(supervisorExit, false)) return null;
+    const kills = await readDockerKills(execDocker, prior);
+    const timedOut = supervisorExit === SUPERVISOR_EXIT.deadline || kills.some((kill) => kill.reason === 'timeout');
+    const loss = infraLossOf({
+        killedByDriver: kills.some((kill) => killEndsGroup(kill.reason)),
+        timedOut,
+        reported: false,
+        vanished: null,
+        unfinalized: supervisorLossOf(supervisorExit, false),
+    });
+    if (loss) return null;
     const name = containerName(prior);
     const state = JSON.parse((await execDocker(['inspect', '--format', '{{json .State}}', name])).stdout) as {
         ExitCode?: number;
@@ -288,10 +301,11 @@ export async function dockerAdopt(
         exitCode: state.ExitCode ?? null,
         output: reportTail(full.content),
         // A budget the supervisor enforced reads as the exit it caused: its own 124.
-        timedOut: supervisorExit === SUPERVISOR_EXIT.deadline,
+        timedOut,
         started: true,
         fullLog: full.content,
         logTruncated: full.truncated,
+        ...adoptedVerdictOf(kills),
     };
     const startedAt = state.StartedAt ?? new Date(0).toISOString();
     await applyCloseTimeReadout(
