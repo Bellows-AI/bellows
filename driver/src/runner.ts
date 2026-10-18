@@ -272,18 +272,17 @@ export interface Runner {
      * attempt's control channel (`killAgent`), so the supervisor ends the agent, has the exporter
      * drain what it wrote and finalizes, and the run's group then ends by itself — `run` resolves
      * with the real outcome. This waits, bounded, for that and past the bound falls back to
-     * `kill`, the hard kill. A runner that supervises nothing leaves it out and the loop calls
-     * `kill`. Never throws.
+     * `kill`, the hard kill. Never throws.
      */
-    stopAgent?(job: BoardJob): Promise<void>;
+    stopAgent(job: BoardJob): Promise<void>;
     /**
      * Records on the attempt why the driver is ending its run (`termination.ts`), where the claim
      * adopting the run after this driver's loss reads it back (`adopt`). Rejects when the platform
      * refuses; the caller never holds the kill back for it.
      */
-    recordKill?(job: BoardJob, kill: KillRecord): Promise<void>;
+    recordKill(job: BoardJob, kill: KillRecord): Promise<void>;
     /** Stops/resumes the runtime budget while questions are pending. */
-    pauseDeadline?(job: BoardJob, paused: boolean): Promise<void>;
+    pauseDeadline(job: BoardJob, paused: boolean): Promise<void>;
     /**
      * Tears down the attempt's `.bellows.yaml` services. run() starts the fleet and deliberately
      * leaves it up: the declared gates run after it and are what test against those services, so
@@ -295,21 +294,19 @@ export interface Runner {
      * Publishes the work the run produced: task branch (when the checkout sits on the default
      * one), commit, push, and a PR. The deterministic end of a task — a succeeded verdict may not
      * describe work that exists only in a local checkout. The loop decides WHEN this is called (a
-     * succeeded run, gates passed, and nothing else); a runner that cannot publish answers the
-     * refusal in the result — or does not implement the method at all, which the loop reads as
-     * "this platform does not publish". `githubToken` is the board's token minted for this push
+     * succeeded run, gates passed, and nothing else); a publish that cannot happen answers the
+     * refusal in the result. `githubToken` is the board's token minted for this push
      * (docs/connections.md); both transports lay it into the publish steps' env the same way
      * (`supervisedStepRunner`), so neither can drift. `draft` opens a NEW pull request as a draft
      * (the agent's mid-run publish); an existing PR is reused whatever its state.
      */
-    publishGit?(job: BoardJob, githubToken?: string, options?: PublishOptions): Promise<PublishResult>;
+    publishGit(job: BoardJob, githubToken?: string, options?: PublishOptions): Promise<PublishResult>;
     /**
      * The task tree's fingerprint now (`probeTreeFingerprint`): the probe step over the same
      * transport `publishGit` uses, read only after a declared gate failed. Null is unknown.
-     * Optional, like `publishGit`: a runner without it reports no tree change at all. `signal`
-     * is the attempt's stand-down: an aborted probe tears its container or aux Job down.
+     * `signal` is the attempt's stand-down: an aborted probe tears its container or aux Job down.
      */
-    probeTree?(job: BoardJob, signal?: AbortSignal): Promise<string | null>;
+    probeTree(job: BoardJob, signal?: AbortSignal): Promise<string | null>;
     /**
      * Reads and takes down a FINISHED runner an earlier claim of this job left behind (issue
      * #792), before this attempt's sync touches the tree that run left: its verdict, log and
@@ -318,15 +315,14 @@ export interface Runner {
      * objects are swept only once read. Under kubernetes it takes the checkout claim, which the
      * attempt holds from here as the sync would have taken it.
      */
-    adopt?(job: BoardJob): Promise<AdoptedRun | null>;
+    adopt(job: BoardJob): Promise<AdoptedRun | null>;
     /**
      * Freezes the task tree's current state under a snapshot ref of the shared clone, for a named
      * reviewer to start from (issue #549) — over the same transport `probeTree` uses, so both
      * executors do it identically. Writes only a ref, never overwrites one (a repeated request
-     * finds the first snapshot), and moves nothing the agent has. Optional, like `probeTree`: a
-     * runner without it cannot offer a reviewer, which the loop answers as unsupported.
+     * finds the first snapshot), and moves nothing the agent has.
      */
-    snapshotTree?(job: BoardJob, key: string, signal?: AbortSignal): Promise<SnapshotResult>;
+    snapshotTree(job: BoardJob, key: string, signal?: AbortSignal): Promise<SnapshotResult>;
     /**
      * Prepares the job's task worktree before the run. A STARTING claim syncs it with the
      * remote default: fetch, create the worktree branched off `origin/<default>` (first attempt
@@ -356,10 +352,9 @@ export interface Runner {
      * probe, the helpers and the publish, and held the agent. The group exists from the attempt's
      * first step, not from the agent's start, and `run` leaves it alive — so the loop finishes it,
      * on every way the attempt ends, while the run-control channel its order travels is still open.
-     * Idempotent, never throws, and a no-op for an attempt with no group. Optional: a runner with
-     * no group has nothing to end.
+     * Idempotent, never throws, and a no-op for an attempt with no group.
      */
-    finish?(job: BoardJob): Promise<void>;
+    finish(job: BoardJob): Promise<void>;
     /**
      * Reclaims the task worktree after the thread's LAST job is terminal: removes the per-thread
      * tree and prunes its admin entry, so a finished or deleted task does not leave its tree
@@ -399,15 +394,13 @@ export interface Runner {
      * expanded workflow `block` node names to run before or after its agent turn. `call.token` is a
      * fresh GitHub installation token, minted by the loop immediately before a github-writing
      * helper (`plan.githubWriting`); a read-only helper gets none and the transport runs it with
-     * the claim env untouched. Optional: a job with no `helperPlans` never calls it, and a runner
-     * that does not implement one simply cannot run helpers — the same "this platform does not
-     * support it" reading `publishGit`'s optionality already carries. An aborted `call.signal` (the
+     * the claim env untouched. A job with no `helperPlans` never calls it. An aborted `call.signal` (the
      * attempt's stand-down) ends a kubernetes helper's poll and reaps its Job; on docker it
      * detaches the client and the container is removed by name, a github-writing one included.
      * `call.effectId` names the call's logical effect across claims (`helperEffectId`, issue #826). A
      * lost supervisor rejects (`stepLost`) rather than answering a helper failure.
      */
-    runHelper?(job: BoardJob, plan: HelperPlan, call?: HelperCall): Promise<HelperResult>;
+    runHelper(job: BoardJob, plan: HelperPlan, call?: HelperCall): Promise<HelperResult>;
 }
 
 /**

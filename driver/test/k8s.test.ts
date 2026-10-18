@@ -2272,7 +2272,7 @@ describe('publishing the produced work', () => {
     it('branches, commits, pushes and opens the PR — one step per git/gh call, in order', async () => {
         const steps = scripted();
         const { request, calls } = fakeRequest();
-        const result = await publishing(steps, request).publishGit!(ISSUE_JOB);
+        const result = await publishing(steps, request).publishGit(ISSUE_JOB);
 
         expect(result).toEqual({
             ok: true,
@@ -2326,7 +2326,7 @@ describe('publishing the produced work', () => {
 
     it('hands the claim env and the minted token to the steps that read them, and to no other', async () => {
         const steps = scripted();
-        await publishing(steps).publishGit!(ISSUE_JOB, 'ghs_minted');
+        await publishing(steps).publishGit(ISSUE_JOB, 'ghs_minted');
 
         const sent = publishStepsOf(steps);
         const push = sent.find((step) => step.argv.includes('push'))!;
@@ -2346,7 +2346,7 @@ describe('publishing the produced work', () => {
     it("publishes with the board's minted token in the step env, never a claim value", async () => {
         const steps = scripted();
         const { request, calls } = fakeRequest();
-        await publishing(steps, request).publishGit!(ISSUE_JOB, 'ghs_fresh');
+        await publishing(steps, request).publishGit(ISSUE_JOB, 'ghs_fresh');
 
         const push = publishStepsOf(steps).find((step) => step.argv.includes('push'))!;
         expect(push.env.GITHUB_TOKEN).toBe('ghs_fresh');
@@ -2359,7 +2359,7 @@ describe('publishing the produced work', () => {
         const steps = scripted({ probe: { ...DIRTY_ON_MAIN, fingerprint: 'h:1' } });
         const { request, calls } = fakeRequest();
 
-        expect(await publishing(steps, request).probeTree?.(ISSUE_JOB)).toBe('h:1');
+        expect(await publishing(steps, request).probeTree(ISSUE_JOB)).toBe('h:1');
 
         const probes = steps.submitted.filter((step) => step.kind === 'probe');
         expect(probes).toHaveLength(1);
@@ -2385,7 +2385,7 @@ describe('publishing the produced work', () => {
             attach: () => undefined,
         };
 
-        expect(await publishing({ sink }).probeTree?.(ISSUE_JOB, cancel.signal)).toBeNull();
+        expect(await publishing({ sink }).probeTree(ISSUE_JOB, cancel.signal)).toBeNull();
     });
 
     it.each([
@@ -2393,13 +2393,13 @@ describe('publishing the produced work', () => {
         ['a probe that failed', failed(1, 'boom')],
     ])('answers null for %s', async (_label, answer) => {
         const steps = scripted({ step: (step) => (step.kind === 'probe' ? answer : null) });
-        expect(await publishing(steps).probeTree?.(ISSUE_JOB)).toBeNull();
+        expect(await publishing(steps).probeTree(ISSUE_JOB)).toBeNull();
     });
 
     it('carries no claim env for an env-less claim', async () => {
         const steps = scripted({ probe: { cloned: false } });
         const { env: _env, ...envLess } = ISSUE_JOB;
-        const result = await publishing(steps).publishGit!(envLess);
+        const result = await publishing(steps).publishGit(envLess);
 
         expect(result).toEqual({
             ok: true,
@@ -2422,7 +2422,7 @@ describe('publishing the produced work', () => {
     // live in two places and drift.
     it('leaves the publish decision to the loop: publishGit ignores a publish:false claim', async () => {
         const steps = scripted();
-        const result = await publishing(steps).publishGit!({ ...ISSUE_JOB, publish: false });
+        const result = await publishing(steps).publishGit({ ...ISSUE_JOB, publish: false });
 
         expect(result.ok).toBe(true);
         expect(publishStepsOf(steps).some((step) => step.argv.includes('push'))).toBe(true);
@@ -2441,7 +2441,7 @@ describe('publishing the produced work', () => {
                       }
                     : null,
         });
-        const result = await publishing(steps).publishGit!(ISSUE_JOB);
+        const result = await publishing(steps).publishGit(ISSUE_JOB);
 
         expect(result.ok).toBe(false);
         expect(result.published).toBe(false);
@@ -2463,7 +2463,7 @@ describe('publishing the produced work', () => {
             },
         });
 
-        const result = await publishing(steps).publishGit!(ISSUE_JOB, undefined, { revision: 'h:1' });
+        const result = await publishing(steps).publishGit(ISSUE_JOB, undefined, { revision: 'h:1' });
 
         expect(result).toMatchObject(published ? { ok: true, published } : { ok: false, stale: true });
         const argvs = publishStepsOf(steps).map((step) => step.argv);
@@ -2480,7 +2480,7 @@ describe('publishing the produced work', () => {
                 throw new StepChannelClosed('the answer');
             },
         });
-        const result = await publishing(steps).publishGit!(ISSUE_JOB, 'ghs_fresh');
+        const result = await publishing(steps).publishGit(ISSUE_JOB, 'ghs_fresh');
         expect(result).toMatchObject({ ok: false, published: false, cause: 'transport' });
     });
 });
@@ -2825,7 +2825,7 @@ describe('the kubernetes runner and the task supervisor', () => {
     // finalizes, so the pod ends by itself — a stop that waits is not a delete.
     it('stopAgent waits for the supervisor to finalize and deletes nothing once the pod is done', async () => {
         const { request, calls } = fakeRequest();
-        await runner(request).stopAgent!(exporting);
+        await runner(request).stopAgent(exporting);
         expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes(runnerJobName(exporting)))).toBe(
             false
         );
@@ -2835,7 +2835,7 @@ describe('the kubernetes runner and the task supervisor', () => {
         const { request, calls } = fakeRequest({
             job: { status: 200, body: JSON.stringify({ status: { active: 1 } }) },
         });
-        await runner(request).stopAgent!(exporting);
+        await runner(request).stopAgent(exporting);
         expect(calls).toContainEqual(
             expect.objectContaining({
                 method: 'DELETE',
@@ -2948,7 +2948,7 @@ describe('the kubernetes runner', () => {
         const reaped = (): boolean =>
             calls.some((call) => call.method === 'DELETE' && call.path === `${secretsPath}/${secretName(envJob)}`);
         expect(reaped()).toBe(false);
-        await r.finish!(envJob);
+        await r.finish(envJob);
         expect(reaped()).toBe(true);
     });
 
@@ -3097,7 +3097,7 @@ describe('the kubernetes runner', () => {
         expect(secretName(oldJob)).not.toBe(secretName(newJob));
 
         // The replacement's own `finish` is what reaps its Secret.
-        await replacement.finish!(newJob);
+        await replacement.finish(newJob);
         expect(calls.some((call) => call.method === 'DELETE' && call.path === secretOf(newJob))).toBe(true);
     });
 
@@ -3772,7 +3772,7 @@ describe('the kubernetes runner', () => {
         const finishing = runner(released.request);
         await finishing.run(envJob, { id: SESSION, resume: false });
         expect(released.calls.some((call) => call.path === claimPath && call.method === 'DELETE')).toBe(false);
-        await finishing.finish!(envJob);
+        await finishing.finish(envJob);
         const tail = released.calls.slice(-2);
         expect(tail[0]).toEqual({ method: 'GET', path: claimPath });
         expect(tail[1]?.method).toBe('DELETE');
@@ -3798,7 +3798,7 @@ describe('the kubernetes runner', () => {
         const gone = runner(request);
         const outcome = await gone.run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
-        await gone.finish!(job);
+        await gone.finish(job);
         // The acquire POST and the two verifies around the Job POST happened — reads 1 through
         // 3 — and the release read found the claim gone without deleting anything.
         expect(reads).toBeGreaterThan(3);
@@ -4388,7 +4388,7 @@ describe('the kubernetes runner', () => {
             const secretPath = `/api/v1/namespaces/${namespace}/secrets/${secretName(envJob)}`;
             expect(calls.some((call) => call.method === 'DELETE' && call.path === secretPath)).toBe(false);
 
-            await attempt.finish!(envJob);
+            await attempt.finish(envJob);
             const secretCreate = calls.findIndex((call) => call.method === 'POST' && call.path?.endsWith('/secrets'));
             const secretReap = calls.findIndex((call) => call.method === 'DELETE' && call.path === secretPath);
             const jobDelete = calls.findIndex(
@@ -4482,7 +4482,7 @@ describe('the kubernetes runner', () => {
     // Why the driver ends a run is recorded on the runner Job itself, for a claim that adopts it.
     it('records a kill reason as an annotation on the runner Job, and tolerates a Job already gone', async () => {
         const { request, calls } = fakeRequest();
-        await runner(request).recordKill!(job, { reason: 'artifact_spool_full', detail: '2000000000 bytes' });
+        await runner(request).recordKill(job, { reason: 'artifact_spool_full', detail: '2000000000 bytes' });
         expect(calls).toContainEqual({
             method: 'PATCH',
             path: jobPath(namespace, runnerJobName(job)),
@@ -4491,7 +4491,7 @@ describe('the kubernetes runner', () => {
 
         const gone = fakeRequest({ job: { status: 404, body: '{"kind":"Status"}' } });
         await expect(
-            runner(gone.request).recordKill!(job, { reason: 'artifact_spool_full', detail: '' })
+            runner(gone.request).recordKill(job, { reason: 'artifact_spool_full', detail: '' })
         ).resolves.toBeUndefined();
     });
 
@@ -6511,7 +6511,7 @@ describe('the block-helper transport (issue #207)', () => {
     // literal bounded input and the task worktree are the step's, not a Job spec's.
     it('submits one helper step: content-passed script, literal bounded input, task worktree', async () => {
         const steps = answering();
-        await runner(fakeRequest().request, {}, undefined, steps.sink).runHelper!(repoJob, plan());
+        await runner(fakeRequest().request, {}, undefined, steps.sink).runHelper(repoJob, plan());
         const [step] = helperStepsOf(steps);
         expect(step).toMatchObject({
             kind: 'helper',
@@ -6523,17 +6523,17 @@ describe('the block-helper transport (issue #207)', () => {
 
         // A command-only job (no repo): no working directory, the member root's own mount.
         const bare = answering();
-        await runner(fakeRequest().request, {}, undefined, bare.sink).runHelper!(job, plan());
+        await runner(fakeRequest().request, {}, undefined, bare.sink).runHelper(job, plan());
         expect(helperStepsOf(bare)[0]!.cwd).toBeUndefined();
     });
 
     it('gives a read-only helper no claim env, and a github-writing one the fresh token over the claim env', async () => {
         const readOnly = answering();
-        await runner(fakeRequest().request, {}, undefined, readOnly.sink).runHelper!(repoJob, plan());
+        await runner(fakeRequest().request, {}, undefined, readOnly.sink).runHelper(repoJob, plan());
         expect(helperStepsOf(readOnly)[0]!.env).toEqual({ HELPER_INPUT: JSON.stringify({ a: 1 }) });
 
         const writing = answering();
-        await runner(fakeRequest().request, {}, undefined, writing.sink).runHelper!(
+        await runner(fakeRequest().request, {}, undefined, writing.sink).runHelper(
             repoJob,
             plan({ githubWriting: true }),
             { token: 'fresh-install-token' }
@@ -6547,7 +6547,7 @@ describe('the block-helper transport (issue #207)', () => {
     it('brackets a receipted helper with its receipt in the task worktree, and throws a lost supervisor', async () => {
         const steps = fakeSteps(receiptedAnswer);
         // The receipt's MAC key: a driver without a board token keeps no receipt.
-        await runner(fakeRequest().request, { JOB_BOARD_TOKEN: 'board-key' }, undefined, steps.sink).runHelper!(
+        await runner(fakeRequest().request, { JOB_BOARD_TOKEN: 'board-key' }, undefined, steps.sink).runHelper(
             repoJob,
             plan({ helperId: REVIEW_REPLY_PROBE_ID, githubWriting: true }),
             { token: 'fresh-install-token', effectId: 'effect-1' }
@@ -6559,13 +6559,13 @@ describe('the block-helper transport (issue #207)', () => {
             throw new StepChannelClosed('the helper');
         });
         await expect(
-            runner(fakeRequest().request, {}, undefined, lost.sink).runHelper!(repoJob, plan())
+            runner(fakeRequest().request, {}, undefined, lost.sink).runHelper(repoJob, plan())
         ).rejects.toBeInstanceOf(StepChannelClosed);
     });
 
     it('fails an unknown helper id before any step is submitted', async () => {
         const steps = answering();
-        const result = await runner(fakeRequest().request, {}, undefined, steps.sink).runHelper!(
+        const result = await runner(fakeRequest().request, {}, undefined, steps.sink).runHelper(
             job,
             plan({ helperId: 'not-a-real-helper' })
         );
@@ -6580,7 +6580,7 @@ describe('the block-helper transport (issue #207)', () => {
     it('runs the noop helper end to end as a step, creating no Job or Secret of its own', async () => {
         const steps = answering();
         const { request, calls } = fakeRequest();
-        const result = await runner(request, {}, undefined, steps.sink).runHelper!(job, plan());
+        const result = await runner(request, {}, undefined, steps.sink).runHelper(job, plan());
         expect(result).toEqual({ ok: true, output: { echoed: true } });
         // The attempt had no group (an adopted run): one supervisor-only group, and nothing per helper.
         const created = calls.filter((c) => c.method === 'POST' && c.path === jobsPath(namespace));
@@ -6595,7 +6595,7 @@ describe('the block-helper transport (issue #207)', () => {
 
     it('ends a cancelled helper without submitting it when the stand-down signal is already aborted (issue #488)', async () => {
         const steps = answering();
-        const result = await runner(fakeRequest().request, {}, undefined, steps.sink).runHelper!(
+        const result = await runner(fakeRequest().request, {}, undefined, steps.sink).runHelper(
             repoJob,
             plan({ githubWriting: true }),
             { token: 'fresh-install-token', signal: AbortSignal.abort() }
@@ -6607,7 +6607,7 @@ describe('the block-helper transport (issue #207)', () => {
     it('never puts the fresh token in a Job, a Secret or any request body — only in the step', async () => {
         const steps = answering();
         const { request, calls } = fakeRequest();
-        await runner(request, {}, undefined, steps.sink).runHelper!(repoJob, plan({ githubWriting: true }), {
+        await runner(request, {}, undefined, steps.sink).runHelper(repoJob, plan({ githubWriting: true }), {
             token: 'super-secret-token',
         });
         expect(JSON.stringify(calls.map((c) => c.body))).not.toContain('super-secret-token');
@@ -6617,8 +6617,8 @@ describe('the block-helper transport (issue #207)', () => {
     it('mints a fresh step identity on every call, even for the identical plan run twice in a row', async () => {
         const steps = answering();
         const r = runner(fakeRequest().request, {}, undefined, steps.sink);
-        await r.runHelper!(job, plan());
-        await r.runHelper!(job, plan());
+        await r.runHelper(job, plan());
+        await r.runHelper(job, plan());
         const ids = helperStepsOf(steps).map((step) => step.id);
         expect(ids).toHaveLength(2);
         expect(ids[0]).not.toBe(ids[1]);
@@ -6626,13 +6626,13 @@ describe('the block-helper transport (issue #207)', () => {
 
     it('reports a named timeout failure when the supervisor ends the step at its bound', async () => {
         const steps = fakeSteps(() => ({ exitCode: null, stdout: '', stderr: '', timedOut: true }));
-        const result = await runner(fakeRequest().request, {}, undefined, steps.sink).runHelper!(job, plan());
+        const result = await runner(fakeRequest().request, {}, undefined, steps.sink).runHelper(job, plan());
         expect(result).toEqual({ ok: false, reason: 'timeout', message: expect.any(String) });
     });
 
     it('reports runner_error for an ordinary non-zero exit, distinct from a timeout', async () => {
         const steps = fakeSteps(() => ({ exitCode: 1, stdout: '', stderr: 'boom', timedOut: false }));
-        const result = await runner(fakeRequest().request, {}, undefined, steps.sink).runHelper!(job, plan());
+        const result = await runner(fakeRequest().request, {}, undefined, steps.sink).runHelper(job, plan());
         expect(result).toEqual({ ok: false, reason: 'runner_error', message: expect.stringContaining('boom') });
     });
 
@@ -6640,7 +6640,7 @@ describe('the block-helper transport (issue #207)', () => {
         const steps = fakeSteps(() => {
             throw new Error('the step channel connection reset');
         });
-        const result = await runner(fakeRequest().request, {}, undefined, steps.sink).runHelper!(job, plan());
+        const result = await runner(fakeRequest().request, {}, undefined, steps.sink).runHelper(job, plan());
         expect(result).toEqual({
             ok: false,
             reason: 'runner_error',
@@ -6751,13 +6751,13 @@ describe('the paused deadline for an agent question', () => {
         const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
         try {
             const r = runner(request);
-            await Promise.all([r.pauseDeadline?.(job, true), r.pauseDeadline?.(job, true)]);
+            await Promise.all([r.pauseDeadline(job, true), r.pauseDeadline(job, true)]);
             expect(spec.activeDeadlineSeconds).toBeNull();
             expect(patches).toHaveLength(1);
             now.mockReturnValue(1000 + 48 * 3600 * 1000);
-            await r.pauseDeadline?.(job, false);
+            await r.pauseDeadline(job, false);
             expect(spec.activeDeadlineSeconds).toBe(7200 + 48 * 3600);
-            await r.pauseDeadline?.(job, false);
+            await r.pauseDeadline(job, false);
             expect(patches).toHaveLength(2);
         } finally {
             now.mockRestore();
@@ -6766,7 +6766,7 @@ describe('the paused deadline for an agent question', () => {
 
     it('does nothing when the runner Job is gone', async () => {
         const request = vi.fn(async () => ({ status: 404, body: '{}' }));
-        await runner(request).pauseDeadline?.(job, true);
+        await runner(request).pauseDeadline(job, true);
         expect(request).toHaveBeenCalledTimes(1);
     });
 
@@ -6775,7 +6775,7 @@ describe('the paused deadline for an agent question', () => {
             method === 'PATCH'
                 ? { status: 403, body: '{}' }
                 : { status: 200, body: JSON.stringify({ spec: { activeDeadlineSeconds: 60 } }) };
-        await expect(runner(request).pauseDeadline?.(job, true)).rejects.toThrow(/pausing or resuming/);
+        await expect(runner(request).pauseDeadline(job, true)).rejects.toThrow(/pausing or resuming/);
     });
 });
 
@@ -6834,7 +6834,7 @@ describe('a Stop on kubernetes (issue #427)', () => {
         };
         const r = runner(request);
         const helperPlan: HelperPlan = { helperId: 'noop', phase: 'pre', input: null, githubWriting: true };
-        const running = r.runHelper!(helperJob, helperPlan, { token: 'ghs_fresh' });
+        const running = r.runHelper(helperJob, helperPlan, { token: 'ghs_fresh' });
         try {
             while (helperName === null) await new Promise((resolve) => setTimeout(resolve, 1));
             await r.kill(helperJob); // the heartbeat's Stop
@@ -6940,7 +6940,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
     it('reads its verdict, log and session, keeps its Job for the next claim, and holds the checkout', async () => {
         const { request, calls } = withRunners([priorItem({ succeeded: 1 })]);
 
-        const adopted = await runner(request).adopt!(adopter);
+        const adopted = await runner(request).adopt(adopter);
 
         expect(adopted).toMatchObject({
             claimSeq: 1,
@@ -6980,7 +6980,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
             return base(method, path, body);
         };
 
-        expect(await runner(request).adopt!(adopter)).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0 } });
+        expect(await runner(request).adopt(adopter)).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0 } });
 
         expect(
             calls.some((call) => call.method === 'DELETE' && call.path.startsWith(jobPath(namespace, priorName)))
@@ -7006,7 +7006,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
             priorItem({ succeeded: 1 }, '1', runnerJobName({ ...job, leaseToken: OLDER }), OLDER),
         ]);
 
-        expect((await runner(request).adopt!({ ...adopter, claimSeq: 4 }))?.claimSeq).toBe(3);
+        expect((await runner(request).adopt({ ...adopter, claimSeq: 4 }))?.claimSeq).toBe(3);
     });
 
     it("adopts the earlier runner's whole log, not a line tail (#825)", async () => {
@@ -7017,7 +7017,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
                 ? Promise.resolve(kubeletLog(whole)(path))
                 : base(method, path, body);
 
-        const adopted = await runner(request).adopt!(adopter);
+        const adopted = await runner(request).adopt(adopter);
 
         expect(adopted?.outcome).toMatchObject({ fullLog: whole, logTruncated: false });
     });
@@ -7038,7 +7038,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
             padded(priorItem({ active: 1 }, '0', runnerJobName({ ...job, leaseToken: OLDER }), OLDER), ARTIFACT_LIMIT),
         ]);
 
-        const adopted = await runner(throughTransport(request)).adopt!(adopter);
+        const adopted = await runner(throughTransport(request)).adopt(adopter);
 
         expect(adopted?.claimSeq).toBe(1);
     });
@@ -7046,13 +7046,13 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
     // A runner marked at or after this claim's sequence is a newer contender's, never an earlier one.
     it('never adopts a runner of a claim at or after its own', async () => {
         const { request } = withRunners([priorItem({ succeeded: 1 }, '2')]);
-        expect(await runner(request).adopt!(adopter)).toBeNull();
+        expect(await runner(request).adopt(adopter)).toBeNull();
     });
 
     it('never adopts a runner that is still running, and deletes nothing', async () => {
         const { request, calls } = withRunners([priorItem({ active: 1 })]);
 
-        expect(await runner(request).adopt!(adopter)).toBeNull();
+        expect(await runner(request).adopt(adopter)).toBeNull();
         expect(calls.some((call) => call.method === 'DELETE')).toBe(false);
         expect(calls.some((call) => call.method === 'POST' && call.path === configmapsPath)).toBe(false);
     });
@@ -7067,7 +7067,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
             },
         });
 
-        expect(await runner(request).adopt!(adopter)).toBeNull();
+        expect(await runner(request).adopt(adopter)).toBeNull();
         expect(
             calls.some((call) => call.method === 'DELETE' && call.path.startsWith(jobPath(namespace, priorName)))
         ).toBe(false);
@@ -7097,7 +7097,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
             },
         });
 
-        expect(await runner(request).adopt!(adopter)).toBeNull();
+        expect(await runner(request).adopt(adopter)).toBeNull();
         expect(
             calls.some((call) => call.method === 'DELETE' && call.path.startsWith(jobPath(namespace, priorName)))
         ).toBe(false);
@@ -7116,7 +7116,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
     it('adopts a supervised stop its lost driver recorded for a full spool, with the spool fault', async () => {
         const { request } = withRunners([recorded(priorItem({ succeeded: 1 }), SPOOL_MARK)]);
 
-        const adopted = await runner(request).adopt!(adopter);
+        const adopted = await runner(request).adopt(adopter);
 
         expect(adopted?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
         expect(adopted?.outcome).not.toHaveProperty('infraLoss');
@@ -7144,7 +7144,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
             },
         });
 
-        expect(await runner(request).adopt!(adopter)).toBeNull();
+        expect(await runner(request).adopt(adopter)).toBeNull();
     });
 
     // Stated limit: a stop that fell back to the hard kill deleted the Job, its record with it —
@@ -7152,19 +7152,19 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
     it('finds nothing to adopt after the hard kill deleted a recorded runner', async () => {
         const { request, calls } = withRunners([recorded(priorItem({ active: 1 }), SPOOL_MARK)]);
         const lost = runner(request);
-        await lost.recordKill!(job, { reason: 'artifact_spool_full', detail: '2000000000 bytes' });
+        await lost.recordKill(job, { reason: 'artifact_spool_full', detail: '2000000000 bytes' });
         await lost.kill(job);
 
         expect(
             calls.some((call) => call.method === 'DELETE' && call.path.startsWith(jobPath(namespace, priorName)))
         ).toBe(true);
-        expect(await runner(request).adopt!(adopter)).toBeNull();
+        expect(await runner(request).adopt(adopter)).toBeNull();
     });
 
     // A queued task's command can be edited after a handover: a run of the old command is not its run.
     it('never adopts a run of a command since edited', async () => {
         const { request } = withRunners([priorItem({ succeeded: 1 })]);
-        expect(await runner(request).adopt!({ ...adopter, command: 'another command' })).toBeNull();
+        expect(await runner(request).adopt({ ...adopter, command: 'another command' })).toBeNull();
     });
 
     // Issue #822: the runner of an interrupted attempt finished while its takeover or handover was
@@ -7176,7 +7176,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         const { request } = withRunners([launched]);
         const continuing = { ...adopter, resumeSessionId: SESSION, ownSession: true, continuesInterrupted: true };
 
-        expect(await runner(request).adopt!(continuing)).toMatchObject({
+        expect(await runner(request).adopt(continuing)).toMatchObject({
             claimSeq: 1,
             outcome: { exitCode: 0, started: true, sessionId: SESSION },
         });
@@ -7184,7 +7184,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
     it('answers null when this job has no earlier runner', async () => {
         const { request } = withRunners([]);
-        expect(await runner(request).adopt!(adopter)).toBeNull();
+        expect(await runner(request).adopt(adopter)).toBeNull();
     });
 
     it('marks every runner Job with its claim sequence and session, for the next claim to read', () => {
@@ -7408,7 +7408,7 @@ describe('acknowledged Secret-first teardown (#821 D16)', () => {
             async drive(request) {
                 const r = build(request);
                 await r.syncCheckout(repoJob, undefined, SESSION_OF);
-                await r.finish!(repoJob);
+                await r.finish(repoJob);
             },
         },
         'failed sync': {
@@ -7634,13 +7634,13 @@ describe('claims of an unconfirmed group (#821)', () => {
         await r.syncCheckout(repoJob, undefined, SESSION_OF);
         await r.run(repoJob, SESSION_OF);
         expect(claimDeletes(calls)).toEqual([]);
-        await r.probeTree!(repoJob);
+        await r.probeTree(repoJob);
         expect(claimDeletes(calls)).toEqual([]);
         // The loop's hand-back while the group is live keeps it for the group's end.
         await r.releaseFence!(repoJob);
         expect(claimDeletes(calls)).toEqual([]);
         refuse = true;
-        await r.finish!(repoJob);
+        await r.finish(repoJob);
         expect(claimDeletes(calls)).toEqual([]);
         expect(await holderOf(request)).toBe(repoJob.leaseToken);
         // A later hand-back still finds the group unconfirmed: the claim stays.
@@ -7653,10 +7653,10 @@ describe('claims of an unconfirmed group (#821)', () => {
     it('keeps the claim an on-demand group took until that group is finished', async () => {
         const { request, calls } = fakeRequest();
         const r = build(request);
-        await r.probeTree!(repoJob);
+        await r.probeTree(repoJob);
         expect(claimDeletes(calls)).toEqual([]);
         expect(await holderOf(request)).toBe(repoJob.leaseToken);
-        await r.finish!(repoJob);
+        await r.finish(repoJob);
         expect(claimDeletes(calls)).toHaveLength(1);
     });
 
@@ -7867,7 +7867,7 @@ describe('claims of an unconfirmed group (#821)', () => {
             }
         });
 
-        expect(await runner(request).adopt!(adopter)).toMatchObject({ claimSeq: 1 });
+        expect(await runner(request).adopt(adopter)).toMatchObject({ claimSeq: 1 });
 
         const jobDelete = calls.findIndex(
             (call) => call.method === 'DELETE' && call.path.startsWith(`${jobPath(namespace, runnerJobName(job))}?`)
@@ -7906,7 +7906,7 @@ describe('claims of an unconfirmed group (#821)', () => {
                 ? { status: 200, body: JSON.stringify({ items: [prior] }) }
                 : undefined
         );
-        expect(await runner(request).adopt!(adopter)).toBeNull();
+        expect(await runner(request).adopt(adopter)).toBeNull();
     });
 });
 
@@ -7987,7 +7987,7 @@ describe('finishing a group that ended by itself (#821)', () => {
         });
         const first = build(request);
         await first.syncCheckout(repoJob, undefined, SESSION_OF);
-        await first.finish!(repoJob);
+        await first.finish(repoJob);
 
         expect(jobDeleted(calls)).toBe(false);
         for (const name of [secretName(repoJob), gateEnvSecretName(repoJob)]) {
@@ -7997,7 +7997,7 @@ describe('finishing a group that ended by itself (#821)', () => {
 
         // This driver is lost before its verdict: the replacement claim reads the run it left.
         const adopter: BoardJob = { ...repoJob, leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
-        expect(await build(request).adopt!(adopter)).toMatchObject({
+        expect(await build(request).adopt(adopter)).toMatchObject({
             claimSeq: 1,
             outcome: { exitCode: 0, started: true, sessionId: SESSION },
         });
@@ -8010,13 +8010,13 @@ describe('finishing a group that ended by itself (#821)', () => {
         const released = routed(writers([done]));
         const r1 = build(released.request);
         await r1.syncCheckout(repoJob, undefined, SESSION_OF);
-        await r1.finish!(repoJob);
+        await r1.finish(repoJob);
         expect(claimDeleted(released.calls)).toBe(true);
 
         const held = routed(writers([done, live]));
         const r2 = build(held.request);
         await r2.syncCheckout(repoJob, undefined, SESSION_OF);
-        await r2.finish!(repoJob);
+        await r2.finish(repoJob);
         expect(jobDeleted(held.calls)).toBe(false);
         expect(claimDeleted(held.calls)).toBe(false);
     });
@@ -8027,7 +8027,7 @@ describe('finishing a group that ended by itself (#821)', () => {
         });
         const r = build(request);
         await r.syncCheckout(repoJob, undefined, SESSION_OF);
-        await r.finish!(repoJob);
+        await r.finish(repoJob);
         const secretAt = calls.findIndex(
             (call) => call.method === 'DELETE' && call.path === `${secretsBase}/${secretName(repoJob)}`
         );
@@ -8141,7 +8141,7 @@ describe('finish retries a teardown left unconfirmed (#821)', () => {
         expect(claimDeletes()).toEqual([]);
 
         // The kill took the group out of memory; the loop's finish still finds the held end.
-        await r.finish!(repoJob);
+        await r.finish(repoJob);
         expect(
             calls.some(
                 (call) =>
@@ -8245,7 +8245,7 @@ describe('Secrets owned by their Job, and only agent runs adopted (#821)', () =>
             attempts: 3,
             claimSeq: 3,
         };
-        expect(await build(request).adopt!(third)).toMatchObject({ claimSeq: 1 });
+        expect(await build(request).adopt(third)).toMatchObject({ claimSeq: 1 });
     });
 
     it('keeps the adopted run’s Job until the verdict, and finish deletes the supervisor-only group it made', async () => {
@@ -8265,10 +8265,10 @@ describe('Secrets owned by their Job, and only agent runs adopted (#821)', () =>
             }
         });
         const r = build(request);
-        expect(await r.adopt!(adopter)).toMatchObject({ claimSeq: 1 });
+        expect(await r.adopt(adopter)).toMatchObject({ claimSeq: 1 });
         // The post-adoption step runs in a supervisor-only group, which finish ends.
-        await r.probeTree!(adopter);
-        await r.finish!(adopter);
+        await r.probeTree(adopter);
+        await r.finish(adopter);
 
         expect(calls.some((call) => call.method === 'DELETE' && call.path.startsWith(`${priorAt}?`))).toBe(false);
         expect(
@@ -8284,7 +8284,7 @@ describe('Secrets owned by their Job, and only agent runs adopted (#821)', () =>
             attempts: 3,
             claimSeq: 3,
         };
-        expect(await build(request).adopt!(third)).toMatchObject({ claimSeq: 1, outcome: { sessionId: SESSION } });
+        expect(await build(request).adopt(third)).toMatchObject({ claimSeq: 1, outcome: { sessionId: SESSION } });
     });
 });
 
@@ -8336,7 +8336,7 @@ describe('a finished run is kept only for the claim that adopted it (#821)', () 
     it("sweeps an earlier claim's finished run before a fresh sync touches the checkout", async () => {
         const { r, calls, syncAt } = harness(false);
         // The run is not this claim's to adopt (its command was edited since): a fresh sync follows.
-        expect(await r.adopt!({ ...repoJob, command: 'an edited command' })).toBeNull();
+        expect(await r.adopt({ ...repoJob, command: 'an edited command' })).toBeNull();
         expect((await r.syncCheckout(repoJob, undefined, { id: SESSION, resume: false })).ok).toBe(true);
 
         const deleted = calls.findIndex((call) => call.method === 'DELETE' && call.path.startsWith(`${oldAt}?`));
@@ -8403,7 +8403,7 @@ describe('teardown ownership in time and incarnation (#821)', () => {
         const { request, calls } = fakeRequest();
         const r = supervisedRunner(config, request, async () => {}, { steps: steps.sink });
         await r.syncCheckout(repoJob, undefined, SESSION_OF);
-        const finishing = r.finish!(repoJob);
+        const finishing = r.finish(repoJob);
         await tick();
         await r.releaseFence!(repoJob);
         expect(claimDeletes(calls)).toEqual([]);
@@ -8955,7 +8955,7 @@ describe('teardown ownership in time and incarnation (#821)', () => {
             if (method === 'DELETE' && path.startsWith(`${secretsBase}/`)) return { status: 503, body: 'unavailable' };
         });
 
-        expect(await runner(request).adopt!(adopter)).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0 } });
+        expect(await runner(request).adopt(adopter)).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0 } });
         expect(
             calls.some(
                 (call) => call.method === 'DELETE' && call.path.startsWith(`${jobPath(namespace, runnerJobName(job))}?`)
@@ -8991,7 +8991,7 @@ describe('teardown ownership in time and incarnation (#821)', () => {
                 return { status: 503, body: 'unavailable' };
             }
         });
-        await expect(runner(request).adopt!(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+        await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
     });
 });
 

@@ -27,7 +27,7 @@ const outcome = (over: Partial<RunOutcome> = {}): RunOutcome => ({
     ...over,
 });
 
-function setup(options: { supervised?: boolean; records?: boolean } = {}) {
+function setup(options: { gates?: boolean } = {}) {
     const run = newExportRun();
     const board = {
         putArtifactChunk: vi.fn(async () => ({ result: 'stored' as const })),
@@ -39,12 +39,8 @@ function setup(options: { supervised?: boolean; records?: boolean } = {}) {
     const recordKill = vi.fn(async () => {});
     const rt = {
         board,
-        runner: {
-            kill,
-            ...(options.supervised === false ? {} : { stopAgent }),
-            ...(options.records ? { recordKill } : {}),
-        },
-        gates: { server: { raiseKill } },
+        runner: { kill, stopAgent, recordKill },
+        ...(options.gates === false ? {} : { gates: { server: { raiseKill } } }),
         log: vi.fn(),
     } as unknown as LoopRuntime;
     const state = newJobState();
@@ -108,7 +104,7 @@ describe('the export relay', () => {
         );
     });
 
-    it('keeps the exporter vitals and ends the agent once, under its supervisor, when the spool is full', () => {
+    it('keeps the exporter vitals and ends the agent once, under its supervisor, when the spool is full', async () => {
         const { relay, run, kill, stopAgent, raiseKill } = setup();
         relay.report({ pendingBytes: 10, oldestUnackedMs: 5, spoolFull: false, done: false });
         expect(run.vitals).toEqual({ pendingBytes: 10, oldestUnackedMs: 5 });
@@ -116,6 +112,7 @@ describe('the export relay', () => {
         relay.report({ pendingBytes: 2_000_000_000, oldestUnackedMs: 9, spoolFull: true, done: false });
         relay.report({ pendingBytes: 2_000_000_001, oldestUnackedMs: 10, spoolFull: true, done: false });
         expect(run.spoolFull).toBe(true);
+        await vi.waitFor(() => expect(stopAgent).toHaveBeenCalledTimes(1));
         // The kill order for the supervisor, then the bounded wait for the pod to wind down: the
         // exporter drains what the agent wrote before anything is deleted.
         expect(raiseKill).toHaveBeenCalledExactlyOnceWith('token');
@@ -124,7 +121,7 @@ describe('the export relay', () => {
     });
 
     it('records a full spool on the runner before the kill order, for a claim adopting the run', async () => {
-        const { relay, stopAgent, raiseKill, recordKill } = setup({ records: true });
+        const { relay, stopAgent, raiseKill, recordKill } = setup();
         relay.report({ pendingBytes: 2_000_000_000, oldestUnackedMs: 9, spoolFull: true, done: false });
         await vi.waitFor(() => expect(stopAgent).toHaveBeenCalledTimes(1));
         expect(recordKill).toHaveBeenCalledExactlyOnceWith(job, {
@@ -134,10 +131,10 @@ describe('the export relay', () => {
         expect(recordKill.mock.invocationCallOrder[0]).toBeLessThan(raiseKill.mock.invocationCallOrder[0] as number);
     });
 
-    it('falls back to the hard kill on a runner that supervises nothing', () => {
-        const { relay, kill, raiseKill } = setup({ supervised: false });
+    it('falls back to the hard kill with no control endpoint to raise the kill order on', async () => {
+        const { relay, kill, raiseKill } = setup({ gates: false });
         relay.report({ pendingBytes: 2_000_000_000, oldestUnackedMs: 9, spoolFull: true, done: false });
-        expect(kill).toHaveBeenCalledTimes(1);
+        await vi.waitFor(() => expect(kill).toHaveBeenCalledTimes(1));
         expect(raiseKill).not.toHaveBeenCalled();
     });
 
