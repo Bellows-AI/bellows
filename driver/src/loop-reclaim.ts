@@ -36,6 +36,7 @@ function reclaimJob(reclaim: Reclaim): BoardJob {
         resumeSessionId: null,
         followUp: false,
         ownSession: false,
+        continuesInterrupted: false,
         userId: null,
         workspacePath: reclaim.workspacePath,
         rootJobId: reclaim.rootJobId,

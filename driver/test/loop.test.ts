@@ -63,6 +63,7 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
     resumeSessionId,
     followUp: false,
     ownSession: false,
+    continuesInterrupted: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
 });
@@ -2008,6 +2009,7 @@ describe('the poll loop', () => {
                 resumeSessionId: null,
                 followUp: false,
                 ownSession: false,
+                continuesInterrupted: false,
                 userId: null,
                 workspacePath: `bellows/${USER}`,
                 rootJobId: root,
@@ -2484,11 +2486,12 @@ describe('the poll loop', () => {
         expect(logs.some((m) => m.includes(reason))).toBe(true);
     });
 
-    // Issue #822: a refusal this driver makes while alive is handed back as an interruption, the
-    // way an infrastructure loss is — its real reason recorded on the row inside the interruption
-    // budget and the lease freed at once, never a lease period recorded as a silent driver. The
-    // board recovers it at the last allowed attempt while that budget lasts.
-    it('hands a run it could not start back as an interruption carrying its reason', async () => {
+    // Issue #822: a run that threw may still have a runner — a force-deleted driver pod keeps
+    // running with its apiserver token revoked, and reading its own runner Job answers 401 while the
+    // runner works on. Handing that attempt back would free the lease, and the reaper would sweep
+    // the runner the next claim should adopt (the kind lane's hard-kill case): it is left to the
+    // lease, whatever the board would have answered an interrupt.
+    it('leaves a run it could not run to the lease, never handing it back, so a surviving runner is adopted', async () => {
         const board = stubBoard([{ ...job(1), attempts: 3, lastAttempt: false }]);
         const runner = stubRunner(async () => {
             throw new Error('reading the runner job answered 401: Unauthorized');
@@ -2498,31 +2501,7 @@ describe('the poll loop', () => {
         await drive({ ...board, runner, log: (m) => logs.push(m) });
 
         expect(board.board.completed).toEqual([]);
-        expect(board.board.interrupted).toEqual([
-            {
-                id: job(1).id,
-                reason: 'could not run: reading the runner job answered 401: Unauthorized',
-                release: true,
-            },
-        ]);
-        expect(logs.some((m) => m.includes('handed back as an interruption'))).toBe(true);
-    });
-
-    // Only an interrupt that does not land — the board unreachable, or refusing a revoked token —
-    // leaves the attempt to the lease.
-    it('leaves a run it could not start to the lease when the interruption does not land', async () => {
-        const board = stubBoard([{ ...job(1), attempts: 3, lastAttempt: false }]);
-        board.board.interrupt = async () => {
-            throw new BoardHttpError(401, '/api/jobs/x/interrupt answered 401: Unauthorized');
-        };
-        const runner = stubRunner(async () => {
-            throw new Error('reading the runner job answered 401: Unauthorized');
-        });
-        const logs: string[] = [];
-
-        await drive({ ...board, runner, log: (m) => logs.push(m) });
-
-        expect(board.board.completed).toEqual([]);
+        expect(board.board.interrupted).toEqual([]);
         expect(logs.some((m) => m.includes('could not run: reading the runner job answered 401'))).toBe(true);
         expect(logs.some((m) => m.includes('leaving it to the lease'))).toBe(true);
     });
@@ -2530,14 +2509,14 @@ describe('the poll loop', () => {
     // The kubernetes twin: the runner throws when the apiserver refuses the Job, so the reason
     // rides the rejection instead of the outcome.
     it('reports the reason a run could not start on the last attempt', async () => {
-        const board = stubBoard([{ ...job(1), attempts: 3, lastAttempt: true }], { interruptVerdict: 'exhausted' });
+        const board = stubBoard([{ ...job(1), attempts: 3, lastAttempt: true }]);
         const runner = stubRunner(async () => {
             throw new Error('creating the runner job answered 403: pods "x" is forbidden: exceeded quota');
         });
 
         await drive({ ...board, runner });
 
-        expect(board.board.interrupted).toHaveLength(1);
+        expect(board.board.interrupted).toEqual([]);
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
         expect(board.board.completed[0]?.output).toContain('exceeded quota');
     });

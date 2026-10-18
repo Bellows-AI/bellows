@@ -24,7 +24,7 @@ import {
     concludeUnreported,
     handBackFence,
     handOverConflict,
-    interruptAttempt,
+    leaveToLease,
     releaseAbandonedSync,
     standDown,
 } from './loop-fence.js';
@@ -718,15 +718,17 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                 .catch((e: Error) => log(`job ${job.id}: could not tear down the services: ${e.message}`));
         }
     } catch (e) {
-        // The container never ran — docker is missing, or the daemon refused. Deliberately NOT
-        // reported as a failed job: that would blame the command for the driver's problem. It goes
-        // back to the board as an interruption carrying the reason, claimable at once (issue #822).
+        // The run threw — docker is missing, the daemon or apiserver refused, or this driver lost
+        // its own credentials mid-run. Deliberately NOT reported as a failed job: that would blame
+        // the command for the driver's problem. Nor handed back as an interruption (issue #822): a
+        // runner may have survived — a force-deleted driver pod reads its own Job with a revoked
+        // token — and a freed lease lets the reaper sweep what the next claim should adopt.
         // A killed run can reject (the runner's own Job vanished under it): the stand-down
         // that killed it owns the settlement, not the lease.
         stopIfDraining(state);
         if (await standDown(ctx, 'its run')) return;
         // A throw is the path that would otherwise leak the claim: no runner ever launched, so none
         // of them releases it, and it would sit there until the cluster noticed (issue #469).
-        await interruptAttempt(ctx, `could not run: ${(e as Error).message}`, null);
+        await leaveToLease(ctx, `could not run: ${(e as Error).message}`, null);
     }
 }

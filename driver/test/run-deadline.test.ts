@@ -86,6 +86,7 @@ describe('the docker runner kill timer', () => {
         resumeSessionId: null,
         followUp: false,
         ownSession: false,
+        continuesInterrupted: false,
         userId: '44444444-4444-4444-8444-444444444444',
         workspacePath: 'bellows/44444444-4444-4444-8444-444444444444',
         supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: 'tok' },

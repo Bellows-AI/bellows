@@ -27,6 +27,7 @@ const job = {
     resumeSessionId: null,
     followUp: false,
     ownSession: false,
+    continuesInterrupted: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
 } as BoardJob;
@@ -78,6 +79,19 @@ describe('the claude-code runner plan', () => {
             ],
             cliArgs: [flag, SESSION, ...SYSTEM_PROMPT, '-p', 'fix the failing build'],
         });
+    });
+
+    // Issue #822: a claim continuing an interrupted attempt is told so in its prompt alone, the
+    // whole command behind the lead; a takeover the board does not flag is delivered the bare command.
+    it('frames the prompt as a continuation only for a claim that continues an interrupted attempt', () => {
+        const session = { id: SESSION, resume: true };
+        const resumed = { ...job, resumeSessionId: SESSION, ownSession: true };
+
+        const prompt = plan({ ...resumed, continuesInterrupted: true }, session).cliArgs.at(-1)!;
+
+        expect(prompt.startsWith('Your previous run of this task was interrupted')).toBe(true);
+        expect(prompt.endsWith('The task, for reference:\n\nfix the failing build')).toBe(true);
+        expect(plan(resumed, session).cliArgs.slice(-2)).toEqual(['-p', 'fix the failing build']);
     });
 
     // Issue #545: a skill selection rides the master prompt verbatim.
@@ -165,6 +179,20 @@ describe('the opencode runner plan', () => {
         expect(plan({ ...opencodeJob, turnContext }, null).cliArgs.at(-1)).toBe(
             `${turnContext}\n\nfix the failing build`
         );
+    });
+
+    // Issue #822: the continuation rides the turn prompt behind the turn context; only a claim the
+    // board flags as continuing an interrupted attempt is framed.
+    it('frames the prompt as a continuation only for a claim that continues an interrupted attempt', () => {
+        const session = { id: 'ses_f86188c3dffeZGYO4yZq4atba9', resume: true };
+        const turnContext = 'Factory turn context\n- Current node: implement';
+        const resumed = { ...opencodeJob, resumeSessionId: session.id, ownSession: true, turnContext };
+
+        const prompt = plan({ ...resumed, continuesInterrupted: true }, session).cliArgs.at(-1)!;
+
+        expect(prompt.startsWith(`${turnContext}\n\nYour previous run of this task was interrupted`)).toBe(true);
+        expect(prompt.endsWith('The task, for reference:\n\nfix the failing build')).toBe(true);
+        expect(plan(resumed, session).cliArgs.at(-1)).toBe(`${turnContext}\n\nfix the failing build`);
     });
 
     it.each([

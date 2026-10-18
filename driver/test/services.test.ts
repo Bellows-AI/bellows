@@ -25,6 +25,7 @@ const job: BoardJob = {
     resumeSessionId: null,
     followUp: false,
     ownSession: false,
+    continuesInterrupted: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
 };

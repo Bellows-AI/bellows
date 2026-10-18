@@ -148,14 +148,14 @@ export async function concludeSetup(ctx: AttemptCtx, halt: SetupHalt): Promise<v
 }
 
 /**
- * Leaves an attempt the board did not take back to the lease, saying why in the log: the fallback
- * of `interruptAttempt` alone, for an interrupt that never landed or a spent interruption budget.
- * The board recovers an expired lease as an interruption while it can, and retires the job `dead`
- * with no output once it cannot, so that LAST attempt (`lastAttempt` on the claim) reports a failed
- * verdict carrying `reason` instead: the reason is what `job investigate`, the web and a batch
- * report show.
+ * Leaves an attempt to the lease, saying why in the log: a run that threw, whose runner may still
+ * be running for the next claim to adopt, and the fallback of `interruptAttempt` for an interrupt
+ * that never landed or a spent interruption budget. The board recovers an expired lease as an
+ * interruption while it can, and retires the job `dead` with no output once it cannot, so that
+ * LAST attempt (`lastAttempt` on the claim) reports a failed verdict carrying `reason` instead: the
+ * reason is what `job investigate`, the web and a batch report show.
  */
-async function leaveToLease(ctx: AttemptCtx, reason: string, exitCode: number | null): Promise<void> {
+export async function leaveToLease(ctx: AttemptCtx, reason: string, exitCode: number | null): Promise<void> {
     await concludeSetup(ctx, leaveConclusion(ctx.job, reason, exitCode));
 }
 
@@ -169,9 +169,10 @@ const INTERRUPTION_REASON_MAX = 500;
 /**
  * Hands an attempt that ended without a verdict back to the board as an interruption (issues #792,
  * #822): refunded and claimable at once, its reason recorded inside the interruption budget, no
- * verdict. The infrastructure took its runner away, or this driver refused it while alive — could
- * not run it, saw its container never start, could not start its services — and either way the
- * reason belongs on the row, never in a lease period the next claim records as a silent driver.
+ * verdict. The infrastructure took its runner away, or this driver refused it while alive with no
+ * runner left behind — its container never started, its services could not start — and either way
+ * the reason belongs on the row, never in a lease period the next claim records as a silent driver.
+ * A run that threw is not handed back: its runner may have survived (`leaveToLease`).
  * Only an interrupt that does not land (the board unreachable, a refused token) or a spent budget
  * leaves it to the lease (`leaveToLease`), where the last attempt reports it; a lost lease is the
  * new holder's.

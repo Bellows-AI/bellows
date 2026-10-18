@@ -34,11 +34,8 @@ function renderTurn(turn: RecapTurn, index: number): string {
     return `Turn ${index + 1} (${turn.status}): ${what}\nResult: ${result ? tail(result) : '(none recorded)'}`;
 }
 
-/**
- * The command to deliver: the recap of `turns`, then the new command, within `limit` — less than
- * the whole cap when it rides inside a continuation. No turns, no recap.
- */
-export function renderFollowUpRecap(turns: RecapTurn[], command: string, limit = DELIVERED_LIMIT): string {
+/** The command to deliver: the recap of `turns`, then the new command. No turns, no recap. */
+export function renderFollowUpRecap(turns: RecapTurn[], command: string): string {
     if (turns.length === 0) return command;
     const rendered = turns.map(renderTurn);
     const preamble =
@@ -50,7 +47,7 @@ export function renderFollowUpRecap(turns: RecapTurn[], command: string, limit =
     for (let first = 0; first < rendered.length; first += 1) {
         const omitted = first > 0 ? [`(${first} earlier turn${first === 1 ? '' : 's'} omitted)`] : [];
         const delivered = [preamble, ...omitted, ...rendered.slice(first), instruction].join('\n\n');
-        if (delivered.length <= limit) return delivered;
+        if (delivered.length <= DELIVERED_LIMIT) return delivered;
     }
     return command;
 }
@@ -89,35 +86,13 @@ export async function readRecapTurns(
     }));
 }
 
-const CONTINUATION_LEAD =
-    'Your previous run of this task was interrupted before it finished. ' +
-    'Continue from where this conversation left off. ' +
-    'Before repeating any step, check what was already done — commits, pushes, pull requests — ' +
-    'and do not redo it. ' +
-    'If this conversation has no earlier turns, start the task from the beginning.\n\n' +
-    'The task, for reference:\n\n';
-
 /**
- * What a claim that continues an interrupted attempt in its session delivers (issue #822): the
- * resumed conversation already holds the task, and handing it over afresh would have the agent
- * repeat what the lost attempt already did. What that attempt was delivered follows for reference
- * — the command, behind `recap` when it carried one, trimmed by the recap's own rule to the room
- * the lead leaves. A command that leaves the lead no room is delivered without it, never cut: on
- * the unwritten-session fallback this text is all the agent gets, and its last instruction counts.
- */
-export function renderContinuation(command: string, recap: RecapTurn[] = []): string {
-    const task = renderFollowUpRecap(recap, command, DELIVERED_LIMIT - CONTINUATION_LEAD.length);
-    if (CONTINUATION_LEAD.length + task.length <= DELIVERED_LIMIT) return CONTINUATION_LEAD + task;
-    return renderFollowUpRecap(recap, command);
-}
-
-/**
- * The command a claim delivers: a claim that continues an interrupted attempt in its session is
- * told to carry on (`renderContinuation`); a member follow-up with no session to resume starts
- * fresh, so the earlier turns ride ahead of its command; every other claim delivers the row's own
- * command. A continuation wraps what the attempt that started its session was delivered: the recap
- * too when that session is the row's own and the row a member follow-up — that attempt started
- * sessionless, so it carried the recap.
+ * The command a claim delivers: a member follow-up with no session to resume starts fresh, so the
+ * earlier turns ride ahead of its command; every other claim delivers the row's own command. A
+ * claim that continues an interrupted attempt in its session (issue #822) is delivered exactly what
+ * that attempt's first claim was — the recap too when the session is the row's own, minted by a
+ * first claim that ran sessionless — never wrapped: the runner that claim launched is marked with
+ * this text (`COMMAND_MARK`) and adopted on it, and the driver frames the continuation itself.
  */
 export async function claimCommand(
     tx: TransactionSql,
@@ -133,11 +108,9 @@ export async function claimCommand(
         resumes_interrupted: boolean;
     }
 ): Promise<string> {
-    const memberFollowUp = row.follow_up && row.workflow_node === null;
-    if (row.resumes_interrupted) {
-        const recapped = memberFollowUp && row.own_session;
-        return renderContinuation(row.command, recapped ? await readRecapTurns(tx, orgId, rootJobId, row.id) : []);
-    }
-    if (!memberFollowUp || row.session_id !== null) return row.command;
+    // Whether the attempt's first claim ran sessionless: for a continuation, when the session it
+    // resumes is one that first claim minted (`own_session`).
+    const sessionless = row.resumes_interrupted ? row.own_session : row.session_id === null;
+    if (!row.follow_up || row.workflow_node !== null || !sessionless) return row.command;
     return renderFollowUpRecap(await readRecapTurns(tx, orgId, rootJobId, row.id), row.command);
 }

@@ -39,6 +39,7 @@ const base: BoardJob = {
     resumeSessionId: null,
     followUp: false,
     ownSession: false,
+    continuesInterrupted: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
     repo: 'Bellows-AI/factory',

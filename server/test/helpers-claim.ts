@@ -20,5 +20,6 @@ export const makeClaim = (overrides: Partial<Claim> & Pick<Claim, 'id' | 'comman
     resumeSessionId: null,
     followUp: false,
     ownSession: false,
+    continuesInterrupted: false,
     ...overrides,
 });

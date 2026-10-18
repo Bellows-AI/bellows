@@ -304,6 +304,7 @@ describe('the token cache and the runner env, on both executors', () => {
         resumeSessionId: null,
         followUp: false,
         ownSession: false,
+        continuesInterrupted: false,
         userId: USER,
         workspacePath: `bellows/${USER}`,
         repo: 'Bellows-AI/factory',

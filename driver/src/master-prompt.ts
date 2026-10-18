@@ -5,6 +5,7 @@
  * is told it, which is why it is the one thing docker and kubernetes must build identically.
  */
 import type { BoardJob } from './board.js';
+import { agentPrompt } from './continuation.js';
 
 /** Mirrors the server's own cap (server/src/db/master-prompt.ts) — the driver's own backstop
  *  against a malformed claim, never the source of truth for what "too large" means. */
@@ -58,9 +59,13 @@ export function claudeTurnContextEnv(job: BoardJob): [string, string][] {
     return job.turnContext ? [[TURN_CONTEXT_ENV, job.turnContext]] : [];
 }
 
-/** OpenCode's turn prompt: its positional message is plain text, so the turn context leads it. */
+/**
+ * OpenCode's turn prompt: its positional message is plain text, so the turn context leads it, ahead
+ * of the command — framed as a continuation when the claim continues an interrupted attempt.
+ */
 export function opencodeTurnPrompt(job: BoardJob): string {
-    return job.turnContext ? `${job.turnContext}\n\n${job.command}` : job.command;
+    const prompt = agentPrompt(job);
+    return job.turnContext ? `${job.turnContext}\n\n${prompt}` : prompt;
 }
 
 /**

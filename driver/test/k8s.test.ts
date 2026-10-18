@@ -98,6 +98,7 @@ const job: BoardJob = {
     resumeSessionId: null,
     followUp: false,
     ownSession: false,
+    continuesInterrupted: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
     rootCommand: 'fix the failing build',
@@ -5902,6 +5903,31 @@ describe('the runner pod of a resumed attempt', () => {
             ).not.toContain(UNWRITTEN.name);
         }
     );
+
+    // A claim continuing an interrupted attempt is framed in its prompt alone: the Job is marked
+    // with the unframed command (`COMMAND_MARK`), as the interrupted attempt's runner Job was.
+    it.each([
+        ['claude-code', job, SESSION, { id: SESSION, resume: false }],
+        ['opencode', opencodeJob, 'ses_abc123', null],
+    ])(
+        'frames a %s continuation into its prompt alone, marking the Job with the command the first claim ran',
+        (_name, claimed, session, firstSession) => {
+            const first = runnerJobSpec(k8sConfig, claimed, firstSession);
+            const continuing = runnerJobSpec(
+                k8sConfig,
+                { ...claimed, claimSeq: 2, resumeSessionId: session, ownSession: true, continuesInterrupted: true },
+                { id: session, resume: true }
+            );
+
+            const prompt = continuing.spec.template.spec.containers[0]!.args?.at(-1);
+            expect(prompt?.startsWith('Your previous run of this task was interrupted')).toBe(true);
+            expect(prompt?.endsWith(`The task, for reference:\n\n${claimed.command}`)).toBe(true);
+            expect(continuing.metadata.annotations?.['factory.command']).toBe(commandMark(claimed.command));
+            expect(continuing.metadata.annotations?.['factory.command']).toBe(
+                first.metadata.annotations?.['factory.command']
+            );
+        }
+    );
 });
 
 describe('the opencode session readout job', () => {
@@ -6836,6 +6862,21 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
     it('never adopts a run of a command since edited', async () => {
         const { request } = withRunners([priorItem({ succeeded: 1 })]);
         expect(await runner(request).adopt!({ ...adopter, command: 'another command' })).toBeNull();
+    });
+
+    // Issue #822: the runner of an interrupted attempt finished while its takeover or handover was
+    // being claimed. The continuing claim carries the command the first claim ran, so the marks
+    // that runner's Job was created with are its own, and the run is adopted, never redone.
+    it('adopts, for a claim continuing an interrupted attempt, the runner its first claim launched', async () => {
+        const listed = priorItem({ succeeded: 1 });
+        const launched = { ...listed, metadata: { ...listed.metadata, annotations: spec().metadata.annotations } };
+        const { request } = withRunners([launched]);
+        const continuing = { ...adopter, resumeSessionId: SESSION, ownSession: true, continuesInterrupted: true };
+
+        expect(await runner(request).adopt!(continuing)).toMatchObject({
+            claimSeq: 1,
+            outcome: { exitCode: 0, started: true, sessionId: SESSION },
+        });
     });
 
     it('answers null when this job has no earlier runner', async () => {

@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { renderContinuation } from '../src/db/follow-up-recap.js';
 import { createJobStore, INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from '../src/db/job-store.js';
 import type { Claim, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
@@ -49,7 +48,7 @@ describe.skipIf(!enabled)('interrupting an attempt the infrastructure took away 
     it('refunds the attempt, frees the lease at once and records why', async () => {
         const id = await queue();
         const first = await claim();
-        expect(first).toMatchObject({ id, attempts: 1, claimSeq: 1 });
+        expect(first).toMatchObject({ id, attempts: 1, claimSeq: 1, continuesInterrupted: false });
 
         expect(
             await store.interrupt(id, first.leaseToken, { reason: 'the driver was drained', release: true })
@@ -168,7 +167,9 @@ describe.skipIf(!enabled)('interrupting an attempt the infrastructure took away 
         expect(row!.interruptions).toEqual([{ at: expect.any(String), reason: 'the driver was drained', claimSeq: 1 }]);
     });
 
-    it('resumes the session of an attempt the driver handed back, telling it to continue', async () => {
+    // The command is what the first claim got, so the runner that claim launched stays adoptable
+    // (its `COMMAND_MARK`); the driver frames the continuation into the prompt alone.
+    it('resumes the session of an attempt the driver handed back, flagged as continuing it', async () => {
         const id = await queue();
         const first = await claim();
         const session = randomUUID();
@@ -180,7 +181,8 @@ describe.skipIf(!enabled)('interrupting an attempt the infrastructure took away 
             resumeSessionId: session,
             followUp: false,
             ownSession: true,
-            command: renderContinuation('do the thing'),
+            continuesInterrupted: true,
+            command: 'do the thing',
         });
     });
 
@@ -190,7 +192,29 @@ describe.skipIf(!enabled)('interrupting an attempt the infrastructure took away 
         const first = await claim();
         await store.interrupt(id, first.leaseToken, { reason: 'the driver was drained', release: true });
 
-        expect(await claim()).toMatchObject({ id, resumeSessionId: null, command: 'do the thing' });
+        expect(await claim()).toMatchObject({
+            id,
+            resumeSessionId: null,
+            continuesInterrupted: false,
+            command: 'do the thing',
+        });
+    });
+
+    // A retry is a new row that resumes nothing: no interrupted attempt of its own to continue.
+    it('never flags a retry of a task as continuing an interrupted attempt', async () => {
+        const id = await queue();
+        const first = await claim();
+        await store.session(id, first.leaseToken, randomUUID());
+        await store.complete(id, first.leaseToken, { status: 'failed', exitCode: 1, output: 'no' });
+        const retry = await store.createRetry(id, null);
+        if (typeof retry === 'string') throw new Error(`createRetry refused: ${retry}`);
+
+        expect(await claim()).toMatchObject({
+            id: retry.id,
+            resumeSessionId: null,
+            continuesInterrupted: false,
+            command: 'do the thing',
+        });
     });
 });
 
@@ -267,14 +291,17 @@ describe.skipIf(!enabled)('a lease expiry is an interruption the next claim reco
             resumeSessionId: null,
             followUp: false,
             ownSession: false,
+            continuesInterrupted: false,
             command: 'do the thing',
         });
         expect((await store.get(id))!.sessionId).toBeNull();
     });
 
     // The takeover resumes the lost attempt's conversation, so handing it the task again would
-    // have the agent repeat what it already committed, pushed or opened.
-    it('tells a takeover to continue the interrupted run, with the task for reference', async () => {
+    // have the agent repeat what it already committed, pushed or opened: the claim says it
+    // continues, and the driver frames the prompt. The command stays the first claim's, the text
+    // the lost runner is marked with, so a runner that finished meanwhile is adopted.
+    it('flags a takeover as continuing the interrupted run, delivering the command the first claim got', async () => {
         const id = await queue();
         const first = await claim();
         const session = randomUUID();
@@ -286,7 +313,8 @@ describe.skipIf(!enabled)('a lease expiry is an interruption the next claim reco
             resumeSessionId: session,
             followUp: false,
             ownSession: true,
-            command: renderContinuation('do the thing'),
+            continuesInterrupted: true,
+            command: first.command,
             rootCommand: 'do the thing',
         });
     });

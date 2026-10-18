@@ -829,6 +829,7 @@ export function buildClaimResult(
         resumeSessionId: row.session_id,
         followUp: row.follow_up,
         ownSession: row.own_session,
+        continuesInterrupted: row.resumes_interrupted,
         ...(claimEnv ? { env: claimEnv } : {}),
         ...(row.repo !== null ? { repo: row.repo } : {}),
         ...(row.base_branch ? { baseBranch: row.base_branch } : {}),

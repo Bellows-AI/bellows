@@ -283,6 +283,7 @@ describe('the driver config: runner resources', () => {
         resumeSessionId: null,
         followUp: false,
         ownSession: false,
+        continuesInterrupted: false,
         userId: USER,
         workspacePath: `bellows/${USER}`,
     };

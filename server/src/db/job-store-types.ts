@@ -565,6 +565,13 @@ export interface Claim {
      */
     ownSession: boolean;
     /**
+     * Whether this claim continues, in its session, the interrupted attempt it supersedes — a
+     * lease-expiry takeover or a handover (issue #822). `command` stays what that attempt's first
+     * claim was delivered, the text its runner is marked with for adoption; the driver frames the
+     * prompt as a continuation (`driver/src/continuation.ts`).
+     */
+    continuesInterrupted: boolean;
+    /**
      * The environment the runner starts with, resolved at claim time for THIS job's author and
      * repo label: org < workspace < repo, the more specific scope winning. Optional — absent on a
      * board built without an env store, which the driver reads as "no environment".

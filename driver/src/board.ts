@@ -118,6 +118,13 @@ export interface BoardJob {
      */
     ownSession: boolean;
     /**
+     * Whether this claim continues, in its session, the interrupted attempt it supersedes — a
+     * takeover or a handover (issue #822). The agent's prompt alone is framed as a continuation
+     * (`continuation.ts`); `command` is what every claim of the attempt carries, so the runner's
+     * adoption mark, helper receipts and commit title read the same text on each.
+     */
+    continuesInterrupted: boolean;
+    /**
      * The account that queued the job, or null for an unattributed one.
      *
      * Still not read here — the per-user Claude credential is what will read it. `workspacePath`

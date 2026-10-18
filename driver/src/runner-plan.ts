@@ -8,6 +8,7 @@ import {
     SESSION_ID,
     transcriptDir,
 } from './claim.js';
+import { agentPrompt } from './continuation.js';
 import { OPENCODE } from './executors.js';
 import {
     claudeSystemPromptArgs,
@@ -153,7 +154,8 @@ function claudePlan(config: DriverConfig, job: BoardJob, session: RunSession | n
     // system-instruction channel — additive to its built-in system prompt, never a replacement.
     // It is the same text on every claim of a thread; the per-node turn context rides the env above.
     cliArgs.push(...claudeSystemPromptArgs(job));
-    cliArgs.push('-p', job.command);
+    // Framed as a continuation when the claim continues an interrupted attempt (issue #822).
+    cliArgs.push('-p', agentPrompt(job));
     return { envPairs, cliArgs };
 }
 

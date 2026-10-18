@@ -53,6 +53,7 @@ const JOB = (lease: string): BoardJob => ({
     resumeSessionId: null,
     followUp: false,
     ownSession: false,
+    continuesInterrupted: false,
     userId: '44444444-4444-4444-8444-444444444444',
     workspacePath: 'bellows/44444444-4444-4444-8444-444444444444',
 });

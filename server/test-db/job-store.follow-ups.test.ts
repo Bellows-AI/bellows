@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql, TransactionSql } from 'postgres';
-import { renderContinuation } from '../src/db/follow-up-recap.js';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
@@ -313,6 +312,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             resumeSessionId: SESSION,
             followUp: true,
             ownSession: false,
+            continuesInterrupted: false,
             command: 'again',
         });
     });
@@ -334,7 +334,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
     // A crashed follow-up attempt re-claims with the session kept and the command re-delivered:
     // the conversation survives the crash, and the adjustment still reaches the agent, behind the
-    // note that its run was interrupted.
+    // note the driver frames because the claim says its run was interrupted.
     it('re-delivers the command when a follow-up attempt is reclaimed', async () => {
         const parent = await finishWithSession('drive me');
         const { id } = await mustFollowUp(parent, 'again', null);
@@ -351,13 +351,15 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             resumeSessionId: SESSION,
             followUp: true,
             ownSession: false,
-            command: renderContinuation('again'),
+            continuesInterrupted: true,
+            command: 'again',
         });
     });
 
     // A follow-up of a sessionless parent minted its own session, which a driver lost before the
     // CLI's first write leaves unwritten (`ownSession`); its first attempt was delivered the recap,
-    // so the takeover continues that, never the bare command.
+    // so the takeover is delivered that same text, never the bare command — exactly, so the runner
+    // the first attempt launched keeps its mark (`COMMAND_MARK`) and is adopted.
     it('continues a sessionless follow-up in the session it minted, with the recap it was delivered', async () => {
         const { id: parent } = await queue('fix the login bug');
         const ran = await store.claim('w1', LEASE_SECONDS);
@@ -382,7 +384,8 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             resumeSessionId: minted,
             followUp: true,
             ownSession: true,
-            command: renderContinuation(first!.command),
+            continuesInterrupted: true,
+            command: first!.command,
         });
         expect(takeover!.command).toContain('Found the bug in auth.ts');
         expect(takeover!.command.endsWith('New instruction:\n\ntry again')).toBe(true);
@@ -399,7 +402,13 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
         const second = await store.claim('w2', LEASE_SECONDS);
 
-        expect(second).toMatchObject({ id, attempts: 2, resumeSessionId: null, followUp: true });
+        expect(second).toMatchObject({
+            id,
+            attempts: 2,
+            resumeSessionId: null,
+            followUp: true,
+            continuesInterrupted: false,
+        });
         expect(second!.command).toContain('Turn 1 (succeeded): drive me\nResult: done');
         expect(second!.command.endsWith('New instruction:\n\nagain')).toBe(true);
     });

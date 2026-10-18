@@ -109,6 +109,7 @@ const job: BoardJob = {
     resumeSessionId: null,
     followUp: false,
     ownSession: false,
+    continuesInterrupted: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
     supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: CONTROL_TOKEN },
@@ -5200,5 +5201,46 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
                 `factory.command=${commandMark(job.command)}`,
             ])
         );
+    });
+
+    // Issue #822: a claim continuing an interrupted attempt is framed in its prompt alone; the
+    // container is labelled with the unframed command, as the interrupted attempt's runner was.
+    it.each([
+        ['claude-code', job, SESSION],
+        ['opencode', opencodeJob, 'ses_abc123'],
+    ])(
+        'frames a %s continuation into its prompt alone, labelling the container with the unframed command',
+        (_name, claimed, session) => {
+            const line = dockerArgs(
+                loadDriverConfig({}),
+                { ...claimed, claimSeq: 2, resumeSessionId: session, ownSession: true, continuesInterrupted: true },
+                { id: session, resume: true },
+                { envFile: '/tmp/env-file' }
+            );
+
+            expect(line.at(-1)?.startsWith('Your previous run of this task was interrupted')).toBe(true);
+            expect(line.at(-1)?.endsWith(`The task, for reference:\n\n${claimed.command}`)).toBe(true);
+            expect(line).toContain(`factory.command=${commandMark(claimed.command)}`);
+        }
+    );
+
+    // Issue #822: the runner of an interrupted attempt exited while its takeover or handover was
+    // being claimed. The continuing claim carries the command the first claim ran, so the label
+    // that runner was started with is its own, and the run is adopted, never redone.
+    it('adopts, for a claim continuing an interrupted attempt, the runner its first claim started', async () => {
+        const started = dockerArgs(
+            loadDriverConfig({}),
+            job,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
+        const mark = started.find((arg) => arg.startsWith('factory.command='))!.slice('factory.command='.length);
+        const { exec, logs } = daemon(listing('1', job.leaseToken, containerName(job), mark));
+        const continuing = { ...adopter, resumeSessionId: SESSION, ownSession: true, continuesInterrupted: true };
+
+        expect(await dockerRunner(exec, { spawn: logs }).adopt!(continuing)).toMatchObject({
+            claimSeq: 1,
+            outcome: { exitCode: 0, started: true, sessionId: SESSION },
+        });
     });
 });
