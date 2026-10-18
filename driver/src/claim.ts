@@ -34,6 +34,18 @@ export const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
  */
 export const GATE_UID = 1000;
 export const GATE_GID = 1000;
+/**
+ * The uid the agent's tool commands run as (issue #814): `factory-tool` in both executor images, in
+ * group GATE_GID beside the CLI's uid, so a tool cannot signal the CLI that started it. The terminal
+ * reclaim's release pass runs as it too, to give back what a tool closed to the uid-1000 reclaim.
+ */
+export const TOOL_UID = 1001;
+/**
+ * The capabilities the agent container starts with (issue #814), as root, every other one dropped:
+ * what the tool broker needs to start each command as TOOL_UID. factory-launch drops both, and root,
+ * before the CLI runs; no other container the driver starts gets either.
+ */
+export const AGENT_LAUNCH_CAPS = ['SETUID', 'SETGID'] as const;
 const NPM_UPDATE_NOTIFIER = 'NPM_CONFIG_UPDATE_NOTIFIER';
 /**
  * Runner and gate env, both executors: npm's update notice is the last line every npm call prints,
@@ -193,7 +205,17 @@ export const RESERVED_ENV_NAMES = [
     // board (docs/connections.md), so no claim value may stand in for it.
     'GITHUB_TOKEN',
     'GH_TOKEN',
+    // The agent container starts as root to launch its tool broker (issue #814): the glibc loader
+    // reads these for that root shell before any line of it runs. Every `LD_` name too (claimEnv).
+    'GCONV_PATH',
+    'GLIBC_TUNABLES',
+    'LOCPATH',
+    'NLSPATH',
+    'MALLOC_TRACE',
 ] as const;
+
+/** Every loader name, listed or not; mirrored at the board (isReservedEnvName in core/src/env.ts). */
+const LOADER_ENV_PREFIX = 'LD_';
 
 /** The job fields the repo cache path is composed from. */
 export type CacheJob = Pick<BoardJob, 'id' | 'env' | 'repo' | 'gates' | 'workspacePath'>;
@@ -301,7 +323,7 @@ export function gateEnv(config: Pick<DriverConfig, 'workspaceMount'>, job: Cache
 export function claimEnv(job: BoardJob): Record<string, string> {
     const env: Record<string, string> = Object.create(null);
     for (const [name, value] of Object.entries(job.env ?? {})) {
-        if ((RESERVED_ENV_NAMES as readonly string[]).includes(name)) continue;
+        if ((RESERVED_ENV_NAMES as readonly string[]).includes(name) || name.startsWith(LOADER_ENV_PREFIX)) continue;
         env[name] = value;
     }
     return env;

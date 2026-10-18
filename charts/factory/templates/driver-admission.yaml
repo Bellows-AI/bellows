@@ -139,12 +139,21 @@ spec:
                   (has(f.secretRef.name) &&
                     (f.secretRef.name.matches({{ squote $secretName }}) || f.secretRef.name in variables.allowed)))))
           message: 'a driver-specced pod may read only its own per-attempt Secrets and the runner credentials'
+        {{/*
+        Issue #814: one container may add a capability, and only these two. A runner Job's `agent`
+        starts as root with CAP_SETUID and CAP_SETGID, which its tool broker keeps to start each of
+        the agent's commands as the tool uid; factory-launch drops both, and root, before the CLI
+        runs. A service pod is no Job, and container names are unique across a pod's containers and
+        initContainers, so no other container can carry them.
+        */}}
         - expression: >-
               variables.containers.all(c, !has(c.securityContext) || (
                 !(has(c.securityContext.privileged) && c.securityContext.privileged) &&
                 (!has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add) ||
-                  size(c.securityContext.capabilities.add) == 0)))
-          message: 'a driver-specced container may not be privileged or add capabilities'
+                  size(c.securityContext.capabilities.add) == 0 ||
+                  (request.kind.kind == 'Job' && c.name == 'agent' &&
+                    c.securityContext.capabilities.add.all(a, a in ['SETUID', 'SETGID'])))))
+          message: 'a driver-specced container may not be privileged or add capabilities, but for the agent launch pair'
         {{/*
         Issue #382. Everything above FORBIDS a dangerous shape; these three REQUIRE the safe one,
         which is a different control: a driver that silently stopped setting `capabilities.drop`

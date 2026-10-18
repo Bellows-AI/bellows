@@ -104,8 +104,12 @@ describe('the agent container', () => {
         expect(mounted.some((mount) => mount.includes(volumeOf('supervisor')))).toBe(false);
     });
 
+    // Issue #814: the agent's own owner-only directories inside the two mailboxes it mounts.
     it('is told two mailbox paths and no control credential', () => {
-        expect(argv).toEqual(expect.arrayContaining(['FACTORY_CTL_IN=/factory/in', 'FACTORY_CTL_OUT=/factory/out']));
+        expect(argv).toEqual(
+            expect.arrayContaining(['FACTORY_CTL_IN=/factory/in/agent', 'FACTORY_CTL_OUT=/factory/out/agent'])
+        );
+        expect(argv).toContain('FACTORY_CTL_GO=/factory/in/agent/go');
         for (const name of SUPERVISOR_CREDENTIAL_NAMES) expect(argv.join(' ')).not.toContain(name);
         expect(argv.join(' ')).not.toContain('tok-supervisor');
     });

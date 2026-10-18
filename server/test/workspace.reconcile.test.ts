@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -94,6 +94,26 @@ describe.skipIf(!hasGit())('cloning into a member workspace', () => {
 
         expect(readdirSync(join(root, 'acme', USER)).sort()).toEqual(['gadgets', 'widgets']);
         expect(existsSync(join(root, 'acme', USER, 'widgets', '.git'))).toBe(true);
+    });
+
+    // Issue #814: the agent's tools run as their own uid in group 1000 and commit through this clone's
+    // object store from their worktrees, so every directory of it is group-writable, and git keeps
+    // the ones it creates later so too.
+    it('clones a tree the tool uid can write: group-writable directories, a group-shared repository', async () => {
+        await clone(repos[0] as Repo);
+        const checkout = join(root, 'acme', USER, 'widgets');
+        const closed: string[] = [];
+        const walk = (path: string): void => {
+            if (!lstatSync(path).isDirectory()) return;
+            if ((lstatSync(path).mode & 0o070) !== 0o070) closed.push(path);
+            for (const name of readdirSync(path)) walk(join(path, name));
+        };
+        walk(join(root, 'acme', USER));
+
+        expect(closed).toEqual([]);
+        expect(
+            execFileSync('git', ['-C', checkout, 'config', 'core.sharedRepository'], { encoding: 'utf8' }).trim()
+        ).toBe('group');
     });
 
     it("keeps two members' checkouts of the same repo apart", async () => {
