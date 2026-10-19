@@ -118,7 +118,9 @@ describe('the executor isolation record (#382)', () => {
         // 1.33: the first release with the `pods/resize` subresource the gate sidecar is resized
         // through, beside native sidecars and ValidatingAdmissionPolicy (issue #773, checked on kind
         // v1.33.4).
-        expect(kubernetesDocs).toContain('ValidatingAdmissionPolicy, native sidecars and `pods/resize`, Kubernetes ≥ 1.33');
+        expect(kubernetesDocs).toContain(
+            'ValidatingAdmissionPolicy, native sidecars and `pods/resize`, Kubernetes ≥ 1.33'
+        );
         expect(kubernetesDocs).toContain('httpPutResponseHopLimit');
         // The IP family: documented as a limit, since only IPv4 rules exist. The IPv4 rules still
         // cover IPv4 on a dual-stack cluster; what is missing there is the IPv6 half.
