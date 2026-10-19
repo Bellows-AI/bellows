@@ -397,15 +397,20 @@ export interface K8sPod {
         message?: string;
         /** `DisruptionTarget` is the control plane's mark on a pod it is taking away (issue #560). */
         conditions?: { type?: string; status?: string; reason?: string; message?: string }[];
-        containerStatuses?: {
-            /** The container's name — the runner pod holds several, so its verdict reads them by name. */
-            name?: string;
-            state?: {
-                terminated?: { exitCode?: number; reason?: string; message?: string; startedAt?: string };
-                running?: { startedAt?: string };
-                waiting?: { reason?: string; message?: string };
-            };
-        }[];
+        containerStatuses?: K8sContainerStatus[];
+        /** The init containers', sidecars included (#773 D10): one held on its image holds the whole pod. */
+        initContainerStatuses?: K8sContainerStatus[];
+    };
+}
+
+export interface K8sContainerStatus {
+    /** The container's name — the runner pod holds several, so its verdict reads them by name. */
+    name?: string;
+    image?: string;
+    state?: {
+        terminated?: { exitCode?: number; reason?: string; message?: string; startedAt?: string };
+        running?: { startedAt?: string };
+        waiting?: { reason?: string; message?: string };
     };
 }
 

@@ -87,7 +87,7 @@ async function pollGateJobToTerminal(
         }
         if (!imageCleared) {
             const pull = await readImagePullStatus(deps, jobName);
-            if (pull.blocked) throw gateHarness(unpullableImage('gate', image, pull.blocked));
+            if (pull.blocked) throw gateHarness(unpullableImage({ role: 'gate' }, image, pull.blocked));
             imageCleared = pull.containerSeen;
         }
         await deps.sleep(POLL_MS);

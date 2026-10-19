@@ -25,7 +25,7 @@ import {
 import { containerHardeningField } from './k8s-podfields.js';
 import { GATE_GID, TOOL_UID, workspacePath } from './claim.js';
 import { RELEASE_DEADLINE_MS, toolTreeReleaseBoundedScript, toolTreeReleaseScript, worktreeDir } from './publish.js';
-import { type PodStartState, readImagePullStatus, readJobStatus, startRefusalOf, unpullableImage } from './k8s-poll.js';
+import { heldUnpullable, type PodStartState, readImagePullStatus, readJobStatus, startRefusalOf } from './k8s-poll.js';
 import {
     endRunnerJob,
     GROUP_END_WAIT_MS,
@@ -208,11 +208,11 @@ async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): P
         const pull = await readImagePullStatus(deps, jobName);
         const refused = startRefusalOf(image, pull, true);
         if (refused) throw refused;
-        if (pull.blocked) unproven = pull.blocked;
+        if (pull.blocked) unproven = heldUnpullable(image, pull, pull.blocked);
         if (pull.podState !== 'unread') last = pull.podState;
         await deps.sleep(POLL_MS);
     }
-    if (unproven) throw new Error(unpullableImage('executor', image, unproven));
+    if (unproven) throw new Error(unproven);
     const why = `the task supervisor of ${jobName} never came up within ${GROUP_UP_WAIT_MS}ms`;
     if (last === 'none' || last === 'starting') throw new StartupRefused(why, 'transient');
     throw new Error(why);

@@ -11,14 +11,31 @@
 export const STARTUP_CAUSES = ['transient', 'image', 'auth', 'config'] as const;
 export type StartupCause = (typeof STARTUP_CAUSES)[number];
 
-/** A group start the platform refused, with the cause its own words prove. */
+/** Which of the group's containers a refusal held (#773 D10): the executor's own, the gate's, or a declared service's. */
+export interface HeldContainer {
+    role: 'executor' | 'gate' | 'service';
+    /** The declared service's name, for the `service` role only. */
+    service?: string;
+}
+
+/** How a refusal names the container it held: `executor`, `gate`, or `service "db"`. */
+export const heldWords = ({ role, service }: HeldContainer): string =>
+    role === 'service' ? `service "${service}"` : role;
+
+/** A group start the platform refused, with the cause its own words prove and the container it held. */
 export class StartupRefused extends Error {
+    readonly role: HeldContainer['role'];
+    readonly service: string | undefined;
+
     constructor(
         message: string,
-        readonly startupCause: StartupCause
+        readonly startupCause: StartupCause,
+        held: HeldContainer = { role: 'executor' }
     ) {
         super(message);
         this.name = 'StartupRefused';
+        this.role = held.role;
+        this.service = held.service;
     }
 }
 

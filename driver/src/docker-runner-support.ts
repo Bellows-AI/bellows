@@ -27,19 +27,26 @@ import {
     serviceRunArgs,
 } from './services.js';
 import { awaitServicesRunning, throwIfStoodDown } from './service-restart.js';
-import { type StartupCause, startupCauseOf, StartupRefused } from './startup-cause.js';
+import { type HeldContainer, heldWords, type StartupCause, startupCauseOf, StartupRefused } from './startup-cause.js';
 
 export const run = promisify(execFile);
 
 /**
  * A group start the daemon refused, typed by the cause its own stderr proves (#824 D11); anything
- * else — a local file the host refused, words that prove no cause — is rethrown as it came.
+ * else — a local file the host refused, words that prove no cause — is rethrown as it came. A
+ * sidecar's refusal (`held`, #773 D10) names its role and image; the executor's keeps the daemon's words.
  */
-export function startupRefusalOf(e: unknown): unknown {
+export function startupRefusalOf(e: unknown, held?: HeldContainer & { image: string }): unknown {
     const stderr = (e as { stderr?: unknown }).stderr;
     if (typeof stderr !== 'string') return e;
     const cause = startupCauseOf({ message: stderr });
-    return cause ? new StartupRefused(stderr.trim(), cause) : e;
+    if (!cause) return e;
+    if (!held) return new StartupRefused(stderr.trim(), cause);
+    return new StartupRefused(
+        `the ${heldWords(held)} image "${held.image}" was refused: ${stderr.trim()}`,
+        cause,
+        held
+    );
 }
 
 export type Spawn = typeof spawn;

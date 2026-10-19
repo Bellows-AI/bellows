@@ -16,7 +16,8 @@ import {
     supervisorName,
 } from '../src/docker-group.js';
 import { ctlVolumeName } from '../src/docker-mailbox.js';
-import type { RunnerFiles } from '../src/docker-runner-support.js';
+import { type RunnerFiles, startupRefusalOf } from '../src/docker-runner-support.js';
+import { StartupRefused } from '../src/startup-cause.js';
 import { MAILBOXES, SUPERVISOR_CREDENTIAL_NAMES, SUPERVISOR_EXIT } from '../src/supervisor-contract.js';
 import { orphanBoundMs } from '../src/supervisor-plan.js';
 
@@ -243,5 +244,48 @@ describe('waiting for the supervisor after the agent exits', () => {
         expect(supervisorLossOf(null, false)).toMatch(/did not finalize/);
         // The backstop's own timeout is a verdict, never a loss.
         expect(supervisorLossOf(null, true)).toBeNull();
+    });
+});
+
+// Issue #773 D10: the docker twin of the pod's held sidecar — a refused create names the role and image it was for.
+describe('a refused sidecar create', () => {
+    const refusal = (stderr: string) => Object.assign(new Error('docker create failed'), { stderr });
+
+    it('names the gate role and image a refused pull was for', () => {
+        const refused = startupRefusalOf(
+            refusal('Error response from daemon: pull access denied for registry.example/gate\n'),
+            { role: 'gate', image: 'registry.example/gate:1' }
+        );
+        expect(refused).toBeInstanceOf(StartupRefused);
+        expect(refused).toMatchObject({
+            startupCause: 'auth',
+            role: 'gate',
+            message:
+                'the gate image "registry.example/gate:1" was refused: Error response from daemon: pull access denied for registry.example/gate',
+        });
+    });
+
+    it('names the service and its image', () => {
+        expect(
+            startupRefusalOf(refusal('Error response from daemon: manifest unknown'), {
+                role: 'service',
+                service: 'db',
+                image: 'registry.example/db:17',
+            })
+        ).toMatchObject({
+            startupCause: 'image',
+            role: 'service',
+            service: 'db',
+            message:
+                'the service "db" image "registry.example/db:17" was refused: Error response from daemon: manifest unknown',
+        });
+    });
+
+    it('keeps the executor’s own refusal as the daemon said it', () => {
+        expect(startupRefusalOf(refusal('Error response from daemon: manifest unknown'))).toMatchObject({
+            startupCause: 'image',
+            role: 'executor',
+            message: 'Error response from daemon: manifest unknown',
+        });
     });
 });
