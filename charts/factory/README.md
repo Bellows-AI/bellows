@@ -19,8 +19,8 @@ commented in `values.yaml`; the executor, EKS prerequisites and isolation residu
 
 - The chart deploys **no database**. `database.url` is required, or `secret.existingSecret` must carry
   `database-url`. Any managed PostgreSQL 17 works; no extension is needed.
-- Requires **Kubernetes ≥ 1.30** and an installer allowed to create cluster-scoped `ValidatingAdmissionPolicy`
-  objects (`isolation.admissionPolicy`).
+- Requires **Kubernetes ≥ 1.33** (native sidecars, `pods/resize`) and an installer allowed to create
+  cluster-scoped `ValidatingAdmissionPolicy` objects (`isolation.admissionPolicy`).
 - `AUTH_MODE` is always `github`; the Service is ClusterIP. An unauthenticated `POST /api/jobs` is RCE —
   [docs/security.md](../../docs/security.md).
 - `global.imageRegistry` prefixes every rendered reference, both executor images included; `database.waitImage` is

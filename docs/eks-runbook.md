@@ -9,7 +9,7 @@ ingress half held; 1, 6 and 7's job half were not walked.
 
 Reasoning: [docs/kubernetes.md](kubernetes.md), "EKS prerequisites".
 
-- EKS ≥ 1.30, EC2 Linux nodes. **Fargate is out entirely** — no NetworkPolicy, no metrics API.
+- EKS ≥ 1.33, EC2 Linux nodes. **Fargate is out entirely** — no NetworkPolicy, no metrics API.
 - VPC CNI add-on with `enableNetworkPolicy: true`.
 - `httpPutResponseHopLimit: 1` (or IMDS disabled) on the runner node group.
 - The metrics-server add-on, or a running job's vitals degrade to null.

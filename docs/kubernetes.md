@@ -1,7 +1,6 @@
 # Kubernetes
 
-The primary executor — runners are Jobs reconciled by the driver itself (no CRD, no second control loop) — plus the
-Helm chart that deploys the whole factory.
+The primary executor — runners are Jobs the driver reconciles itself, no CRD — and the chart deploying it.
 
 ## Where things live
 
@@ -30,9 +29,6 @@ Helm chart that deploys the whole factory.
 | The admission policies that fence the driver, admitting one capability add: `SETUID`/`SETGID` on a runner Job's `agent`; and one update: a checkout claim's revoke (`factory-job-<id>-claim` only, labels and data kept, no annotation but `factory.revoked` changed) | `charts/factory/templates/driver-admission.yaml`, `driver/src/k8s-podfields.ts` | `driver/test/k8s-admission.test.ts`, `scripts/test-k8s.sh`, `scripts/test-k8s.sh --cluster` |
 | Runner network confinement | `charts/factory/templates/runner-networkpolicy.yaml` | `scripts/test-k8s.sh --netpol` |
 | Local Postgres, the workspaces claim, the `.env`-fed local values, `make start`/`reset`; the kind cluster and its local registry, `make cluster`/`cleanup` | `charts/factory-local-state/`, `scripts/k8s-local-values.mjs`, `scripts/kind-cluster.sh`, `scripts/kind-cluster.yaml`, `Makefile` | `scripts/test-k8s.sh`, `driver/test/k8s-lane.test.ts`, `core/test/makefile.kind-cluster.test.ts` |
-
-What a run does — sync, gates, services, publish, helpers, reclaim — is one contract over both executors
-([jobs.md](jobs.md)); lanes are [executor-testing.md](executor-testing.md).
 
 ## Invariants
 
@@ -78,8 +74,8 @@ What a run does — sync, gates, services, publish, helpers, reclaim — is one 
 
 ## Operational facts
 
-- `make reset` destroys the local state release and its data — the `volumeClaimTemplate` claim survives
-  `helm uninstall`. A `timescale/timescaledb` data directory cannot be upgraded to `postgres:17`.
+- `make reset` destroys the local state release and its data; the `volumeClaimTemplate` claim survives
+  `helm uninstall`.
 - `EXECUTOR=kubernetes` with `RUNNER_CACHE_WATCH=1` is fatal at startup (`driver/src/config.ts`).
 - Deliberate docker divergences: no cpu-request flag, no node scheduling, no `imagePullSecrets` twin, no admission
   equivalent; the docker fence keeps its label-sweep shape; on docker (development only) service listeners are
@@ -121,7 +117,7 @@ has **never been installed on EKS**. The single-AZ `ReadWriteOnce` fallback need
 
 Controls, why Pod Security `restricted` cannot admit the agent container, and that none of this is kernel or VM
 isolation: [security.md](security.md). The deployment must provide **A CNI that enforces NetworkPolicy**,
-**ValidatingAdmissionPolicy, Kubernetes ≥ 1.30**, and the IMDS defence above. Residuals:
+**ValidatingAdmissionPolicy, native sidecars and `pods/resize`, Kubernetes ≥ 1.33**, the IMDS defence. Residuals:
 
 - **IPv6 egress is not covered**; every rule is IPv4.
 - A runner can **reach the driver pod on any port** (the gate endpoint has an ephemeral port). Runner pods take no
