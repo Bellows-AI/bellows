@@ -1,37 +1,65 @@
 #!/usr/bin/env bash
 # End-to-end for the job board and its driver.
 #
-#   scripts/test-jobs.sh
+#   scripts/test-jobs.sh [--phase workflows]
 #
-# Real HTTP, a real database and real containers — but no Claude and no credential. The runners are
-# four throwaway stub images — two whose entrypoints echo and exit (proving the whole path: the
-# prompt reaches the container, the exit code and output come back, and the board records them),
-# plus a service stub and a runner-exec stub for the services phase.
+# Real HTTP, a real database, stub runners and real agent CLIs against a scripted model endpoint.
+# No model credential or quota. Selected phases provision fixtures without running other phases.
 #
-# Everything it creates it removes: a *_test database, four stub images, one volume, two processes.
-#
-# Needs: docker (with the compose stack's postgres reachable) and node. No jq, no curl.
+# Runtime fixtures are removed; timings and process logs remain under artifacts/jobs/.
+# Needs: docker and node; board phases also need compose Postgres. See --help.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
+PHASE=all
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --phase)
+        shift
+        PHASE="${1:-}"
+        case "$PHASE" in
+        all|board|driver|github-credential|services|orphan-reaper|node-disruption|workflows|compose-driver|auth|cooperative-stop|tool-isolation|ask-user-question|question-round-trip) ;;
+        *) echo 'test-jobs: invalid --phase (see --help)'; exit 2 ;;
+        esac
+        ;;
+    --help)
+        echo 'Usage: scripts/test-jobs.sh [--phase PHASE]'
+        echo 'Phases: all (default), board, driver, github-credential, services, orphan-reaper,'
+        echo '        node-disruption, workflows, compose-driver, auth, cooperative-stop,'
+        echo '        tool-isolation, ask-user-question, question-round-trip'
+        echo 'Each phase provisions its own prerequisites; standalone CLI phases need no database or build.'
+        echo 'TIMINGS_FILE overrides artifacts/jobs/<run>.tsv; check timings and process logs are saved beside it.'
+        exit 0
+        ;;
+    *) echo "test-jobs: unknown argument: $1"; exit 2 ;;
+    esac
+    shift
+done
+selected_phase() { [ "$PHASE" = all ] || [ "$PHASE" = "$1" ]; }
+needs_board() {
+    case "$PHASE" in cooperative-stop|tool-isolation|ask-user-question) return 1 ;; esac
+    return 0
+}
+
+RUN_ID="$(date +%s)-$$"
 PORT="${PORT:-8129}"
 BASE="http://127.0.0.1:$PORT"
-DB="${JOBS_TEST_DB:-factory_jobs_test}"
+DB="${JOBS_TEST_DB:-factory_jobs_${RUN_ID//-/_}_test}"
 DATABASE_URL="postgres://factory:factory@127.0.0.1:5432/$DB"
-IMAGE_BASE="factory-jobs-smoke-base"
-IMAGE_OK="factory-jobs-smoke-ok"
-IMAGE_FAIL="factory-jobs-smoke-fail"
-IMAGE_SVC="factory-jobs-smoke-svc"
-IMAGE_RUN="factory-jobs-smoke-run"
-IMAGE_GH="factory-jobs-smoke-github"
-IMAGE_KILL="factory-jobs-smoke-kill"
-VOLUME="factory-jobs-smoke-workspaces"
-COMPOSE_DRIVER="factory-jobs-compose-driver"
+IMAGE_BASE="factory-jobs-$RUN_ID-base"
+IMAGE_OK="factory-jobs-$RUN_ID-ok"
+IMAGE_FAIL="factory-jobs-$RUN_ID-fail"
+IMAGE_SVC="factory-jobs-$RUN_ID-svc"
+IMAGE_RUN="factory-jobs-$RUN_ID-run"
+IMAGE_GH="factory-jobs-$RUN_ID-github"
+IMAGE_KILL="factory-jobs-$RUN_ID-kill"
+VOLUME="factory-jobs-$RUN_ID-workspaces"
+COMPOSE_DRIVER="factory-jobs-$RUN_ID-compose-driver"
 # The compose phase pins its own project name, so the volumes and network its `run` creates can be
 # torn down by name without touching the stack services the script itself started (postgres).
-COMPOSE_PROJECT="factory-jobs-smoke-compose"
+COMPOSE_PROJECT="factory-jobs-$RUN_ID-compose"
 # docker-compose.yml requires JOB_BOARD_TOKEN for the dashboard service, and compose interpolates the
 # whole file on every call (on a current compose even `exec` into postgres), so every call goes
 # through compose(). The compose phase's driver is started with the token cleared
@@ -49,37 +77,103 @@ driver_pid=""
 mint_pid=""
 compose_pid=""
 db_created=""
-work="$(mktemp -d)"
+# Preflight before creating or removing any shared lane resource.
+for tool in docker node timeout; do
+    command -v "$tool" >/dev/null || { echo "test-jobs: $tool is required"; exit 1; }
+done
+docker info >/dev/null 2>&1 || { echo 'test-jobs: docker daemon is unavailable'; exit 1; }
+images=''
+case "$PHASE" in
+all|cooperative-stop|tool-isolation) images='claude-executor opencode-executor' ;;
+ask-user-question|question-round-trip) images='claude-executor' ;;
+esac
+for image in $images; do
+    docker image inspect "$image" >/dev/null 2>&1 || {
+        echo "test-jobs: $image is missing — run make runners"
+        exit 1
+    }
+done
+if needs_board; then
+    for tool in npm openssl; do
+        command -v "$tool" >/dev/null || { echo "test-jobs: $tool is required"; exit 1; }
+    done
+    compose version >/dev/null 2>&1 || { echo 'test-jobs: the compose plugin is required'; exit 1; }
+    [[ "$DB" =~ ^[a-z_][a-z0-9_]*_test$ ]] || { echo 'test-jobs: JOBS_TEST_DB must be a SQL identifier ending _test'; exit 2; }
+fi
+
+TIMINGS_FILE="${TIMINGS_FILE:-$REPO/artifacts/jobs/$(date +%Y%m%d-%H%M%S)-$$.tsv}"
+CHECKS_FILE="${TIMINGS_FILE%.tsv}.checks.tsv"
+mkdir -p "$(dirname "$TIMINGS_FILE")" || exit 1
+printf 'phase\tseconds\n' >"$TIMINGS_FILE" || exit 1
+printf 'phase\tseconds\tresult\tcheck\n' >"$CHECKS_FILE" || exit 1
+lane_started=$SECONDS
+phase_name=''
+phase_started=$SECONDS
+check_started=$SECONDS
+end_phase() {
+    [ -n "$phase_name" ] || return 0
+    local elapsed=$((SECONDS - phase_started))
+    printf '[timing] %s: %ss\n' "$phase_name" "$elapsed"
+    printf '%s\t%s\n' "$phase_name" "$elapsed" >>"$TIMINGS_FILE"
+    phase_name=''
+}
+begin_phase() {
+    end_phase
+    phase_name="$1"
+    phase_started=$SECONDS
+    check_started=$SECONDS
+}
+check_timing() {
+    printf '%s\t%s\t%s\t%s\n' "$phase_name" "$((SECONDS - check_started))" "$1" "$2" >>"$CHECKS_FILE"
+    check_started=$SECONDS
+}
+work="$(mktemp -d)" || exit 1
 
 ok() {
+    check_timing ok "$1"
     printf 'ok   %s\n' "$1"
     pass=$((pass + 1))
 }
 
 bad() {
+    check_timing FAIL "$1"
     printf 'FAIL %s\n     %s\n' "$1" "${2:0:400}"
     fail=$((fail + 1))
 }
 
 cleanup() {
+    local result=$?
+    begin_phase cleanup
     [ -n "$driver_pid" ] && kill "$driver_pid" 2>/dev/null
     [ -n "$compose_pid" ] && kill "$compose_pid" 2>/dev/null
     [ -n "$mint_pid" ] && kill "$mint_pid" 2>/dev/null
     [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null
     wait 2>/dev/null
-    docker rm -f "$COMPOSE_DRIVER" >/dev/null 2>&1
-    # The compose phase's own project: its volumes and network, not the stack's postgres.
-    compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
-    # Only ever drops a database this run created, and only one named *_test.
-    if [ -n "$db_created" ]; then
-        compose exec -T postgres psql -U factory -d postgres \
-            -c "drop database if exists $DB" >/dev/null 2>&1
+    if needs_board; then
+        docker rm -f "$COMPOSE_DRIVER" >/dev/null 2>&1
+        # The compose phase's own project: its volumes and network, not the stack's postgres.
+        compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
+        # Only ever drops a database this run created, and only one named *_test.
+        if [ -n "$db_created" ]; then
+            compose exec -T postgres psql -U factory -d postgres \
+                -c "drop database if exists $DB" >/dev/null 2>&1
+        fi
+        docker volume rm "$VOLUME" >/dev/null 2>&1
+        docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_BASE" >/dev/null 2>&1
     fi
-    docker volume rm "$VOLUME" >/dev/null 2>&1
-    docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_BASE" >/dev/null 2>&1
+    for log in "$work"/*.log; do
+        [ -f "$log" ] && cp "$log" "${TIMINGS_FILE%.tsv}.$(basename "$log")"
+    done
     rm -rf "$work"
+    end_phase
+    printf 'total\t%s\n' "$((SECONDS - lane_started))" >>"$TIMINGS_FILE"
+    printf '[timing] total: %ss; timings: %s; exit: %s\n' "$((SECONDS - lane_started))" "$TIMINGS_FILE" "$result"
+    trap - EXIT
+    exit "$result"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # --- HTTP, in node, so the script needs neither curl nor jq ----------------------------------
 
@@ -173,19 +267,96 @@ await_settled() { # await_settled <id> [seconds] -> final status, or empty on ti
     printf ''
 }
 
-# --- Bring up everything it needs -------------------------------------------------------------
-
-command -v docker >/dev/null || {
-    echo 'test-jobs: docker is required'
-    exit 1
+start_driver() { # start_driver <image> [RUNNER_SERVICES]
+    # No ORG_ID. The board sends `workspacePath` on the claim now — it owns the layout, because it
+    # is the thing that created the directory — so the driver builds no path of its own.
+    # RUNNER_SERVICES defaults to on now; every phase but the services one passes 0 explicitly, so
+    # what each phase asserts stays independent of the default.
+    env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$1" OPENCODE_EXECUTOR_IMAGE="$1" \
+        RUNNER_SERVICES="${2:-0}" \
+        WORKSPACE_VOLUME="$VOLUME" \
+        DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=60 \
+        node driver/dist/index.js >>"$work/driver.log" 2>&1 &
+    driver_pid=$!
 }
 
+stop_driver() {
+    [ -n "$driver_pid" ] && kill "$driver_pid" 2>/dev/null
+    wait "$driver_pid" 2>/dev/null
+    driver_pid=""
+}
+
+# The file has to be on the origin's default branch: every task's startup sync fetches it and
+# branches the task worktree from it, and the readout reads that worktree. There is no host path
+# into a named volume, so a container commits it. A failed write fails the run here, not later as a
+# misleading job verdict.
+write_bellows() { # write_bellows <contents>
+    docker run --rm -i -v "$VOLUME:/workspaces" -e HOME=/tmp "$IMAGE_BASE" sh -c '
+        set -e
+        git clone -q "$1" /tmp/tree
+        cat >/tmp/tree/.bellows.yaml
+        git -C /tmp/tree add .bellows.yaml
+        git -C /tmp/tree -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q --allow-empty -m bellows
+        git -C /tmp/tree push -q origin HEAD:main' sh "/workspaces/$member_path/.smoke-origin.git" \
+        <<<"$1" >/dev/null || {
+        echo 'test-jobs: could not commit the .bellows.yaml fixture'
+        exit 1
+    }
+    # The offline board has no GitHub: it reads the plan at claim time from a bare mirror under its
+    # workspace root (server/src/github/local-origin-plan.ts), so the origin is copied out of the volume.
+    local mirror="$work/workspaces/.origins/$SMOKE_REPO.git"
+    rm -rf "$mirror" && mkdir -p "$mirror" &&
+        docker run --rm -v "$VOLUME:/workspaces" "$IMAGE_BASE" \
+            tar -C "/workspaces/$member_path/.smoke-origin.git" -cf - . | tar -C "$mirror" -xf - || {
+        echo 'test-jobs: could not mirror the origin for the board'
+        exit 1
+    }
+}
+lane_group_up() { # lane_group_up <name> <image> <control-url>
+    local name="$RUN_ID-$1" image="$2" url="$3" box
+    for box in in out export supervisor; do
+        docker volume create "lane-$name-$box" >/dev/null
+    done
+    docker run -d --name "lane-sup-$name" --add-host host.docker.internal:host-gateway \
+        -v "$PWD/driver/src/scripts/supervisor.cjs:/supervisor.cjs:ro" \
+        -v "lane-$name-in:/factory/in" -v "lane-$name-out:/factory/out" \
+        -v "lane-$name-export:/factory/export" -v "lane-$name-supervisor:/factory/supervisor" \
+        -e "SUPERVISOR_CONTROL_URL=$url" -e SUPERVISOR_CONTROL_TOKEN=lane \
+        -e SUPERVISOR_CONTROL_MS=200 -e SUPERVISOR_TICK_MS=100 \
+        --entrypoint node "$image" /supervisor.cjs >/dev/null
+}
+
+lane_group_agent_args() { # lane_group_agent_args <name>: the agent's half of the mailboxes, as argv words
+    local name="$RUN_ID-$1"
+    printf '%s\n' -v "lane-$name-in:/factory/in:ro" -v "lane-$name-out:/factory/out" \
+        -e FACTORY_CTL_IN=/factory/in/agent -e FACTORY_CTL_OUT=/factory/out/agent -e FACTORY_CTL_GO=/factory/in/agent/go \
+        -e FACTORY_CTL_TICK_MS=200
+}
+
+lane_group_down() { # lane_group_down <name>: the supervisor finalizes after the agent exits; then the group goes
+    local name="$RUN_ID-$1" box
+    timeout 60 docker wait "lane-sup-$name" >/dev/null 2>&1
+    docker rm -f "lane-sup-$name" >/dev/null 2>&1
+    for box in in out export supervisor; do
+        docker volume rm -f "lane-$name-$box" >/dev/null 2>&1
+    done
+}
+
+# --- Bring up everything it needs -------------------------------------------------------------
+
+if needs_board; then
+begin_phase postgres
 echo 'starting postgres'
-compose up -d postgres >/dev/null 2>&1
+compose up -d --no-recreate postgres >"$work/postgres.log" 2>&1 || {
+    echo 'test-jobs: could not start postgres'
+    exit 1
+}
+postgres_ready=''
 for _ in $(seq 1 30); do
-    compose exec -T postgres pg_isready -U factory >/dev/null 2>&1 && break
+    compose exec -T postgres pg_isready -U factory >/dev/null 2>&1 && { postgres_ready=1; break; }
     sleep 1
 done
+[ -n "$postgres_ready" ] || { echo 'test-jobs: postgres never became ready'; exit 1; }
 
 # The name ends in _test on purpose: it marks the database disposable, and the drop in cleanup()
 # refuses anything this run did not create.
@@ -201,13 +372,15 @@ else
     db_created=1
 fi
 
+begin_phase build
 echo 'building core, server, driver'
-npm run build -w core >/dev/null 2>&1 && npm run build -w server >/dev/null 2>&1 &&
-    npm run build -w driver >/dev/null 2>&1 || {
+npm run build -w core >"$work/build.log" 2>&1 && npm run build -w server >>"$work/build.log" 2>&1 &&
+    npm run build -w driver >>"$work/build.log" 2>&1 || {
     echo 'test-jobs: build failed'
     exit 1
 }
 
+begin_phase stub-images
 echo 'building the stub runner images'
 # The OK stub prints two env probes BEFORE echoing its arguments, so the output proves both the
 # argv path (prompt, session id) and the env path (the claim's stacked environment) reached the
@@ -271,13 +444,11 @@ start_open_board() { # boots the AUTH_MODE=none board on $BASE and waits until i
     }
 }
 
+begin_phase board-fixture
 echo "starting the board on $BASE"
 start_open_board
 
 # --- The board on its own --------------------------------------------------------------------
-
-echo
-echo '# board'
 
 # The queue is FIFO, so every check below depends on what is already in it. A reused database, or
 # a job left by a failed run, would otherwise hand the claim a different job than the one under
@@ -344,7 +515,16 @@ expect_status 'stores the task-selectable executors' 200 PUT /api/workspace/exec
 ORG_EXECUTOR="team-$(openssl rand -hex 3)"
 expect_status 'stores an org executor as the admin' 201 POST /api/org/executors \
     "{\"name\":\"$ORG_EXECUTOR\",\"type\":\"claude-code\",\"config\":{\"model\":\"org-team-model\"}}"
-expect_status 'refuses a duplicate org name'        409 POST /api/org/executors \
+expect_status 'puts the core env' 200 PUT /api/env/org \
+    '{"vars":[{"name":"FACTORY_ENV_PROBE","value":"org-marker","isSecret":false},{"name":"SECRET_PROBE","value":"secret-marker","isSecret":true}]}'
+fi
+
+if selected_phase board; then
+begin_phase board
+echo
+echo '# board'
+
+expect_status 'refuses a duplicate org name'         409 POST /api/org/executors \
     "{\"name\":\"$ORG_EXECUTOR\",\"type\":\"claude-code\",\"config\":{}}"
 expect_status 'a scope outside the pair is refused' 400 POST /api/jobs \
     "{\"command\":\"x\",\"executor\":\"$ORG_EXECUTOR\",\"executorScope\":\"repo\",\"repo\":\"$SMOKE_REPO\"}"
@@ -357,8 +537,6 @@ expect_status 'refuses an unknown status' 400 GET '/api/jobs?status=pending'
 
 # The runner environment, configured the way the UI would: one plain variable and one secret on the
 # org ("core") scope. AUTH_MODE=none resolves the stand-in admin, so the PUT is allowed.
-expect_status 'puts the core env' 200 PUT /api/env/org \
-    '{"vars":[{"name":"FACTORY_ENV_PROBE","value":"org-marker","isSecret":false},{"name":"SECRET_PROBE","value":"secret-marker","isSecret":true}]}'
 expect_status 'refuses an env name that is not a name' 400 PUT /api/env/org \
     '{"vars":[{"name":"not a name","value":"x","isSecret":false}]}'
 env_list="$(body "$(api GET /api/env)")"
@@ -493,29 +671,14 @@ expect_field 'the sessionless follow-up is a follow-up'   "$fu_claim" followUp t
 api POST "/api/jobs/$fu_id/complete" \
     "{\"leaseToken\":\"$(field "$fu_claim" leaseToken)\",\"status\":\"succeeded\",\"exitCode\":0,\"output\":\"ok\"}" >/dev/null
 
+fi
+
+if selected_phase driver; then
+begin_phase driver
 # --- The driver ------------------------------------------------------------------------------
 
 echo
 echo '# driver'
-
-start_driver() { # start_driver <image> [RUNNER_SERVICES]
-    # No ORG_ID. The board sends `workspacePath` on the claim now — it owns the layout, because it
-    # is the thing that created the directory — so the driver builds no path of its own.
-    # RUNNER_SERVICES defaults to on now; every phase but the services one passes 0 explicitly, so
-    # what each phase asserts stays independent of the default.
-    env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$1" OPENCODE_EXECUTOR_IMAGE="$1" \
-        RUNNER_SERVICES="${2:-0}" \
-        WORKSPACE_VOLUME="$VOLUME" \
-        DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=60 \
-        node driver/dist/index.js >>"$work/driver.log" 2>&1 &
-    driver_pid=$!
-}
-
-stop_driver() {
-    [ -n "$driver_pid" ] && kill "$driver_pid" 2>/dev/null
-    wait "$driver_pid" 2>/dev/null
-    driver_pid=""
-}
 
 start_driver "$IMAGE_OK"
 
@@ -605,6 +768,10 @@ expect_field    'the org scope is stamped'          "$org_body" executorScope or
 
 stop_driver
 
+fi
+
+if selected_phase github-credential; then
+begin_phase github-credential
 # --- The runner's GitHub token (docs/connections.md) ------------------------------------------
 #
 # A second board on the same database boots the lanes' entry (server/dist/offline-mint.js): the
@@ -684,6 +851,39 @@ kill "$mint_pid" 2>/dev/null
 wait "$mint_pid" 2>/dev/null
 mint_pid=""
 
+fi
+
+if selected_phase services || selected_phase orphan-reaper || selected_phase node-disruption; then
+begin_phase service-fixture
+mkdir -p "$work/svc"
+printf '%s\n' \
+    '#!/bin/sh' \
+    'while true; do' \
+    "    printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 13\\r\\n\\r\\nservice-is-up' | nc -l -p 8000" \
+    'done' >"$work/svc/serve.sh"
+printf 'FROM alpine:3\nCOPY serve.sh /serve.sh\nCMD ["sh","/serve.sh"]\n' >"$work/svc/Dockerfile"
+docker build -q -t "$IMAGE_SVC" "$work/svc" >/dev/null || {
+    echo 'test-jobs: could not build the service stub image'
+    exit 1
+}
+mkdir -p "$work/run"
+printf '#!/bin/sh\nfor last in "$@"; do :; done\nexec sh -c "$last"\n' >"$work/run/run.sh"
+# `sh /run.sh` rather than exec-ing it: a file written by this script has no exec bit to copy in.
+printf 'FROM %s\nCOPY run.sh /run.sh\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/run.sh"]\n' "$IMAGE_BASE" >"$work/run/Dockerfile"
+docker build -q -t "$IMAGE_RUN" "$work/run" >/dev/null || {
+    echo 'test-jobs: could not build the runner-exec stub image'
+    exit 1
+}
+
+if [ "$PHASE" = node-disruption ]; then
+write_bellows "services:
+  - name: stub-svc
+    image: $IMAGE_SVC"
+fi
+fi
+
+if selected_phase services; then
+begin_phase services
 # --- Auxiliary services (.bellows.yaml) -------------------------------------------------------
 #
 # Issue #6, end to end: a checkout declares a service, the driver starts it on a per-job network,
@@ -710,55 +910,9 @@ api POST "/api/jobs/$wp_id/complete" \
 # The service: a one-file HTTP responder on busybox nc — current alpine:3 ships no httpd applet,
 # and the answer is deliberately static so the assertion reads the alias, not the server. The
 # runner-exec image: a script that runs the prompt, which the echo stubs cannot do.
-mkdir -p "$work/svc"
-printf '%s\n' \
-    '#!/bin/sh' \
-    'while true; do' \
-    "    printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 13\\r\\n\\r\\nservice-is-up' | nc -l -p 8000" \
-    'done' >"$work/svc/serve.sh"
-printf 'FROM alpine:3\nCOPY serve.sh /serve.sh\nCMD ["sh","/serve.sh"]\n' >"$work/svc/Dockerfile"
-docker build -q -t "$IMAGE_SVC" "$work/svc" >/dev/null || {
-    echo 'test-jobs: could not build the service stub image'
-    exit 1
-}
-mkdir -p "$work/run"
-printf '#!/bin/sh\nfor last in "$@"; do :; done\nexec sh -c "$last"\n' >"$work/run/run.sh"
-# `sh /run.sh` rather than exec-ing it: a file written by this script has no exec bit to copy in.
-printf 'FROM %s\nCOPY run.sh /run.sh\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/run.sh"]\n' "$IMAGE_BASE" >"$work/run/Dockerfile"
-docker build -q -t "$IMAGE_RUN" "$work/run" >/dev/null || {
-    echo 'test-jobs: could not build the runner-exec stub image'
-    exit 1
-}
-
-# The file has to be on the origin's default branch: every task's startup sync fetches it and
-# branches the task worktree from it, and the readout reads that worktree. There is no host path
-# into a named volume, so a container commits it. A failed write fails the run here, not later as a
-# misleading job verdict.
-write_bellows() { # write_bellows <contents>
-    docker run --rm -i -v "$VOLUME:/workspaces" -e HOME=/tmp "$IMAGE_BASE" sh -c '
-        set -e
-        git clone -q "$1" /tmp/tree
-        cat >/tmp/tree/.bellows.yaml
-        git -C /tmp/tree add .bellows.yaml
-        git -C /tmp/tree -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q --allow-empty -m bellows
-        git -C /tmp/tree push -q origin HEAD:main' sh "/workspaces/$member_path/.smoke-origin.git" \
-        <<<"$1" >/dev/null || {
-        echo 'test-jobs: could not commit the .bellows.yaml fixture'
-        exit 1
-    }
-    # The offline board has no GitHub: it reads the plan at claim time from a bare mirror under its
-    # workspace root (server/src/github/local-origin-plan.ts), so the origin is copied out of the volume.
-    local mirror="$work/workspaces/.origins/$SMOKE_REPO.git"
-    rm -rf "$mirror" && mkdir -p "$mirror" &&
-        docker run --rm -v "$VOLUME:/workspaces" "$IMAGE_BASE" \
-            tar -C "/workspaces/$member_path/.smoke-origin.git" -cf - . | tar -C "$mirror" -xf - || {
-        echo 'test-jobs: could not mirror the origin for the board'
-        exit 1
-    }
-}
-write_bellows 'services:
+write_bellows "services:
   - name: stub-svc
-    image: factory-jobs-smoke-svc'
+    image: $IMAGE_SVC"
 
 start_driver "$IMAGE_RUN" 1
 
@@ -793,6 +947,10 @@ done
 if [ "$svc_networks" = '0' ]; then ok 'no service networks left behind'; else bad 'no service networks left behind' "$svc_networks remain"; fi
 if [ "$leftover" = '0' ]; then ok 'no containers left behind'; else bad 'no containers left behind' "$leftover remain"; fi
 
+fi
+
+if selected_phase orphan-reaper; then
+begin_phase orphan-reaper
 # --- The orphan reaper (issue #301) -----------------------------------------------------------
 #
 # The exact shape the issue describes: a service fleet is up, the driver is kill -9ed before its
@@ -806,9 +964,9 @@ if [ "$leftover" = '0' ]; then ok 'no containers left behind'; else bad 'no cont
 echo
 echo '# orphan reaper'
 
-write_bellows 'services:
+write_bellows "services:
   - name: stub-svc
-    image: factory-jobs-smoke-svc'
+    image: $IMAGE_SVC"
 
 # A 10s lease keeps the expired-lease wait short; the reaper driver after the kill gets a fast
 # cadence and a grace the fleet has long outlived.
@@ -911,6 +1069,10 @@ docker ps -aq --filter "label=factory.job=$orphan" |
 
 stop_driver
 
+fi
+
+if selected_phase node-disruption; then
+begin_phase node-disruption
 # --- Node disruption (issue #796) -------------------------------------------------------------
 #
 # Infrastructure loss interrupts a task, it never loses one: a driver lost mid-run leaves its
@@ -1089,10 +1251,10 @@ docker ps -aq --filter "label=factory.job=$lost" |
     while IFS= read -r container_id; do
         [ -n "$container_id" ] && docker rm -f "$container_id" >/dev/null 2>&1
     done
-write_bellows 'services:
+write_bellows "services:
   - name: stub-svc
-    image: factory-jobs-smoke-svc
-# lane-upstream'
+    image: $IMAGE_SVC
+# lane-upstream"
 disruption_driver
 expect_contains 'the replacement runner settles the lost run' "$(await_settled "$lost" 120)" succeeded
 lost_body="$(body "$(api GET "/api/jobs/$lost")")"
@@ -1119,6 +1281,10 @@ for job in "$killed" "$drained" "$lost"; do
         done
 done
 
+fi
+
+if selected_phase workflows; then
+begin_phase workflows
 # --- Workflows -------------------------------------------------------------------------------
 #
 # Issue #94, end to end. A workflow definition lives on the board (created through the API, the
@@ -1278,6 +1444,10 @@ else
 fi
 expect_status 'a rested thread offers nothing more' 204 POST /api/jobs/claim '{"worker":"idle-walker"}'
 
+fi
+
+if selected_phase compose-driver; then
+begin_phase compose-driver
 # --- The compose driver -----------------------------------------------------------------------
 #
 # Issue #174: this service used to build the baked `runtime` stage, so an `up` or restart without
@@ -1344,6 +1514,10 @@ compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
 wait "$compose_pid" 2>/dev/null
 compose_pid=""
 
+fi
+
+if selected_phase auth; then
+begin_phase auth
 # --- The same board, with auth on -------------------------------------------------------------
 #
 # Everything above runs against AUTH_MODE=none, which is what this script has always been and what
@@ -1420,6 +1594,10 @@ wait "$server_pid" 2>/dev/null
 server_pid=""
 start_open_board
 
+fi
+
+if selected_phase cooperative-stop; then
+begin_phase cooperative-stop
 # --- A cooperative Stop at the model-step boundary (issue #442) --------------------------------
 #
 # The real `claude` and `opencode` binaries, in the real executor images (`make runners`), against
@@ -1437,35 +1615,6 @@ echo '# cooperative stop (real agent CLIs against a scripted model endpoint)'
 # control pair and all four mailboxes, beside an agent that mounts `in` read-only and `out` and
 # nothing else. The scripted endpoint plays the driver's control endpoint; the supervisor reads the
 # Stop or the question from it, and the agent's mailbox helper and bridge read what it wrote.
-lane_group_up() { # lane_group_up <name> <image> <control-url>
-    local name="$1" image="$2" url="$3" box
-    for box in in out export supervisor; do
-        docker volume create "lane-$name-$box" >/dev/null
-    done
-    docker run -d --name "lane-sup-$name" --add-host host.docker.internal:host-gateway \
-        -v "$PWD/driver/src/scripts/supervisor.cjs:/supervisor.cjs:ro" \
-        -v "lane-$name-in:/factory/in" -v "lane-$name-out:/factory/out" \
-        -v "lane-$name-export:/factory/export" -v "lane-$name-supervisor:/factory/supervisor" \
-        -e "SUPERVISOR_CONTROL_URL=$url" -e SUPERVISOR_CONTROL_TOKEN=lane \
-        -e SUPERVISOR_CONTROL_MS=200 -e SUPERVISOR_TICK_MS=100 \
-        --entrypoint node "$image" /supervisor.cjs >/dev/null
-}
-
-lane_group_agent_args() { # lane_group_agent_args <name>: the agent's half of the mailboxes, as argv words
-    printf '%s\n' -v "lane-$1-in:/factory/in:ro" -v "lane-$1-out:/factory/out" \
-        -e FACTORY_CTL_IN=/factory/in/agent -e FACTORY_CTL_OUT=/factory/out/agent -e FACTORY_CTL_GO=/factory/in/agent/go \
-        -e FACTORY_CTL_TICK_MS=200
-}
-
-lane_group_down() { # lane_group_down <name>: the supervisor finalizes after the agent exits; then the group goes
-    local box
-    timeout 60 docker wait "lane-sup-$1" >/dev/null 2>&1
-    docker rm -f "lane-sup-$1" >/dev/null 2>&1
-    for box in in out export supervisor; do
-        docker volume rm -f "lane-$1-$box" >/dev/null 2>&1
-    done
-}
-
 stop_lane() { # stop_lane <claude|opencode>
     local cli="$1" image="$1-executor" dir="$work/stop-$1" fake_pid port requests
     if ! docker image inspect "$image" >/dev/null 2>&1; then
@@ -1523,6 +1672,10 @@ stop_lane() { # stop_lane <claude|opencode>
 stop_lane claude
 stop_lane opencode
 
+fi
+
+if selected_phase tool-isolation; then
+begin_phase tool-isolation
 # --- The agent's tool isolation (issue #814) ------------------------------------------------------
 #
 # The real CLIs again, now under the driver's own agent flags — root, every capability dropped but
@@ -1593,6 +1746,10 @@ kill_lane claude isolated
 kill_lane opencode control
 kill_lane opencode isolated
 
+fi
+
+if selected_phase ask-user-question; then
+begin_phase ask-user-question
 # --- AskUserQuestion answered inside the same Claude run (issue #226) ----------------------------
 #
 # The real claude-executor image against the same scripted endpoint in `--ask` mode. The model's
@@ -1662,6 +1819,10 @@ ask_lane() {
 ask_lane tool --ask
 ask_lane prose --ask-prose
 
+fi
+
+if selected_phase question-round-trip; then
+begin_phase question-round-trip
 # --- The question round trip: board + driver + the real claude-executor (issue #226) -------------
 #
 # The board and the driver are the real ones. The model is the scripted endpoint in `--ask` mode,
@@ -1753,6 +1914,8 @@ ask_roundtrip_lane() {
 }
 
 ask_roundtrip_lane
+
+fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
