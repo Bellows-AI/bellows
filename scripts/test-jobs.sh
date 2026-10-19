@@ -347,12 +347,15 @@ lane_group_down() { # lane_group_down <name>: the supervisor finalizes after the
 if needs_board; then
 begin_phase postgres
 echo 'starting postgres'
+# --no-recreate: the stack's postgres is shared, and a run from another checkout carries another
+# config hash, so a plain `up` would replace the container mid-write. A replaced one can spend most
+# of a minute in crash recovery, hence the wait.
 compose up -d --no-recreate postgres >"$work/postgres.log" 2>&1 || {
     echo 'test-jobs: could not start postgres'
     exit 1
 }
 postgres_ready=''
-for _ in $(seq 1 30); do
+for _ in $(seq 1 120); do
     compose exec -T postgres pg_isready -U factory >/dev/null 2>&1 && { postgres_ready=1; break; }
     sleep 1
 done
