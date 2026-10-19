@@ -293,7 +293,7 @@ done
 # status, delete it, list its pods, read one pod's log. Nothing watches; the jobs rule carries no
 # watch, which the exact-verbs assertion pins.
 rbac="$(awk '/^# Source: factory\/templates\/driver-rbac.yaml/,/^---/' "$work/rendered.yaml")"
-# `list` on jobs and services is the re-claim fence: its sweep is a collection GET, and a
+# `list` on jobs and pods is the re-claim fence: its sweep is a collection GET, and a
 # collection GET needs the list verb — a rule without it makes every fence round a 403.
 expect_contains     'the driver role grants the runner calls' "$rbac" \
     "resources: ['jobs']
@@ -310,17 +310,14 @@ expect_contains     'the driver role manages the per-job env Secret' "$rbac" \
 expect_contains     'the driver role manages the checkout claim' "$rbac" \
     "resources: ['configmaps']
       verbs: ['create', 'get', 'delete', 'patch']"
-expect_contains     'the driver role lists pods, only to find them' "$rbac" "verbs: ['create', 'delete', 'list']"
-# Gate runs ride the jobs rule (a gate run IS a Job), but a declared SERVICE is a long-running
-# neighbor pod, and its DNS name is a Service object: create before the runner starts, delete
-# with the attempt, list for the fence sweep and the attempt teardown.
-expect_contains     'the driver role names the service DNS objects' "$rbac" \
-    "resources: ['services']
-      verbs: ['create', 'delete', 'list']"
-# A vanished service pod's events name why it went: list only, by field selector.
-expect_contains     'the driver role reads why a service pod vanished' "$rbac" \
-    "resources: ['events']
-      verbs: ['list']"
+# Issue #773: the gate and the declared services are sidecars of the runner Job's pod, so the
+# driver creates no pod, no Service and reads no event. Pods are listed to find a Job's pod and
+# deleted by the re-claim fence's sweep, nothing more.
+expect_contains     'the driver role lists and deletes pods, never creates one' "$rbac" \
+    "resources: ['pods']
+      verbs: ['delete', 'list']"
+expect_not_contains 'the driver role creates no Service'    "$rbac" "resources: ['services']"
+expect_not_contains 'the driver role reads no event'        "$rbac" "resources: ['events']"
 # The gate sidecar's in-place resize (issue #773): patch on the resize subresource and no more.
 expect_contains     'the driver role resizes the gate sidecar' "$rbac" \
     "resources: ['pods/resize']
@@ -816,6 +813,11 @@ expect_contains 'the runner policy sends DNS to kube-dns in kube-system' "$netpo
     $'- namespaceSelector:\n                    matchLabels:\n                        kubernetes.io/metadata.name: kube-system\n                podSelector:\n                    matchLabels:\n                        k8s-app: kube-dns'
 expect_contains 'the runner policy sends DNS to the NodeLocal DNSCache address' "$netpol" 'cidr: 169.254.20.10/32'
 expect_not_contains 'the runner policy never allows port 53 to any destination' "$netpol" '        - ports:'
+# Issue #773: a run's services are on its own pod's loopback, so no runner pod takes a connection
+# from anything and none dials another runner pod.
+expect_contains 'the runner policy admits no ingress' "$netpol" 'ingress: []'
+expect_not_contains 'the runner policy opens no runner-to-runner rule' "$netpol" \
+    $'        - to:\n              - podSelector:\n                    matchLabels:\n                        app.kubernetes.io/instance:'
 
 # Issue #382. The hardening the driver sets on every pod is also REQUIRED by admission, which is a
 # different control: a driver that silently stopped setting the fields satisfies every "may not be
@@ -834,8 +836,19 @@ expect_contains 'the admission policy refuses a container-level seccomp override
     '!has(c.securityContext.seccompProfile)'
 expect_contains 'the admission policy requires every capability dropped' "$admission" \
     "'ALL' in c.securityContext.capabilities.drop"
-expect_contains 'the admission policy exempts only a labelled declared service' "$admission" \
-    "variables.podLabels['factory.unhardened'] == 'true'"
+expect_not_contains 'the admission policy exempts no container from the capability drop' "$admission" \
+    'factory.unhardened'
+# Issue #773: the driver creates pods only through Jobs, no Service at all; a service is a `svc-`
+# sidecar of the task pod, named on its loopback by hostAliases.
+expect_not_contains 'the admission policy matches no bare pod create' "$admission" "operations: ['CREATE']
+              resources: ['pods']"
+expect_not_contains 'the admission policy admits no Service' "$admission" 'headless Services'
+expect_contains 'the admission policy maps hostAliases only to loopback' "$admission" \
+    "variables.spec.hostAliases.all(h, h.ip == '127.0.0.1')"
+expect_contains 'the admission policy keeps svc- containers out of the main containers' "$admission" \
+    "variables.spec.containers.all(c, !c.name.startsWith('svc-'))"
+expect_contains 'the admission policy restarts only the gate and svc- sidecars' "$admission" \
+    "(c.name == 'gate' || c.name.startsWith('svc-'))"
 # Issue #814: the one capability add admitted, the agent's launch pair, on a runner Job's agent alone.
 expect_contains 'the admission policy admits the launch pair on a runner Job agent alone' "$admission" \
     "request.kind.kind == 'Job' && c.name == 'agent' &&"
@@ -1106,7 +1119,7 @@ EOF
     # than once.
     #
     # Each target is `<name>|<host>|<port>`, and each is a REAL listener on this cluster:
-    #   - the unrelated pod on both its ports (an unrelated workload),
+    #   - the unrelated pod on both its ports (an unrelated workload), and another attempt's runner pod,
     #   - the kubernetes API's ClusterIP (the service network, inside blockedCidrs 10/8),
     #   - the kubelet on the node's own address (inside blockedCidrs 172.16/12 on kind),
     #   - a hostNetwork pod bound to a high port on that same node address — the node itself,
@@ -1117,7 +1130,8 @@ another port on an unrelated pod|$IP_UNRELATED|9999
 the kubernetes API|$API_IP|443
 the kubelet on its node|$NODE_IP|10250
 the node itself|$NODE_IP|31999
-another port on the dashboard|$IP_DASH|9999"
+another port on the dashboard|$IP_DASH|9999
+another attempt's runner pod|$IP_B|8080"
 
     # Ready means ANSWERING, not Running: the kubelet calls a pod Ready as soon as its process
     # starts, which is before the listener inside it has bound. Polled rather than slept, because
@@ -1125,8 +1139,6 @@ another port on the dashboard|$IP_DASH|9999"
     # that has nothing to do with the policy) or wasted on every run. EVERY probe target is
     # polled, not just the first: `node-listener` is a separate pod with its own image pull and is
     # the likeliest laggard, and a target that is merely slow would otherwise fail its own
-    # control. `attempt-b` is in the list too — it is not a DENIALS entry (its reachability is the
-    # #257 residual, asserted at the end) but it is a listener this lane waits on all the same.
     #
     # The first target that never comes up abandons the whole wait rather than letting each
     # remaining one burn its own budget: the lane is already going to fail its honest-probe
@@ -1147,7 +1159,6 @@ another port on the dashboard|$IP_DASH|9999"
         [ "$ready" = '1' ] || poll_ready=0
     done <<EOF
 $DENIALS
-the cross-attempt residual target|$IP_B|8080
 EOF
 
     while IFS='|' read -r what host port; do
@@ -1194,14 +1205,6 @@ EOF
     # does not work, and an isolation change that breaks them has not hardened anything.
     dns="$(kn exec attempt-a -n "$NETPOL_NS" -- sh -c 'nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1 && echo resolves || echo broken' 2>/dev/null)"
     expect_contains 'a runner still resolves cluster DNS' "$dns" 'resolves'
-
-    # The STATED RESIDUAL, asserted rather than assumed. One attempt can still reach another
-    # attempt's pods: the policy's runner-to-runner rule is what makes a declared service
-    # reachable from its own runner, and it does not distinguish attempts. #257 owns narrowing it.
-    # Pinned as `reachable` on purpose — when #257 lands, THIS line is what tells its author the
-    # behaviour changed, instead of the change being invisible.
-    expect_contains 'cross-attempt traffic is still allowed — the #257 residual, measured not assumed' \
-        "$(reaches attempt-a "$IP_B" 8080)" 'reachable'
 
     netpol_cleanup
     trap cleanup EXIT
@@ -1901,18 +1904,23 @@ HARD_C='securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: 
 # unrelated message and none of them tests anything.
 HARD_POD='{seccompProfile: {type: RuntimeDefault}}'
 
+# The driver creates pods only through Jobs (issue #773): the Role grants no pod create and the
+# policy matches Jobs alone, so each probe is a Job whose pod template carries the spec lines.
 probe_pod() { # probe_pod <name> <extra spec lines> [<extra labels>] [<pod securityContext>]
     cat <<EOF
-apiVersion: v1
-kind: Pod
+apiVersion: batch/v1
+kind: Job
 metadata:
     name: admission-probe-$1
-    labels: {factory.job: admission-probe${3:+, $3}}
+    labels: {factory.job: admission-probe}
 spec:
-    automountServiceAccountToken: false
-    restartPolicy: Never
-    securityContext: ${4:-$HARD_POD}
-$2
+    template:
+        metadata: {labels: {factory.job: admission-probe${3:+, $3}}}
+        spec:
+            automountServiceAccountToken: false
+            restartPolicy: Never
+            securityContext: ${4:-$HARD_POD}
+$(printf '%s\n' "$2" | sed 's/^/        /')
 EOF
 }
 as_driver() { kubectl create --as="$DRIVER_SA" -n "$NAMESPACE" --dry-run=server -f - 2>&1; }
@@ -2010,30 +2018,52 @@ launch_more="$(probe_job launchmore agent 'SETUID, NET_RAW' | as_driver)"
 expect_contains 'the policy refuses any other capability on the agent' "$launch_more" 'may not be privileged or add capabilities'
 launch_other="$(probe_job launchother supervisor 'SETUID' | as_driver)"
 expect_contains 'the policy refuses the launch pair on any other container' "$launch_other" 'may not be privileged or add capabilities'
-launch_pod="$(probe_pod launchpod '    containers: [{name: agent, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL], add: [SETUID]}}}]' | as_driver)"
-expect_contains 'the policy refuses the launch pair on a bare Pod' "$launch_pod" 'may not be privileged or add capabilities'
+# A bare Pod is refused before admission: the Role grants no pod create at all (issue #773).
+bare_pod="$(as_driver <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+    name: admission-probe-bare
+    labels: {factory.job: admission-probe}
+spec:
+    automountServiceAccountToken: false
+    restartPolicy: Never
+    securityContext: $HARD_POD
+    containers: [{name: agent, image: alpine, $HARD_C}]
+EOF
+)"
+expect_contains 'the driver may not create a bare Pod' "$bare_pod" 'cannot create resource "pods"'
 
 no_drop="$(probe_pod nodrop \
     '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: []}}}]' |
     as_driver)"
 expect_contains 'the policy refuses a container that drops nothing' "$no_drop" 'must drop ALL capabilities'
-# The declared opt-out, and the fact that it is the LABEL that carries it — not the absence of the
-# field. The same pod without the label is the probe directly above, and it is refused.
+# There is no opt-out (issue #773): the label a declared unhardened service once carried buys a
+# container nothing.
 opted_out="$(probe_pod optout \
     '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false}}]' \
     'factory.unhardened: "true"' | as_driver)"
-expect_contains 'the policy admits a labelled declared unhardened service' "$opted_out" 'created (server dry run)'
-# The opt-out reaches the capability drop and NOTHING else: the label does not buy the escalation
-# bit back, and it does not buy an unconfined seccomp profile.
-opted_escalating="$(probe_pod optesc \
-    '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: true}}]' \
-    'factory.unhardened: "true"' | as_driver)"
-expect_contains 'the opt-out still may not escalate privileges' "$opted_escalating" 'allowPrivilegeEscalation: false'
-opted_unconfined="$(probe_pod optsec \
-    '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false}}]' \
-    'factory.unhardened: "true"' '{seccompProfile: {type: Unconfined}}' | as_driver)"
-expect_contains 'the opt-out still runs under the default seccomp profile' "$opted_unconfined" \
-    'RuntimeDefault seccomp profile'
+expect_contains 'the policy refuses the retired unhardened label its capabilities' "$opted_out" 'must drop ALL capabilities'
+
+# The task pod's shape (issue #773): its declared services are `svc-` sidecars named on its
+# loopback. The driver's own shape is the runner Job's dry run above; these refuse each way out.
+sidecar="$(probe_pod sidecar "    initContainers: [{name: svc-db, image: alpine, restartPolicy: Always, $HARD_C}]
+    containers: [{name: c, image: alpine, $HARD_C}]
+    hostAliases: [{ip: 127.0.0.1, hostnames: [db]}]" | as_driver)"
+expect_contains 'the policy admits a svc- sidecar named on loopback' "$sidecar" 'created (server dry run)'
+aliased="$(probe_pod alias "    containers: [{name: c, image: alpine, $HARD_C}]
+    hostAliases: [{ip: 10.0.0.1, hostnames: [db]}]" | as_driver)"
+expect_contains 'the policy refuses a hostAlias off loopback' "$aliased" 'hostAliases only to 127.0.0.1'
+main_svc="$(probe_pod mainsvc "    containers: [{name: svc-db, image: alpine, $HARD_C}]" | as_driver)"
+expect_contains 'the policy refuses a svc- main container' "$main_svc" 'only as restartable init containers'
+once_svc="$(probe_pod oncesvc "    initContainers: [{name: svc-db, image: alpine, $HARD_C}]
+    containers: [{name: c, image: alpine, $HARD_C}]" | as_driver)"
+expect_contains 'the policy refuses a svc- init container that is not restartable' "$once_svc" \
+    'only as restartable init containers'
+proxy="$(probe_pod proxy "    initContainers: [{name: proxy, image: alpine, restartPolicy: Always, $HARD_C}]
+    containers: [{name: c, image: alpine, $HARD_C}]" | as_driver)"
+expect_contains 'the policy refuses a restartable init container that is neither gate nor svc-' "$proxy" \
+    'only as restartable init containers'
 
 # --- The agent's tool isolation (issue #814), on the real kubelet ----------------------------------
 #

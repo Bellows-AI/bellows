@@ -47,7 +47,7 @@ export const podsSelectorPath = (namespace: string, job: BoardJob): string => by
 export const jobPath = (namespace: string, name: string): string => `${jobsPath(namespace)}/${name}`;
 
 /**
- * Delete one Job by name, swallowing the answer — the shape almost every aux/runner/gate Job's
+ * Delete one Job by name, swallowing the answer — the shape almost every aux/runner Job's
  * teardown wants: reaped once its verdict has been read, and nobody downstream branches on
  * whether the delete actually landed. `Foreground` is what `takeSyncJobDown`/`takeReclaimJobDown`
  * await before handing the checkout back — the delete returns only once the Job's dependents are

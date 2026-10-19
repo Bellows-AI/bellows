@@ -2809,28 +2809,6 @@ describe('the poll loop', () => {
         expect(runner.startedServices).toEqual([job(2).id]);
     });
 
-    // A service's `unhardened: true` keeps its image's capabilities; in the task pod it would sit
-    // beside the agent, and admission can only exempt the whole pod. Kubernetes refuses it at claim.
-    it('refuses an unhardened service on kubernetes, naming `user:`, and runs it on docker', async () => {
-        const unhardened = {
-            ...job(1),
-            services: [{ name: 'db', image: 'postgres:17', environment: [], unhardened: true as const }],
-        };
-        const k8s = stubBoard([unhardened]);
-        const refused = stubRunner(async () => {
-            throw new Error('the runner must never be reached');
-        });
-        await drive({ ...k8s, runner: refused }, { EXECUTOR: 'kubernetes' });
-        expect(k8s.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
-        expect(k8s.board.completed[0]?.output).toContain('service "db" declares unhardened: true');
-        expect(k8s.board.completed[0]?.output).toContain('user: "uid:gid"');
-
-        const docker = stubBoard([unhardened]);
-        const runner = stubRunner(async () => ok());
-        await drive({ ...docker, runner });
-        expect(runner.startedServices).toEqual([job(1).id]);
-    });
-
     it('fails a job with a plan refusal before the checkout fence is ever taken', async () => {
         const board = stubBoard([{ ...job(1), planRefusal: '.bellows.yaml line 3: unknown key "ports"' }]);
         const runner = stubRunner(async () => {
@@ -3560,7 +3538,7 @@ describe('the poll loop', () => {
                 exitCode: 1,
                 reason: 'Error',
                 logTail: mongo.logTail,
-                hint: expect.stringContaining('unhardened: true'),
+                hint: expect.stringContaining('user: "uid:gid"'),
             },
             { name: 'test-redis', image: 'redis:6.2.6', state: 'running' },
         ]);

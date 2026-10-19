@@ -4,11 +4,11 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { AGENT_LAUNCH_CAPS, workspacePath } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
-import { UNHARDENED_LABEL } from '../src/labels.js';
 import { runnerJobSpec, secretName } from '../src/k8s-podspec.js';
 import { reclaimGroupSpec } from '../src/k8s-group.js';
 import { WORKSPACE_PATH } from '../src/publish.js';
-import { AGENT_CONTAINER } from '../src/supervisor-contract.js';
+import { SERVICE_ADDRESS } from '../src/services.js';
+import { AGENT_CONTAINER, GATE_CONTAINER, serviceContainerOf } from '../src/supervisor-contract.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
@@ -22,6 +22,11 @@ const SESSION = '33333333-3333-4333-8333-333333333333';
  */
 const template = readFileSync(join(ROOT, 'charts/factory/templates/driver-admission.yaml'), 'utf8');
 const pattern = new RegExp(/\$secretName := "([^"]+)"/.exec(template)![1]!);
+/** One of the template's policies, by its name suffix: the document between two `---`. */
+const policy = (suffix: string): string =>
+    template
+        .split('\n---\n')
+        .find((doc) => doc.includes(`kind: ValidatingAdmissionPolicy\n`) && doc.includes(`-${suffix}\n`)) ?? '';
 
 const job: BoardJob = {
     id: '11111111-1111-4111-8111-111111111111',
@@ -133,11 +138,11 @@ describe('the admission policy requires the pod hardening (#382)', () => {
         expect(template).toContain(needle);
     });
 
-    // The opt-out has to be visible to the policy, which sees the object and nothing else: a
-    // declared `unhardened: true` service and a driver that quietly stopped hardening look
-    // identical without the label.
-    it('lets a declared opt-out through by its label, and only by its label', () => {
-        expect(template).toContain(UNHARDENED_LABEL);
+    // Issue #773: a service is a sidecar of the task pod, beside the agent, so no container has a
+    // way out of the capability drop — the policy reads no label that could exempt a pod.
+    it('requires the capability drop of every container, with no exemption', () => {
+        expect(template).not.toContain('factory.unhardened');
+        expect(template).not.toContain('podLabels');
     });
 
     // The honest half. Every spec the driver builds must satisfy the fields the expressions name;
@@ -184,5 +189,58 @@ describe('the admission policy requires the pod hardening (#382)', () => {
         expect(template).toContain(`c.name == '${AGENT_CONTAINER}'`);
         expect(template).toContain(`a in [${AGENT_LAUNCH_CAPS.map((cap) => `'${cap}'`).join(', ')}]`);
         expect(template).toContain("request.kind.kind == 'Job' && c.name ==");
+    });
+});
+
+/*
+ * Issue #773. The driver creates no bare pod and no Service: services and the gate are sidecars of
+ * the runner Job's pod, reached on its loopback through `hostAliases`. The policy fences that shape
+ * — template pins paired with the driver's own output, as above.
+ */
+describe('the admission policy fences the task pod shape (#773)', () => {
+    const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: 'factory' });
+    const pod = runnerJobSpec(
+        config,
+        {
+            ...job,
+            masterPrompt: 'Factory execution contract',
+            repo: 'Bellows-AI/factory',
+            gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+            services: [
+                { name: 'cache', image: 'redis', environment: [], user: { uid: 999, gid: 999 } },
+                { name: 'db', image: 'postgres:17', environment: [], user: { uid: 999, gid: 999 } },
+            ],
+        },
+        { id: SESSION, resume: false }
+    ).spec.template.spec;
+
+    it('matches runner Jobs only: no bare pod create, no pod-only spec branch', () => {
+        const pods = policy('pods');
+        expect(pods).toContain("resources: ['jobs']");
+        expect(pods).not.toContain("resources: ['pods']");
+        expect(pods).toContain('expression: "object.spec.template.spec"');
+    });
+
+    it('creates no Service and no pod, and deletes pods only for the fence sweep', () => {
+        const objects = policy('objects');
+        expect(objects).not.toContain('services');
+        expect(objects).not.toContain("'Service'");
+        expect(objects).toContain("resources: ['secrets', 'configmaps']");
+        expect(objects).toMatch(/operations: \['DELETE'\]\n\s+resources: \['pods'\]/);
+    });
+
+    it(`maps hostAliases only to ${SERVICE_ADDRESS}, which is all the driver writes there`, () => {
+        expect(policy('pods')).toContain(`variables.spec.hostAliases.all(h, h.ip == '${SERVICE_ADDRESS}')`);
+        expect(pod.hostAliases?.length).toBeGreaterThan(0);
+        expect(pod.hostAliases?.every((alias) => alias.ip === SERVICE_ADDRESS)).toBe(true);
+    });
+
+    it(`admits a ${serviceContainerOf('')} container only as a restartable init container, beside the ${GATE_CONTAINER}`, () => {
+        const pods = policy('pods');
+        expect(pods).toContain(`variables.spec.containers.all(c, !c.name.startsWith('${serviceContainerOf('')}'))`);
+        expect(pods).toContain(`c.name == '${GATE_CONTAINER}' || c.name.startsWith('${serviceContainerOf('')}')`);
+        const restartable = (pod.initContainers ?? []).filter((c) => c.restartPolicy === 'Always').map((c) => c.name);
+        expect(restartable).toEqual([GATE_CONTAINER, serviceContainerOf('cache'), serviceContainerOf('db')]);
+        expect(pod.containers.some((c) => c.name.startsWith(serviceContainerOf('')))).toBe(false);
     });
 });

@@ -202,7 +202,7 @@ export function serviceHint(logTail: string): string | null {
     if (!CAPABILITY_DROP_SIGNATURE.test(logTail)) return null;
     return (
         'the service starts with every capability dropped, so its entrypoint cannot chown or switch user — ' +
-        'declare `user: "uid:gid"` (a non-root user the image runs as) or `unhardened: true` on it in .bellows.yaml'
+        'declare `user: "uid:gid"` (a non-root user the image runs as) on it in .bellows.yaml'
     );
 }
 

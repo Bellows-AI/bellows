@@ -5,8 +5,8 @@ driver's ServiceAccount and this namespace. Cluster-scoped objects, so their nam
 namespace; they need Kubernetes >= 1.30 (admissionregistration.k8s.io/v1), and a cluster without
 the API fails the install loudly rather than installing an unfenced driver.
 
-`-pods` fences what a pod the driver specs may hold — the runner, every aux Job, every service
-pod — because `create pods` would otherwise be `read every Secret`:
+`-pods` fences what a pod the driver specs may hold — the runner Job's task pod with its gate and
+service sidecars, every aux Job — because `create jobs` would otherwise be `read every Secret`:
   - Secrets a container can read (volumes, env, envFrom) only when they are the driver's own
     per-attempt ones (factory-job-…-env, docs/kubernetes.md) or the
     runner credentials. The chart's pull secrets only under imagePullSecrets — the kubelet reads
@@ -18,17 +18,18 @@ pod — because `create pods` would otherwise be `read every Secret`:
   - no ServiceAccount token, no other ServiceAccount, no host namespaces, nothing privileged, no
     added capabilities.
   - the executor hardening is REQUIRED, not merely permitted (#382): the RuntimeDefault seccomp
-    profile on the pod, `allowPrivilegeEscalation: false` on every container, and
-    `capabilities.drop: [ALL]` on every container except a declared `unhardened: true` service,
-    which carries `factory.unhardened: "true"` so this policy can tell one from a driver that
-    quietly stopped hardening. Forbidding `privileged` and requiring the drop are different
-    controls; a client that sets neither satisfies only the first.
+    profile on the pod, `allowPrivilegeEscalation: false` and `capabilities.drop: [ALL]` on every
+    container. Forbidding `privileged` and requiring the drop are different controls; a client
+    that sets neither satisfies only the first.
+  - the task pod's shape (#773): `hostAliases` map only to 127.0.0.1 (a declared service's name),
+    and a `svc-` container is only a restartable init container — the restartable ones are the
+    `gate` and the `svc-` services, nothing else.
 `-resize` fences the one in-place resize the driver makes (issue #773): a `pods/resize` update of a
 pod it labelled `factory.job` that changes no main container and no init container but `gate`.
 `-objects` fences what the driver may create and delete: only objects labelled `factory.job` (the
-label every runner-owned object carries), so the dashboard's Secret, Service and ConfigMaps are
-out of reach; Secrets only under the per-attempt names and only Opaque (a service-account-token
-Secret would mint credentials); Services only headless, never an exposure. The one update it
+label every runner-owned object carries), so the dashboard's Secret and ConfigMaps are out of
+reach; Secrets only under the per-attempt names and only Opaque (a service-account-token Secret
+would mint credentials); pods only deleted (the re-claim fence's sweep). The one update it
 admits is a checkout claim's revoke (issue #821): the Role's `patch` on configmaps is
 namespace-wide, so an update reaches only a `factory-job-<id>-claim` ConfigMap, keeps its labels
 and data, and changes no annotation but `factory.revoked`.
@@ -36,8 +37,8 @@ and data, and changes no annotation but `factory.revoked`.
 Limits, stated: the per-attempt Secret names do not carry the release, so in a namespace shared by
 two releases one driver can still reach the other's per-attempt objects — install one release per
 namespace. Admission sees no job, so the workspace subPath is fenced by shape, not by owner: a
-compromised driver can still name another member's `<org>/<user id>` subtree. A mutating sidecar injector (a service mesh) adds volumes this policy refuses on service
-pods; exclude the namespace from injection. Seccomp is required here (#382); AppArmor and sysctls
+compromised driver can still name another member's `<org>/<user id>` subtree. A mutating sidecar injector (a service mesh) adds volumes and containers this policy refuses on
+runner pods; exclude the namespace from injection. Seccomp is required here (#382); AppArmor and sysctls
 are still left to Pod Security Admission — label the namespace
 `pod-security.kubernetes.io/enforce: baseline` for those. None of this is kernel or VM isolation:
 it is a smaller share of one shared kernel, not a different one (docs/security.md).
@@ -51,8 +52,6 @@ it is a smaller share of one shared kernel, not a different one (docs/security.m
 {{- end }}
 {{- $secretName := "^factory-job-[a-z0-9-]+-env$" }}
 {{- $workspaceSubPath := "^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" }}
-{{/* The declared-service hardening opt-out (#382) — driver/src/labels.ts, UNHARDENED_LABEL. */}}
-{{- $unhardenedLabel := "factory.unhardened" }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -63,10 +62,6 @@ spec:
     failurePolicy: Fail
     matchConstraints:
         resourceRules:
-            - apiGroups: ['']
-              apiVersions: ['v1']
-              operations: ['CREATE']
-              resources: ['pods']
             - apiGroups: ['batch']
               apiVersions: ['v1']
               operations: ['CREATE']
@@ -76,7 +71,7 @@ spec:
           expression: {{ printf "request.userInfo.username == '%s'" $user | quote }}
     variables:
         - name: spec
-          expression: "request.kind.kind == 'Job' ? object.spec.template.spec : object.spec"
+          expression: "object.spec.template.spec"
         - name: containers
           expression: "variables.spec.containers + (has(variables.spec.initContainers) ? variables.spec.initContainers : [])"
         - name: allowed
@@ -88,19 +83,6 @@ spec:
               has(variables.spec.volumes) ? variables.spec.volumes.filter(v,
                 has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName == {{ include "factory.workspaceClaim" . | squote }}
               ).map(v, v.name) : []
-        {{/*
-        The POD's labels, wherever the pod lives: on a Job the pod is the template, on a declared
-        service it is the object itself. Only the declared-service opt-out (#382) reads this, and
-        only service pods are bare Pods — but the variable resolves for both kinds, because a
-        CEL variable that is undefined for one of the policy's two resources fails the whole
-        expression closed, and `failurePolicy: Fail` turns that into every pod create refused.
-        */}}
-        - name: podLabels
-          expression: >-
-              request.kind.kind == 'Job'
-                ? (has(object.spec.template.metadata) && has(object.spec.template.metadata.labels)
-                    ? object.spec.template.metadata.labels : {})
-                : (has(object.metadata) && has(object.metadata.labels) ? object.metadata.labels : {})
     validations:
         - expression: "has(variables.spec.automountServiceAccountToken) && variables.spec.automountServiceAccountToken == false"
           message: 'a driver-specced pod must set automountServiceAccountToken: false'
@@ -148,8 +130,8 @@ spec:
         Issue #814: one container may add a capability, and only these two. A runner Job's `agent`
         starts as root with CAP_SETUID and CAP_SETGID, which its tool broker keeps to start each of
         the agent's commands as the tool uid; factory-launch drops both, and root, before the CLI
-        runs. A service pod is no Job, and container names are unique across a pod's containers and
-        initContainers, so no other container can carry them.
+        runs. Container names are unique across a pod's containers and initContainers, so no other
+        container can carry them.
         */}}
         - expression: >-
               variables.containers.all(c, !has(c.securityContext) || (
@@ -187,23 +169,25 @@ spec:
                 has(c.securityContext.allowPrivilegeEscalation) &&
                 c.securityContext.allowPrivilegeEscalation == false)
           message: 'a driver-specced container must set allowPrivilegeEscalation: false'
-        {{/*
-        The one validation with an exemption, and it is narrow by construction. A declared service
-        runs a stock image the repository author named; `.bellows.yaml` may say `unhardened: true`,
-        which gives that image its default capability set back and nothing else — the escalation
-        bit above and the seccomp profile above that still apply to it. The driver stamps
-        `factory.unhardened: "true"` on exactly those pods, because this policy sees the object and
-        nothing else: without the label a declared opt-out and a driver that quietly stopped
-        dropping capabilities are the same object. The label is not a security boundary against the
-        driver — it holds the driver's own identity — it is what keeps THIS validation from being
-        the reason nobody can run postgres.
-        */}}
         - expression: >-
-              ('{{ $unhardenedLabel }}' in variables.podLabels &&
-                variables.podLabels['{{ $unhardenedLabel }}'] == 'true') ||
               variables.containers.all(c, has(c.securityContext) && has(c.securityContext.capabilities) &&
                 has(c.securityContext.capabilities.drop) && 'ALL' in c.securityContext.capabilities.drop)
-          message: 'a driver-specced container must drop ALL capabilities unless it is a declared unhardened service'
+          message: 'a driver-specced container must drop ALL capabilities'
+        {{/*
+        Issue #773. A declared service is a sidecar of the task pod, reached on the pod's own
+        loopback by its name: `hostAliases` may point nowhere else, or a name the agent dials could
+        be sent off the pod. Only a restartable init container may be a `svc-` service, and the
+        restartable ones are the gate and the services, nothing else (driver/src/k8s-podspec.ts).
+        */}}
+        - expression: >-
+              !has(variables.spec.hostAliases) || variables.spec.hostAliases.all(h, h.ip == '127.0.0.1')
+          message: 'a driver-specced pod maps hostAliases only to 127.0.0.1'
+        - expression: >-
+              variables.spec.containers.all(c, !c.name.startsWith('svc-')) &&
+              (!has(variables.spec.initContainers) || variables.spec.initContainers.all(c,
+                (has(c.restartPolicy) && c.restartPolicy == 'Always') ==
+                  (c.name == 'gate' || c.name.startsWith('svc-'))))
+          message: 'a driver-specced pod runs its gate and svc- services only as restartable init containers'
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -278,7 +262,11 @@ spec:
             - apiGroups: ['']
               apiVersions: ['v1']
               operations: ['CREATE', 'DELETE']
-              resources: ['pods', 'secrets', 'configmaps', 'services']
+              resources: ['secrets', 'configmaps']
+            - apiGroups: ['']
+              apiVersions: ['v1']
+              operations: ['DELETE']
+              resources: ['pods']
             - apiGroups: ['']
               apiVersions: ['v1']
               operations: ['UPDATE']
@@ -320,10 +308,6 @@ spec:
               (variables.target.metadata.name.matches({{ squote $secretName }}) &&
                 (request.operation == 'DELETE' || !has(object.type) || object.type == 'Opaque'))
           message: 'the driver manages only Opaque per-attempt Secrets'
-        - expression: >-
-              request.kind.kind != 'Service' || request.operation == 'DELETE' ||
-              (has(object.spec.clusterIP) && object.spec.clusterIP == 'None')
-          message: 'the driver creates only headless Services'
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

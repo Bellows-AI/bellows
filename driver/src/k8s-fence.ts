@@ -466,10 +466,9 @@ async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[], signal?: A
  * `factory.job=<id>,factory.lease!=<token>` selector answers is a leftover of the attempts this
  * claim was taken FROM: deleted BY NAME, per object, with Foreground propagation, until the
  * selector answers nothing and no leftover runner remains to write the checkout once this
- * attempt's Job starts. It runs at the runner's launch, AFTER the loop already started this
- * attempt's services and ran its setup Job, so those briefly share the namespace with a dead
- * attempt's leftovers; a service of this attempt they disturbed is put back by the pre-gate
- * restart (issue #560). No timestamps, no cutoffs, no clocks: an age filter
+ * attempt's Job starts. It runs when the attempt's task group is made — at the sync, its first
+ * step — before this attempt's pod and its gate and service sidecars exist. No timestamps, no
+ * cutoffs, no clocks: an age filter
  * was unsound in both directions, so the sweep classifies nothing. The claim is re-read before
  * every deleting round: a stale attempt whose claim was taken over mid-sweep STANDS DOWN having
  * deleted nothing.
@@ -520,7 +519,7 @@ async function standDownOwnJob(deps: K8sDeps, identity: TeardownIdentity): Promi
 
 /**
  * The runner's arrival: `prepare` takes the checkout claim, sweeps the leftovers of the job's
- * OTHER attempts (the loop already started this attempt's services) and runs the pre-create claim
+ * OTHER attempts and runs the pre-create claim
  * verify; `launch` creates the Job suspended, then its env Secret, runs the post-create verify and
  * only then resumes the Job. A Secret therefore never exists without a Job the fence and the reaper
  * can derive its name from (issue #821), and no pod starts before the claim is verified.

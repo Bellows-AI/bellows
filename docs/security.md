@@ -47,15 +47,14 @@ Set by `driver/src/k8s-podfields.ts` and `driver/src/docker.ts`; on kubernetes *
 
 | Control | Kubernetes | Docker |
 | --- | --- | --- |
-| No capabilities | `capabilities.drop: [ALL]` unless `unhardened: true` | `--cap-drop ALL` unless `unhardened: true` |
+| No capabilities | `capabilities.drop: [ALL]` on every container | `--cap-drop ALL` on every container |
 | No escalation | `allowPrivilegeEscalation: false` | `--security-opt no-new-privileges` |
 | Seccomp | `seccompProfile: RuntimeDefault` | the daemon's default profile |
 | Non-root | uid 1000, the image's `USER node` | uid 1000, the image's `USER node` |
 | Agent launch, the `agent` container alone | `runAsUser: 0`, `capabilities.add: [SETUID, SETGID]`, admitted on a Job's `agent` only | `--user 0:0 --cap-add SETUID --cap-add SETGID` |
 
-`unhardened: true` on a declared `.bellows.yaml` service restores the image's default capability set (`CAP_NET_RAW`
-included) and nothing else — the **escalation bit stays off**, seccomp stays on, the uid is unchanged. There is
-**no opt-out for a GATE image**. `driver/src/services.ts`, `driver/test/services.test.ts`.
+There is **no opt-out for a declared service or a GATE image**: a stock service image that needs root at boot
+declares `user: "uid:gid"`. `server/src/workspace/bellows-services.ts`, `driver/test/k8s-admission.test.ts`.
 
 ## Stated limits
 

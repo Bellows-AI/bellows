@@ -4814,20 +4814,8 @@ describe('every container the driver runs is hardened (#382)', () => {
         }
     });
 
-    // The same opt-out the kubernetes service pod carries, and reaching exactly as far: a stock
-    // image whose entrypoint chowns its data directory as root gets its capabilities back and
-    // nothing else. `no-new-privileges` stays on, because chowning does not require escalating.
-    it('lets a declared service opt out of the capability drop, and of nothing else', () => {
-        const argv = serviceRunArgs(
-            job,
-            { name: 'db', image: 'postgres:16', environment: [], unhardened: true },
-            supervisorName(job)
-        );
-        expect(argv).not.toContain('--cap-drop');
-        expect(hasPair(argv, '--security-opt', 'no-new-privileges')).toBe(true);
-    });
-
-    // The hardened alternative: the declared uid:gid, with every capability still dropped.
+    // A service has no opt-out: a stock image that needs root at boot declares its own uid:gid,
+    // and every capability stays dropped.
     it('runs a declared service as its declared uid:gid, still hardened', () => {
         const argv = serviceRunArgs(
             job,

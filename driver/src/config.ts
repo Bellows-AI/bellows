@@ -209,7 +209,7 @@ export interface DriverConfig {
     /**
      * Resource requests and limits (RUNNER_CPU_REQUEST / RUNNER_MEMORY_REQUEST /
      * RUNNER_CPU_LIMIT / RUNNER_MEMORY_LIMIT, kubernetes quantity strings) rendered onto every
-     * pod this driver specs — the runner, every aux Job, every declared service pod — so a
+     * pod this driver specs — the runner and its service sidecars, every aux Job — so a
      * runner fleet is Burstable rather than BestEffort and the autoscaler can size for it.
      * Requests and limits are independent: limits stay off by default, because a memory limit on
      * an agent run turns a big build into an OOM kill mid-work, while a request only reserves.
@@ -619,8 +619,8 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
 
     const executor = resolveExecutor(env);
 
-    // Auxiliary services run under both executors: docker networks and sibling containers
-    // there, service pods with headless DNS Services here. The RUNNER_SERVICES flag decides
+    // Auxiliary services run under both executors: containers in the supervisor's network
+    // namespace there, sidecars of the task pod here. The RUNNER_SERVICES flag decides
     // whether they run at all, on either platform — ON by default: a checkout that declares no
     // `.bellows.yaml` services gets exactly the runner it always had (an empty readout names no
     // service), and `RUNNER_SERVICES=0` is the opt-out for an operator who wants the old

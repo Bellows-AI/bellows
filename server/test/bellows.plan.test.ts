@@ -73,6 +73,11 @@ describe('parseServices', () => {
             'services:\n    - name: db\n      image: postgres\n      volumes: x\n',
             /unknown service key/,
         ],
+        [
+            'the hardening opt-out, naming the hardened alternative',
+            'services:\n    - name: db\n      image: postgres\n      unhardened: true\n',
+            /"unhardened" is not supported.*user: "uid:gid"/,
+        ],
     ])('refuses %s', (_label, text, message) => {
         expect(() => parseServices(text)).toThrow(message);
     });

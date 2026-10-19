@@ -7,7 +7,7 @@ const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
 /*
  * Issue #363: the EKS prerequisites live in four places — the docs section that carries them,
- * the ownership sentence that closes the standalone-pod caveat, and the pointers from the chart
+ * the sentence that closes the standalone-pod caveat, and the pointers from the chart
  * surfaces an operator actually reads first (the NetworkPolicy template comment, the values
  * comments, the chart README). Each pin below is a fact the issue demands be stated; a docs edit
  * that drops one fails here instead of at an operator's cluster.
@@ -35,8 +35,10 @@ describe('the EKS prerequisites record', () => {
         expect(kubernetesDocs).toContain('allowedCidrs');
     });
 
-    it('records that declared-service pods are owned, closing the standalone-pod caveat', () => {
-        expect(kubernetesDocs).toContain('ownerReference');
+    // Issue #773: services and gates are sidecars of the runner Job's pod, so no pod is standalone.
+    it("records that every runner pod is a Job's, closing the standalone-pod caveat", () => {
+        expect(prose(kubernetesDocs)).toContain("Every runner pod is a Job's");
+        expect(prose(kubernetesDocs)).toContain('the driver creates no bare pod');
         expect(kubernetesDocs).toContain('standalone');
     });
 
@@ -87,23 +89,20 @@ describe('the executor isolation record (#382)', () => {
         expect(securityDocs).toContain('required by admission');
     });
 
-    // The table is the part a reviewer reads instead of the section below it, so it has to carry
-    // the one exception itself. An unqualified "with no switch to turn it off" over a row that a
-    // declared service CAN turn off is the exact overstatement the opt-out subsection then
-    // contradicts.
-    it('qualifies the capability row in the control table rather than claiming it is unconditional', () => {
+    // Issue #773: a declared service is a sidecar beside the agent, so the capability row has no
+    // exception left — the table states it for every container, and the opt-out is gone.
+    it('states the capability row for every container, with no exception', () => {
         const table = prose(securityDocs);
-        expect(table).not.toContain('on every pod and every container, with no switch to turn it off');
-        expect(table).toContain('| No capabilities | `capabilities.drop: [ALL]` unless `unhardened: true`');
-        expect(table).toContain('`--cap-drop ALL` unless `unhardened: true` |');
+        expect(table).toContain('| No capabilities | `capabilities.drop: [ALL]` on every container');
+        expect(table).toContain('`--cap-drop ALL` on every container |');
+        expect(table).not.toContain('unless `unhardened: true`');
     });
 
-    it('states that the declared-service opt-out reaches the capabilities and nothing else', () => {
-        expect(securityDocs).toContain('unhardened: true');
-        expect(securityDocs).toContain('escalation bit stays off');
-        // And the asymmetry: a gate image is hardened with NO escape hatch, which is a limit an
-        // author hits as a failing gate rather than as a security message.
-        expect(prose(securityDocs)).toContain('no opt-out for a GATE image');
+    it('states that no service or gate image opts out, and what a stock image declares instead', () => {
+        // The limit an author hits as a crash-looping service or a failing gate rather than as a
+        // security message.
+        expect(prose(securityDocs)).toContain('no opt-out for a declared service or a GATE image');
+        expect(securityDocs).toContain('user: "uid:gid"');
     });
 
     // The workspace claim the issue is most explicit about: do NOT advertise task isolation.
@@ -126,9 +125,11 @@ describe('the executor isolation record (#382)', () => {
     it('names each residual rather than leaving it to be discovered', () => {
         // The portless driver egress — the hole the port scoping did not close.
         expect(kubernetesDocs).toContain('reach the driver pod on any port');
-        // The two issues that own what this change deliberately did not implement.
-        expect(kubernetesDocs).toContain('#257');
-        expect(kubernetesDocs).toContain('#296');
+        // Issue #773: no runner ingress, and service names on the pod's loopback, never DNS.
+        expect(prose(kubernetesDocs)).toContain('one attempt cannot reach another');
+        expect(prose(kubernetesDocs)).toContain(
+            'resolves to `127.0.0.1` through `hostAliases`, never through DNS (#296)'
+        );
         // The blockedCidrs hole: a public apiserver or node address is not covered.
         expect(kubernetesDocs).toContain('PUBLIC is not covered');
         // The control a NetworkPolicy cannot be, stated where someone might assume otherwise.
@@ -136,17 +137,24 @@ describe('the executor isolation record (#382)', () => {
     });
 
     // The AUTHOR-facing half. security.md and kubernetes.md are read by operators; the person who
-    // writes `services:` reads jobs.md, and the default this change introduces is one that breaks
-    // their stock postgres. Documenting the opt-out only where operators look would leave that to
-    // be diagnosed from a crash loop.
-    it('tells a .bellows.yaml author about the hardening and the opt-out', () => {
-        expect(jobsDocs).toContain('unhardened: true');
+    // writes `services:` reads jobs.md, and the hardening breaks their stock postgres. Documenting
+    // the fix only where operators look would leave that to be diagnosed from a crash loop.
+    it('tells a .bellows.yaml author about the hardening and its one fix', () => {
         // The symptom they will actually see, named.
         expect(prose(jobsDocs)).toContain('chowns its data directory as root');
-        // The reach of the opt-out, so it is not read as "turns the sandbox off".
-        expect(prose(jobsDocs)).toContain('capability set and nothing else');
-        // And its cost, so granting it fleet-wide is a choice rather than a default.
-        expect(jobsDocs).toContain('CAP_NET_RAW');
+        expect(jobsDocs).toContain('user: "uid:gid"');
+        // Issue #773: the opt-out is gone, and the board says so at parse.
+        expect(prose(jobsDocs)).toContain('the board refuses `unhardened`');
+    });
+
+    // Issue #773: what a service sidecar needs of its image, and docker's weaker service network.
+    it('states the service image needs and the docker service reachability as limits', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            'Stated limit: a declared service image needs `sh`, `cat` and a writable `/tmp`'
+        );
+        expect(prose(kubernetesDocs)).toContain(
+            'on docker (development only) service listeners are reachable by IP on the compose network'
+        );
     });
 
     // Issue #792: a runner that outlived its driver is adopted only once it finished; the running

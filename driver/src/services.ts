@@ -23,18 +23,9 @@ export interface ServiceSpec {
     image: string;
     environment: { key: string; value: string }[];
     /**
-     * The declared hardening opt-out (issue #382), present only when the file asked for it. A
-     * service pod is hardened like every other pod the driver specs — every capability dropped —
-     * and that breaks the common stock image whose entrypoint chowns its data directory as root
-     * before dropping down. This restores THE IMAGE'S DEFAULT CAPABILITY SET and nothing else:
-     * the escalation bit stays off and the seccomp profile stays on, because neither is what
-     * broke. Absent rather than `false` when unasked, so the field's presence IS the declaration.
-     */
-    unhardened?: true;
-    /**
-     * The declared `user: "uid:gid"` the container runs as, present only when the file asked. The
-     * hardened alternative to `unhardened`: a stock entrypoint that already starts as its own uid
-     * skips the root-only chown and user switch, so it boots with every capability dropped.
+     * The declared `user: "uid:gid"` the container runs as, present only when the file asked. A
+     * service is hardened like every container the driver specs, so a stock entrypoint boots only
+     * when it already starts as its own uid and skips the root-only chown and user switch.
      */
     user?: { uid: number; gid: number };
     /**
@@ -63,9 +54,6 @@ export const groupServices = (config: Pick<DriverConfig, 'servicesEnabled'>, job
  * change to one that is not made to the other fails there rather than in a container.
  */
 const HARDENING_ARGS = ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges'];
-
-/** `no-new-privileges` only — the declared `unhardened: true` opt-out. See docker.ts for why. */
-const UNHARDENED_ARGS = ['--security-opt', 'no-new-privileges'];
 
 /**
  * What a service may be called. The name becomes a container-name suffix and a hosts entry —
@@ -166,14 +154,12 @@ function dialedHosts(
  * Why this driver will not run the claim's services, or null (issue #773, R3-1). A declared name
  * goes into the group's hosts file (`127.0.0.1`), so a service spelled like a host its containers
  * dial would capture that traffic; the board cannot know this driver's endpoints, so the driver
- * refuses, case-insensitively. And under kubernetes a service shares the task pod with the agent,
- * where an `unhardened: true` service cannot keep its image's capabilities without the whole pod
- * being exempted: `user:` is the way. A `config` refusal at claim — nothing launches.
+ * refuses, case-insensitively. A `config` refusal at claim — nothing launches.
  */
 export function servicePlanRefusal(
     config: Pick<
         DriverConfig,
-        'executor' | 'servicesEnabled' | 'gateAdvertiseUrl' | 'boardUrl' | 'statsUrl' | 'otelEndpoint' | 'passEnv'
+        'servicesEnabled' | 'gateAdvertiseUrl' | 'boardUrl' | 'statsUrl' | 'otelEndpoint' | 'passEnv'
     >,
     job: BoardJob,
     env: NodeJS.ProcessEnv = process.env
@@ -181,16 +167,10 @@ export function servicePlanRefusal(
     const services = groupServices(config, job);
     if (services.length === 0) return null;
     const hosts = dialedHosts(config, job, env);
-    for (const { name, unhardened } of services) {
+    for (const { name } of services) {
         const shadowed = hosts.find(([host]) => host === name.toLowerCase());
         if (shadowed) {
             return `.bellows.yaml: service "${name}" would shadow ${shadowed[1]} (${shadowed[0]}) for every container of the task; rename it`;
-        }
-        if (unhardened && config.executor === 'kubernetes') {
-            return (
-                `.bellows.yaml: service "${name}" declares unhardened: true, which the kubernetes executor cannot run ` +
-                'beside the agent in its task pod; declare user: "uid:gid" (a non-root user the image runs as) instead'
-            );
         }
     }
     return null;
@@ -233,10 +213,7 @@ export function serviceRunArgs(job: BoardJob, spec: ServiceSpec, holder: string)
     const args = [
         'run',
         '-d',
-        // The declared opt-out reaches exactly the capability drop (issue #382): a stock image
-        // whose entrypoint chowns its data directory as root needs CHOWN/DAC_OVERRIDE/FOWNER
-        // back, and needs nothing else — so `no-new-privileges` is on either way.
-        ...(spec.unhardened ? UNHARDENED_ARGS : HARDENING_ARGS),
+        ...HARDENING_ARGS,
         ...(spec.user ? ['--user', `${spec.user.uid}:${spec.user.gid}`] : []),
         '--name',
         serviceContainerName(job, spec.name),
