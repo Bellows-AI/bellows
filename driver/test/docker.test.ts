@@ -1789,18 +1789,22 @@ function dockerRunner(
         files,
         steps = fakeSteps().sink,
         endpoint,
+        sleep = async () => {},
     }: {
         env?: Parameters<typeof loadDriverConfig>[0];
         spawn?: typeof spawn;
         files?: RunnerFiles;
         steps?: StepSink;
         endpoint?: SupervisorEndpoint;
+        sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
     } = {}
 ): ReturnType<typeof createDockerRunner> {
     return createDockerRunner(loadDriverConfig(env), spawnFn, exec, {
         ...(files ? { files } : {}),
         steps,
         ...(endpoint ? { endpoint } : {}),
+        // No test waits out a real pause: a test that is about one passes its own.
+        sleep,
     });
 }
 
@@ -5454,6 +5458,44 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         await expect(dockerRunner(wrap(base), { spawn: logs }).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
         expect(readOrRemoved(calls)).toBe(false);
+    });
+
+    // Paced like the kubernetes listing (its verdict reads sleep between retries), and a stand-down
+    // during the pause ends it: no further listing, the adoption abandoned.
+    it('pauses between listings of the exited runners after a refusal', async () => {
+        const { exec: base, logs } = daemon(listing());
+        const events: string[] = [];
+        const listed = refusingDiscovery(base, 1);
+        const exec = (args: string[]) => {
+            if (args[0] === 'ps' && args.includes('status=exited')) events.push('ps');
+            return listed(args);
+        };
+        const sleep = async (ms: number) => {
+            events.push(`sleep ${ms > 0}`);
+        };
+
+        expect(await dockerRunner(exec, { spawn: logs, sleep }).adopt(adopter)).toMatchObject({ claimSeq: 1 });
+        expect(events).toEqual(['ps', 'sleep true', 'ps']);
+    });
+
+    it('abandons the adoption when the attempt stands down during the pause between listings', async () => {
+        const { exec: base, logs } = daemon(listing());
+        const standDown = new AbortController();
+        let listings = 0;
+        const listed = refusingDiscovery(base, 1);
+        const exec = (args: string[]) => {
+            if (args[0] === 'ps' && args.includes('status=exited')) listings += 1;
+            return listed(args);
+        };
+        const sleep = (_ms: number, signal?: AbortSignal) => {
+            standDown.abort();
+            return signal?.aborted ? Promise.reject(new Error('The operation was aborted')) : Promise.resolve();
+        };
+
+        await expect(dockerRunner(exec, { spawn: logs, sleep }).adopt(adopter, standDown.signal)).rejects.toThrow(
+            /abandoned/
+        );
+        expect(listings).toBe(1);
     });
 
     /** The daemon of `daemon`, whose `docker wait` on the earlier supervisor rejects with `error`. */

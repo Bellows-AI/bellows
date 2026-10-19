@@ -80,6 +80,9 @@ import {
     servicePsArgs,
     startJobServices,
     type RunnerFiles,
+    abortableSleep,
+    type Sleep,
+    untilStandDown,
     type Spawn,
     type ExecDocker,
     readUtf8,
@@ -109,6 +112,8 @@ interface RunnerDeps {
     execDocker: ExecDocker;
     files: RunnerFiles;
     spawnFn: Spawn;
+    /** Paces the adoption's discovery retries; a stand-down cuts it short. */
+    sleep: Sleep;
     /** The supervised-step channel and the endpoint a supervisor-only group is served on (`step-control.ts`). */
     steps?: StepSink;
     endpoint?: SupervisorEndpoint;
@@ -169,12 +174,7 @@ interface RunnerDeps {
  */
 async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal?: AbortSignal): Promise<void> {
     // An adoption's fence stops at its attempt's stand-down: no call of it is made after (#824).
-    const execDocker: ExecDocker = signal
-        ? async (args, options) => {
-              if (signal.aborted) throw new Error('the fence was abandoned: the attempt stood down');
-              return deps.execDocker(args, options);
-          }
-        : deps.execDocker;
+    const execDocker = untilStandDown(deps.execDocker, signal);
     // The run this attempt adopted is kept, as kubernetes keeps its Job, for a later claim (issue #821).
     const kept = { leaseToken: job.leaseToken, spared: deps.adopted.get(job.leaseToken) };
     const containerIds = await listOtherAttemptsOrThrow(
@@ -727,15 +727,16 @@ export function createDockerRunner(
         if (input) pending.child.stdin?.end(input);
         return pending;
     },
-    extras: { files?: RunnerFiles; steps?: StepSink; endpoint?: SupervisorEndpoint } = {}
+    extras: { files?: RunnerFiles; steps?: StepSink; endpoint?: SupervisorEndpoint; sleep?: Sleep } = {}
 ): Runner {
     const deadlines = createDeadlineRegistry();
-    const { files = { writeFile, rm }, steps, endpoint } = extras;
+    const { files = { writeFile, rm }, steps, endpoint, sleep = abortableSleep } = extras;
     const deps: RunnerDeps = {
         config,
         execDocker,
         files,
         spawnFn,
+        sleep,
         killed: new Set(),
         hardKilled: new Set(),
         deadlines,
