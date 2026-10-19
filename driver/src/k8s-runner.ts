@@ -50,7 +50,7 @@ import {
     expectOk,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
-    HTTP_OK_STATUS,
+    is2xx,
     livePod,
     MS_PER_SECOND,
     parse,
@@ -471,7 +471,7 @@ async function heldClaim(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult['h
     } catch {
         return undefined;
     }
-    if (get.status < HTTP_OK_STATUS || get.status >= HTTP_ERROR_STATUS) return undefined;
+    if (!is2xx(get.status)) return undefined;
     const claim = parse<K8sClaim>(get.body);
     const uid = claim.metadata?.uid;
     const holder = claim.data?.holder;

@@ -33,6 +33,7 @@ import {
     runnerClaimEnv,
 } from './claim.js';
 import { gateShellArgv, opencodeReadoutScript } from './container-scripts.js';
+import { parseLastJsonLine } from './json-parse.js';
 import type { ServiceStatus } from './board.js';
 import { BYTES_PER_KIB, commandMark, OPENCODE_EXPORT_LIMIT, type RuntimeSample, type RunSession } from './runner.js';
 import { GATE_IMAGE, GATE_KEY, toolTreeReleaseScript, worktreeDir } from './publish.js';
@@ -141,14 +142,9 @@ const memMbOf = (field: string | undefined): number | null => {
  * freshness, never the run.
  */
 export function parseDockerStats(stdout: string): Omit<RuntimeSample, 'sampledAt'> | null {
-    const line = stdout.trim().split('\n').filter(Boolean).pop();
-    if (!line) return null;
-    let fields: Record<string, unknown>;
-    try {
-        fields = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-        return null;
-    }
+    const parsed = parseLastJsonLine<unknown>(stdout, () => undefined);
+    if (parsed === undefined) return null;
+    const fields = parsed as Record<string, unknown>;
     const cpuPercent = percentOf(fields.CPUPerc);
     const usage = typeof fields.MemUsage === 'string' ? fields.MemUsage.split('/') : [];
     const memUsedMb = memMbOf(usage[0]);

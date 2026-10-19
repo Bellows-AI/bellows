@@ -2,6 +2,7 @@ import type { AskedQuestion } from './board.js';
 import type { PublishRelay, PublishSlot } from './publish-control.js';
 import type { ReviewRelay, ReviewSlot } from './review-control.js';
 import type { ExportRelay, ExportSlot } from './export-control.js';
+import { parseJsonObject } from './json-parse.js';
 import { QUESTION_ID, validateQuestionReport } from './question-validation.js';
 
 /**
@@ -89,13 +90,7 @@ const refusedAnswer: QuestionAnswer = { status: HTTP_TOO_MANY_REQUESTS, body: { 
 
 /** `POST /question`: validate, record, forward once. Rejects when the forward throws; the record is dropped. */
 export async function recordQuestion(control: ControlEntry, raw: string): Promise<QuestionAnswer> {
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(raw);
-    } catch {
-        parsed = null;
-    }
-    const report = validateQuestionReport(parsed);
+    const report = validateQuestionReport(parseJsonObject(raw));
     if (!report) return { status: HTTP_BAD_REQUEST, body: { error: 'invalid question' } };
     // A repeat that arrives while the first forward is in flight waits for it and gets the same
     // answer, so a forward that then fails or is refused fails the repeat too and the bridge retries.

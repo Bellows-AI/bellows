@@ -13,12 +13,12 @@ import {
     lookupHelper,
     parseHelperOutput,
 } from './helpers.js';
+import { parseLastJsonLine } from './json-parse.js';
 import {
     baseBranchOf,
     CREDENTIAL_HELPER,
     gitWorktreeRemoveScript,
     gitWorktreeScript,
-    parseLastJsonLine,
     probeTreeFingerprint,
     publishCheckout,
     type PublishStep,

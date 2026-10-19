@@ -1,5 +1,6 @@
 import type { BoardJob } from './board.js';
 import { containerScript as script } from './container-scripts.js';
+import { parseLastJsonLine } from './json-parse.js';
 
 /**
  * The values of the publish workflow that stand alone — the PR summary's script and parse, the
@@ -31,16 +32,12 @@ export interface PrSummary {
 
 /** Pulls the PR summary's answer out of its stdout, tolerating anything else. */
 export function parsePrSummary(stdout: string): PrSummary {
-    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-    try {
-        const p = JSON.parse(line) as Partial<PrSummary>;
-        return {
-            title: typeof p.title === 'string' && p.title ? p.title : null,
-            body: typeof p.body === 'string' && p.body ? p.body : null,
-        };
-    } catch {
-        return { title: null, body: null };
-    }
+    const p = parseLastJsonLine<Partial<PrSummary> | null>(stdout, () => null);
+    if (p === null) return { title: null, body: null };
+    return {
+        title: typeof p.title === 'string' && p.title ? p.title : null,
+        body: typeof p.body === 'string' && p.body ? p.body : null,
+    };
 }
 /**
  * A branch name is about to become a `-w` path-adjacent argv value and a `gh --head` value. The

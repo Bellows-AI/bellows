@@ -8,6 +8,7 @@ import { ARTIFACT_LIMIT, OUTPUT_LIMIT } from '../src/runner.js';
 import {
     DIAGNOSIS_BODY_CHARS,
     inClusterRequest,
+    is2xx,
     isMalformedRequest400,
     refusalDiagnosis,
 } from '../src/k8s-transport.js';
@@ -16,6 +17,12 @@ const METRICS_PATH = '/apis/metrics.k8s.io/v1beta1/namespaces/factory/pods/runne
 const LOG_PATH = '/api/v1/namespaces/factory/pods/runner-1/log?tailLines=1000';
 const status = (message: string, reason?: string) => JSON.stringify({ kind: 'Status', message, reason, code: 400 });
 const CREATING = status('container "runner" in pod "runner-1" is waiting to start: ContainerCreating', 'BadRequest');
+
+describe('is2xx', () => {
+    it('holds for 200 through 299 and nothing else', () => {
+        expect([199, 200, 204, 299, 300, 404].map(is2xx)).toEqual([false, true, true, true, false, false]);
+    });
+});
 
 describe('refusalDiagnosis', () => {
     it('stays quiet for the expected metrics 404 and ContainerCreating log 400 only', () => {

@@ -114,6 +114,19 @@ describe('the export routes of the control channel', () => {
         expect((await call('POST', '/export/state', JSON.stringify({ pendingBytes: -1 }))).status).toBe(400);
     });
 
+    it('refuse a manifest or a report that is not a JSON object as a malformed export request', async () => {
+        openExporting();
+        for (const body of ['not json', 'null', '[]']) {
+            const manifest = await call('PUT', '/export/manifest', body);
+            expect(manifest.status).toBe(400);
+            expect(await manifest.json()).toEqual({ error: 'malformed export request' });
+            const state = await call('POST', '/export/state', body);
+            expect(state.status).toBe(400);
+            expect(await state.json()).toEqual({ error: 'malformed export request' });
+        }
+        expect(seen.reports).toEqual([]);
+    });
+
     it('answer 400 where the attempt exports no transcript', async () => {
         channel.open(TOKEN);
         channel.grantExporter(TOKEN, EXPORTER);
