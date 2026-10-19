@@ -26,9 +26,6 @@ export const EXPORT_FLUSH_MS = 15_000;
 
 /** The attempt failure cause when the spool cap is hit; also the manifest's terminal cause for it. */
 export const SPOOL_FULL_CAUSE = 'artifact_spool_full';
-/** The manifest cause of a transcript cut short by a kill or timeout of the agent. */
-export const AGENT_KILLED_CAUSE = 'agent_killed';
-export const AGENT_TIMEOUT_CAUSE = 'timeout';
 
 /** The exporter's own producer name in a manifest, and its schema version. */
 export const EXPORT_PRODUCER = 'exporter';

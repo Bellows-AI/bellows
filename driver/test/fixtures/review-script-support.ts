@@ -41,12 +41,7 @@ export interface ScriptRun {
     args: string[][];
 }
 
-/**
- * Run one review script against the stub `gh`. The pure planning functions these scripts wrap
- * (`validateReviewRef`, `buildReviewReply`, the two verdict parsers) are exercised directly,
- * offline, in `review.test.ts` — this suite pins the end-to-end spawn shape and the wire bytes a
- * real gh round trip produces.
- */
+/** Run one review script against the stub `gh`: the end-to-end spawn shape and the wire bytes a real gh round trip produces. */
 export const runScript = async (
     name: string,
     env: Record<string, string>,
