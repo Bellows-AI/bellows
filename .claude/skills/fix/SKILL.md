@@ -20,7 +20,8 @@ beside this file prevent that; call them by absolute path from the main checkout
 cover every command this skill names below.
 
 - Heavy commands run as `sh HEAVY <command>`: `npm test`, `npm run typecheck`, `npm run build`, a
-  directory-wide `npx vitest run <dir>`, `docker build`, `make runners` and `codex exec`. A
+  directory-wide `npx vitest run <dir>`, `npx vitest run --changed`, `docker build`, `make runners`
+  and `codex exec`. A
   single-file `npx vitest run <path>` and `npm run lint:changed` run bare.
 - Lanes with fixed ports or project names run as `sh HEAVY --exclusive <command>`:
   `npm run test:jobs`, `npm run test:k8s`, `npm run verify:ui`.
@@ -64,8 +65,8 @@ task branch strands the run: the board's resume gate refuses a follow-up whose c
    the main checkout when possible (`cp -cR <root>/node_modules <worktree>/node_modules` — APFS
    copy-on-write, near-instant), falling back to `npm install`. Copy any gitignored local files
    the toolchain needs too (`.env` and the like).
-4. Prove the worktree can actually run the test suite (`npm test` — offline, no token, no
-   database, no docker) before moving on.
+4. Prove the worktree can actually run tests before moving on: `npm run build -w core`, then one
+   file, `npx vitest run core/test/core-index.test.ts`. The full suite waits for the Phase 5 gate.
 5. Record the worktree path as WORKTREE. From now on every command runs with WORKTREE as its
    working directory — absolute path, never a relative `cd`.
 
@@ -83,8 +84,22 @@ task branch strands the run: the board's resume gate refuses a follow-up whose c
 
 ## Phase 3 — Implement, TDD
 
-The suite commands here are `npm test` (vitest, offline) and `npm run typecheck`. Single file:
-`npx vitest run <path>`. Style is enforced by biome — run `npm run lint:changed` before
+The suite commands here are the focused suite (below) and `npm run typecheck`. Single file:
+`npx vitest run <path>`. The full `npm test` runs once, as the Phase 5 gate — never per iteration.
+
+**Focused suite** — every test the change can reach, run from WORKTREE with
+BASE=`git merge-base HEAD origin/<default-branch>`:
+
+- `sh HEAVY npx vitest run --changed $BASE` — each test file whose import graph reaches a file
+  changed since BASE, uncommitted work included.
+- The diff touches `core/src`: `npm run build -w core`, then also
+  `sh HEAVY npx vitest run server/test web/test` — they import `@factory-ai/core` from
+  `core/dist`, which the graph does not follow back to `core/src`.
+- The diff touches a file tests read by path rather than import (docs, `.sh`, `.sql`,
+  `driver/src/scripts/*`, `charts/`, skills): also each test that names it,
+  `git grep -l <basename> -- '*/test/*' e2e`.
+
+Style is enforced by biome — run `npm run lint:changed` before
 committing (only the files the branch touched, at low CPU priority; never the whole-repo
 `npm run lint`, which CI runs), and `npm run lint:changed -- --write` (or `npm run format` for pure
 format drift) to settle what it flags.
@@ -95,7 +110,7 @@ In order:
    expected reason — a setup error is not a red.
 2. GREEN: write the minimum implementation that makes it pass. No features beyond the issue, no
    speculative abstractions.
-3. Run the full suite plus `npm run typecheck`. If existing tests break, fix them before
+3. Run the focused suite plus `npm run typecheck`. If existing tests break, fix them before
    proceeding — never delete or skip a test to get green.
 4. Tests must be isolated from each other and never hardcode database ids or environment-specific
    values.
@@ -114,7 +129,7 @@ For each round, up to 3:
    one-paragraph summary of the approach.
 3. Triage its findings:
    - Blockers (bugs, broken error handling, missing coverage for the change, security issues):
-     fix, re-run the full suite, continue to the next round.
+     fix, re-run the focused suite, continue to the next round.
    - Nitpicks/style: fix only if trivial; do not loop on them.
 4. A round with zero blockers ends the loop.
 
@@ -129,6 +144,8 @@ Pre-flight (all inside WORKTREE):
   run — revert it; never mix it into the PR.
 - `git log --oneline -10` — match the repo's existing commit message style.
 - Stage only the files your change touched. Never commit secrets, keys, or .env files.
+- The gate: the full `sh HEAVY npm test`, `npm run typecheck` and `npm run lint:changed`, once,
+  here. A failure is fixed and the gate re-run before anything is committed.
 
 Then:
 
@@ -145,8 +162,8 @@ Then:
      `--ours`/`--theirs`. In files your change did not touch, take the default branch's side;
      where it touched the same lines as the fix, combine both intents (re-read the issue and the
      planner output if the intent is unclear — that is a stop condition, not a guess).
-   - After every merge — clean, fast-forward or conflict-resolved — re-run `npm test`,
-     `npm run typecheck` and `npm run lint:changed`.
+   - After every merge that brought commits in — clean, fast-forward or conflict-resolved —
+     re-run the full gate: `npm test`, `npm run typecheck` and `npm run lint:changed`.
    - Record the pre-merge commit (`git rev-parse HEAD`) before each merge.
    - If conflict resolution fails while the merge is still in progress, run `git merge --abort`,
      fetch again (the default branch may have moved under you), and spend the second attempt.
@@ -189,7 +206,7 @@ round = one wait, one fetch, one address cycle:
      ambiguity gate: STOP and ask the user. Never invent a resolution.
    - **PR-level comments and review-summary bodies** (the skill covers line comments only): judge
      each point yourself. Fix what is real with the full Phase 3 discipline — RED test first,
-     minimal fix, `npm test` + `npm run typecheck` + `npm run lint:changed` — and run one Phase 4
+     minimal fix, the focused suite + `npm run typecheck` + `npm run lint:changed` — and run one Phase 4
      reviewer round on the new diff before pushing.
 4. Every addressed comment gets a reply saying what was fixed and how — never a bare
    "fixed in <sha>". github-review-fix posts its own; for the ones you handled:

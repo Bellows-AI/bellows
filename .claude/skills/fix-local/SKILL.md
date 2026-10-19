@@ -52,7 +52,7 @@ Per round, in WORKTREE:
 1. Make the whole change visible as one diff: `git add -N <each new file>` (intent-to-add, so
    untracked files appear), then record BASE=`git merge-base HEAD origin/<default-branch>`.
 2. Run the code brief below.
-3. Triage as `fix` Phase 4 does: fix blockers and re-run the full suite; nitpicks only if trivial.
+3. Triage as `fix` Phase 4 does: fix blockers and re-run the focused suite; nitpicks only if trivial.
 4. A round with zero blockers ends the loop.
 
 After 3 rounds with blockers remaining: STOP, exactly as `fix` Phase 4 says. Phase 6's "one Phase 4

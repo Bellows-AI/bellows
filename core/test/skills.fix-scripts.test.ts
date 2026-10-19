@@ -54,6 +54,13 @@ describe('the fix skills', () => {
         expect(fix).toContain('`sh CLEANUP <N>` run');
         expect(readFileSync(join(skill, '../fix-local/SKILL.md'), 'utf8')).toContain('`sh HEAVY codex exec');
     });
+
+    it('iterate on the focused suite and run the full suite once, as the ship gate', () => {
+        const fix = readFileSync(join(skill, 'SKILL.md'), 'utf8');
+        expect(fix).toContain('`sh HEAVY npx vitest run --changed $BASE`');
+        expect(fix).toContain('The full `npm test` runs once, as the Phase 5 gate');
+        expect(readFileSync(join(skill, '../fix-local/SKILL.md'), 'utf8')).toContain('re-run the focused suite');
+    });
 });
 
 describe('heavy.sh', () => {
