@@ -3399,7 +3399,9 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // Pinned (#828, slice 1): a run whose outcome rejects once its group exists finishes that group
     // itself (`docker-runner.ts:680-683`), before the loop decides — though the loop leaves such a
     // run to its lease so the next claim can adopt it (`concludeThrownRun`, `loop-fence.ts`).
-    // Slice 6 removes the finish-on-throw; this pin flips then.
+    // Slice 6 removes the finish-on-throw; this pin flips then. Like the harness's pins, it fails
+    // only on today's exact removals: any other rejection or removal set returns early and turns
+    // the `it.fails` red.
     it.fails('a run that rejects leaves its group for the loop to decide', async () => {
         const exec = daemon();
         let spawnedAt = -1;
@@ -3407,11 +3409,20 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             spawnedAt = exec.mock.calls.length;
             throw new Error('the attach could not be spawned');
         }) as unknown as typeof spawn;
-        await expect(servicesRunner(exec, throwing).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /could not be spawned/
-        );
-        expect(spawnedAt).toBeGreaterThan(0);
-        expect(groupRemovals(exec, spawnedAt)).toEqual([]);
+        const rejected = await servicesRunner(exec, throwing)
+            .run(job, { id: SESSION, resume: false })
+            .then(
+                () => null,
+                (e: Error) => e.message
+            );
+        const removals = groupRemovals(exec, spawnedAt);
+        const today = [
+            ['rm', '-f', exporterName(job)],
+            ['rm', '-f', supervisorName(job)],
+        ];
+        if (!/could not be spawned/.test(rejected ?? '') || spawnedAt <= 0) return;
+        if (JSON.stringify(removals) !== JSON.stringify(today)) return;
+        expect(removals).toEqual([]);
     });
 
     // The spawn-error twin: A's runner spawn fails, but the failure is delivered only after B
