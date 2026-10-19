@@ -63,6 +63,8 @@ import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
 import { throughTransport } from './fixtures/k8s-transport-bridge.js';
 import { decisionOf, TERMINATION_ROWS, type TerminationRow } from './fixtures/termination-table.js';
+import { STARTUP_ROWS, type StartupRow, startupDecisionOf } from './fixtures/startup-table.js';
+import { StartupRefused } from '../src/startup-cause.js';
 import type { RunOutcome } from '../src/runner.js';
 import { ServicesNotRunning } from '../src/service-restart.js';
 import {
@@ -1672,11 +1674,15 @@ describe('the worktree sync', () => {
         };
         const steps = fakeSteps();
         steps.sink.contacted = () => false;
-        const result = await sync(repoJob, steps, request);
-        expect(result.ok).toBe(false);
-        expect(result.reason).toMatch(
-            /the executor image "claude-executor" cannot be pulled: ErrImagePull — pull access denied/
-        );
+        // Typed by the cause the pod's words prove (#824 D11): a refused credential, a configuration fault.
+        const refused = sync(repoJob, steps, request);
+        await expect(refused).rejects.toBeInstanceOf(StartupRefused);
+        await expect(refused).rejects.toMatchObject({
+            startupCause: 'auth',
+            message: expect.stringMatching(
+                /the executor image "claude-executor" cannot be pulled: ErrImagePull — pull access denied/
+            ),
+        });
         // Named on the SECOND round: the first round's ContainerCreating did not settle the watch.
         expect(podReads).toBe(2);
         expect(steps.submitted).toEqual([]);
@@ -3365,11 +3371,83 @@ describe('the kubernetes runner', () => {
             }
             return base(method, path, body);
         };
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+        const running = runner(request).run(job, { id: SESSION, resume: false });
+        await expect(running).rejects.toThrow(
             /the executor image "claude-executor" cannot be pulled: ImagePullBackOff/
         );
+        // Typed by the cause its words prove (#824 D11), as the sync's wait types it.
+        await expect(running).rejects.toMatchObject({ name: 'StartupRefused', startupCause: 'auth' });
         // Named on the first poll — the image question never waits out the deadline.
         expect(polls).toBe(1);
+    });
+
+    // A container config the kubelet refuses holds the pod as surely as an image: named at once,
+    // not after the runner Job's deadline (#824 D11).
+    it('names a container config the kubelet refuses instead of burning the runner deadline', async () => {
+        const held = JSON.stringify({
+            items: [
+                {
+                    metadata: { name: podName },
+                    status: {
+                        containerStatuses: [
+                            {
+                                state: {
+                                    waiting: { reason: 'CreateContainerConfigError', message: 'secret "x" not found' },
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        });
+        const { request: base } = fakeRequest({ pods: { status: 200, body: held } });
+        const request: K8sRequest = async (method, path, body) =>
+            method === 'GET' && path === jobPath(namespace, runnerJobName(job))
+                ? { status: 200, body: '{"status":{}}' }
+                : base(method, path, body);
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toMatchObject({
+            name: 'StartupRefused',
+            startupCause: 'config',
+            message: expect.stringContaining('the executor container cannot start: CreateContainerConfigError'),
+        });
+    });
+
+    // An agent that is running or ended has run: a container held beside it (an exporter whose Secret
+    // went away) is no refused start of the run, never a fault that ends the task (Codex r2, class B).
+    it('never reads a container held beside an agent that ran as a refused start', async () => {
+        const held = JSON.stringify({
+            items: [
+                {
+                    metadata: { name: podName },
+                    status: {
+                        containerStatuses: [
+                            { name: AGENT_CONTAINER, state: { terminated: { exitCode: 0 } } },
+                            { name: SUPERVISOR_CONTAINER, state: { running: {} } },
+                            {
+                                name: EXPORTER_CONTAINER,
+                                state: {
+                                    waiting: { reason: 'CreateContainerConfigError', message: 'secret "x" not found' },
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        });
+        let polls = 0;
+        const { request: base } = fakeRequest({ pods: { status: 200, body: held } });
+        const request: K8sRequest = async (method, path, body) => {
+            if (method === 'GET' && path === jobPath(namespace, runnerJobName(job))) {
+                polls += 1;
+                return { status: 200, body: polls < 2 ? '{"status":{}}' : '{"status":{"succeeded":1}}' };
+            }
+            return base(method, path, body);
+        };
+        const ended = await runner(request)
+            .run(job, { id: SESSION, resume: false })
+            .catch((e: unknown) => e);
+        expect(ended).not.toMatchObject({ name: 'StartupRefused' });
+        expect(polls).toBeGreaterThan(1);
     });
 
     /*
@@ -9929,5 +10007,153 @@ describe('one end, one identity (#821)', () => {
         expect(claimDeletes()).toEqual([]);
         running = false;
         await expect(r.reapOrphanedClaim!(repoJob, observed)).resolves.toBe(true);
+    });
+});
+
+/*
+ * Issue #824 D11, the kubernetes half: the group's pod tells why it cannot start through its
+ * containers' waiting reasons and messages, and the wait for its supervisor answers the proven
+ * cause — read the same way docker reads its daemon's words.
+ */
+describe('how a refused group start ends, on kubernetes (the startup conformance table, #824 D11)', () => {
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const SESSION_OF = { id: SESSION, resume: false };
+    const pulled = (detail: string) =>
+        `rpc error: code = Unknown desc = failed to pull and unpack image "registry.example/claude-executor:latest": ${detail}`;
+    const waitingPod = (reason: string, message?: string) => ({
+        metadata: { name: podName },
+        status: {
+            phase: 'Pending',
+            containerStatuses: [{ name: 'supervisor', state: { waiting: message ? { reason, message } : { reason } } }],
+        },
+    });
+    /** The kubelet's own reason and words for each refusal, on the group pod's supervisor container. */
+    const refusals: Record<StartupRow, ReturnType<typeof waitingPod>> = {
+        'the platform never brought the group up': waitingPod('ContainerCreating'),
+        'a registry that timed out': waitingPod(
+            'ErrImagePull',
+            pulled(
+                'failed to do request: Head "https://registry.example/v2/claude-executor/manifests/latest": dial tcp 10.0.0.1:443: i/o timeout'
+            )
+        ),
+        'a registry rate limit': waitingPod(
+            'ErrImagePull',
+            pulled('unexpected status code: 429 Too Many Requests - Server message: toomanyrequests: rate limit')
+        ),
+        'a TLS handshake that timed out': waitingPod(
+            'ErrImagePull',
+            pulled('failed to do request: Head "https://registry.example/v2/": net/http: TLS handshake timeout')
+        ),
+        'a missing image': waitingPod(
+            'ErrImagePull',
+            'rpc error: code = NotFound desc = failed to pull and unpack image "registry.example/claude-executor:latest": failed to resolve reference "registry.example/claude-executor:latest": registry.example/claude-executor:latest: not found'
+        ),
+        'an invalid image reference': waitingPod(
+            'InvalidImageName',
+            'Failed to apply default image tag "Registry.Example//claude": couldn\'t parse image reference'
+        ),
+        'an unauthorized pull': waitingPod(
+            'ErrImagePull',
+            pulled('failed to authorize: failed to fetch anonymous token: unexpected status: 401 Unauthorized')
+        ),
+        'an untrusted registry certificate': waitingPod(
+            'ErrImagePull',
+            pulled('tls: failed to verify certificate: x509: certificate signed by unknown authority')
+        ),
+        'a container configuration the platform refuses': waitingPod(
+            'CreateContainerConfigError',
+            'secret "factory-env-x" not found'
+        ),
+        'a refusal whose words prove no cause': waitingPod(
+            'ErrImagePull',
+            'rpc error: code = Unknown desc = something the kubelet has never said before'
+        ),
+    };
+    /** The group pod's lists answer `pods` in turn (the last one repeats); every other call as the fake does. */
+    const podsInTurn = (pods: unknown[]) => {
+        const base = fakeRequest();
+        let reads = 0;
+        const request: K8sRequest = async (method, path, body) => {
+            if (
+                method === 'GET' &&
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
+                const pod = pods[Math.min(reads, pods.length - 1)];
+                reads += 1;
+                return { status: 200, body: JSON.stringify({ items: pod === undefined ? [] : [pod] }) };
+            }
+            return base.request(method, path, body);
+        };
+        return { request, reads: () => reads };
+    };
+    /** The sync of a group whose supervisor never answers: what it threw, or null. */
+    const refusedSync = (request: K8sRequest): Promise<unknown> => {
+        const steps = fakeSteps();
+        steps.sink.contacted = () => false;
+        return runner(request, {}, undefined, steps.sink)
+            .syncCheckout(repoJob, undefined, SESSION_OF)
+            .then(
+                () => null,
+                (e: unknown) => e
+            );
+    };
+
+    it.each(STARTUP_ROWS)('%s: %s', async (row, expected) => {
+        expect(startupDecisionOf(await refusedSync(podsInTurn([refusals[row]]).request))).toBe(expected);
+    });
+
+    // A back-off names no cause of its own: the wait reads on until the pull's own failure says one.
+    it('reads past a back-off that names no cause, to the pull failure that does', async () => {
+        const backOff = waitingPod(
+            'ImagePullBackOff',
+            'Back-off pulling image "registry.example/claude-executor:latest"'
+        );
+        const pods = podsInTurn([backOff, backOff, refusals['a missing image']]);
+        const thrown = await refusedSync(pods.request);
+        expect(thrown).toBeInstanceOf(StartupRefused);
+        expect(thrown).toMatchObject({ startupCause: 'image' });
+        expect(pods.reads()).toBe(3);
+    });
+
+    // A supervisor that runs and never answers is no evidence the platform is still bringing the
+    // group up: it is no transient refusal, and the sync is left to the lease as before.
+    it('reads no transient cause from a supervisor that runs and never answers', async () => {
+        const running = {
+            metadata: { name: podName },
+            status: { phase: 'Running', containerStatuses: [{ name: 'supervisor', state: { running: {} } }] },
+        };
+        const thrown = await refusedSync(podsInTurn([running]).request);
+        expect(thrown).toBeInstanceOf(Error);
+        expect(startupDecisionOf(thrown)).toBe('unclassified');
+        expect((thrown as Error).message).toMatch(/never came up/);
+    });
+
+    // A pod list that cannot be read proves nothing either way: no transient cause from silence.
+    it('reads no transient cause from pod lists that never answered', async () => {
+        const base = fakeRequest();
+        const request: K8sRequest = async (method, path, body) =>
+            method === 'GET' &&
+            path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+            decodeURIComponent(path).includes('job-name=')
+                ? { status: 503, body: 'unavailable' }
+                : base.request(method, path, body);
+        expect(startupDecisionOf(await refusedSync(request))).toBe('unclassified');
+    });
+
+    // The bound is elapsed time, not a count of polls: slow reads end the wait as surely as quick ones.
+    it('ends the wait for the supervisor on elapsed time', async () => {
+        const pods = podsInTurn([refusals['the platform never brought the group up']]);
+        let now = 1_000_000;
+        const clock = vi.spyOn(Date, 'now').mockImplementation(() => {
+            now += 120_000;
+            return now;
+        });
+        try {
+            expect(startupDecisionOf(await refusedSync(pods.request))).toBe('interruption');
+        } finally {
+            clock.mockRestore();
+        }
+        expect(pods.reads()).toBeLessThan(20);
     });
 });

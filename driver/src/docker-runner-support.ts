@@ -26,8 +26,20 @@ import {
     serviceRunArgs,
 } from './services.js';
 import { awaitServicesRunning, throwIfStoodDown } from './service-restart.js';
+import { type StartupCause, startupCauseOf, StartupRefused } from './startup-cause.js';
 
 export const run = promisify(execFile);
+
+/**
+ * A group start the daemon refused, typed by the cause its own stderr proves (#824 D11); anything
+ * else — a local file the host refused, words that prove no cause — is rethrown as it came.
+ */
+export function startupRefusalOf(e: unknown): unknown {
+    const stderr = (e as { stderr?: unknown }).stderr;
+    if (typeof stderr !== 'string') return e;
+    const cause = startupCauseOf({ message: stderr });
+    return cause ? new StartupRefused(stderr.trim(), cause) : e;
+}
 
 export type Spawn = typeof spawn;
 
@@ -247,6 +259,44 @@ export async function setupJobServices(
     return { servicesNetwork };
 }
 
+/** Docker's start time for a container it never started. */
+const NEVER_STARTED_AT = '0001-01-01T00:00:00Z';
+
+/** A failing close as the daemon answered it: `neverRan` is the daemon's proof, never a guess (#824 D11). */
+export interface ClosedState {
+    started: boolean;
+    neverRan: boolean;
+    infraLoss: string | null;
+}
+
+/**
+ * Whether a container that closed failing ever ran, as the daemon answers it: one that never ran is
+ * still `created`, or carries no start time — a status alone (`dead`, `exited`) is no such proof. The
+ * fallback when the daemon cannot answer is a guess, never that proof.
+ */
+export async function closedStateOf(
+    code: number,
+    ctx: { execDocker: ExecDocker; job: BoardJob; timedOut: boolean }
+): Promise<ClosedState> {
+    try {
+        const state = JSON.parse(
+            (await ctx.execDocker(['inspect', '--format', '{{json .State}}', containerName(ctx.job)])).stdout
+        ) as { Status?: string; StartedAt?: string };
+        const neverRan = state.Status === 'created' || state.StartedAt === NEVER_STARTED_AT;
+        return { started: !neverRan, neverRan, infraLoss: null };
+    } catch (e) {
+        const started = code !== CONTAINER_GONE;
+        // A container that ran and is gone before its own close was removed under the run —
+        // the driver's kill only kills (issue #560). Its exit is the removal's, not the agent's.
+        const removed = started && !ctx.timedOut && alreadyGone(e);
+        return {
+            started,
+            neverRan: false,
+            infraLoss: removed ? `the runner container was removed before it exited (exit ${code})` : null,
+        };
+    }
+}
+
 /**
  * The verdict for a close, decided after the process is gone. An exit CONTAINER_GONE is
  * ambiguous on the shared stderr — the daemon's refusal and a command that genuinely exited that
@@ -272,36 +322,33 @@ export async function dockerRunVerdict(
         /** The full-run log the accumulator kept (issue #325); absent when nothing ran. */
         fullLog?: string;
         logTruncated?: boolean;
+        /** The cause a refused create's own stderr proves (#824 D11): the refusal is the evidence. */
+        refusalCause?: StartupCause | null;
+        /** The daemon's answer already read for this close (`provenStartRefusal`): never asked twice. */
+        closed?: ClosedState | null;
     }
 ): Promise<RunOutcome> {
     // 125 is the CLI's own refusal or the command's exit — only the daemon can tell, and a
     // container it cannot answer for never ran. Any other failing code from the attached
     // `docker start` (it exits 1 when the runtime cannot start the process) is a verdict unless
     // the daemon still holds the container as `created`.
-    let started = true;
-    let infraLoss: string | null = null;
-    if (code !== null && code !== 0) {
-        try {
-            const state = JSON.parse(
-                (await ctx.execDocker(['inspect', '--format', '{{json .State}}', containerName(ctx.job)])).stdout
-            ) as { Status?: string };
-            started = code === CONTAINER_GONE ? state.Status === 'exited' : state.Status !== 'created';
-        } catch (e) {
-            started = code !== CONTAINER_GONE;
-            // A container that ran and is gone before its own close was removed under the run —
-            // the driver's kill only kills (issue #560). Its exit is the removal's, not the agent's.
-            if (started && !ctx.timedOut && alreadyGone(e)) {
-                infraLoss = `the runner container was removed before it exited (exit ${code})`;
-            }
-        }
-    }
+    const { started, neverRan, infraLoss } =
+        code !== null && code !== 0
+            ? (ctx.closed ?? (await closedStateOf(code, ctx)))
+            : { started: true, neverRan: false, infraLoss: null };
     await ctx.execDocker(['rm', '-f', containerName(ctx.job)]).catch(() => undefined);
+    // A startup cause only on proof the container never ran — the refused create's own stderr, or the
+    // daemon's answer — when what printed is the daemon's, never the agent's own words (#824 D11).
+    const startupCause = started
+        ? null
+        : (ctx.refusalCause ?? (neverRan ? startupCauseOf({ message: ctx.output }) : null));
     return {
         exitCode: code,
         output: ctx.output,
         timedOut: ctx.timedOut,
         started,
         ...(infraLoss ? { infraLoss } : {}),
+        ...(startupCause ? { startupCause } : {}),
         cacheLost: ctx.cacheLost,
         // The artifact the loop uploads at close (issue #325); present only when the
         // accumulator actually ran — a refused start has no log and uploads nothing.
@@ -365,14 +412,33 @@ export async function createRunnerContainer(
         });
         return null;
     } catch (error) {
+        const refused = startupRefusalOf(error);
         return dockerRunVerdict(CONTAINER_GONE, {
             execDocker,
             job,
             output: dockerErrorDetail(error),
             timedOut: false,
             cacheLost: null,
+            refusalCause: refused instanceof StartupRefused ? refused.startupCause : null,
         });
     }
+}
+
+/**
+ * An attached start the daemon refused, proven before anything waits on the run (#824 D11): a
+ * failing close, the daemon's proof the container never ran (`closedStateOf`), and words that prove
+ * a cause — answered with that daemon state, for the verdict to keep rather than ask again. An
+ * inspect that cannot answer proves nothing (null). Reads only: the container stays for the verdict.
+ */
+export async function provenStartRefusal(
+    execDocker: ExecDocker,
+    job: BoardJob,
+    code: number | null,
+    output: string
+): Promise<ClosedState | null> {
+    if (code === null || code === 0 || startupCauseOf({ message: output }) === null) return null;
+    const closed = await closedStateOf(code, { execDocker, job, timedOut: false });
+    return closed.neverRan ? closed : null;
 }
 
 /**

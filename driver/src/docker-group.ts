@@ -6,7 +6,14 @@ import { supervisorEnvFileBody, workspacePath } from './claim.js';
 import { claudeExportScript, supervisorScript } from './container-scripts.js';
 import { containerHardeningArgs, workspacesMountArgs } from './docker.js';
 import { ctlVolumeName, idsOf, mailboxMountArgs } from './docker-mailbox.js';
-import { type ExecDocker, noSuchObject, type RunnerFiles } from './docker-runner-support.js';
+import {
+    type ClosedState,
+    type ExecDocker,
+    noSuchObject,
+    provenStartRefusal,
+    type RunnerFiles,
+    startupRefusalOf,
+} from './docker-runner-support.js';
 import { JOB_LABEL, LEASE_LABEL, RECLAIM_LABEL, ROLE_LABEL } from './labels.js';
 import { Inconclusive, type RunSession } from './runner.js';
 import {
@@ -17,6 +24,7 @@ import {
     DRIVER_LOST_LOSS,
     SUPERVISOR_EXIT,
     SUPERVISOR_WINDDOWN_MS,
+    type SupervisorReport,
 } from './supervisor-contract.js';
 import { supervisorLiterals } from './supervisor-plan.js';
 import { exportEnv, exportsTranscript } from './transcript-export.js';
@@ -195,14 +203,22 @@ export async function createGroup(
         }
     } catch (e) {
         await removeGroup(deps.execDocker, job);
-        throw e;
+        // Typed when the daemon's words prove a cause, for the loop's one startup decision (#824 D11).
+        throw startupRefusalOf(e);
     }
 }
 
-/** Starts the supervisor and the exporter, detached; the agent is started by the caller, attached, after them. */
+/**
+ * Starts the supervisor and the exporter, detached; the agent is started by the caller, attached,
+ * after them. A refusal is typed by the cause the daemon's words prove, as a refused create is.
+ */
 export async function startGroup(execDocker: ExecDocker, job: BoardJob, session: RunSession | null): Promise<void> {
-    await execDocker(['start', supervisorName(job)]);
-    if (groupShape(job, session).exporting) await execDocker(['start', exporterName(job)]);
+    try {
+        await execDocker(['start', supervisorName(job)]);
+        if (groupShape(job, session).exporting) await execDocker(['start', exporterName(job)]);
+    } catch (e) {
+        throw startupRefusalOf(e);
+    }
 }
 
 /**
@@ -241,6 +257,38 @@ export async function awaitSupervisor(
     ms: number = SUPERVISOR_WINDDOWN_MS
 ): Promise<number | null> {
     return waitSupervisorExit(execDocker, job, ms).catch(() => null);
+}
+
+/**
+ * Waits for the supervisor's report that the agent is over and its exporter drained, or for the
+ * supervisor to exit without one (a kill, the budget — both end it at once — or a crash), whichever
+ * comes first, bounded by the wind-down. The report's absence with no exit is reported as neither.
+ */
+export async function awaitReportOrExit(
+    execDocker: ExecDocker,
+    job: BoardJob,
+    reported: Promise<SupervisorReport | null>
+): Promise<{ report: SupervisorReport | null; supervisorExit: number | null }> {
+    const exited = awaitSupervisor(execDocker, job).then((supervisorExit) => ({ report: null, supervisorExit }));
+    const answered = reported.then((report) =>
+        report ? { report, supervisorExit: null } : new Promise<never>(() => undefined)
+    );
+    return Promise.race([answered, exited]);
+}
+
+/**
+ * How an attached run's close ends (#824 D11): a start the daemon refused, proven (`provenStartRefusal`),
+ * ran no agent — decided before the wind-down, its supervisor owes no report and is no loss, and the
+ * daemon's answer is kept for the verdict. Any other close waits for the supervisor (`awaitReportOrExit`).
+ */
+export async function closeEndOf(
+    execDocker: ExecDocker,
+    job: BoardJob,
+    close: { code: number | null; output: string; reported: Promise<SupervisorReport | null> }
+): Promise<{ proven: ClosedState | null; report: SupervisorReport | null; supervisorExit: number | null }> {
+    const proven = await provenStartRefusal(execDocker, job, close.code, close.output);
+    if (proven) return { proven, report: null, supervisorExit: SUPERVISOR_EXIT.finalized };
+    return { proven, ...(await awaitReportOrExit(execDocker, job, close.reported)) };
 }
 
 /**

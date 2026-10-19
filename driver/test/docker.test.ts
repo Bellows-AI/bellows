@@ -8,6 +8,7 @@ import type { BoardJob } from '../src/board.js';
 import { executorImage, loadDriverConfig } from '../src/config.js';
 import { ctlVolumeName, killMarkName } from '../src/docker-mailbox.js';
 import { decisionOf, TERMINATION_ROWS, type TerminationRow } from './fixtures/termination-table.js';
+import { STARTUP_ROWS, type StartupRow, startupDecisionOf } from './fixtures/startup-table.js';
 import {
     containerName,
     dockerArgs,
@@ -1913,6 +1914,137 @@ describe('the docker runner', () => {
         });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 1, started: false });
+        // The runtime's words prove no cause: the never-started recovery stands (#824 D11).
+        expect(outcome).not.toHaveProperty('startupCause');
+    });
+
+    // Issue #824 D11: a container the daemon confirms never started carries the cause its refusal
+    // proves, for the loop's one startup decision — on a refused create and a refused attached start
+    // alike. A container that ran is a verdict whatever it printed.
+    it('stamps the cause a refused agent create proves', async () => {
+        const exec = (args: string[]) =>
+            args[0] === 'create' && args.includes(containerName(job))
+                ? Promise.reject(
+                      Object.assign(new Error(`Command failed: docker ${args.join(' ')}`), {
+                          stderr: 'Error response from daemon: manifest for claude-executor:latest not found: manifest unknown\n',
+                      })
+                  )
+                : noContainer(args);
+        const outcome = await dockerRunner(exec, { env: { RUNNER_SERVICES: '0' } }).run(job, {
+            id: SESSION,
+            resume: false,
+        });
+        expect(outcome).toMatchObject({ exitCode: 125, started: false, startupCause: 'image' });
+    });
+
+    it('stamps the cause a refused attached start proves', async () => {
+        const exec = (args: string[]) =>
+            args[0] === 'inspect'
+                ? Promise.resolve({ stdout: '{"Status":"created","ExitCode":0}\n' })
+                : Promise.resolve({ stdout: '' });
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild(
+                '',
+                'Error response from daemon: Get "https://registry/v2/": net/http: TLS handshake timeout\n',
+                1
+            ),
+        });
+        expect(await runner.run(job, { id: SESSION, resume: false })).toMatchObject({
+            started: false,
+            startupCause: 'transient',
+        });
+    });
+
+    // An inspect that could not answer proves no container never ran: what printed may be the agent's
+    // own words, so the never-started recovery stands unclassified (Codex r1, class B).
+    it('stamps no cause when the daemon could not say the container never ran', async () => {
+        const exec = (args: string[]) =>
+            args[0] === 'inspect'
+                ? Promise.reject(
+                      Object.assign(new Error('Command failed: docker inspect'), {
+                          stderr: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock.',
+                      })
+                  )
+                : Promise.resolve({ stdout: args[0] === 'wait' ? '0\n' : '' });
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild('', 'Error response from daemon: manifest unknown\n', 125),
+        });
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({ exitCode: 125, started: false });
+        expect(outcome).not.toHaveProperty('startupCause');
+    });
+
+    // A start the daemon refused, proven, ran no agent: no report can come, so the refusal is decided
+    // before the supervisor's wind-down and no supervisor loss rides on it (Codex r1, class C).
+    it('decides a proven start refusal before the supervisor wait, with no loss beside it', async () => {
+        const calls: string[][] = [];
+        const exec = (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'inspect') return Promise.resolve({ stdout: '{"Status":"created","ExitCode":0}\n' });
+            // A supervisor that ended without finalizing, had it been waited for.
+            return Promise.resolve({ stdout: args[0] === 'wait' ? '70\n' : '' });
+        };
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild('', 'Error response from daemon: invalid mount config for type "bind"\n', 1),
+            steps: fakeSteps(undefined, new Promise<never>(() => undefined)).sink,
+        });
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({ started: false, startupCause: 'config' });
+        expect(outcome).not.toHaveProperty('infraLoss');
+        expect(calls.some((args) => args[0] === 'wait')).toBe(false);
+    });
+
+    // A status alone is no proof a container never ran: one that started and is now `dead` closes
+    // 125 too, and what it printed is the agent's own (Codex r2, class B).
+    it('reads a container with a start time as one that ran, whatever its status', async () => {
+        const exec = (args: string[]) =>
+            args[0] === 'inspect'
+                ? Promise.resolve({ stdout: '{"Status":"dead","StartedAt":"2026-10-01T00:00:00Z","ExitCode":125}\n' })
+                : Promise.resolve({ stdout: args[0] === 'wait' ? '0\n' : '' });
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild('', 'unauthorized: authentication required\n', 125),
+        });
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({ exitCode: 125, started: true });
+        expect(outcome).not.toHaveProperty('startupCause');
+    });
+
+    // The refusal proven before the wait is the verdict's: the daemon is not asked again, so a later
+    // inspect that cannot answer never turns the refused start into a run that failed (Codex r2, class C).
+    it('keeps the proven refusal for the verdict, asking the daemon once', async () => {
+        let inspects = 0;
+        const exec = (args: string[]) => {
+            if (args[0] !== 'inspect') return Promise.resolve({ stdout: '' });
+            inspects += 1;
+            return inspects === 1
+                ? Promise.resolve({ stdout: '{"Status":"created","StartedAt":"0001-01-01T00:00:00Z"}\n' })
+                : Promise.reject(new Error('daemon unreachable'));
+        };
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild('', 'Error response from daemon: invalid mount config for type "bind"\n', 1),
+        });
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({ exitCode: 1, started: false, startupCause: 'config' });
+        expect(inspects).toBe(1);
+    });
+
+    it('stamps no cause on a run that started, whatever it printed', async () => {
+        const exec = (args: string[]) =>
+            args[0] === 'inspect'
+                ? Promise.resolve({ stdout: '{"Status":"exited","ExitCode":1}\n' })
+                : Promise.resolve({ stdout: '' });
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild('', 'Error response from daemon: manifest unknown\n', 1),
+        });
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({ exitCode: 1, started: true });
+        expect(outcome).not.toHaveProperty('startupCause');
     });
 
     it('still reads a run that exited non-zero as a verdict', async () => {
@@ -5800,5 +5932,66 @@ describe('how a started run ends, on docker (the conformance table)', () => {
 
     it.each(TERMINATION_ROWS)('%s: %s', async (row, expected) => {
         expect(decisionOf(await endOnDocker(ends[row]))).toBe(expected);
+    });
+});
+
+describe('how a refused group start ends, on docker (the startup conformance table, #824 D11)', () => {
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    /** The daemon's own words for each refusal, as the CLI prints them on its stderr. */
+    const refusals: Record<StartupRow, string> = {
+        'the platform never brought the group up':
+            'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?',
+        'a registry that timed out':
+            'Error response from daemon: Get "https://registry.example/v2/": dial tcp 10.0.0.1:443: i/o timeout',
+        'a registry rate limit': 'Error response from daemon: toomanyrequests: You have reached your pull rate limit.',
+        'a TLS handshake that timed out':
+            'Error response from daemon: Get "https://registry.example/v2/": net/http: TLS handshake timeout',
+        'a missing image':
+            'Error response from daemon: manifest for registry.example/claude-executor:latest not found: manifest unknown',
+        'an invalid image reference': 'docker: invalid reference format.',
+        'an unauthorized pull':
+            'Error response from daemon: Head "https://registry.example/v2/claude-executor/manifests/latest": unauthorized: authentication required',
+        'an untrusted registry certificate':
+            'Error response from daemon: Get "https://registry.example/v2/": tls: failed to verify certificate: x509: certificate signed by unknown authority',
+        'a container configuration the platform refuses':
+            'Error response from daemon: invalid mount config for type "bind": bind source path does not exist: /srv/missing',
+        'a refusal whose words prove no cause':
+            'Error response from daemon: Conflict. The container name "/x" is already in use by container "y"',
+    };
+    /** The sync, its group's supervisor create refused with `stderr`: what it threw, or null. */
+    const refusedSync = async (stderr: string): Promise<unknown> => {
+        const d = labelDaemon({
+            fail: (args) => (args[0] === 'create' && args.includes(supervisorName(repoJob)) ? stderr : null),
+        });
+        return dockerRunner(d.exec, { steps: syncSteps().sink })
+            .syncCheckout(repoJob)
+            .then(
+                () => null,
+                (e: unknown) => e
+            );
+    };
+
+    it.each(STARTUP_ROWS)('%s: %s', async (row, expected) => {
+        expect(startupDecisionOf(await refusedSync(refusals[row]))).toBe(expected);
+    });
+
+    // A local failure — the env file the create reads, refused by the host — is no platform refusal,
+    // whatever its words: it carries no stderr, so no cause is read from it.
+    it('reads no startup cause from a local file the host refused', async () => {
+        const d = labelDaemon();
+        const files: RunnerFiles = {
+            writeFile: (async () => {
+                throw Object.assign(new Error("EACCES: permission denied, open '/tmp/env'"), { code: 'EACCES' });
+            }) as unknown as RunnerFiles['writeFile'],
+            rm: (async () => undefined) as unknown as RunnerFiles['rm'],
+        };
+        const thrown = await dockerRunner(d.exec, { steps: syncSteps().sink, files })
+            .syncCheckout(repoJob)
+            .then(
+                () => null,
+                (e: unknown) => e
+            );
+        expect((thrown as Error).message).toContain('EACCES');
+        expect(startupDecisionOf(thrown)).toBe('unclassified');
     });
 });

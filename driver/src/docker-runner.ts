@@ -1,5 +1,5 @@
 import { JOB_LABEL } from './labels.js';
-import { awaitSupervisor, createGroup, removeGroup, startGroup, supervisorLossOf } from './docker-group.js';
+import { awaitSupervisor, closeEndOf, createGroup, removeGroup, startGroup, supervisorLossOf } from './docker-group.js';
 import {
     dockerKill,
     dockerKillFor,
@@ -7,7 +7,7 @@ import {
     dockerStopAgent,
     recordDockerKill,
 } from './docker-teardown.js';
-import { SUPERVISOR_ENV, SUPERVISOR_EXIT, type SupervisorReport } from './supervisor-contract.js';
+import { SUPERVISOR_ENV, SUPERVISOR_EXIT } from './supervisor-contract.js';
 import { agentBackstopMs } from './supervisor-plan.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -73,6 +73,7 @@ import {
     dockerRunVerdict,
     LEASE_FORMAT,
     listOtherAttemptsOrThrow,
+    type ClosedState,
     servicesNetworkOf,
     removeEachTolerantly,
     run,
@@ -554,12 +555,14 @@ async function dockerRun(
                 cacheLost: cacheState.cacheLost,
                 fullLog: fullLog.content,
                 logTruncated: fullLog.truncated,
+                closed: proven,
             });
 
         const child = spawnFn('docker', ['start', '-a', containerName(job)], {
             stdio: ['ignore', 'pipe', 'pipe'],
         });
         let timedOut = false;
+        let proven: ClosedState | null = null;
         const cacheState: { cacheLost: string | null } = { cacheLost: null };
 
         let output = '';
@@ -652,8 +655,9 @@ async function dockerRun(
             // steps. A supervisor that exited instead of reporting says how: 124 is the budget it
             // enforced, the driver's own hard kill explains its exit, and anything else is a
             // supervisor lost, an infrastructure loss (`infraLossOf`).
-            void awaitReportOrExit(execDocker, job, reported)
+            void closeEndOf(execDocker, job, { code, output, reported })
                 .then((ended) => {
+                    proven = ended.proven;
                     // An exit with no report taken leaves nobody to answer the steps the loop still sends.
                     if (!ended.report) releaseSteps(host, job);
                     return ended;
@@ -691,23 +695,6 @@ async function dockerRun(
         // steps, and the loop's `finish` ends it (its mailboxes with it: transient control, never
         // finished work, which lives on the task volume).
     }
-}
-
-/**
- * Waits for the supervisor's report that the agent is over and its exporter drained, or for the
- * supervisor to exit without one (a kill, the budget — both end it at once — or a crash), whichever
- * comes first, bounded by the wind-down. The report's absence with no exit is reported as neither.
- */
-async function awaitReportOrExit(
-    execDocker: ExecDocker,
-    job: BoardJob,
-    reported: Promise<SupervisorReport | null>
-): Promise<{ report: SupervisorReport | null; supervisorExit: number | null }> {
-    const exited = awaitSupervisor(execDocker, job).then((supervisorExit) => ({ report: null, supervisorExit }));
-    const answered = reported.then((report) =>
-        report ? { report, supervisorExit: null } : new Promise<never>(() => undefined)
-    );
-    return Promise.race([answered, exited]);
 }
 
 /**

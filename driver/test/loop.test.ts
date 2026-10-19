@@ -34,6 +34,7 @@ import type { ReviewRelay } from '../src/review-control.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
 import type { SnapshotResult } from '../src/review-snapshot.js';
 import { StepChannelClosed } from '../src/step-control.js';
+import { StartupRefused } from '../src/startup-cause.js';
 import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
 import { createLoop, type Loop, wait } from '../src/loop.js';
 import { type SyncQueue, type SyncTurn, syncQueue } from '../src/sync-queue.js';
@@ -3152,6 +3153,107 @@ describe('the poll loop', () => {
                 release: true,
             },
         ]);
+    });
+
+    // Issue #824 D11: a group start the platform refused for a proven cause takes ONE decision on
+    // every path — the sync, the run, a container that never started: a transient cause is an
+    // interruption, a permanent one (image, auth, config) a configuration fault, never left to the
+    // lease to burn the attempts.
+    describe('a refused group start (#824 D11)', () => {
+        const transient = () => new StartupRefused('the registry answered: dial tcp: i/o timeout', 'transient');
+        const permanent = () => new StartupRefused('manifest unknown', 'image');
+
+        it('interrupts a sync whose group start was refused for a transient cause', async () => {
+            const board = stubBoard([job(1)]);
+            await drive({ ...board, runner: stubRunner(async () => ok(), { syncError: transient() }) });
+            expect(board.board.completed).toEqual([]);
+            expect(board.board.interrupted).toEqual([
+                {
+                    id: job(1).id,
+                    reason: 'the runner could not start: the registry answered: dial tcp: i/o timeout',
+                    release: true,
+                },
+            ]);
+        });
+
+        it('fails a sync whose group start was refused for a permanent cause, as config', async () => {
+            const board = stubBoard([job(1)]);
+            await drive({ ...board, runner: stubRunner(async () => ok(), { syncError: permanent() }) });
+            expect(board.board.interrupted).toEqual([]);
+            expect(board.board.completed[0]).toMatchObject({
+                status: 'failed',
+                failureKind: 'config',
+                output: 'The runner could not start: manifest unknown',
+            });
+        });
+
+        it('takes the same decisions when the run starts the group', async () => {
+            const permanentRun = stubBoard([job(1)]);
+            await drive({
+                ...permanentRun,
+                runner: stubRunner(async () => {
+                    throw permanent();
+                }),
+            });
+            expect(permanentRun.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
+
+            const transientRun = stubBoard([job(1)]);
+            await drive({
+                ...transientRun,
+                runner: stubRunner(async () => {
+                    throw transient();
+                }),
+            });
+            expect(transientRun.board.completed).toEqual([]);
+            expect(transientRun.board.interrupted).toHaveLength(1);
+        });
+
+        it('fails a container that never started for a permanent cause, and hands a transient one back', async () => {
+            const refused = stubBoard([job(1)]);
+            const pull = 'docker: Error response from daemon: manifest unknown';
+            await drive({
+                ...refused,
+                runner: stubRunner(async () =>
+                    ok({ exitCode: 125, output: pull, started: false, startupCause: 'image' })
+                ),
+            });
+            expect(refused.board.interrupted).toEqual([]);
+            expect(refused.board.completed[0]).toMatchObject({
+                status: 'failed',
+                failureKind: 'config',
+                output: `The runner could not start: ${pull}`,
+            });
+
+            const blip = stubBoard([job(1)]);
+            await drive({
+                ...blip,
+                runner: stubRunner(async () =>
+                    ok({ exitCode: 125, output: 'i/o timeout', started: false, startupCause: 'transient' })
+                ),
+            });
+            expect(blip.board.completed).toEqual([]);
+            expect(blip.board.interrupted).toHaveLength(1);
+        });
+
+        // The one mapping orders it for both executors: a proven refused start ran no agent, so no
+        // supervisor loss beside it can turn its configuration fault into a refund (Codex r1, class C).
+        it('decides a proven permanent start refusal before any infrastructure loss beside it', async () => {
+            const board = stubBoard([job(1)]);
+            await drive({
+                ...board,
+                runner: stubRunner(async () =>
+                    ok({
+                        exitCode: 1,
+                        output: 'invalid mount config',
+                        started: false,
+                        startupCause: 'config',
+                        infraLoss: 'the task supervisor did not finalize the run in time',
+                    })
+                ),
+            });
+            expect(board.board.interrupted).toEqual([]);
+            expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
+        });
     });
 
     // The mirror case, and why classification lives in the runner rather than in an exit code

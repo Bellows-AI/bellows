@@ -863,6 +863,19 @@ expect_contains 'the agent survived its tool'  "$(field "$kill_body" output)" 'a
 expect_contains 'the tool ran as the tool uid' "$(field "$kill_body" output)" 'the tool ran as 1001'
 expect_field    'one attempt was enough for it' "$kill_body" attempts 1
 
+# Issue #824 D11: an executor image the daemon refuses on its own words (an invalid reference — no
+# network asked) fails the job as a configuration fault on its first attempt, the daemon's reason in
+# the output, instead of a lease burnt down to dead.
+stop_driver
+start_driver 'Factory-Lane-Invalid-Reference'
+
+unstartable="$(create_job 'an image the daemon refuses')"
+expect_contains 'a refused executor image is a failure' "$(await_settled "$unstartable")" failed
+unstartable_body="$(body "$(api GET "/api/jobs/$unstartable")")"
+expect_field    'it is a configuration fault'     "$unstartable_body" failureKind config
+expect_field    'on its first attempt'            "$unstartable_body" attempts 1
+expect_contains 'the daemon says why'             "$(field "$unstartable_body" output)" 'invalid reference format'
+
 stop_driver
 start_driver "$IMAGE_OK"
 

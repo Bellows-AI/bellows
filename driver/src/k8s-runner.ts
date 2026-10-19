@@ -489,18 +489,14 @@ async function syncCheckout(
     if (!clone || !worktree) return { ok: true, reason: null }; // nothing synced, nothing to fail either
 
     await acquireClaim(deps, job);
-    // A group that could not come up (an image the node cannot pull) answers as a failed sync: the
-    // checkout could not be prepared, and the attempt fails with the cluster's reason. The claim
-    // goes back only once nothing of this group can still write the worktree (`takeGroupDown`).
+    // A group that could not come up is thrown, typed when the pod's words prove why (`StartupRefused`,
+    // the loop's one startup decision, #824 D11) and plain for the lease otherwise. The claim goes
+    // back only once nothing of this group can still write the worktree (`takeGroupDown`).
     const failed = (): Promise<void> => takeGroupDown(deps, job);
     try {
         await ensureGroup(deps, job, session);
     } catch (e) {
         await failed();
-        const reason = (e as Error).message;
-        // Infrastructure (a refused Job, a fenced claim) is thrown for the lease; only a group that
-        // never came up is the sync's own refusal.
-        if (/never came up|cannot be pulled/.test(reason)) return { ok: false, reason };
         throw e;
     }
     try {

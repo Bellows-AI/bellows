@@ -22,12 +22,13 @@ import { attemptSettlement } from './loop-conclusion.js';
 import type { GateRunNote } from './timeout-note.js';
 import {
     concludeSetup,
+    concludeThrownRun,
     concludeUnreported,
     handBackFence,
     handOverConflict,
-    leaveToLease,
     releaseAbandonedSync,
     standDown,
+    syncThrewHalt,
 } from './loop-fence.js';
 import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
@@ -121,8 +122,7 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     try {
         syncedOut = await raceStep(state.signal, syncing);
     } catch (e) {
-        // A sync that threw took its own claim down inside the runner, so nothing is held here.
-        return { halt: 'leave', log: `checkout sync threw, leaving it to the lease: ${(e as Error).message}` };
+        return syncThrewHalt(e);
     }
     if (syncedOut === null) {
         // The abandoned sync owns the claim until it answers, and nothing this attempt settles can
@@ -714,8 +714,6 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         // that killed it owns the settlement, not the lease.
         stopIfDraining(state);
         if (await standDown(ctx, 'its run')) return;
-        // A throw is the path that would otherwise leak the claim: no runner ever launched, so none
-        // of them releases it, and it would sit there until the cluster noticed (issue #469).
-        await leaveToLease(ctx, `could not run: ${(e as Error).message}`, null);
+        await concludeThrownRun(ctx, e);
     }
 }
