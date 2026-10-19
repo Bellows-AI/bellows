@@ -25,7 +25,8 @@ approve it.
    scratchpad is set) and write the brief, filled in, to `<STEM>.md`.
 2. Run it with Bash `run_in_background` — it takes minutes — and wait for the exit notification;
    never poll:
-   `codex exec -C <WORKTREE> -s read-only --ephemeral --color never -o <STEM>.out - < <STEM>.md > <STEM>.log 2>&1`
+   `sh HEAVY codex exec -C <WORKTREE> -s read-only --ephemeral --color never -o <STEM>.out - < <STEM>.md > <STEM>.log 2>&1`
+   (HEAVY as `fix` defines it: the review queues for a host slot like any suite.)
 3. A non-zero exit or an empty `.out` is a failed round, not a clean one: read the `.log`, retry
    once, then STOP and report.
 4. Codex is a reviewer, not an authority. A finding the code disproves is rejected with a one-line
