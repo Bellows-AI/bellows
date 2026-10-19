@@ -12,8 +12,6 @@ import {
     podsPath,
     podsSelectorPath,
     secretsPath,
-    servicesPath,
-    servicesSelectorPath,
 } from './k8s-auxspec.js';
 import {
     finishedAgentRun,
@@ -281,7 +279,7 @@ function claimReadIsTakenOver(read: K8sResponse, job: BoardJob): boolean {
     );
 }
 
-/** One kind's leftover objects — a job, a pod or a service — the sweep found by label, with the leases they carry. */
+/** One kind's leftover objects — a job or a pod — the sweep found by label, with the leases they carry. */
 interface SweepFleet {
     kind: string;
     basePath: string;
@@ -372,7 +370,7 @@ async function probeOneFleetKind(
 }
 
 /**
- * One pass over the three label selectors a leftover attempt can answer on. `conclusive` is false
+ * One pass over the two label selectors a leftover attempt can answer on. `conclusive` is false
  * the instant any kind could not be read at all — a transport failure or 429/5xx says nothing
  * about whether the objects are gone, so the caller must not read an empty `fleets` as a free
  * checkout on an inconclusive pass.
@@ -388,7 +386,6 @@ async function probeLeftoverFleets(
     for (const kind of [
         ['job', jobsSelectorPath(deps.config.k8sNamespace, job), jobsPath(deps.config.k8sNamespace)],
         ['pod', podsSelectorPath(deps.config.k8sNamespace, job), podsPath(deps.config.k8sNamespace)],
-        ['service', servicesSelectorPath(deps.config.k8sNamespace, job), servicesPath(deps.config.k8sNamespace)],
     ] as const) {
         const { fleet, inconclusive } = await probeOneFleetKind(deps, job, kind, keptJobs);
         if (fleet) fleets.push(fleet);

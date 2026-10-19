@@ -30,6 +30,7 @@ import {
     worktreeBranch,
     worktreeDir,
 } from './publish.js';
+import { serviceRestartArgv } from './container-scripts.js';
 import { StepTimedOut, type StepSink, stepLost } from './step-control.js';
 import { SUPERVISOR_ENV, type StepKind, type StepRequest, type StepResult } from './supervisor-contract.js';
 
@@ -378,6 +379,31 @@ export async function runGateStep(
         signal?.removeEventListener('abort', cancel);
     }
 }
+
+/** How long the supervisor may take over one read or bump of the services' generations: a few files. */
+const SERVICE_STEP_TIMEOUT_MS = 30_000;
+
+/**
+ * One `restart` step (issue #773 D9): the supervisor reads which of `names` have not acknowledged
+ * their generation (`acked`), or bumps every one's (`bump`, refused unless all have) — instant
+ * either way, so it never holds the steps behind it. A fresh id each time: a read must read now, and
+ * a bump the caller asks again is a new one. A lost supervisor rejects (`stepLost`).
+ */
+export const runServiceGenerationStep = (
+    host: Pick<StepHost, 'sink'>,
+    job: BoardJob,
+    mode: 'acked' | 'bump',
+    names: readonly string[]
+): Promise<StepResult> =>
+    submitStep(
+        host,
+        job,
+        request(job, 'restart', {
+            id: randomUUID(),
+            argv: serviceRestartArgv(mode, names),
+            timeoutMs: SERVICE_STEP_TIMEOUT_MS,
+        })
+    );
 
 /**
  * `go`: releases the attempt's agent, whose entrypoint waits for it, and hands the supervisor the

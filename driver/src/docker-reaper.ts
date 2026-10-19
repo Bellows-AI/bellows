@@ -1,15 +1,14 @@
 import type { BoardJob } from './board.js';
 import { containerName } from './docker.js';
 import { JOB_LABEL, LEASE_LABEL, RECLAIM_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
-import { networkName } from './services.js';
 import { alreadyGone, linesOf, type ExecDocker } from './docker-runner-support.js';
 import type { OrphanGroup, OrphanObject, ReaperArm } from './reaper.js';
 
 /**
  * The docker half of the orphan reaper (issue #301): label-filtered `docker ps` and `volume ls`,
- * container and volume removal, and the per-attempt services network's teardown — the twin of
- * `dockerServiceTeardown` and the docker fence acting on what an attempt can never tear down
- * itself. Scope: the SERVICE and GATE labels (issue #667) and an attempt's task group (issue
+ * and container and volume removal — the twin of `dockerServiceTeardown` and the docker fence
+ * acting on what an attempt can never tear down itself. No network is an attempt's: its group
+ * shares its supervisor's namespace (issue #773). Scope: the SERVICE and GATE labels (issue #667) and an attempt's task group (issue
  * #821) — every container carrying the ROLE label (agent, supervisor, exporter) and every volume
  * carrying the job and lease labels (its mailboxes and kill markers). An exited runner container
  * is unread: the next claim adopts it. A terminal reclaim's group (`RECLAIM_LABEL`) is never in
@@ -191,38 +190,8 @@ const removeTolerantly = async (execDocker: ExecDocker, args: string[]): Promise
     }
 };
 
-/**
- * The attempt's services network — attempt-scoped by name, so it can only ever resolve to this
- * dead attempt's own. A group's gate container may still be attached, and docker
- * refuses to remove a network with an endpoint, so whatever is left is disconnected first — the
- * exact shape of the teardown this complements.
- */
-const removeNetwork = async (execDocker: ExecDocker, network: string): Promise<boolean> => {
-    try {
-        const attached = await execDocker([
-            'network',
-            'inspect',
-            '--format',
-            '{{range .Containers}}{{println .Name}}{{end}}',
-            network,
-        ]);
-        for (const name of linesOf(attached.stdout)) {
-            await removeTolerantly(execDocker, ['network', 'disconnect', '-f', network, name]);
-        }
-    } catch {
-        // Unreadable network is removed blind below; absence is the goal either way.
-    }
-    return removeTolerantly(execDocker, ['network', 'rm', network]);
-};
-
 const reap = async (execDocker: ExecDocker, group: OrphanGroup): Promise<readonly string[]> => {
     const removed: string[] = [];
-    // The network goes first: scan lists service containers only, so a network that fails to
-    // come down after the containers are gone would be undiscoverable to every later sweep.
-    if (group.leaseToken) {
-        const network = networkName({ id: group.jobId, leaseToken: group.leaseToken } as BoardJob);
-        if (await removeNetwork(execDocker, network)) removed.push(`network ${network}`);
-    }
     // The containers before the volumes they mount: docker refuses to remove a volume in use.
     for (const object of group.objects.filter((candidate) => candidate.kind === 'container')) {
         if (await removeTolerantly(execDocker, ['rm', '-f', object.name])) {

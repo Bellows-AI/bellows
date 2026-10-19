@@ -47,13 +47,6 @@ export const ROLE_LABEL = 'factory.role';
 export const RECLAIM_LABEL = 'factory.reclaim';
 
 /**
- * Kubernetes only: the attempt's service subdomain on each of its service pods — what the
- * attempt's one headless Service selects by, so the runner and gate pods (which share the lease
- * label) never join the fleet's DNS.
- */
-export const FLEET_LABEL = 'factory.fleet';
-
-/**
  * The declared hardening opt-out (issue #382), on the one pod that can carry it: a service whose
  * `.bellows.yaml` entry said `unhardened: true`. The driver already knows which pods those are —
  * the label exists for the ADMISSION POLICY, which sees only the object and must be able to tell

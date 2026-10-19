@@ -1024,11 +1024,12 @@ if selected_phase services; then
 begin_phase services
 # --- Auxiliary services (.bellows.yaml) -------------------------------------------------------
 #
-# Issue #6, end to end: a checkout declares a service, the driver starts it on a per-job network,
-# and the runner reaches it by name. The stub runner is the one image here whose entrypoint EXECUTES
-# the prompt (the driver always puts it last in the argv), so the job's output is an HTTP fetch of
-# `http://stub-svc:8000/probe` — the assertion fails unless the service is up, on the job's network,
-# under the name the file asked for.
+# Issue #6, end to end: a checkout declares a service, the driver starts it in the network
+# namespace of the task's group supervisor, whose hosts file names it on loopback (issue #773), and
+# the runner and the gate container reach it by name. The stub runner is the one image here whose
+# entrypoint EXECUTES the prompt (the driver always puts it last in the argv), so the job's output
+# is the hosts entry and an HTTP fetch of `http://stub-svc:8000/probe` — the assertion fails unless
+# the name resolves to 127.0.0.1 and the service answers there.
 
 echo
 echo '# services'
@@ -1054,9 +1055,24 @@ write_bellows "services:
 
 start_driver "$IMAGE_RUN" 1
 
-svc="$(create_job 'wget -qO- http://stub-svc:8000/probe')"
+svc="$(create_job 'grep -E "^127\.0\.0\.1[[:space:]]+stub-svc$" /etc/hosts && wget -qO- http://stub-svc:8000/probe')"
 expect_contains 'a declared service is reachable by name' "$(await_settled "$svc")" succeeded
-expect_contains 'the service answered the runner'    "$(field "$(body "$(api GET "/api/jobs/$svc")")" output)" service-is-up
+svc_out="$(field "$(body "$(api GET "/api/jobs/$svc")")" output)"
+expect_contains 'the service answered the runner'           "$svc_out" service-is-up
+expect_contains 'the name resolves to 127.0.0.1 for the agent' "$svc_out" '127.0.0.1'
+
+# The gate container shares the same namespace: a declared gate that passes only when the name is
+# on its loopback and the service answers there. The gate image is the service stub's alpine.
+write_bellows "services:
+  - name: stub-svc
+    image: $IMAGE_SVC
+environment:
+    image: $IMAGE_SVC
+    gates:
+        - name: reach
+          command: 'grep -Eq \"^127\\.0\\.0\\.1[[:space:]]+stub-svc\$\" /etc/hosts && wget -qO- http://stub-svc:8000/probe'"
+gated="$(create_job 'echo the agent ran')"
+expect_contains 'the gate reaches the service by name on 127.0.0.1' "$(await_settled "$gated" 120)" succeeded
 
 # The refusal path, end to end: a file the parser refuses fails the job with the reason, and the
 # runner never spawns — the output is the parse error alone.
@@ -1070,8 +1086,8 @@ expect_contains 'the parse reason comes back'    "$(field "$(body "$(api GET "/a
 
 stop_driver
 
-# Nothing of THIS RUN's jobs may survive the driver: the network is per-job (named after the job
-# id), every runner is --rm, and the driver drains before it exits. Scoped to the ids this script
+# Nothing of THIS RUN's jobs may survive the driver, and no job made a network of its own: the
+# services share their group supervisor's namespace (issue #773). Scoped to the ids this script
 # created — the daemon may be serving a live deployment whose factory.job containers and
 # factory-job-* networks are none of this suite's business.
 svc_networks=0
@@ -1082,7 +1098,7 @@ for job in $(cat "$work/created-jobs" 2>/dev/null); do
     n="$(docker ps -aq --filter "label=factory.job=$job" | wc -l | tr -d ' ')"
     leftover=$((leftover + n))
 done
-if [ "$svc_networks" = '0' ]; then ok 'no service networks left behind'; else bad 'no service networks left behind' "$svc_networks remain"; fi
+if [ "$svc_networks" = '0' ]; then ok 'no job made a network of its own'; else bad 'no job made a network of its own' "$svc_networks found"; fi
 if [ "$leftover" = '0' ]; then ok 'no containers left behind'; else bad 'no containers left behind' "$leftover remain"; fi
 
 fi
@@ -1095,7 +1111,7 @@ begin_phase orphan-reaper
 # teardown can run, and the job goes terminal WITHOUT any driver alive to sweep it — the stop
 # route's in-place landing on a row whose lease has already expired (#152) is what settles it.
 # A restarted driver's reaper (one fast round of DRIVER_REAP_INTERVAL_MS/GRACE) then removes the
-# service container and the per-attempt network. The runner container is NOT the reaper's to reap
+# service container; no network is the attempt's (issue #773). The runner container is NOT the reaper's to reap
 # (its scope is the service label; the fence owns the rest), so it is hand-removed at the end,
 # by label, exactly as an operator would.
 
@@ -1182,18 +1198,10 @@ else
     bad "the reaper removes the crashed attempt's service container" 'the service container survived the reaper'
 fi
 
-orphan_net=""
-for _ in $(seq 1 30); do
-    [ -z "$(docker network ls --filter "name=factory-job-$orphan-" --format '{{.Name}}')" ] && {
-        orphan_net=1
-        break
-    }
-    sleep 1
-done
-if [ -n "$orphan_net" ]; then
-    ok "the reaper removes the crashed attempt's services network"
+if [ -z "$(docker network ls --filter "name=factory-job-$orphan-" --format '{{.Name}}')" ]; then
+    ok 'the crashed attempt made no network of its own'
 else
-    bad "the reaper removes the crashed attempt's services network" 'the network survived the reaper'
+    bad 'the crashed attempt made no network of its own' 'a factory-job network exists for it'
 fi
 
 # The runner container is the fence's territory, not the reaper's — cleaned up by label, the

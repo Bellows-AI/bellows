@@ -80,9 +80,7 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
     // The environment starts with the claim's own env — resolved for THIS author and repo — and a
     // GitHub token fetched now, which is what a test suite needs to reach the forge.
     const envBody = await gateEnvNow(rt, job, 'the gate environment');
-    // The job is the kubernetes gate manager's attempt context — its gate Jobs carry the
-    // job and lease labels, and their names are derived from them. The docker manager joins
-    // the attempt's services network by it.
+    // The job is the gate manager's attempt context: the group whose gate container runs it.
     await gates.manager.acquire(key, job.gates.image, envBody, { job, signal: state.signal });
     // A stand-down that landed while the acquire was in flight leaves the environment here:
     // the caller has stopped waiting and holds no session to release through (issue #126).

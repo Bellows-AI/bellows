@@ -1,10 +1,8 @@
-import { SERVICE_LABEL } from './labels.js';
 import { readFileSync } from 'node:fs';
 import type { IncomingMessage } from 'node:http';
 import { Agent, request as httpsRequest } from 'node:https';
 import type { DriverConfig } from './config.js';
 import { ARTIFACT_LIMIT } from './runner.js';
-import type { ServiceStatus } from './board.js';
 import type { RuntimeSample } from './runner.js';
 import { UUID } from './publish.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, MERGE_PATCH_CONTENT_TYPE } from './http.js';
@@ -265,6 +263,8 @@ export interface K8sDeps {
     adopted?: Map<string, string>;
     /** The holders whose group another incarnation replaced (`k8s-teardown.ts`): their claim is not this runner's to give back. */
     superseded?: Set<string>;
+    /** Each attempt's service sidecars' restart counts once last seen ready (`k8s-services.ts`), by lease token. */
+    serviceBaselines?: Map<string, Map<string, number>>;
 }
 
 /** The ServiceAccount volume every pod gets, holding the token and the cluster CA. */
@@ -425,6 +425,9 @@ export interface K8sContainerStatus {
         running?: { startedAt?: string };
         waiting?: { reason?: string; message?: string };
     };
+    /** A restarted sidecar's (#773 D8): how often the kubelet restarted it, and how its previous container ended. */
+    restartCount?: number;
+    lastState?: { terminated?: { exitCode?: number; reason?: string; message?: string } };
 }
 
 export interface K8sPodList {
@@ -561,89 +564,4 @@ export function parsePodMetrics(body: string): Omit<RuntimeSample, 'sampledAt'> 
     const memUsedMb = typeof usage?.memory === 'string' ? memMbOfQuantity(usage.memory) : null;
     if (millicores === null || memUsedMb === null) return null;
     return { cpuPercent: millicores / 10, memUsedMb, memPercent: null };
-}
-
-/**
- * Pulls the attempt's service fleet out of the lease-scoped pod list — the same selector the
- * teardown tears down with, so the runner and gate pods never answer it. Pure and exported for
- * the pinning, like `parsePodMetrics`: the name is the `factory.service` label (the DNS name the
- * runner resolves), the image the pod's first container's, the state the pod phase lowercased —
- * `unknown` for a pod the API has not phased yet. Rows without a label or an image are skipped,
- * and garbage answers empty.
- */
-export function parseServicePods(body: string): ServiceStatus[] {
-    return servicePodRows(body).map(({ status }) => status);
-}
-
-/** One service pod of the lease-scoped list, read once for both the panel and the dead probe. */
-interface ServicePodRow {
-    status: ServiceStatus;
-    pod: K8sPod;
-}
-
-function servicePodRows(body: string): ServicePodRow[] {
-    let list: {
-        items?: (K8sPod & {
-            metadata?: { labels?: Record<string, string> };
-            spec?: { containers?: { image?: string }[] };
-        })[];
-    };
-    try {
-        list = JSON.parse(body) as typeof list;
-    } catch {
-        return [];
-    }
-    const out: ServicePodRow[] = [];
-    for (const item of list.items ?? []) {
-        const name = item.metadata?.labels?.[SERVICE_LABEL];
-        const image = item.spec?.containers?.[0]?.image;
-        if (!name || !image) continue;
-        out.push({ status: { name, image, state: (item.status?.phase ?? 'unknown').toLowerCase() }, pod: item });
-    }
-    return out.sort((a, b) => (a.status.name < b.status.name ? -1 : a.status.name > b.status.name ? 1 : 0));
-}
-
-/** Waiting reasons a Pending service pod never recovers from: docker fails these `run -d`s as infrastructure. */
-const STUCK_WAITING_REASONS: ReadonlySet<string> = new Set([
-    'ImagePullBackOff',
-    'ErrImagePull',
-    'InvalidImageName',
-    'CreateContainerConfigError',
-]);
-
-const isGoneForGood = (phase: string, waitingReason: string | undefined): boolean =>
-    phase === 'failed' ||
-    phase === 'succeeded' ||
-    (phase === 'pending' && STUCK_WAITING_REASONS.has(waitingReason ?? ''));
-
-/** A dead service pod: its status, the pod to read the log of, and the kubelet's termination. */
-export interface DeadServicePod extends ServiceStatus {
-    pod: string;
-    exitCode: number | null;
-    reason: string | null;
-}
-
-/**
- * The service pods that are no longer running (issue #423). A service pod runs under
- * `restartPolicy: Never`, so `failed` and `succeeded` are both a service gone for good; the exit
- * and reason come off the first container's `terminated` state — the pod's own reason when
- * it has none, as an eviction leaves it — null when nothing recorded one. Pure and exported for the pinning, like `parseServicePods`.
- */
-export function parseDeadServicePods(body: string): DeadServicePod[] {
-    const out: DeadServicePod[] = [];
-    for (const { status, pod } of servicePodRows(body)) {
-        const name = pod.metadata?.name;
-        const state = pod.status?.containerStatuses?.[0]?.state;
-        if (!name || !isGoneForGood(status.state, state?.waiting?.reason)) continue;
-        const ending = state?.terminated ?? state?.waiting;
-        const reason = ending?.reason ?? pod.status?.reason ?? null;
-        const message = ending?.message ?? pod.status?.message ?? null;
-        out.push({
-            pod: name,
-            ...status,
-            exitCode: state?.terminated?.exitCode ?? null,
-            reason: reason && message ? `${reason}: ${message}` : (reason ?? message),
-        });
-    }
-    return out;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { containerName } from '../src/docker.js';
-import { networkName, serviceContainerName } from '../src/services.js';
+import { serviceContainerName } from '../src/services.js';
 import type { BoardJob } from '../src/board.js';
 import { createDockerReaper, parseDockerCreatedAt } from '../src/docker-reaper.js';
 import type { ExecDocker } from '../src/docker-runner-support.js';
@@ -191,46 +191,15 @@ describe('the docker reaper arm: a group’s gate container (issue #773)', () =>
 });
 
 describe('the docker reaper arm: reap', () => {
-    it('removes each container by id, detaches the network, and removes the derived network', async () => {
-        const { execDocker, calls } = router([
-            // The network inspect: one attached endpoint the teardown must disconnect first.
-            ['network', 'gate-env'],
-        ]);
+    // Issue #773: a group shares its supervisor's network namespace, so no network is an attempt's.
+    it('removes each container by id, and no network', async () => {
+        const { execDocker, calls } = router([]);
         const arm = createDockerReaper(execDocker);
 
         const removed = await arm.reap(group(), 'gone');
 
-        expect(removed).toEqual([
-            `network factory-job-${JOB}-${LEASE}-services`,
-            `container ${JOB}-${LEASE}-svc-postgres`,
-        ]);
-        expect(calls).toEqual([
-            ['network', 'inspect', '--format', '{{range .Containers}}{{println .Name}}{{end}}', networkName(job)],
-            ['network', 'disconnect', '-f', networkName(job), 'gate-env'],
-            ['network', 'rm', networkName(job)],
-            ['rm', '-f', `${JOB}-${LEASE}-svc-postgres`],
-        ]);
-    });
-
-    it('attempts the network teardown before removing containers — a failed network rm leaves them retryable', async () => {
-        const calls: string[][] = [];
-        const failing: ExecDocker = async (args) => {
-            calls.push([...args]);
-            if (args[0] === 'network' && args[1] === 'rm') {
-                throw new Error(
-                    'Error response from daemon: error while removing network: network has active endpoints'
-                );
-            }
-            return { stdout: '' };
-        };
-        const arm = createDockerReaper(failing);
-
-        await expect(arm.reap(group(), 'gone')).rejects.toThrow('active endpoints');
-        // The containers were never touched: scan lists them, so the next sweep can retry both.
-        expect(calls).toEqual([
-            ['network', 'inspect', '--format', '{{range .Containers}}{{println .Name}}{{end}}', networkName(job)],
-            ['network', 'rm', networkName(job)],
-        ]);
+        expect(removed).toEqual([`container ${JOB}-${LEASE}-svc-postgres`]);
+        expect(calls).toEqual([['rm', '-f', `${JOB}-${LEASE}-svc-postgres`]]);
     });
 
     it('tolerates a container vanishing between the list and its removal', async () => {
@@ -242,18 +211,8 @@ describe('the docker reaper arm: reap', () => {
         };
         const arm = createDockerReaper(failing);
 
-        // The vanished container is not this round's removal; the network teardown continues.
-        expect(await arm.reap(group(), 'gone')).toEqual([`network factory-job-${JOB}-${LEASE}-services`]);
-    });
-
-    it("keeps the derived network scoped to the group's own attempt", async () => {
-        const { execDocker, calls } = router([]);
-        const arm = createDockerReaper(execDocker);
-
-        await arm.reap(group({ jobId: JOB2, leaseToken: LEASE2 }), 'superseded');
-
-        // The network name carries THIS group's lease token — never the live attempt's.
-        expect(calls).toContainEqual(['network', 'rm', networkName({ id: JOB2, leaseToken: LEASE2 } as BoardJob)]);
+        // The vanished container is not this round's removal.
+        expect(await arm.reap(group(), 'gone')).toEqual([]);
     });
 
     it('names the service container the way the fleet builder does', () => {

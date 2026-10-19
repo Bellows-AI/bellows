@@ -5,7 +5,7 @@ import { executorImage, type DriverConfig } from './config.js';
 import { GATE_GID, GATE_UID, gateEnv, supervisorEnvFileBody, workspacePath } from './claim.js';
 import { claudeExportScript, gateLoopArgv, supervisorScript } from './container-scripts.js';
 import { containerHardeningArgs, resourceArgs, workspacesMountArgs } from './docker.js';
-import { ctlVolumeName, idsOf, mailboxMountArgs } from './docker-mailbox.js';
+import { ctlVolumeName, groupNetworkArgs, idsOf, mailboxMountArgs, supervisorName } from './docker-mailbox.js';
 import {
     type ClosedState,
     type ExecDocker,
@@ -28,6 +28,7 @@ import {
     type SupervisorReport,
 } from './supervisor-contract.js';
 import { gateImageOf, supervisorLiterals } from './supervisor-plan.js';
+import { groupServices, SERVICE_ADDRESS } from './services.js';
 import { exportEnv, exportsTranscript } from './transcript-export.js';
 
 /**
@@ -41,7 +42,6 @@ import { exportEnv, exportsTranscript } from './transcript-export.js';
  * (`awaitSupervisor`). The group is the pod's twin, and `k8s-podspec.ts` its other half.
  */
 
-export const supervisorName = (job: BoardJob): string => `factory-supervisor-${idsOf(job)}`;
 export const exporterName = (job: BoardJob): string => `factory-export-${idsOf(job)}`;
 export const gateName = (job: BoardJob): string => `factory-gate-${idsOf(job)}`;
 
@@ -78,9 +78,15 @@ const reachDriverArgs = (config: DriverConfig): string[] => [
     ...(config.network ? ['--network', config.network] : []),
 ];
 
+/** Each declared service's name on the group's loopback (issue #773): the supervisor's hosts file, which the group shares. */
+const serviceHostArgs = (config: DriverConfig, job: BoardJob): string[] =>
+    groupServices(config, job).flatMap(({ name }) => ['--add-host', `${name}:${SERVICE_ADDRESS}`]);
+
 /**
- * The supervisor's `docker create` argv — pure and exported, the part worth pinning. All four
- * mailboxes, no workspace and no claim env; the control pair rides an env file, never argv.
+ * The supervisor's `docker create` argv — pure and exported, the part worth pinning. All the
+ * mailboxes, the member's workspace and no claim env; the control pair rides an env file, never
+ * argv. It holds the group's network namespace (issue #773): the agent, the gate and the services
+ * join it (`groupNetworkArgs`), and its hosts file names each declared service on loopback.
  */
 export function supervisorCreateArgs(
     config: DriverConfig,
@@ -95,6 +101,7 @@ export function supervisorCreateArgs(
         supervisorName(job),
         ...labelArgs(job, SUPERVISOR_CONTAINER, group.reclaim === true),
         ...reachDriverArgs(config),
+        ...serviceHostArgs(config, job),
         ...(envFile ? ['--env-file', envFile] : []),
         ...supervisorLiterals(config, job, group).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
         // The member's workspace subtree: the steps the supervisor runs (the sync, the probe, the
@@ -137,8 +144,8 @@ export function exporterCreateArgs(config: DriverConfig, job: BoardJob, startedA
  * over the gate mailbox (`scripts/gate-loop.sh`), the pod's gate sidecar's twin. It writes the
  * shared task worktree as the uid:gid every other writer on that tree uses, with a HOME that uid can
  * write; its working directory is the mailbox, since each request names its worktree. No claim env
- * and no credential: those ride each request. Sized by GATE_* (issue #507), on the runner network
- * for the registry a setup installs from; the services network is joined once services start.
+ * and no credential: those ride each request. Sized by GATE_* (issue #507), in its supervisor's
+ * network namespace — the registry a setup installs from, and the declared services on loopback.
  */
 export function gateCreateArgs(config: DriverConfig, job: BoardJob, image: string): string[] {
     return [
@@ -154,7 +161,7 @@ export function gateCreateArgs(config: DriverConfig, job: BoardJob, image: strin
         ...mailboxMountArgs(job, MAILBOXES.gate, 'rw'),
         '-w',
         MAILBOXES.gate.path,
-        ...(config.network ? ['--network', config.network] : []),
+        ...groupNetworkArgs(job),
         ...resourceArgs(config.gateResources),
         '--entrypoint',
         'sh',

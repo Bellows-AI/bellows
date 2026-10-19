@@ -47,16 +47,10 @@ import {
     gateCreateArgs,
     gateName,
     supervisorCreateArgs,
-    supervisorName,
 } from '../src/docker-group.js';
+import { supervisorName } from '../src/docker-mailbox.js';
 import { HELPER_TIMEOUT_MS, lookupHelper, type HelperPlan } from '../src/helpers.js';
-import {
-    forgetDeclaredServices,
-    networkName,
-    type ServiceSpec,
-    serviceContainerName,
-    serviceRunArgs,
-} from '../src/services.js';
+import { forgetDeclaredServices, type ServiceSpec, serviceContainerName, serviceRunArgs } from '../src/services.js';
 import { type RunnerFiles, startJobServices } from '../src/docker-runner-support.js';
 import { createStepBroker, StepChannelClosed, type StepSink, type SupervisorEndpoint } from '../src/step-control.js';
 import { REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
@@ -206,11 +200,12 @@ const psLine = (service: { name: string; image: string; state: string }): string
         Status: `${service.state} (a minute ago)`,
     })}\n`;
 
-const args = (
-    env: NodeJS.ProcessEnv = {},
-    session: RunSession | null = { id: SESSION, resume: false },
-    servicesNetwork: string | null = null
-) => dockerArgs(loadDriverConfig(env), job, session, { servicesNetwork: servicesNetwork, envFile: '/tmp/env-file' });
+/** A declared service's `docker run` (issue #773): detached, labelled with its service name. */
+const isServiceRun = (args: string[]): boolean =>
+    args[0] === 'run' && args.some((arg) => arg.startsWith('factory.service='));
+
+const args = (env: NodeJS.ProcessEnv = {}, session: RunSession | null = { id: SESSION, resume: false }) =>
+    dockerArgs(loadDriverConfig(env), job, session, { envFile: '/tmp/env-file' });
 
 describe('the docker run arguments', () => {
     // The plan itself is pinned in runner-plan.test.ts; this is docker's rendering of it: every
@@ -353,33 +348,19 @@ describe('the docker run arguments', () => {
         );
     });
 
-    it('joins a network only when one is configured', () => {
-        expect(args()).not.toContain('--network');
-        expect(args({ RUNNER_NETWORK: 'factory-ai_default' })).toEqual(
-            expect.arrayContaining(['--network', 'factory-ai_default'])
-        );
-    });
-
-    // servicesNetwork is null whenever the job declared no services — and then the argv is
-    // byte-identical to what the pins above and below expect, which is the compatibility promise
-    // the whole feature makes: no .bellows.yaml, no difference.
-    it('joins the per-job services network only when one is given', () => {
-        expect(args()).not.toContain(networkName(job));
-        expect(args({}, { id: SESSION, resume: false }, networkName(job))).toEqual(
-            expect.arrayContaining(['--network', networkName(job)])
-        );
-    });
-
-    it('can sit on both the configured and the per-job network', () => {
-        // RUNNER_NETWORK carries telemetry to the collector; the services network carries the
-        // job's DNS aliases. Two different jobs for one container — and a Docker 25.0 floor
-        // (API 1.44 is where multi-network create landed): on an older daemon the last --network
-        // silently wins, so a driver running services plus a telemetry network needs a current
-        // docker, which docs/jobs.md states.
-        const line = args({ RUNNER_NETWORK: 'factory-ai_default' }, { id: SESSION, resume: false }, networkName(job));
-        expect(line.filter((arg) => arg === '--network')).toHaveLength(2);
-        expect(line.indexOf('factory-ai_default')).toBeGreaterThanOrEqual(0);
-        expect(line.indexOf(networkName(job))).toBeGreaterThan(line.indexOf('factory-ai_default'));
+    // Issue #773: the agent shares its group supervisor's network namespace, as a pod's containers
+    // share one: the supervisor is on RUNNER_NETWORK with the hosts entries, and nothing of a
+    // network is the agent's own — docker refuses --add-host and a second --network beside it.
+    it('joins its group supervisor’s network namespace, and no network of its own', () => {
+        for (const env of [{}, { RUNNER_NETWORK: 'factory-ai_default' }]) {
+            const line = args(env);
+            expect(line.filter((arg) => arg === '--network')).toHaveLength(1);
+            expect(line[line.indexOf('--network') + 1]).toBe(
+                `container:factory-supervisor-${job.id}-${job.leaseToken}`
+            );
+            expect(line).not.toContain('factory-ai_default');
+            expect(line).not.toContain('--add-host');
+        }
     });
 
     // The endpoint is always provided, defaulting to the compose collector when
@@ -1280,14 +1261,12 @@ describe('the runner env for a gated job', () => {
         expect(() => dockerArgs(loadDriverConfig({}), gateOnly, { id: SESSION, resume: false })).toThrow(/no env file/);
     });
 
-    it('adds the host gateway mapping so the default gate URL resolves on Linux daemons', () => {
+    // The default gate URL's host gateway mapping is the supervisor's, whose namespace and hosts
+    // file the agent shares (issue #773): docker refuses --add-host on a container-mode network.
+    it('leaves the host gateway mapping to the supervisor whose namespace it shares', () => {
         expect(
             dockerArgs(loadDriverConfig({}), gated, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })
-        ).toEqual(expect.arrayContaining(['--add-host', 'host.docker.internal:host-gateway']));
-        // ... and only for a gated job: an ungated runner's argv must stay byte-identical.
-        expect(
-            dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })
-        ).not.toContain('host.docker.internal:host-gateway');
+        ).not.toContain('--add-host');
     });
 
     it('never puts a gate value on the command line', () => {
@@ -1443,9 +1422,9 @@ function spawnChild(stdout: string, stderr?: string, code?: number | null): type
 }
 
 /**
- * A stateful daemon: containers and networks live in maps keyed by id/name with their labels,
- * `ps` and `network ls` honor `--filter label=` pairs, and `rm -f` / `network rm` remove exactly
- * what they are told. Service containers, networks and the runner's own `docker create` register
+ * A stateful daemon: containers live in a map keyed by id/name with their labels, `ps` honors
+ * `--filter label=` pairs, and `rm -f` removes exactly what it is told. Service containers and
+ * every `docker create` register
  * through the exec seam, so cross-attempt "B is untouched" assertions are state, not argv. The
  * throwaway `run … --entrypoint` container answers `readout` (default: the sync's success
  * verdict). `fail`, when given, turns the matching call into an execFile-shaped rejection —
@@ -1457,7 +1436,7 @@ function spawnChild(stdout: string, stderr?: string, code?: number | null): type
  */
 function runningServicesPs(calls: readonly string[][]): { stdout: string } {
     const names = calls
-        .filter((a) => a[0] === 'run' && a.includes('--network-alias'))
+        .filter((a) => isServiceRun(a))
         .flatMap((a) => a.filter((arg) => arg.startsWith('factory.service=')));
     return {
         stdout: names.map((label) => JSON.stringify({ Labels: label, Image: 'svc:1', State: 'running' })).join('\n'),
@@ -1472,7 +1451,6 @@ function labelDaemon({
     fail?: (args: string[]) => string | null;
 } = {}) {
     const containers = new Map<string, Record<string, string>>();
-    const networks = new Map<string, Record<string, string>>();
     const calls: string[][] = [];
     const labelsOf = (args: string[]): Record<string, string> => {
         const labels: Record<string, string> = {};
@@ -1484,22 +1462,25 @@ function labelDaemon({
         }
         return labels;
     };
-    const filtersOf = (args: string[]): [string, string][] => {
-        const filters: [string, string][] = [];
+    // `label=key=value` matches the value, `label=key` the key's presence — docker's two spellings.
+    const filtersOf = (args: string[]): [string, string | null][] => {
+        const filters: [string, string | null][] = [];
         for (let i = 0; i < args.length; i += 1) {
             if (args[i] === '--filter' && (args[i + 1] ?? '').startsWith('label=')) {
                 const [key, value] = (args[i + 1] ?? '').slice('label='.length).split('=');
-                if (key && value !== undefined) filters.push([key, value]);
+                if (key) filters.push([key, value ?? null]);
             }
         }
         return filters;
     };
+    const matches = (labels: Record<string, string>, filters: [string, string | null][]): boolean =>
+        filters.every(([key, value]) => (value === null ? key in labels : labels[key] === value));
     const listed = (entries: Map<string, Record<string, string>>, args: string[]) => {
         const filters = filtersOf(args);
         if (args.includes('{{json .}}')) {
             // The readiness wait's listing: every matching service container, running.
             const services = [...entries.values()].filter(
-                (labels) => labels['factory.service'] && filters.every(([key, value]) => labels[key] === value)
+                (labels) => labels['factory.service'] && matches(labels, filters)
             );
             return {
                 stdout: services
@@ -1517,7 +1498,7 @@ function labelDaemon({
         const withLease = (args[args.indexOf('--format') + 1] ?? '').includes('factory.lease');
         return {
             stdout: [...entries.entries()]
-                .filter(([, labels]) => filters.every(([key, value]) => labels[key] === value))
+                .filter(([, labels]) => matches(labels, filters))
                 .map(([name, labels]) => (withLease ? `${name}\t${labels['factory.lease'] ?? ''}` : name))
                 .join('\n'),
         };
@@ -1533,23 +1514,14 @@ function labelDaemon({
             for (const id of args.slice(2)) containers.delete(id);
             return { stdout: '' };
         }
-        if (args[0] === 'network' && args[1] === 'ls') return listed(networks, args);
-        if (args[0] === 'network' && args[1] === 'rm') {
-            for (const name of args.slice(2)) networks.delete(name);
-            return { stdout: '' };
-        }
-        if (args[0] === 'network' && args[1] === 'create') {
-            networks.set(args[args.length - 1]!, labelsOf(args));
-            return { stdout: '' };
-        }
         if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: readout };
-        if ((args[0] === 'run' && args.includes('--network-alias')) || args[0] === 'create') {
+        if (isServiceRun(args) || args[0] === 'create') {
             containers.set(args[args.indexOf('--name') + 1]!, labelsOf(args));
             return { stdout: '' };
         }
         return { stdout: '' };
     }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-    return { containers, networks, calls, exec };
+    return { containers, calls, exec };
 }
 
 /**
@@ -2451,10 +2423,9 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     /** A restart's stand-down signal that never fires. */
     const live = new AbortController().signal;
 
-    const daemon = (opts: { serviceFails?: boolean; attached?: string } = {}) =>
+    const daemon = (opts: { serviceFails?: boolean } = {}) =>
         vitest.fn(async (args: string[]) => {
-            if (args[0] === 'network' && args[1] === 'inspect') return { stdout: opts.attached ?? '' };
-            if (args[0] === 'run' && args.includes('--network-alias')) {
+            if (isServiceRun(args)) {
                 if (opts.serviceFails) throw new Error('daemon refused the service');
                 return { stdout: '' };
             }
@@ -2582,29 +2553,30 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         return lease ? `${idFor(lease)}\n` : 'stale-leftover\n';
     };
 
-    it('creates the job network, starts the claim’s service, and joins the runner to it', async () => {
+    // Issue #773: the service joins its group supervisor's network namespace, so the group — its
+    // supervisor started, its hosts file naming the service on loopback — comes first.
+    it('starts the claim’s service in its started group’s namespace, and the runner joins it too', async () => {
         const exec = daemon();
         const { fn, seen } = spawnRecording('ran\n', 0);
         const outcome = await servicesRunner(exec, fn).run(job, { id: SESSION, resume: false });
 
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
         const calls = exec.mock.calls.map((call) => call[0]);
-        const createAt = calls.findIndex((a) => a[0] === 'network' && a[1] === 'create');
-        const serviceAt = calls.findIndex((a) => a[0] === 'run' && a.includes('--network-alias'));
-        // Create before the service — the fence's rounds sit between, which is why these are
-        // comparisons and not exact positions.
-        expect(createAt).toBeGreaterThanOrEqual(0);
-        expect(serviceAt).toBeGreaterThan(createAt);
-        expect(calls[serviceAt]).toEqual(serviceRunArgs(job, { name: 'stub', image: 'stub-svc:1', environment: [] }));
-        // The runner shares the network — that is the whole feature: inside the job, `stub`
-        // resolves to the service container.
+        const supervisorAt = calls.findIndex((a) => a.join(' ') === `start ${supervisorName(job)}`);
+        const serviceAt = calls.findIndex((a) => isServiceRun(a));
+        expect(supervisorAt).toBeGreaterThanOrEqual(0);
+        expect(serviceAt).toBeGreaterThan(supervisorAt);
+        expect(calls.some((a) => a[0] === 'network')).toBe(false);
+        expect(calls[serviceAt]).toEqual(serviceRunArgs(job, STUB, supervisorName(job)));
+        // The runner shares the namespace — that is the whole feature: inside the job, `stub`
+        // resolves to the service on loopback.
         expect(seen[0]).toEqual(['start', '-a', containerName(job)]);
         expect(calls.find((a) => a[0] === 'create' && a.includes(containerName(job)))).toEqual(
             dockerArgs(
                 loadDriverConfig({ RUNNER_SERVICES: '1' }),
                 job,
                 { id: SESSION, resume: false },
-                { servicesNetwork: networkName(job), envFile: envFilePath(job) }
+                { envFile: envFilePath(job) }
             )
         );
     });
@@ -2624,35 +2596,36 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         });
 
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
-        const started = exec.mock.calls
-            .map((call) => call[0])
-            .filter((a) => a[0] === 'run' && a.includes('--network-alias'));
+        const started = exec.mock.calls.map((call) => call[0]).filter((a) => isServiceRun(a));
         expect(started).toEqual([
-            serviceRunArgs(planned, { name: 'postgres', image: 'postgres:1', environment: [] }),
-            serviceRunArgs(planned, { name: 'redis', image: 'redis:1', environment: [], user: { uid: 999, gid: 999 } }),
+            serviceRunArgs(
+                planned,
+                { name: 'postgres', image: 'postgres:1', environment: [] },
+                supervisorName(planned)
+            ),
+            serviceRunArgs(
+                planned,
+                { name: 'redis', image: 'redis:1', environment: [], user: { uid: 999, gid: 999 } },
+                supervisorName(planned)
+            ),
         ]);
         expect(started.every((a) => !a.includes('5432'))).toBe(true);
     });
 
-    it('starts only the network and the service runs: no readout container is ever run', async () => {
+    // An attempt that synced none (an adopted run) gets its group made first: a supervisor to join.
+    it('runs nothing but the services, and creates no network: no readout container is ever run', async () => {
         const exec = daemon();
         const runner = bareServicesRunner(exec, spawnRecording('', 0).fn);
         await expect(runner.startServices(job)).resolves.toBeNull();
 
-        const runs = exec.mock.calls.map((call) => call[0]).filter((a) => a[0] === 'run');
-        expect(runs).toEqual([serviceRunArgs(job, STUB)]);
+        const calls = exec.mock.calls.map((call) => call[0]);
+        const runs = calls.filter((a) => a[0] === 'run');
+        expect(runs).toEqual([serviceRunArgs(job, STUB, supervisorName(job))]);
         expect(runs.some((a) => a.includes('--entrypoint') || a.includes('sh'))).toBe(false);
-        expect(exec.mock.calls.map((call) => call[0]).filter((a) => a[0] === 'network' && a[1] === 'create')).toEqual([
-            [
-                'network',
-                'create',
-                '--label',
-                `factory.job=${job.id}`,
-                '--label',
-                `factory.lease=${job.leaseToken}`,
-                networkName(job),
-            ],
-        ]);
+        expect(calls.some((a) => a[0] === 'network')).toBe(false);
+        expect(calls.findIndex((a) => a.join(' ') === `start ${supervisorName(job)}`)).toBeLessThan(
+            calls.findIndex((a) => isServiceRun(a))
+        );
     });
 
     it('starts nothing and changes no argv when the claim carries no services', async () => {
@@ -2673,8 +2646,8 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 { envFile: envFilePath(baseJob) }
             )
         );
-        expect(calls).not.toContainEqual(['network', 'create', networkName(job)]);
-        expect(calls.every((a) => !a.includes('--network-alias'))).toBe(true);
+        expect(calls.some((a) => a[0] === 'network')).toBe(false);
+        expect(calls.every((a) => !isServiceRun(a))).toBe(true);
     });
 
     /*
@@ -2687,32 +2660,15 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const runner = servicesRunner(exec, spawnRecording('', 1).fn);
         await runner.run(job, { id: SESSION, resume: false });
 
-        const createAt = exec.mock.calls.findIndex((call) => call[0][0] === 'network' && call[0][1] === 'create');
-        const afterSetup = exec.mock.calls.slice(createAt).map((call) => call[0]);
-        expect(afterSetup).not.toContainEqual(['network', 'rm', networkName(job)]);
+        const serviceAt = exec.mock.calls.findIndex((call) => isServiceRun(call[0]));
+        const afterSetup = exec.mock.calls.slice(serviceAt).map((call) => call[0]);
         expect(afterSetup).not.toContainEqual(['rm', '-f', 'svc-id-1']);
 
         const releasedAt = exec.mock.calls.length;
         await runner.releaseServices(job);
         const released = exec.mock.calls.slice(releasedAt).map((call) => call[0]);
         expect(released).toContainEqual(['rm', '-f', 'svc-id-1']);
-        expect(released).toContainEqual(['network', 'rm', networkName(job)]);
-    });
-
-    // The gate environment joins the services network to reach the fleet, and docker refuses to
-    // remove a network with an endpoint still attached — so the release detaches whatever is
-    // left on it first, or the network would outlive the attempt.
-    it('detaches the gate environment from the network before removing it', async () => {
-        const exec = daemon({ attached: 'factory-gateenv-x\n' });
-        await servicesRunner(exec, spawnRecording('', 0).fn).releaseServices(job);
-
-        const calls = exec.mock.calls.map((call) => call[0]);
-        const disconnectAt = calls.findIndex(
-            (a) => a.join(' ') === ['network', 'disconnect', '-f', networkName(job), 'factory-gateenv-x'].join(' ')
-        );
-        const removeAt = calls.findIndex((a) => a.join(' ') === ['network', 'rm', networkName(job)].join(' '));
-        expect(disconnectAt).toBeGreaterThanOrEqual(0);
-        expect(removeAt).toBeGreaterThan(disconnectAt);
+        expect(released.some((a) => a[0] === 'network')).toBe(false);
     });
 
     // Review: setup must not race a fleet still starting — the start answers only once every
@@ -2749,8 +2705,8 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     });
 
     // Review (PR 737): the loop starts the services before the gate environment's setup, so run()
-    // must neither start them again nor fence them away; the runner still joins their network.
-    it('run() starts no services after the loop started them, and the runner joins their network', async () => {
+    // must neither start them again nor fence them away; the runner joins their namespace.
+    it('run() starts no services after the loop started them, and the runner joins their namespace', async () => {
         const exec = daemon();
         const runner = bareServicesRunner(exec, spawnRecording('', 0).fn);
         await expect(runner.startServices(job)).resolves.toBeNull();
@@ -2758,20 +2714,18 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await runner.run(job, { id: SESSION, resume: false });
 
         const during = exec.mock.calls.slice(startedAt).map((call) => call[0]);
-        expect(during.some((a) => a[0] === 'network' && a[1] === 'create')).toBe(false);
+        expect(during.some((a) => a[0] === 'network')).toBe(false);
         const readsBellows = (a: string[]) => a.some((arg) => arg.startsWith('BELLOWS_ROOT='));
-        expect(during.some((a) => a[0] === 'run' && (a.includes('--network-alias') || readsBellows(a)))).toBe(false);
+        expect(during.some((a) => a[0] === 'run' && (isServiceRun(a) || readsBellows(a)))).toBe(false);
         const created = during.find((a) => a[0] === 'create' && a.includes(containerName(job)));
-        expect(created?.[created.indexOf('--network') + 1]).toBe(networkName(job));
+        expect(created?.[created.indexOf('--network') + 1]).toBe(`container:${supervisorName(job)}`);
     });
 
-    it("run()'s fence spares this attempt's own containers and networks", async () => {
+    // Issue #773: no network is an attempt's, so the fence lists none.
+    it("run()'s fence spares this attempt's own containers, and lists no network", async () => {
         const exec = vitest.fn(async (args: string[]) => {
             if (args[0] === 'ps' && args.includes('--format')) {
                 return { stdout: `own-1\t${job.leaseToken}\nold-1\tolder-lease\n` };
-            }
-            if (args[0] === 'network' && args[1] === 'ls') {
-                return { stdout: `own-net\t${job.leaseToken}\nold-net\tolder-lease\n` };
             }
             return { stdout: '' };
         });
@@ -2780,22 +2734,21 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const calls = exec.mock.calls.map((call) => call[0]);
         expect(calls).toContainEqual(['rm', '-f', 'old-1']);
         expect(calls).not.toContainEqual(['rm', '-f', 'own-1']);
-        expect(calls).toContainEqual(['network', 'rm', 'old-net']);
-        expect(calls).not.toContainEqual(['network', 'rm', 'own-net']);
+        expect(calls.some((a) => a[0] === 'network')).toBe(false);
     });
 
-    it('fences leftover services before anything is created', async () => {
+    // The fence takes other attempts' leftovers before the group exists; this lease's own are
+    // the service start's to clear, before the first service runs.
+    it('clears leftover services before the first service starts', async () => {
         const exec = daemon();
         await servicesRunner(exec, spawnRecording('', 0).fn).run(job, { id: SESSION, resume: false });
 
         const calls = exec.mock.calls.map((call) => call[0]);
         const firstPsAt = calls.findIndex((a) => a[0] === 'ps');
-        const createAt = calls.findIndex((a) => a[0] === 'network' && a[1] === 'create');
-        // A dead previous attempt leaves its fleet behind — the same leftover the runner
-        // container's rm catches, one layer out, and for the same reason.
+        const serviceAt = calls.findIndex((a) => isServiceRun(a));
         expect(firstPsAt).toBeGreaterThanOrEqual(0);
-        expect(firstPsAt).toBeLessThan(createAt);
-        expect(calls.slice(0, createAt).some((a) => a[0] === 'rm' && a[1] === '-f' && a[2] === 'svc-id-1')).toBe(true);
+        expect(firstPsAt).toBeLessThan(calls.findIndex((a) => a[0] === 'create'));
+        expect(calls.slice(0, serviceAt).some((a) => a[0] === 'rm' && a[1] === '-f' && a[2] === 'svc-id-1')).toBe(true);
     });
 
     it('sends a refused service to the lease, after tearing down what did start', async () => {
@@ -2807,10 +2760,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(seen).toHaveLength(0);
         const calls = exec.mock.calls.map((call) => call[0]);
         expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
-        expect(calls).toContainEqual(['network', 'rm', networkName(job)]);
+        expect(calls.some((a) => a[0] === 'network')).toBe(false);
     });
 
-    it('kill() takes the services and the network down with the runner', async () => {
+    it('kill() takes the services down with the runner', async () => {
         const exec = daemon();
         await servicesRunner(exec, spawnRecording('', 0).fn).kill(job);
         const calls = exec.mock.calls.map((call) => call[0]);
@@ -2827,7 +2780,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         ]);
         expect(calls).toContainEqual(['kill', 'svc-id-1']);
         expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
-        expect(calls).toContainEqual(['network', 'rm', networkName(job)]);
+        expect(calls.some((a) => a[0] === 'network')).toBe(false);
     });
 
     // A lost lease fires kill() while the setup may still be awaiting the daemon. Throwing is the
@@ -2837,13 +2790,12 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     it('aborts the setup, creating nothing more and spawning nothing, when the job is killed mid-setup', async () => {
         const handle: { kill: ((j: BoardJob) => Promise<void>) | null } = { kill: null };
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'network' && args[1] === 'create') {
-                // The lease is lost while the network create is in flight; kill() is what the loop
-                // calls, and it must be recorded before the create resolves.
+            if (isServiceRun(args)) {
+                // The lease is lost while the service start is in flight; kill() is what the loop
+                // calls, and it must be recorded before the start resolves.
                 await handle.kill!(job);
                 return { stdout: '' };
             }
-            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
             if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
             return { stdout: '' };
         });
@@ -2854,8 +2806,9 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await expect(runner.run(job, { id: SESSION, resume: false })).rejects.toThrow(
             /killed while setting up services/
         );
+        // The start in flight when the kill landed is the last thing the attempt created.
         const calls = exec.mock.calls.map((call) => call[0]);
-        expect(calls.every((a) => !a.includes('--network-alias'))).toBe(true);
+        expect(calls.filter((a) => isServiceRun(a))).toHaveLength(1);
         expect(seen).toHaveLength(0);
     });
 
@@ -2863,7 +2816,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // aborts — the loop dedups by nothing. A kill names ATTEMPT A; B carries a fresh lease
     // token that was never killed, so B must proceed, and A must stay aborted. Keyed by job
     // id, one marker serves both attempts: B's claim would either be aborted by a kill meant
-    // for A, or wipe the marker and revive A to compete for the same network and containers.
+    // for A, or wipe the marker and revive A to compete for the same containers.
     it('aborts only the killed attempt when a sibling attempt of the same id claims the job', async () => {
         const handle: { kill: ((j: BoardJob) => Promise<void>) | null } = { kill: null };
         let killedA = false;
@@ -2872,17 +2825,16 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             releaseA = resolve;
         });
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'network' && args[1] === 'create') {
+            if (isServiceRun(args)) {
                 if (!killedA) {
-                    // A's lease is lost while its network create is in flight; the loop's kill()
-                    // must be on record before the create resolves.
+                    // A's lease is lost while its service start is in flight; the loop's kill()
+                    // must be on record before the start resolves.
                     killedA = true;
                     await handle.kill!(attemptA);
                     releaseA!();
                 }
                 return { stdout: '' };
             }
-            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
             if (args[0] === 'ps') return { stdout: psAnswer(args) };
             return { stdout: '' };
         });
@@ -2908,24 +2860,15 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(aCalls.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
         expect(aCalls.every((a) => !touchesB(a))).toBe(true);
 
-        // B was never killed, whatever happened to A: network, service, spawn all happen —
+        // B was never killed, whatever happened to A: group, service, spawn all happen —
         // under B's OWN names, since every name carries B's token.
         await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
-        // A's create was in flight when its kill landed; it went no further. Only B started a
-        // service — and the last network created is B's, labeled like everything the attempt
-        // stands up.
-        const creates = exec.mock.calls.map((call) => call[0]).filter((a) => a[0] === 'network' && a[1] === 'create');
-        expect(creates).toHaveLength(2);
-        const services = exec.mock.calls.map((call) => call[0]).filter((a) => a.includes('--network-alias'));
-        expect(services).toEqual([serviceRunArgs(attemptB, STUB)]);
-        expect(creates.at(-1)).toEqual([
-            'network',
-            'create',
-            '--label',
-            `factory.job=${job.id}`,
-            '--label',
-            `factory.lease=${ATTEMPT_B}`,
-            networkName(attemptB),
+        // A's start was in flight when its kill landed; it went no further. B started its own
+        // service, in its own supervisor's namespace — labeled like everything the attempt stands up.
+        const services = exec.mock.calls.map((call) => call[0]).filter((a) => isServiceRun(a));
+        expect(services).toEqual([
+            serviceRunArgs(attemptA, STUB, supervisorName(attemptA)),
+            serviceRunArgs(attemptB, STUB, supervisorName(attemptB)),
         ]);
         expect(seen).toHaveLength(1);
     });
@@ -2933,7 +2876,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // The abort must not disturb a sibling attempt's fleet. In the gated world that needed a
     // teardown-FREE abort; in the scoped world the kill's teardown ISSUES its daemon calls and
     // is safe because of what it names: every ps carries A's lease, every removal carries A's
-    // id or A's network name. B claims with a fresh token and stands its fleet up afterwards,
+    // id. B claims with a fresh token and stands its fleet up afterwards,
     // untouched — nothing A issued could resolve to it.
     it("scopes a killed attempt's teardown to its own lease, leaving a sibling attempt's fleet alone", async () => {
         const handle: { kill: ((j: BoardJob) => Promise<void>) | null } = { kill: null };
@@ -2943,17 +2886,16 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             releaseKill = resolve;
         });
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'network' && args[1] === 'create') {
+            if (isServiceRun(args)) {
                 if (!killedA) {
-                    // A's lease is lost while its network create is in flight; kill() — its own
-                    // teardown included — must be fully settled before the create resolves.
+                    // A's lease is lost while its service start is in flight; kill() — its own
+                    // teardown included — must be fully settled before the start resolves.
                     killedA = true;
                     await handle.kill!(attemptA);
                     releaseKill!();
                 }
                 return { stdout: '' };
             }
-            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
             if (args[0] === 'ps') return { stdout: psAnswer(args) };
             return { stdout: '' };
         });
@@ -2969,31 +2911,22 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await expect(runA).rejects.toThrow(/killed while setting up services/);
 
         // Everything so far is A's: the kill and its teardown ran — and every call of them is
-        // scoped to A. The ps filters carry A's lease, the removals carry A's id and A's
-        // network name, and no argv element names anything of B's.
+        // scoped to A. The ps filters carry A's lease, the removals carry A's id, and no argv
+        // element names anything of B's.
         const aCalls = exec.mock.calls.map((call) => call[0]);
         expect(aCalls.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
         expect(aCalls).toContainEqual(['kill', idFor(ATTEMPT_A)]);
         expect(aCalls).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
-        expect(aCalls).toContainEqual(['network', 'rm', networkName(attemptA)]);
+        expect(aCalls.some((a) => a[0] === 'network')).toBe(false);
         expect(aCalls.every((a) => !touchesB(a))).toBe(true);
 
-        // B, the newer attempt for the same job id: fence, network create, service start and
-        // runner spawn all happen after A's abort — and nothing A did on the way out disturbed
+        // B, the newer attempt for the same job id: fence, group, service start and runner
+        // spawn all happen after A's abort — and nothing A did on the way out disturbed
         // them.
         const outcome = await runner.run(attemptB, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
         const calls = exec.mock.calls.map((call) => call[0]);
-        expect(calls).toContainEqual([
-            'network',
-            'create',
-            '--label',
-            `factory.job=${job.id}`,
-            '--label',
-            `factory.lease=${ATTEMPT_B}`,
-            networkName(attemptB),
-        ]);
-        expect(calls.some((a) => a.includes('--network-alias'))).toBe(true);
+        expect(calls).toContainEqual(serviceRunArgs(attemptB, STUB, supervisorName(attemptB)));
         expect(seen).toHaveLength(1);
     });
 
@@ -3035,7 +2968,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             };
 
             const exec = vitest.fn(async (args: string[]) => {
-                if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+                if (isServiceRun(args)) return { stdout: '' };
                 if (args[0] === 'ps') return { stdout: psAnswer(args) };
                 return { stdout: '' };
             });
@@ -3049,7 +2982,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             if (killA) await runner.kill(attemptA);
             // B re-claims the same job id and stands a fresh fleet up.
             const runB = runner.run(attemptB, { id: SESSION, resume: false });
-            await closeOf(1); // B spawned; its network and service are live
+            await closeOf(1); // B spawned; its group and service are live
             const afterBCreation = exec.mock.calls.length;
 
             // A's CLI client only now exits — daemon slowness, or B's fence, makes the close
@@ -3061,10 +2994,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
             const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
             // The teardown ran — and every call of it is A's: the ps filters carry A's lease, the
-            // removals carry A's id and A's network name, and nothing names B.
+            // removals carry A's id, and nothing names B.
             expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
             expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
-            expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
+            expect(late.some((a) => a[0] === 'network')).toBe(false);
             expect(late.every((a) => !touchesB(a))).toBe(true);
 
             // B is untouched and still finishes under its own verdict.
@@ -3082,7 +3015,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     it("scopes a kill that lands after the replacement stood its fleet up to the killed attempt's own lease", async () => {
         const { fn, fires, childAt } = gatedSpawns();
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (isServiceRun(args)) return { stdout: '' };
             if (args[0] === 'ps') return { stdout: psAnswer(args) };
             return { stdout: '' };
         });
@@ -3093,7 +3026,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // B re-claims the same job id and stands a fresh fleet up BEFORE the loop learns of
         // A's lost lease.
         const runB = runner.run(attemptB, { id: SESSION, resume: false });
-        await childAt(1); // B spawned; its network and service are live
+        await childAt(1); // B spawned; its group and service are live
         const afterBCreation = exec.mock.calls.length;
 
         // Only now does the loop's kill for A fire — over a daemon where B's fleet is live.
@@ -3105,7 +3038,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
         expect(late).toContainEqual(['kill', idFor(ATTEMPT_A)]);
         expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
-        expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
+        expect(late.some((a) => a[0] === 'network')).toBe(false);
         expect(late.every((a) => !touchesB(a))).toBe(true);
 
         // A still winds down by its own killed marker, and B is untouched, finishing under
@@ -3118,23 +3051,22 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
     // Ordering, not just outcome: the rejection must not be observable while the teardown is
     // still in flight, or the caller sees shutdown and the next lifecycle step race the
-    // removals. The LAST teardown step is held in flight on a gate the test controls — armed
-    // only after the readout, so the fence's own network rm passes — and a rejection observable
-    // while the gate is closed is one that did not wait for cleanup.
+    // removals. The service teardown's removal is held in flight on a gate the test controls —
+    // armed only once the service ran, so the start's own clearing passes — and a rejection
+    // observable while the gate is closed is one that did not wait for cleanup.
     it('tears the services down before a spawn error rejects', async () => {
-        let releaseNetworkRm: (() => void) | null = null;
-        const networkRmGate = new Promise<void>((resolve) => {
-            releaseNetworkRm = resolve;
+        let releaseRm: (() => void) | null = null;
+        const rmGate = new Promise<void>((resolve) => {
+            releaseRm = resolve;
         });
         let armed = false;
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'network' && args[1] === 'create') {
+            if (isServiceRun(args)) {
                 armed = true;
                 return { stdout: '' };
             }
-            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
             if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
-            if (args[0] === 'network' && args[1] === 'rm' && armed) await networkRmGate;
+            if (args.join(' ') === 'rm -f svc-id-1' && armed) await rmGate;
             return { stdout: '' };
         });
         // A child that never closes: the CLI could not even be spawned, which is the 'error'
@@ -3154,11 +3086,11 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
         expect(rejected).toBe(false);
 
-        releaseNetworkRm!();
+        releaseRm!();
         await expect(pending).rejects.toThrow(/ENOENT/);
         const calls = exec.mock.calls.map((call) => call[0]);
-        expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
-        expect(calls).toContainEqual(['network', 'rm', networkName(job)]);
+        expect(calls.filter((a) => a.join(' ') === 'rm -f svc-id-1').length).toBeGreaterThanOrEqual(2);
+        expect(calls.some((a) => a[0] === 'network')).toBe(false);
     });
 
     // A spawn failure makes Node deliver 'error' and then 'close' with a null code. The close
@@ -3173,7 +3105,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         });
         let psCount = 0;
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (isServiceRun(args)) return { stdout: '' };
             if (args[0] === 'ps') {
                 psCount++;
                 // ps #1 is the entry fence; ps #2 is the fence's own service half; ps #3 is the
@@ -3208,7 +3140,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     it("scopes a superseded spawn error's teardown to the failing attempt's own lease", async () => {
         const { fn, fires, childAt } = gatedSpawns();
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (isServiceRun(args)) return { stdout: '' };
             if (args[0] === 'ps') return { stdout: psAnswer(args) };
             return { stdout: '' };
         });
@@ -3219,7 +3151,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // B re-claims the same job id and stands a fresh fleet up while A's spawn failure is
         // still in flight.
         const runB = runner.run(attemptB, { id: SESSION, resume: false });
-        await childAt(1); // B spawned; its network and service are live
+        await childAt(1); // B spawned; its group and service are live
         const afterBCreation = exec.mock.calls.length;
 
         fires[0]!('error', new Error('spawn docker ENOENT'));
@@ -3232,7 +3164,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
         expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
         expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
-        expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
+        expect(late.some((a) => a[0] === 'network')).toBe(false);
         expect(late.every((a) => !touchesB(a))).toBe(true);
 
         // B is untouched and still finishes under its own verdict.
@@ -3258,7 +3190,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         });
         let psCount = 0;
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (isServiceRun(args)) return { stdout: '' };
             if (args[0] === 'ps') {
                 psCount++;
                 // ps #1 is A's entry fence; ps #2 is A's fence-half teardown; ps #3 is A's
@@ -3281,7 +3213,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
         // B re-claims the same job id and stands a fresh fleet up while A's teardown is in flight.
         const runB = runner.run(attemptB, { id: SESSION, resume: false });
-        await childAt(1); // B spawned; its network and service are live
+        await childAt(1); // B spawned; its group and service are live
         const afterBCreation = exec.mock.calls.length;
 
         releaseTeardownPs!(); // the teardown resumes — and names only what its own ps found
@@ -3292,7 +3224,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
         const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
         expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
-        expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
+        expect(late.some((a) => a[0] === 'network')).toBe(false);
         expect(late.every((a) => !touchesB(a))).toBe(true);
 
         // B is untouched and still finishes under its own verdict.
@@ -3322,7 +3254,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 await killGate;
                 return { stdout: '' };
             }
-            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (isServiceRun(args)) return { stdout: '' };
             if (args[0] === 'ps') return { stdout: psAnswer(args) };
             return { stdout: '' };
         });
@@ -3341,7 +3273,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // B re-claims the same job id with a fresh token and stands a fresh fleet up while
         // A's kill is still awaiting the daemon.
         const runB = runner.run(attemptB, { id: SESSION, resume: false });
-        await childAt(1); // B spawned; its network and service are live
+        await childAt(1); // B spawned; its group and service are live
         const afterBCreation = exec.mock.calls.length;
 
         releaseKill!(); // the kill resumes into its teardown
@@ -3350,7 +3282,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
         expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
         expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
-        expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
+        expect(late.some((a) => a[0] === 'network')).toBe(false);
         expect(late.every((a) => !touchesB(a))).toBe(true);
 
         // A still winds down by its own killed marker, and B is untouched, finishing under
@@ -3395,7 +3327,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await spawnA.childAt(0); // A's fleet and runner stand on the daemon
         expect(d.containers.has(containerName(attemptA))).toBe(true);
         expect(d.containers.has(serviceContainerName(attemptA, 'stub'))).toBe(true);
-        expect(d.networks.has(networkName(attemptA))).toBe(true);
 
         // B claims the same job id with a different token. Its fence is job-scoped and removes
         // A's live fleet before creating anything of its own.
@@ -3404,10 +3335,8 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await spawnB.childAt(0);
         expect(d.containers.has(containerName(attemptA))).toBe(false);
         expect(d.containers.has(serviceContainerName(attemptA, 'stub'))).toBe(false);
-        expect(d.networks.has(networkName(attemptA))).toBe(false);
         expect(d.containers.has(containerName(attemptB))).toBe(true);
         expect(d.containers.has(serviceContainerName(attemptB, 'stub'))).toBe(true);
-        expect(d.networks.has(networkName(attemptB))).toBe(true);
         const afterBCreation = d.calls.length;
 
         // A's late kill fires from its own runner, over a daemon where B's fleet is live.
@@ -3418,10 +3347,9 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // in any argv names B — not B's token, names, or ids.
         expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
         expect(late.every((a) => !touchesB(a))).toBe(true);
-        // B's fleet survives on the daemon: containers and network all still there.
+        // B's fleet survives on the daemon: its containers all still there.
         expect(d.containers.has(containerName(attemptB))).toBe(true);
         expect(d.containers.has(serviceContainerName(attemptB, 'stub'))).toBe(true);
-        expect(d.networks.has(networkName(attemptB))).toBe(true);
 
         // B finishes its run under its own verdict — and A's runner child winds down too:
         // its run never settles otherwise, and the job-timeout timer armed at its spawn would
@@ -3439,7 +3367,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     it("computes disjoint names per attempt for the same job id, and fences the previous attempt's leftovers by label", async () => {
         // The pure argv half: the names differ for the same job id.
         expect(containerName(attemptB)).not.toBe(containerName(attemptA));
-        expect(networkName(attemptB)).not.toBe(networkName(attemptA));
         expect(serviceContainerName(attemptB, 'stub')).not.toBe(serviceContainerName(attemptA, 'stub'));
 
         // A's leftovers still exist on the daemon when B's run starts.
@@ -3472,9 +3399,8 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     });
 
     // The fence is the only job-scoped sweep, and this is its full inventory: every labeled
-    // container of the job regardless of which attempt made it, and every labeled network.
-    // Anything not this job's is left alone.
-    it('fences every leftover of the job by label — containers and networks — and nothing else', async () => {
+    // container of the job regardless of which attempt made it. Anything not this job's is left alone.
+    it('fences every leftover container of the job by label, and nothing else', async () => {
         const oldA = { ...job, leaseToken: 'aaaaaaaa-1111-4111-8111-111111111111' };
         const oldB = { ...job, leaseToken: 'bbbbbbbb-2222-4222-8222-222222222222' };
         const d = labelDaemon({});
@@ -3485,14 +3411,13 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             'factory.service': 'stub',
         });
         d.containers.set('someone-elses-runner', { 'factory.job': '99999999-9999-4999-8999-999999999999' });
-        d.networks.set(networkName(oldA), { 'factory.job': job.id, 'factory.lease': oldA.leaseToken });
 
         // The loop started B's services first; run()'s fence then sweeps, and the runner's create is
         // the first call after it, so snapshotting there is snapshotting the fence's outcome.
-        let afterFence: { containers: string[]; networks: string[] } | null = null;
+        let afterFence: { containers: string[] } | null = null;
         const exec = async (args: string[]) => {
-            if (!afterFence && args[0] === 'create') {
-                afterFence = { containers: [...d.containers.keys()], networks: [...d.networks.keys()] };
+            if (!afterFence && args[0] === 'create' && args.includes(containerName(attemptB))) {
+                afterFence = { containers: [...d.containers.keys()] };
             }
             return d.exec(args);
         };
@@ -3505,12 +3430,11 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         );
         await runner.run(attemptB, { id: SESSION, resume: false });
 
-        // All three leftovers are gone; the other job's container is not this fence's business, and
-        // this attempt's own fleet and network — started before run() — are spared.
+        // Both leftovers are gone; the other job's container is not this fence's business, and
+        // this attempt's own group and fleet — started before run() — are spared.
         expect(afterFence!.containers.sort()).toEqual(
-            [serviceContainerName(attemptB, 'stub'), 'someone-elses-runner'].sort()
+            [serviceContainerName(attemptB, 'stub'), supervisorName(attemptB), 'someone-elses-runner'].sort()
         );
-        expect(afterFence!.networks).toEqual([networkName(attemptB)]);
     });
 
     it('leaves the daemon alone when the switch is off', async () => {
@@ -3533,7 +3457,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // create, no service containers, byte-identical runner argv. The one `--entrypoint`
         // run allowed is the close-time claude-code turn read, which is the runner's own.
         expect(calls.every((a) => !(a[0] === 'network' && a[1] === 'create'))).toBe(true);
-        expect(calls.every((a) => !a.includes('--network-alias'))).toBe(true);
+        expect(calls.every((a) => !isServiceRun(a))).toBe(true);
         expect(
             calls.every(
                 (a) =>
@@ -3571,37 +3495,48 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
     const runningStub = JSON.stringify({ Labels: 'factory.service=stub', Image: 'stub-svc:1', State: 'running' });
 
-    it("restartServices re-runs a removed service on the attempt's existing network (issue #560)", async () => {
+    // Issues #560, #773 (R1-4): the restart is the fleet's — the healthy sibling re-runs too — into
+    // the same namespace, whose hosts file still names every service on loopback.
+    it('restartServices re-runs every service, a healthy sibling too, in the group’s namespace', async () => {
+        const DB: ServiceSpec = { name: 'db', image: 'postgres:17', environment: [] };
+        const fleet: BoardJob = { ...job, services: [STUB, DB] };
         const base = daemon();
         let removedByHand = false;
+        const both = [
+            runningStub,
+            JSON.stringify({ Labels: 'factory.service=db', Image: 'postgres:17', State: 'running' }),
+        ].join('\n');
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--network-alias')) removedByHand = false;
-            if (args[0] === 'ps' && args.includes('{{json .}}')) return { stdout: removedByHand ? '' : runningStub };
+            if (isServiceRun(args)) removedByHand = false;
+            if (args[0] === 'ps' && args.includes('{{json .}}')) return { stdout: removedByHand ? '' : both };
             return base(args);
         }) as unknown as ReturnType<typeof daemon>;
         const runner = servicesRunner(exec, spawnRecording('', 0).fn);
-        await runner.run(job, { id: SESSION, resume: false });
+        await runner.run(fleet, { id: SESSION, resume: false });
         removedByHand = true;
         const before = exec.mock.calls.length;
 
-        await runner.restartServices(job, live);
+        await runner.restartServices(fleet, live);
 
         const calls = exec.mock.calls.slice(before).map((call) => call[0]);
-        // The leftover goes by name, the service comes back on the SAME network — never the
-        // whole teardown, which removes the network the gate containers join.
-        expect(calls[0]).toEqual(['rm', '-f', serviceContainerName(job, 'stub')]);
-        expect(calls[1]).toEqual(expect.arrayContaining(['--network', networkName(job), '--network-alias', 'stub']));
+        expect(calls.slice(0, 4)).toEqual([
+            ['rm', '-f', serviceContainerName(fleet, 'stub')],
+            serviceRunArgs(fleet, STUB, supervisorName(fleet)),
+            ['rm', '-f', serviceContainerName(fleet, 'db')],
+            serviceRunArgs(fleet, DB, supervisorName(fleet)),
+        ]);
         expect(calls.some((a) => a[0] === 'network')).toBe(false);
-        expect(await runner.deadServices(job)).toEqual([]);
+        expect(await runner.deadServices(fleet)).toEqual([]);
 
-        await runner.releaseServices(job);
+        await runner.releaseServices(fleet);
+        forgetDeclaredServices(fleet);
     });
 
     it('restartServices stops on a stand-down and removes the service it started again (issue #560)', async () => {
         const base = daemon();
         const stand = new AbortController();
         const exec = vitest.fn(async (args: string[]) => {
-            if (args[0] === 'run' && args.includes('--network-alias') && stand.signal.aborted === false) {
+            if (isServiceRun(args) && stand.signal.aborted === false) {
                 // The Stop lands while the replacement is being started.
                 const answer = await base(args);
                 stand.abort();
@@ -3626,7 +3561,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const base = daemon();
         let refuse = false;
         const exec = vitest.fn(async (args: string[]) => {
-            if (refuse && args[0] === 'run' && args.includes('--network-alias')) throw new Error('no such network');
+            if (refuse && isServiceRun(args)) throw new Error('no such network');
             return base(args);
         }) as unknown as ReturnType<typeof daemon>;
         const runner = servicesRunner(exec, spawnRecording('', 0).fn);
@@ -3897,7 +3832,12 @@ describe('publishing the produced work', () => {
             ok(step.kind === 'reclaim' ? '{"ok":true,"removed":true,"reason":null}' : '')
         );
         const runner = dockerRunner(d.exec, { steps: supervised.sink, endpoint });
-        const result = await runner.reclaimWorktree({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } });
+        // The checkout declares a service: a reclaim's group brings none of it (#773 D11).
+        const result = await runner.reclaimWorktree({
+            ...repoJob,
+            env: { GITHUB_TOKEN: 't0k-3n' },
+            services: [{ name: 'db', image: 'postgres:17', environment: [] }],
+        });
 
         expect(result).toEqual({ ok: true, removed: true, reason: null });
         const [reclaim] = supervised.ofKind('reclaim');
@@ -3918,6 +3858,7 @@ describe('publishing the produced work', () => {
         expect(creates).toHaveLength(1);
         const create = creates[0]!;
         expect(create).toContain('--entrypoint');
+        expect(create).not.toContain('db:127.0.0.1');
         expect(create.some((arg) => arg.includes(repoJob.leaseToken))).toBe(false);
         expect(create.join(' ')).not.toContain(RECLAIM_TOKEN);
         expect(create).toEqual(
@@ -4165,15 +4106,10 @@ describe('publishing the produced work', () => {
     // The fence is infrastructure, not the command's verdict: it must throw, and the loop's
     // try/catch around syncCheckout leaves the job to its lease. The same holds for every verb
     // of the fence, with the leftover the refused verb would have touched seeded.
-    it.each<[string, (args: string[]) => string | null, 'container' | 'network' | null]>([
+    it.each<[string, (args: string[]) => string | null, 'container' | null]>([
         [
             'cannot list the job’s leftover containers',
             (args) => (args[0] === 'ps' ? 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock' : null),
-            null,
-        ],
-        [
-            'cannot list the job’s stale networks',
-            (args) => (args[0] === 'network' && args[1] === 'ls' ? 'Cannot connect to the Docker daemon' : null),
             null,
         ],
         [
@@ -4181,17 +4117,11 @@ describe('publishing the produced work', () => {
             (args) => (args[0] === 'rm' ? 'Error: cannot remove container: device is busy' : null),
             'container',
         ],
-        [
-            'a leftover network refuses to be removed',
-            (args) => (args[0] === 'network' && args[1] === 'rm' ? 'Error: cannot remove network: in use' : null),
-            'network',
-        ],
     ])('fails the sync when the fence %s', async (_label, fail, leftover) => {
         const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
         const d = labelDaemon({ fail });
         const labels = { 'factory.job': job.id, 'factory.lease': OLD_TOKEN };
         if (leftover === 'container') d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), labels);
-        if (leftover === 'network') d.networks.set(networkName({ ...job, leaseToken: OLD_TOKEN }), labels);
         const supervised = syncSteps();
         const runner = dockerRunner(d.exec, { steps: supervised.sink });
 
@@ -4786,7 +4716,10 @@ describe('every container the driver runs is hardened (#382)', () => {
             () => supervisorCreateArgs(config(), repoJob, { exporting: false, agentless: true }, '/tmp/supervisor.env'),
         ],
         ['the claude transcript exporter', () => exporterCreateArgs(config(), job, START, '/tmp/export.env')],
-        ['a declared service', () => serviceRunArgs(job, { name: 'cache', image: 'redis', environment: [] })],
+        [
+            'a declared service',
+            () => serviceRunArgs(job, { name: 'cache', image: 'redis', environment: [] }, supervisorName(job)),
+        ],
         ['the tool tree release', () => toolTreeReleaseArgs(config(), repoJob) ?? []],
     ];
 
@@ -4885,19 +4818,27 @@ describe('every container the driver runs is hardened (#382)', () => {
     // image whose entrypoint chowns its data directory as root gets its capabilities back and
     // nothing else. `no-new-privileges` stays on, because chowning does not require escalating.
     it('lets a declared service opt out of the capability drop, and of nothing else', () => {
-        const argv = serviceRunArgs(job, { name: 'db', image: 'postgres:16', environment: [], unhardened: true });
+        const argv = serviceRunArgs(
+            job,
+            { name: 'db', image: 'postgres:16', environment: [], unhardened: true },
+            supervisorName(job)
+        );
         expect(argv).not.toContain('--cap-drop');
         expect(hasPair(argv, '--security-opt', 'no-new-privileges')).toBe(true);
     });
 
     // The hardened alternative: the declared uid:gid, with every capability still dropped.
     it('runs a declared service as its declared uid:gid, still hardened', () => {
-        const argv = serviceRunArgs(job, {
-            name: 'db',
-            image: 'postgres:17',
-            environment: [],
-            user: { uid: 999, gid: 999 },
-        });
+        const argv = serviceRunArgs(
+            job,
+            {
+                name: 'db',
+                image: 'postgres:17',
+                environment: [],
+                user: { uid: 999, gid: 999 },
+            },
+            supervisorName(job)
+        );
         expect(hasPair(argv, '--user', '999:999')).toBe(true);
         expect(hasPair(argv, '--cap-drop', 'ALL')).toBe(true);
         expect(hasPair(argv, '--security-opt', 'no-new-privileges')).toBe(true);
@@ -4905,7 +4846,9 @@ describe('every container the driver runs is hardened (#382)', () => {
     });
 
     it('passes no --user to a service that declared none', () => {
-        expect(serviceRunArgs(job, { name: 'db', image: 'postgres:17', environment: [] })).not.toContain('--user');
+        expect(
+            serviceRunArgs(job, { name: 'db', image: 'postgres:17', environment: [] }, supervisorName(job))
+        ).not.toContain('--user');
     });
 });
 
@@ -5856,7 +5799,9 @@ describe('the docker runner and the gates', () => {
         return { calls, exec };
     };
 
-    it('runs a gate as a step of a group it makes on demand, its gate container joined to the services once', async () => {
+    // Issue #773: the gate container shares its supervisor's namespace from its create, so the
+    // declared services are on its loopback with no network to join.
+    it('runs a gate as a step of a group it makes on demand, in its supervisor’s namespace, joining no network', async () => {
         const daemon = recording();
         const supervised = fakeSteps(() => ok('passed'));
         const runner = dockerRunner(daemon.exec, { steps: supervised.sink });
@@ -5866,19 +5811,16 @@ describe('the docker runner and the gates', () => {
 
         expect(supervised.ofKind('gate')).toHaveLength(2);
         expect(supervised.ofKind('gate')[0]).toMatchObject({ argv: ['npm test'], cwd: gate.cwd });
-        const created = daemon.calls
-            .filter((args) => args[0] === 'create')
-            .map((args) => args[args.indexOf('--name') + 1]);
-        expect(created).toContain(gateName(gated));
-        const connects = daemon.calls.filter((args) => args[0] === 'network' && args[1] === 'connect');
-        expect(connects).toEqual([['network', 'connect', networkName(gated), gateName(gated)]]);
+        const created = daemon.calls.filter((args) => args[0] === 'create');
+        const gateCreate = created.find((args) => args[args.indexOf('--name') + 1] === gateName(gated));
+        expect(gateCreate?.[gateCreate.indexOf('--network') + 1]).toBe(`container:${supervisorName(gated)}`);
+        expect(daemon.calls.some((args) => args[0] === 'network')).toBe(false);
     });
 
-    it('joins no network when services are off, and resizes nothing', async () => {
+    it('resizes nothing: the gate container keeps its GATE_* sizing', async () => {
         const daemon = recording();
         const runner = dockerRunner(daemon.exec, { env: { RUNNER_SERVICES: '0' }, steps: fakeSteps().sink });
-        await runner.runGate(gated, gate);
-        expect(daemon.calls.some((args) => args[0] === 'network' && args[1] === 'connect')).toBe(false);
         expect(await runner.resizeGate(gated, 'verify')).toBe(false);
+        expect(daemon.calls).toEqual([]);
     });
 });

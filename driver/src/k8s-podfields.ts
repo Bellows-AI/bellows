@@ -171,6 +171,7 @@ export function podHardeningField(): { seccompProfile: { type: 'RuntimeDefault' 
 export interface ContainerSecurityContext {
     allowPrivilegeEscalation: false;
     capabilities: { drop: string[]; add?: string[] };
+    runAsNonRoot?: true;
     runAsUser?: number;
     runAsGroup?: number;
 }

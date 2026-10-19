@@ -14,8 +14,30 @@ case "$*" in
     mkdir -p "$WORKDIR/.factory" && echo "${HOSTNAME:-stub}" >"$WORKDIR/.factory/stub-mark"
     ;;
 esac
+# `factory-stub-services` (issue #773): the names a task pod's hosts file puts on its loopback, then
+# a TCP connect to each declared service of the services lane, retried while one still boots.
+reach() { # reach <host> <port>
+    node -e '
+const [host, port] = process.argv.slice(1);
+const until = Date.now() + 60000;
+const once = () => {
+    const socket = require("net").connect(Number(port), host);
+    socket.on("connect", () => { console.log(`reached ${host}`); process.exit(0); });
+    socket.on("error", (e) => {
+        if (Date.now() > until) { console.error(`${host}:${port} ${e.message}`); process.exit(1); }
+        setTimeout(once, 1000);
+    });
+};
+once();' "$1" "$2"
+}
 for arg in "$@"; do
     case "$arg" in
+    *factory-stub-services*)
+        echo "loopback names: $(awk '$1 == "127.0.0.1" { for (i = 2; i <= NF; i++) printf "%s ", $i }' /etc/hosts)"
+        reach postgres 5432 || exit 1
+        reach s3 9000 || exit 1
+        break
+        ;;
     *factory-stub-github*)
         github_exit=0
         node /usr/local/bin/github-credential.cjs token >/dev/null 2>/tmp/github.err || github_exit=$?

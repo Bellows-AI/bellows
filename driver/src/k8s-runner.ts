@@ -24,7 +24,7 @@ import {
     vanishedOutcome,
     wasKilled,
 } from './k8s-kill.js';
-import { claimName, claimPath, deleteJob, jobPath, jobPodsPath, podLogPath, podsByLeasePath } from './k8s-auxspec.js';
+import { claimName, claimPath, deleteJob, jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
 import { acquireClaim, type ObservedClaim, readClaim, releaseClaimAfterGroupEnd, revokeClaim } from './k8s-fence.js';
 import {
     ensureGroup,
@@ -47,7 +47,14 @@ import {
     readRunnerVerdict,
     readVerdict,
 } from './k8s-poll.js';
-import { deadServices, restartServiceFleet, startServiceFleet, teardownServices } from './k8s-services.js';
+import {
+    deadServices,
+    forgetServices,
+    restartServiceFleet,
+    sidecarStatuses,
+    startServiceFleet,
+} from './k8s-services.js';
+import { groupServices } from './services.js';
 import { resizeGateSidecar, runGateInGroup } from './k8s-gate.js';
 import {
     answerPreview,
@@ -60,7 +67,6 @@ import {
     parse,
     parsePodMetrics,
     POLL_MS,
-    parseServicePods,
     refusal,
     wait,
 } from './k8s-transport.js';
@@ -84,7 +90,7 @@ import { KILL_WINDDOWN_MS, type SupervisorReport } from './supervisor-contract.j
 
 /**
  * The kubernetes `Runner`: assembles the fence (`k8s-fence.ts`), the pollers (`k8s-poll.ts`) and
- * the service fleet (`k8s-services.ts`) into the same `run`/`kill`/`syncCheckout`/`publishGit`/
+ * the service sidecars (`k8s-services.ts`) into the same `run`/`kill`/`syncCheckout`/`publishGit`/
  * `reclaimWorktree` surface the docker runner exposes. See docs/kubernetes.md for the protocol
  * each method implements; every function here is a thin composition over the sibling files, kept
  * here because it is the runner's own close-time bookkeeping (the opencode/claude-turns scrapes,
@@ -191,23 +197,24 @@ async function attachOpencodeOutcome(
 
 // The docker runner samples `docker stats`; the twin here is the metrics API, read from the
 // runner's own pod. Every failure (no pod yet, no metrics-server, a blink) answers null for the
-// NUMBERS: "no fresh sample", never an error. The service fleet is read FIRST and independently
-// of the metrics API, so a cluster with no metrics-server still reports its services.
+// NUMBERS: "no fresh sample", never an error. The services are the pod's own sidecars (issue #773),
+// read off its status before and independently of the metrics API, so a cluster with no
+// metrics-server still reports them.
 async function sampleRuntime(deps: K8sDeps, job: BoardJob) {
-    const services = deps.config.servicesEnabled
-        ? await deps
-              .request('GET', podsByLeasePath(deps.config.k8sNamespace, job))
-              .then((found) => (found.status >= HTTP_ERROR_STATUS ? null : parseServicePods(found.body)))
-              .catch(() => null)
-        : undefined;
+    const specs = groupServices(deps.config, job);
     let pods: K8sResponse;
     try {
         pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, runnerName(job)));
     } catch {
-        return composeRuntimeSample(null, services);
+        return null;
     }
-    if (pods.status >= HTTP_ERROR_STATUS) return composeRuntimeSample(null, services);
-    const runnerPod = livePod(pods.body)?.metadata?.name;
+    if (pods.status >= HTTP_ERROR_STATUS) return null;
+    const live = livePod(pods.body);
+    const services =
+        specs.length > 0 && live
+            ? sidecarStatuses(live, specs).map(({ name, image, state }) => ({ name, image, state }))
+            : undefined;
+    const runnerPod = live?.metadata?.name;
     if (!runnerPod) return composeRuntimeSample(null, services);
     let metrics: K8sResponse;
     try {
@@ -233,8 +240,8 @@ async function killRunner(deps: K8sDeps, job: BoardJob): Promise<void> {
     // from here, before anything is awaited.
     const known = forgetGroup(deps, job);
     releaseSteps(stepHostOf(deps), job);
+    forgetServices(deps, job);
     await releaseClaimAfterGroupEnd(deps, job, { groups: [runnerGroupOf(job, known?.uids)] });
-    await teardownServices(deps, job);
 }
 
 /**
@@ -250,9 +257,9 @@ async function stopAgent(deps: K8sDeps, job: BoardJob): Promise<void> {
         const read = await readJobStatus(deps, runnerName(job), 'reading the runner job').catch(() => null);
         if (!read) break;
         if (read.kind === 'notFound' || read.kind === 'terminal') {
-            // The supervisor ended the group: nobody is left to answer its steps.
+            // The supervisor ended the group, its service sidecars with it: nobody is left to answer its steps.
             releaseSteps(stepHostOf(deps), job);
-            await teardownServices(deps, job);
+            forgetServices(deps, job);
             return;
         }
         if (read.kind === 'error') break;
@@ -333,9 +340,9 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     // One Job, one pod: the agent, the task supervisor that owns its lifecycle and — for a run that
     // exports its transcript — the exporter, created together by the attempt's first step (the
     // sync) or, for an attempt that never synced, here. A pod the cluster refuses is infrastructure,
-    // thrown like any refused runner Job, never a run that silently loses its record. The loop
-    // started this attempt's services before its gate environment and setup (`startServices`); the
-    // fence's sweep spares them, and the pod finds them by DNS.
+    // thrown like any refused runner Job, never a run that silently loses its record. The declared
+    // services are the pod's own sidecars (issue #773), waited ready by the loop's setup
+    // (`startServices`) before its gate environment, and reached on the pod's loopback by name.
     const { startedAt } = await ensureGroup(deps, job, session);
 
     // The agent waits on the supervisor's release; the order hands the supervisor what is left of
@@ -406,9 +413,8 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
 // The checkout claim outlives run(): the group does — the gates, the publish and the helpers are its
 // steps — and the group's end (`finish`, a kill) is what hands the claim back, once confirmed (issue
 // #821). A run that threw before its group existed has no end to wait for: a launch that got as far
-// as its Job ended it at its stand-down, and the claim goes back unless that end is unconfirmed. The service
-// fleet is NOT torn down here either: the declared gates run after run() and test against it, so the
-// loop's releaseServices takes it down once they are done — on every exit path, a throw included.
+// as its Job ended it at its stand-down, and the claim goes back unless that end is unconfirmed. The
+// service sidecars live as long as the group: the declared gates run after run() against them.
 async function run(
     deps: K8sDeps,
     job: BoardJob,
@@ -633,7 +639,8 @@ export function createKubernetesRunner(
         stopAgent: (job: BoardJob) => stopAgent(deps, job),
         recordKill: (job: BoardJob, kill: KillRecord) => recordRunnerKill(deps, job, kill),
         pauseDeadline: (job: BoardJob, paused: boolean) => pauseRunnerDeadline(deps, job, paused),
-        releaseServices: (job: BoardJob) => teardownServices(deps, job),
+        // The sidecars end with the group; what is released is the driver's memory of them.
+        releaseServices: async (job: BoardJob) => forgetServices(deps, job),
         deadServices: (job: BoardJob) => deadServices(deps, job),
         restartServices: (job: BoardJob, signal: AbortSignal) => restartServiceFleet(deps, job, signal),
         startServices: (job: BoardJob, signal?: AbortSignal) => startServiceFleet(deps, job, signal),

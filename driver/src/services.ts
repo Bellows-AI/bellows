@@ -14,6 +14,8 @@
  */
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import type { BoardJob, ServiceStatus } from './board.js';
+import { claimEnv } from './claim.js';
+import { type DriverConfig, gateAdvertiseUrlFor } from './config.js';
 
 /** One service of the claim's plan, as the board resolved it. `environment` preserves the file's order. */
 export interface ServiceSpec {
@@ -46,6 +48,13 @@ export interface ServiceSpec {
 /** The services the claim's plan declares: what both executors start, and nothing the driver read itself. */
 export const plannedServices = (job: BoardJob): ServiceSpec[] => [...(job.services ?? [])];
 
+/** The address every declared name resolves to in the attempt's group (issue #773): its own loopback. */
+export const SERVICE_ADDRESS = '127.0.0.1';
+
+/** The services an attempt's group runs: the plan's, unless this driver runs none (`RUNNER_SERVICES=0`). */
+export const groupServices = (config: Pick<DriverConfig, 'servicesEnabled'>, job: BoardJob): ServiceSpec[] =>
+    config.servicesEnabled ? plannedServices(job) : [];
+
 /**
  * The container hardening flags (issue #382), COPIED from docker.ts rather than imported — the
  * same one-direction rule the mount string and the workspace-path regexes already follow (docker
@@ -59,7 +68,7 @@ const HARDENING_ARGS = ['--cap-drop', 'ALL', '--security-opt', 'no-new-privilege
 const UNHARDENED_ARGS = ['--security-opt', 'no-new-privileges'];
 
 /**
- * What a service may be called. The name becomes a container-name suffix and a network alias —
+ * What a service may be called. The name becomes a container-name suffix and a hosts entry —
  * the hostname the author's tests resolve — so it is a DNS label: lowercase letters, digits and
  * hyphens, one to thirty characters, no hyphen at either end.
  */
@@ -110,26 +119,106 @@ export function missingDeclaredServices(job: BoardJob, listed: readonly { name: 
 }
 
 /**
- * The per-attempt user-defined network services and the runner share. Attempt-scoped by
- * contract: the lease token is minted fresh on every claim and never repeats, so this name can
- * only ever resolve to the network the attempt that computed it created — a stale attempt
- * cannot name a replacement's, which is what makes its teardown safe without any ownership
- * gate. The one job-scoped identifier is the `factory.job` label, and the only thing allowed to
- * act on it is the re-claim fence, which runs before anything is created.
+ * The service container's name. Attempt-scoped by contract: the lease token is minted fresh on
+ * every claim and never repeats, so this name can only ever resolve to the container the attempt
+ * that computed it created — a stale attempt cannot name a replacement's, which is what makes its
+ * teardown safe without any ownership gate.
  */
-export function networkName(job: BoardJob): string {
-    return `factory-job-${job.id}-${job.leaseToken}-services`;
-}
-
-/** The service container's name — attempt-scoped for the same reason `networkName` is. */
 export function serviceContainerName(job: BoardJob, name: string): string {
     return `factory-job-${job.id}-${job.leaseToken}-svc-${name}`;
 }
 
+/** The host a URL-shaped value names, lowercased; null for a value that is no URL. */
+function hostOf(value: string): string | null {
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value.trim())) return null;
+    try {
+        return new URL(value.trim()).hostname.toLowerCase() || null;
+    } catch {
+        return null;
+    }
+}
+
 /**
- * The `docker run` argv for one service: detached, on the attempt's network under the service's
- * own name as alias — which is the whole feature, `redis://cache:6379` resolving inside the job —
- * and labeled by job (what the re-claim fence searches for), by lease (what makes every teardown
+ * Every host a container of the attempt's group dials, with what it is: the driver's control
+ * endpoint, the board, the telemetry collector, and the host of each forwarded env value that is a
+ * URL — the claim's own env and the credentials this driver forwards from its environment.
+ */
+function dialedHosts(
+    config: Pick<DriverConfig, 'gateAdvertiseUrl' | 'boardUrl' | 'statsUrl' | 'otelEndpoint' | 'passEnv'>,
+    job: BoardJob,
+    env: NodeJS.ProcessEnv
+): [string, string][] {
+    const named: [string, string][] = [
+        [gateAdvertiseUrlFor(config.gateAdvertiseUrl, 1), "the driver's control endpoint"],
+        [config.boardUrl, 'the board'],
+        [config.statsUrl, 'the board'],
+        [config.otelEndpoint, 'the telemetry collector'],
+        ...Object.entries(claimEnv(job)).map(([name, value]): [string, string] => [value, `the host of ${name}`]),
+        ...config.passEnv.map((name): [string, string] => [env[name] ?? '', `the host of ${name}`]),
+    ];
+    return named.flatMap(([url, what]) => {
+        const host = hostOf(url);
+        return host ? [[host, what] as [string, string]] : [];
+    });
+}
+
+/**
+ * Why this driver will not run the claim's services, or null (issue #773, R3-1). A declared name
+ * goes into the group's hosts file (`127.0.0.1`), so a service spelled like a host its containers
+ * dial would capture that traffic; the board cannot know this driver's endpoints, so the driver
+ * refuses, case-insensitively. And under kubernetes a service shares the task pod with the agent,
+ * where an `unhardened: true` service cannot keep its image's capabilities without the whole pod
+ * being exempted: `user:` is the way. A `config` refusal at claim — nothing launches.
+ */
+export function servicePlanRefusal(
+    config: Pick<
+        DriverConfig,
+        'executor' | 'servicesEnabled' | 'gateAdvertiseUrl' | 'boardUrl' | 'statsUrl' | 'otelEndpoint' | 'passEnv'
+    >,
+    job: BoardJob,
+    env: NodeJS.ProcessEnv = process.env
+): string | null {
+    const services = groupServices(config, job);
+    if (services.length === 0) return null;
+    const hosts = dialedHosts(config, job, env);
+    for (const { name, unhardened } of services) {
+        const shadowed = hosts.find(([host]) => host === name.toLowerCase());
+        if (shadowed) {
+            return `.bellows.yaml: service "${name}" would shadow ${shadowed[1]} (${shadowed[0]}) for every container of the task; rename it`;
+        }
+        if (unhardened && config.executor === 'kubernetes') {
+            return (
+                `.bellows.yaml: service "${name}" declares unhardened: true, which the kubernetes executor cannot run ` +
+                'beside the agent in its task pod; declare user: "uid:gid" (a non-root user the image runs as) instead'
+            );
+        }
+    }
+    return null;
+}
+
+/**
+ * Re-asserts what of a service reaches a container spec — its name (a container name, a hosts entry,
+ * a volume name), its image and its env keys — before either executor puts it there: the board is
+ * not something this process trusts with any of them.
+ */
+export function assertServiceSpec(job: BoardJob, spec: ServiceSpec): void {
+    if (!SERVICE_NAME.test(spec.name)) {
+        throw new Error(`refusing to run job ${job.id}: "${spec.name}" is not a safe service name`);
+    }
+    if (!IMAGE.test(spec.image)) {
+        throw new Error(`refusing to run job ${job.id}: "${spec.image}" is not a safe image reference`);
+    }
+    for (const { key } of spec.environment) {
+        if (!ENV_KEY.test(key)) {
+            throw new Error(`refusing to run job ${job.id}: "${key}" is not a valid environment variable name`);
+        }
+    }
+}
+
+/**
+ * The `docker run` argv for one service: detached, in the network namespace of its group's
+ * supervisor (`holder`, issue #773), whose hosts file maps the service's name to loopback — which
+ * is the whole feature, `redis://cache:6379` resolving inside the job — and labeled by job (what the re-claim fence searches for), by lease (what makes every teardown
  * and kill resolve to this attempt's fleet and nothing else), and by service (what makes a
  * leftover nameable in a log).
  *
@@ -139,13 +228,8 @@ export function serviceContainerName(job: BoardJob, name: string): string {
  * daemon executing this argv is root on the host, and a published port is the one step from "a
  * service for my tests" to "a listener on somebody's machine".
  */
-export function serviceRunArgs(job: BoardJob, spec: ServiceSpec): string[] {
-    if (!SERVICE_NAME.test(spec.name)) {
-        throw new Error(`refusing to run job ${job.id}: "${spec.name}" is not a safe service name`);
-    }
-    if (!IMAGE.test(spec.image)) {
-        throw new Error(`refusing to run job ${job.id}: "${spec.image}" is not a safe image reference`);
-    }
+export function serviceRunArgs(job: BoardJob, spec: ServiceSpec, holder: string): string[] {
+    assertServiceSpec(job, spec);
     const args = [
         'run',
         '-d',
@@ -163,16 +247,9 @@ export function serviceRunArgs(job: BoardJob, spec: ServiceSpec): string[] {
         '--label',
         `${SERVICE_LABEL}=${spec.name}`,
         '--network',
-        networkName(job),
-        '--network-alias',
-        spec.name,
+        `container:${holder}`,
     ];
-    for (const { key, value } of spec.environment) {
-        if (!ENV_KEY.test(key)) {
-            throw new Error(`refusing to run job ${job.id}: "${key}" is not a valid environment variable name`);
-        }
-        args.push('-e', `${key}=${value}`);
-    }
+    for (const { key, value } of spec.environment) args.push('-e', `${key}=${value}`);
     args.push(spec.image);
     return args;
 }

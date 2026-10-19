@@ -12,6 +12,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { SERVICE_GENERATIONS } from './supervisor-contract.js';
 
 export const containerScript = (name: string): string =>
     readFileSync(new URL(`./scripts/${name}`, import.meta.url), 'utf8');
@@ -43,3 +44,32 @@ export const gateLoopScript = script('gate-loop.sh');
 
 /** The gate container's command on both executors: the loop, with the gate shell it runs each request under. */
 export const gateLoopArgv = (): string[] => ['sh', '-c', gateLoopScript, 'gate-loop', gateShellScript];
+
+/** A declared service sidecar's liveness probe (kubernetes): see scripts/service-generation-probe.sh. */
+export const serviceGenerationProbeScript = script('service-generation-probe.sh');
+
+/** The supervisor's acknowledgement read and generation bump of the services: see scripts/service-generation-bump.sh. */
+export const serviceGenerationBumpScript = script('service-generation-bump.sh');
+
+/** The probe's `exec` command for one service's sidecar. */
+export const serviceProbeArgv = (name: string): string[] => [
+    'sh',
+    '-c',
+    serviceGenerationProbeScript,
+    'service-probe',
+    SERVICE_GENERATIONS.path,
+    name,
+    SERVICE_GENERATIONS.ackPath,
+];
+
+/** A `restart` step's argv: which services have not acknowledged (`acked`), or the bump of every one named. */
+export const serviceRestartArgv = (mode: 'acked' | 'bump', names: readonly string[]): string[] => [
+    'sh',
+    '-c',
+    serviceGenerationBumpScript,
+    'service-generation',
+    mode,
+    SERVICE_GENERATIONS.path,
+    SERVICE_GENERATIONS.ackRoot,
+    ...names,
+];

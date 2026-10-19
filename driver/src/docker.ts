@@ -26,7 +26,7 @@ import type { ServiceStatus } from './board.js';
 import { BYTES_PER_KIB, commandMark, OPENCODE_EXPORT_LIMIT, type RuntimeSample, type RunSession } from './runner.js';
 import { toolTreeReleaseScript, worktreeDir } from './publish.js';
 import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
-import { agentMailboxArgs, agentRoleArgs } from './docker-mailbox.js';
+import { agentMailboxArgs, agentRoleArgs, groupNetworkArgs } from './docker-mailbox.js';
 
 /**
  * The close-time claude-code turn read's whole budget, matching the kubernetes twin's
@@ -347,9 +347,9 @@ export function dockerArgs(
     config: DriverConfig,
     job: BoardJob,
     session: RunSession | null,
-    options: { servicesNetwork?: string | null; envFile?: string } = {}
+    options: { envFile?: string } = {}
 ): string[] {
-    const { servicesNetwork = null, envFile } = options;
+    const { envFile } = options;
     /*
      * The run happens in the job's task worktree (issue #35) — one per task thread, branched off
      * the remote default — when the job names a repository, and at the member root when it does
@@ -411,28 +411,17 @@ export function dockerArgs(
         `${GITHUB_CACHE_DIR}:rw,noexec,nosuid,size=${GITHUB_CACHE_SIZE.docker},mode=0700,uid=${TOOL_UID}`,
     ];
 
-    // A gated job's runner reaches the driver's gate endpoint by the default
-    // `http://host.docker.internal:<port>`, which resolves only if the daemon is told what that
-    // name means — automatic on Docker Desktop, not on Linux. Mapped iff the job has gates, so
-    // an ungated runner's argv stays exactly what it always was.
-    if (job.gates?.gates?.length) {
-        args.push('--add-host', 'host.docker.internal:host-gateway');
-    }
-
     // Issue #360 on this side too: the configured requests/limits as resource flags, before the
     // credentials. Nothing configured renders nothing — the argv is exactly what it always was.
     args.push(...resourceArgs(config.runnerResources));
 
     pushRunnerCredentialArgs(args, config, job, envFile);
 
-    if (config.network) args.push('--network', config.network);
-
-    // The per-job services network, when the job declared services and the driver honors them.
-    // Repeated --network flags need Docker 25.0 (API 1.44), where multi-network create landed;
-    // on older daemons the flag is single-valued and the LAST one silently wins — which here
-    // would drop the runner's telemetry network without an error. The two networks do different
-    // jobs: config.network carries telemetry out, this one carries the job's DNS names in.
-    if (servicesNetwork) args.push('--network', servicesNetwork);
+    // The group supervisor's network namespace (issue #773), as a pod's containers share one: its
+    // RUNNER_NETWORK carries telemetry and the driver's gate endpoint out, and its hosts file maps
+    // `host.docker.internal` (automatic on Docker Desktop, not on Linux) and every declared service,
+    // on loopback. docker refuses --add-host and a second --network beside it.
+    args.push(...groupNetworkArgs(job));
     // Where the runner's telemetry is pointed. The executor image bakes a default endpoint
     // (http://collector:4318), but RUNNER_OTEL_ENDPOINT overrides it for a collector the compose
     // network cannot name — the same override the kubernetes runner applies in the pod spec. A

@@ -37,10 +37,10 @@ while [ "$#" -gt 0 ]; do
         phase_requested=1
         shift
         PHASE="${1:-}"
-        case "$PHASE" in all|smoke|admission|workspace|recovery) ;; *) echo 'invalid --phase'; exit 2 ;; esac
+        case "$PHASE" in all|smoke|admission|workspace|recovery|services) ;; *) echo 'invalid --phase'; exit 2 ;; esac
         ;;
     --help)
-        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery] | --netpol]'
+        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services] | --netpol]'
         echo 'All cluster phases run smoke prerequisites. The default cluster phase is all.'
         echo 'TIMINGS_FILE overrides artifacts/k8s/<release>.tsv (includes cleanup).'
         exit 0
@@ -1805,55 +1805,41 @@ expect_contains 'the runner pod carries no GitHub token in its env'  "$gh_result
 
 # --- The orphan reaper (issue #301), against the real apiserver ---------------------------------
 #
-# A service fleet the way a crashed attempt would have left it: a pod and its headless Service,
-# labelled with the job id of the job that just succeeded — the board answers `succeeded`, the
-# reaper's table says gone. The driver was installed with a 3s cadence, so one round must do it.
-# The release label rides both objects, because that is the selector the arm scans by; the pod's
-# image is the stub already loaded onto the node, and whether the container ever runs is beside
-# the point — the OBJECT is what the reaper deletes.
+# An attempt's leftover the way a crashed attempt would have left it: a Job (suspended, so nothing
+# runs), labelled with the job id of the job that just succeeded — the board answers `succeeded`,
+# the reaper's table says gone. A declared service is a sidecar of its attempt's pod (issue #773),
+# so the Jobs are all the arm scans. The driver was installed with a 3s cadence, so one round must
+# do it. The release label rides the Job, because that is the selector the arm scans by.
 
 echo
 echo '# orphan reaper'
 
 orphan_lease='33333333-3333-4333-8333-333333333333'
 cat <<EOF | kubectl apply -n "$NAMESPACE" -f - >/dev/null 2>&1
-apiVersion: v1
-kind: Pod
+apiVersion: batch/v1
+kind: Job
 metadata:
     name: factory-orphan-reaper-probe
     labels:
         factory.job: $id
         factory.lease: $orphan_lease
-        factory.service: probe
         app.kubernetes.io/instance: $RELEASE
 spec:
-    restartPolicy: Never
-    automountServiceAccountToken: false
-    containers: [{name: probe, image: $STUB_REF}]
----
-apiVersion: v1
-kind: Service
-metadata:
-    name: factory-orphan-reaper-svc
-    labels:
-        factory.job: $id
-        factory.lease: $orphan_lease
-        factory.service: factory-orphan-reaper-svc
-        app.kubernetes.io/instance: $RELEASE
-spec:
-    clusterIP: None
-    selector: {factory.fleet: factory-orphan-reaper-svc}
+    suspend: true
+    backoffLimit: 0
+    template:
+        spec:
+            restartPolicy: Never
+            automountServiceAccountToken: false
+            containers: [{name: probe, image: $STUB_REF}]
 EOF
-kubectl get pod/factory-orphan-reaper-probe service/factory-orphan-reaper-svc -n "$NAMESPACE" >/dev/null 2>&1 &&
-    ok 'the synthetic orphan fleet is up' ||
-    bad 'the synthetic orphan fleet is up' 'the seed objects were not created'
+kubectl get job/factory-orphan-reaper-probe -n "$NAMESPACE" >/dev/null 2>&1 &&
+    ok "the synthetic orphan attempt's Job is up" ||
+    bad "the synthetic orphan attempt's Job is up" 'the seed Job was not created'
 
-kubectl wait --for=delete pod/factory-orphan-reaper-probe -n "$NAMESPACE" --timeout=60s >/dev/null 2>&1 &&
-    ok 'the reaper removes the orphan pod' ||
-    bad 'the reaper removes the orphan pod' 'the pod survived the reaper'
-kubectl wait --for=delete service/factory-orphan-reaper-svc -n "$NAMESPACE" --timeout=60s >/dev/null 2>&1 &&
-    ok 'the reaper removes the orphan Service' ||
-    bad 'the reaper removes the orphan Service' 'the Service survived the reaper'
+kubectl wait --for=delete job/factory-orphan-reaper-probe -n "$NAMESPACE" --timeout=60s >/dev/null 2>&1 &&
+    ok 'the reaper removes the orphan Job' ||
+    bad 'the reaper removes the orphan Job' 'the Job survived the reaper'
 save_logs "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=driver" "$DRIVER_LOG"
 if [ -n "${runner_log_pid:-}" ]; then
     kill "$runner_log_pid" 2>/dev/null
@@ -2495,6 +2481,236 @@ kubectl set env "$DRIVER_DEPLOY" -n "$NAMESPACE" "CLAUDE_EXECUTOR_IMAGE=$image_w
 kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
 
 for job in $hard $drained $evicted $lost $final $unpullable; do
+    kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
+        --ignore-not-found --wait=false >/dev/null 2>&1
+done
+fi
+
+if selected_phase services; then
+begin_phase services
+# --- Declared services and gates in the task pod (issue #773) -----------------------------------
+#
+# The first lane with a `.bellows.yaml` plan. The offline board reads a plan at claim time from a
+# bare mirror under its workspace root (server/src/github/local-origin-plan.ts), so `commit_plan`
+# commits the file — and the lane's gate scripts under lane/ — to the member's origin, which every
+# startup sync fetches, and mirrors that origin to `.origins/<repo>.git`. The services are native
+# sidecars of the task pod, named on its loopback by hostAliases: the agent (the stub's
+# `factory-stub-services`) and the gate container (lane/reach.sh, the stub image as the gate image)
+# reach `postgres:5432` and `s3:9000` there by name.
+
+echo
+echo '# declared services'
+
+# The gate scripts every plan commits beside it. reach.sh: both names on 127.0.0.1, then a TCP
+# connect to each, retried while a service still boots. leave.sh: a background write the gate loop's
+# `kill -KILL -1` must stop before the next gate runs (the `isolated` gate checks it never landed).
+LANE_REACH="$(
+    cat <<'SH'
+#!/bin/sh
+for name in postgres s3; do
+    awk '$1 == "127.0.0.1" { for (i = 2; i <= NF; i++) print $i }' /etc/hosts | grep -qx "$name" || {
+        echo "$name is not on 127.0.0.1"
+        exit 1
+    }
+done
+reach() {
+    node -e '
+const [host, port] = process.argv.slice(1);
+const until = Date.now() + 60000;
+const once = () => {
+    const socket = require("net").connect(Number(port), host);
+    socket.on("connect", () => { console.log(`reached ${host}`); process.exit(0); });
+    socket.on("error", (e) => {
+        if (Date.now() > until) { console.error(`${host}:${port} ${e.message}`); process.exit(1); }
+        setTimeout(once, 1000);
+    });
+};
+once();' "$1" "$2"
+}
+reach postgres 5432 && reach s3 9000
+SH
+)"
+LANE_LEAVE="$(
+    cat <<'SH'
+#!/bin/sh
+dir="$(pwd)"
+(sleep 3; touch "$dir/.lane-forged") >/dev/null 2>&1 &
+exit 0
+SH
+)"
+
+commit_plan() { # commit_plan <label> <.bellows.yaml contents, empty to remove it> -> 0 once committed and mirrored
+    local plan reach leave script out
+    plan="$(printf '%s' "$2" | base64 | tr -d '\n')"
+    reach="$(printf '%s\n' "$LANE_REACH" | base64 | tr -d '\n')"
+    leave="$(printf '%s\n' "$LANE_LEAVE" | base64 | tr -d '\n')"
+    # One line, no double quotes or backslashes: it is interpolated into the JSON override below.
+    script="set -e; rm -rf /tmp/plan; git clone -q /workspaces/$member_path/.smoke-origin.git /tmp/plan;
+echo $plan | base64 -d > /tmp/plan/.bellows.yaml;
+[ -s /tmp/plan/.bellows.yaml ] || rm -f /tmp/plan/.bellows.yaml;
+mkdir -p /tmp/plan/lane; echo $reach | base64 -d > /tmp/plan/lane/reach.sh; echo $leave | base64 -d > /tmp/plan/lane/leave.sh;
+git -C /tmp/plan add -A;
+git -C /tmp/plan -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q --allow-empty -m lane-plan-$1;
+git -C /tmp/plan push -q origin HEAD:main;
+rm -rf /workspaces/.origins/$SMOKE_REPO.git; cp -a /workspaces/$member_path/.smoke-origin.git /workspaces/.origins/$SMOKE_REPO.git;
+echo committed"
+    script="$(printf '%s' "$script" | tr '\n' ' ')"
+    kubectl run "$RELEASE-plan-$1" -n "$NAMESPACE" --image="$STUB_REF" --restart=Never --command \
+        --overrides="$(
+            cat <<EOF
+{"spec":{"automountServiceAccountToken":false,
+"volumes":[{"name":"w","persistentVolumeClaim":{"claimName":"$STATE_RELEASE-workspaces"}}],
+"initContainers":[{"name":"own","image":"alpine:3",
+"command":["sh","-c","mkdir -p /workspaces/.origins/${SMOKE_REPO%%/*} && chown -R 1000:1000 /workspaces/.origins"],
+"volumeMounts":[{"name":"w","mountPath":"/workspaces"}]}],
+"containers":[{"name":"plan","image":"$STUB_REF","imagePullPolicy":"IfNotPresent",
+"command":["sh","-c","$script"],
+"volumeMounts":[{"name":"w","mountPath":"/workspaces"}]}]}}
+EOF
+        )" -- sh >/dev/null 2>&1
+    kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s "pod/$RELEASE-plan-$1" \
+        -n "$NAMESPACE" >/dev/null 2>&1
+    out="$(kubectl logs "$RELEASE-plan-$1" -n "$NAMESPACE" --all-containers 2>&1 || true)"
+    kubectl delete pod "$RELEASE-plan-$1" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
+    case "$out" in
+    *committed*) return 0 ;;
+    *) printf '%s' "$out" >&2; return 1 ;;
+    esac
+}
+
+sidecar_restarts() { # sidecar_restarts <pod> <container> -> its restartCount, empty when unread
+    kubectl get pod "$1" -n "$NAMESPACE" \
+        -o jsonpath="{.status.initContainerStatuses[?(@.name==\"$2\")].restartCount}" 2>/dev/null
+}
+
+LANE_SERVICES="services:
+    - name: postgres
+      image: postgres:17
+      user: \"999:999\"
+      environment:
+          POSTGRES_PASSWORD: lane
+    - name: s3
+      image: rustfs/rustfs:1.0.1
+      user: \"10001:10001\""
+LANE_GATES="environment:
+    image: $STUB_REF
+    gates:
+        - name: reach
+          command: sh lane/reach.sh
+        - name: leave
+          command: sh lane/leave.sh
+        - name: isolated
+          command: \"sleep 6 && test ! -e .lane-forged\""
+
+commit_plan services "$LANE_SERVICES
+$LANE_GATES" && ok 'a plan with declared services and gates is committed and mirrored' ||
+    bad 'a plan with declared services and gates is committed and mirrored' 'the plan pod did not commit'
+
+# a. Both sides by name: the agent sees both names on 127.0.0.1 and reaches each service there,
+#    and the gates (reach, then the isolation pair) pass in the gate sidecar.
+begin_phase services-reach
+reached="$(queue_job 'factory-stub-services')"
+reached_end="$(await_brief "$reached" 'succeeded*' 420)" && ok 'a run with declared services and gates succeeds' ||
+    bad 'a run with declared services and gates succeeds' "status|attempts|count|claimSeq|reason: $reached_end; $(job_output "$reached")"
+reached_out="$(job_output "$reached")"
+expect_contains 'the agent finds both declared names on 127.0.0.1' "$reached_out" 'postgres s3'
+expect_contains 'the agent reaches postgres by name'               "$reached_out" 'reached postgres'
+expect_contains 'the agent reaches s3 by name'                     "$reached_out" 'reached s3'
+runner_job="$(first_runner_job "$reached")"
+pod_spec="$(kubectl get jobs "$runner_job" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec}' 2>/dev/null)"
+expect_contains 'the names are the pod’s hostAliases on 127.0.0.1' "$pod_spec" '"ip":"127.0.0.1"'
+expect_contains 'the services are svc- sidecars of the task pod'   "$pod_spec" '"name":"svc-postgres"'
+expect_not_contains 'no service pod or headless Service is created' \
+    "$(kubectl get pods,services -l "factory.job=$reached" -n "$NAMESPACE" -o name 2>/dev/null)" 'service/'
+
+# b. The pre-gate restart: the harness ends postgres while the agent holds; the kubelet brings it
+#    back with its restart count past the baseline, so the driver finds it dead before the gates and
+#    restarts the fleet by the generation bump — one more kubelet restart — and the gates pass.
+begin_phase services-restart
+svc_release="/workspaces/$member_path/.lane-services"
+restarted="$(queue_job "factory-stub-wait-$svc_release services restart")"
+restart_pod="$(await_runner_pod "$restarted")"
+if [ -z "$restarted" ] || [ -z "$restart_pod" ]; then
+    bad 'the restart runner is running' "job '$restarted': $(job_brief "$restarted")"
+else
+    ok 'the restart runner is running'
+    await_blocked "$restart_pod" "$svc_release" && ok 'the restart agent is blocked at its barrier' || give_up
+    kubectl exec "$restart_pod" -c svc-postgres -n "$NAMESPACE" -- sh -c 'kill 1' >/dev/null 2>&1
+    died=""
+    for _ in $(seq 1 60); do
+        [ "$(sidecar_restarts "$restart_pod" svc-postgres)" -ge 1 ] 2>/dev/null && {
+            died=1
+            break
+        }
+        sleep 1
+    done
+    [ -n "$died" ] && ok 'the kubelet restarts the ended postgres sidecar' ||
+        bad 'the kubelet restarts the ended postgres sidecar' "restartCount $(sidecar_restarts "$restart_pod" svc-postgres)"
+    release_stub "$svc_release"
+    most=0
+    restart_end=""
+    for _ in $(seq 1 300); do
+        count="$(sidecar_restarts "$restart_pod" svc-postgres)"
+        [ -n "$count" ] && [ "$count" -gt "$most" ] 2>/dev/null && most="$count"
+        restart_end="$(job_brief "$restarted")"
+        case "$restart_end" in succeeded* | failed* | stopped* | dead*) break ;; esac
+        sleep 1
+    done
+    case "$restart_end" in
+    succeeded*) ok 'the gates pass after the pre-gate restart' ;;
+    *) bad 'the gates pass after the pre-gate restart' "$restart_end; $(job_output "$restarted")" ;;
+    esac
+    expect_contains 'the verdict notes the restart before the gates' "$(job_output "$restarted")" \
+        'restarted before the declared gates'
+    [ "$most" -ge 2 ] && ok 'the generation bump restarts the sidecar once more' ||
+        bad 'the generation bump restarts the sidecar once more' "restartCount reached $most"
+fi
+
+# c. A service that crashes on every start fails the run `services`, naming it — never a run left
+#    to wait out the lease.
+begin_phase services-crash
+commit_plan crash 'services:
+    - name: crash
+      image: alpine:3' && ok 'a plan with a crashing service is committed' ||
+    bad 'a plan with a crashing service is committed' 'the plan pod did not commit'
+crashed="$(queue_job 'hello from a crashing fleet')"
+crash_end="$(await_brief "$crashed" 'failed*' 900)" && ok 'a crashing service fails the run' ||
+    bad 'a crashing service fails the run' "status|attempts|count|claimSeq|reason: $crash_end"
+expect_contains 'the failure names the crashing service' "$(job_output "$crashed")" 'service "crash"'
+
+# d. An image the registry does not have, for a service and for the gate (#773 D10): the kubelet's
+#    words name the held sidecar, so the group's start is a configuration fault on the first
+#    attempt, the role and the image named — never a lease burnt down to dead.
+begin_phase services-unpullable
+missing_svc="$LANE_REGISTRY/factory-lane-missing-service:$RELEASE"
+commit_plan ghost "services:
+    - name: ghost
+      image: $missing_svc" && ok 'a plan with an unpullable service image is committed' ||
+    bad 'a plan with an unpullable service image is committed' 'the plan pod did not commit'
+ghost="$(queue_job 'hello from a ghost service')"
+ghost_end="$(await_brief "$ghost" 'failed*' 300)"
+[ "$ghost_end" = 'failed|1|0||' ] && ok 'a missing service image fails the job at once, nothing refunded' ||
+    bad 'a missing service image fails the job at once, nothing refunded' "status|attempts|count|claimSeq|reason: $ghost_end"
+expect_contains 'the failure names the service and its image' "$(job_output "$ghost")" \
+    "the service \"ghost\" image \"$missing_svc\" cannot be pulled"
+
+missing_gate="$LANE_REGISTRY/factory-lane-missing-gate:$RELEASE"
+commit_plan ghost-gate "environment:
+    image: $missing_gate
+    gates:
+        - name: test
+          command: \"true\"" && ok 'a plan with an unpullable gate image is committed' ||
+    bad 'a plan with an unpullable gate image is committed' 'the plan pod did not commit'
+ghost_gate="$(queue_job 'hello from a ghost gate')"
+ghost_gate_end="$(await_brief "$ghost_gate" 'failed*' 300)"
+[ "$ghost_gate_end" = 'failed|1|0||' ] && ok 'a missing gate image fails the job at once, nothing refunded' ||
+    bad 'a missing gate image fails the job at once, nothing refunded' "status|attempts|count|claimSeq|reason: $ghost_gate_end"
+expect_contains 'the failure names the gate image' "$(job_output "$ghost_gate")" \
+    "the gate image \"$missing_gate\" cannot be pulled"
+
+# The origin and its mirror carry no plan again: a later phase runs as it always did.
+commit_plan restore '' && ok 'the plan is removed again' || bad 'the plan is removed again' 'the plan pod did not commit'
+for job in $reached $restarted $crashed $ghost $ghost_gate; do
     kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
         --ignore-not-found --wait=false >/dev/null 2>&1
 done

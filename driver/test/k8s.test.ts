@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Board, BoardJob } from '../src/board.js';
 import { type DriverConfig, loadDriverConfig } from '../src/config.js';
 import {
@@ -12,15 +12,24 @@ import {
     SUPERVISOR_REPORT_PREFIX,
     SUPERVISOR_STEPS_MS,
     SUPERVISOR_WINDDOWN_MS,
+    SERVICE_GENERATIONS,
+    SERVICE_NOT_ACKED_EXIT,
     type StepRequest,
     type StepResult,
     type SupervisorReport,
 } from '../src/supervisor-contract.js';
 import { StepChannelClosed, type StepSink } from '../src/step-control.js';
-import { claudeTurnsScript, claudeExportScript, gateLoopArgv } from '../src/container-scripts.js';
+import {
+    claudeTurnsScript,
+    claudeExportScript,
+    gateLoopArgv,
+    serviceProbeArgv,
+    serviceRestartArgv,
+} from '../src/container-scripts.js';
 import {
     AdoptionBlocked,
     ARTIFACT_LIMIT,
+    Inconclusive,
     commandMark,
     OPENCODE_EXPORT_LIMIT,
     SERVICE_LOG_TAIL_LINES,
@@ -31,30 +40,22 @@ import { receiptedAnswer, receiptOrder } from './fixtures/helper-receipt-steps.j
 import { claudeManagedSettings, opencodeOtelConfig } from '../src/telemetry-config.js';
 import type { HelperPlan } from '../src/helpers.js';
 import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
-import {
-    LOG_TAIL_LINES,
-    POLL_MAX_CONSECUTIVE_FAILURES,
-    parseDeadServicePods,
-    parseServicePods,
-    parsePodMetrics,
-    POLL_MS,
-} from '../src/k8s-transport.js';
+import { LOG_TAIL_LINES, POLL_MAX_CONSECUTIVE_FAILURES, parsePodMetrics, POLL_MS } from '../src/k8s-transport.js';
 import { GROUP_END_WAIT_MS } from '../src/k8s-teardown.js';
 import { readVerdict, runnerLossOf } from '../src/k8s-poll.js';
 import { orphanBoundMs } from '../src/supervisor-plan.js';
 import {
     claudeTurnsJobName,
     claudeTurnsJobSpec,
-    fleetDnsField,
     jobsPath,
     opencodeReadoutJobName,
     opencodeReadoutJobSpec,
     runnerJobName,
     runnerJobSpec,
     secretName,
-    serviceSubdomain,
 } from '../src/k8s-podspec.js';
-import { claimName, jobPath, serviceDnsSpec, servicePodSpec } from '../src/k8s-auxspec.js';
+import { claimName, jobPath, podLogPath } from '../src/k8s-auxspec.js';
+import { KUBELET_RESTART_NOTE, sidecarStatuses } from '../src/k8s-services.js';
 import { reclaimGroupSpec } from '../src/k8s-group.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
@@ -73,7 +74,7 @@ import {
     toolTreeReleaseScript,
     TRANSIENT_SYNC_REASON,
 } from '../src/publish.js';
-import { forgetDeclaredServices, type ServiceSpec } from '../src/services.js';
+import type { ServiceSpec } from '../src/services.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 /** The Job's backstop beyond the agent's budget: the drain and the report, then the hours the group serves steps. */
@@ -606,7 +607,7 @@ describe('the runner job spec', () => {
 
 /*
  * Every pod the driver specs, by name: the runner, the ten aux builders (all through
- * `auxJobSpec`) and a declared service's bare Pod. Each entry is a thunk, built inside the it
+ * `auxJobSpec`) and a declared service's sidecar. Each entry is a thunk, built inside the it
  * bodies — the file's `namespace` is declared below, and nothing here may build eagerly. A
  * builder that bypassed `auxJobSpec` altogether would need its own entry here, and the
  * admission policy is the backstop that refuses it at the apiserver either way.
@@ -619,19 +620,16 @@ const POD_NAMES = [
     'the task supervisor',
     'the transcript exporter',
     'the reclaim group',
-    'the service pod',
+    'the service sidecar',
 ] as const;
 type PodName = (typeof POD_NAMES)[number];
-/** Every Job-backed pod — all of them but the declared service's bare Pod. */
-const JOB_POD_NAMES = POD_NAMES.filter((name) => name !== 'the service pod');
 
 type JobSpecOf = ReturnType<typeof runnerJobSpec> | ReturnType<typeof claudeTurnsJobSpec>;
-type ServicePodOf = ReturnType<typeof servicePodSpec>;
 interface PodView {
-    /** The Job object — absent on the service's bare Pod. */
-    job?: JobSpecOf;
-    /** The POD's metadata: the Job's pod template, or the bare Pod's own. */
-    meta: JobSpecOf['spec']['template']['metadata'] | ServicePodOf['metadata'];
+    /** The Job object. */
+    job: JobSpecOf;
+    /** The POD's metadata: the Job's pod template. */
+    meta: JobSpecOf['spec']['template']['metadata'];
     /** The pod spec, read only through the fields every pod shares. */
     pod: {
         restartPolicy: string;
@@ -698,6 +696,19 @@ const gateView = (config: DriverConfig, of: BoardJob): PodView => {
     return { ...view, pod: { ...view.pod, containers: [gate] } };
 };
 
+/** A run's pod with one declared service, seen through its sidecar alone (issue #773). */
+const serviceSidecarView = (config: DriverConfig, of: BoardJob): PodView => {
+    const spec = runnerJobSpec(
+        { ...config, servicesEnabled: true },
+        { ...of, ...SUPERVISED, services: [{ name: 'cache', image: 'redis', environment: [] }] },
+        { id: SESSION, resume: false }
+    );
+    const view = jobView(spec);
+    const sidecar = spec.spec.template.spec.initContainers?.find((candidate) => candidate.name === 'svc-cache');
+    if (!sidecar) throw new Error("the run's pod has no service sidecar");
+    return { ...view, pod: { ...view.pod, containers: [sidecar] } };
+};
+
 const everyPodSpec = (env: NodeJS.ProcessEnv = {}, of: BoardJob = job): Record<PodName, () => PodView> => {
     const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, ...env });
     const repoJob: BoardJob = { ...of, repo: 'Bellows-AI/factory' };
@@ -710,10 +721,7 @@ const everyPodSpec = (env: NodeJS.ProcessEnv = {}, of: BoardJob = job): Record<P
         'the task supervisor': () => containerView(config, of, SUPERVISOR_CONTAINER),
         'the transcript exporter': () => containerView(config, of, EXPORTER_CONTAINER),
         'the reclaim group': () => jobView(reclaimGroupSpec(config, repoJob, repoJob.leaseToken)),
-        'the service pod': () => {
-            const pod = servicePodSpec(config, of, { name: 'cache', image: 'redis', environment: [] }, 'svc-uid');
-            return { meta: pod.metadata, pod: pod.spec };
-        },
+        'the service sidecar': () => serviceSidecarView(config, of),
     };
 };
 
@@ -800,11 +808,11 @@ describe('the lifecycle of every pod the driver specs', () => {
         expect(pod.automountServiceAccountToken).toBe(false);
     });
 
-    it.each(JOB_POD_NAMES)('bounds %s with a deadline of its own, never retries it and reaps its pod', (name) => {
+    it.each(POD_NAMES)('bounds %s with a deadline of its own, never retries it and reaps its pod', (name) => {
         const { job: jobObject } = everyPodSpec()[name]();
-        expect(jobObject?.spec.activeDeadlineSeconds).toBeGreaterThan(0);
-        expect(jobObject?.spec.backoffLimit).toBe(0);
-        expect(jobObject?.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
+        expect(jobObject.spec.activeDeadlineSeconds).toBeGreaterThan(0);
+        expect(jobObject.spec.backoffLimit).toBe(0);
+        expect(jobObject.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
     });
 });
 
@@ -817,7 +825,7 @@ describe('the lifecycle of every pod the driver specs', () => {
  * What actually protects a NEW aux Job is not the list above — which is hand-written and can fall
  * behind — but the single spread inside `auxJobSpec`, which every aux builder goes through. This
  * suite pins that the spread exists and reaches all ten of today's aux builders (`runnerJobSpec`
- * has its own spread and never goes through it), and the declared service pod besides.
+ * has its own spread and never goes through it), and the declared service sidecar besides.
  */
 describe('the pod hardening on every pod the driver specs (#382)', () => {
     // A capability is a slice of root the kernel hands a process without asking anyone. An agent
@@ -878,61 +886,11 @@ describe('the pod hardening on every pod the driver specs (#382)', () => {
         expect(everyPodSpec()[name]().pod.containers[0]!.securityContext?.readOnlyRootFilesystem).toBeUndefined();
     });
 
-    // A declared service is the one pod in the fleet whose image the driver did not build: a
+    // A declared service is the one container in the fleet whose image the driver did not build: a
     // repository author names it in `.bellows.yaml` and the cluster pulls it. It is hardened like
-    // everything else (the rows above) — "every execution path" is the whole point of the issue —
-    // and the escape hatch below is a declaration, not a default.
-    it('hardens a declared service pod like every other pod', () => {
-        expect(everyPodSpec()['the service pod']().meta.labels['factory.unhardened']).toBeUndefined();
-    });
-
-    // The opt-out, and exactly how far it goes. `unhardened: true` restores THE IMAGE'S DEFAULT
-    // CAPABILITY SET and nothing else, because that is the only part that breaks a stock image: a
-    // root entrypoint that chowns its data directory needs CHOWN, DAC_OVERRIDE and FOWNER back.
-    // It does not need to escalate, so the escalation bit stays off, and it does not need an
-    // unfiltered syscall table, so the seccomp profile stays on. The label is what lets the
-    // admission policy tell a declared opt-out from a driver that silently stopped hardening.
-    it('lets a declared service opt out of the capability drop, and of nothing else', () => {
-        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
-        const pod = servicePodSpec(
-            config,
-            job,
-            { name: 'db', image: 'postgres:16', environment: [], unhardened: true },
-            'svc-uid'
-        );
-        expect(pod.spec.containers[0]!.securityContext?.capabilities).toBeUndefined();
-        expect(pod.spec.containers[0]!.securityContext?.allowPrivilegeEscalation).toBe(false);
-        expect(pod.spec.securityContext?.seccompProfile).toEqual({ type: 'RuntimeDefault' });
-        expect(pod.metadata.labels['factory.unhardened']).toBe('true');
-        // Nothing the opt-out touches reaches the node: it is still a tokenless pod, and the
-        // admission policy still refuses it a host mount and a foreign Secret.
-        expect(pod.spec.automountServiceAccountToken).toBe(false);
-    });
-
-    // The hardened alternative, same reach as `--user` on docker: the declared uid:gid on the
-    // container, every capability still dropped, and no opt-out label for admission to read.
-    it('runs a declared service as its declared uid:gid, still hardened', () => {
-        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
-        const pod = servicePodSpec(
-            config,
-            job,
-            { name: 'db', image: 'postgres:17', environment: [], user: { uid: 999, gid: 999 } },
-            'svc-uid'
-        );
-        expect(pod.spec.containers[0]!.securityContext).toEqual({
-            allowPrivilegeEscalation: false,
-            capabilities: { drop: ['ALL'] },
-            runAsNonRoot: true,
-            runAsUser: 999,
-            runAsGroup: 999,
-        });
-        expect(pod.metadata.labels['factory.unhardened']).toBeUndefined();
-    });
-
-    it('sets no uid on a service that declared none', () => {
-        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
-        const pod = servicePodSpec(config, job, { name: 'db', image: 'postgres:17', environment: [] }, 'svc-uid');
-        expect(pod.spec.containers[0]!.securityContext?.runAsUser).toBeUndefined();
+    // everything else (the rows above), and the pod it shares with the agent carries no opt-out.
+    it('hardens a declared service sidecar like every other container, its pod carrying no opt-out', () => {
+        expect(everyPodSpec()['the service sidecar']().meta.labels['factory.unhardened']).toBeUndefined();
     });
 
     // The gate writes the shared worktree as a fixed uid:gid, on its own container: the pod's
@@ -1122,6 +1080,10 @@ const routed = (special: Special, overrides: Record<string, unknown> = {}): { re
     };
     return { request, calls };
 };
+
+/** The teardown's writer-pod list (`writerPodsPath`): every pod of one (job, lease) pair. */
+const isWriterPodList = (path: string): boolean =>
+    /\/pods\?labelSelector=factory\.job=[^,]+,factory\.lease=[0-9a-f-]+$/.test(decodeURIComponent(path));
 
 /** The answer a hand-written fake gave a call it did not script. */
 const noAnswer = (method: K8sMethod, path: string): Promise<K8sResponse> =>
@@ -2581,228 +2543,126 @@ describe('the runner vitals', () => {
     });
 
     /**
-     * The attempt's service fleet rides the same sample (issue #60), read off the lease-scoped
-     * pod list — the same selector the teardown uses, so the runner and gate pods never answer.
-     * THE kubernetes regression this exists for: a cluster with no metrics-server (kind, for one)
-     * must not silence the fleet — the sample carries null vitals beside real service states
-     * rather than skipping the flush. An empty fleet is no key at all, so a job that declared
-     * nothing reports exactly what it reported before.
+     * The attempt's services ride the same sample (issue #60), read off the task pod's own sidecar
+     * statuses (issue #773). THE kubernetes regression this exists for: a cluster with no
+     * metrics-server (kind, for one) must not silence them — the sample carries null vitals beside
+     * real service states rather than skipping the flush. A job that declared nothing reports
+     * exactly what it reported before.
      */
-    it('reports the service fleet beside the vitals, with or without them', async () => {
-        const base = fakeRequest();
-        const fleetBody = JSON.stringify({
-            items: [
-                {
-                    metadata: { labels: { 'factory.service': 'db' } },
-                    spec: { containers: [{ image: 'postgres:16' }] },
-                    status: { phase: 'Running' },
-                },
-            ],
-        });
-        const emptyBody = '{"items":[]}';
+    it('reports the service sidecars beside the vitals, with or without them', async () => {
+        const declared: BoardJob = { ...job, services: [{ name: 'db', image: 'postgres:16', environment: [] }] };
+        const pods = routed((method, path) =>
+            method === 'GET' && decodeURIComponent(path).includes('job-name=')
+                ? {
+                      status: 200,
+                      body: JSON.stringify({
+                          items: [
+                              {
+                                  metadata: { name: podName },
+                                  status: { initContainerStatuses: [{ name: 'svc-db', state: { running: {} } }] },
+                              },
+                          ],
+                      }),
+                  }
+                : undefined
+        );
+        const withMetrics =
+            (metrics: K8sResponse): K8sRequest =>
+            (method, path, body) =>
+                path.startsWith('/apis/metrics.k8s.io/') ? Promise.resolve(metrics) : pods.request(method, path, body);
         const metricsBody = {
             status: 200,
             body: JSON.stringify({ containers: [{ usage: { cpu: '310m', memory: '96Mi' } }] }),
         };
-        const wrap =
-            (fleet: string | null, metrics: { status: number; body: string } | null): K8sRequest =>
-            (method, path, body) => {
-                if (
-                    fleet !== null &&
-                    path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                    decodeURIComponent(path).includes(`factory.lease=${job.leaseToken}`)
-                ) {
-                    return Promise.resolve({ status: 200, body: fleet });
-                }
-                if (metrics !== null && path.startsWith('/apis/metrics.k8s.io/')) {
-                    return Promise.resolve(metrics as K8sResponse);
-                }
-                return base.request(method, path, body);
-            };
+        const services = [{ name: 'db', image: 'postgres:16', state: 'running' }];
 
-        // Both reads land: numbers and fleet.
-        expect(await runner(wrap(fleetBody, metricsBody), { RUNNER_SERVICES: '1' }).sampleRuntime(job)).toEqual({
+        expect(await runner(withMetrics(metricsBody), { RUNNER_SERVICES: '1' }).sampleRuntime(declared)).toEqual({
             cpuPercent: 31,
             memUsedMb: 96,
             memPercent: null,
-            services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+            services,
         });
-
-        // No metrics-server: the fleet still reports, the numbers go honestly null.
-        expect(
-            await runner(wrap(fleetBody, { status: 404, body: 'no metrics-server' }), {
-                RUNNER_SERVICES: '1',
-            }).sampleRuntime(job)
-        ).toEqual({
+        // No metrics-server: the services still report, the numbers go honestly null.
+        const noServer = withMetrics({ status: 404, body: 'no metrics-server' });
+        expect(await runner(noServer, { RUNNER_SERVICES: '1' }).sampleRuntime(declared)).toEqual({
             cpuPercent: null,
             memUsedMb: null,
             memPercent: null,
-            services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+            services,
         });
-
-        // Nothing declared: no key, and without metrics nothing to report at all.
-        expect(
-            await runner(wrap(emptyBody, { status: 404, body: 'x' }), { RUNNER_SERVICES: '1' }).sampleRuntime(job)
-        ).toBeNull();
-
-        // Services off: exactly the vitals-only sample, and no fleet request is even issued.
-        const off = fakeRequest();
-        expect(
-            await runner((method, path, body) => {
-                if (path.startsWith('/apis/metrics.k8s.io/')) return Promise.resolve(metricsBody as K8sResponse);
-                return off.request(method, path, body);
-            }).sampleRuntime(job)
-        ).toEqual({ cpuPercent: 31, memUsedMb: 96, memPercent: null });
-        expect(off.calls.some((call) => decodeURIComponent(call.path).includes('factory.lease'))).toBe(false);
-    });
-
-    describe('parseServicePods', () => {
-        const pod = (name: string, phase: string | undefined, image = 'postgres:16'): unknown => ({
-            metadata: { labels: { 'factory.service': name } },
-            spec: { containers: [{ image }] },
-            status: phase === undefined ? {} : { phase },
-        });
-
-        it('reads name, image and phase off each pod, lowercased and sorted by name', () => {
-            expect(
-                parseServicePods(JSON.stringify({ items: [pod('db', 'Running'), pod('cache', 'Pending', 'redis:7')] }))
-            ).toEqual([
-                { name: 'cache', image: 'redis:7', state: 'pending' },
-                { name: 'db', image: 'postgres:16', state: 'running' },
-            ]);
-        });
-
-        it('answers unknown for a pod with no phase yet', () => {
-            expect(parseServicePods(JSON.stringify({ items: [pod('db', undefined)] }))).toEqual([
-                { name: 'db', image: 'postgres:16', state: 'unknown' },
-            ]);
-        });
-
-        it('skips pods without the service label or an image, and garbage', () => {
-            expect(parseServicePods(JSON.stringify({ items: [{ metadata: {}, spec: { containers: [] } }] }))).toEqual(
-                []
-            );
-            expect(parseServicePods('not json')).toEqual([]);
-            expect(parseServicePods('{"items":[]}')).toEqual([]);
+        // Nothing declared, or services off: no key, and without metrics nothing to report at all.
+        expect(await runner(noServer, { RUNNER_SERVICES: '1' }).sampleRuntime(job)).toBeNull();
+        expect(await runner(withMetrics(metricsBody)).sampleRuntime(declared)).toEqual({
+            cpuPercent: 31,
+            memUsedMb: 96,
+            memPercent: null,
         });
     });
 
-    /**
-     * The dead half of the fleet (issue #423): a service pod runs under `restartPolicy: Never`, so
-     * `Failed` and `Succeeded` are both a service that is no longer there for the gates. The
-     * verdict quotes the kubelet's termination and the pod's last log lines — the only place the
-     * cause survives, because the teardown deletes the pod right after.
-     */
-    describe('dead services', () => {
-        const pod = (name: string, phase: string, terminated?: { exitCode: number; reason?: string }): unknown => ({
-            metadata: { name: `svc-${name}`, labels: { 'factory.service': name } },
-            spec: { containers: [{ image: `${name}:1` }] },
-            status: { phase, containerStatuses: terminated ? [{ state: { terminated } }] : [] },
-        });
-
-        it('parses failed and succeeded pods with their termination, skipping live ones and garbage', () => {
-            const body = JSON.stringify({
-                items: [
-                    pod('mongo', 'Failed', { exitCode: 1, reason: 'Error' }),
-                    pod('cache', 'Succeeded', { exitCode: 0, reason: 'Completed' }),
-                    pod('db', 'Running'),
-                    pod('queue', 'Pending'),
-                    pod('blank', 'Failed'),
+    describe('sidecarStatuses (issue #773 D8)', () => {
+        const specs = ['up', 'ended', 'looping', 'unpullable', 'creating', 'unlisted'].map((name) => ({
+            name,
+            image: `${name}:1`,
+            environment: [],
+        }));
+        const pod = {
+            status: {
+                initContainerStatuses: [
+                    { name: 'gate', state: { running: {} } },
+                    { name: 'svc-up', state: { running: {} }, restartCount: 2 },
+                    { name: 'svc-ended', state: { terminated: { exitCode: 3, reason: 'Error', message: 'boom' } } },
+                    {
+                        name: 'svc-looping',
+                        state: { waiting: { reason: 'CrashLoopBackOff', message: 'back-off' } },
+                        restartCount: 4,
+                        lastState: { terminated: { exitCode: 1, reason: 'Error' } },
+                    },
+                    {
+                        name: 'svc-unpullable',
+                        state: { waiting: { reason: 'ImagePullBackOff', message: 'no manifest' } },
+                    },
+                    { name: 'svc-creating', state: { waiting: { reason: 'ContainerCreating' } } },
                 ],
-            });
-            expect(parseDeadServicePods(body)).toEqual([
-                { pod: 'svc-blank', name: 'blank', image: 'blank:1', state: 'failed', exitCode: null, reason: null },
+            },
+        };
+
+        it('reads each declared service off its sidecar: running, exited for a reason waiting cannot cure, else pending', () => {
+            expect(sidecarStatuses(pod, specs)).toEqual([
+                { name: 'up', image: 'up:1', state: 'running', restartCount: 2, exitCode: null, ending: null },
                 {
-                    pod: 'svc-cache',
-                    name: 'cache',
-                    image: 'cache:1',
-                    state: 'succeeded',
-                    exitCode: 0,
-                    reason: 'Completed',
+                    name: 'ended',
+                    image: 'ended:1',
+                    state: 'exited',
+                    restartCount: 0,
+                    exitCode: 3,
+                    ending: 'Error: boom',
                 },
-                { pod: 'svc-mongo', name: 'mongo', image: 'mongo:1', state: 'failed', exitCode: 1, reason: 'Error' },
-            ]);
-            expect(parseDeadServicePods('not json')).toEqual([]);
-            // A pod stuck Pending on an image or config error never starts: docker fails the same as infrastructure.
-            const stuck = (waiting: string) => ({
-                metadata: { name: 'svc-mongo', labels: { 'factory.service': 'mongo' } },
-                spec: { containers: [{ image: 'mongo:1' }] },
-                status: { phase: 'Pending', containerStatuses: [{ state: { waiting: { reason: waiting } } }] },
-            });
-            for (const reason of ['ImagePullBackOff', 'ErrImagePull', 'CreateContainerConfigError']) {
-                expect(parseDeadServicePods(JSON.stringify({ items: [stuck(reason)] }))).toEqual([
-                    { pod: 'svc-mongo', name: 'mongo', image: 'mongo:1', state: 'pending', exitCode: null, reason },
-                ]);
-            }
-            expect(parseDeadServicePods(JSON.stringify({ items: [stuck('ContainerCreating')] }))).toEqual([]);
-            // An eviction records no container termination: the pod's own reason stands in.
-            const evicted = {
-                metadata: { name: 'svc-mongo', labels: { 'factory.service': 'mongo' } },
-                spec: { containers: [{ image: 'mongo:1' }] },
-                status: { phase: 'Failed', reason: 'Evicted', message: 'low on memory' },
-            };
-            expect(parseDeadServicePods(JSON.stringify({ items: [evicted] }))).toEqual([
+                { name: 'looping', image: 'looping:1', state: 'exited', restartCount: 4, exitCode: 1, ending: 'Error' },
                 {
-                    pod: 'svc-mongo',
-                    name: 'mongo',
-                    image: 'mongo:1',
-                    state: 'failed',
+                    name: 'unpullable',
+                    image: 'unpullable:1',
+                    state: 'exited',
+                    restartCount: 0,
                     exitCode: null,
-                    reason: 'Evicted: low on memory',
+                    ending: 'ImagePullBackOff: no manifest',
                 },
-            ]);
-        });
-
-        it('reads the lease-scoped fleet, then the log tail of each dead pod only', async () => {
-            const base = fakeRequest();
-            const fleet = JSON.stringify({
-                items: [pod('mongo', 'Failed', { exitCode: 1, reason: 'Error' }), pod('db', 'Running')],
-            });
-            const request: K8sRequest = (method, path, body) => {
-                if (
-                    path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                    decodeURIComponent(path).includes(`factory.lease=${job.leaseToken}`)
-                )
-                    return Promise.resolve({ status: 200, body: fleet });
-                if (path === `/api/v1/namespaces/${namespace}/pods/svc-mongo/log?tailLines=${SERVICE_LOG_TAIL_LINES}`)
-                    return Promise.resolve({ status: 200, body: 'chown: Operation not permitted\n' });
-                return base.request(method, path, body);
-            };
-
-            expect(await runner(request, { RUNNER_SERVICES: '1' }).deadServices(job)).toEqual([
                 {
-                    name: 'mongo',
-                    image: 'mongo:1',
-                    state: 'failed',
-                    exitCode: 1,
-                    reason: 'Error',
-                    logTail: 'chown: Operation not permitted\n',
+                    name: 'creating',
+                    image: 'creating:1',
+                    state: 'pending',
+                    restartCount: 0,
+                    exitCode: null,
+                    ending: null,
+                },
+                {
+                    name: 'unlisted',
+                    image: 'unlisted:1',
+                    state: 'pending',
+                    restartCount: 0,
+                    exitCode: null,
+                    ending: null,
                 },
             ]);
-            expect(base.calls.some((call) => call.path.includes('svc-db'))).toBe(false);
-        });
-
-        it('keeps a dead service whose log is gone, and throws on an unreadable fleet', async () => {
-            const fleet = JSON.stringify({ items: [pod('mongo', 'Failed', { exitCode: 1 })] });
-            const request =
-                (fleetStatus: number): K8sRequest =>
-                (_method, path) =>
-                    Promise.resolve(
-                        path.includes('/log')
-                            ? { status: 404, body: 'gone' }
-                            : { status: fleetStatus, body: fleetStatus === 200 ? fleet : 'forbidden' }
-                    );
-
-            expect(await runner(request(200), { RUNNER_SERVICES: '1' }).deadServices(job)).toEqual([
-                { name: 'mongo', image: 'mongo:1', state: 'failed', exitCode: 1, reason: null, logTail: '' },
-            ]);
-            await expect(runner(request(403), { RUNNER_SERVICES: '1' }).deadServices(job)).rejects.toThrow(/403/);
-        });
-
-        it('answers empty without a request when services are off', async () => {
-            const off = fakeRequest();
-            expect(await runner(off.request).deadServices(job)).toEqual([]);
-            expect(off.calls).toEqual([]);
         });
     });
 });
@@ -2908,11 +2768,10 @@ describe('the kubernetes runner', () => {
         expect(calls[1]!.path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
         expect(calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`)).toEqual([
             `POST ${configmapsPath}`,
-            // The sweep lists every kind the job label can answer — runner and gate Jobs, then
-            // service pods, then service DNS Services — before this attempt creates anything.
+            // The sweep lists every kind the job label can answer — the runner Jobs, then their
+            // pods — before this attempt creates anything.
             `GET ${jobsPath(namespace)}`,
             `GET /api/v1/namespaces/factory/pods`,
-            `GET /api/v1/namespaces/factory/services`,
             // The claim verify, then the Job created suspended and only then its per-attempt
             // Secret (the runner's attempt pair), so a Secret never exists without a Job to derive
             // it from (issue #821); the post-create verify, then the resume that starts the pod.
@@ -2926,8 +2785,7 @@ describe('the kubernetes runner', () => {
             `GET /api/v1/namespaces/factory/pods/${podName}/log`,
             // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
             ...cturnsCalls(job),
-            // No fleet teardown here: the services outlive run() for the declared gates, and the
-            // loop's releaseServices takes them down. Nor does the group go: its Job and Secret
+            // The group does not go here: its Job and Secret
             // serve the steps after the run until the loop's `finish` — which is also what hands
             // the checkout claim back, once the group's end is confirmed (issue #821).
         ]);
@@ -3256,22 +3114,20 @@ describe('the kubernetes runner', () => {
         // delete's own response does not wait for them.
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
-            // Round one lists every kind — jobs names the leftover, pods and services answer
-            // empty — then the claim is confirmed ours and the leftover is deleted by name.
-            'GET',
+            // Round one lists every kind — jobs names the leftover, pods answer empty — then the
+            // claim is confirmed ours and the leftover is deleted by name.
             'GET',
             'GET',
             'GET',
             'DELETE',
-            // Round two: all three kinds answer empty. The per-attempt Secret is written after
+            // Round two: both kinds answer empty. The per-attempt Secret is written after
             // the sweep, before the claim that precedes the create — and reaped with the attempt.
-            'GET',
             'GET',
             'GET',
             ...RUN_FROM_SECRET,
         ]);
         expect(calls[1]!.path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
-        expect(calls[5]!.path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
+        expect(calls[4]!.path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
     });
 
     // A re-claim whose sweep never lands — an apiserver losing deletes, say — must not loop
@@ -3517,7 +3373,6 @@ describe('the kubernetes runner', () => {
             `POST ${configmapsPath}`,
             `GET ${jobsPath(namespace)}`,
             `GET /api/v1/namespaces/factory/pods`,
-            `GET /api/v1/namespaces/factory/services`,
             // The Job created suspended, then the per-attempt Secret, kept with the group: `finish`
             // reaps it, not the run. The resume starts the pod after the post-create verify.
             `GET ${claimPath}`,
@@ -3719,19 +3574,16 @@ describe('the kubernetes runner', () => {
             method: 'DELETE',
             path: `${jobPath(namespace, freshName)}?propagationPolicy=Foreground`,
         });
-        // Claim, LIST ×3 (finds both in jobs; pods and services empty), claim confirmed ours,
-        // two deletes, LIST ×3 (clean), claim re-verified before the create, create, claim
-        // verified again, then the status poll, the pod list, the log, the claim release and
-        // the Secret's reap.
+        // Claim, LIST ×2 (finds both in jobs; pods empty), claim confirmed ours, two deletes,
+        // LIST ×2 (clean), claim re-verified before the create, create, claim verified again,
+        // then the status poll, the pod list, the log, the claim release and the Secret's reap.
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
             'GET',
             'GET',
             'GET',
-            'GET',
             'DELETE',
             'DELETE',
-            'GET',
             'GET',
             'GET',
             ...RUN_FROM_SECRET,
@@ -3790,17 +3642,15 @@ describe('the kubernetes runner', () => {
             path: `${jobPath(namespace, predecessor)}?propagationPolicy=Foreground`,
         });
         // ...and only once the claim is confirmed ours and the selector answers nothing does
-        // this attempt create its own Job: claim, LIST ×3 (finds the predecessor in jobs; the
-        // others empty), claim confirmed, DELETE, LIST ×3 (clean), claim re-verified, POST,
-        // claim verified, then the status poll and the close-time reads.
+        // this attempt create its own Job: claim, LIST ×2 (finds the predecessor in jobs; pods
+        // empty), claim confirmed, DELETE, LIST ×2 (clean), claim re-verified, POST, claim
+        // verified, then the status poll and the close-time reads.
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
             'GET',
             'GET',
             'GET',
-            'GET',
             'DELETE',
-            'GET',
             'GET',
             'GET',
             ...RUN_FROM_SECRET,
@@ -3821,10 +3671,9 @@ describe('the kubernetes runner', () => {
         expect(outcome.exitCode).toBe(0);
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
-            // Jobs 404s; the sweep goes on to the pods and services lists, both empty — the
-            // round is conclusive and the checkout is free. The per-attempt Secret is written
-            // after the sweep, before the claim that precedes the create — and reaped with it.
-            'GET',
+            // Jobs 404s; the sweep goes on to the pods list, empty — the round is conclusive
+            // and the checkout is free. The per-attempt Secret is written after the sweep,
+            // before the claim that precedes the create — and reaped with it.
             'GET',
             'GET',
             ...RUN_FROM_SECRET,
@@ -3850,14 +3699,12 @@ describe('the kubernetes runner', () => {
         expect(outcome.exitCode).toBe(0);
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
-            // Round one: the jobs list drops — the round is inconclusive, and the pods and
-            // services lists still run before the retry.
+            // Round one: the jobs list drops — the round is inconclusive, and the pods list
+            // still runs before the retry.
             'GET',
             'GET',
-            'GET',
-            // Round two: jobs, pods and services all answer empty — free to create. The
-            // per-attempt Secret is written after the sweep, before the claim — reaped with it.
-            'GET',
+            // Round two: jobs and pods both answer empty — free to create. The per-attempt
+            // Secret is written after the sweep, before the claim — reaped with it.
             'GET',
             'GET',
             ...RUN_FROM_SECRET,
@@ -4398,13 +4245,11 @@ describe('the kubernetes runner', () => {
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
-        // LIST ×3 (leftover in jobs; pods/services empty), verify 503 → no delete, LIST ×3
-        // (leftover again), verify ours → DELETE, LIST ×3 (clean), claim re-verified, create,
-        // verify, poll, pods, log, release, release-delete, Secret reap.
+        // LIST ×2 (leftover in jobs; pods empty), verify 503 → no delete, LIST ×2 (leftover
+        // again), verify ours → DELETE, LIST ×2 (clean), claim re-verified, create, verify,
+        // poll, pods, log, release, release-delete, Secret reap.
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
-            'GET',
-            'GET',
             'GET',
             'GET',
             'GET',
@@ -4414,10 +4259,9 @@ describe('the kubernetes runner', () => {
             'DELETE',
             'GET',
             'GET',
-            'GET',
             ...RUN_FROM_SECRET,
         ]);
-        expect(calls[9]?.path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
+        expect(calls[7]?.path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
     });
 
     // The board refuses a complete POST that does not fit its body limit — an oversized report
@@ -5045,665 +4889,467 @@ describe('the kubernetes runner and the gates', () => {
 });
 
 // ==============================================================================================
-// Auxiliary services under kubernetes: a pod per declared service, a headless Service as its DNS
-// name, alive for exactly the attempt.
+// Auxiliary services under kubernetes: a native sidecar of the task pod per declared service,
+// reached on the pod's loopback by its declared name, alive for exactly the group.
 // ==============================================================================================
 
-describe('the service pod and DNS specs', () => {
-    const cache: ServiceSpec = {
-        name: 'cache',
-        image: 'redis',
-        environment: [{ key: 'ALLOW_EMPTY_PASSWORD', value: 'yes' }],
+describe('the service sidecars (issue #773)', () => {
+    const servicesConfig = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' });
+    const db: ServiceSpec = {
+        name: 'db',
+        image: 'postgres:17',
+        environment: [{ key: 'POSTGRES_PASSWORD', value: 'local' }],
+        user: { uid: 999, gid: 999 },
+    };
+    const cache: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
+    const declared: BoardJob = { ...gatedOf(job), ...SUPERVISED, services: [db, cache] };
+    const podOf = (of: BoardJob, config: DriverConfig = servicesConfig) =>
+        runnerJobSpec(config, of, { id: SESSION, resume: false }).spec.template.spec;
+    const sidecarOf = (name: string, of: BoardJob = declared) => {
+        const sidecar = podOf(of).initContainers?.find((container) => container.name === `svc-${name}`);
+        if (!sidecar) throw new Error(`no svc-${name} sidecar`);
+        return sidecar;
     };
 
-    it('runs the service as a never-restarted, token-less pod with the declared env as literals', () => {
-        const pod = servicePodSpec(gatedConfig, job, cache, 'svc-uid');
-        expect(pod.kind).toBe('Pod');
-        expect(pod.metadata.name).toBe(`factory-job-${job.id}-${job.leaseToken}-svc-cache`);
-        expect(pod.metadata.labels).toEqual({
-            'factory.job': job.id,
-            'factory.lease': job.leaseToken,
-            'factory.service': 'cache',
-            'factory.fleet': serviceSubdomain(job),
+    // Every init container starts, in order, before the main containers: no order spares the
+    // supervisor a sidecar that never starts, so the gate leads and the services follow as declared.
+    it('runs each declared service as a native sidecar after the gate, before the main containers', () => {
+        expect(podOf(declared).initContainers?.map((container) => container.name)).toEqual([
+            'gate',
+            'svc-db',
+            'svc-cache',
+        ]);
+        expect(sidecarOf('db')).toMatchObject({
+            image: 'postgres:17',
+            imagePullPolicy: 'IfNotPresent',
+            restartPolicy: 'Always',
+            env: [{ name: 'POSTGRES_PASSWORD', value: 'local' }],
         });
-        // The declared name is the pod's hostname under the attempt's subdomain — the DNS
-        // record `cache` resolves to through the runner's search domain.
-        expect(pod.spec.hostname).toBe('cache');
-        expect(pod.spec.subdomain).toBe(serviceSubdomain(job));
-        expect(pod.spec.restartPolicy).toBe('Never');
-        expect(pod.spec.automountServiceAccountToken).toBe(false);
-        expect(pod.spec.containers[0]!.image).toBe('redis');
-        expect(pod.spec.containers[0]!.env).toEqual([{ name: 'ALLOW_EMPTY_PASSWORD', value: 'yes' }]);
+        const { gates: _gates, ...ungated } = declared;
+        expect(podOf(ungated).initContainers?.map((container) => container.name)).toEqual(['svc-db', 'svc-cache']);
     });
 
-    // Issue #363: VPC CNI network-policy enforcement is "optimized for" pods carrying
-    // metadata.ownerReferences and "might not work reliably" for standalone pods — and the
-    // declared-service pod is the one driver-specced pod that is not a Job. It is owned by the
-    // attempt's own headless DNS Service, created moments before, so every pod a .bellows.yaml
-    // starts is a managed pod even where the CNI cares.
-    it("owns the service pod by the attempt's DNS Service, so an enforcing CNI sees a managed pod", () => {
-        const pod = servicePodSpec(gatedConfig, job, cache, 'svc-uid');
-        expect(pod.metadata.ownerReferences).toEqual([
-            {
-                apiVersion: 'v1',
-                kind: 'Service',
-                name: serviceSubdomain(job),
-                uid: 'svc-uid',
-                blockOwnerDeletion: false,
-                controller: false,
-            },
+    it('runs a service as its declared uid:gid with every capability dropped, and one that declared none as its image does', () => {
+        expect(sidecarOf('db').securityContext).toEqual({
+            allowPrivilegeEscalation: false,
+            capabilities: { drop: ['ALL'] },
+            runAsNonRoot: true,
+            runAsUser: 999,
+            runAsGroup: 999,
+        });
+        expect(sidecarOf('cache').securityContext).toEqual({
+            allowPrivilegeEscalation: false,
+            capabilities: { drop: ['ALL'] },
+        });
+    });
+
+    // R2-4: the sidecar reads the generations and speaks for itself alone; it mounts no worktree.
+    it('mounts the generations read-only and its own acknowledgement volume, and nothing of the task', () => {
+        expect(sidecarOf('db').volumeMounts).toEqual([
+            { name: SERVICE_GENERATIONS.volume, mountPath: SERVICE_GENERATIONS.path, readOnly: true },
+            { name: 'svc-ack-db', mountPath: SERVICE_GENERATIONS.ackPath },
         ]);
     });
 
-    it('refuses an environment key that is not a variable name', () => {
-        expect(() =>
-            servicePodSpec(gatedConfig, job, { ...cache, environment: [{ key: 'not a key', value: 'x' }] }, 'svc-uid')
-        ).toThrow(/not a valid environment variable name/);
+    it('probes liveness with the generation probe every two seconds, failing at the first miss', () => {
+        expect(sidecarOf('cache').livenessProbe).toEqual({
+            exec: { command: serviceProbeArgv('cache') },
+            periodSeconds: 2,
+            failureThreshold: 1,
+        });
     });
 
-    it('names the DNS object for the attempt, never the declared name, headless, selecting only its fleet', () => {
-        const dns = serviceDnsSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), job);
-        expect(dns.kind).toBe('Service');
-        expect(dns.metadata.name).toBe(serviceSubdomain(job));
-        expect(dns.metadata.name).toMatch(/^factory-svc-[0-9a-f]{16}$/);
-        expect(dns.metadata.labels).toMatchObject({ 'factory.lease': job.leaseToken });
-        expect(dns.metadata.labels).toHaveProperty('factory.service');
-        expect(dns.spec.clusterIP).toBe('None');
-        expect(dns.spec.selector).toEqual({ 'factory.fleet': serviceSubdomain(job) });
-
-        // Issue #301: the orphan reaper's scan pairs factory.job + factory.service with the
-        // release label, so the Service must carry it exactly as the service pods do — without
-        // it, a chart-deployed reaper could never see the fleets it exists to reap.
-        const released = serviceDnsSpec(
-            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, K8S_RELEASE: 'factory' }),
-            job
+    it('gives the supervisor the generations and every acknowledgement, and no other container any of them', () => {
+        const pod = podOf(declared);
+        const supervisor = pod.containers.find((container) => container.name === 'supervisor')!;
+        expect(supervisor.volumeMounts).toEqual(
+            expect.arrayContaining([
+                { name: SERVICE_GENERATIONS.volume, mountPath: SERVICE_GENERATIONS.path },
+                { name: 'svc-ack-db', mountPath: `${SERVICE_GENERATIONS.ackRoot}/db` },
+                { name: 'svc-ack-cache', mountPath: `${SERVICE_GENERATIONS.ackRoot}/cache` },
+            ])
         );
-        expect(released.metadata.labels['app.kubernetes.io/instance']).toBe('factory');
+        for (const container of [...pod.containers, ...(pod.initContainers ?? [])]) {
+            if (container.name === 'supervisor' || container.name.startsWith('svc-')) continue;
+            expect(JSON.stringify(container.volumeMounts), container.name).not.toMatch(/ctl-services|svc-ack-/);
+        }
+        for (const name of [SERVICE_GENERATIONS.volume, 'svc-ack-db', 'svc-ack-cache']) {
+            expect(pod.volumes).toContainEqual({ name, emptyDir: {} });
+        }
     });
 
-    it('gives two concurrent attempts disjoint DNS names, so both can declare the same service', () => {
-        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
-        const other = { ...job, id: '22222222-2222-4222-8222-222222222222' };
-        expect(serviceDnsSpec(config, other).metadata.name).not.toBe(serviceDnsSpec(config, job).metadata.name);
-        const retry = { ...job, leaseToken: '33333333-3333-4333-8333-333333333333' };
-        expect(serviceDnsSpec(config, retry).metadata.name).not.toBe(serviceDnsSpec(config, job).metadata.name);
+    // The whole feature: `postgres://db:5432` from the agent and the gate reaches the sidecar on the
+    // pod's own loopback. No DNS search domain, no headless Service, no subdomain.
+    it('maps every declared name to 127.0.0.1 in the pod, with no search domain and no subdomain', () => {
+        const pod = podOf(declared);
+        expect(pod.hostAliases).toEqual([{ ip: '127.0.0.1', hostnames: ['db', 'cache'] }]);
+        expect(pod).not.toHaveProperty('dnsConfig');
+        expect(pod).not.toHaveProperty('subdomain');
+        expect(pod).not.toHaveProperty('hostname');
     });
 
-    // The gate sidecar is a container of the runner pod (issue #773): it resolves with the pod's search domain.
-    it('puts the attempt search domain on the runner pod, and only when services are on', () => {
-        const searches = [`${serviceSubdomain(job)}.${namespace}.svc.cluster.local`];
-        const on = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' });
-        expect(fleetDnsField(on, job)).toEqual({ dnsConfig: { searches } });
-        const session = { id: SESSION, resume: false };
-        expect(runnerJobSpec(on, job, session).spec.template.spec.dnsConfig).toEqual({ searches });
-        expect(runnerJobSpec(on, gatedOf(job), session).spec.template.spec.dnsConfig).toEqual({ searches });
-
-        const domain = loadDriverConfig({
-            EXECUTOR: 'kubernetes',
-            K8S_NAMESPACE: namespace,
-            K8S_CLUSTER_DOMAIN: 'corp.internal',
-        });
-        expect(fleetDnsField(domain, job).dnsConfig?.searches).toEqual([
-            `${serviceSubdomain(job)}.${namespace}.svc.corp.internal`,
-        ]);
-
+    it('specs no sidecar, alias or generation volume when services are off or none are declared', () => {
         const off = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
-        expect(runnerJobSpec(off, job, session).spec.template.spec).not.toHaveProperty('dnsConfig');
+        const { services: _services, ...plain } = declared;
+        for (const pod of [podOf(declared, off), podOf(plain)]) {
+            expect(pod.initContainers?.map((container) => container.name)).toEqual(['gate']);
+            expect(pod).not.toHaveProperty('hostAliases');
+            expect(JSON.stringify(pod.volumes)).not.toMatch(/ctl-services|svc-ack-/);
+        }
+    });
+
+    // D11: the adopted run's group (made on demand, no agent) still serves its services' gates; the
+    // reclaim's group is a supervisor alone whatever its checkout declares.
+    it('specs the agentless group of an adopted run with the services, and the reclaim group without them', () => {
+        expect(sidecarOf('db', { ...declared, agent: false }).name).toBe('svc-db');
+        const reclaim = reclaimGroupSpec(servicesConfig, declared, declared.leaseToken).spec.template.spec;
+        expect(reclaim.initContainers?.map((container) => container.name)).toEqual(['release']);
+        expect(reclaim).not.toHaveProperty('hostAliases');
+        expect(JSON.stringify(reclaim.volumes)).not.toMatch(/ctl-services|svc-ack-/);
+    });
+
+    it('refuses a service env key that is not a name, before the spec exists', () => {
+        const bad = { ...declared, services: [{ ...cache, environment: [{ key: 'not a key', value: 'x' }] }] };
+        expect(() => podOf(bad)).toThrow(/not a valid environment variable name/);
     });
 });
 
 /** The suite's job with no services on the claim, for the block below that shadows `job`. */
 const baseJob = job;
 
-describe('the kubernetes services flow', () => {
+describe('the kubernetes services flow (issue #773)', () => {
     // Issue #769: the services ride on the claim — this block's `job` declares the one `cache` service.
-    const CACHE: ServiceSpec = {
-        name: 'cache',
-        image: 'redis',
-        environment: [{ key: 'ALLOW_EMPTY_PASSWORD', value: 'yes' }],
-    };
-    const job: BoardJob = { ...baseJob, services: [CACHE] };
-    // The declared fleet is process-wide and the suite runs isolate: false — a failed test must not leak it.
-    afterEach(() => forgetDeclaredServices(job));
+    const CACHE: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
+    const DB: ServiceSpec = { name: 'db', image: 'postgres:17', environment: [] };
+    const job: BoardJob = { ...baseJob, repo: 'Bellows-AI/factory', services: [CACHE] };
+    const fleet: BoardJob = { ...job, services: [DB, CACHE] };
     /** A restart's stand-down signal that never fires. */
     const live = new AbortController().signal;
-    const DNS_UID = '99999999-9999-4999-8999-999999999999';
 
-    /** A fake that routes one full run with services: service objects, runner Job. */
-    const servicesFake = (options: { dnsCreate?: K8sResponse } = {}) => {
-        const calls: Call[] = [];
-        const createdPods: { metadata: { labels: Record<string, string> }; spec: unknown }[] = [];
-        const runningPod = (pod: (typeof createdPods)[number]) => ({ ...pod, status: { phase: 'Running' } });
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            const respond = (r: K8sResponse) => Promise.resolve(r);
-            const empty = { status: 200, body: '{"items":[]}' };
-            if (path === jobsPath(namespace)) {
-                // Every Job POST is accepted, answered with its uid; nothing ever polls as failed.
-                return respond(FAKE.create as K8sResponse);
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                // The fence's job list: nothing of this job's left to sweep.
-                return respond(empty);
-            }
-            if (path.startsWith(`${jobsPath(namespace)}/`)) {
-                return respond({ status: 200, body: JSON.stringify({ status: { succeeded: 1 } }) });
-            }
-            if (path === `/api/v1/namespaces/${namespace}/services`) {
-                return respond(
-                    options.dnsCreate ?? { status: 201, body: JSON.stringify({ metadata: { uid: DNS_UID } }) }
-                );
-            }
-            if (path.includes('pods?') && decodeURIComponent(path).includes('job-name=')) {
-                return respond({
-                    status: 200,
-                    body: JSON.stringify({
-                        items: [
-                            {
-                                metadata: { name: 'runner-pod' },
-                                status: { containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
-                            },
-                        ],
-                    }),
-                });
-            }
-            if (path === `/api/v1/namespaces/${namespace}/pods/runner-pod/log`) {
-                return respond({ status: 200, body: 'did the work\n' });
-            }
-            // The lease-scoped list the readiness wait polls: every pod this fake created, Running.
-            if (method === 'GET' && path.includes('pods?') && decodeURIComponent(path).includes('factory.lease=')) {
-                return respond({ status: 200, body: JSON.stringify({ items: createdPods.map(runningPod) }) });
-            }
-            if (path.includes('pods?') || path.includes('services?')) return respond(empty);
-            if (path === `/api/v1/namespaces/${namespace}/pods`) {
-                if (method === 'POST') createdPods.push(body as (typeof createdPods)[number]);
-                return respond({ status: 201, body: '{}' });
-            }
-            if (path.includes('/secrets')) return respond({ status: 200, body: '{}' });
-            if (path.startsWith('/api/v1/namespaces/factory/pods/')) return respond({ status: 200, body: '{}' });
-            if (path.startsWith('/api/v1/namespaces/factory/services/')) return respond({ status: 200, body: '{}' });
-            return Promise.reject(new Error(`services fake has no answer for ${method} ${path}`));
-        };
-        return { request, calls, pods: createdPods };
-    };
+    type Sidecar = { state: Record<string, unknown>; restartCount: number; lastState?: Record<string, unknown> };
+    const running = (restartCount = 0, lastState?: Record<string, unknown>): Sidecar => ({
+        state: { running: { startedAt: '2026-10-19T00:00:00Z' } },
+        restartCount,
+        ...(lastState ? { lastState } : {}),
+    });
 
     /**
-     * The loop's order (PR 737): its setup phase starts the fleet — before the gate environment's
-     * setup — and run() spawns the runner. A refused start ends there.
+     * The task pod as the kubelet reports it: `sidecars` is read on every listing (a test moves it
+     * on), `list` overrides the answer outright. Every other route is fakeRequest's.
      */
-    const asLoop = (runner: ReturnType<typeof createKubernetesRunner>): ReturnType<typeof createKubernetesRunner> => ({
-        ...runner,
-        run: async (j, session, onOutput) => (await runner.startServices(j)) ?? runner.run(j, session, onOutput),
-    });
-    const bareServicesRunner = (request: K8sRequest) =>
-        supervisedRunner(
-            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' }),
-            request,
-            async () => {}
-        );
-    const servicesRunner = (request: K8sRequest) => asLoop(bareServicesRunner(request));
-
-    it('starts the declared fleet before the runner and keeps it up until the loop releases it', async () => {
-        const { request, calls } = servicesFake();
-        const runner = servicesRunner(request);
-        const outcome = await runner.run(job, { id: SESSION, resume: false });
-        expect(outcome.exitCode).toBe(0);
-
-        // The attempt's DNS name, then the service pod under it, and only then the runner Job —
-        // docker's fleet-before-runner order. No readout Job runs before them.
-        const podPost = calls.findIndex((c) => c.method === 'POST' && c.path?.endsWith('/pods'));
-        const dnsPost = calls.findIndex((c) => c.method === 'POST' && c.path?.endsWith('/services'));
-        const jobPost = calls.findIndex(
-            (c) =>
-                c.method === 'POST' &&
-                c.path === jobsPath(namespace) &&
-                (c.body as { metadata?: { name?: string } })?.metadata?.name === runnerJobName(job)
-        );
-        expect(dnsPost).toBeGreaterThanOrEqual(0);
-        expect(podPost).toBeGreaterThan(dnsPost);
-        expect(jobPost).toBeGreaterThan(podPost);
-        expect((calls[dnsPost]!.body as { metadata: { name: string } }).metadata.name).toBe(serviceSubdomain(job));
-
-        // The fleet OUTLIVES run(): the declared gates run after it and test against these
-        // services, so run() ends with the claim's release (GET, DELETE) — no lease-scoped fleet
-        // list, and no reap of the attempt's group or Secret, which serve the gates' steps.
-        const leaseList = (c: Call) =>
-            c.method === 'GET' &&
-            (c.path?.includes(`pods?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`) ||
-                c.path?.includes(`services?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`));
-        expect(calls.slice(-2).map((c) => c.method)).toEqual(['GET', 'DELETE']);
-        expect(calls.slice(jobPost).some(leaseList)).toBe(false);
-
-        // The loop's release takes it down, by lease: the pods and the DNS objects.
-        const releasedAt = calls.length;
-        await runner.releaseServices(job);
-        expect(calls.slice(releasedAt).filter(leaseList)).toHaveLength(2);
-    });
-
-    // Review: setup must not race a fleet still scheduling or pulling — the start answers only once
-    // every service pod runs, and one that never does is a ServicesNotRunning, as in the restart.
-    it('startServices answers only once every service pod runs', async () => {
-        const { request } = servicesFake();
-        let leaseLists = 0;
-        const pending: K8sRequest = (method, path, body) => {
-            const leaseList =
-                method === 'GET' && path.includes('pods?') && decodeURIComponent(path).includes('factory.lease=');
-            if (leaseList && leaseLists++ === 0) {
-                return Promise.resolve({
-                    status: 200,
-                    body: JSON.stringify({
-                        items: [
-                            {
-                                metadata: { name: 'p', labels: { 'factory.service': 'cache' } },
-                                spec: { containers: [{ image: 'redis' }] },
-                                status: { phase: 'Pending' },
+    const podFake = (sidecars: Record<string, Sidecar>, list?: () => K8sResponse | undefined) =>
+        routed((method, path) => {
+            if (method !== 'GET' || !decodeURIComponent(path).includes('job-name=')) return;
+            const scripted = list?.();
+            if (scripted) return scripted;
+            const initContainerStatuses = Object.entries(sidecars).map(([name, sidecar]) => ({
+                name: `svc-${name}`,
+                image: 'redis',
+                ...sidecar,
+            }));
+            return {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        {
+                            metadata: { name: podName },
+                            status: {
+                                phase: 'Succeeded',
+                                initContainerStatuses,
+                                containerStatuses: [{ state: { terminated: { exitCode: 0 } } }],
                             },
-                        ],
-                    }),
-                });
-            }
-            return request(method, path, body);
+                        },
+                    ],
+                }),
+            };
+        });
+
+    /** The supervisor's answers to the `restart` steps: `acked` and `bump` scripted, every other step the default. */
+    const restartSteps = (
+        answer: { acked?: (names: string[]) => StepResult; bump?: (names: string[]) => StepResult } = {}
+    ) =>
+        fakeSteps((step) => {
+            if (step.kind !== 'restart') return defaultStepAnswer(step);
+            const [mode, , , ...names] = step.argv.slice(4);
+            return (mode === 'bump' ? answer.bump : answer.acked)?.(names) ?? stepOk();
+        });
+    const modes = (steps: { submitted: StepRequest[] }) =>
+        steps.submitted.filter((step) => step.kind === 'restart').map((step) => step.argv[4]);
+    const notAcked = (...names: string[]): StepResult => ({
+        exitCode: SERVICE_NOT_ACKED_EXIT,
+        stdout: names.map((name) => `${name}\n`).join(''),
+        stderr: '',
+        timedOut: false,
+    });
+    const servicesOn = { RUNNER_SERVICES: '1' };
+    const SESSION_RUN = { id: SESSION, resume: false };
+
+    it('starts the services with the group the sync made, answering once every sidecar runs and acknowledged', async () => {
+        const sidecars: Record<string, Sidecar> = {
+            cache: { state: { waiting: { reason: 'PodInitializing' } }, restartCount: 0 },
         };
-        await expect(bareServicesRunner(pending).startServices(job)).resolves.toBeNull();
-        expect(leaseLists).toBeGreaterThanOrEqual(2);
-    });
+        const api = podFake(sidecars);
+        let reads = 0;
+        const steps = restartSteps({
+            acked: (names) => {
+                reads += 1;
+                return reads === 1 ? notAcked(...names) : stepOk();
+            },
+        });
+        const k8s = runner(api.request, servicesOn, undefined, steps.sink);
+        await k8s.syncCheckout(job, undefined, SESSION_RUN);
+        const listed = api.calls.length;
+        sidecars.cache = running();
 
-    it('startServices rejects with ServicesNotRunning when a service pod fails', async () => {
-        const { request } = servicesFake();
-        const failing: K8sRequest = (method, path, body) =>
-            method === 'GET' && path.includes('pods?') && decodeURIComponent(path).includes('factory.lease=')
-                ? Promise.resolve({
-                      status: 200,
-                      body: JSON.stringify({
-                          items: [
-                              {
-                                  metadata: { name: 'p', labels: { 'factory.service': 'cache' } },
-                                  spec: { containers: [{ image: 'redis' }] },
-                                  status: { phase: 'Failed' },
-                              },
-                          ],
-                      }),
-                  })
-                : request(method, path, body);
-        await expect(bareServicesRunner(failing).startServices(job)).rejects.toBeInstanceOf(ServicesNotRunning);
-    });
+        expect(await k8s.startServices(job)).toBeNull();
 
-    // Review (PR 737): the loop starts the fleet before the gate environment's setup, so run()
-    // must neither start it again nor sweep it away.
-    it("run() starts no fleet after the loop started it, and its sweep spares the attempt's own lease", async () => {
-        const { request, calls } = servicesFake();
-        const runner = bareServicesRunner(request);
-        await expect(runner.startServices(job)).resolves.toBeNull();
-        const startedAt = calls.length;
-        await runner.run(job, { id: SESSION, resume: false });
-
-        const during = calls.slice(startedAt);
-        expect(during.some((c) => c.method === 'POST' && c.path?.endsWith('/pods'))).toBe(false);
-        expect(during.some((c) => c.method === 'POST' && c.path?.endsWith('/services'))).toBe(false);
-        const sweeps = during.filter(
-            (c) => c.method === 'GET' && decodeURIComponent(c.path ?? '').includes(`factory.job=${job.id}`)
+        expect(modes(steps)).toEqual(['acked', 'acked']);
+        expect(steps.submitted.find((step) => step.kind === 'restart')?.argv).toEqual(
+            serviceRestartArgv('acked', ['cache'])
         );
-        expect(sweeps.length).toBeGreaterThan(0);
-        for (const sweep of sweeps) {
-            expect(decodeURIComponent(sweep.path ?? '')).toContain(`factory.lease!=${job.leaseToken}`);
-        }
+        // Nothing is created for them: no pod, no Service, no Job beside the group's own.
+        expect(api.calls.slice(listed).filter((call) => call.method !== 'GET')).toEqual([]);
+        const posted = api.calls.filter((call) => call.method === 'POST').map((call) => call.path);
+        expect(posted.some((path) => path.endsWith('/pods') || path.endsWith('/services'))).toBe(false);
     });
 
-    // Issue #363: every service pod carries the attempt DNS Service as its ownerReference —
-    // the uid can only come from the create response, so the flow must wire it through.
-    it('wires the created DNS Service uid into every service pod as its owner', async () => {
-        const { request, calls } = servicesFake();
-        const runner = servicesRunner(request);
-        await runner.run(job, { id: SESSION, resume: false });
-
-        const podPosts = calls.filter((c) => c.method === 'POST' && c.path?.endsWith('/pods'));
-        expect(podPosts.length).toBeGreaterThan(0);
-        for (const post of podPosts) {
-            expect((post.body as { metadata: { ownerReferences: unknown } }).metadata.ownerReferences).toEqual([
-                {
-                    apiVersion: 'v1',
-                    kind: 'Service',
-                    name: serviceSubdomain(job),
-                    uid: DNS_UID,
-                    blockOwnerDeletion: false,
-                    controller: false,
-                },
-            ]);
-        }
+    // An adopted run synced nothing: its group is made now, the sidecars in it, and no agent.
+    it('makes the group of an attempt that synced none, with its sidecars in it', async () => {
+        const api = podFake({ cache: running() });
+        const steps = restartSteps();
+        expect(await runner(api.request, servicesOn, undefined, steps.sink).startServices(job)).toBeNull();
+        const jobs = api.calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace));
+        expect(jobs).toHaveLength(1);
+        const pod = (jobs[0]!.body as ReturnType<typeof runnerJobSpec>).spec.template.spec;
+        expect(pod.initContainers?.map((container) => container.name)).toEqual(['svc-cache']);
+        expect(pod.containers.map((container) => container.name)).not.toContain('agent');
     });
 
-    it('fails a DNS create that answers no uid as infrastructure, tearing the partial fleet down', async () => {
-        const { request, calls } = servicesFake({ dnsCreate: { status: 201, body: '{}' } });
-        // An apiserver always stamps a uid; an answer without one is a proxy or a fake lying —
-        // and a pod created without its owner is exactly the standalone pod an enforcing CNI
-        // may not confine. Fail loud, tear the partial fleet down, leave the job to its lease.
-        await expect(servicesRunner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /could not start the service DNS name.*no uid/s
+    it('rejects with ServicesNotRunning, in the kubelet’s words, when a sidecar crash-loops before it is ready', async () => {
+        const api = podFake({
+            cache: {
+                state: { waiting: { reason: 'CrashLoopBackOff', message: 'back-off 40s' } },
+                restartCount: 3,
+                lastState: { terminated: { exitCode: 1, reason: 'Error' } },
+            },
+        });
+        const k8s = runner(api.request, servicesOn, undefined, restartSteps().sink);
+        const thrown = await k8s.startServices(job).catch((e: unknown) => e);
+        expect(thrown).toBeInstanceOf(ServicesNotRunning);
+        expect((thrown as Error).message).toBe(
+            `service "cache" exited after the start (Error; ${KUBELET_RESTART_NOTE})`
         );
-
-        // The runner Job was never created — a failed start has no runner to orphan.
-        expect(
-            calls.some(
-                (c) =>
-                    c.method === 'POST' &&
-                    c.path === jobsPath(namespace) &&
-                    (c.body as { metadata?: { name?: string } })?.metadata?.name === runnerJobName(job)
-            )
-        ).toBe(false);
-        // And the partial fleet was torn down on the way out: the lease lists ran (their empty
-        // answers mean the fake had nothing left to delete).
-        expect(
-            calls.some(
-                (c) =>
-                    c.method === 'GET' &&
-                    c.path?.includes(`pods?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`)
-            )
-        ).toBe(true);
-        expect(
-            calls.some(
-                (c) =>
-                    c.method === 'GET' &&
-                    c.path?.includes(`services?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`)
-            )
-        ).toBe(true);
     });
 
-    it('fails a DNS-name create as infrastructure, tearing the partial fleet down', async () => {
-        const { request, calls } = servicesFake({ dnsCreate: { status: 500, body: '{"reason":"InternalError"}' } });
-        await expect(servicesRunner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /could not start the service DNS name/
-        );
-
-        // The runner Job was never created — a failed start has no runner to orphan.
-        expect(
-            calls.some(
-                (c) =>
-                    c.method === 'POST' &&
-                    c.path === jobsPath(namespace) &&
-                    (c.body as { metadata?: { name?: string } })?.metadata?.name === runnerJobName(job)
-            )
-        ).toBe(false);
-        // And the partial fleet was torn down on the way out: the lease lists ran (their empty
-        // answers mean the fake had nothing left to delete).
-        expect(
-            calls.some(
-                (c) =>
-                    c.method === 'GET' &&
-                    c.path?.includes(`pods?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`)
-            )
-        ).toBe(true);
-        expect(
-            calls.some(
-                (c) =>
-                    c.method === 'GET' &&
-                    c.path?.includes(`services?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`)
-            )
-        ).toBe(true);
+    // R2-1: a pod that never answered proves nothing about its services.
+    it('throws Inconclusive when the task pod cannot be read to the end of the budget', async () => {
+        const api = podFake({ cache: running() });
+        const steps = restartSteps();
+        const k8s = runner(api.request, servicesOn, undefined, steps.sink);
+        await k8s.syncCheckout(job, undefined, SESSION_RUN);
+        const broken = podFake({}, () => ({ status: 503, body: 'overloaded' }));
+        const thrown = await runner(broken.request, servicesOn, undefined, steps.sink)
+            .startServices({ ...job, leaseToken: NEW_TOKEN })
+            .catch((e: unknown) => e);
+        expect(thrown).toBeInstanceOf(Inconclusive);
+        expect(thrown).not.toBeInstanceOf(ServicesNotRunning);
     });
 
-    it('reports a declared service whose pod is gone from the lease list as dead (issue #471)', async () => {
-        const { request, pods } = servicesFake();
-        const runner = servicesRunner(request);
-        const outcome = await runner.run(job, { id: SESSION, resume: false });
-        expect(outcome.exitCode).toBe(0);
-        pods.length = 0; // the lease-scoped pod list answers empty from here: the pod is gone
-
-        const dead = await runner.deadServices(job);
-        expect(dead).toMatchObject([{ name: 'cache', state: 'missing', exitCode: null, logTail: '' }]);
-
-        // The attempt's teardown ends the declaration: nothing is expected of a released fleet.
-        await runner.releaseServices(job);
-        expect(await runner.deadServices(job)).toEqual([]);
+    it('finds none dead while every sidecar runs at the count it was ready at', async () => {
+        const api = podFake({ cache: running(2) });
+        const k8s = runner(api.request, servicesOn, undefined, restartSteps().sink);
+        await k8s.syncCheckout(job, undefined, SESSION_RUN);
+        await k8s.startServices(job);
+        expect(await k8s.deadServices(job)).toEqual([]);
     });
 
-    /** The fake with the lease-scoped service pod list answered by `servicePods`, everything else as before. */
-    const withServicePods = (request: K8sRequest, servicePods: () => unknown[]): K8sRequest => {
-        // Scripted once the runner Job exists: until then the fleet the start waits on is running.
-        let launched = false;
-        return (method, path, body) => {
-            const scoped = decodeURIComponent(path ?? '');
-            const named = (body as { metadata?: { name?: string } } | undefined)?.metadata?.name;
-            if (method === 'POST' && path === jobsPath(namespace) && named === runnerJobName(job)) launched = true;
-            if (
-                launched &&
-                method === 'GET' &&
-                scoped.includes('/pods?') &&
-                scoped.includes(`factory.lease=${job.leaseToken}`)
-            ) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: servicePods() }) });
+    // D8: a liveness failure or a crash restarts a sidecar in place — running again, its restart count
+    // past the baseline is the only trace, and its previous container's log the only evidence.
+    it('reports a sidecar the kubelet restarted since it was ready, with its previous log and why', async () => {
+        const sidecars: Record<string, Sidecar> = { cache: running() };
+        const api = routed((method, path) => {
+            if (method === 'GET' && path.includes(`/pods/${podName}/log?`)) {
+                return { status: 200, body: `previous=${path.includes('previous=true')} ${path}` };
             }
-            return request(method, path, body);
-        };
-    };
-    const cachePod = (phase: string) => ({
-        metadata: { name: 'cache-pod', labels: { 'factory.service': 'cache' } },
-        spec: { containers: [{ image: 'redis' }] },
-        status: { phase },
-    });
-
-    it('names why a vanished service pod went, from its newest event (issue #560)', async () => {
-        const { request, pods } = servicesFake();
-        const events: K8sRequest = (method, path, body) =>
-            path?.includes('/events?')
-                ? Promise.resolve({
-                      status: 200,
-                      body: JSON.stringify({
-                          items: [
-                              { reason: 'Scheduled', message: 'assigned', lastTimestamp: '2026-10-08T13:44:28Z' },
-                              // An events.k8s.io event: a MicroTime and no lastTimestamp — compared as an instant.
-                              {
-                                  reason: 'Evicted',
-                                  message: 'The node was low on resource: memory.',
-                                  eventTime: '2026-10-08T13:44:28.500000Z',
-                              },
-                              { reason: 'Pulled', message: 'pulled', lastTimestamp: '2026-10-08T13:00:05Z' },
-                          ],
-                      }),
-                  })
-                : request(method, path, body);
-        const runner = servicesRunner(events);
-        await runner.run(job, { id: SESSION, resume: false });
-        pods.length = 0; // the pod vanishes from the lease list
-
-        expect(await runner.deadServices(job)).toMatchObject([
-            { name: 'cache', state: 'missing', reason: 'Evicted: The node was low on resource: memory.' },
-        ]);
-
-        await runner.releaseServices(job);
-    });
-
-    it('names a vanished service pod as deleted when its events cannot be read (issue #560)', async () => {
-        const { request, pods } = servicesFake(); // no events route: the read throws
-        const runner = servicesRunner(request);
-        await runner.run(job, { id: SESSION, resume: false });
-        pods.length = 0; // the pod vanishes from the lease list
-
-        expect(await runner.deadServices(job)).toMatchObject([
-            { name: 'cache', state: 'missing', reason: 'pod deleted — evicted, drained or its node removed' },
-        ]);
-
-        await runner.releaseServices(job);
-    });
-
-    it('restartServices recreates the vanished fleet and waits until it runs (issue #560)', async () => {
-        const { request, calls } = servicesFake();
-        let listed = (): unknown[] => [];
-        let lists = 0;
-        const fleet = withServicePods(request, () => {
-            lists += 1;
-            return listed();
         });
-        let posted = 0;
-        const runner = servicesRunner((method, path, body) => {
-            if (method === 'POST' && path === `/api/v1/namespaces/${namespace}/pods`) posted += 1;
-            return fleet(method, path, body);
+        const pods = podFake(sidecars);
+        const request: K8sRequest = (method, path, body) =>
+            path.includes(`/pods/${podName}/log?`) ? api.request(method, path, body) : pods.request(method, path, body);
+        const k8s = runner(request, servicesOn, undefined, restartSteps().sink);
+        await k8s.syncCheckout(job, undefined, SESSION_RUN);
+        await k8s.startServices(job);
+        sidecars.cache = running(1, { terminated: { exitCode: 137, reason: 'OOMKilled' } });
+
+        const [dead, ...rest] = await k8s.deadServices(job);
+        expect(rest).toEqual([]);
+        expect(dead).toEqual({
+            name: 'cache',
+            image: 'redis',
+            state: 'restarted',
+            exitCode: 137,
+            reason: `OOMKilled; ${KUBELET_RESTART_NOTE}`,
+            logTail: `previous=true ${podLogPath(namespace, podName, SERVICE_LOG_TAIL_LINES, 'svc-cache')}&previous=true`,
         });
-        await runner.run(job, { id: SESSION, resume: false });
-        // Gone at the restart; the replacement listed Pending on its first poll, then Running.
-        let polls = 0;
-        const replaced = posted;
-        listed = () => (posted === replaced ? [] : polls++ === 0 ? [cachePod('Pending')] : [cachePod('Running')]);
-        const before = calls.length;
-
-        await runner.restartServices(job, live);
-
-        const after = calls.slice(before).filter((c) => c.method === 'POST');
-        // The DNS name first, then the service pod under it — startFleet's order, again.
-        expect(after.map((c) => c.path)).toEqual([
-            `/api/v1/namespaces/${namespace}/services`,
-            `/api/v1/namespaces/${namespace}/pods`,
-        ]);
-        expect(lists).toBeGreaterThan(1);
-        expect(await runner.deadServices(job)).toEqual([]);
-
-        await runner.releaseServices(job);
     });
 
-    it('restartServices throws when the old fleet never leaves the listing (issue #560)', async () => {
-        const { request } = servicesFake();
-        const runner = servicesRunner(withServicePods(request, () => [cachePod('Failed')]));
-        await runner.run(job, { id: SESSION, resume: false });
+    it('reports a terminated sidecar dead, and infers no death from a pod it cannot read', async () => {
+        const sidecars: Record<string, Sidecar> = { cache: running() };
+        let broken = false;
+        const api = podFake(sidecars, () => (broken ? { status: 500, body: '' } : undefined));
+        const k8s = runner(api.request, servicesOn, undefined, restartSteps().sink);
+        await k8s.syncCheckout(job, undefined, SESSION_RUN);
+        await k8s.startServices(job);
+        sidecars.cache = { state: { terminated: { exitCode: 2, reason: 'Error' } }, restartCount: 0 };
+        expect(await k8s.deadServices(job)).toMatchObject([{ name: 'cache', state: 'exited', exitCode: 2 }]);
+        broken = true;
+        await expect(k8s.deadServices(job)).rejects.toBeInstanceOf(Inconclusive);
+    });
 
-        await expect(runner.restartServices(job, live)).rejects.toThrow(
-            'the old service fleet was still terminating 300s on'
+    // R1-4: a restart is the fleet's — the healthy sibling is bumped, restarted and reset too.
+    it('restarts every declared service, a healthy sibling too, and resets the baseline for all', async () => {
+        const sidecars: Record<string, Sidecar> = { db: running(), cache: running() };
+        const api = podFake(sidecars);
+        const bumped: string[][] = [];
+        const steps = restartSteps({
+            bump: (names) => {
+                bumped.push(names);
+                // The probes fail on the new generation: the kubelet restarts each sidecar once.
+                sidecars.db = running(2);
+                sidecars.cache = running(1);
+                return stepOk();
+            },
+        });
+        const k8s = runner(api.request, servicesOn, undefined, steps.sink);
+        await k8s.syncCheckout(fleet, undefined, SESSION_RUN);
+        await k8s.startServices(fleet);
+        sidecars.db = running(1, { terminated: { exitCode: 1, reason: 'Error' } });
+        expect((await k8s.deadServices(fleet)).map(({ name }) => name)).toEqual(['db']);
+
+        await k8s.restartServices(fleet, live);
+
+        expect(bumped).toEqual([['db', 'cache']]);
+        expect(steps.submitted.find((step) => step.argv[4] === 'bump')?.argv).toEqual(
+            serviceRestartArgv('bump', ['db', 'cache'])
         );
-
-        await runner.releaseServices(job);
+        expect(await k8s.deadServices(fleet)).toEqual([]);
     });
 
-    it('restartServices throws naming the service that stays pending (issue #560)', async () => {
-        const { request } = servicesFake();
-        let posted = false;
-        const fleet = withServicePods(request, () => (posted ? [cachePod('Pending')] : []));
-        const runner = servicesRunner((method, path, body) => {
-            if (method === 'POST' && path === `/api/v1/namespaces/${namespace}/pods`) posted = true;
-            return fleet(method, path, body);
+    // R2-4: a restart asked before a probe ever acknowledged waits for it, and only then bumps.
+    it('waits for every service to acknowledge its generation before it bumps', async () => {
+        const sidecars: Record<string, Sidecar> = { cache: running() };
+        const api = podFake(sidecars);
+        let bumps = 0;
+        const steps = restartSteps({
+            bump: () => {
+                bumps += 1;
+                if (bumps < 3) return notAcked('cache');
+                sidecars.cache = running(1);
+                return stepOk();
+            },
         });
-        await runner.run(job, { id: SESSION, resume: false });
-        posted = false;
+        const k8s = runner(api.request, servicesOn, undefined, steps.sink);
+        await k8s.syncCheckout(job, undefined, SESSION_RUN);
 
-        await expect(runner.restartServices(job, live)).rejects.toThrow(
+        await k8s.restartServices(job, live);
+
+        expect(modes(steps).slice(0, 3)).toEqual(['bump', 'bump', 'bump']);
+        expect(bumps).toBe(3);
+    });
+
+    it('fails naming a service that never acknowledges its generation, bumping nothing', async () => {
+        const api = podFake({ cache: running() });
+        const steps = restartSteps({ bump: () => notAcked('cache') });
+        const k8s = runner(api.request, servicesOn, undefined, steps.sink);
+        await k8s.syncCheckout(job, undefined, SESSION_RUN);
+        const thrown = await k8s.restartServices(job, live).catch((e: unknown) => e);
+        expect(thrown).toBeInstanceOf(ServicesNotRunning);
+        expect((thrown as Error).message).toBe('service "cache" never acknowledged its generation 300s on');
+    });
+
+    it('fails naming a service that never restarts within the budget', async () => {
+        const api = podFake({ cache: running() });
+        const k8s = runner(api.request, servicesOn, undefined, restartSteps().sink);
+        await k8s.syncCheckout(job, undefined, SESSION_RUN);
+        await expect(k8s.restartServices(job, live)).rejects.toThrow(
             'service "cache" not running 300s after the restart'
         );
-
-        await runner.releaseServices(job);
     });
 
-    it('restartServices spends one timeout across the teardown and readiness waits (issue #560)', async () => {
-        const { request } = servicesFake();
-        let posted = false;
-        let oldLists = 0;
-        // The old pod leaves the listing on its fourth poll; the replacement never runs.
-        const fleet = withServicePods(request, () => {
-            if (posted) return [cachePod('Pending')];
-            oldLists += 1;
-            return oldLists > 3 ? [] : [cachePod('Failed')];
+    it('fails naming one that restarts again on its way back up: it crashed', async () => {
+        const sidecars: Record<string, Sidecar> = { cache: running() };
+        const api = podFake(sidecars);
+        const steps = restartSteps({
+            bump: () => {
+                sidecars.cache = {
+                    state: { waiting: { reason: 'CrashLoopBackOff' } },
+                    restartCount: 2,
+                    lastState: { terminated: { exitCode: 1, reason: 'Error' } },
+                };
+                return stepOk();
+            },
         });
-        let slept = 0;
-        const runner = asLoop(
-            supervisedRunner(
-                loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' }),
-                (method, path, body) => {
-                    if (method === 'POST' && path === `/api/v1/namespaces/${namespace}/pods`) posted = true;
-                    return fleet(method, path, body);
-                },
-                async (ms) => {
-                    slept += ms;
-                }
-            )
-        );
-        await runner.run(job, { id: SESSION, resume: false });
-        posted = false;
-        oldLists = 0;
-        slept = 0;
-
-        await expect(runner.restartServices(job, live)).rejects.toThrow(
-            'service "cache" not running 300s after the restart'
-        );
-        expect(slept).toBe(300_000);
-
-        await runner.releaseServices(job);
+        const k8s = runner(api.request, servicesOn, undefined, steps.sink);
+        await k8s.syncCheckout(job, undefined, SESSION_RUN);
+        await expect(k8s.restartServices(job, live)).rejects.toBeInstanceOf(ServicesNotRunning);
     });
 
-    it('restartServices fails at once on a replacement stuck on an unpullable image (issue #560)', async () => {
-        const { request } = servicesFake();
-        let posted = false;
-        let lists = 0;
-        const stuck = {
-            ...cachePod('Pending'),
-            status: { phase: 'Pending', containerStatuses: [{ state: { waiting: { reason: 'ErrImagePull' } } }] },
-        };
-        const fleet = withServicePods(request, () => {
-            if (posted) lists += 1;
-            return posted ? [stuck] : [];
+    // R2-1: a lost supervisor is the attempt's loss, thrown as it is for the loop to interrupt.
+    it('throws a supervisor lost mid-restart as it is', async () => {
+        const api = podFake({ cache: running() });
+        const steps = fakeSteps((step) => {
+            if (step.kind === 'restart') throw new StepChannelClosed('the service restart');
+            return defaultStepAnswer(step);
         });
-        const runner = servicesRunner((method, path, body) => {
-            if (method === 'POST' && path === `/api/v1/namespaces/${namespace}/pods`) posted = true;
-            return fleet(method, path, body);
-        });
-        await runner.run(job, { id: SESSION, resume: false });
-        posted = false;
-
-        await expect(runner.restartServices(job, live)).rejects.toThrow('service "cache" failed after the restart');
-        expect(lists).toBe(1);
+        const k8s = runner(api.request, servicesOn, undefined, steps.sink);
+        await k8s.syncCheckout(job, undefined, SESSION_RUN);
+        await expect(k8s.restartServices(job, live)).rejects.toBeInstanceOf(StepChannelClosed);
     });
 
-    it('restartServices names a lease listing that keeps failing, not a fleet still terminating (issue #560)', async () => {
-        const { request } = servicesFake();
-        let restarting = false;
-        const runner = servicesRunner((method, path, body) => {
-            const scoped = decodeURIComponent(path ?? '');
-            if (restarting && method === 'GET' && scoped.includes(`factory.lease=${job.leaseToken}`)) {
-                return Promise.reject(new Error('the API server is away'));
-            }
-            return request(method, path, body);
-        });
-        await runner.run(job, { id: SESSION, resume: false });
-        restarting = true;
-
-        await expect(runner.restartServices(job, live)).rejects.toThrow(
-            'the old service fleet could not be listed 300s on: the API server is away'
-        );
-    });
-
-    it('restartServices stops on a stand-down and takes the fleet it started down again (issue #560)', async () => {
-        const { request, calls } = servicesFake();
+    it('bumps nothing once the attempt stood down', async () => {
+        const api = podFake({ cache: running() });
+        const steps = restartSteps();
+        const k8s = runner(api.request, servicesOn, undefined, steps.sink);
+        await k8s.syncCheckout(job, undefined, SESSION_RUN);
         const stand = new AbortController();
-        let posted = false;
-        const fleet = withServicePods(request, () => {
-            // The replacement is up but Pending when the Stop lands.
-            if (posted) stand.abort();
-            return posted ? [cachePod('Pending')] : [];
-        });
-        const runner = servicesRunner((method, path, body) => {
-            if (method === 'POST' && path === `/api/v1/namespaces/${namespace}/pods`) posted = true;
-            return fleet(method, path, body);
-        });
-        await runner.run(job, { id: SESSION, resume: false });
-        posted = false;
-        const before = calls.length;
+        stand.abort();
+        await expect(k8s.restartServices(job, stand.signal)).rejects.toThrow('the attempt stood down');
+        expect(modes(steps)).toEqual([]);
+    });
 
-        await expect(runner.restartServices(job, stand.signal)).rejects.toThrow(
-            'the restart was abandoned: the attempt stood down'
+    it('samples the services off the task pod’s sidecars', async () => {
+        const api = podFake({ cache: running() }, undefined);
+        const k8s = runner(api.request, servicesOn, undefined, restartSteps().sink);
+        const sample = await k8s.sampleRuntime(job);
+        expect(sample?.services).toEqual([{ name: 'cache', image: 'redis', state: 'running' }]);
+    });
+
+    // The whole flow creates the one runner Job: the services are its pod's own sidecars.
+    it('creates nothing but the runner Job and its Secret through a whole run with services', async () => {
+        const api = podFake({ cache: running() });
+        const k8s = runner(api.request, servicesOn, undefined, restartSteps().sink);
+        await k8s.syncCheckout(job, undefined, { id: SESSION, resume: false });
+        await k8s.startServices(job);
+        expect((await k8s.run(job, { id: SESSION, resume: false })).exitCode).toBe(0);
+        await k8s.releaseServices(job);
+        const posts = api.calls.filter((call) => call.method === 'POST').map((call) => call.path);
+        expect(posts.filter((path) => path.endsWith('/pods') || path.endsWith('/services'))).toEqual([]);
+        const runnerJobs = api.calls.filter(
+            (call) =>
+                call.method === 'POST' &&
+                call.path === jobsPath(namespace) &&
+                (call.body as { metadata: { name: string } }).metadata.name === runnerJobName(job)
         );
-        // Swept again after the abort: the lease lists run once more after the pod create.
-        const after = calls.slice(before);
-        const create = after.findIndex((c) => c.method === 'POST' && c.path === `/api/v1/namespaces/${namespace}/pods`);
-        expect(after.slice(create).some((c) => c.method === 'GET' && c.path?.includes('services?labelSelector='))).toBe(
-            true
-        );
-        expect(await runner.deadServices(job)).toEqual([]);
+        expect(runnerJobs).toHaveLength(1);
+        expect(api.calls.some((call) => call.method === 'DELETE' && call.path.includes('/services'))).toBe(false);
     });
 
     it("reports a runner pod deleted mid-run as an infrastructure loss, not the agent's verdict (issue #560)", async () => {
-        const { request } = servicesFake();
-        const lost: K8sRequest = (method, path, body) => {
-            const decoded = decodeURIComponent(path ?? '');
+        const api = podFake({ cache: running() });
+        let vanished = false;
+        const lost = routed((method, path) => {
+            if (!vanished) return;
             if (method === 'GET' && path === `${jobsPath(namespace)}/${runnerJobName(job)}`) {
-                return Promise.resolve({
+                return {
                     status: 200,
                     body: JSON.stringify({
                         status: {
@@ -5711,85 +5357,43 @@ describe('the kubernetes services flow', () => {
                             conditions: [{ type: 'Failed', status: 'True', reason: 'BackoffLimitExceeded' }],
                         },
                     }),
-                });
+                };
             }
-            if (method === 'GET' && decoded.includes(`job-name=${runnerJobName(job)}`)) {
-                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            if (method === 'GET' && decodeURIComponent(path).includes(`job-name=${runnerJobName(job)}`)) {
+                return { status: 200, body: '{"items":[]}' };
             }
-            return request(method, path, body);
-        };
+        });
+        const request: K8sRequest = (method, path, body) =>
+            vanished ? lost.request(method, path, body) : api.request(method, path, body);
+        const k8s = runner(request, servicesOn, undefined, restartSteps().sink);
+        await k8s.syncCheckout(job, undefined, { id: SESSION, resume: false });
+        await k8s.startServices(job);
+        vanished = true;
 
-        const runner = servicesRunner(lost);
-        const outcome = await runner.run(job, { id: SESSION, resume: false });
-
-        expect(outcome).toMatchObject({
+        expect(await k8s.run(job, { id: SESSION, resume: false })).toMatchObject({
             exitCode: null,
             started: true,
             infraLoss: 'the runner pod was deleted before it exited (evicted, drained or its node removed)',
         });
-
-        await runner.releaseServices(job);
     });
 
-    // Issue #769: the fleet is exactly the claim's services — nothing is read from a checkout.
-    const podsPosted = (calls: Call[]) =>
-        calls
-            .filter((c) => c.method === 'POST' && c.path === `/api/v1/namespaces/${namespace}/pods`)
-            .map((c) => c.body as ReturnType<typeof servicePodSpec>);
-    const jobPosts = (calls: Call[]) =>
-        calls
-            .filter((c) => c.method === 'POST' && c.path === jobsPath(namespace))
-            .map((c) => (c.body as { metadata: { name: string } }).metadata.name);
-
-    it('starts every service the claim carries, a declared port changing no pod spec', async () => {
-        const planned: BoardJob = {
-            ...baseJob,
-            services: [
-                { name: 'postgres', image: 'postgres:1', environment: [], ports: [5432], user: { uid: 999, gid: 999 } },
-                { name: 'redis', image: 'redis:1', environment: [] },
-            ],
-        };
-        const { request, calls } = servicesFake();
-        const outcome = await servicesRunner(request).run(planned, { id: SESSION, resume: false });
-        expect(outcome.exitCode).toBe(0);
-
-        const pods = podsPosted(calls);
-        const byImage = new Map(pods.map((p) => [p.spec.containers[0]!.image, p.spec.containers[0]!]));
-        expect([...byImage.keys()].sort()).toEqual(['postgres:1', 'redis:1']);
-        expect(byImage.get('postgres:1')!.securityContext).toMatchObject({ runAsUser: 999, runAsGroup: 999 });
-        expect(byImage.get('redis:1')!.securityContext?.runAsUser).toBeUndefined();
-        expect(JSON.stringify(pods)).not.toContain('5432');
-        await servicesRunner(request).releaseServices(planned);
-    });
-
-    it('posts no readout Job: only the runner Job, the service pod and its DNS Service', async () => {
-        const { request, calls } = servicesFake();
-        await bareServicesRunner(request).startServices(job);
-
-        expect(jobPosts(calls)).toEqual([]);
-        expect(podsPosted(calls)).toHaveLength(1);
-        expect(calls.filter((c) => c.method === 'POST' && c.path?.endsWith('/services'))).toHaveLength(1);
-        await bareServicesRunner(request).releaseServices(job);
-    });
-
-    it('starts no pod and creates no DNS Service when the claim carries no services', async () => {
-        const { request, calls } = servicesFake();
-        const outcome = await servicesRunner(request).run(baseJob, { id: SESSION, resume: false });
-        expect(outcome.exitCode).toBe(0);
-
-        expect(podsPosted(calls)).toEqual([]);
-        expect(calls.some((c) => c.method === 'POST' && c.path?.endsWith('/services'))).toBe(false);
-        expect(jobPosts(calls)).toContain(runnerJobName(baseJob));
-        expect(jobPosts(calls).some((name) => name.startsWith('factory-bellows-'))).toBe(false);
+    it('starts nothing and asks the supervisor nothing when the claim carries no services, or services are off', async () => {
+        for (const [of, env] of [
+            [{ ...job, services: [] }, servicesOn],
+            [job, { RUNNER_SERVICES: '0' }],
+        ] as const) {
+            const api = podFake({});
+            const steps = restartSteps();
+            const k8s = runner(api.request, env, undefined, steps.sink);
+            expect(await k8s.startServices(of)).toBeNull();
+            expect(await k8s.deadServices(of)).toEqual([]);
+            await k8s.restartServices(of, live);
+            expect(steps.submitted).toEqual([]);
+            expect(api.calls).toEqual([]);
+        }
     });
 });
 
-/**
- * An opencode-selected task under EXECUTOR=kubernetes: the same `run [--session <id>] <command>` argv
- * the docker runner composes, a session database persisted on the PVC, and the close-time
- * session scrape as an aux Job. The spec tests pin the shapes; the runner tests pin that the
- * scrape rides the run's outcome the way docker's verdict does.
- */
 describe("scoping the kubernetes mounts to the job's own subtree", () => {
     // Every volumeMount this executor emits names the job's own `<orgId>/<userId>` subtree as
     // its subPath. That is what makes a missing target fail loud — the kubelet cannot start a
@@ -5798,7 +5402,7 @@ describe("scoping the kubernetes mounts to the job's own subtree", () => {
     // mounts the workspaces PVC without a subPath.
     // The supervisor runs the attempt's steps (the sync, the publish) on the task worktree (issue
     // #771), so it mounts the member's workspace — at the member's subtree like every other pod.
-    it.each(JOB_POD_NAMES)(
+    it.each(POD_NAMES.filter((name) => name !== 'the service sidecar'))(
         'mounts nothing broader than the member subtree on %s — it names the exact target',
         (name) => {
             const { pod } = everyPodSpec({ RUNNER_SERVICES: '0' })[name]();
@@ -5810,7 +5414,7 @@ describe("scoping the kubernetes mounts to the job's own subtree", () => {
 
     // A claim whose workspace path fails the segment assertions is refused before any pod spec
     // exists — the mount can never name a path the assertions did not clear.
-    it.each(JOB_POD_NAMES)('refuses to build %s for a claim with a malformed workspace path', (name) => {
+    it.each(POD_NAMES)('refuses to build %s for a claim with a malformed workspace path', (name) => {
         const build = everyPodSpec({ RUNNER_SERVICES: '0' }, { ...job, workspacePath: '../../etc' })[name];
         expect(build).toThrow(/workspace path/);
     });
@@ -6469,14 +6073,14 @@ describe('RUNNER_DO_NOT_DISRUPT on pod templates', () => {
     };
 
     // The annotations name the POD: Job specs carry them on the pod template (Karpenter reads
-    // pods, not Job objects); the bare service Pod carries them on its own metadata.
+    // pods, not Job objects).
     it.each(POD_NAMES)('annotates %s', (name) => {
         expect(everyPodSpec({ RUNNER_DO_NOT_DISRUPT: '1' })[name]().meta.annotations).toEqual(ANNOTATIONS);
     });
 
     // Annotating the Job object itself would be cargo cult — Karpenter reads pods. (The runner Job
     // carries its adoption marks, issue #792, and nothing of the disruption opt-out.)
-    it.each(JOB_POD_NAMES)('leaves the Job object of %s without the disruption annotations', (name) => {
+    it.each(POD_NAMES)('leaves the Job object of %s without the disruption annotations', (name) => {
         const { job: jobObject } = everyPodSpec({ RUNNER_DO_NOT_DISRUPT: '1' })[name]();
         const annotations = (jobObject as { metadata: { annotations?: Record<string, string> } }).metadata.annotations;
         for (const key of Object.keys(ANNOTATIONS)) expect(annotations?.[key]).toBeUndefined();
@@ -7839,7 +7443,7 @@ describe('acknowledged Secret-first teardown (#821 D16)', () => {
         jobDelete?: 'refused';
         /** The Job keeps reading present after its delete, through the whole bound. */
         jobLingers?: boolean;
-        /** What the writer-pod list (`factory.job=…,factory.lease=…,!factory.service`) answers. */
+        /** What the writer-pod list (`factory.job=…,factory.lease=…`) answers. */
         writerPods?: unknown[];
     }
 
@@ -7873,7 +7477,7 @@ describe('acknowledged Secret-first teardown (#821 D16)', () => {
             if (method === 'GET' && path === jobAt && faults.jobLingers) {
                 return { status: 200, body: JSON.stringify({ status: {} }) };
             }
-            if (method === 'GET' && faults.writerPods && decodeURIComponent(path).includes('!factory.service')) {
+            if (method === 'GET' && faults.writerPods && isWriterPodList(path)) {
                 return { status: 200, body: JSON.stringify({ items: faults.writerPods }) };
             }
         }, overrides);
@@ -8029,13 +7633,13 @@ describe('acknowledged Secret-first teardown (#821 D16)', () => {
             const { request, calls } = clusterOf(life, { writerPods: [{ metadata: { name: 'a-gate-pod' } }] });
             await life.drive(request);
 
-            // The confirmation asked for this attempt's writer pods by equality, the services excluded.
+            // The confirmation asked for this attempt's writer pods by equality: every pod of the pair.
             expect(
                 calls.some(
                     (call) =>
                         call.method === 'GET' &&
                         decodeURIComponent(call.path).endsWith(
-                            `labelSelector=factory.job=${life.pair.id},factory.lease=${life.pair.leaseToken},!factory.service`
+                            `labelSelector=factory.job=${life.pair.id},factory.lease=${life.pair.leaseToken}`
                         )
                 )
             ).toBe(true);
@@ -8056,19 +7660,6 @@ describe('acknowledged Secret-first teardown (#821 D16)', () => {
     });
 
     // A declared service pod mounts no worktree: it never holds the group's end, whatever its lease.
-    it('confirms the end with the declared services still up — they are no writer of the tree', async () => {
-        const servicePod = { metadata: { name: 'svc', labels: { 'factory.service': 'db' } } };
-        const { request, calls } = cluster(runnerJobName(repoJob), {});
-        const withServices: K8sRequest = (method, path, body) =>
-            method === 'GET' &&
-            decodeURIComponent(path).includes(`factory.lease=${repoJob.leaseToken}`) &&
-            !decodeURIComponent(path).includes('!factory.service')
-                ? Promise.resolve({ status: 200, body: JSON.stringify({ items: [servicePod] }) })
-                : request(method, path, body);
-        await LIFECYCLES.finish!.drive(withServices);
-        expect(claimDeleted(calls)).toBe(true);
-    });
-
     // A kill whose Secret delete is refused leaves the Job suspended and listed, its supervisor
     // reporting nothing: the run still ends as the kill's at its very next poll.
     it('ends a run as killed within one poll when its kill could not delete the Job', async () => {
@@ -8220,9 +7811,7 @@ describe('claims of an unconfirmed group (#821)', () => {
     it('keeps an orphaned claim while its holder still lists writer pods, and reaps it once both groups are gone', async () => {
         let podsLeft = true;
         const { request, calls } = routed((method, path) =>
-            method === 'GET' &&
-            podsLeft &&
-            decodeURIComponent(path).includes(`factory.lease=${NEW_TOKEN},!factory.service`)
+            method === 'GET' && podsLeft && decodeURIComponent(path).endsWith(`factory.lease=${NEW_TOKEN}`)
                 ? { status: 200, body: JSON.stringify({ items: [{ metadata: { name: 'still-writing' } }] }) }
                 : undefined
         );
@@ -8428,9 +8017,7 @@ describe('finishing a group that ended by itself (#821)', () => {
         status: { startTime: START, succeeded: 1 },
     };
     const writers = (pods: unknown[]) => (method: K8sMethod, path: string) =>
-        method === 'GET' && decodeURIComponent(path).includes('!factory.service')
-            ? { status: 200, body: JSON.stringify({ items: pods }) }
-            : undefined;
+        method === 'GET' && isWriterPodList(path) ? { status: 200, body: JSON.stringify({ items: pods }) } : undefined;
     const jobDeleted = (calls: Call[]) =>
         calls.some((call) => call.method === 'DELETE' && call.path.startsWith(`${runnerAt}?`));
     const claimDeleted = (calls: Call[]) =>

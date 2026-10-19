@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { cpuQuantityToCores, gateAdvertiseUrlFor, loadDriverConfig, memoryQuantityToBytes } from '../src/config.js';
 import { dockerArgs } from '../src/docker.js';
-import { fleetDnsField, runnerJobSpec, serviceSubdomain } from '../src/k8s-podspec.js';
+import { runnerJobSpec } from '../src/k8s-podspec.js';
 
 describe('the driver config: basics', () => {
     it('runs on defaults, so a driver next to the dashboard needs no environment at all', () => {
@@ -77,14 +77,12 @@ describe('the driver config: executor and endpoints', () => {
         expect(loadDriverConfig({ EXECUTOR: 'kubernetes' }).executor).toBe('kubernetes');
     });
 
-    it('refuses a docker default RUNNER_NETWORK while services are on, naming both variables', () => {
+    // Issue #773: the services share their group supervisor's network namespace, so no services
+    // network sits beside RUNNER_NETWORK for docker to refuse a default network next to.
+    it('takes a docker default RUNNER_NETWORK with services on: no services network sits beside it', () => {
         for (const network of ['bridge', 'host', 'none']) {
-            const env = { RUNNER_NETWORK: network };
-            expect(() => loadDriverConfig(env), network).toThrow(/RUNNER_NETWORK=.*RUNNER_SERVICES/);
-            expect(() => loadDriverConfig({ ...env, RUNNER_SERVICES: '1' }), network).toThrow(/RUNNER_SERVICES=0/);
-            expect(loadDriverConfig({ ...env, RUNNER_SERVICES: '0' }).network, network).toBe(network);
+            expect(loadDriverConfig({ RUNNER_NETWORK: network, RUNNER_SERVICES: '1' }).network, network).toBe(network);
         }
-        expect(loadDriverConfig({ RUNNER_NETWORK: 'factory_default' }).network).toBe('factory_default');
     });
 
     it('refuses an unknown EXECUTOR rather than falling back to docker', () => {
@@ -463,34 +461,11 @@ describe('the driver config: the drain handover', () => {
     });
 });
 
-describe('the driver config: the service search domain', () => {
-    const job = { id: '11111111-1111-4111-8111-111111111111', leaseToken: '22222222-2222-4222-8222-222222222222' };
-    const k8s = (env: NodeJS.ProcessEnv) => loadDriverConfig({ EXECUTOR: 'kubernetes', ...env });
-
-    // The domain lands in dnsConfig.searches, which kubernetes validates as a lowercase DNS
-    // subdomain: a bad one must fail the driver's boot, not every runner and gate Job it creates.
-    it('refuses a cluster domain that is not a lowercase DNS subdomain when services are on', () => {
-        expect(() => k8s({ K8S_CLUSTER_DOMAIN: 'Corp.Internal' })).toThrow(/K8S_CLUSTER_DOMAIN/);
-        expect(() => k8s({ K8S_CLUSTER_DOMAIN: 'corp_internal' })).toThrow(/K8S_CLUSTER_DOMAIN/);
-        expect(() => k8s({ K8S_CLUSTER_DOMAIN: '-corp.internal' })).toThrow(/K8S_CLUSTER_DOMAIN/);
-        expect(k8s({ K8S_CLUSTER_DOMAIN: 'corp.internal' }).k8sClusterDomain).toBe('corp.internal');
-        // Off, nothing reads the domain into a pod, so nothing is refused.
-        expect(k8s({ K8S_CLUSTER_DOMAIN: 'Corp.Internal', RUNNER_SERVICES: '0' }).k8sClusterDomain).toBe(
-            'Corp.Internal'
-        );
-    });
-
-    // The raw domain can be fine and the generated entry still overflow once the attempt prefix
-    // and the namespace are joined to it — so the whole entry is what is measured.
-    it('measures the complete generated search entry against the 253-byte ceiling', () => {
-        const SUBDOMAIN_MAX_LENGTH = 253;
-        const namespace = 'factory';
-        const fixed = `${serviceSubdomain(job as BoardJob)}.${namespace}.svc.`.length;
-        const domainOf = (length: number) => `${'a'.repeat(length - 2)}.b`;
-        const fits = k8s({ K8S_NAMESPACE: namespace, K8S_CLUSTER_DOMAIN: domainOf(SUBDOMAIN_MAX_LENGTH - fixed) });
-        expect(fleetDnsField(fits, job as BoardJob).dnsConfig?.searches[0]).toHaveLength(SUBDOMAIN_MAX_LENGTH);
-        expect(() =>
-            k8s({ K8S_NAMESPACE: namespace, K8S_CLUSTER_DOMAIN: domainOf(SUBDOMAIN_MAX_LENGTH - fixed + 1) })
-        ).toThrow(/K8S_CLUSTER_DOMAIN/);
+describe('the driver config: no service search domain (#773)', () => {
+    // Declared services are the task pod's own sidecars, named on its loopback: nothing reads a
+    // cluster domain into a pod, so the driver knows none and refuses none.
+    it('knows no cluster domain and refuses none', () => {
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_CLUSTER_DOMAIN: 'Corp.Internal' });
+        expect(config).not.toHaveProperty('k8sClusterDomain');
     });
 });

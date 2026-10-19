@@ -15,9 +15,11 @@ import {
     runGateStep,
     runHelperStep,
     runReclaimStep,
+    runServiceGenerationStep,
     runSyncStep,
     supervisedStepRunner,
 } from '../src/supervised-steps.js';
+import { serviceRestartArgv } from '../src/container-scripts.js';
 import {
     AGENT_CONTAINER,
     SUPERVISOR_CONTAINER,
@@ -430,6 +432,21 @@ describe('the declared gates over the supervisor (issue #773)', () => {
         const s = sink();
         await expect(runGateStep(s.host, job, gate, AbortSignal.abort())).rejects.toThrow(/cancelled/);
         expect(s.submitted).toEqual([]);
+    });
+});
+
+describe('the services’ generations over the supervisor (issue #773 D9)', () => {
+    it('reads or bumps the generations as a `restart` step of its own, a fresh one every call', async () => {
+        const s = sink();
+        expect(await runServiceGenerationStep(s.host, job, 'acked', ['db', 'cache'])).toEqual(ok());
+        await runServiceGenerationStep(s.host, job, 'bump', ['db', 'cache']);
+        const [read, bump] = s.submitted;
+        expect(read).toMatchObject({ kind: 'restart', argv: serviceRestartArgv('acked', ['db', 'cache']), env: {} });
+        expect(bump).toMatchObject({ kind: 'restart', argv: serviceRestartArgv('bump', ['db', 'cache']) });
+        expect(read?.id).not.toBe(bump?.id);
+        // A few files: well inside the broker's grace, never holding a step behind it for long.
+        expect(read?.timeoutMs).toBeLessThanOrEqual(30_000);
+        expect(s.tokens).toEqual([CONTROL_TOKEN, CONTROL_TOKEN]);
     });
 });
 

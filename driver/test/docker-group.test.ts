@@ -15,9 +15,8 @@ import {
     startGroup,
     supervisorCreateArgs,
     supervisorLossOf,
-    supervisorName,
 } from '../src/docker-group.js';
-import { ctlVolumeName } from '../src/docker-mailbox.js';
+import { ctlVolumeName, supervisorName } from '../src/docker-mailbox.js';
 import { type RunnerFiles, startupRefusalOf } from '../src/docker-runner-support.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import { gateLoopArgv } from '../src/container-scripts.js';
@@ -105,6 +104,37 @@ describe('the supervisor container', () => {
         expect(argv).toEqual(expect.arrayContaining(['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges']));
         expect(argv).toEqual(expect.arrayContaining(['--name', supervisorName(job)]));
         expect(argv).toEqual(expect.arrayContaining(['--label', `factory.lease=${job.leaseToken}`]));
+    });
+
+    // Issue #773: the supervisor holds the group's network namespace — on RUNNER_NETWORK, the
+    // driver's name mapped — and its hosts file names every declared service on loopback, which
+    // every container of the group shares (docker refuses --add-host on a container-mode network).
+    it('holds the group’s network: RUNNER_NETWORK, the driver’s name, and each declared service on loopback', () => {
+        const services = [
+            { name: 'db', image: 'postgres:17', environment: [] },
+            { name: 'cache', image: 'redis', environment: [] },
+        ];
+        const networked = loadDriverConfig({ RUNNER_NETWORK: 'factory-ai_default' });
+        const line = supervisorCreateArgs(
+            networked,
+            { ...job, services },
+            { exporting: false, agentless: false },
+            null
+        );
+        const hosts = line.filter((_arg, i) => line[i - 1] === '--add-host');
+        expect(hosts).toEqual(['host.docker.internal:host-gateway', 'db:127.0.0.1', 'cache:127.0.0.1']);
+        expect(line).toEqual(expect.arrayContaining(['--network', 'factory-ai_default']));
+        // Services off, or none declared: the driver's name alone.
+        const off = loadDriverConfig({ RUNNER_SERVICES: '0' });
+        for (const [cfg, of] of [
+            [off, { ...job, services }],
+            [config, job],
+        ] as const) {
+            const plain = supervisorCreateArgs(cfg, of, { exporting: false, agentless: false }, null);
+            expect(plain.filter((_arg, i) => plain[i - 1] === '--add-host')).toEqual([
+                'host.docker.internal:host-gateway',
+            ]);
+        }
     });
 });
 
@@ -376,14 +406,19 @@ describe('the gate container (issue #773)', () => {
         );
     });
 
-    it('is hardened, labelled for the fence and the reaper, and joins the runner network only when configured', () => {
+    // Issue #773: the gate reaches the declared services on loopback by name, and the registry a
+    // setup installs from, through the namespace its group's supervisor holds.
+    it('is hardened, labelled for the fence and the reaper, and joins its supervisor’s network namespace', () => {
         expect(argv).toEqual(expect.arrayContaining(['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges']));
         expect(argv).toEqual(
             expect.arrayContaining(['--label', `factory.lease=${gated.leaseToken}`, '--label', 'factory.role=gate'])
         );
-        expect(argv).not.toContain('--network');
         const networked = gateCreateArgs(loadDriverConfig({ RUNNER_NETWORK: 'factory-ai_default' }), gated, 'node:24');
-        expect(networked).toEqual(expect.arrayContaining(['--network', 'factory-ai_default']));
+        for (const line of [argv, networked]) {
+            expect(line.filter((arg) => arg === '--network')).toHaveLength(1);
+            expect(line[line.indexOf('--network') + 1]).toBe(`container:${supervisorName(gated)}`);
+            expect(line).not.toContain('--add-host');
+        }
     });
 
     // Issue #507: sized by GATE_*, each unset slot the runner's; nothing configured leaves it unthrottled.

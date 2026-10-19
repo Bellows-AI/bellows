@@ -105,7 +105,7 @@ const FILES = {
     report: 'report.json',
 };
 /** The supervised steps, by kind; the two last are the group's own orders (`STEP_KINDS` of supervisor-contract.ts). */
-const STEP_KINDS = ['sync', 'reclaim', 'probe', 'snapshot', 'publish', 'helper', 'gate', 'go', 'finish'];
+const STEP_KINDS = ['sync', 'reclaim', 'probe', 'snapshot', 'publish', 'helper', 'gate', 'restart', 'go', 'finish'];
 /** The gate mailbox's layout (`GATE_FILES` of supervisor-contract.ts; scripts/gate-loop.sh spells the same). */
 const GATE_FILES = {
     staging: 'staging',

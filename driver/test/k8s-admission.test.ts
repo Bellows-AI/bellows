@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
-import { servicePodSpec } from '../src/k8s-auxspec.js';
 import { AGENT_LAUNCH_CAPS, workspacePath } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
 import { UNHARDENED_LABEL } from '../src/labels.js';
@@ -153,7 +152,17 @@ describe('the admission policy requires the pod hardening (#382)', () => {
             // The supervisor-only group of an agentless attempt and of a reclaim: no agent container.
             runnerJobSpec(config, { ...promptedJob, agent: false }, null).spec.template.spec,
             reclaimGroupSpec(config, { ...job, repo: 'Bellows-AI/factory' }, job.leaseToken).spec.template.spec,
-            servicePodSpec(config, job, { name: 'cache', image: 'redis', environment: [] }, 'uid').spec,
+            // A run with a gate and a declared service: their sidecars are init containers (#773).
+            runnerJobSpec(
+                config,
+                {
+                    ...promptedJob,
+                    repo: 'Bellows-AI/factory',
+                    gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+                    services: [{ name: 'cache', image: 'redis', environment: [], user: { uid: 999, gid: 999 } }],
+                },
+                { id: SESSION, resume: false }
+            ).spec.template.spec,
         ];
         for (const pod of pods) {
             expect(pod.securityContext?.seccompProfile?.type).toBe('RuntimeDefault');

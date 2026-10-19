@@ -12,20 +12,21 @@ import {
     type K8sRequest,
     type K8sResponse,
 } from './k8s-transport.js';
-import { claimPath, podsPath, secretsPath, servicesPath } from './k8s-auxspec.js';
+import { claimPath, secretsPath } from './k8s-auxspec.js';
 import { releaseClaimAfterGroupEnd } from './k8s-fence.js';
 import { holderGroupsOf } from './k8s-group.js';
 import { finishedAgentRun, jobsPath, type ListedRunnerJob, runnerJobName, secretName } from './k8s-podspec.js';
-import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
+import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
 import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict } from './reaper.js';
 
 /**
- * The kubernetes half of the orphan reaper (issue #301): enumerate the Jobs and service fleet the driver's
- * crashed attempts left behind, and delete it when the board condemns the owning job. The
+ * The kubernetes half of the orphan reaper (issue #301): enumerate the Jobs the driver's crashed
+ * attempts left behind — a declared service is a sidecar of its attempt's pod (issue #773), so it
+ * goes with its Job — and delete them when the board condemns the owning job. The
  * counterpart of the re-claim fence — the fence acts on the job label at CLAIM time, under the
  * checkout claim; this arm acts on it when the BOARD says no claim can ever be taken again.
  *
- * RBAC needs nothing new: `list` on jobs, pods and services is the fence's grant, `delete` on all resource
+ * RBAC needs nothing new: `list` on jobs is the fence's grant, `delete` on all resource
  * kinds is already the chart's Role. `list secrets` stays deliberately ungranted — which is why
  * the attempt-scoped env Secret is reaped by DERIVED NAME, never enumerated. Its name hashes the
  * same (job id, lease token) pair the labels carry, so it is derivable: the sync, publish, helper
@@ -42,11 +43,8 @@ const GONE_STATUSES: readonly number[] = [HTTP_NOT_FOUND, HTTP_CONFLICT];
 /** Every kind the arm deletes, with its collection path — one table, not a branch per kind. */
 const basePathOf = (config: DriverConfig): Record<OrphanObject['kind'], string> => ({
     job: jobsPath(config.k8sNamespace),
-    pod: podsPath(config.k8sNamespace),
-    service: servicesPath(config.k8sNamespace),
     // The docker-only kinds never reach this arm's table; the record must still be total.
     container: '',
-    network: '',
     volume: '',
 });
 
@@ -86,9 +84,9 @@ const listBySelector = async (request: K8sRequest, path: string): Promise<Listed
     return parse<{ items?: ListedItem[] }>(response.body).items ?? [];
 };
 
-/** Select attempt Jobs or service resources within this release; never sweep another release. */
-const selectorFor = (config: DriverConfig, jobs = false): string => {
-    const terms = jobs ? [JOB_LABEL, LEASE_LABEL] : [JOB_LABEL, SERVICE_LABEL];
+/** Select attempt Jobs within this release; never sweep another release. */
+const selectorFor = (config: DriverConfig): string => {
+    const terms = [JOB_LABEL, LEASE_LABEL];
     if (config.k8sRelease) terms.push(`app.kubernetes.io/instance=${config.k8sRelease}`);
     return terms.join(',');
 };
@@ -150,29 +148,15 @@ const mergeIntoGroups = (
 };
 
 const scan = async (config: DriverConfig, request: K8sRequest): Promise<OrphanGroup[]> => {
-    const selector = encodeURIComponent(selectorFor(config));
-    const namespace = config.k8sNamespace;
-    const pods = await listBySelector(request, `${podsPath(namespace)}?labelSelector=${selector}`);
-    if (pods === null) return [];
-    const services = await listBySelector(request, `${servicesPath(namespace)}?labelSelector=${selector}`);
-    if (services === null) return [];
-
     const jobs = await listBySelector(
         request,
-        `${jobsPath(namespace)}?labelSelector=${encodeURIComponent(selectorFor(config, true))}`
+        `${jobsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(selectorFor(config))}`
     );
     if (jobs === null) return [];
-
     const groups = new Map<string, OrphanGroup>();
-    for (const { kind, items } of [
-        { kind: 'job' as const, items: jobs },
-        { kind: 'pod' as const, items: pods },
-        { kind: 'service' as const, items: services },
-    ]) {
-        for (const item of items) {
-            const found = groupKeyOf(item, kind);
-            if (found) mergeIntoGroups(groups, `${found.jobId}|${found.leaseToken}`, found);
-        }
+    for (const item of jobs) {
+        const found = groupKeyOf(item, 'job');
+        if (found) mergeIntoGroups(groups, `${found.jobId}|${found.leaseToken}`, found);
     }
     return [...groups.values()];
 };
@@ -209,7 +193,7 @@ const uuidScoped = (group: OrphanGroup): group is OrphanGroup & { leaseToken: st
     group.leaseToken !== null && JOB_ID.test(group.jobId) && JOB_ID.test(group.leaseToken);
 
 /**
- * The attempt-scoped env Secrets, deleted FIRST — before the Pod and Service, and one failed
+ * The attempt-scoped env Secrets, deleted FIRST — before the Job, and one failed
  * delete stops the round (answers false): a Secret has no ownerReferences, so once the listed
  * objects are gone no next scan can rediscover the (job, lease) pair these names are hashed
  * from. Already-gone Secrets (404/409) never hold the teardown back. The names hash the OLD
@@ -283,7 +267,7 @@ const reap = async (deps: K8sDeps, group: OrphanGroup, verdict: ReapVerdict): Pr
 };
 
 /**
- * The arm. See the file header for the posture; `scan` is three collection GETs, `reap` is the
+ * The arm. See the file header for the posture; `scan` is one collection GET, `reap` is the
  * derived-name Secret deletes FIRST — one failure stops the round, since nothing rediscoverable
  * would survive it — then one Foreground delete per named object and — only on a provably dead
  * job whose holder's groups are confirmed ended — the checkout claim. `sleep` paces that

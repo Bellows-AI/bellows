@@ -43,7 +43,14 @@ import { masterPromptRefusalReason } from './master-prompt.js';
 import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
 import { awaitSyncTurn } from './sync-queue.js';
 import { stepLost } from './step-control.js';
-import { releaseStartedServices, releasingOnThrow, restartDeadServices, startServicesStep } from './loop-services.js';
+import {
+    releaseStartedServices,
+    releasingOnThrow,
+    restartDeadServices,
+    servicesLost,
+    startServicesStep,
+} from './loop-services.js';
+import { servicePlanRefusal } from './services.js';
 
 function pickSession(job: BoardJob, executorType: BoardJob['executorType']): RunSession | null {
     // opencode mints its own session ids (`ses_…`) and cannot adopt one, so a fresh run gets
@@ -480,8 +487,9 @@ async function concludeRunEnd(ctx: AttemptCtx, outcome: RunOutcome): Promise<boo
 }
 
 /**
- * The gates phase — none without a session to run — or `STOOD_DOWN` once a gate or setup whose
- * supervisor was lost (issue #773) interrupted the attempt here: no gate verdict lands for it.
+ * The gates phase — none without a session to run — or `STOOD_DOWN` once a gate, setup or service
+ * restart whose supervisor was lost, or whose pod could not be read (issue #773), interrupted the
+ * attempt here: no gate verdict lands for it.
  */
 async function gatesOrLoss(
     ctx: AttemptCtx,
@@ -492,8 +500,9 @@ async function gatesOrLoss(
     try {
         return await runGatesPhase(ctx, gateSession, outcome);
     } catch (e) {
-        if (!stepLost(e)) throw e;
-        await interruptAttempt(ctx, gateLossReason(e), null);
+        if (!servicesLost(e)) throw e;
+        const reason = stepLost(e) ? gateLossReason(e) : `infrastructure loss: ${(e as Error).message}`;
+        await interruptAttempt(ctx, reason, null);
         return STOOD_DOWN;
     }
 }
@@ -632,7 +641,7 @@ async function failOnClaimRefusal(rt: LoopRuntime, job: BoardJob): Promise<boole
         ? ([executorRefusal, 'config', 'executor selection'] as const)
         : job.skillRefusal
           ? ([job.skillRefusal, 'config', 'selected skills'] as const)
-          : ([job.planRefusal, 'config', 'execution plan'] as const);
+          : ([job.planRefusal ?? servicePlanRefusal(rt.config, job), 'config', 'execution plan'] as const);
     if (!reason) return false;
     rt.log(`job ${job.id}: ${what} is not runnable, failing`);
     await report(rt, job, { status: 'failed', exitCode: null, output: reason, failureKind }).catch((e: Error) =>

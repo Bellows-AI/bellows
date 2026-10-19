@@ -23,7 +23,7 @@ import type {
     Runner,
     RuntimeSample,
 } from '../src/runner.js';
-import { AdoptionBlocked } from '../src/runner.js';
+import { AdoptionBlocked, Inconclusive } from '../src/runner.js';
 import type { GateClaim, GateManager, GateRun, GateRunOptions, GateServer } from '../src/gates.js';
 import type { StepResult } from '../src/supervisor-contract.js';
 import { setupTimeoutMs } from '../src/claim.js';
@@ -2765,6 +2765,72 @@ describe('the poll loop', () => {
         return { events };
     };
 
+    // R3-1: a declared name lands in the pod's hosts file, so one spelled like a host the pod dials
+    // would capture that traffic. The board cannot know the driver's endpoints: the driver refuses.
+    it.each([
+        ['docker', 'driver', { GATE_ADVERTISE_URL: 'http://driver:7000' }, "the driver's control endpoint"],
+        ['kubernetes', 'driver', { GATE_ADVERTISE_URL: 'http://Driver' }, "the driver's control endpoint"],
+        ['docker', 'collector', {}, 'the telemetry collector'],
+        ['kubernetes', 'collector', { RUNNER_OTEL_ENDPOINT: 'http://COLLECTOR:4318' }, 'the telemetry collector'],
+    ])(
+        'refuses on %s a service named %s, shadowing a host the pod dials, launching nothing',
+        async (executor, name, env, what) => {
+            const declared = { ...job(1), services: [{ name, image: 'redis', environment: [] }] };
+            const board = stubBoard([declared]);
+            const runner = stubRunner(async () => {
+                throw new Error('the runner must never be reached');
+            });
+
+            await drive({ ...board, runner }, { EXECUTOR: executor, ...env });
+
+            expect(runner.synced).toHaveLength(0);
+            expect(runner.startedServices).toEqual([]);
+            const complete = board.board.completed[0]!;
+            expect(complete).toMatchObject({ status: 'failed', failureKind: 'config' });
+            expect(complete.output).toContain(`service "${name}" would shadow ${what}`);
+            expect(complete.output).toContain('rename it');
+        }
+    );
+
+    it('refuses a service named like the host of a forwarded URL, and runs one that shadows nothing', async () => {
+        const shadowing = {
+            ...job(1),
+            env: { API_BASE: 'https://models:8443/v1' },
+            services: [{ name: 'models', image: 'redis', environment: [] }],
+        };
+        const harmless = { ...job(2), services: [{ name: 'cache', image: 'redis', environment: [] }] };
+        const board = stubBoard([shadowing, harmless]);
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
+        expect(board.board.completed[0]?.output).toContain('service "models" would shadow the host of API_BASE');
+        expect(runner.startedServices).toEqual([job(2).id]);
+    });
+
+    // A service's `unhardened: true` keeps its image's capabilities; in the task pod it would sit
+    // beside the agent, and admission can only exempt the whole pod. Kubernetes refuses it at claim.
+    it('refuses an unhardened service on kubernetes, naming `user:`, and runs it on docker', async () => {
+        const unhardened = {
+            ...job(1),
+            services: [{ name: 'db', image: 'postgres:17', environment: [], unhardened: true as const }],
+        };
+        const k8s = stubBoard([unhardened]);
+        const refused = stubRunner(async () => {
+            throw new Error('the runner must never be reached');
+        });
+        await drive({ ...k8s, runner: refused }, { EXECUTOR: 'kubernetes' });
+        expect(k8s.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
+        expect(k8s.board.completed[0]?.output).toContain('service "db" declares unhardened: true');
+        expect(k8s.board.completed[0]?.output).toContain('user: "uid:gid"');
+
+        const docker = stubBoard([unhardened]);
+        const runner = stubRunner(async () => ok());
+        await drive({ ...docker, runner });
+        expect(runner.startedServices).toEqual([job(1).id]);
+    });
+
     it('fails a job with a plan refusal before the checkout fence is ever taken', async () => {
         const board = stubBoard([{ ...job(1), planRefusal: '.bellows.yaml line 3: unknown key "ports"' }]);
         const runner = stubRunner(async () => {
@@ -3974,6 +4040,24 @@ describe('environment.setup before the agent starts', () => {
         expect(
             logs.some((line) => line.includes('could not start the services') && line.includes('interruption'))
         ).toBe(true);
+    });
+
+    // R2-1: readiness whose listing never answered proves nothing about the services.
+    it('interrupts an attempt whose service readiness could never be read, never failing it', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { stack, gates } = stubGateStack({}, { setup: { exitCode: 0, output: '' } });
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must not spawn');
+        });
+        runner.startServices = async () => {
+            throw new Inconclusive('the services could not be listed 300s after the start: the API server is away');
+        };
+
+        await drive({ ...board, runner, gates });
+
+        expect(stack.setups).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.interrupted[0]?.reason).toContain('the services could not be listed 300s after the start');
     });
 
     it('reports a refused service start on the last attempt, once the interruption budget is spent', async () => {
@@ -5267,6 +5351,31 @@ describe('a dead declared service (issue #423)', () => {
         expect(board.board.completed).toEqual([]);
         expect(board.board.suspended).toEqual([gatedJob(1).id]);
         expect(runner.published).toEqual([]);
+    });
+
+    // R2-1: a restart whose supervisor was lost, or whose pod could not be read, is the attempt's
+    // infrastructure loss — interrupted for the next claim, never a `services` verdict.
+    it.each([
+        ['lost its supervisor', () => new StepChannelClosed('the service restart')],
+        ['could not read the task pod', () => new Inconclusive('the task pod could not be listed (HTTP 503)')],
+    ])('interrupts an attempt whose pre-gate restart %s, running no gates', async (_label, lost) => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok({ output: 'agent did the work' }), {
+            deadServices: async () => [mongo],
+            restartServices: async () => {
+                throw lost();
+            },
+            publish: draftPr,
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(stack.stack.ran.names).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        expect(runner.published).toEqual([]);
+        expect(board.board.interrupted).toHaveLength(1);
+        expect(board.board.interrupted[0]?.reason).toContain(lost().message);
     });
 
     it('drafts nothing when the services failed under a gates-required policy, or the board reserves publication', async () => {

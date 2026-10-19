@@ -18,7 +18,7 @@ const group = (overrides: Partial<OrphanGroup> = {}): OrphanGroup => ({
     jobId: JOB_A,
     leaseToken: LEASE_OLD,
     createdAtMs: 1_000_000,
-    objects: [{ kind: 'pod', name: 'svc-postgres' }],
+    objects: [{ kind: 'container', name: 'svc-postgres' }],
     ...overrides,
 });
 

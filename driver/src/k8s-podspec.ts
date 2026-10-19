@@ -19,6 +19,7 @@ import {
     claudeExportScript,
     gateLoopArgv,
     opencodeReadoutScript,
+    serviceProbeArgv,
     supervisorScript,
 } from './container-scripts.js';
 import { commandMark, OPENCODE_EXPORT_LIMIT, type RunSession } from './runner.js';
@@ -28,8 +29,12 @@ import {
     EXPORTER_CONTAINER,
     GATE_CONTAINER,
     MAILBOXES,
+    SERVICE_GENERATIONS,
+    serviceAckVolume,
+    serviceContainerOf,
     SUPERVISOR_CONTAINER,
 } from './supervisor-contract.js';
+import { assertServiceSpec, groupServices, SERVICE_ADDRESS, type ServiceSpec } from './services.js';
 import {
     agentMailboxEnv,
     backstopMs,
@@ -79,8 +84,10 @@ export interface RunnerPodContainer {
     name: string;
     image: string;
     imagePullPolicy: string;
-    /** `Always` makes an init container a native sidecar: the gate, up beside the pod's main containers. */
+    /** `Always` makes an init container a native sidecar: the gate and the services, up beside the main containers. */
     restartPolicy?: 'Always';
+    /** A service sidecar's generation probe (issue #773): what the kubelet restarts it on. */
+    livenessProbe?: { exec: { command: string[] }; periodSeconds: number; failureThreshold: number };
     resources?: PodResources;
     /** The executor hardening (#382) — `containerHardeningField`, always present. */
     securityContext: ContainerSecurityContext;
@@ -122,12 +129,13 @@ export interface RunnerJobSpec {
                 /** The executor hardening (#382) — `podHardeningField`, always present. */
                 securityContext: PodSecurityContext;
                 imagePullSecrets?: { name: string }[];
-                dnsConfig?: FleetDnsConfig;
+                /** The declared service names on the pod's own loopback (issue #773); absent with none. */
+                hostAliases?: { ip: string; hostnames: string[] }[];
                 /** The runner group's scheduling knobs — `schedulingField`, absent when unset. */
                 nodeSelector?: Record<string, string>;
                 tolerations?: Record<string, unknown>[];
                 affinity?: Record<string, unknown>;
-                /** The gate sidecar (issue #773), or the reclaim group's release pass (issue #814). */
+                /** The gate and service sidecars (issue #773), or the reclaim group's release pass (issue #814). */
                 initContainers?: RunnerPodContainer[];
                 /** The agent, the supervisor beside it and, for a run that exports its transcript, the exporter. */
                 containers: RunnerPodContainer[];
@@ -216,7 +224,7 @@ function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
 function supervisorContainer(
     config: DriverConfig,
     job: BoardJob,
-    group: { exporting: boolean; agentless: boolean; gated: boolean }
+    group: { exporting: boolean; agentless: boolean; gated: boolean; services: readonly ServiceSpec[] }
 ): RunnerPodContainer {
     return {
         name: SUPERVISOR_CONTAINER,
@@ -234,7 +242,73 @@ function supervisorContainer(
         volumeMounts: [
             workspaceMount(config, workspacePath(job)),
             ...Object.values(MAILBOXES).map((box) => mailboxMount(box, 'rw')),
+            ...serviceRestartMounts(group.services),
         ],
+    };
+}
+
+/** The supervisor's half of the services' restart: every generation to write, every acknowledgement to read. */
+const serviceRestartMounts = (services: readonly ServiceSpec[]): RunnerMount[] =>
+    services.length === 0
+        ? []
+        : [
+              { name: SERVICE_GENERATIONS.volume, mountPath: SERVICE_GENERATIONS.path },
+              ...services.map(({ name }) => ({
+                  name: serviceAckVolume(name),
+                  mountPath: `${SERVICE_GENERATIONS.ackRoot}/${name}`,
+              })),
+          ];
+
+/** How often the kubelet runs a service sidecar's generation probe, and the misses it restarts it on. */
+const SERVICE_PROBE_PERIOD_SECONDS = 2;
+const SERVICE_PROBE_FAILURES = 1;
+
+/**
+ * One declared service as a native sidecar of the task pod (issue #773): up beside the supervisor
+ * for the whole group and reached on the pod's own loopback by its declared name (`hostAliases`).
+ * Hardened like every container — the declared `user:` is its uid:gid, an image default otherwise —
+ * with the claim's environment as literals: those were already world-readable in the author's
+ * `.bellows.yaml`. It mounts nothing of the task: the generations read-only and its own
+ * acknowledgement directory, for the liveness probe that is its restart (`serviceProbeArgv`).
+ */
+function serviceSidecar(config: DriverConfig, job: BoardJob, spec: ServiceSpec): RunnerPodContainer {
+    assertServiceSpec(job, spec);
+    const hardened = containerHardeningField().securityContext;
+    return {
+        name: serviceContainerOf(spec.name),
+        image: spec.image,
+        imagePullPolicy: config.imagePullPolicy,
+        restartPolicy: 'Always',
+        ...resourcesField(config),
+        securityContext: {
+            ...hardened,
+            ...(spec.user ? { runAsNonRoot: true as const, runAsUser: spec.user.uid, runAsGroup: spec.user.gid } : {}),
+        },
+        env: spec.environment.map(({ key, value }) => ({ name: key, value })),
+        livenessProbe: {
+            exec: { command: serviceProbeArgv(spec.name) },
+            periodSeconds: SERVICE_PROBE_PERIOD_SECONDS,
+            failureThreshold: SERVICE_PROBE_FAILURES,
+        },
+        volumeMounts: [
+            { name: SERVICE_GENERATIONS.volume, mountPath: SERVICE_GENERATIONS.path, readOnly: true },
+            { name: serviceAckVolume(spec.name), mountPath: SERVICE_GENERATIONS.ackPath },
+        ],
+    };
+}
+
+/** The pod fields the declared services add: their names on loopback, and the restart's volumes. */
+function servicesPodFields(services: readonly ServiceSpec[]): {
+    hostAliases?: { ip: string; hostnames: string[] }[];
+    volumes: RunnerVolume[];
+} {
+    if (services.length === 0) return { volumes: [] };
+    return {
+        hostAliases: [{ ip: SERVICE_ADDRESS, hostnames: services.map(({ name }) => name) }],
+        volumes: [SERVICE_GENERATIONS.volume, ...services.map(({ name }) => serviceAckVolume(name))].map((name) => ({
+            name,
+            emptyDir: {},
+        })),
     };
 }
 
@@ -410,8 +484,17 @@ export function runnerJobSpec(
     const agentless = job.agent === false;
     const agent = agentless ? null : agentPart(config, job, session);
     const exporting = !agentless && exportsTranscript(job, session);
-    // The declared gates and setup run in the group's own gate container (issue #773).
+    // The declared gates and setup run in the group's own gate container, and the declared services
+    // beside it on the pod's loopback (issue #773).
     const gateImage = gateImageOf(job);
+    const services = groupServices(config, job);
+    const servicesFields = servicesPodFields(services);
+    // Every init container starts, in order, before the main containers, so no order spares the
+    // supervisor a sidecar that never starts: the gate leads, the services follow as declared.
+    const sidecars = [
+        ...(gateImage ? [gateSidecar(config, job, gateImage)] : []),
+        ...services.map((service) => serviceSidecar(config, job, service)),
+    ];
     const volumes: RunnerVolume[] = agent?.volumes ?? [
         { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
     ];
@@ -472,14 +555,19 @@ export function runnerJobSpec(
                     securityContext: { ...podHardeningField() },
                     ...pullSecretsField(config),
                     ...schedulingField(config),
-                    ...fleetDnsField(config, job),
-                    ...(gateImage ? { initContainers: [gateSidecar(config, job, gateImage)] } : {}),
+                    ...(servicesFields.hostAliases ? { hostAliases: servicesFields.hostAliases } : {}),
+                    ...(sidecars.length > 0 ? { initContainers: sidecars } : {}),
                     containers: [
                         ...(agent ? [agent.container] : []),
-                        supervisorContainer(config, job, { exporting, agentless, gated: gateImage !== null }),
+                        supervisorContainer(config, job, {
+                            exporting,
+                            agentless,
+                            gated: gateImage !== null,
+                            services,
+                        }),
                         ...(exporting ? [exporterContainer(config, job, startedAt, path)] : []),
                     ],
-                    volumes: [...volumes, ...mailboxVolumes()],
+                    volumes: [...volumes, ...mailboxVolumes(), ...servicesFields.volumes],
                 },
             },
         },
@@ -706,31 +794,6 @@ export function workspaceMount(
 const HASH_HEX_LENGTH = 16;
 export const hash16 = (input: string): string =>
     createHash('sha256').update(input).digest('hex').slice(0, HASH_HEX_LENGTH);
-
-/**
- * The attempt's service subdomain: the name of its ONE headless Service, and the `subdomain` of
- * every service pod it starts, each pod carrying the declared service name as its `hostname`.
- * Kubernetes publishes `<hostname>.<subdomain>.<namespace>.svc.<domain>` for such a pod, so the
- * declared name is scoped to the attempt rather than to the namespace — two concurrent jobs can
- * both declare `db`, exactly as docker's per-job network lets them.
- */
-export const serviceSubdomain = (job: BoardJob): string => `factory-svc-${hash16(`${job.id}|${job.leaseToken}`)}`;
-
-export interface FleetDnsConfig {
-    searches: string[];
-}
-
-/**
- * The search domain that makes the bare declared name (`postgres://db:5432`) resolve to this
- * attempt's service pod, on every pod that talks to the fleet — the runner and the gates. Merged
- * after the ClusterFirst defaults, so the namespace's own Services are searched first: a
- * non-factory Service named like a declared one shadows it. Absent when services are off.
- */
-export function fleetDnsField(config: DriverConfig, job: BoardJob): { dnsConfig?: FleetDnsConfig } {
-    if (!config.servicesEnabled) return {};
-    const domain = `${serviceSubdomain(job)}.${config.k8sNamespace}.svc.${config.k8sClusterDomain}`;
-    return { dnsConfig: { searches: [domain] } };
-}
 
 /**
  * The runner Job's name, hashed rather than `containerName(job)`'s raw

@@ -20,12 +20,12 @@ import { telemetryConfig, telemetryConfigTar, telemetryCopyTarget } from './tele
 import type { RunOutcome, RunSession } from './runner.js';
 import {
     declaredServiceSpecs,
-    serviceContainerName,
-    plannedServices,
+    groupServices,
     recordDeclaredServices,
-    networkName,
+    serviceContainerName,
     serviceRunArgs,
 } from './services.js';
+import { supervisorName } from './docker-mailbox.js';
 import { awaitServicesRunning, throwIfStoodDown } from './service-restart.js';
 import { type HeldContainer, heldWords, type StartupCause, startupCauseOf, StartupRefused } from './startup-cause.js';
 
@@ -173,10 +173,6 @@ export async function listOtherAttemptsOrThrow(
     });
 }
 
-/** The services network the runner joins: the one the loop's service start created, if it did. */
-export const servicesNetworkOf = (job: BoardJob): string | null =>
-    declaredServiceSpecs(job).length > 0 ? networkName(job) : null;
-
 /**
  * Removes each name, tolerating one that is already gone — a container or network that exited
  * between the list and its removal is the fence succeeding, not failing.
@@ -198,10 +194,11 @@ export async function removeEachTolerantly(
 }
 
 /**
- * Auxiliary services (issue #6) for one attempt: creates the network and starts each service of
- * the claim's plan (`BoardJob.services`, resolved and validated by the board), each step with its
- * own verdict. The driver reads no file — an author's refusal never reaches here, it failed the
- * task at the claim (`BoardJob.planRefusal`).
+ * Auxiliary services (issue #6) for one attempt: starts each service of the claim's plan
+ * (`BoardJob.services`, resolved and validated by the board) in the network namespace of the
+ * attempt's group supervisor (issue #773), whose hosts file already names every one on loopback,
+ * each step with its own verdict. The driver reads no file — an author's refusal never reaches
+ * here, it failed the task at the claim (`BoardJob.planRefusal`). Answers whether any started.
  *
  * A refused service start is INFRASTRUCTURE — the daemon said no to a container this process
  * spawned, the same class as a refused runner spawn — so it throws, and the caller leaves the job
@@ -219,41 +216,17 @@ export async function setupJobServices(
         killed: Set<BoardJob['leaseToken']>;
         serviceTeardown: (job: BoardJob) => Promise<void>;
     }
-): Promise<{ servicesNetwork: string | null }> {
-    if (!config.servicesEnabled) return { servicesNetwork: null };
-
+): Promise<boolean> {
+    const specs = groupServices(config, job);
+    if (specs.length === 0) return false;
     // The fleet starts clean: whatever this attempt's lease already has of a fleet goes first,
     // by the same attempt-scoped code that enforces it at teardown. The sync's fence has swept the
     // job's other attempts by then; their leftovers are never this teardown's business.
     await deps.serviceTeardown(job);
     assertJobNotKilled(deps.killed, job);
-
-    const specs = plannedServices(job);
-    if (specs.length === 0) return { servicesNetwork: null };
-
-    const servicesNetwork = networkName(job);
-    // The fence already swept the job's stale networks, and this name carries this attempt's
-    // own token — a create here cannot collide with anything.
-    try {
-        // Labeled like everything else the attempt creates: factory.job is what the next
-        // attempt's fence sweeps networks by, factory.lease what scopes the teardown's removal
-        // to this attempt's own.
-        await deps.execDocker([
-            'network',
-            'create',
-            '--label',
-            `${JOB_LABEL}=${job.id}`,
-            '--label',
-            `${LEASE_LABEL}=${job.leaseToken}`,
-            servicesNetwork,
-        ]);
-    } catch (e) {
-        throw new Error(`could not create the services network: ${(e as Error).message}`);
-    }
-    assertJobNotKilled(deps.killed, job);
     for (const spec of specs) {
         try {
-            await deps.execDocker(serviceRunArgs(job, spec));
+            await deps.execDocker(serviceRunArgs(job, spec, supervisorName(job)));
         } catch (e) {
             await deps.serviceTeardown(job);
             throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
@@ -261,7 +234,7 @@ export async function setupJobServices(
         assertJobNotKilled(deps.killed, job);
     }
     recordDeclaredServices(job, specs);
-    return { servicesNetwork };
+    return true;
 }
 
 /** Docker's start time for a container it never started. */
@@ -406,7 +379,7 @@ export async function createRunnerContainer(
     deps: { config: DriverConfig; execDocker: ExecDocker },
     job: BoardJob,
     session: RunSession | null,
-    options: { servicesNetwork: string | null; envFile?: string }
+    options: { envFile?: string }
 ): Promise<RunOutcome | null> {
     const { config, execDocker } = deps;
     try {
@@ -463,8 +436,7 @@ export async function startJobServices(
     },
     signal?: AbortSignal
 ): Promise<RunOutcome | null> {
-    const { servicesNetwork } = await setupJobServices(job, config, deps);
-    if (servicesNetwork === null) return null;
+    if (!(await setupJobServices(job, config, deps))) return null;
     await awaitServicesRunning(
         declaredServiceSpecs(job),
         listJobServices(job, deps.execDocker),
@@ -499,10 +471,10 @@ export const servicePsArgs = (job: BoardJob): string[] => [
 const serviceWait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
- * The pre-gate restart (issue #560): each recorded service's container removed and run again on
- * the attempt's EXISTING network — never the whole teardown, which removes the network the gate
- * containers join by name — then waited until every one runs. Every failure throws; a stand-down
- * ends it and removes whatever it had started again.
+ * The pre-gate restart (issues #560, #773): EVERY recorded service's container removed and run
+ * again into the same network namespace — its group supervisor's, whose hosts file still names it —
+ * then waited until every one runs. Every failure throws; a stand-down ends it and removes whatever
+ * it had started again.
  */
 export async function restartJobServices(
     job: BoardJob,
@@ -517,7 +489,7 @@ export async function restartJobServices(
             throwIfStoodDown(signal);
             await remove(spec.name);
             try {
-                await execDocker(serviceRunArgs(job, spec));
+                await execDocker(serviceRunArgs(job, spec, supervisorName(job)));
             } catch (e) {
                 throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
             }
