@@ -132,6 +132,10 @@ describe('parseHelperOutput', () => {
             message: expect.stringContaining(String(TIGHT_DESCRIPTOR.outputCapBytes)),
         });
     });
+    it('refuses a null last line as wrong_version and a non-JSON last line as malformed_output', () => {
+        expect(parseHelperOutput(DESCRIPTOR, 'null')).toMatchObject({ ok: false, reason: 'wrong_version' });
+        expect(parseHelperOutput(DESCRIPTOR, 'x\n')).toMatchObject({ ok: false, reason: 'malformed_output' });
+    });
 });
 
 describe('helperInputValue', () => {

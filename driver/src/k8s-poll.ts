@@ -15,6 +15,7 @@ import {
     HTTP_OK_STATUS,
     HTTP_SERVER_ERROR_STATUS,
     HTTP_TOO_MANY_REQUESTS,
+    is2xx,
     isMalformedRequest400,
     livePod,
     livePodOfItems,
@@ -112,7 +113,7 @@ export async function readObject<T>(
         throw new Inconclusive(`${what}: ${(e as Error).message}`);
     }
     if (response.status === HTTP_NOT_FOUND) return ABSENT;
-    if (response.status < HTTP_OK_STATUS || response.status >= HTTP_ERROR_STATUS) {
+    if (!is2xx(response.status)) {
         throw new Inconclusive(`${what} answered ${response.status}`);
     }
     let body: unknown;

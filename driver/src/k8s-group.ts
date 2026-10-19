@@ -38,7 +38,7 @@ import {
     type TeardownIdentity,
 } from './k8s-teardown.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
-import { HTTP_ERROR_STATUS, HTTP_OK_STATUS, JOB_ID, MS_PER_SECOND, parse, POLL_MS } from './k8s-transport.js';
+import { is2xx, JOB_ID, MS_PER_SECOND, parse, POLL_MS } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
 import type { ReclaimResult } from './publish.js';
 import type { RunSession } from './runner.js';
@@ -111,7 +111,7 @@ export async function holderGroupsOf(deps: K8sDeps, job: BoardJob, holder: strin
         `${JOB_LABEL}=${job.id},${HOLDER_LABEL}=${holder}`
     )}`;
     const listed = await deps.request('GET', path).catch(() => null);
-    if (!listed || listed.status < HTTP_OK_STATUS || listed.status >= HTTP_ERROR_STATUS) return null;
+    if (!listed || !is2xx(listed.status)) return null;
     const groups: GroupRef[] = [runnerGroupOf({ ...job, leaseToken: holder })];
     for (const item of parse<{ items?: ListedGroupJob[] }>(listed.body).items ?? []) {
         const lease = item.metadata?.labels?.[LEASE_LABEL];

@@ -1,7 +1,8 @@
 import type { BoardJob } from './board.js';
 import { containerScript } from './container-scripts.js';
 import type { DriverConfig } from './config.js';
-import { parseLastJsonLine, type PublishStep, type RunPublishStep, worktreeDir } from './publish.js';
+import { parseLastJsonLine } from './json-parse.js';
+import { type PublishStep, type RunPublishStep, worktreeDir } from './publish.js';
 
 /**
  * The review snapshot (issue #549): the step that freezes the task worktree's current state under

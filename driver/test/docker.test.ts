@@ -36,6 +36,7 @@ import { claudeTurnsArgs, opencodeCacheProbeArgs } from '../src/docker-close-rea
 import { gateShellScript } from '../src/container-scripts.js';
 import {
     CACHE_WATCH_TURNS,
+    CLAUDE_READ_NONE,
     cacheCollapse,
     parseClaudeCloseRead,
     parseOpencodeCacheProbe,
@@ -755,6 +756,11 @@ describe('the close-time claude-code turn count', () => {
             blocked: 'b',
         });
     });
+
+    it('answers the unmeasured read itself for a null last line or a non-JSON last line', () => {
+        expect(parseClaudeCloseRead('null')).toBe(CLAUDE_READ_NONE);
+        expect(parseClaudeCloseRead('{"turns":3,"summary":"x"}\nnoise')).toBe(CLAUDE_READ_NONE);
+    });
 });
 
 describe('which runs get a close-time turn read', () => {
@@ -1037,6 +1043,22 @@ describe('scraping the session opencode used', () => {
             'no access'
         );
     });
+    it('answers every field unmeasured, and no export, for a null last line or a non-JSON last line', () => {
+        const nothing = {
+            sessionId: null,
+            finishReason: null,
+            contextTokens: null,
+            costUsd: null,
+            agentTurns: null,
+            summary: null,
+            blocked: null,
+            error: null,
+        };
+        expect(parseOpencodeRunOutcome('null')).toStrictEqual(nothing);
+        expect(
+            parseOpencodeRunOutcome('{"stream":"raw","row":1}\n{"id":"ses_x1","finish":"stop"}\nnoise')
+        ).toStrictEqual(nothing);
+    });
 });
 
 describe('the cache watch', () => {
@@ -1100,6 +1122,11 @@ describe('the cache watch', () => {
         });
         // Malformed turns are not turns.
         expect(parseOpencodeCacheProbe('{"id":"ses_x1","turns":[{"input":-1},{"input":5}]}').turns).toEqual([]);
+    });
+
+    it('answers nothing for a null last line or a non-JSON last line', () => {
+        expect(parseOpencodeCacheProbe('null')).toEqual({ sessionId: null, turns: [], error: null });
+        expect(parseOpencodeCacheProbe('{"cloned":true}\nnoise')).toEqual({ sessionId: null, turns: [], error: null });
     });
 
     it('fires only on three consecutive dead, real-context, slow turns', () => {
@@ -2444,6 +2471,11 @@ describe('the docker runner', () => {
             expect(parseDockerStats('not json')).toBeNull();
             expect(parseDockerStats('{"MemUsage":"544MiB / 7.754GiB"}')).toBeNull();
             expect(parseDockerStats('{"CPUPerc":"93.00%","MemUsage":"? / 8GiB"}')).toBeNull();
+        });
+
+        it('throws on a null last line, and takes null for valid JSON followed by a non-JSON last line', () => {
+            expect(() => parseDockerStats('null')).toThrow(TypeError);
+            expect(parseDockerStats('{"CPUPerc":"93.00%","MemUsage":"544MiB / 7.754GiB"}\nnoise')).toBeNull();
         });
     });
 
@@ -4592,6 +4624,24 @@ describe('publishing the produced work', () => {
         expect(parsePrSummary('{"title":"","body":null}')).toEqual({ title: null, body: null });
         expect(parsePrSummary('')).toEqual({ title: null, body: null });
         expect(parsePrSummary('git: fatal: not a git repository')).toEqual({ title: null, body: null });
+    });
+
+    it('defaults the probe’s and the PR summary’s answers for a null last line or a non-JSON last line', () => {
+        const unread = {
+            cloned: false,
+            branch: '',
+            defaultBranch: 'main',
+            dirty: false,
+            unpushed: 0,
+            hasIdentity: false,
+            fingerprint: null,
+            conflicts: [],
+            rebasing: false,
+        };
+        expect(parseGitState('null')).toEqual(unread);
+        expect(parseGitState('{"cloned":true}\nnoise')).toEqual(unread);
+        expect(parsePrSummary('null')).toEqual({ title: null, body: null });
+        expect(parsePrSummary('{"title":"t","body":"b"}\nnoise')).toEqual({ title: null, body: null });
     });
 
     /**
