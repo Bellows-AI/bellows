@@ -43,8 +43,7 @@ import type { K8sDeps } from './k8s-transport.js';
 import type { ReclaimResult } from './publish.js';
 import type { RunSession } from './runner.js';
 import { StartupRefused } from './startup-cause.js';
-import { noStepChannel } from './step-control.js';
-import { type StepHost, attachSteps, orderFinish, releaseSteps, runReclaimStep } from './supervised-steps.js';
+import { attachSteps, orderFinish, releaseSteps, runReclaimStep, stepHostOf } from './supervised-steps.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
 
 /**
@@ -184,9 +183,6 @@ export const groupsOf = (deps: K8sDeps): Map<string, TaskGroup> => {
     return deps.groups;
 };
 
-/** The step channel this runner submits through; with none wired, every step is refused with the reason. */
-export const stepHostOf = (deps: K8sDeps): StepHost => ({ config: deps.config, sink: deps.steps ?? noStepChannel });
-
 /**
  * Waits until the group's supervisor has pulled from the driver at least once, failing at once on a
  * held container whose words prove why (issue #302; typed by #824 D11) and past `GROUP_UP_WAIT_MS` —
@@ -242,18 +238,6 @@ export async function ensureGroup(deps: K8sDeps, job: BoardJob, session: RunSess
     groupsOf(deps).set(job.leaseToken, group);
     await awaitSupervisor(deps, job, runnerName(job));
     return group;
-}
-
-/**
- * The step host of an attempt whose first step is not its sync — an adopted run, whose agent
- * already ended under an earlier claim: a group is created for it on demand, a supervisor and no
- * agent, because the gates' probe, the helpers and the publish are still its steps. A group the
- * sync already created is simply answered. The claim the group took is the group's end's to give
- * back (`finishGroup`), never this call's.
- */
-export async function stepHostFor(deps: K8sDeps, job: BoardJob): Promise<StepHost> {
-    if (!groupsOf(deps).has(job.leaseToken)) await ensureGroup(deps, { ...job, agent: false }, null);
-    return stepHostOf(deps);
 }
 
 /** Ends the attempt's group now, acknowledged, and hands the checkout back only once its end is confirmed. */

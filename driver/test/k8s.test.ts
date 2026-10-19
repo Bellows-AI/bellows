@@ -2409,6 +2409,27 @@ describe('publishing the produced work', () => {
         expect(await publishing(steps).probeTree(ISSUE_JOB)).toBeNull();
     });
 
+    // The review snapshot of an attempt with no group yet (an adopted run): a supervisor-only group
+    // is made for it, and its one `snapshot` step carries the stand-down signal.
+    it('snapshots the tree as one snapshot step with the signal, making the supervisor-only group', async () => {
+        const cancel = new AbortController();
+        const steps = fakeSteps((step) => stepOk(step.kind === 'snapshot' ? '{"ok":true}' : ''));
+        const { request, calls } = fakeRequest();
+
+        expect(await publishing(steps, request).snapshotTree(ISSUE_JOB, 'review-1', cancel.signal)).toMatchObject({
+            ok: true,
+        });
+
+        expect(kindsOf(steps)).toEqual(['snapshot']);
+        expect(steps.signals).toEqual([cancel.signal]);
+        const created = calls.filter((c) => c.method === 'POST' && c.path === jobsPath(namespace));
+        expect(
+            created.map((c) =>
+                (c.body as ReturnType<typeof runnerJobSpec>).spec.template.spec.containers.map((x) => x.name)
+            )
+        ).toEqual([[SUPERVISOR_CONTAINER]]);
+    });
+
     it('carries no claim env for an env-less claim', async () => {
         const steps = scripted({ probe: { cloned: false } });
         const { env: _env, ...envLess } = ISSUE_JOB;
@@ -6681,6 +6702,20 @@ describe('the block-helper transport (issue #207)', () => {
             message: expect.stringContaining('not-a-real-helper'),
         });
         expect(helperStepsOf(steps)).toEqual([]);
+    });
+
+    // A group the cluster refuses is a failed helper in the apiserver's own words — never a throw.
+    it('fails a helper whose runner Job the cluster refuses, submitting no step', async () => {
+        const steps = answering();
+        const { request } = fakeRequest({ create: { status: 403, body: 'jobs is forbidden' } });
+        const result = await runner(request, {}, undefined, steps.sink).runHelper(repoJob, plan());
+
+        expect(result).toEqual({
+            ok: false,
+            reason: 'runner_error',
+            message: expect.stringContaining('jobs is forbidden'),
+        });
+        expect(steps.submitted).toEqual([]);
     });
 
     it('runs the noop helper end to end as a step, creating no Job or Secret of its own', async () => {
