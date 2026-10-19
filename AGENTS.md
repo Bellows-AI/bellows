@@ -127,7 +127,8 @@ npm run verify:ui:nightly       # @nightly-tagged specs + the specimen; same nee
 DATABASE_URL=…/factory_seed npm run seed        # synthetic sessions, disposable names only
 DATABASE_URL=…/factory_test  npm run test:db    # resets every table
 DATABASE_URL=…/factory_dev   npm run backfill   # import ~/.claude/projects/*/*.jsonl, idempotent
-npm run test:jobs               # board + driver + real containers on 8129, no Claude
+npm run test:jobs               # all phases; real containers + scripted model, no quota
+npm run test:jobs -- --phase workflows # focused rerun with its own fixtures; --help lists phases
 npm run test:k8s                # helm assertions; --cluster installs into kind
 npm run release                 # patch-bump VERSION, commit, tag vX.Y.Z, atomic push to main
 
@@ -148,6 +149,16 @@ Operational facts behind those:
 - **Run the CLI through ONE npm layer** — `npm run dev -w cli -- job …`. A second npm eats
   `--timeout`/`--json`/`--yes` as its own configuration and drops the flag silently.
   `core/test/skills.task-control.test.ts`.
+- **Iterate with a job phase, validate with the full lane.** Selected `test:jobs` phases provision
+  their own fixtures; standalone CLI phases skip Postgres and TypeScript builds. The full default
+  lane remains required for Docker runner behavior. `scripts/test-jobs.sh`, `docs/executor-testing.md`.
+- **Job fixtures are per run; the host is shared.** Stub image tags, the default disposable database,
+  workspace/mailbox volumes and compose projects use run-specific names (`scripts/test-jobs.sh`).
+  Postgres remains shared; do not recreate it or prune images while a lane is active. Board phases
+  use `PORT` through `PORT + 2` (default 8129–8131). Keep `test:jobs` runs serial on one Docker daemon:
+  the reaper scans daemon-wide (`driver/src/docker-reaper.ts`), and one checkout also shares `dist`.
+  Phase totals, check intervals and process logs stay under `artifacts/jobs/`; `TIMINGS_FILE` overrides
+  the output path (`server/test/test-jobs.options.test.ts`).
 - `verify:ui` needs `factory_e2e` **and** `factory_auth_e2e` to exist; Playwright boots every
   webServer whatever `--project` says. `E2E_PORT_BASE` (default 8123) and `E2E_DB_PREFIX` let two
   worktrees run at once — one checkout cannot, since both write `web/dist` and `artifacts/`.
