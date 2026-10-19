@@ -3368,6 +3368,52 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await expect(pending).rejects.toThrow(/ENOENT/);
     });
 
+    /** The group-removal calls the daemon saw from the spawn on: the supervisor's and the exporter's. */
+    const groupRemovals = (exec: ReturnType<typeof daemon>, from: number) =>
+        exec.mock.calls
+            .slice(from)
+            .map((call) => call[0])
+            .filter((args) => args[0] === 'rm' && [supervisorName(job), exporterName(job)].includes(args[2] ?? ''));
+
+    // As it is today, a second teardown owner beside the loop's `finish` (#828): the spawn-error path
+    // removes the group before it rejects (`docker-runner.ts:629`), and the run's own catch removes
+    // it again (:682). A spawn that failed ran no agent, so nothing adoptable is lost.
+    it('removes the group of a spawn that errored before rejecting, then again in the run’s catch (today)', async () => {
+        const exec = daemon();
+        let spawnedAt = -1;
+        const errored = (() => {
+            spawnedAt = exec.mock.calls.length;
+            const c = new EventEmitter() as ChildProcess;
+            process.nextTick(() => c.emit('error', new Error('spawn docker ENOENT')));
+            return c;
+        }) as unknown as typeof spawn;
+        await expect(servicesRunner(exec, errored).run(job, { id: SESSION, resume: false })).rejects.toThrow(/ENOENT/);
+        expect(groupRemovals(exec, spawnedAt)).toEqual([
+            ['rm', '-f', exporterName(job)],
+            ['rm', '-f', supervisorName(job)],
+            ['rm', '-f', exporterName(job)],
+            ['rm', '-f', supervisorName(job)],
+        ]);
+    });
+
+    // Pinned (#828, slice 1): a run whose outcome rejects once its group exists finishes that group
+    // itself (`docker-runner.ts:680-683`), before the loop decides — though the loop leaves such a
+    // run to its lease so the next claim can adopt it (`concludeThrownRun`, `loop-fence.ts`).
+    // Slice 6 removes the finish-on-throw; this pin flips then.
+    it.fails('a run that rejects leaves its group for the loop to decide', async () => {
+        const exec = daemon();
+        let spawnedAt = -1;
+        const throwing = (() => {
+            spawnedAt = exec.mock.calls.length;
+            throw new Error('the attach could not be spawned');
+        }) as unknown as typeof spawn;
+        await expect(servicesRunner(exec, throwing).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /could not be spawned/
+        );
+        expect(spawnedAt).toBeGreaterThan(0);
+        expect(groupRemovals(exec, spawnedAt)).toEqual([]);
+    });
+
     // The spawn-error twin: A's runner spawn fails, but the failure is delivered only after B
     // claimed the same job id and stood its fleet up. The error path tears the attempt's
     // services down before rejecting — unconditionally now, and safe unconditionally: the

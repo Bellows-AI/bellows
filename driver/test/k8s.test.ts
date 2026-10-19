@@ -4650,6 +4650,19 @@ describe('the kubernetes runner', () => {
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/500/);
     });
 
+    // The docker twin is pinned `it.fails` in docker.test.ts (#828, slice 1): a run that rejects once
+    // its group exists ends nothing here (`k8s-runner.ts:415-420`) — neither the Job nor the
+    // checkout claim — and the loop decides.
+    it('a run that rejects leaves its group for the loop to decide', async () => {
+        const { request, calls } = fakeRequest({ job: { status: 403, body: 'forbidden' } });
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /reading the runner job/
+        );
+        expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(true);
+        expect(calls.filter((call) => call.method === 'DELETE' && call.path?.includes(runnerJobName(job)))).toEqual([]);
+        expect(calls.filter((call) => call.method === 'DELETE' && call.path === claimPathFor(job.id))).toEqual([]);
+    });
+
     it('keeps polling the pod list through transient API failures', async () => {
         let lists = 0;
         const { request } = routed((method, path) => {
