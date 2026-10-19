@@ -25,7 +25,7 @@ import {
 import { containerHardeningField } from './k8s-podfields.js';
 import { GATE_GID, TOOL_UID, workspacePath } from './claim.js';
 import { RELEASE_DEADLINE_MS, toolTreeReleaseBoundedScript, toolTreeReleaseScript, worktreeDir } from './publish.js';
-import { readImagePullStatus, readJobStatus, unpullableImage } from './k8s-poll.js';
+import { type PodStartState, readImagePullStatus, readJobStatus, startRefusalOf, unpullableImage } from './k8s-poll.js';
 import {
     endRunnerJob,
     GROUP_END_WAIT_MS,
@@ -42,6 +42,7 @@ import { HTTP_ERROR_STATUS, HTTP_OK_STATUS, JOB_ID, MS_PER_SECOND, parse, POLL_M
 import type { K8sDeps } from './k8s-transport.js';
 import type { ReclaimResult } from './publish.js';
 import type { RunSession } from './runner.js';
+import { StartupRefused } from './startup-cause.js';
 import { noStepChannel } from './step-control.js';
 import { type StepHost, attachSteps, orderFinish, releaseSteps, runReclaimStep } from './supervised-steps.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
@@ -187,23 +188,34 @@ export const groupsOf = (deps: K8sDeps): Map<string, TaskGroup> => {
 export const stepHostOf = (deps: K8sDeps): StepHost => ({ config: deps.config, sink: deps.steps ?? noStepChannel });
 
 /**
- * Waits until the group's supervisor has pulled from the driver at least once, failing at once on
- * an executor image the node cannot pull (issue #302) and past `GROUP_UP_WAIT_MS` on anything else.
+ * Waits until the group's supervisor has pulled from the driver at least once, failing at once on a
+ * held container whose words prove why (issue #302; typed by #824 D11) and past `GROUP_UP_WAIT_MS` —
+ * elapsed time, not a count of polls — on anything else. At the bound, a pod the platform was still
+ * bringing up (none yet, or none of its containers started) is a transient refusal; a back-off that
+ * never named its cause, a supervisor that runs without answering, or lists that never answered prove
+ * nothing, and are left to the lease.
  */
 async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): Promise<void> {
     const sink = stepHostOf(deps).sink;
     const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
     if (!token) return;
-    const polls = Math.ceil(GROUP_UP_WAIT_MS / POLL_MS);
-    for (let poll = 0; poll < polls; poll += 1) {
+    const image = executorImage(deps.config, job.executorType);
+    const started = Date.now();
+    let last: PodStartState = 'unread';
+    let unproven: string | null = null;
+    for (let polls = 0; Math.max(polls * POLL_MS, Date.now() - started) < GROUP_UP_WAIT_MS; polls += 1) {
         if (sink.contacted(token)) return;
         const pull = await readImagePullStatus(deps, jobName);
-        if (pull.blocked) {
-            throw new Error(unpullableImage('executor', executorImage(deps.config, job.executorType), pull.blocked));
-        }
+        const refused = startRefusalOf(image, pull, true);
+        if (refused) throw refused;
+        if (pull.blocked) unproven = pull.blocked;
+        if (pull.podState !== 'unread') last = pull.podState;
         await deps.sleep(POLL_MS);
     }
-    throw new Error(`the task supervisor of ${jobName} never came up within ${GROUP_UP_WAIT_MS}ms`);
+    if (unproven) throw new Error(unpullableImage('executor', image, unproven));
+    const why = `the task supervisor of ${jobName} never came up within ${GROUP_UP_WAIT_MS}ms`;
+    if (last === 'none' || last === 'starting') throw new StartupRefused(why, 'transient');
+    throw new Error(why);
 }
 
 /**

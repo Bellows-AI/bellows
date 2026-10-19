@@ -25,6 +25,7 @@ import {
     refusal,
 } from './k8s-transport.js';
 import type { K8sDeps, K8sJobStatus, K8sPod, K8sPodList, K8sResponse } from './k8s-transport.js';
+import { startupCauseOf, StartupRefused } from './startup-cause.js';
 import {
     AGENT_CONTAINER,
     SUPERVISOR_CONTAINER,
@@ -172,31 +173,72 @@ export function unpullableImage(role: 'gate' | 'executor', image: string, blocke
  * waiting — `ContainerCreating` covers the whole first pull — has not: the pull can still fail
  * after this tick, so the watch keeps reading the pod list. A pod-list blink or a pod with no
  * container status yet answers "nothing seen" — the caller keeps polling.
+ *
+ * Beside it, for the group start (#824 D11): `waiting`, the first container held by a reason the
+ * pod never recovers from on its own — the pull reasons, an invalid image name, a container config
+ * the kubelet refuses — and `podState`, what the last list proves about the start: `unread` (no
+ * answer, no evidence), `none` (no pod yet), `starting` (no container running or ended) or `started`.
  */
-export async function readImagePullStatus(
-    deps: K8sDeps,
-    jobName: string
-): Promise<{ blocked: string | null; containerSeen: boolean }> {
+export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promise<ImagePullStatus> {
     const pods = await deps
         .request('GET', jobPodsPath(deps.config.k8sNamespace, jobName))
         .catch(() => ({ status: 0, body: '' }));
+    const list = pods.status === HTTP_OK_STATUS ? parse<K8sPodList>(pods.body) : null;
+    const items = Array.isArray(list?.items) ? list.items : null;
     // Every container of the pod, not the first: the runner pod holds the agent, the supervisor and
     // the exporter, and any one of them blocked on its image holds the whole run.
     const containers = livePod(pods.body)?.status?.containerStatuses ?? [];
-    for (const container of containers) {
-        const waiting = container.state?.waiting;
-        if (waiting?.reason === 'ImagePullBackOff' || waiting?.reason === 'ErrImagePull') {
-            return {
-                blocked:
-                    waiting.reason + (waiting.message ? ` — ${waiting.message.slice(0, ERROR_PREVIEW_CHARS)}` : ''),
-                containerSeen: true,
-            };
-        }
+    const waiting = containers.map((c) => c.state?.waiting).find((w) => STUCK_REASONS.has(w?.reason ?? ''));
+    const startedAny = containers.some((c) => c.state?.terminated !== undefined || c.state?.running !== undefined);
+    const agentStarted = containers.some(
+        (c) => c.name === AGENT_CONTAINER && (c.state?.terminated !== undefined || c.state?.running !== undefined)
+    );
+    const podState: PodStartState =
+        items === null ? 'unread' : !livePodOfItems(items) ? 'none' : startedAny ? 'started' : 'starting';
+    const stuck = waiting?.reason ? { reason: waiting.reason, message: waiting.message ?? '' } : null;
+    if (stuck && PULL_REASONS.has(stuck.reason)) {
+        return { blocked: pullDetail(stuck), containerSeen: true, waiting: stuck, podState, agentStarted };
     }
     const containerSeen =
         containers.length > 0 &&
         containers.every((c) => c.state?.terminated !== undefined || c.state?.running !== undefined);
-    return { blocked: null, containerSeen };
+    return { blocked: null, containerSeen, waiting: stuck, podState, agentStarted };
+}
+
+export type PodStartState = 'unread' | 'none' | 'starting' | 'started';
+
+export interface ImagePullStatus {
+    blocked: string | null;
+    containerSeen: boolean;
+    waiting: { reason: string; message: string } | null;
+    podState: PodStartState;
+    /** The agent container is running or ended: once released, the run has happened. */
+    agentStarted: boolean;
+}
+
+const PULL_REASONS: ReadonlySet<string> = new Set(['ImagePullBackOff', 'ErrImagePull']);
+const STUCK_REASONS: ReadonlySet<string> = new Set([...PULL_REASONS, 'InvalidImageName', 'CreateContainerConfigError']);
+
+const pullDetail = (waiting: { reason: string; message: string }): string =>
+    waiting.reason + (waiting.message ? ` — ${waiting.message.slice(0, ERROR_PREVIEW_CHARS)}` : '');
+
+/**
+ * What a group pod's held container proves about its start (#824 D11): a refusal typed by the cause
+ * the kubelet's reason and words prove, a refusal whose words prove none (a plain `Error`, left to
+ * the lease), or null — nothing held, or a back-off that names no cause of its own while the caller
+ * can still read on for the pull failure that does (`waitOutBackOff`).
+ */
+export function startRefusalOf(image: string, pull: ImagePullStatus, waitOutBackOff: boolean): Error | null {
+    const { waiting } = pull;
+    if (!waiting) return null;
+    const message =
+        waiting.reason === 'CreateContainerConfigError'
+            ? `the executor container cannot start: ${pullDetail(waiting)}`
+            : unpullableImage('executor', image, pullDetail(waiting));
+    const cause = startupCauseOf({ waitingReason: waiting.reason, message: waiting.message });
+    if (cause) return new StartupRefused(message, cause);
+    if (waitOutBackOff && waiting.reason === 'ImagePullBackOff') return null;
+    return new Error(message);
 }
 
 /**
@@ -492,6 +534,17 @@ function readUnlessKilled(deps: K8sDeps, job: BoardJob): Promise<JobStatusResult
  * executor image the node cannot pull (issue #302) and fails the run naming it, instead of
  * burning the deadline and reporting a timeout over what is really "no such image".
  */
+async function runStartSeen(deps: K8sDeps, job: BoardJob, image: string): Promise<boolean> {
+    // A held container is the run's start refused (#824 D11): typed when its words prove a cause,
+    // plain (the lease) otherwise — with no bound here but the Job's deadline, a back-off that names
+    // no cause is no reason to wait. A released agent that is running or ended has run: a container
+    // held beside it (an exporter whose Secret went away) is no refused start of the run.
+    const pull = await readImagePullStatus(deps, runnerName(job));
+    const refused = pull.agentStarted ? null : startRefusalOf(image, pull, false);
+    if (refused) throw refused;
+    return pull.containerSeen || pull.agentStarted;
+}
+
 export async function pollRunnerJobUntilTerminal(
     deps: K8sDeps,
     job: BoardJob,
@@ -520,10 +573,7 @@ export async function pollRunnerJobUntilTerminal(
         // The task group outlives the agent: its supervisor's report — the agent is over and the
         // exporter drained — is the end of the run, with the Job still serving the attempt's steps.
         if (over?.()) return { timedOut: false, jobSucceeded: false };
-        if (!seen.container) {
-            const failure = await executorImageWatch(deps, runnerName(job), image, seen);
-            if (failure) throw new Error(failure);
-        }
+        if (!seen.container) seen.container = await runStartSeen(deps, job, image);
         const nextPodName = onOutput ? await tailRunnerOutput(deps, job, pod, onOutput) : pod;
         await deps.sleep(POLL_MS);
         return poll(nextPodName);

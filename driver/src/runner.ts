@@ -10,6 +10,7 @@ import type { BoardJob, ServiceStatus } from './board.js';
 import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
 import type { PublishOptions, PublishResult, SyncResult, ReclaimResult } from './publish.js';
 import type { SnapshotResult } from './review-snapshot.js';
+import type { StartupCause } from './startup-cause.js';
 import type { KillRecord } from './termination.js';
 
 /** What the board is told afterwards. `timedOut` is reported as a failure, with a reason. */
@@ -40,6 +41,8 @@ export interface RunOutcome {
      * agent's exists, so the loop reports none: it leaves the job to the lease, which re-offers it.
      */
     infraLoss?: string;
+    /** For a container that never started: the cause the platform's refusal proves (`startupCauseOf`), if any. */
+    startupCause?: StartupCause;
     /**
      * The session the run actually used, when the runner could only know it after the fact —
      * opencode mints its own (`ses_…`) and the runner scrapes it out of the session database the

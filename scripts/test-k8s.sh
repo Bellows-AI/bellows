@@ -2467,7 +2467,26 @@ fi
 kubectl scale "$DRIVER_DEPLOY" -n "$NAMESPACE" --replicas=1 >/dev/null 2>&1
 kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
 
-for job in $hard $drained $evicted $lost $final; do
+# f. An executor image the registry does not have (issue #824 D11): the kubelet's own words name
+#    the missing manifest, so the group's start is a configuration fault on the first attempt —
+#    failed, no interruption refunded, the image named — never a lease burnt down to dead.
+begin_phase recovery-unpullable
+image_was="$(kubectl get "$DRIVER_DEPLOY" -n "$NAMESPACE" \
+    -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CLAUDE_EXECUTOR_IMAGE")].value}')"
+missing="$LANE_REGISTRY/factory-lane-missing:$RELEASE"
+kubectl set env "$DRIVER_DEPLOY" -n "$NAMESPACE" "CLAUDE_EXECUTOR_IMAGE=$missing" >/dev/null 2>&1
+kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
+unpullable="$(queue_job 'factory-stub-unpullable')"
+unpullable_end="$(await_brief "$unpullable" 'failed*' 240)"
+[ "$unpullable_end" = 'failed|1|0||' ] && ok 'a missing executor image fails the job at once, nothing refunded' ||
+    bad 'a missing executor image fails the job at once, nothing refunded' \
+        "status|attempts|count|claimSeq|reason: $unpullable_end"
+expect_contains 'the failure names the image the registry does not have' "$(job_output "$unpullable")" \
+    "the executor image \"$missing\" cannot be pulled"
+kubectl set env "$DRIVER_DEPLOY" -n "$NAMESPACE" "CLAUDE_EXECUTOR_IMAGE=$image_was" >/dev/null 2>&1
+kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
+
+for job in $hard $drained $evicted $lost $final $unpullable; do
     kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
         --ignore-not-found --wait=false >/dev/null 2>&1
 done

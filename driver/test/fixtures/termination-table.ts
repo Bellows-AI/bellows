@@ -7,7 +7,7 @@ import type { RunOutcome } from '../../src/runner.js';
  * conformance table both executors run (`docker.test.ts`, `k8s.test.ts`), each row through its own
  * harness. Typed as a `Record`, so neither suite can leave a row out. Not rows here: a cache loss
  * (the watch is docker-only, refused at boot under kubernetes — `config.test.ts`) and a refused
- * start (owned elsewhere).
+ * start (`startup-table.ts`).
  */
 export const TERMINATION_TABLE = {
     'an agent that exits 0 under a finalizing supervisor': 'succeeded',

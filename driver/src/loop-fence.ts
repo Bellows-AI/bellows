@@ -11,8 +11,51 @@ import type { BoardJob, LeaseState } from './board.js';
 import type { RunOutcome } from './runner.js';
 import { withConflictContext, type SyncResult } from './publish.js';
 import type { AttemptCtx, LoopRuntime, SetupHalt, VerdictBody } from './loop-types.js';
+import { type StartupCause, StartupRefused, transientStartup } from './startup-cause.js';
 
 const MS_PER_SECOND = 1_000;
+
+/**
+ * The ONE decision on a group start the platform refused for a proven cause (issue #824 D11) — on
+ * the sync, the run and a container that never started alike: a transient cause is an interruption
+ * the board refunds within its budget, a permanent one a configuration fault a person fixes.
+ */
+export function startupHaltOf(refused: StartupRefused): SetupHalt {
+    return startupHalt(refused.startupCause, refused.message);
+}
+
+function startupHalt(cause: StartupCause, detail: string): SetupHalt {
+    if (transientStartup(cause)) return { halt: 'interrupt', reason: `the runner could not start: ${detail}` };
+    return {
+        halt: 'fault',
+        log: `the runner could not start (${cause}): ${detail}`,
+        verdict: {
+            status: 'failed',
+            exitCode: null,
+            output: `The runner could not start: ${detail}`,
+            failureKind: 'config',
+        },
+    };
+}
+
+/**
+ * A checkout sync that threw: it took its own claim down inside the runner, so nothing is held here.
+ * A group the platform refused to start for a proven cause is decided; anything else is left.
+ */
+export function syncThrewHalt(e: unknown): SetupHalt {
+    if (e instanceof StartupRefused) return startupHaltOf(e);
+    return { halt: 'leave', log: `checkout sync threw, leaving it to the lease: ${(e as Error).message}` };
+}
+
+/**
+ * A run that threw, past its stand-down: a group the platform refused to start for a proven cause ran
+ * nothing and is decided; any other throw is left to the lease — its runner may survive for the next
+ * claim to adopt, and no runner ever launched would release the claim otherwise (issue #469).
+ */
+export async function concludeThrownRun(ctx: AttemptCtx, e: unknown): Promise<void> {
+    if (e instanceof StartupRefused) return concludeSetup(ctx, startupHaltOf(e));
+    await leaveToLease(ctx, `could not run: ${(e as Error).message}`, null);
+}
 
 /**
  * Why the loop reports no verdict for this outcome, or null when it reports: a container that never
@@ -266,14 +309,20 @@ export async function interruptAttempt(ctx: AttemptCtx, reason: string, exitCode
 
 /**
  * Lands a run that has no verdict to report, answering whether it did: a runner the platform took
- * away, or one that never started, is an interruption (`interruptAttempt`).
+ * away, or one that never started, is an interruption (`interruptAttempt`) — unless the platform's
+ * words prove a permanent cause for the refused start, which is a configuration fault (`startupHalt`).
+ * That refusal is decided first: it ran no agent, so no supervisor loss beside it outranks it.
  */
 export async function concludeUnreported(ctx: AttemptCtx, outcome: RunOutcome): Promise<boolean> {
+    const why = neverStartedWhy(outcome);
+    if (why !== null && outcome.startupCause && !transientStartup(outcome.startupCause)) {
+        await concludeSetup(ctx, startupHalt(outcome.startupCause, outcome.output.trim()));
+        return true;
+    }
     if (outcome.infraLoss) {
         await interruptAttempt(ctx, `infrastructure loss: ${outcome.infraLoss}`, outcome.exitCode);
         return true;
     }
-    const why = neverStartedWhy(outcome);
     if (why === null) return false;
     await interruptAttempt(ctx, why, outcome.exitCode);
     return true;

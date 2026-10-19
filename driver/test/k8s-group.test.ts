@@ -5,6 +5,7 @@ import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
 import { reclaimGroupName } from '../src/k8s-group.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
+import { StartupRefused } from '../src/startup-cause.js';
 import { createStepBroker, type StepBroker, type StepSink, type SupervisorEndpoint } from '../src/step-control.js';
 import {
     AGENT_CONTAINER,
@@ -328,14 +329,19 @@ describe('the task group of one attempt', () => {
         expect(await replacement.syncCheckout(job, undefined, SESSION)).toMatchObject({ ok: true });
     });
 
-    it('answers a group whose image cannot be pulled as a failed sync, naming the image problem', async () => {
+    // Issue #824 D11: typed by the cause the pod's words prove, for the loop's one startup decision.
+    it('refuses a group whose image cannot be pulled with the cause it proves, naming the image problem', async () => {
         const api = cluster({ imagePull: 'manifest unknown' });
         const s = steps(() => ok('{"ok":true,"reason":null}'), false);
         const k8s = runner(api.request, s.sink);
 
-        const synced = await k8s.syncCheckout(job, undefined, SESSION);
+        const refused = k8s.syncCheckout(job, undefined, SESSION);
 
-        expect(synced).toMatchObject({ ok: false, reason: expect.stringContaining('cannot be pulled') });
+        await expect(refused).rejects.toBeInstanceOf(StartupRefused);
+        await expect(refused).rejects.toMatchObject({
+            startupCause: 'image',
+            message: expect.stringContaining('cannot be pulled'),
+        });
         // No step was submitted to a supervisor that never came up, and the group is gone.
         expect(s.submitted).toEqual([]);
         expect(api.created.deletedJobs).toEqual([runnerJobName(job)]);
