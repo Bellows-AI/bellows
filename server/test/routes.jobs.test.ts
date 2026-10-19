@@ -31,6 +31,7 @@ import type {
     PokeWaitResult,
     ReadReviewResult,
     ReclaimClaim,
+    ReclaimRenewal,
     RemoveResult,
     ReopenResult,
     RequestReviewResult,
@@ -123,7 +124,8 @@ interface StoreStub extends JobStore {
     pokes: { id: string; pokedBy: string | null }[];
     reopened: string[];
     reclaimClaims: { worker: string; leaseSeconds: number }[];
-    reclaimAcks: { id: string; worker: string }[];
+    reclaimAcks: { id: string; token: string }[];
+    reclaimRenewals: { id: string; token: string; leaseSeconds: number }[];
     /** The lease lookups the orphan reaper's batched route made, with the ids it asked for. */
     leased: { ids: string[] }[];
     /** The long-poll holds the route requested, with the timeout it was given (issue #323). */
@@ -197,6 +199,7 @@ function stubStore(
         reopen?: ReopenResult;
         reclaimClaim?: ReclaimClaim | null;
         ackReclaim?: 'ok' | 'lost' | 'missing';
+        renewReclaim?: ReclaimRenewal;
         heartbeatCancelRequested?: boolean;
         answeredQuestions?: { questionId: string; answers: Record<string, string> }[];
         /** What the question store answers a report and an answer with (050). */
@@ -244,6 +247,7 @@ function stubStore(
         reopened: [],
         reclaimClaims: [],
         reclaimAcks: [],
+        reclaimRenewals: [],
         leased: [],
         waits: [],
         asked: [],
@@ -373,10 +377,15 @@ function stubStore(
             stub.reclaimClaims.push({ worker, leaseSeconds });
             return options.reclaimClaim ?? null;
         },
-        async ackReclaim(id, worker) {
+        async ackReclaim(id, token) {
             boom();
-            stub.reclaimAcks.push({ id, worker });
+            stub.reclaimAcks.push({ id, token });
             return options.ackReclaim ?? 'ok';
+        },
+        async renewReclaim(id, token, leaseSeconds) {
+            boom();
+            stub.reclaimRenewals.push({ id, token, leaseSeconds });
+            return options.renewReclaim ?? { result: 'ok', leaseExpiresAt: '2026-08-21T12:10:00.000Z' };
         },
         async leases(ids) {
             boom();
@@ -2016,6 +2025,7 @@ describe('lifecycle actor attribution', () => {
 describe('POST /api/reclaims/claim', () => {
     const claim: ReclaimClaim = {
         id: '55555555-5555-4555-8555-555555555555',
+        token: TOKEN,
         rootJobId: ID,
         repo: 'acme/web',
         workspacePath: 'test-org/user-7',
@@ -2077,20 +2087,84 @@ describe('POST /api/reclaims/claim', () => {
 describe('POST /api/reclaims/:id/ack', () => {
     const RECLAIM_ID = '55555555-5555-4555-8555-555555555555';
 
-    it("acks the reclaim in the driver's name", async () => {
+    it("acks the reclaim under the acquisition's token", async () => {
         const store = stubStore();
         const instance = await harnessWith(store);
 
-        const response = await post(instance, `/api/reclaims/${RECLAIM_ID}/ack`, { worker: 'w1' });
+        const response = await post(instance, `/api/reclaims/${RECLAIM_ID}/ack`, { token: TOKEN });
 
         expect(response.statusCode).toBe(200);
         expect(response.json()).toEqual({ id: RECLAIM_ID });
-        expect(store.reclaimAcks).toEqual([{ id: RECLAIM_ID, worker: 'w1' }]);
+        expect(store.reclaimAcks).toEqual([{ id: RECLAIM_ID, token: TOKEN }]);
     });
 
-    it('refuses a missing worker', async () => {
-        const instance = await harnessWith(stubStore());
-        expect((await post(instance, `/api/reclaims/${RECLAIM_ID}/ack`, {})).statusCode).toBe(400);
+    it.each([
+        ['a missing token', {}],
+        ['a non-uuid token', { token: 'w1' }],
+        ['a worker name in place of the token', { worker: 'w1' }],
+    ])('refuses %s', async (_label, payload) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/reclaims/${RECLAIM_ID}/ack`, payload);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_TOKEN');
+        expect(store.reclaimAcks).toEqual([]);
+    });
+
+    it.each([
+        ['lost', 409, 'LEASE_LOST'],
+        ['missing', 404, 'NOT_FOUND'],
+    ] as const)('answers %s as %i', async (verdict, status, code) => {
+        const instance = await harnessWith(stubStore({ ackReclaim: verdict }));
+        const response = await post(instance, `/api/reclaims/${RECLAIM_ID}/ack`, { token: TOKEN });
+        expect(response.statusCode).toBe(status);
+        expect(response.json().code).toBe(code);
+    });
+});
+
+describe('POST /api/reclaims/:id/renew', () => {
+    const RECLAIM_ID = '55555555-5555-4555-8555-555555555555';
+
+    it("renews the reclaim's lease under the acquisition's token", async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/reclaims/${RECLAIM_ID}/renew`, {
+            token: TOKEN,
+            leaseSeconds: 600,
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ leaseExpiresAt: '2026-08-21T12:10:00.000Z' });
+        expect(store.reclaimRenewals).toEqual([{ id: RECLAIM_ID, token: TOKEN, leaseSeconds: 600 }]);
+    });
+
+    it.each([
+        [{ result: 'lost' }, 409, 'LEASE_LOST'],
+        [{ result: 'missing' }, 404, 'NOT_FOUND'],
+    ] as const)('answers %o as %i', async (verdict, status, code) => {
+        const instance = await harnessWith(stubStore({ renewReclaim: verdict }));
+        const response = await post(instance, `/api/reclaims/${RECLAIM_ID}/renew`, {
+            token: TOKEN,
+            leaseSeconds: 300,
+        });
+        expect(response.statusCode).toBe(status);
+        expect(response.json().code).toBe(code);
+    });
+
+    it.each([
+        ['a missing token', { leaseSeconds: 300 }, 'BAD_TOKEN'],
+        ['a non-uuid token', { token: 'w1', leaseSeconds: 300 }, 'BAD_TOKEN'],
+        ['a zero lease', { token: TOKEN, leaseSeconds: 0 }, 'BAD_LEASE'],
+        ['a fractional lease', { token: TOKEN, leaseSeconds: 1.5 }, 'BAD_LEASE'],
+        ['a lease past the maximum', { token: TOKEN, leaseSeconds: 1_000_000 }, 'BAD_LEASE'],
+    ])('refuses %s', async (_label, payload, code) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/reclaims/${RECLAIM_ID}/renew`, payload);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe(code);
+        expect(store.reclaimRenewals).toEqual([]);
     });
 });
 
@@ -3394,6 +3468,7 @@ describe('error-path mapping', () => {
     type StoreOptions = Parameters<typeof stubStore>[0];
     const JOB = `/api/jobs/${ID}`;
     const ACK = '/api/reclaims/55555555-5555-4555-8555-555555555555/ack';
+    const RENEW = '/api/reclaims/55555555-5555-4555-8555-555555555555/renew';
     const SESSION = '33333333-3333-4333-8333-333333333333';
     const COMPLETE = { leaseToken: TOKEN, status: 'succeeded', exitCode: 0, output: 'hello' };
     const POST = (url: string, payload: unknown) => ({ method: 'POST' as Method, url, payload });
@@ -3472,15 +3547,27 @@ describe('error-path mapping', () => {
         ],
         ['a completion on a lost lease', POST(`${JOB}/complete`, COMPLETE), { verdict: 'lost' }, [409, null]],
         [
-            'a reclaim ack from a foreign worker',
-            POST(ACK, { worker: 'w2' }),
+            'a reclaim ack under a superseded token',
+            POST(ACK, { token: TOKEN }),
             { ackReclaim: 'lost' },
             [409, 'LEASE_LOST'],
         ],
         [
             'a reclaim ack for a reclaim that never existed',
-            POST(ACK, { worker: 'w1' }),
+            POST(ACK, { token: TOKEN }),
             { ackReclaim: 'missing' },
+            [404, null],
+        ],
+        [
+            'a reclaim renew under a superseded token',
+            POST(RENEW, { token: TOKEN }),
+            { renewReclaim: { result: 'lost' } },
+            [409, 'LEASE_LOST'],
+        ],
+        [
+            'a reclaim renew for a reclaim that is gone',
+            POST(RENEW, { token: TOKEN }),
+            { renewReclaim: { result: 'missing' } },
             [404, null],
         ],
         ['a stop of a missing task', POST(`${JOB}/stop`, {}), { stop: 'missing' }, [404, null]],
@@ -3536,7 +3623,8 @@ describe('error-path mapping', () => {
         ['a wait cancel', POST(`${JOB}/wait/cancel`, {}), 'UNAVAILABLE'],
         ['a wait poke', POST(`${JOB}/wait/poke`, {}), 'UNAVAILABLE'],
         ['a reclaim claim', POST('/api/reclaims/claim', { worker: 'w1' }), null],
-        ['a reclaim ack', POST(ACK, { worker: 'w1' }), null],
+        ['a reclaim ack', POST(ACK, { token: TOKEN }), null],
+        ['a reclaim renew', POST(RENEW, { token: TOKEN }), null],
         ['a follow-up', POST(`${JOB}/follow-up`, { command: 'again' }), 'UNAVAILABLE'],
         ['a retry', POST(`${JOB}/retry`, {}), 'UNAVAILABLE'],
         ['an edit', PATCH(JOB, { command: 'again' }), 'UNAVAILABLE'],

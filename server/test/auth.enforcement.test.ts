@@ -209,6 +209,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // reclaim, so both ends are as worker-only as claim and complete.
     ['/api/reclaims/claim', 'worker'],
     [`/api/reclaims/${JOB_ID}/ack`, 'worker'],
+    [`/api/reclaims/${JOB_ID}/renew`, 'worker'],
     [`/api/jobs/${JOB_ID}/heartbeat`, 'worker'],
     [`/api/jobs/${JOB_ID}/session`, 'worker'],
     [`/api/jobs/${JOB_ID}/suspend`, 'worker'],

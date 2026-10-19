@@ -2,7 +2,7 @@ import type { BoardJob } from './board.js';
 import { runnerClaimEnv } from './claim.js';
 import type { DriverConfig } from './config.js';
 import { telemetryConfig, type TelemetryConfig } from './telemetry-config.js';
-import { LEASE_LABEL } from './labels.js';
+import { LEASE_LABEL, REVOKED_MARK } from './labels.js';
 import {
     claimBody,
     claimPath,
@@ -178,8 +178,13 @@ export interface ObservedClaim {
     holder: string;
 }
 
+/** A claim as read now: its incarnation, and whether an orphaned-claim reap revoked it. */
+export interface ReadClaim extends ObservedClaim {
+    revoked: boolean;
+}
+
 /** One claim read, as the incarnation it names; null when gone, unreadable or unidentifiable. */
-export async function readClaim(deps: K8sDeps, job: BoardJob): Promise<ObservedClaim | null> {
+export async function readClaim(deps: K8sDeps, job: BoardJob): Promise<ReadClaim | null> {
     let get: K8sResponse;
     try {
         get = await deps.request('GET', claimPath(deps.config.k8sNamespace, job));
@@ -190,7 +195,26 @@ export async function readClaim(deps: K8sDeps, job: BoardJob): Promise<ObservedC
     const claim = parse<K8sClaim>(get.body);
     const uid = claim.metadata?.uid;
     const holder = claim.data?.holder;
-    return uid && holder ? { uid, holder } : null;
+    return uid && holder ? { uid, holder, revoked: claim.metadata?.annotations?.[REVOKED_MARK] !== undefined } : null;
+}
+
+/**
+ * Revokes the claim incarnation an orphaned-claim reap observed (issue #821): a merge patch adding
+ * `REVOKED_MARK` under the reaping acquisition's token, preconditioned on the observed uid, so it
+ * can only ever mark the incarnation read. A reclaim verifies its claim unrevoked before its group
+ * starts (`reclaimInGroup`), so once this answers true no group of the holder created after the
+ * reaper's list can run. True only on a 2xx; a refusal or a throw revokes nothing, and the reap
+ * acts on nothing.
+ */
+export async function revokeClaim(deps: K8sDeps, job: BoardJob, observed: ObservedClaim): Promise<boolean> {
+    try {
+        const patched = await deps.request('PATCH', claimPath(deps.config.k8sNamespace, job), {
+            metadata: { uid: observed.uid, annotations: { [REVOKED_MARK]: job.leaseToken } },
+        });
+        return patched.status >= HTTP_OK_STATUS && patched.status < HTTP_ERROR_STATUS;
+    } catch {
+        return false;
+    }
 }
 
 /**

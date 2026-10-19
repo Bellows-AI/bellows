@@ -11,7 +11,6 @@ import {
     validateListQuery,
     validateVerdictBody,
     validateWaitQuery,
-    validateWorkerField,
 } from './job-field-validation.js';
 import { bad, body, guard } from './helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from './route-guards.js';
@@ -25,7 +24,9 @@ import {
     HTTP_NO_CONTENT,
     HTTP_OK,
     conclusionConflict,
+    LEASE_SECONDS_MAX,
     leaseLost,
+    leaseSeconds,
     noBoard,
     notFoundJob,
 } from './job-limits.js';
@@ -362,30 +363,59 @@ export async function handleReclaimsClaim(
     return reply.code(HTTP_OK).send(claim.value);
 }
 
-// The driver's proof that a parked worktree is gone. Only the worker that holds the claim may ack
-// it, so a slow worker's row survives a foreign ack and finishes on its next try.
+// The driver's proof that a parked worktree is gone. Only the acquisition that holds the row may
+// ack it — its token, never the worker name — so a re-offered row survives a stale ack, and the
+// identical ack replayed after a lost response answers 200 again.
 export async function handleReclaimsAck(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveJobRoute(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
-    const workerResult = validateWorkerField(body(request.body).worker);
-    if (!workerResult.ok) return bad(reply, ERROR_CODES.BAD_WORKER, workerResult.message);
+    const { token } = body(request.body);
+    if (typeof token !== 'string' || !UUID.test(token))
+        return bad(reply, ERROR_CODES.BAD_TOKEN, 'token must be a uuid');
 
     const result = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'reclaim ack failed'),
-        () => store.ackReclaim(id, workerResult.value)
+        () => store.ackReclaim(id, token)
     );
     if (!result.ok) return reply;
-    if (result.value === 'missing') {
-        return reply.code(HTTP_NOT_FOUND).send({ error: 'No such reclaim', code: ERROR_CODES.NOT_FOUND });
-    }
-    if (result.value === 'lost') {
-        return reply.code(HTTP_CONFLICT).send({ error: 'Reclaim is not yours', code: ERROR_CODES.LEASE_LOST });
-    }
+    if (result.value === 'missing') return noSuchReclaim(reply);
+    if (result.value === 'lost') return reclaimNotYours(reply);
     return reply.code(HTTP_OK).send({ id });
 }
+
+// The driver's renewal of a reclaim it is still removing: the lease is extended while the token
+// still owns the row, so a deletion longer than the claim's lease is never re-offered under it.
+export async function handleReclaimsRenew(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
+
+    const { token, leaseSeconds: requested } = body(request.body);
+    if (typeof token !== 'string' || !UUID.test(token))
+        return bad(reply, ERROR_CODES.BAD_TOKEN, 'token must be a uuid');
+    const lease = leaseSeconds(requested);
+    if (lease === null) {
+        return bad(reply, ERROR_CODES.BAD_LEASE, `leaseSeconds must be an integer 1..${LEASE_SECONDS_MAX}`);
+    }
+
+    const result = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'reclaim renew failed'),
+        () => store.renewReclaim(id, token, lease)
+    );
+    if (!result.ok) return reply;
+    if (result.value.result === 'missing') return noSuchReclaim(reply);
+    if (result.value.result === 'lost') return reclaimNotYours(reply);
+    return reply.code(HTTP_OK).send({ leaseExpiresAt: result.value.leaseExpiresAt });
+}
+
+const noSuchReclaim = (reply: FastifyReply) =>
+    reply.code(HTTP_NOT_FOUND).send({ error: 'No such reclaim', code: ERROR_CODES.NOT_FOUND });
+const reclaimNotYours = (reply: FastifyReply) =>
+    reply.code(HTTP_CONFLICT).send({ error: 'Reclaim is not yours', code: ERROR_CODES.LEASE_LOST });
 
 // The worker's verdict that the run is over. The 200 body carries `threadDone` — the store's
 // answer, computed in the same transaction as the verdict, to whether the job's whole thread is

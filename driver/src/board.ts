@@ -1,6 +1,7 @@
 import { artifactCalls } from './artifact-calls.js';
 import { BoardHttpError } from './board-retry.js';
 import { githubCredentialCall } from './github-credential-call.js';
+import { reclaimCalls } from './reclaim-calls.js';
 import { verdictCalls } from './board-verdict.js';
 import type { EvidencePolicy, GatesOutcome, ReviewEvidence } from './evidence-policy.js';
 import { type ExecutorType, isExecutorType } from './executors.js';
@@ -409,8 +410,10 @@ export interface VerdictEvidence {
  * exclusive with a live attempt's startup sync; the row is deleted when the work is acked.
  */
 export interface Reclaim {
-    /** The queue row's own id — the lease token acking the removal produces. */
+    /** The queue row's own id — the work order's name. */
     id: string;
+    /** This acquisition's own token (issue #821): the ack, the renew and the checkout claim ride it. */
+    token: string;
     /** The thread whose tree the removed job left behind. */
     rootJobId: string;
     /** The checkout the thread's worktree belonged to, when the removed job named one. */
@@ -421,6 +424,9 @@ export interface Reclaim {
 
 /** What acking a reclaim answered: consumed, or another worker already has it. */
 export type ReclaimAck = 'ok' | 'lost' | 'missing';
+
+/** What renewing a reclaim answered: extended, another acquisition holds it, or it is gone. */
+export type ReclaimRenewal = 'held' | 'lost' | 'missing';
 
 /**
  * The runner container's vitals at one sample, plus the agent's current activity line — what the
@@ -497,10 +503,15 @@ export interface Board {
     claimReclaim(worker: string): Promise<Reclaim | null>;
     /**
      * Tells the board the removed thread's tree was reclaimed, so the row leaves the queue
-     * instead of being offered again. `lost` means the lease ran out under this worker — another
-     * worker holds the row now and its tree is this worker's no longer.
+     * instead of being offered again — under the acquisition's `token`. `lost` means another
+     * acquisition holds the row now; the identical ack replayed answers `ok`.
      */
-    ackReclaim(id: string, worker: string): Promise<ReclaimAck>;
+    ackReclaim(id: string, token: string): Promise<ReclaimAck>;
+    /**
+     * Extends the row's lease by the driver's `leaseSeconds` while `token` still owns it, so a
+     * removal longer than its claim's lease is never re-offered under it. `signal` bounds the request.
+     */
+    renewReclaim(id: string, token: string, signal?: AbortSignal): Promise<ReclaimRenewal>;
     /**
      * Streams a rolling tail of the runner's output while the job runs, so the dashboard shows the
      * work instead of a spinner. `runtime` rides beside it when the driver has a fresh sample of
@@ -884,20 +895,7 @@ export function createBoard({
         ...artifactCalls({ url, token, fetch }),
         ...githubCredentialCall({ url, fetch }),
 
-        async claimReclaim(worker) {
-            const response = await post('/api/reclaims/claim', { worker, leaseSeconds });
-            if (response.status === HTTP_NO_CONTENT) return null;
-            return (await response.json()) as Reclaim;
-        },
-
-        async ackReclaim(id, worker) {
-            const response = await post(`/api/reclaims/${id}/ack`, { worker }, true);
-            // 409 means this worker's lease on the row ran out — another worker holds it now.
-            // 404 means the row already left the queue (acked elsewhere, or the delete landed).
-            if (response.status === HTTP_CONFLICT) return 'lost';
-            if (response.status === HTTP_NOT_FOUND) return 'missing';
-            return 'ok';
-        },
+        ...reclaimCalls(post, leaseSeconds),
 
         async progress(job, output, runtime) {
             const response = await post(`/api/jobs/${job.id}/output`, {

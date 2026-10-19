@@ -5,7 +5,7 @@ import type { Runner } from './runner.js';
 import { worktreeRelDir } from './publish.js';
 import type { GateStack, LoopRuntime } from './loop-types.js';
 import { runJob } from './loop-run.js';
-import { processReclaim } from './loop-reclaim.js';
+import { processReclaim, processVerdictReclaim } from './loop-reclaim.js';
 import { CLAUDE_CODE } from './executors.js';
 import { withBoardRetry } from './board-retry.js';
 import { type SyncQueue, syncQueue } from './sync-queue.js';
@@ -41,7 +41,16 @@ export interface LoopDeps {
     syncWaitMs?: number;
 }
 
-const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** The production sleep; `until` settling ends it early and clears its timer, so nothing outlives its caller. */
+export const wait = (ms: number, until?: Promise<unknown>) =>
+    new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        const stop = () => {
+            clearTimeout(timer);
+            resolve();
+        };
+        until?.then(stop, stop);
+    });
 
 /**
  * A claimed job this loop refuses to run as claimed — no workspace, no resolvable task worktree,
@@ -152,27 +161,19 @@ function handoverOf(rt: LoopRuntime) {
  * reclaim for the same root is never undone by a predecessor settling late.
  */
 function startVerdictReclaim(
-    deps: Pick<LoopRuntime, 'board' | 'runner' | 'config' | 'log' | 'reclaims'>,
+    deps: Pick<LoopRuntime, 'board' | 'runner' | 'config' | 'log' | 'sleep' | 'reclaims'>,
     job: BoardJob,
     order: { reclaimId: string; after: Promise<void> | undefined }
 ): void {
-    const { board, runner, config, log, reclaims } = deps;
+    const { board, runner, config, log, sleep, reclaims } = deps;
     const root = job.rootJobId ?? job.id;
-    let reclaim: Promise<void> = Promise.resolve();
-    reclaim = (async () => {
-        try {
-            // The tree outlives the attempt's last step.
-            await order.after;
-            const outcome = await runner.reclaimWorktree(job);
-            if (!outcome.ok) return log(`job ${job.id}: the task worktree could not be reclaimed: ${outcome.reason}`);
-            const ack = await board.ackReclaim(order.reclaimId, config.worker);
-            if (ack !== 'ok') log(`job ${job.id}: the reclaim ack answered ${ack}`);
-        } catch (e) {
-            log(`job ${job.id}: the task worktree could not be reclaimed: ${(e as Error).message}`);
-        } finally {
-            if (reclaims.get(root) === reclaim) reclaims.delete(root);
-        }
-    })();
+    const reclaim: Promise<void> = (async () => {
+        // The tree outlives the attempt's last step.
+        await order.after;
+        await processVerdictReclaim({ board, runner, config, log, sleep }, job, order.reclaimId);
+    })().finally(() => {
+        if (reclaims.get(root) === reclaim) reclaims.delete(root);
+    });
     reclaims.set(root, reclaim);
 }
 
@@ -252,10 +253,12 @@ export function createLoop({
      * follow-up's insertion: reclaim sits downstream of the verdict and runs only when the answer
      * says done-and-terminal, so a follow-up still queued keeps its tree.
      *
-     * The order is a reclaim row claimed by this worker (issue #821), acked once the removal lands —
-     * the ack marks the tree reclaimed. A refusal, a throw or a lost ack skips the ack and the row
-     * returns to the queue when its lease expires: delayed, never lost, and never the verdict's
-     * cost. A refused tree stays on the disk (the script deletes only what the sync created).
+     * The order is a reclaim row owned by this attempt's lease token (issue #821), renewed under it
+     * while the removal runs (and never removed unless the first renew holds), acked under it once
+     * the removal lands — the ack marks the tree reclaimed, and a lost ack response is replayed for
+     * the lease. A refusal, a throw or a refused ack skips the ack and the row returns to the queue
+     * when its lease expires: delayed, never lost, and never the verdict's cost. A refused tree
+     * stays on the disk (the script deletes only what the sync created).
      *
      * The removal is registered under the thread's ROOT id in the reclaim barrier BEFORE it
      * starts and the entry is dropped when it settles: a follow-up of the same thread claimed by
@@ -275,7 +278,7 @@ export function createLoop({
         }
         const { reclaimId } = verdict;
         if (verdict.state !== 'held' || reclaimId === null) return verdict.state;
-        startVerdictReclaim({ board, runner, config, log, reclaims }, job, { reclaimId, after });
+        startVerdictReclaim({ board, runner, config, log, sleep, reclaims }, job, { reclaimId, after });
         return verdict.state;
     }
 
@@ -301,6 +304,7 @@ export function createLoop({
                 runner,
                 config,
                 log,
+                sleep,
                 failureLog: reclaimFailureLog,
                 inFlightReclaim: (root) => reclaims.has(root),
             },

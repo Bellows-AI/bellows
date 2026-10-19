@@ -789,11 +789,16 @@ export type ReopenResult = { result: 'ok' } | 'missing' | 'not_done' | 'reclaime
  * to it whatever later pollers ask for. */
 export interface ReclaimClaim {
     id: string;
+    /** This acquisition's own ownership token (075): the ack and the renew are fenced by it. */
+    token: string;
     rootJobId: string;
     repo: string | null;
     workspacePath: string | null;
     leaseExpiresAt: string;
 }
+
+/** A reclaim renew's answer: extended, held by another acquisition, or gone (acked or never queued). */
+export type ReclaimRenewal = { result: 'ok'; leaseExpiresAt: string } | { result: 'lost' } | { result: 'missing' };
 
 /**
  * One row of the batched lease lookup the orphan reaper sweeps with (issue #301): the job's
@@ -1028,15 +1033,15 @@ export interface JobStore {
      * The user's reopening of a done task (issue #327): clears the done stamp on EVERY member of
      * the thread and withdraws a queued task_reclaim row, so a task closed by mistake can be
      * followed up again — `createFollowUp`'s thread-wide done predicate is what this reverses.
-     * Decided under the same per-thread advisory lock the claim and remove take, so the checks,
-     * the withdraw and the clear see every earlier claim of the thread commit; the withdraw only
-     * takes rows no worker holds a LIVE claim on, and re-verifies after the delete, so a row
-     * claimed mid-transaction is refused rather than yanked from under its worker.
+     * Decided under the same per-thread advisory lock the claim, remove and reclaim ack take, so
+     * the checks, the withdraw and the clear see every earlier claim and ack of the thread commit;
+     * the withdraw only takes rows no acquisition ever took, and re-verifies after the delete, so a
+     * row claimed mid-transaction is refused rather than yanked from under its worker.
      *
      * Refuses once the worktree is gone (`reclaimed` — the `worktree_reclaimed_at` marker, 045:
-     * stamped at the ack), and while a reclaim is in flight
-     * (`reclaiming` — a live claim on the row; the lease expiry is what relinquishes a crashed
-     * worker's claim), because a follow-up resumes a session in the tree it ran in. Not
+     * stamped at the ack), and while a reclaim may be in flight (`reclaiming` — any acquisition
+     * of the row, its lease live or expired: a reclaim group can outlive its driver, so only the
+     * ack ends the refusal), because a follow-up resumes a session in the tree it ran in. Not
      * idempotent: reopening a task that is not done answers `not_done`, and so does the second
      * reopen.
      */
@@ -1045,8 +1050,17 @@ export interface JobStore {
      * claimable by the expiry a previous claim GRANTED it, never by the polling worker's own
      * leaseSeconds. */
     claimReclaim(worker: string, leaseSeconds: number): Promise<ReclaimClaim | null>;
-    /** Removes the reclaim row once the driver has actually taken the tree. The claim's worker only. */
-    ackReclaim(id: string, worker: string): Promise<'ok' | 'lost' | 'missing'>;
+    /**
+     * Removes the reclaim row once the driver has actually taken the tree, under the acquisition's
+     * own token only, and records the ack's receipt: the identical ack replayed answers `ok`, any
+     * other token `lost`, a row never queued `missing`.
+     */
+    ackReclaim(id: string, token: string): Promise<'ok' | 'lost' | 'missing'>;
+    /**
+     * Extends the row's lease to `leaseSeconds` from now while `token` still owns it — even past
+     * its expiry, since a row still carrying the token was never re-acquired.
+     */
+    renewReclaim(id: string, token: string, leaseSeconds: number): Promise<ReclaimRenewal>;
     /**
      * The batched lease lookup behind `POST /api/jobs/leases` (issue #301): every named id's
      * status and current lease, in no particular order. Ids this org's board does not know are
@@ -1240,9 +1254,7 @@ export interface JobStore {
                 baseBranch: string;
             } | null;
         }
-    ): Promise<
-        { result: 'ok'; threadDone: boolean; reclaimId: string | null } | { result: 'lost' | 'missing' | 'conflict' }
-    >;
+    ): Promise<{ result: 'ok'; threadDone: boolean; reclaimId: string | null } | SettleRefusal>;
     /**
      * Stages the attempt's final envelope, the input `complete` takes, under its lease (issue #821),
      * renewing it by `leaseSeconds`: immutable, and binding — see `job-store-conclusions.ts`.

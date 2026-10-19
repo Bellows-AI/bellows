@@ -304,11 +304,12 @@ expect_contains     'the driver role manages the per-job env Secret' "$rbac" \
     "resources: ['secrets']
       verbs: ['create', 'delete']"
 # The checkout claim that makes the re-claim fence atomic: POSTed to take the checkout, read to
-# order the contenders, deleted to release or take over. `get` is safe on ConfigMaps and would
-# not be on secrets — the claim carries no secret material.
+# order the contenders, patched to revoke an orphaned claim before its reap, deleted to release or
+# take over. `get` is safe on ConfigMaps and would not be on secrets — the claim carries no secret
+# material.
 expect_contains     'the driver role manages the checkout claim' "$rbac" \
     "resources: ['configmaps']
-      verbs: ['create', 'get', 'delete']"
+      verbs: ['create', 'get', 'delete', 'patch']"
 expect_contains     'the driver role lists pods, only to find them' "$rbac" "verbs: ['create', 'delete', 'list']"
 # Gate runs ride the jobs rule (a gate run IS a Job), but a declared SERVICE is a long-running
 # neighbor pod, and its DNS name is a Service object: create before the runner starts, delete
@@ -775,6 +776,17 @@ expect_contains 'the admission policy binds the driver identity' "$admission" \
 expect_contains 'the admission policy names the per-attempt Secret pattern' "$admission" \
     '^factory-(job|gate)-[a-z0-9-]+-env$'
 expect_contains 'the admission policy fences deletes by label' "$admission" "'factory.job' in variables.target.metadata.labels"
+# The Role's namespace-wide configmaps `patch` (issue #821) reaches only a checkout claim, and only
+# to revoke it: labels and data kept, no annotation but factory.revoked changed.
+expect_contains 'the admission policy matches configmap updates' "$admission" "operations: ['UPDATE']
+              resources: ['configmaps']"
+expect_contains 'the admission policy updates only checkout claims' "$admission" \
+    "oldObject.metadata.name.matches('^factory-job-[0-9a-f-]+-claim\$')"
+expect_contains 'the admission policy keeps a claim update to its data' "$admission" 'object.data == oldObject.data'
+expect_contains 'the admission policy keeps a claim update to its labels' "$admission" \
+    'object.metadata.labels == oldObject.metadata.labels'
+expect_contains 'the admission policy lets a claim update change only factory.revoked' "$admission" \
+    "k == 'factory.revoked'"
 expect_contains 'the admission policy denies' "$admission" 'validationActions: [Deny]'
 expect_not_contains 'the admission policy never admits the dashboard Secret' "$admission" "$RELEASE-factory-dashboard"
 expect_contains 'the admission policy scopes workspace mounts to a member subPath' "$admission" \
@@ -1932,6 +1944,26 @@ expr="$(probe_pod expr "    containers: [{name: c, image: alpine, $HARD_C, volum
 expect_contains 'the policy refuses a subPathExpr workspace mount' "$expr" 'only at a member subPath'
 deleted="$(kubectl delete secret "$RELEASE-factory-dashboard" --as="$DRIVER_SA" -n "$NAMESPACE" --dry-run=server 2>&1)"
 expect_contains 'the policy refuses deleting an unlabelled Secret' "$deleted" 'only objects labelled factory.job'
+
+# The checkout claim's revoke (issue #821): the one update the driver may make, to a claim alone.
+# The probe objects are made as the test's own identity, which no driver policy matches.
+PROBE_CLAIM="factory-job-00000000-0000-4000-8000-000000000821-claim"
+kubectl create configmap "$PROBE_CLAIM" -n "$NAMESPACE" --from-literal=holder=probe --from-literal=claimSeq=1 >/dev/null
+kubectl label configmap "$PROBE_CLAIM" -n "$NAMESPACE" factory.job=admission-probe >/dev/null
+kubectl create configmap admission-probe-plain -n "$NAMESPACE" --from-literal=k=v >/dev/null
+kubectl label configmap admission-probe-plain -n "$NAMESPACE" factory.job=admission-probe >/dev/null
+as_driver_patch() { kubectl patch configmap "$1" --as="$DRIVER_SA" -n "$NAMESPACE" --type=merge -p "$2" --dry-run=server 2>&1; }
+revoked="$(as_driver_patch "$PROBE_CLAIM" '{"metadata":{"annotations":{"factory.revoked":"probe"}}}')"
+expect_contains 'the policy admits revoking a checkout claim' "$revoked" 'patched'
+rewritten="$(as_driver_patch "$PROBE_CLAIM" '{"data":{"holder":"thief"}}')"
+expect_contains 'the policy refuses a claim patch that changes its data' "$rewritten" 'changes only factory.revoked'
+relabelled="$(as_driver_patch "$PROBE_CLAIM" '{"metadata":{"labels":{"factory.lease":"thief"}}}')"
+expect_contains 'the policy refuses a claim patch that changes its labels' "$relabelled" 'changes only factory.revoked'
+annotated="$(as_driver_patch "$PROBE_CLAIM" '{"metadata":{"annotations":{"other":"x"}}}')"
+expect_contains 'the policy refuses a claim patch that adds another annotation' "$annotated" 'changes only factory.revoked'
+plain="$(as_driver_patch admission-probe-plain '{"metadata":{"annotations":{"factory.revoked":"probe"}}}')"
+expect_contains 'the policy refuses patching a configmap that is not a checkout claim' "$plain" 'updates only checkout claims'
+kubectl delete configmap "$PROBE_CLAIM" admission-probe-plain -n "$NAMESPACE" >/dev/null
 
 # Issue #382, the half that cannot be asserted by rendering. Phase one proved the CEL is in the
 # document; this proves a real apiserver COMPILES it and refuses on it. The distinction matters
