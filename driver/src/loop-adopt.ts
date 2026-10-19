@@ -13,7 +13,7 @@ import { AdoptionBlocked, type AdoptedRun } from './runner.js';
 export async function adoptStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
     const { rt, job, state } = ctx;
     if (isAgentless(job)) return null;
-    const adopting = rt.runner.adopt(job);
+    const adopting = rt.runner.adopt(job, state.signal);
     let adoptedOut: { value: AdoptedRun | null } | null;
     try {
         adoptedOut = await raceStep(state.signal, adopting);

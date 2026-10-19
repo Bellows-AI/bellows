@@ -6,9 +6,9 @@ import { supervisorEnvFileBody, workspacePath } from './claim.js';
 import { claudeExportScript, supervisorScript } from './container-scripts.js';
 import { containerHardeningArgs, workspacesMountArgs } from './docker.js';
 import { ctlVolumeName, idsOf, mailboxMountArgs } from './docker-mailbox.js';
-import type { ExecDocker, RunnerFiles } from './docker-runner-support.js';
+import { type ExecDocker, noSuchObject, type RunnerFiles } from './docker-runner-support.js';
 import { JOB_LABEL, LEASE_LABEL, RECLAIM_LABEL, ROLE_LABEL } from './labels.js';
-import type { RunSession } from './runner.js';
+import { Inconclusive, type RunSession } from './runner.js';
 import {
     EXPORTER_CONTAINER,
     MAILBOXES,
@@ -207,21 +207,40 @@ export async function startGroup(execDocker: ExecDocker, job: BoardJob, session:
 
 /**
  * Waits for the supervisor to finalize and exit — the drain, the manifests, the report — and
- * answers its exit status; null when it did not end in `ms` or the daemon could not say. The group
- * is the agent's to outlive, so this is read after the agent's close, never before.
+ * answers its exit status; null when it did not end in `ms`, or its container is gone. Rejects when
+ * the daemon could not say, or answered anything but a status (#824): that is no confirmation the
+ * supervisor is past finalizing. The
+ * group is the agent's to outlive, so this is read after the agent's close, never before.
  */
+export async function waitSupervisorExit(
+    execDocker: ExecDocker,
+    job: BoardJob,
+    ms: number,
+    signal?: AbortSignal
+): Promise<number | null> {
+    let waited: string;
+    try {
+        waited = (await execDocker(['wait', supervisorName(job)], { timeout: ms, ...(signal ? { signal } : {}) }))
+            .stdout;
+    } catch (e) {
+        if ((e as { killed?: boolean }).killed === true || noSuchObject(e, CONTAINER) || signal?.aborted) return null;
+        throw e;
+    }
+    // The whole answer is the exit status, or it is no answer at all.
+    if (!/^\d+$/.test(waited.trim())) throw new Inconclusive(`docker wait answered '${waited.trim()}'`);
+    return Number(waited.trim());
+}
+
+/** The words docker refuses a missing container in: `inspect` and `wait` say `No such object`. */
+const CONTAINER = ['container', 'object'];
+
+/** `waitSupervisorExit`, with a wait the daemon could not answer read as one that did not end. */
 export async function awaitSupervisor(
     execDocker: ExecDocker,
     job: BoardJob,
     ms: number = SUPERVISOR_WINDDOWN_MS
 ): Promise<number | null> {
-    try {
-        const waited = await execDocker(['wait', supervisorName(job)], { timeout: ms });
-        const code = Number.parseInt(waited.stdout.trim(), 10);
-        return Number.isFinite(code) ? code : null;
-    } catch {
-        return null;
-    }
+    return waitSupervisorExit(execDocker, job, ms).catch(() => null);
 }
 
 /**

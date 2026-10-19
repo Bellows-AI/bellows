@@ -502,15 +502,20 @@ export interface ListedRunnerJob {
 }
 
 /**
- * A runner Job of `pair` that ran an agent and finished — the one shape of Job a later claim may
- * adopt (issue #792). A supervisor-only group (an agentless node, the group made after an
- * adoption) ran no agent and is no run; a Job its driver suspended (issue #821) is no finished run.
+ * A runner Job of `pair` that runs an agent. A supervisor-only group (an agentless node, the group
+ * made after an adoption) ran no agent and is no run; a Job its driver suspended (issue #821) is none.
  */
-export const finishedAgentRun = (item: ListedRunnerJob, pair: BoardJob): boolean =>
+export const agentRunJob = (item: ListedRunnerJob, pair: BoardJob): boolean =>
     item.metadata?.name === runnerJobName(pair) &&
     item.spec?.suspend !== true &&
-    (item.spec?.template?.spec?.containers ?? []).some((container) => container.name === AGENT_CONTAINER) &&
-    ((item.status?.succeeded ?? 0) >= 1 || (item.status?.failed ?? 0) >= 1);
+    (item.spec?.template?.spec?.containers ?? []).some((container) => container.name === AGENT_CONTAINER);
+
+/**
+ * A runner Job of `pair` that ran an agent and finished — the one shape of Job a later claim adopts
+ * as it is listed (issue #792); one whose supervisor is still finalizing is waited out first (#824).
+ */
+export const finishedAgentRun = (item: ListedRunnerJob, pair: BoardJob): boolean =>
+    agentRunJob(item, pair) && ((item.status?.succeeded ?? 0) >= 1 || (item.status?.failed ?? 0) >= 1);
 
 /**
  * A batch Job this driver creates for its own auxiliary work — one gate run, or the

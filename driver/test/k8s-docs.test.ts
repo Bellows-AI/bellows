@@ -162,6 +162,17 @@ describe('the executor isolation record (#382)', () => {
         expect(kubernetesDocs).toContain('`ttlSecondsAfterFinished`');
     });
 
+    // Issue #824 (D13): a runner whose agent exited is waited out and adopted, never swept; the claim
+    // fences the checkout, not the steps a lost driver still alive sends, which the group's bound ends.
+    it('states that a finalizing runner is waited out, and what the takeover does not fence', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            'one whose agent exited is waited out (`SUPERVISOR_WINDDOWN_MS`) and adopted with its logged report'
+        );
+        expect(prose(kubernetesDocs)).toContain(
+            "a lost driver still alive steps into it until its lease or the group's orphan bound ends"
+        );
+    });
+
     // Issue #821 (D1): a board that takes neither the staged conclusion nor the verdict for a whole
     // lease leaves the group to adoption, which keeps the agent's outcome but not the rest.
     it('states what an outage past the lease costs a finished attempt', () => {

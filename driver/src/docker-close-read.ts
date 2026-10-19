@@ -22,11 +22,11 @@ import {
 import { type DriverConfig, executorImage } from './config.js';
 import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts.js';
 import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
-import { type ExecDocker, linesOf, type Spawn, readUtf8 } from './docker-runner-support.js';
-import { awaitSupervisor, supervisorLossOf } from './docker-group.js';
+import { type ExecDocker, linesOf, noSuchObject, type Sleep, type Spawn, readUtf8 } from './docker-runner-support.js';
+import { supervisorLossOf, supervisorName, waitSupervisorExit } from './docker-group.js';
 import { readDockerKills } from './docker-teardown.js';
-import { adoptedVerdictOf, infraLossOf, killEndsGroup } from './termination.js';
-import { SUPERVISOR_EXIT } from './supervisor-contract.js';
+import { adoptedVerdictOf, infraLossOf, killEndsGroup, reportFinalized, reportVerdictOf } from './termination.js';
+import { type FinalReport, finalReportOf, SUPERVISOR_EXIT, SUPERVISOR_WINDDOWN_MS } from './supervisor-contract.js';
 import {
     containerName,
     workspacesMountArgs,
@@ -35,8 +35,11 @@ import {
     CLOSE_READ_DEADLINE_MS,
 } from './docker.js';
 import {
+    AdoptionBlocked,
     type AdoptedRun,
+    adoptionAbandoned,
     appendTailKept,
+    Inconclusive,
     commandMark,
     type KeptLog,
     type RunOutcome,
@@ -258,6 +261,38 @@ function readRunnerLog(spawnFn: Spawn, name: string): Promise<KeptLog> {
     });
 }
 
+/** An exited runner's state as `inspect` answers it: its exit code, or `Inconclusive` for anything else. */
+function runnerStateOf(read: string): { ExitCode: number; StartedAt?: string } {
+    let state: unknown;
+    try {
+        state = JSON.parse(read);
+    } catch {
+        throw new Inconclusive('the exited runner inspect answered a body that is not JSON');
+    }
+    const { ExitCode, StartedAt } = (state ?? {}) as { ExitCode?: unknown; StartedAt?: unknown };
+    if (typeof ExitCode !== 'number') throw new Inconclusive('the exited runner inspect answered no exit code');
+    return typeof StartedAt === 'string' ? { ExitCode, StartedAt } : { ExitCode };
+}
+
+/** The last lines of a supervisor's log the final report is the last of. */
+const REPORT_LOG_TAIL = '20';
+
+/**
+ * The final report the earlier supervisor logged; null when it logged none, or its container is
+ * gone. A log the daemon would not serve is no answer — "no report" would make a supervisor that
+ * reported and then crashed a loss, swept unread — so the attempt stands down instead.
+ */
+async function readSupervisorReport(execDocker: ExecDocker, prior: BoardJob): Promise<FinalReport | null> {
+    let log: string;
+    try {
+        log = (await execDocker(['logs', '--tail', REPORT_LOG_TAIL, supervisorName(prior)])).stdout;
+    } catch (e) {
+        if (noSuchObject(e, ['container', 'object'])) return null;
+        throw new AdoptionBlocked(`the earlier supervisor's report could not be read: ${(e as Error).message}`);
+    }
+    return finalReportOf(log);
+}
+
 /**
  * The docker `Runner.adopt` (issue #792): a driver restarted while its runner container ran on, and
  * the claim that superseded it reads the container that has since exited — its exit code, its log,
@@ -267,51 +302,107 @@ function readRunnerLog(spawnFn: Spawn, name: string): Promise<KeptLog> {
  * before its verdict lands leaves it for the next to adopt, and the reaper takes it once the job is
  * terminal. A timeout the dead driver enforced reads as the exit it caused: the deadline died with it.
  */
-export async function dockerAdopt(
-    deps: {
-        execDocker: ExecDocker;
-        spawnFn: Spawn;
-        config: DriverConfig;
-        fence: (job: BoardJob) => Promise<void>;
-        adopted: Map<string, string>;
-    },
-    job: BoardJob
+export async function dockerAdopt(deps: AdoptDeps, job: BoardJob, signal?: AbortSignal): Promise<AdoptedRun | null> {
+    const found = await listedWithRetries(() => exitedEarlierRunner(deps.execDocker, job), { ...deps, signal });
+    if (!found) return null;
+    try {
+        return await adoptExited(deps, job, found, signal);
+    } catch (e) {
+        // An exited earlier run exists: no throw may fall through to a fresh run, whose fence would
+        // remove it unread — the attempt stands down to its lease instead (#824).
+        if (e instanceof AdoptionBlocked || signal?.aborted) throw e;
+        throw new AdoptionBlocked(`the earlier run could not be adopted: ${(e as Error).message}`);
+    }
+}
+
+/** How often the adoption lists the exited runners before a refusing daemon stands the attempt down. */
+const DISCOVERY_ATTEMPTS = 3;
+/** The pause between those listings — the kubernetes listing's pace (`POLL_MS`). */
+const DISCOVERY_RETRY_MS = 2_000;
+
+/**
+ * The exited-runner listing, tried again on a refusal after a pause a stand-down cuts short; still
+ * refused, the attempt stands down: a daemon that could not say is no "nothing to adopt", and a
+ * fresh run's fence would remove a finalizing group unread once it answers again (#824).
+ */
+async function listedWithRetries<T>(
+    list: () => Promise<T>,
+    pace: { sleep: Sleep; signal: AbortSignal | undefined },
+    attempt = 1
+): Promise<T> {
+    try {
+        return await list();
+    } catch (e) {
+        if (attempt >= DISCOVERY_ATTEMPTS) {
+            throw new AdoptionBlocked(`the earlier runners could not be listed: ${(e as Error).message}`);
+        }
+    }
+    try {
+        await pace.sleep(DISCOVERY_RETRY_MS, pace.signal);
+    } catch {
+        throw adoptionAbandoned();
+    }
+    if (pace.signal?.aborted) throw adoptionAbandoned();
+    return listedWithRetries(list, pace, attempt + 1);
+}
+
+interface AdoptDeps {
+    execDocker: ExecDocker;
+    sleep: Sleep;
+    spawnFn: Spawn;
+    config: DriverConfig;
+    fence: (job: BoardJob) => Promise<void>;
+    adopted: Map<string, string>;
+}
+
+/** `dockerAdopt` over the exited earlier runner it found. */
+async function adoptExited(
+    deps: AdoptDeps,
+    job: BoardJob,
+    found: { prior: BoardJob; claimSeq: number; session: string | null },
+    signal?: AbortSignal
 ): Promise<AdoptedRun | null> {
     const { execDocker, config } = deps;
-    const found = await exitedEarlierRunner(execDocker, job);
-    if (!found) return null;
     const { prior, claimSeq, session } = found;
     // The agent's exit is not the run's end: its supervisor may still be draining the exporter and
     // finalizing (the dead driver never waited for it). Waited out, bounded — never swept unread —
     // and a supervisor that ended any way but finalizing is a run the platform took away, which
     // the sync's re-claim fence takes as ever.
     // Why the lost driver ended the run, when it did, was recorded on the attempt before its kill: a
-    // hard kill explains the supervisor's exit, and every reason is the verdict it was live.
-    const supervisorExit = await awaitSupervisor(execDocker, prior);
+    // hard kill explains the supervisor's exit, and every reason is the verdict it was live; so does
+    // the final report the supervisor logged, which a crash after it does not unsay (#824).
+    const supervisorExit = await waitSupervisorExit(execDocker, prior, SUPERVISOR_WINDDOWN_MS, signal).catch(
+        (e: Error) => {
+            throw new AdoptionBlocked(`the earlier supervisor could not be waited for: ${e.message}`);
+        }
+    );
+    if (signal?.aborted) throw adoptionAbandoned();
     const kills = await readDockerKills(execDocker, prior);
-    const timedOut = supervisorExit === SUPERVISOR_EXIT.deadline || kills.some((kill) => kill.reason === 'timeout');
+    const report = await readSupervisorReport(execDocker, prior);
+    const timedOut =
+        supervisorExit === SUPERVISOR_EXIT.deadline ||
+        report?.outcome === 'timed_out' ||
+        kills.some((kill) => kill.reason === 'timeout');
     const loss = infraLossOf({
         killedByDriver: kills.some((kill) => killEndsGroup(kill.reason)),
         timedOut,
-        reported: false,
+        reported: reportFinalized(report),
         vanished: null,
         unfinalized: supervisorLossOf(supervisorExit, false),
     });
     if (loss) return null;
     const name = containerName(prior);
-    const state = JSON.parse((await execDocker(['inspect', '--format', '{{json .State}}', name])).stdout) as {
-        ExitCode?: number;
-        StartedAt?: string;
-    };
+    const state = runnerStateOf((await execDocker(['inspect', '--format', '{{json .State}}', name])).stdout);
     const full = await readRunnerLog(deps.spawnFn, name);
     const outcome: RunOutcome = {
-        exitCode: state.ExitCode ?? null,
+        exitCode: state.ExitCode,
         output: reportTail(full.content),
         // A budget the supervisor enforced reads as the exit it caused: its own 124.
         timedOut,
         started: true,
         fullLog: full.content,
         logTruncated: full.truncated,
+        ...reportVerdictOf(report),
         ...adoptedVerdictOf(kills),
     };
     const startedAt = state.StartedAt ?? new Date(0).toISOString();
@@ -321,12 +412,14 @@ export async function dockerAdopt(
         session ? { id: session, resume: false } : null
     );
     if (session && !outcome.sessionId) outcome.sessionId = session;
+    if (signal?.aborted) throw adoptionAbandoned();
     deps.adopted.set(job.leaseToken, prior.leaseToken);
     try {
         await deps.fence(job);
     } catch (e) {
-        // Not adopted after all: the sync's fence that follows sweeps the read run like any other.
+        // Not adopted after all: the run is left to the lease, and the next claim reads it again.
         deps.adopted.delete(job.leaseToken);
+        if (signal?.aborted) throw adoptionAbandoned();
         throw e;
     }
     return { outcome, claimSeq };

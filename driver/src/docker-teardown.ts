@@ -3,8 +3,9 @@ import type { DriverConfig } from './config.js';
 import { awaitSupervisor } from './docker-group.js';
 import { killMarkName } from './docker-mailbox.js';
 import type { ExecDocker } from './docker-runner-support.js';
-import { alreadyGone, linesOf } from './docker-runner-support.js';
+import { linesOf, noSuchObject } from './docker-runner-support.js';
 import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
+import { Inconclusive } from './runner.js';
 import { forgetDeclaredServices, networkName } from './services.js';
 import type { StepSink } from './step-control.js';
 import { releaseSteps } from './supervised-steps.js';
@@ -66,7 +67,7 @@ export async function readDockerKills(execDocker: ExecDocker, job: BoardJob): Pr
         const read = await execDocker(['volume', 'inspect', '--format', '{{json .Labels}}', killMarkName(job, reason)])
             .then((out) => out.stdout)
             .catch((e: unknown) => {
-                if (alreadyGone(e)) return null;
+                if (noSuchObject(e, ['volume'])) return null;
                 throw e;
             });
         const labels = read === null ? null : labelsOf(read);
@@ -77,13 +78,26 @@ export async function readDockerKills(execDocker: ExecDocker, job: BoardJob): Pr
     return records;
 }
 
-/** A volume's labels as `inspect` answers them; null for an answer that does not parse. */
+/**
+ * A volume's labels as `inspect` answers them; null for a volume that carries none. Anything else
+ * is `Inconclusive` — a record that cannot be read is no proof there is none (#824).
+ */
 function labelsOf(read: string): Record<string, string> | null {
+    let labels: unknown;
     try {
-        return JSON.parse(read) as Record<string, string> | null;
+        labels = JSON.parse(read);
     } catch {
-        return null;
+        throw new Inconclusive('a kill marker answered labels that are not JSON');
     }
+    if (labels === null) return null;
+    if (
+        typeof labels !== 'object' ||
+        Array.isArray(labels) ||
+        !Object.values(labels).every((v) => typeof v === 'string')
+    ) {
+        throw new Inconclusive('a kill marker answered labels that are not a label map');
+    }
+    return labels as Record<string, string>;
 }
 
 /** Records the reason, then hard-kills the group: a record that fails never holds the kill back. */

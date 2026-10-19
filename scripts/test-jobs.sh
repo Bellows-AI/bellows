@@ -1290,6 +1290,11 @@ driver_pid=""
     [ "$(docker inspect -f '{{.State.ExitCode}}' "$killed_runner" 2>/dev/null)" = '0' ] &&
     ok 'the runner of a killed driver runs to its end' ||
     bad 'the runner of a killed driver runs to its end' "$(docker ps -a --filter "label=factory.job=$killed" --format '{{.Names}} {{.Status}}')"
+# Issue #824: the next claim takes the group between its agent's exit and its supervisor's end —
+# the orphaned supervisor serves on until its bound — and waits it out rather than sweeping it.
+[ -n "$(docker ps -q --filter "label=factory.job=$killed" --filter 'label=factory.role=supervisor' --filter status=running)" ] &&
+    ok 'its supervisor still finalizes when the next driver starts' ||
+    bad 'its supervisor still finalizes when the next driver starts' "$(docker ps -a --filter "label=factory.job=$killed" --format '{{.Names}} {{.Status}}')"
 # A fast reaper round: the adopted run is kept until its verdict lands (issue #821), then reaped.
 disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
 expect_contains 'the next claim settles the killed run' "$(await_settled "$killed" "$ADOPT_S")" succeeded

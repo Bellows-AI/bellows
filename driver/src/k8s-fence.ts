@@ -26,7 +26,7 @@ import {
     secretName,
     type RunnerJobSpec,
 } from './k8s-podspec.js';
-import { readVerdict } from './k8s-poll.js';
+import { isRecord, readVerdict } from './k8s-poll.js';
 import {
     deleteSecretAcked,
     endRunnerJob,
@@ -318,14 +318,19 @@ function spared(deps: K8sDeps, job: BoardJob, item: SweptItem, keptJobs: Set<str
     return keptJobs.has(item.metadata?.labels?.['job-name'] ?? '');
 }
 
-/** The named objects a label-selector list response carries, and their lease labels — empty for anything unparseable. */
+/**
+ * The named objects a label-selector list response carries, and their lease labels; null for a body
+ * that is no list of objects, which proves nothing about what is left (#824).
+ */
 function namedItemsOf(
     deps: K8sDeps,
     job: BoardJob,
     body: string,
     keptJobs: Set<string>
-): Omit<SweepFleet, 'kind' | 'basePath'> {
-    const items = parse<{ items?: SweptItem[] }>(body).items ?? [];
+): Omit<SweepFleet, 'kind' | 'basePath'> | null {
+    const list = parse<unknown>(body);
+    if (!isRecord(list) || !Array.isArray(list.items) || !list.items.every(isRecord)) return null;
+    const items = list.items as SweptItem[];
     const found: Omit<SweepFleet, 'kind' | 'basePath'> = { names: [], uids: new Map(), leases: [] };
     for (const item of items) {
         if (!item.metadata?.name || spared(deps, job, item, keptJobs)) continue;
@@ -359,6 +364,8 @@ async function probeOneFleetKind(
     if (probe.status === HTTP_NOT_FOUND) return { fleet: null, inconclusive: false };
     if (probe.status >= HTTP_OK_STATUS && probe.status < HTTP_ERROR_STATUS) {
         const found = namedItemsOf(deps, job, probe.body, keptJobs);
+        // A 2xx that is no list says nothing about whether the objects are gone.
+        if (!found) return { fleet: null, inconclusive: true };
         return { fleet: found.names.length > 0 ? { kind, basePath, ...found } : null, inconclusive: false };
     }
     // 429/5xx/transport: inconclusive — the round cannot free the checkout.
@@ -414,7 +421,17 @@ async function verifyClaimHeldForSweep(deps: K8sDeps, job: BoardJob): Promise<'o
  * deleted (issue #821): a Secret has no owner, and once its Job is gone nothing can derive its name
  * again. False when any one delete failed; the round then deletes nothing.
  */
-async function deleteLeftoverSecrets(deps: K8sDeps, job: BoardJob, fleets: SweepFleet[]): Promise<boolean> {
+/** Thrown by a sweep whose attempt stood down (`signal`): nothing more is deleted. */
+const sweepAbandoned = (signal?: AbortSignal): void => {
+    if (signal?.aborted) throw new Error('the sweep was abandoned: the attempt stood down');
+};
+
+async function deleteLeftoverSecrets(
+    deps: K8sDeps,
+    job: BoardJob,
+    fleets: SweepFleet[],
+    signal?: AbortSignal
+): Promise<boolean> {
     const leases = new Set(fleets.flatMap((fleet) => fleet.leases).filter((lease) => JOB_ID.test(lease)));
     const adopted = deps.adopted?.get(job.leaseToken);
     for (const lease of leases) {
@@ -423,6 +440,7 @@ async function deleteLeftoverSecrets(deps: K8sDeps, job: BoardJob, fleets: Sweep
         // their cleanup is never what holds a recovered run back (issue #821).
         if (adopted !== undefined && runnerName(pair) === adopted) continue;
         for (const name of [secretName(pair), gateEnvSecretName(pair)]) {
+            sweepAbandoned(signal);
             if ((await deleteSecretAcked(deps, name)) === 'failed') return false;
         }
     }
@@ -430,9 +448,10 @@ async function deleteLeftoverSecrets(deps: K8sDeps, job: BoardJob, fleets: Sweep
 }
 
 /** Deletes every named leftover of one sweep pass; the next pass's list is what says they are gone. */
-async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[]): Promise<void> {
+async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[], signal?: AbortSignal): Promise<void> {
     for (const fleet of fleets) {
         for (const leftover of fleet.names) {
+            sweepAbandoned(signal);
             // The incarnation listed, by its uid: never one created under the name since.
             const uid = fleet.uids.get(leftover);
             const target = `${fleet.basePath}/${leftover}?propagationPolicy=Foreground`;
@@ -461,13 +480,13 @@ async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[]): Promise<v
  * every deleting round: a stale attempt whose claim was taken over mid-sweep STANDS DOWN having
  * deleted nothing.
  */
-export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, waits = 0): Promise<void> {
+export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, waits = 0, signal?: AbortSignal): Promise<void> {
     const nextRound = async (giveUpMessage: string): Promise<void> => {
         if (waits + 1 > REPLACE_MAX_POLLS) {
             throw new Error(`${giveUpMessage} (${REPLACE_MAX_POLLS} polls)`);
         }
         await deps.sleep(POLL_MS);
-        return sweepClaimedFleets(deps, job, waits + 1);
+        return sweepClaimedFleets(deps, job, waits + 1, signal);
     };
 
     const { fleets, conclusive } = await probeLeftoverFleets(deps, job);
@@ -487,10 +506,10 @@ export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, waits = 0
     if (verified === 'unknown') {
         return nextRound(`the checkout claim of job ${job.id} could not be confirmed before fencing`);
     }
-    if (!(await deleteLeftoverSecrets(deps, job, fleets))) {
+    if (!(await deleteLeftoverSecrets(deps, job, fleets, signal))) {
         return nextRound(`the leftover secrets of job ${job.id} could not be deleted`);
     }
-    await deleteSweepFleets(deps, fleets);
+    await deleteSweepFleets(deps, fleets, signal);
     // No delete's answer is proof the checkout is free — a 409 on a uid precondition is another
     // incarnation under the name (issue #821): only a fresh, conclusive empty list lets it go.
     return nextRound(`the leftover objects of job ${job.id} never disappeared after their delete`);

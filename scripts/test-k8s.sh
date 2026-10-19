@@ -2166,8 +2166,10 @@ if selected_phase recovery; then
 # runner running; the driver scaled back adopts it. c: the runner pod deleted mid-run (an eviction
 # stand-in) — an interruption, then the next attempt, in its session. d: the driver pod and its
 # runner Job deleted together — a replacement runner redoes the attempt in the lost session, on the
-# restored tree. Each job refunds its interrupted attempt and records exactly one interruption; an
-# expired lease is that interruption (issue #822). Only this release's objects are touched, by label.
+# restored tree. e: the driver lost after its agent exited, while the supervisor still finalizes —
+# the surviving replica's claim waits that out and adopts the run, never sweeps it (issue #824).
+# Each job refunds its interrupted attempt and records exactly one interruption; an expired lease
+# is that interruption (issue #822). Only this release's objects are touched, by label.
 
 echo
 echo '# node disruption'
@@ -2245,6 +2247,7 @@ hard_release="/workspaces/$member_path/.lane-hard"
 drain_release="/workspaces/$member_path/.lane-drain"
 evict_release="/workspaces/$member_path/.lane-evict"
 lost_release="/workspaces/$member_path/.lane-lost"
+final_release="/workspaces/$member_path/.lane-finalizing"
 
 # a. The hard kill: a lease expiry. A forced delete is no SIGKILL — the kubelet still
 #    sends SIGTERM and kills ~2s later — so this is no drain only while the 10s handover outlasts
@@ -2409,7 +2412,62 @@ else
     expect_not_contains 'nothing was adopted' "$(driver_logs)" "job $lost: $ADOPTED"
 fi
 
-for job in $hard $drained $evicted $lost; do
+# e. The driver lost between its agent's exit and its supervisor's end (issue #824). The pod-IP step
+#    channel refuses once the driver is gone, so the supervisor serves on until its orphan bound
+#    (30s under the 120s lease) and only then reports and ends. A second replica is already up; the
+#    dead driver's claim is expired inside that bound, so the survivor claims a Job whose agent
+#    exited and whose supervisor still runs — the group it must wait out, never sweep.
+begin_phase recovery-finalizing
+kubectl scale "$DRIVER_DEPLOY" -n "$NAMESPACE" --replicas=2 >/dev/null 2>&1
+kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
+final="$(queue_job "factory-stub-wait-$final_release finalizing")"
+if [ -n "$final" ]; then
+    capped="$(last_attempt "$final")" && ok 'the finalizing job runs at max_attempts 1' ||
+        bad 'the finalizing job runs at max_attempts 1' "job '$final': $capped"
+fi
+final_pod="$(await_runner_pod "$final")"
+if [ -z "$final" ] || [ -z "$final_pod" ]; then
+    bad 'the finalizing runner is running' "job '$final': $(job_brief "$final")"
+else
+    ok 'the finalizing runner is running'
+    await_blocked "$final_pod" "$final_release" && ok 'the finalizing agent is blocked at its barrier' || give_up
+    final_job="$(first_runner_job "$final")"
+    final_driver=''
+    for driver_pod in $(kubectl get pod -l "$DRIVER_SEL" -n "$NAMESPACE" -o name); do
+        kubectl logs "$driver_pod" -n "$NAMESPACE" --tail=-1 2>/dev/null | grep -q "job $final" && final_driver="$driver_pod"
+    done
+    [ -n "$final_driver" ] && ok 'the driver holding the finalizing job is found' || {
+        bad 'the driver holding the finalizing job is found' 'no driver pod logged the job'
+        give_up
+    }
+    kubectl delete "$final_driver" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+    release_stub "$final_release"
+    agent_exit=''
+    for _ in $(seq 1 20); do
+        agent_exit="$(kubectl get pod "$final_pod" -n "$NAMESPACE" \
+            -o jsonpath='{.status.containerStatuses[?(@.name=="agent")].state.terminated.exitCode}' 2>/dev/null)"
+        [ -n "$agent_exit" ] && break
+        sleep 1
+    done
+    final_active="$(kubectl get job "$final_job" -n "$NAMESPACE" -o jsonpath='{.status.active}' 2>/dev/null)"
+    [ -n "$agent_exit" ] && [ "$final_active" = 1 ] && ok 'the agent exited while its supervisor still finalizes' ||
+        bad 'the agent exited while its supervisor still finalizes' "agent exit '$agent_exit', job active '$final_active'"
+    expired="$(expire_claim_one "$final")"
+    [ "$expired" = 1 ] && ok 'the lost driver lease is expired while the supervisor finalizes' ||
+        bad 'the lost driver lease is expired while the supervisor finalizes' "$expired"
+    final_end="$(await_brief "$final" 'succeeded*' 240)"
+    [ "$final_end" = "succeeded|1|1|1|$EXPIRED" ] &&
+        ok 'the surviving driver waits the supervisor out and adopts the run: one attempt, one interruption' ||
+        bad 'the surviving driver waits the supervisor out and adopts the run: one attempt, one interruption' \
+            "status|attempts|count|claimSeq|reason: $final_end"
+    expect_contains 'the adopted output is the finalizing runner pod output' "$(job_output "$final")" \
+        "released in $final_pod"
+    expect_contains 'the surviving driver logs the adoption' "$(driver_logs)" "job $final: $ADOPTED"
+fi
+kubectl scale "$DRIVER_DEPLOY" -n "$NAMESPACE" --replicas=1 >/dev/null 2>&1
+kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
+
+for job in $hard $drained $evicted $lost $final; do
     kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
         --ignore-not-found --wait=false >/dev/null 2>&1
 done
