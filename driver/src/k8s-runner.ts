@@ -14,7 +14,6 @@ import {
 import type { RunOutcome, RunSession, Runner } from './runner.js';
 import { adoptFinishedRunner } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from './close-read.js';
-import { type HelperCall, type HelperPlan, type HelperResult, lookupHelper } from './helpers.js';
 import {
     killedOutcome,
     markKilled,
@@ -34,8 +33,6 @@ import {
     holderGroupsOf,
     reclaimInGroup,
     runnerGroupOf,
-    stepHostFor,
-    stepHostOf,
     takeGroupDown,
 } from './k8s-group.js';
 import { claudeTurnsJobSpec, jobsPath, opencodeReadoutJobSpec, runnerName } from './k8s-podspec.js';
@@ -53,7 +50,7 @@ import {
     expectOk,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
-    HTTP_OK_STATUS,
+    is2xx,
     livePod,
     MS_PER_SECOND,
     parse,
@@ -64,19 +61,17 @@ import {
     wait,
 } from './k8s-transport.js';
 import type { K8sClaim, K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
-import { publishCheckout, type PublishOptions, repoPath, worktreeDir } from './publish.js';
-import type { PublishResult, ReclaimResult, SyncResult } from './publish.js';
-import { probeTreeFingerprint } from './publish.js';
-import { snapshotTree, type SnapshotResult } from './review-snapshot.js';
-import { type StepSink, type SupervisorEndpoint, stepLost } from './step-control.js';
+import { repoPath, worktreeDir } from './publish.js';
+import type { ReclaimResult, SyncResult } from './publish.js';
+import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import { infraLossOf, type KillRecord } from './termination.js';
 import {
     controlTokenOf,
     orderGo,
     releaseSteps,
-    runHelperStep,
     runSyncStep,
-    supervisedStepRunner,
+    stepHostOf,
+    supervisedStepMembers,
 } from './supervised-steps.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
 import { KILL_WINDDOWN_MS, type SupervisorReport } from './supervisor-contract.js';
@@ -421,56 +416,6 @@ async function run(
 }
 
 /**
- * The publish: the same publishCheckout workflow the docker runner runs (publish.ts), with the task
- * supervisor as its transport — every step a supervised step whose environment (the claim env and
- * the board's GitHub token) rides the step itself, never a Secret or a spec.
- */
-async function publishGit(
-    deps: K8sDeps,
-    job: BoardJob,
-    githubToken?: string,
-    options?: PublishOptions
-): Promise<PublishResult> {
-    const host = await stepHostFor(deps, job);
-    return publishCheckout(
-        deps.config,
-        job,
-        options,
-        supervisedStepRunner(host, job, { kind: 'publish', githubToken })
-    );
-}
-
-/** The post-gate tree probe: the publish's probe step, over the supervisor. Null is unknown. */
-async function probeTree(deps: K8sDeps, job: BoardJob, signal?: AbortSignal): Promise<string | null> {
-    const host = await stepHostFor(deps, job);
-    return probeTreeFingerprint(deps.config, job, supervisedStepRunner(host, job, { kind: 'probe', signal }));
-}
-
-/** The review snapshot: one supervised step that reads the task worktree and writes one ref. */
-async function snapshotReviewTree(
-    deps: K8sDeps,
-    job: BoardJob,
-    key: string,
-    signal?: AbortSignal
-): Promise<SnapshotResult> {
-    const host = await stepHostFor(deps, job);
-    return snapshotTree(deps.config, job, key, supervisedStepRunner(host, job, { kind: 'snapshot', signal }));
-}
-
-/** One allowlisted helper step, in the attempt's supervisor. */
-async function runHelper(deps: K8sDeps, job: BoardJob, plan: HelperPlan, call: HelperCall): Promise<HelperResult> {
-    // An unknown helper id creates nothing (`runHelperStep` refuses it first), and a group the
-    // cluster refuses is a failed helper; only a lost supervisor (`stepLost`) is thrown.
-    if (!lookupHelper(plan.helperId)) return runHelperStep(stepHostOf(deps), job, plan, call);
-    try {
-        return await runHelperStep(await stepHostFor(deps, job), job, plan, call);
-    } catch (e) {
-        if (stepLost(e)) throw e;
-        return { ok: false, reason: 'runner_error', message: (e as Error).message };
-    }
-}
-
-/**
  * The startup sync: the loop calls it on every claim, the task worktree does not exist until
  * something creates it, and a refusal would fail every claimed job. It is the attempt's first
  * step, so it is what creates the attempt's group — the supervisor runs it, then runs the agent
@@ -526,7 +471,7 @@ async function heldClaim(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult['h
     } catch {
         return undefined;
     }
-    if (get.status < HTTP_OK_STATUS || get.status >= HTTP_ERROR_STATUS) return undefined;
+    if (!is2xx(get.status)) return undefined;
     const claim = parse<K8sClaim>(get.body);
     const uid = claim.metadata?.uid;
     const holder = claim.data?.holder;
@@ -636,13 +581,15 @@ export function createKubernetesRunner(
         startServices: (job: BoardJob, signal?: AbortSignal) => startServiceFleet(deps, job, signal),
         run: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) =>
             run(deps, job, session, onOutput),
-        publishGit: (job: BoardJob, githubToken?: string, options?: PublishOptions) =>
-            publishGit(deps, job, githubToken, options),
-        probeTree: (job: BoardJob, signal?: AbortSignal) => probeTree(deps, job, signal),
         adopt: (job: BoardJob, signal?: AbortSignal) =>
             adoptFinishedRunner(deps, job, { scrapeClaudeCloseRead, attachOpencodeOutcome }, signal),
-        snapshotTree: (job: BoardJob, key: string, signal?: AbortSignal) => snapshotReviewTree(deps, job, key, signal),
-        runHelper: (job: BoardJob, plan: HelperPlan, call: HelperCall = {}) => runHelper(deps, job, plan, call),
+        ...supervisedStepMembers({
+            host: stepHostOf(deps),
+            hasGroup: (job) => groupsOf(deps).has(job.leaseToken),
+            // The claim the group took is the group's end's to give back (`finishGroup`), never this call's.
+            createGroup: (job) => ensureGroup(deps, job, null),
+            errorDetail: (e) => (e as Error).message,
+        }),
         syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
             syncCheckout(deps, job, session ?? null, githubToken),
         finish: (job: BoardJob) => finishGroup(deps, job),

@@ -1,5 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import { readBody } from './http.js';
+import { parseJsonObject } from './json-parse.js';
 import {
     STEP_ANSWER_GRACE_MS,
     STEP_OUTPUT_LIMIT_BYTES,
@@ -328,9 +329,6 @@ export interface StepAnswer {
     body: unknown;
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-    typeof value === 'object' && value !== null && !Array.isArray(value);
-
 /** `GET /step?wait=<ms>`: the next queued step, `{}` when none came in time. */
 export async function serveStepPoll(
     broker: StepBroker,
@@ -347,13 +345,8 @@ export async function serveStepPoll(
 }
 
 const parseResult = (raw: string): { invocation: string; result: StepResult } | null => {
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(raw);
-    } catch {
-        return null;
-    }
-    if (!isRecord(parsed)) return null;
+    const parsed = parseJsonObject(raw);
+    if (!parsed) return null;
     const { invocation, exitCode, stdout, stderr, timedOut } = parsed;
     if (typeof invocation !== 'string' || !INVOCATION.test(invocation)) return null;
     if (exitCode !== null && typeof exitCode !== 'number') return null;
@@ -379,13 +372,8 @@ export async function serveStepResult(
 }
 
 const parseReport = (raw: string): SupervisorReport | null => {
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(raw);
-    } catch {
-        return null;
-    }
-    if (!isRecord(parsed) || typeof parsed.agentEnd !== 'string' || typeof parsed.drained !== 'boolean') return null;
+    const parsed = parseJsonObject(raw);
+    if (!parsed || typeof parsed.agentEnd !== 'string' || typeof parsed.drained !== 'boolean') return null;
     const { id, outcome, cause, agentExit, serving } = parsed;
     if (typeof id !== 'string' || id === '' || typeof serving !== 'boolean') return null;
     return {

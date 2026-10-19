@@ -308,4 +308,63 @@ describe('the kind recovery stub barrier', () => {
         expect(replacement.stdout()).toContain('mark kept from first head: the task base');
         expect(replacement.stdout()).not.toContain('released in');
     });
+
+    // Issue #770: the kind control cases drive a Stop and a question through the supervisor.
+    it('ends a stoppable wait on the supervisor’s Stop, and only a stoppable one', async () => {
+        const box = sandbox();
+        const release = join(box.outDir, 'release');
+        const env = { HOSTNAME: 'first', FACTORY_CTL_IN: box.inDir, FACTORY_CTL_OUT: box.outDir };
+        const stub = join(ROOT, 'scripts/k8s-stub.sh');
+        const deaf = run(box.wrapper, ['sh', stub, `factory-stub-wait-${release}-deaf`], {
+            ...env,
+            FACTORY_STUB_TIMEOUT_SECONDS: '2',
+        });
+        const stoppable = run(box.wrapper, ['sh', stub, `factory-stub-stop factory-stub-wait-${release}`], env);
+        await whenFileExists(`${release}.ready-first`);
+        await whenFileExists(`${release}-deaf.ready-first`);
+        writeFileSync(join(box.inDir, 'stop'), 'stop\n');
+        expect(await stoppable.exited).toBe(0);
+        expect(stoppable.stdout()).toContain('stopped in first');
+        expect(await deaf.exited).toBe(1);
+        expect(deaf.stdout()).not.toContain('stopped in');
+    });
+
+    it('asks one question through the mailbox after its delay, and goes on only once it is answered', async () => {
+        const box = sandbox();
+        const release = join(box.outDir, 'release');
+        const env = { HOSTNAME: 'first', FACTORY_CTL_IN: box.inDir, FACTORY_CTL_OUT: box.outDir };
+        const args = ['sh', join(ROOT, 'scripts/k8s-stub.sh'), `factory-stub-ask-1 factory-stub-wait-${release}`];
+        const asked = Date.now();
+        const child = run(box.wrapper, args, env);
+        const question = join(box.outDir, 'questions', 'stub-first.json');
+        await whenFileExists(question);
+        expect(Date.now() - asked).toBeGreaterThanOrEqual(1000);
+        expect(JSON.parse(readFileSync(question, 'utf8'))).toMatchObject({
+            questionId: 'stub-first',
+            questions: [{ options: [{ label: 'Red' }, { label: 'Blue' }] }],
+        });
+        expect(existsSync(`${release}.ready-first`)).toBe(false);
+        mkdirSync(join(box.inDir, 'answers'));
+        writeFileSync(join(box.inDir, 'answers', 'stub-first.json'), '{"state":"pending"}');
+        writeFileSync(
+            join(box.inDir, 'answers', 'stub-first.json'),
+            JSON.stringify({ state: 'answered', answers: { 'Which colour should the report use?': 'Blue' } })
+        );
+        await whenFileExists(`${release}.ready-first`);
+        writeFileSync(release, '');
+        expect(await child.exited).toBe(0);
+        expect(child.stdout()).toContain('ANSWER: {"state":"answered"');
+        expect(child.stdout()).toContain('Blue');
+    });
+
+    it('fails when its question is settled any way but answered', async () => {
+        const box = sandbox();
+        const env = { HOSTNAME: 'first', FACTORY_CTL_IN: box.inDir, FACTORY_CTL_OUT: box.outDir };
+        const child = run(box.wrapper, ['sh', join(ROOT, 'scripts/k8s-stub.sh'), 'factory-stub-ask-0'], env);
+        await whenFileExists(join(box.outDir, 'questions', 'stub-first.json'));
+        mkdirSync(join(box.inDir, 'answers'));
+        writeFileSync(join(box.inDir, 'answers', 'stub-first.json'), '{"state":"cancelled"}');
+        expect(await child.exited).toBe(1);
+        expect(child.stdout()).toContain('ANSWER: {"state":"cancelled"}');
+    });
 });

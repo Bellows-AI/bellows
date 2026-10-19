@@ -36,6 +36,7 @@ import { claudeTurnsArgs, opencodeCacheProbeArgs } from '../src/docker-close-rea
 import { gateShellScript } from '../src/container-scripts.js';
 import {
     CACHE_WATCH_TURNS,
+    CLAUDE_READ_NONE,
     cacheCollapse,
     parseClaudeCloseRead,
     parseOpencodeCacheProbe,
@@ -755,6 +756,11 @@ describe('the close-time claude-code turn count', () => {
             blocked: 'b',
         });
     });
+
+    it('answers the unmeasured read itself for a null last line or a non-JSON last line', () => {
+        expect(parseClaudeCloseRead('null')).toBe(CLAUDE_READ_NONE);
+        expect(parseClaudeCloseRead('{"turns":3,"summary":"x"}\nnoise')).toBe(CLAUDE_READ_NONE);
+    });
 });
 
 describe('which runs get a close-time turn read', () => {
@@ -1037,6 +1043,22 @@ describe('scraping the session opencode used', () => {
             'no access'
         );
     });
+    it('answers every field unmeasured, and no export, for a null last line or a non-JSON last line', () => {
+        const nothing = {
+            sessionId: null,
+            finishReason: null,
+            contextTokens: null,
+            costUsd: null,
+            agentTurns: null,
+            summary: null,
+            blocked: null,
+            error: null,
+        };
+        expect(parseOpencodeRunOutcome('null')).toStrictEqual(nothing);
+        expect(
+            parseOpencodeRunOutcome('{"stream":"raw","row":1}\n{"id":"ses_x1","finish":"stop"}\nnoise')
+        ).toStrictEqual(nothing);
+    });
 });
 
 describe('the cache watch', () => {
@@ -1100,6 +1122,11 @@ describe('the cache watch', () => {
         });
         // Malformed turns are not turns.
         expect(parseOpencodeCacheProbe('{"id":"ses_x1","turns":[{"input":-1},{"input":5}]}').turns).toEqual([]);
+    });
+
+    it('answers nothing for a null last line or a non-JSON last line', () => {
+        expect(parseOpencodeCacheProbe('null')).toEqual({ sessionId: null, turns: [], error: null });
+        expect(parseOpencodeCacheProbe('{"cloned":true}\nnoise')).toEqual({ sessionId: null, turns: [], error: null });
     });
 
     it('fires only on three consecutive dead, real-context, slow turns', () => {
@@ -2445,6 +2472,11 @@ describe('the docker runner', () => {
             expect(parseDockerStats('{"MemUsage":"544MiB / 7.754GiB"}')).toBeNull();
             expect(parseDockerStats('{"CPUPerc":"93.00%","MemUsage":"? / 8GiB"}')).toBeNull();
         });
+
+        it('throws on a null last line, and takes null for valid JSON followed by a non-JSON last line', () => {
+            expect(() => parseDockerStats('null')).toThrow(TypeError);
+            expect(parseDockerStats('{"CPUPerc":"93.00%","MemUsage":"544MiB / 7.754GiB"}\nnoise')).toBeNull();
+        });
     });
 
     describe('parseDockerServicePs', () => {
@@ -3366,6 +3398,63 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
         releaseTeardownPs!();
         await expect(pending).rejects.toThrow(/ENOENT/);
+    });
+
+    /** The group-removal calls the daemon saw from the spawn on: the supervisor's and the exporter's. */
+    const groupRemovals = (exec: ReturnType<typeof daemon>, from: number) =>
+        exec.mock.calls
+            .slice(from)
+            .map((call) => call[0])
+            .filter((args) => args[0] === 'rm' && [supervisorName(job), exporterName(job)].includes(args[2] ?? ''));
+
+    // As it is today, a second teardown owner beside the loop's `finish` (#828): the spawn-error path
+    // removes the group before it rejects (`docker-runner.ts:629`), and the run's own catch removes
+    // it again (:682). A spawn that failed ran no agent, so nothing adoptable is lost.
+    it('removes the group of a spawn that errored before rejecting, then again in the run’s catch (today)', async () => {
+        const exec = daemon();
+        let spawnedAt = -1;
+        const errored = (() => {
+            spawnedAt = exec.mock.calls.length;
+            const c = new EventEmitter() as ChildProcess;
+            process.nextTick(() => c.emit('error', new Error('spawn docker ENOENT')));
+            return c;
+        }) as unknown as typeof spawn;
+        await expect(servicesRunner(exec, errored).run(job, { id: SESSION, resume: false })).rejects.toThrow(/ENOENT/);
+        expect(groupRemovals(exec, spawnedAt)).toEqual([
+            ['rm', '-f', exporterName(job)],
+            ['rm', '-f', supervisorName(job)],
+            ['rm', '-f', exporterName(job)],
+            ['rm', '-f', supervisorName(job)],
+        ]);
+    });
+
+    // Pinned (#828, slice 1): a run whose outcome rejects once its group exists finishes that group
+    // itself (`docker-runner.ts:680-683`), before the loop decides — though the loop leaves such a
+    // run to its lease so the next claim can adopt it (`concludeThrownRun`, `loop-fence.ts`).
+    // Slice 6 removes the finish-on-throw; this pin flips then. Like the harness's pins, it fails
+    // only on today's exact removals: any other rejection or removal set returns early and turns
+    // the `it.fails` red.
+    it.fails('a run that rejects leaves its group for the loop to decide', async () => {
+        const exec = daemon();
+        let spawnedAt = -1;
+        const throwing = (() => {
+            spawnedAt = exec.mock.calls.length;
+            throw new Error('the attach could not be spawned');
+        }) as unknown as typeof spawn;
+        const rejected = await servicesRunner(exec, throwing)
+            .run(job, { id: SESSION, resume: false })
+            .then(
+                () => null,
+                (e: Error) => e.message
+            );
+        const removals = groupRemovals(exec, spawnedAt);
+        const today = [
+            ['rm', '-f', exporterName(job)],
+            ['rm', '-f', supervisorName(job)],
+        ];
+        if (!/could not be spawned/.test(rejected ?? '') || spawnedAt <= 0) return;
+        if (JSON.stringify(removals) !== JSON.stringify(today)) return;
+        expect(removals).toEqual([]);
     });
 
     // The spawn-error twin: A's runner spawn fails, but the failure is delivered only after B
@@ -4537,6 +4626,24 @@ describe('publishing the produced work', () => {
         expect(parsePrSummary('git: fatal: not a git repository')).toEqual({ title: null, body: null });
     });
 
+    it('defaults the probe’s and the PR summary’s answers for a null last line or a non-JSON last line', () => {
+        const unread = {
+            cloned: false,
+            branch: '',
+            defaultBranch: 'main',
+            dirty: false,
+            unpushed: 0,
+            hasIdentity: false,
+            fingerprint: null,
+            conflicts: [],
+            rebasing: false,
+        };
+        expect(parseGitState('null')).toEqual(unread);
+        expect(parseGitState('{"cloned":true}\nnoise')).toEqual(unread);
+        expect(parsePrSummary('null')).toEqual({ title: null, body: null });
+        expect(parsePrSummary('{"title":"t","body":"b"}\nnoise')).toEqual({ title: null, body: null });
+    });
+
     /**
      * The supervisor stood in: the probe answers from `state`, git steps mutate nothing, and every
      * step the runner submits is recorded, so the flow — what ran, in which order, and what was
@@ -4664,6 +4771,36 @@ describe('publishing the produced work', () => {
     ])('answers null when the probe %s', async (_label, extra, fail) => {
         const { runner } = publishRunner({ ...DIRTY_ON_MAIN, ...extra }, { fail });
         expect(await runner.probeTree(ISSUE_JOB)).toBeNull();
+    });
+
+    // The review snapshot of an attempt with no group yet (an adopted run): a supervisor-only group
+    // is made for it, and its one `snapshot` step carries the stand-down signal.
+    it('snapshots the tree as one snapshot step with the signal, making the supervisor-only group', async () => {
+        const cancel = new AbortController();
+        const seen: { step: StepRequest; signal: AbortSignal | undefined }[] = [];
+        const sink: StepSink = {
+            submit: async (_token, step, signal) => {
+                seen.push({ step, signal });
+                return ok('{"ok":true}');
+            },
+            awaitReport: () => Promise.resolve(FINALIZED),
+            contacted: () => true,
+            release: () => undefined,
+            attach: () => undefined,
+        };
+        const docker: string[][] = [];
+        const exec = (async (args: string[]) => {
+            docker.push(args);
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = dockerRunner(exec, { spawn: spawnChild(''), steps: sink });
+
+        expect(await runner.snapshotTree(ISSUE_JOB, 'review-1', cancel.signal)).toMatchObject({ ok: true });
+
+        expect(seen.map(({ step }) => step.kind)).toEqual(['snapshot']);
+        expect(seen[0]?.signal).toBe(cancel.signal);
+        const created = docker.filter((a) => a[0] === 'create').map((a) => a[a.indexOf('--name') + 1]);
+        expect(created).toEqual([supervisorName(ISSUE_JOB)]);
     });
 
     it('branches, commits, pushes and opens the PR — in that order', async () => {
@@ -4816,6 +4953,22 @@ describe('the block-helper transport (issue #207)', () => {
             reason: 'unknown_helper',
             message: expect.stringContaining('not-a-real-helper'),
         });
+        expect(supervised.steps()).toEqual([]);
+    });
+
+    // A group the daemon refuses is a failed helper in the daemon's own words, bounded — never a throw.
+    it('fails a helper whose group the daemon refuses with the first 300 chars of its stderr', async () => {
+        const stderr = `  Error response from daemon: ${'x'.repeat(400)}  \n`;
+        const supervised = fakeSteps(() => ok(NOOP_VERDICT));
+        const exec = (async (args: string[]) => {
+            if (args[0] === 'create') throw Object.assign(new Error('Command failed: docker create'), { stderr });
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = dockerRunner(exec, { steps: supervised.sink });
+
+        const result = await runner.runHelper(repoJob, plan());
+
+        expect(result).toEqual({ ok: false, reason: 'runner_error', message: stderr.trim().slice(0, 300) });
         expect(supervised.steps()).toEqual([]);
     });
 

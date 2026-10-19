@@ -1,7 +1,7 @@
 import type { BoardJob } from './board.js';
 import { jobPath, podsPath, secretsPath } from './k8s-auxspec.js';
 import { gateEnvSecretName, secretName } from './k8s-podspec.js';
-import { HTTP_CONFLICT, HTTP_ERROR_STATUS, HTTP_NOT_FOUND, HTTP_OK_STATUS, parse, POLL_MS } from './k8s-transport.js';
+import { HTTP_CONFLICT, HTTP_NOT_FOUND, is2xx, parse, POLL_MS } from './k8s-transport.js';
 import type { K8sDeps, K8sResponse } from './k8s-transport.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 
@@ -36,7 +36,7 @@ const preconditioned = (uid: string | undefined): unknown =>
 function deleteAnswer(response: K8sResponse, uid: string | undefined): SecretDelete {
     if (response.status === HTTP_NOT_FOUND) return 'gone';
     if (uid && response.status === HTTP_CONFLICT) return 'superseded';
-    return response.status >= HTTP_OK_STATUS && response.status < HTTP_ERROR_STATUS ? 'removed' : 'failed';
+    return is2xx(response.status) ? 'removed' : 'failed';
 }
 
 /** Deletes one Secret by name — that incarnation only, given its uid — and reads the answer; a transport rejection is `failed`. */
@@ -97,7 +97,7 @@ async function readConclusive(deps: K8sDeps, path: string): Promise<K8sResponse 
     try {
         const read = await deps.request('GET', path);
         if (read.status === HTTP_NOT_FOUND) return read;
-        return read.status >= HTTP_OK_STATUS && read.status < HTTP_ERROR_STATUS ? read : null;
+        return is2xx(read.status) ? read : null;
     } catch {
         return null;
     }

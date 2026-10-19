@@ -1,6 +1,7 @@
 import type { BoardJob, FailureCause } from './board.js';
 import type { DriverConfig } from './config.js';
 import { containerScript as script } from './container-scripts.js';
+import { parseLastJsonLine } from './json-parse.js';
 import { baseBranchOf, isBranchName } from './publish-base.js';
 import { headSha, publicationOp, recordOperation } from './publish-reconcile.js';
 import { publishedResult, pushRecorded, reconcileAgentPr, resolveOrCreatePr, resumePublication } from './publish-pr.js';
@@ -260,20 +261,6 @@ export interface ReclaimResult {
     heldClaim?: { name: string; claimSeq: string | null; createdMs: number | null; uid: string; holder: string };
 }
 
-/**
- * The tail line of a container's stdout, parsed as JSON, or the fallback when it does not —
- * shared by both executors' sync/reclaim readouts (and the docker runner's close-read scrapes),
- * which all print one JSON line as their verdict.
- */
-export function parseLastJsonLine<T>(stdout: string, onUnparseable: () => T): T {
-    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-    try {
-        return JSON.parse(line) as T;
-    } catch {
-        return onUnparseable();
-    }
-}
-
 /** What an unparseable worktree sync verdict means — both executors' fallback for the same shape. */
 export const syncUnreadable: SyncResult = { ok: false, reason: 'the worktree sync answered nothing readable' };
 
@@ -429,21 +416,8 @@ export function worktreeBranch(job: BoardJob): string {
 
 /** Pulls the probe's answer out of its stdout, tolerating anything else. */
 export function parseGitState(stdout: string): GitState {
-    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-    try {
-        const p = JSON.parse(line) as Partial<GitState>;
-        return {
-            cloned: p.cloned === true,
-            branch: typeof p.branch === 'string' ? p.branch : '',
-            defaultBranch: typeof p.defaultBranch === 'string' && p.defaultBranch ? p.defaultBranch : 'main',
-            dirty: p.dirty === true,
-            unpushed: typeof p.unpushed === 'number' && Number.isFinite(p.unpushed) && p.unpushed >= 0 ? p.unpushed : 0,
-            hasIdentity: p.hasIdentity === true,
-            fingerprint: typeof p.fingerprint === 'string' && p.fingerprint ? p.fingerprint : null,
-            conflicts: Array.isArray(p.conflicts) ? p.conflicts.filter((c) => typeof c === 'string') : [],
-            rebasing: p.rebasing === true,
-        };
-    } catch {
+    const p = parseLastJsonLine<Partial<GitState> | null>(stdout, () => null);
+    if (p === null) {
         return {
             cloned: false,
             branch: '',
@@ -456,6 +430,17 @@ export function parseGitState(stdout: string): GitState {
             rebasing: false,
         };
     }
+    return {
+        cloned: p.cloned === true,
+        branch: typeof p.branch === 'string' ? p.branch : '',
+        defaultBranch: typeof p.defaultBranch === 'string' && p.defaultBranch ? p.defaultBranch : 'main',
+        dirty: p.dirty === true,
+        unpushed: typeof p.unpushed === 'number' && Number.isFinite(p.unpushed) && p.unpushed >= 0 ? p.unpushed : 0,
+        hasIdentity: p.hasIdentity === true,
+        fingerprint: typeof p.fingerprint === 'string' && p.fingerprint ? p.fingerprint : null,
+        conflicts: Array.isArray(p.conflicts) ? p.conflicts.filter((c) => typeof c === 'string') : [],
+        rebasing: p.rebasing === true,
+    };
 }
 
 /**

@@ -10,6 +10,7 @@ import type { BoardJob } from './board.js';
 import { UUID } from './claim.js';
 import type { RunOutcome, RunSession } from './runner.js';
 import { CLAUDE_CODE } from './executors.js';
+import { parseLastJsonLine } from './json-parse.js';
 
 /** What the readout answers: the session the run used, how it ended, and the context it reached. */
 export interface OpencodeRunOutcome {
@@ -114,7 +115,6 @@ function nonEmptyString(value: unknown): string | null {
  * else. `headCut` as `parseOpencodeExport` reads it.
  */
 export function parseOpencodeRunOutcome(stdout: string, headCut = false): OpencodeRunOutcome {
-    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
     const nothing = {
         sessionId: null,
         finishReason: null,
@@ -125,40 +125,37 @@ export function parseOpencodeRunOutcome(stdout: string, headCut = false): Openco
         blocked: null,
         error: null,
     };
-    try {
-        const parsed = JSON.parse(line) as {
-            id?: unknown;
-            finish?: unknown;
-            tokens?: unknown;
-            cost?: unknown;
-            turns?: unknown;
-            summary?: unknown;
-            blocked?: unknown;
-            error?: unknown;
-        };
-        const sessionId = typeof parsed.id === 'string' && /^ses_[A-Za-z0-9._-]+$/.test(parsed.id) ? parsed.id : null;
-        const finishReason = nonEmptyString(parsed.finish);
-        const rawTokens = finiteNonNegativeNumber(parsed.tokens);
-        const contextTokens = rawTokens === null ? null : Math.round(rawTokens);
-        const costUsd = finiteNonNegativeNumber(parsed.cost);
-        const agentTurns = nonNegativeInteger(parsed.turns);
-        const summary = nonEmptyString(parsed.summary);
-        const blocked = typeof parsed.blocked === 'string' ? parsed.blocked : null;
-        const error = nonEmptyString(parsed.error);
-        return {
-            sessionId,
-            finishReason,
-            contextTokens,
-            costUsd,
-            agentTurns,
-            summary,
-            blocked,
-            error,
-            ...exportedOf(stdout, headCut),
-        };
-    } catch {
-        return nothing;
-    }
+    const parsed = parseLastJsonLine<{
+        id?: unknown;
+        finish?: unknown;
+        tokens?: unknown;
+        cost?: unknown;
+        turns?: unknown;
+        summary?: unknown;
+        blocked?: unknown;
+        error?: unknown;
+    } | null>(stdout, () => null);
+    if (parsed === null) return nothing;
+    const sessionId = typeof parsed.id === 'string' && /^ses_[A-Za-z0-9._-]+$/.test(parsed.id) ? parsed.id : null;
+    const finishReason = nonEmptyString(parsed.finish);
+    const rawTokens = finiteNonNegativeNumber(parsed.tokens);
+    const contextTokens = rawTokens === null ? null : Math.round(rawTokens);
+    const costUsd = finiteNonNegativeNumber(parsed.cost);
+    const agentTurns = nonNegativeInteger(parsed.turns);
+    const summary = nonEmptyString(parsed.summary);
+    const blocked = typeof parsed.blocked === 'string' ? parsed.blocked : null;
+    const error = nonEmptyString(parsed.error);
+    return {
+        sessionId,
+        finishReason,
+        contextTokens,
+        costUsd,
+        agentTurns,
+        summary,
+        blocked,
+        error,
+        ...exportedOf(stdout, headCut),
+    };
 }
 
 /** The empty `OpencodeRunOutcome` a failed or empty readout answers — every field unmeasured but `error`. */
@@ -247,20 +244,19 @@ export interface ClaudeCloseRead {
 export const CLAUDE_READ_NONE: ClaudeCloseRead = { turns: null, summary: null, blocked: null };
 
 export function parseClaudeCloseRead(stdout: string): ClaudeCloseRead {
-    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-    try {
-        const parsed = JSON.parse(line) as { turns?: unknown; summary?: unknown; blocked?: unknown };
-        return {
-            turns:
-                typeof parsed.turns === 'number' && Number.isInteger(parsed.turns) && parsed.turns >= 0
-                    ? parsed.turns
-                    : null,
-            summary: typeof parsed.summary === 'string' && parsed.summary ? parsed.summary : null,
-            blocked: typeof parsed.blocked === 'string' ? parsed.blocked : null,
-        };
-    } catch {
-        return CLAUDE_READ_NONE;
-    }
+    const parsed = parseLastJsonLine<{ turns?: unknown; summary?: unknown; blocked?: unknown } | null>(
+        stdout,
+        () => null
+    );
+    if (parsed === null) return CLAUDE_READ_NONE;
+    return {
+        turns:
+            typeof parsed.turns === 'number' && Number.isInteger(parsed.turns) && parsed.turns >= 0
+                ? parsed.turns
+                : null,
+        summary: typeof parsed.summary === 'string' && parsed.summary ? parsed.summary : null,
+        blocked: typeof parsed.blocked === 'string' ? parsed.blocked : null,
+    };
 }
 
 /** Lays one claude close-time read onto the outcome — both executors' twin of `mergeOpencodeOutcome`. */
@@ -349,15 +345,10 @@ const isTurn = (value: unknown): value is OpencodeCacheTurn => {
 
 /** Pulls the session id and turns out of the probe's answer, tolerating anything else. */
 export function parseOpencodeCacheProbe(stdout: string): OpencodeCacheProbe {
-    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-    const nothing = { sessionId: null, turns: [], error: null };
-    try {
-        const parsed = JSON.parse(line) as { id?: unknown; turns?: unknown; error?: unknown };
-        const sessionId = typeof parsed.id === 'string' && /^ses_[A-Za-z0-9._-]+$/.test(parsed.id) ? parsed.id : null;
-        const turns = Array.isArray(parsed.turns) ? parsed.turns.filter(isTurn).slice(0, CACHE_WATCH_TURNS) : [];
-        const error = typeof parsed.error === 'string' && parsed.error ? parsed.error : null;
-        return { sessionId, turns, error };
-    } catch {
-        return nothing;
-    }
+    const parsed = parseLastJsonLine<{ id?: unknown; turns?: unknown; error?: unknown } | null>(stdout, () => null);
+    if (parsed === null) return { sessionId: null, turns: [], error: null };
+    const sessionId = typeof parsed.id === 'string' && /^ses_[A-Za-z0-9._-]+$/.test(parsed.id) ? parsed.id : null;
+    const turns = Array.isArray(parsed.turns) ? parsed.turns.filter(isTurn).slice(0, CACHE_WATCH_TURNS) : [];
+    const error = typeof parsed.error === 'string' && parsed.error ? parsed.error : null;
+    return { sessionId, turns, error };
 }

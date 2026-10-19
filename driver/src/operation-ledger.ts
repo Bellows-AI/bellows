@@ -1,4 +1,5 @@
 import { containerScript } from './container-scripts.js';
+import { parseLastJsonLine } from './json-parse.js';
 import type { PublishStep, RunPublishStep } from './publish.js';
 import { stepLost } from './step-control.js';
 
@@ -43,12 +44,8 @@ export async function readLedger(at: LedgerAt, op: string): Promise<Record<strin
         if (stepLost(e)) throw e;
         return null;
     });
-    try {
-        const record: unknown = JSON.parse(read?.stdout.trim().split('\n').pop() ?? '{}');
-        return typeof record === 'object' && record !== null ? (record as Record<string, unknown>) : {};
-    } catch {
-        return {};
-    }
+    const record = parseLastJsonLine<unknown>(read?.stdout ?? '', () => ({}));
+    return typeof record === 'object' && record !== null ? (record as Record<string, unknown>) : {};
 }
 
 /** Records how far an operation got, with `data` merged into its record; a failed write throws. */

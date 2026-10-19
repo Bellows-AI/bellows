@@ -44,7 +44,7 @@ halves in the same change. Unchecked items are not implemented. `→` names hard
   at the claimed revision via the GitHub API (removes the server filesystem read in
   `workspace/bellows.ts` and the `bellowsJobSpec` readout). Rejects port collisions, undeclared
   images and unsupported plans before launch with an actionable error.
-- [ ] 7. (#770) Supervisor and state machine → 6. Supervisor container owns
+- [x] 7. (#770) Supervisor and state machine → 6. Supervisor container owns
   prepare→setup→execute→verify→publish→finalize→report; agent is a child container; Stop,
   questions, deadlines and ad-hoc commands route to the supervisor; agent exit leaves it alive.
   Driver keeps lease, ConfigMap claim fencing and reaper.

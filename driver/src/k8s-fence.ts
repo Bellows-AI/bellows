@@ -44,7 +44,7 @@ import {
     HTTP_CONFLICT,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
-    HTTP_OK_STATUS,
+    is2xx,
     JOB_ID,
     parse,
     POLL_MS,
@@ -191,7 +191,7 @@ export async function readClaim(deps: K8sDeps, job: BoardJob): Promise<ReadClaim
     } catch {
         return null;
     }
-    if (get.status < HTTP_OK_STATUS || get.status >= HTTP_ERROR_STATUS) return null;
+    if (!is2xx(get.status)) return null;
     const claim = parse<K8sClaim>(get.body);
     const uid = claim.metadata?.uid;
     const holder = claim.data?.holder;
@@ -211,7 +211,7 @@ export async function revokeClaim(deps: K8sDeps, job: BoardJob, observed: Observ
         const patched = await deps.request('PATCH', claimPath(deps.config.k8sNamespace, job), {
             metadata: { uid: observed.uid, annotations: { [REVOKED_MARK]: job.leaseToken } },
         });
-        return patched.status >= HTTP_OK_STATUS && patched.status < HTTP_ERROR_STATUS;
+        return is2xx(patched.status);
     } catch {
         return false;
     }
@@ -249,7 +249,7 @@ export async function releaseClaimAfterGroupEnd(
             kind: 'DeleteOptions',
             preconditions: { uid: claim.uid },
         });
-        return deleted.status >= HTTP_OK_STATUS && deleted.status < HTTP_ERROR_STATUS;
+        return is2xx(deleted.status);
     } catch {
         // A leaked claim costs one takeover by the next claimant, nothing worse.
         return false;
@@ -269,14 +269,14 @@ async function groupsEnded(deps: K8sDeps, holder: string, groups: readonly Group
 /** Whether a claim read's status/body prove the checkout still belongs to this attempt. */
 function claimReadIsOurs(read: K8sResponse, job: BoardJob): boolean {
     const claim = parse<K8sClaim>(read.body);
-    const readOk = read.status >= HTTP_OK_STATUS && read.status < HTTP_ERROR_STATUS;
+    const readOk = is2xx(read.status);
     return readOk && claim.data?.holder === job.leaseToken;
 }
 
 /** Whether a claim read proves the checkout was taken over — gone, or held by someone else. */
 function claimReadIsTakenOver(read: K8sResponse, job: BoardJob): boolean {
     const claim = parse<K8sClaim>(read.body);
-    const readOk = read.status >= HTTP_OK_STATUS && read.status < HTTP_ERROR_STATUS;
+    const readOk = is2xx(read.status);
     return (
         read.status === HTTP_NOT_FOUND || (readOk && claim.data?.holder !== undefined && !claimReadIsOurs(read, job))
     );
@@ -362,7 +362,7 @@ async function probeOneFleetKind(
     }
     // A kind answering nothing at all has nothing of this job in it.
     if (probe.status === HTTP_NOT_FOUND) return { fleet: null, inconclusive: false };
-    if (probe.status >= HTTP_OK_STATUS && probe.status < HTTP_ERROR_STATUS) {
+    if (is2xx(probe.status)) {
         const found = namedItemsOf(deps, job, probe.body, keptJobs);
         // A 2xx that is no list says nothing about whether the objects are gone.
         if (!found) return { fleet: null, inconclusive: true };
@@ -403,7 +403,7 @@ async function verifyClaimHeldForSweep(deps: K8sDeps, job: BoardJob): Promise<'o
     try {
         const held = await deps.request('GET', claimPath(deps.config.k8sNamespace, job));
         if (held.status === HTTP_NOT_FOUND) return 'lost';
-        if (held.status >= HTTP_OK_STATUS && held.status < HTTP_ERROR_STATUS) {
+        if (is2xx(held.status)) {
             // A 2xx that cannot name its holder also reads as lost, deliberately asymmetric with
             // step six: standing down deletes nothing, so garbage is safe to act on HERE — while
             // step six deletes the Job, so there the same evidence fails loud without acting.

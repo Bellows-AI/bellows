@@ -62,6 +62,7 @@ import { reclaimGroupSpec } from '../src/k8s-group.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
 import { throughTransport } from './fixtures/k8s-transport-bridge.js';
+import { type Call, k8sApiserver } from './fixtures/k8s-apiserver.js';
 import { decisionOf, TERMINATION_ROWS, type TerminationRow } from './fixtures/termination-table.js';
 import { STARTUP_ROWS, type StartupRow, startupDecisionOf } from './fixtures/startup-table.js';
 import { StartupRefused } from '../src/startup-cause.js';
@@ -929,15 +930,11 @@ describe('the pod hardening on every pod the driver specs (#382)', () => {
  * router over (method, path): everything it is not told about throws, so a test that passes is one
  * whose every call was accounted for.
  */
-interface Call {
-    method: string;
-    path: string;
-    body?: unknown;
-}
-
 const namespace = 'factory';
 
 const podName = `${runnerJobName(job)}-xxxxx`;
+
+const { FAKE, claimServer, fakeRequest, routed } = k8sApiserver({ namespace, podName });
 
 /**
  * The close-time claude-code turn read, appended to every claude-code run: one aux Job over the
@@ -964,138 +961,6 @@ const RUN_FROM_SECRET = [
     ...['GET', 'POST', 'POST', 'GET', 'PATCH', 'GET', 'GET', 'GET'],
     ...['POST', 'GET', 'GET', 'GET', 'DELETE'],
 ];
-
-const FAKE: Record<string, unknown> = {
-    // A created object, as the apiserver answers it: the uid a Secret's owner reference names.
-    create: { status: 201, body: JSON.stringify({ metadata: { uid: 'job-uid-1' } }) },
-    // The fence: a label LIST that answers empty (nothing left to delete). fenceDelete stays
-    // only so an unexpected collection DELETE still gets an answer instead of a route miss.
-    fenceDelete: { status: 200, body: '{}' },
-    fenceList: { status: 200, body: '{"items":[]}' },
-    job: { status: 200, body: JSON.stringify({ status: { succeeded: 1 } }) },
-    failed: {
-        status: 200,
-        body: JSON.stringify({ status: { failed: 1, conditions: [{ type: 'Failed', reason: 'DeadlineExceeded' }] } }),
-    },
-    pods: {
-        status: 200,
-        body: JSON.stringify({
-            items: [
-                {
-                    metadata: { name: podName },
-                    // Ran to its end: an adoption takes no pod still running for a group over (#824).
-                    status: { phase: 'Succeeded', containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
-                },
-            ],
-        }),
-    },
-    log: { status: 200, body: 'did the work\n' },
-    secretCreate: { status: 201, body: JSON.stringify({ metadata: { uid: 'secret-uid-1' } }) },
-    secretDelete: { status: 200, body: '{}' },
-};
-
-/** A request function that answers from FAKE, or throws if the test did not script the call. */
-const fakeRequest = (overrides: Record<string, unknown> = {}): { request: K8sRequest; calls: Call[] } => {
-    const calls: Call[] = [];
-    const answers = { ...FAKE, ...overrides };
-    const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
-    // The checkout claim, emulated the way the apiserver arbitrates it: name uniqueness on POST,
-    // a readable GET, a uid-preconditioned DELETE (see claimServer).
-    const serve = claimServer();
-    // A Job deleted by name reads 404 from then on, as the apiserver answers once its Foreground
-    // deletion lands (issue #821: a teardown confirms it); a POST of the same name brings it back.
-    const deletedJobs = new Set<string>();
-    // A Job never created reads 404 too — what a derived name's teardown reads before it ends anything.
-    const postedJobs = new Set<string>();
-    const request: K8sRequest = (method, path, body) => {
-        calls.push({ method, path, body });
-        const claimAnswer = serve(method, path, body);
-        if (claimAnswer) return Promise.resolve(claimAnswer);
-        if (path === jobsPath(namespace) && method === 'POST') {
-            const posted = (body as { metadata?: { name?: string } } | undefined)?.metadata?.name;
-            const answer = answers.create as K8sResponse;
-            if (posted && answer.status < 300) {
-                deletedJobs.delete(posted);
-                postedJobs.add(posted);
-            }
-            return Promise.resolve(answer);
-        }
-        if (path.startsWith(`${jobsPath(namespace)}/`) && !path.slice(jobsPath(namespace).length + 1).includes('/')) {
-            const name = path.slice(jobsPath(namespace).length + 1).split('?')[0]!;
-            if (method === 'DELETE') deletedJobs.add(name);
-            else if (
-                method === 'GET' &&
-                (deletedJobs.has(name) || (name.startsWith('factory-reclaim-') && !postedJobs.has(name)))
-            ) {
-                return Promise.resolve({ status: 404, body: '{"kind":"Status","reason":"NotFound"}' });
-            } else if (method === 'PATCH') {
-                // A merge patch (a resume, a suspend, a deadline, a kill record) lands on a Job that exists.
-                return Promise.resolve(
-                    deletedJobs.has(name) ? { status: 404, body: '{"kind":"Status"}' } : { status: 200, body: '{}' }
-                );
-            }
-        }
-        if (path.startsWith(`${jobsPath(namespace)}?`)) {
-            if (method === 'DELETE') return Promise.resolve(answers.fenceDelete as K8sResponse);
-            return Promise.resolve(answers.fenceList as K8sResponse);
-        }
-        if (path === secretsPath) {
-            if (method === 'DELETE') return Promise.resolve(answers.secretDelete as K8sResponse);
-            return Promise.resolve(answers.secretCreate as K8sResponse);
-        }
-        if (path.startsWith(`${secretsPath}/`)) return Promise.resolve(answers.secretDelete as K8sResponse);
-        // Any attempt's Job: names carry the lease token now, so a run's own status poll targets
-        // a path built from ITS token, not the fixture job's.
-        if (path.startsWith(`${jobsPath(namespace)}/`)) return Promise.resolve(answers.job as K8sResponse);
-        // Service objects: lists answer empty (nothing to sweep, nothing to tear down), a POST
-        // creates one, a delete succeeds. Overrides script the interesting cases.
-        const servicesPath = `/api/v1/namespaces/${namespace}/services`;
-        if (path === servicesPath) {
-            if (method === 'DELETE') return Promise.resolve(answers.fenceDelete as K8sResponse);
-            return Promise.resolve((answers.serviceCreate ?? { status: 201, body: '{}' }) as K8sResponse);
-        }
-        if (path.startsWith(`${servicesPath}?`)) return Promise.resolve(answers.fenceList as K8sResponse);
-        if (path.startsWith(`${servicesPath}/`)) return Promise.resolve(answers.fenceDelete as K8sResponse);
-        if (
-            path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-            decodeURIComponent(path).includes('job-name=')
-        ) {
-            return Promise.resolve(answers.pods as K8sResponse);
-        }
-        if (path.startsWith(`/api/v1/namespaces/${namespace}/pods/`) && !path.endsWith('/log') && method === 'DELETE') {
-            return Promise.resolve(answers.fenceDelete as K8sResponse);
-        }
-        if (path.startsWith(`/api/v1/namespaces/${namespace}/pods/${podName}/log`)) {
-            return Promise.resolve(answers.log as K8sResponse);
-        }
-        {
-            const aux = auxRoutes(method, path);
-            if (aux) return Promise.resolve(aux);
-        }
-        return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-    };
-    return { request, calls };
-};
-
-/** A test's own routes, tried before fakeRequest's; `undefined` falls through to them. */
-type Special = (method: K8sMethod, path: string, body: unknown) => K8sResponse | Promise<K8sResponse> | undefined;
-
-/**
- * fakeRequest with the routes a test is about in front of it: `special` answers first, and
- * anything it leaves (`undefined`) falls through to fakeRequest — whose claim server, Job,
- * pod, log, Secret and aux routes answer as usual, and whose unscripted paths still reject.
- * Every call is recorded, the ones `special` answered included.
- */
-const routed = (special: Special, overrides: Record<string, unknown> = {}): { request: K8sRequest; calls: Call[] } => {
-    const calls: Call[] = [];
-    const base = fakeRequest(overrides);
-    const request: K8sRequest = (method, path, body) => {
-        calls.push({ method, path, body });
-        const answer = special(method, path, body);
-        return answer === undefined ? base.request(method, path, body) : Promise.resolve(answer);
-    };
-    return { request, calls };
-};
 
 /** The answer a hand-written fake gave a call it did not script. */
 const noAnswer = (method: K8sMethod, path: string): Promise<K8sResponse> =>
@@ -1170,34 +1035,6 @@ const boardLease =
     async (ids) =>
         ids.includes(held.id) ? [{ id: held.id, status: 'running', leaseToken }] : [];
 
-/**
- * Default answers for the objects the runner touches beyond the runner Job itself: the fence
- * sweeps service pods and headless Services by the job label, the lease teardown lists them,
- * and aux Jobs (gates, the .bellows.yaml readout) ride the same Job routes the tests script.
- * fakeRequest (and so every routed fake) falls through to this before rejecting, so a test only scripts the
- * objects it is about. Lists answer empty — nothing to sweep, nothing to tear down.
- */
-const AUX = {
-    list: { status: 200, body: '{"items":[]}' },
-    delete: { status: 200, body: '{}' },
-    create: { status: 201, body: '{}' },
-} satisfies Record<string, K8sResponse>;
-function auxRoutes(method: string, path: string): K8sResponse | null {
-    const ns = `/api/v1/namespaces/${namespace}`;
-    if (path === `${ns}/services`) {
-        if (method === 'DELETE') return AUX.delete;
-        if (method === 'POST') return AUX.create;
-        return AUX.list;
-    }
-    if (path.startsWith(`${ns}/services?`)) return AUX.list;
-    if (path.startsWith(`${ns}/services/`)) return AUX.delete;
-    // Every pod list EXCEPT the runner's job-name discovery (those are routed by the routers
-    // above): the fence's sweep and the lease teardown answer empty — nothing of this job's.
-    if (path.startsWith(`${ns}/pods?`)) return AUX.list;
-    if (path.startsWith(`${ns}/pods/`) && !path.endsWith('/log') && method === 'DELETE') return AUX.delete;
-    return null;
-}
-
 /** A lease token distinct from the fixture job's, for the attempt that reclaimed a job. */
 const NEW_TOKEN = '99999999-9999-4999-8999-999999999999';
 
@@ -1208,75 +1045,6 @@ const configmapsPath = `/api/v1/namespaces/${namespace}/configmaps`;
 
 /** The checkout claim's path: one ConfigMap per JOB id, shared by every attempt (issue #32). */
 const claimPathFor = (id: string): string => `${configmapsPath}/factory-job-${id}-claim`;
-
-/**
- * A minimal API server for the checkout claim: ConfigMap NAME uniqueness arbitrates (a POST of a
- * taken name answers 409), a GET reads the stored claim, and a DELETE honors uid preconditions —
- * exactly the three apiserver properties the acquire/takeover/release protocol rests on.
- */
-const claimServer = () => {
-    const claims = new Map<
-        string,
-        { uid: string; holder: string; claimSeq: string; created: string; annotations: Record<string, string> }
-    >();
-    let uids = 0;
-    return (method: K8sMethod, path: string, body: unknown): K8sResponse | undefined => {
-        if (method === 'POST' && path === configmapsPath) {
-            const b = body as { metadata?: { name?: string }; data?: { holder?: string; claimSeq?: string } };
-            const name = b.metadata?.name ?? '';
-            if (claims.has(name)) return { status: 409, body: '{"reason":"AlreadyExists"}' };
-            claims.set(name, {
-                uid: `claim-uid-${++uids}`,
-                holder: b.data?.holder ?? '',
-                claimSeq: b.data?.claimSeq ?? '',
-                // The apiserver stamps this on every object; the orphaned-claim readout (issue
-                // #344) reports the claim's age from it.
-                created: new Date().toISOString(),
-                annotations: {},
-            });
-            return { status: 201, body: '{}' };
-        }
-        if (path?.startsWith(`${configmapsPath}/`)) {
-            const name = path.slice(configmapsPath.length + 1);
-            const claim = claims.get(name);
-            if (method === 'GET') {
-                return claim
-                    ? {
-                          status: 200,
-                          body: JSON.stringify({
-                              metadata: {
-                                  uid: claim.uid,
-                                  creationTimestamp: claim.created,
-                                  annotations: claim.annotations,
-                              },
-                              data: { holder: claim.holder, claimSeq: claim.claimSeq },
-                          }),
-                      }
-                    : { status: 404, body: '{"kind":"Status"}' };
-            }
-            if (method === 'DELETE') {
-                const want = (body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid;
-                if (claim && (!want || want === claim.uid)) {
-                    claims.delete(name);
-                    return { status: 200, body: '{}' };
-                }
-                return { status: claim ? 409 : 404, body: '{"kind":"Status"}' };
-            }
-            if (method === 'PATCH') {
-                // A merge patch whose `metadata.uid` names another incarnation is refused, as the
-                // apiserver refuses a uid it cannot match.
-                const patch = body as { metadata?: { uid?: string; annotations?: Record<string, string> } } | undefined;
-                if (!claim) return { status: 404, body: '{"kind":"Status"}' };
-                if (patch?.metadata?.uid && patch.metadata.uid !== claim.uid) {
-                    return { status: 409, body: '{"kind":"Status"}' };
-                }
-                Object.assign(claim.annotations, patch?.metadata?.annotations ?? {});
-                return { status: 200, body: '{}' };
-            }
-        }
-        return undefined;
-    };
-};
 
 describe('readVerdict', () => {
     const depsOf = (request: K8sRequest): K8sDeps => ({
@@ -2407,6 +2175,27 @@ describe('publishing the produced work', () => {
     ])('answers null for %s', async (_label, answer) => {
         const steps = scripted({ step: (step) => (step.kind === 'probe' ? answer : null) });
         expect(await publishing(steps).probeTree(ISSUE_JOB)).toBeNull();
+    });
+
+    // The review snapshot of an attempt with no group yet (an adopted run): a supervisor-only group
+    // is made for it, and its one `snapshot` step carries the stand-down signal.
+    it('snapshots the tree as one snapshot step with the signal, making the supervisor-only group', async () => {
+        const cancel = new AbortController();
+        const steps = fakeSteps((step) => stepOk(step.kind === 'snapshot' ? '{"ok":true}' : ''));
+        const { request, calls } = fakeRequest();
+
+        expect(await publishing(steps, request).snapshotTree(ISSUE_JOB, 'review-1', cancel.signal)).toMatchObject({
+            ok: true,
+        });
+
+        expect(kindsOf(steps)).toEqual(['snapshot']);
+        expect(steps.signals).toEqual([cancel.signal]);
+        const created = calls.filter((c) => c.method === 'POST' && c.path === jobsPath(namespace));
+        expect(
+            created.map((c) =>
+                (c.body as ReturnType<typeof runnerJobSpec>).spec.template.spec.containers.map((x) => x.name)
+            )
+        ).toEqual([[SUPERVISOR_CONTAINER]]);
     });
 
     it('carries no claim env for an env-less claim', async () => {
@@ -4650,6 +4439,19 @@ describe('the kubernetes runner', () => {
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/500/);
     });
 
+    // The docker twin is pinned `it.fails` in docker.test.ts (#828, slice 1): a run that rejects once
+    // its group exists ends nothing here (`k8s-runner.ts:415-420`) — neither the Job nor the
+    // checkout claim — and the loop decides.
+    it('a run that rejects leaves its group for the loop to decide', async () => {
+        const { request, calls } = fakeRequest({ job: { status: 403, body: 'forbidden' } });
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /reading the runner job/
+        );
+        expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(true);
+        expect(calls.filter((call) => call.method === 'DELETE' && call.path?.includes(runnerJobName(job)))).toEqual([]);
+        expect(calls.filter((call) => call.method === 'DELETE' && call.path === claimPathFor(job.id))).toEqual([]);
+    });
+
     it('keeps polling the pod list through transient API failures', async () => {
         let lists = 0;
         const { request } = routed((method, path) => {
@@ -6668,6 +6470,20 @@ describe('the block-helper transport (issue #207)', () => {
             message: expect.stringContaining('not-a-real-helper'),
         });
         expect(helperStepsOf(steps)).toEqual([]);
+    });
+
+    // A group the cluster refuses is a failed helper in the apiserver's own words — never a throw.
+    it('fails a helper whose runner Job the cluster refuses, submitting no step', async () => {
+        const steps = answering();
+        const { request } = fakeRequest({ create: { status: 403, body: 'jobs is forbidden' } });
+        const result = await runner(request, {}, undefined, steps.sink).runHelper(repoJob, plan());
+
+        expect(result).toEqual({
+            ok: false,
+            reason: 'runner_error',
+            message: expect.stringContaining('jobs is forbidden'),
+        });
+        expect(steps.submitted).toEqual([]);
     });
 
     it('runs the noop helper end to end as a step, creating no Job or Secret of its own', async () => {
