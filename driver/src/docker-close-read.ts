@@ -22,7 +22,7 @@ import {
 import { type DriverConfig, executorImage } from './config.js';
 import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts.js';
 import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
-import { type ExecDocker, linesOf, noSuchObject, type Spawn, readUtf8 } from './docker-runner-support.js';
+import { type ExecDocker, linesOf, noSuchObject, type Sleep, type Spawn, readUtf8 } from './docker-runner-support.js';
 import { supervisorLossOf, supervisorName, waitSupervisorExit } from './docker-group.js';
 import { readDockerKills } from './docker-teardown.js';
 import { adoptedVerdictOf, infraLossOf, killEndsGroup, reportFinalized, reportVerdictOf } from './termination.js';
@@ -303,7 +303,7 @@ async function readSupervisorReport(execDocker: ExecDocker, prior: BoardJob): Pr
  * terminal. A timeout the dead driver enforced reads as the exit it caused: the deadline died with it.
  */
 export async function dockerAdopt(deps: AdoptDeps, job: BoardJob, signal?: AbortSignal): Promise<AdoptedRun | null> {
-    const found = await listedWithRetries(() => exitedEarlierRunner(deps.execDocker, job));
+    const found = await listedWithRetries(() => exitedEarlierRunner(deps.execDocker, job), { ...deps, signal });
     if (!found) return null;
     try {
         return await adoptExited(deps, job, found, signal);
@@ -317,23 +317,38 @@ export async function dockerAdopt(deps: AdoptDeps, job: BoardJob, signal?: Abort
 
 /** How often the adoption lists the exited runners before a refusing daemon stands the attempt down. */
 const DISCOVERY_ATTEMPTS = 3;
+/** The pause between those listings — the kubernetes listing's pace (`POLL_MS`). */
+const DISCOVERY_RETRY_MS = 2_000;
 
 /**
- * The exited-runner listing, tried again on a refusal; still refused, the attempt stands down: a
- * daemon that could not say is no "nothing to adopt", and a fresh run's fence would remove a
- * finalizing group unread once it answers again (#824).
+ * The exited-runner listing, tried again on a refusal after a pause a stand-down cuts short; still
+ * refused, the attempt stands down: a daemon that could not say is no "nothing to adopt", and a
+ * fresh run's fence would remove a finalizing group unread once it answers again (#824).
  */
-async function listedWithRetries<T>(list: () => Promise<T>, attempt = 1): Promise<T> {
+async function listedWithRetries<T>(
+    list: () => Promise<T>,
+    pace: { sleep: Sleep; signal: AbortSignal | undefined },
+    attempt = 1
+): Promise<T> {
     try {
         return await list();
     } catch (e) {
-        if (attempt < DISCOVERY_ATTEMPTS) return listedWithRetries(list, attempt + 1);
-        throw new AdoptionBlocked(`the earlier runners could not be listed: ${(e as Error).message}`);
+        if (attempt >= DISCOVERY_ATTEMPTS) {
+            throw new AdoptionBlocked(`the earlier runners could not be listed: ${(e as Error).message}`);
+        }
     }
+    try {
+        await pace.sleep(DISCOVERY_RETRY_MS, pace.signal);
+    } catch {
+        throw adoptionAbandoned();
+    }
+    if (pace.signal?.aborted) throw adoptionAbandoned();
+    return listedWithRetries(list, pace, attempt + 1);
 }
 
 interface AdoptDeps {
     execDocker: ExecDocker;
+    sleep: Sleep;
     spawnFn: Spawn;
     config: DriverConfig;
     fence: (job: BoardJob) => Promise<void>;

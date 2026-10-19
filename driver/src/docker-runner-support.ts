@@ -5,6 +5,7 @@
  * setup, the runner's create and verdict, and the killed-job guards around the env-file write.
  */
 
+import { setTimeout as delay } from 'node:timers/promises';
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import { execFile, type spawn } from 'node:child_process';
 import type { writeFile, rm } from 'node:fs/promises';
@@ -67,6 +68,21 @@ export function readUtf8(stream: Readable | null | undefined, onText: (text: str
  * runner's verdict open forever when the daemon stalls. An aborted `signal` kills it the same way.
  * `input` is written to the CLI's stdin — the archive a `docker cp -` reads.
  */
+/** A pause that a stand-down cuts short: rejects once `signal` aborts. */
+export type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
+
+/** `execDocker` refusing every call once `signal` aborts; `execDocker` itself without one. */
+export function untilStandDown(execDocker: ExecDocker, signal?: AbortSignal): ExecDocker {
+    if (!signal) return execDocker;
+    return async (args, options) => {
+        if (signal.aborted) throw new Error('the call was abandoned: the attempt stood down');
+        return execDocker(args, options);
+    };
+}
+
+/** The real pause: `node:timers/promises`, which rejects the moment `signal` aborts. */
+export const abortableSleep: Sleep = (ms, signal) => delay(ms, undefined, signal ? { signal } : {});
+
 export type ExecDocker = (
     args: string[],
     options?: { timeout?: number; signal?: AbortSignal; input?: Buffer }
