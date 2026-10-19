@@ -218,6 +218,11 @@ describe('env var validation', () => {
             'RESERVED_ENV_NAME',
         ],
         [
+            'the transcript exporter’s token the driver mints per run',
+            { vars: [{ name: 'SUPERVISOR_EXPORT_TOKEN', value: 'spoof', isSecret: true }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
             'the credential-helper code the driver passes the fetch',
             { vars: [{ name: 'CRED_HELPER', value: '!evil', isSecret: false }] },
             'RESERVED_ENV_NAME',

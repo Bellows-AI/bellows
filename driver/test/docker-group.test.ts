@@ -52,7 +52,11 @@ const job: BoardJob = {
     userId: USER,
     workspacePath: `bellows/${USER}`,
     gateEnv: { BELLOWS_CONTROL_URL: 'http://driver:7000', BELLOWS_CONTROL_TOKEN: 'tok-agent', OTHER: 'x' },
-    supervisorEnv: { SUPERVISOR_CONTROL_URL: 'http://driver:7000', SUPERVISOR_CONTROL_TOKEN: 'tok-supervisor' },
+    supervisorEnv: {
+        SUPERVISOR_CONTROL_URL: 'http://driver:7000',
+        SUPERVISOR_CONTROL_TOKEN: 'tok-supervisor',
+        SUPERVISOR_EXPORT_TOKEN: 'tok-export',
+    },
 };
 const START = '2026-09-01T00:00:00Z';
 
@@ -169,13 +173,13 @@ describe('creating and starting the group', () => {
         expect(created).toEqual([supervisorName(job), exporterName(job)]);
     });
 
-    it('writes only the control pair to a 0600 env file per container and removes each', async () => {
+    it('writes each container only its own control pair to a 0600 env file and removes each', async () => {
         const { written, removed, deps } = recorder();
         await createGroup(deps, job, SESSION, { startedAt: START });
         expect(written.map((w) => w.body)).toEqual([
             'SUPERVISOR_CONTROL_URL=http://driver:7000\nSUPERVISOR_CONTROL_TOKEN=tok-supervisor\n',
-            // The exporter's script reads the names it always read; the value is the supervisor's token.
-            'BELLOWS_CONTROL_URL=http://driver:7000\nBELLOWS_CONTROL_TOKEN=tok-supervisor\n',
+            // The exporter's script reads the names it always read; the value is its own export-only token.
+            'BELLOWS_CONTROL_URL=http://driver:7000\nBELLOWS_CONTROL_TOKEN=tok-export\n',
         ]);
         expect(written.every((w) => w.mode === 0o600)).toBe(true);
         expect(removed).toEqual(written.map((w) => w.file));

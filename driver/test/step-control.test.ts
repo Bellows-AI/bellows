@@ -207,6 +207,7 @@ describe('the step broker', () => {
 describe('the control routes of a step channel', () => {
     const SUPERVISOR = 'supervisor-token';
     const AGENT = 'agent-token';
+    const EXPORTER = 'exporter-token';
     const steps = createStepBroker();
     const server = createGateServer({
         host: '127.0.0.1',
@@ -222,6 +223,7 @@ describe('the control routes of a step channel', () => {
         base = `http://127.0.0.1:${await server.listen()}`;
         server.openControl(SUPERVISOR);
         server.grantAgent(SUPERVISOR, AGENT);
+        server.grantExporter(SUPERVISOR, EXPORTER);
     });
     afterEach(async () => {
         server.closeControl(SUPERVISOR);
@@ -290,6 +292,25 @@ describe('the control routes of a step channel', () => {
         expect((await call('nobody', 'GET', '/step?wait=0')).status).toBe(401);
         server.closeControl(SUPERVISOR);
         expect((await call(SUPERVISOR, 'GET', '/step?wait=0')).status).toBe(401);
+    });
+
+    // The transcript exporter shares the attempt but not the supervisor's doors: a step it tried to
+    // take or answer, or a report it tried to post, stays the supervisor's.
+    it('refuses the exporter’s token on every step route and leaves the step and report to the supervisor', async () => {
+        const answered = steps.submit(SUPERVISOR, step('s1'));
+        const reported = steps.awaitReport(SUPERVISOR);
+        expect((await call(EXPORTER, 'GET', '/step?wait=0')).status).toBe(403);
+        expect((await call(EXPORTER, 'POST', '/step/s1', { invocation: 'i-x', ...result('forged') })).status).toBe(403);
+        expect((await call(EXPORTER, 'POST', '/report', REPORT)).status).toBe(403);
+        expect((await call(EXPORTER, 'GET', '/control')).status).toBe(403);
+        expect(server.controlPolled(SUPERVISOR)).toBe(false);
+
+        const pulled = await call(SUPERVISOR, 'GET', '/step?wait=0');
+        expect(((await pulled.json()) as { step: StepRequest }).step.id).toBe('s1');
+        await call(SUPERVISOR, 'POST', '/step/s1', { invocation: 'i-1', ...result('x') });
+        expect(await answered).toEqual(result('x'));
+        expect((await call(SUPERVISOR, 'POST', '/report', REPORT)).status).toBe(200);
+        expect(await reported).toMatchObject({ agentExit: 0, drained: true });
     });
 
     it('serves a supervisor-only token — a group with no attempt — its steps and a control that never stops', async () => {
