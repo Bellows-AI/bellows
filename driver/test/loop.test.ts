@@ -5268,7 +5268,7 @@ describe('a service that dies during the gates (issue #437)', () => {
 
 /**
  * Gates judge work: a run that did not finish cleanly left none, and a failed gate over it would
- * fire the workflow's `gate-failed` edge on work that never happened (task d0a4146f).
+ * fire the workflow's `gate-failed` edge on work that never happened.
  */
 describe('the gate environment’s GitHub token (docs/connections.md)', () => {
     // A gate run after an hour-long agent turn must not start on the token minted before it.

@@ -221,8 +221,7 @@ describe('the container scripts', () => {
     // and the op is appended VERBATIM, so trailing whitespace is code. The loaded constant is
     // trimmed (see publish.ts) because the file's POSIX trailing newline would strand `get` on
     // its own line and the helper would exit 127 after answering; git only happens to keep a
-    // dead helper's stdout (observed 2026-09-13, job 43379d3a: `get: 2: get: not found` in the
-    // publish container). Pins the marker semantics AND the spawn shape and its exit status.
+    // dead helper's stdout (`get: 2: get: not found` in the publish container). Pins the marker semantics AND the spawn shape and its exit status.
     it('the credential helper runs clean exactly as git spawns it', () => {
         expect(CREDENTIAL_HELPER.startsWith('!')).toBe(true);
         const snippet = CREDENTIAL_HELPER.slice(1);

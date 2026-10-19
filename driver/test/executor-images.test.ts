@@ -954,7 +954,7 @@ describe('the claude-executor workspace trust', () => {
  * The git guard (issue #73): the claude-executor's PreToolUse hook that denies the Bash
  * commands which would move HEAD or rewrite refs in the task worktree. The tree standing on
  * `factory/<root>` is the driver's invariant — the restore-mode sync refuses a wrong checkout
- * only after the damage, and the damage strands the thread (job 43379d3a, 2026-09-13). The
+ * only after the damage, and the damage strands the thread. The
  * hook is a guardrail, not a security boundary; the sync refusal stays the last line of
  * defense. The canonical case table lives in the script itself and both suites pin it: this
  * one runs decide() offline, the image suite (docker/claude-executor/test.sh) runs --selftest

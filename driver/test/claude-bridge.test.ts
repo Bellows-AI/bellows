@@ -391,7 +391,7 @@ describe('claude-bridge stream', () => {
         );
     });
 
-    // Job 2bfc0e63 (2026-10-11): the agent ended its turn while its reviewer subagent ran, the
+    // The agent ended its turn while its reviewer subagent ran, the
     // bridge closed stdin on that `result`, and every permission request of the turn the
     // subagent's completion started failed "Stream closed" — AskUserQuestion included.
     it('keeps stdin open across a result while a background subagent runs, so the turn it starts is answered', async () => {
@@ -510,7 +510,7 @@ describe('claude-bridge can_use_tool', () => {
 
     const NOT_APPROVED = "Not pre-approved by the runner's allowlist, and nobody can approve it in this run.";
 
-    // A real run (`/fix 582`) read the old "denied by the permission settings" on
+    // A run read the old "denied by the permission settings" on
     // `(npm install | tail -3)` as "npm is forbidden" and gave up, though `Bash(npm *)` was allowed:
     // the subshell, not npm, kept the command from matching. The Bash denial names that way out.
     it.each([
