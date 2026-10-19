@@ -38,7 +38,6 @@ import {
     parseClaudeCloseRead,
     parseOpencodeCacheProbe,
     parseOpencodeRunOutcome,
-    parseTranscriptRead,
     readsAgentTurns,
 } from '../src/close-read.js';
 import { ARTIFACT_LIMIT, commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
@@ -773,44 +772,6 @@ describe('the transcript export reads (issue #325)', () => {
         const line = opencodeSessionReadoutArgs(loadDriverConfig({}), opencodeJob, START);
         expect(line).toContain(`EXPORT_LIMIT_BYTES=${OPENCODE_EXPORT_LIMIT}`);
         expect(line).toContain(opencodeReadoutScript);
-    });
-
-    /**
-     * The parser both executors' transcript reads answer through: marker sniffed and stripped,
-     * plain JSONL through untouched, the driver's own cap re-applied at whole-line granularity —
-     * a record that cannot fit whole is skipped, never split into a partial JSONL line — and the
-     * failure line, or an empty answer, costs the artifact; content is never invented.
-     */
-    it('parses the export: marker stripped, whole lines kept within the cap, failure lines answer null', () => {
-        // Plain content, no marker.
-        expect(parseTranscriptRead('{"a":1}\n{"b":2}\n')).toEqual({ content: '{"a":1}\n{"b":2}', truncated: false });
-        // The marker is sniffed and stripped, and its flag rides the answer.
-        expect(parseTranscriptRead('{"truncated":true,"droppedLines":3}\n{"b":2}\n')).toEqual({
-            content: '{"b":2}',
-            truncated: true,
-        });
-        // A marker with content under the cap: truncated stays true, no second cut.
-        // The failure line, alone: no artifact, never an error line uploaded as content.
-        expect(parseTranscriptRead('{"error":"no transcript for session x"}\n')).toBeNull();
-        // Silence and garbage: no artifact.
-        expect(parseTranscriptRead('')).toBeNull();
-        expect(parseTranscriptRead('node: nothing to run\n')).toEqual({
-            content: 'node: nothing to run',
-            truncated: false,
-        });
-        // Over the cap, whole lines only: an oversized newest record is skipped — never split —
-        // the older lines that fit are kept, and the flag is earned, not guessed.
-        const old = '{"old":1}';
-        const oversized = 'x'.repeat(ARTIFACT_LIMIT + 10);
-        expect(parseTranscriptRead(`${old}\n${oversized}\n`)).toEqual({ content: old, truncated: true });
-        // The kept total, separators included, stays within the cap: a line that fits only by
-        // splitting its neighbor is dropped with it.
-        const almost = 'y'.repeat(ARTIFACT_LIMIT - 10);
-        const kept = parseTranscriptRead(`{"head":1}\n${almost}\n${almost}\n`);
-        expect(kept).toEqual({ content: almost, truncated: true });
-        expect(kept === null || Buffer.byteLength(kept.content, 'utf8') <= ARTIFACT_LIMIT).toBe(true);
-        // Nothing fits whole: no artifact at all, never a partial record.
-        expect(parseTranscriptRead(`${oversized}\n`)).toBeNull();
     });
 });
 
@@ -3540,10 +3501,9 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     });
 
     // The fence is the only job-scoped sweep, and this is its full inventory: every labeled
-    // container of the job regardless of which attempt made it, every labeled network, and —
-    // transitional — the legacy unlabeled network the pre-redesign name scheme left behind.
+    // container of the job regardless of which attempt made it, and every labeled network.
     // Anything not this job's is left alone.
-    it('fences every leftover of the job by label — containers, networks, and the legacy network — and nothing else', async () => {
+    it('fences every leftover of the job by label — containers and networks — and nothing else', async () => {
         const oldA = { ...job, leaseToken: 'aaaaaaaa-1111-4111-8111-111111111111' };
         const oldB = { ...job, leaseToken: 'bbbbbbbb-2222-4222-8222-222222222222' };
         const d = labelDaemon({});
@@ -3555,8 +3515,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         });
         d.containers.set('someone-elses-runner', { 'factory.job': '99999999-9999-4999-8999-999999999999' });
         d.networks.set(networkName(oldA), { 'factory.job': job.id, 'factory.lease': oldA.leaseToken });
-        // The legacy name: created before the token joined the name, carrying no labels at all.
-        d.networks.set(`factory-job-${job.id}-services`, {});
 
         // The loop started B's services first; run()'s fence then sweeps, and the runner's create is
         // the first call after it, so snapshotting there is snapshotting the fence's outcome.
@@ -3576,7 +3534,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         );
         await runner.run(attemptB, { id: SESSION, resume: false });
 
-        // All four leftovers are gone; the other job's container is not this fence's business, and
+        // All three leftovers are gone; the other job's container is not this fence's business, and
         // this attempt's own fleet and network — started before run() — are spared.
         expect(afterFence!.containers.sort()).toEqual(
             [serviceContainerName(attemptB, 'stub'), 'someone-elses-runner'].sort()

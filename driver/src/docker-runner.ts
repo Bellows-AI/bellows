@@ -163,9 +163,7 @@ interface RunnerDeps {
  * worktree. A refusal here is INFRASTRUCTURE — syncCheckout lets it throw (the loop leaves the
  * job to its lease), and run()'s own call propagates the same way — never the command's verdict.
  * The one tolerated shape is docker's already-gone answer on a removal: a container exiting
- * between the ps and its rm is the fence succeeding, not failing. The transitional
- * unlabelled-network rm below keeps tolerating absent outright — it removes by a NAME that may
- * never have existed.
+ * between the ps and its rm is the fence succeeding, not failing.
  */
 async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob): Promise<void> {
     // The run this attempt adopted is kept, as kubernetes keeps its Job, for a later claim (issue #821).
@@ -210,12 +208,6 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob): Promise<void
         (name) => ['volume', 'rm', '-f', name],
         (name) => `the re-claim fence could not remove the leftover control volume ${name} of job ${job.id}`
     );
-
-    // TRANSITIONAL: networks created before the lease token joined the name carry no
-    // labels at all, so the sweep above cannot see them. Remove the pre-redesign name
-    // outright; tolerated absent. This line may be dropped once no pre-redesign leftover
-    // can exist any more.
-    await deps.execDocker(['network', 'rm', `factory-job-${job.id}-services`]).catch(() => undefined);
 }
 
 /** The step host of this runner: the channel its supervisor serves, or a refusal naming the missing one. */

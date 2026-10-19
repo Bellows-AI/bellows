@@ -79,9 +79,6 @@ export const AGENT_OUT = `${MAILBOXES.out.path}/${AGENT_MAILBOX_DIR}`;
  */
 export const GO_MARKER = `${AGENT_IN}/${MAILBOX_FILES.go}`;
 
-/** The marker file the baked Stop hook and plugin read: the supervisor's `stop`, in the agent's read-only mailbox. */
-export const STOP_MARKER = `${AGENT_IN}/${MAILBOX_FILES.stop}`;
-
 /** How often the supervisor reads the driver's run-control endpoint, and so the pace a Stop reaches the agent at. */
 export const RUN_CONTROL_POLL_MS = 5_000;
 /** How long the exporter may take to drain and close its manifests once the agent is gone. */
@@ -160,8 +157,6 @@ export interface SupervisorReport {
 export const STEP_PATH = '/step';
 export const REPORT_PATH = '/report';
 
-/** How long one `GET /step` holds the request open when no step is queued. */
-export const STEP_POLL_WAIT_MS = 15_000;
 /**
  * How long past its own timeout the driver waits for a step's answer before it counts the answer
  * lost (`StepTimedOut`): the supervisor kills a step at its timeout, so only a lost answer or a
