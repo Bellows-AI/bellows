@@ -216,6 +216,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     [`/api/jobs/${JOB_ID}/requeue`, 'worker'],
     [`/api/jobs/${JOB_ID}/interrupt`, 'worker'],
     [`/api/jobs/${JOB_ID}/complete`, 'worker'],
+    // The staged final envelope (issue #821): the same body as complete, under the same lease.
+    [`/api/jobs/${JOB_ID}/conclusion`, 'worker'],
     [`/api/jobs/${JOB_ID}/output`, 'worker'],
     // Both are the driver's gate machinery — the state reports after each gate runs and the
     // post-sync re-read of `.bellows.yaml`. Missing from this table is what left the last run's

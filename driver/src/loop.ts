@@ -143,11 +143,38 @@ function handoverOf(rt: LoopRuntime) {
     return {
         done,
         async run(reason: string): Promise<void> {
-            const handing = [...live.values()].filter(({ state }) => !state.finished && !down(state));
+            // A concluding attempt's verdict is in flight: its own teardown follows it (issue #821).
+            const handing = [...live.values()].filter(
+                ({ state }) => !state.finished && !state.concluding && !down(state)
+            );
             await Promise.all(handing.map(({ job, state }) => handOver(rt, job, state, reason)));
             landed();
         },
     };
+}
+
+/**
+ * A done thread's verdict-time reclaim (`report` in `createLoop`): the removal, once the attempt's
+ * group is torn down (`after`, issue #821), then its ack. Registered under the thread's root in the
+ * reclaim barrier before it starts — the set and the start are one synchronous block, so no claimant
+ * can observe the in-between — and dropped only while it is still the one registered: a replacement
+ * reclaim for the same root is never undone by a predecessor settling late.
+ */
+function startVerdictReclaim(
+    deps: Pick<LoopRuntime, 'board' | 'runner' | 'config' | 'log' | 'sleep' | 'reclaims'>,
+    job: BoardJob,
+    order: { reclaimId: string; after: Promise<void> | undefined }
+): void {
+    const { board, runner, config, log, sleep, reclaims } = deps;
+    const root = job.rootJobId ?? job.id;
+    const reclaim: Promise<void> = (async () => {
+        // The tree outlives the attempt's last step.
+        await order.after;
+        await processVerdictReclaim({ board, runner, config, log, sleep }, job, order.reclaimId);
+    })().finally(() => {
+        if (reclaims.get(root) === reclaim) reclaims.delete(root);
+    });
+    reclaims.set(root, reclaim);
 }
 
 export function createLoop({
@@ -238,23 +265,20 @@ export function createLoop({
      * this driver while the removal is in flight then waits it out before its startup sync (see
      * `reclaims`), instead of syncing against a tree mid-deletion.
      */
-    async function report(job: BoardJob, result: Parameters<Board['complete']>[1]): Promise<LeaseState> {
+    async function report(
+        job: BoardJob,
+        result: Parameters<Board['complete']>[1],
+        { after }: { after?: Promise<void> } = {}
+    ): Promise<LeaseState> {
         const verdict = await completeWithRetry({ board, config, log, sleep }, job, result);
+        if (verdict.conflict) {
+            log(
+                `job ${job.id}: the board refused the verdict: this attempt staged a different conclusion, which stands`
+            );
+        }
         const { reclaimId } = verdict;
         if (verdict.state !== 'held' || reclaimId === null) return verdict.state;
-        const root = job.rootJobId ?? job.id;
-        // Registered before the removal starts — the set and the start are one synchronous block,
-        // so no claimant can observe the in-between. The entry is dropped only while it is still
-        // the one registered: a replacement reclaim for the same root is never undone by a
-        // predecessor settling late.
-        const reclaim: Promise<void> = processVerdictReclaim(
-            { board, runner, config, log, sleep },
-            job,
-            reclaimId
-        ).finally(() => {
-            if (reclaims.get(root) === reclaim) reclaims.delete(root);
-        });
-        reclaims.set(root, reclaim);
+        startVerdictReclaim({ board, runner, config, log, sleep, reclaims }, job, { reclaimId, after });
         return verdict.state;
     }
 

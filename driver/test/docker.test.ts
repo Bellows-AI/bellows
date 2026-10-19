@@ -5138,8 +5138,15 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         command = commandMark(job.command)
     ) => `${name}\t${lease}\t${seq}\t${SESSION}\t${command}\n`;
 
-    /** The fence's own listing: every container of the job by id and lease — the runner's and the exporter's. */
-    const FENCE_PS = `runner-id\t${job.leaseToken}\nexporter-id\t${job.leaseToken}\n`;
+    /** An attempt older than the one adopted, whose leftovers no adoption reads. */
+    const OLDER = '77777777-7777-4777-8777-777777777777';
+    /**
+     * The fence's own listing: every container of the job by id and lease — the read run's runner
+     * and exporter, and an older attempt's leftover.
+     */
+    const FENCE_PS = `runner-id\t${job.leaseToken}\nexporter-id\t${job.leaseToken}\nolder-id\t${OLDER}\n`;
+    /** The fence's volume listing: the read run's mailbox, and the older attempt's. */
+    const FENCE_VOLUMES = `read-mailbox\t${job.leaseToken}\nolder-mailbox\t${OLDER}\n`;
 
     /**
      * The daemon, and the `docker logs` read the adoption streams through spawn — its argv recorded
@@ -5152,6 +5159,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             // The earlier attempt's supervisor: finalized (0) unless a test says how it ended.
             if (args[0] === 'wait') return Promise.resolve({ stdout: `${supervisorExit}\n` });
             if (args[0] === 'ps') return Promise.resolve({ stdout: args.includes('status=exited') ? ps : FENCE_PS });
+            if (args[0] === 'volume' && args[1] === 'ls') return Promise.resolve({ stdout: FENCE_VOLUMES });
             if (args[0] === 'inspect') {
                 return Promise.resolve({
                     stdout: '{"Status":"exited","ExitCode":0,"StartedAt":"2026-10-01T00:00:00Z"}\n',
@@ -5166,7 +5174,16 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         return { exec, calls, logs };
     };
 
-    it('reads the exit code, log and session before removing the container', async () => {
+    /** The removals the daemon was asked for, by the name or id each named last. */
+    const removals = (calls: string[][]) =>
+        calls
+            .filter((args) => args[0] === 'rm' || (args[0] === 'volume' && args[1] === 'rm'))
+            .map((args) => args.at(-1));
+
+    // Issue #821 (D1): the read run is the evidence a later claim adopts again if this one is lost
+    // before its verdict lands — kept, like the kubernetes Job the adoption spares, until the
+    // reaper takes it once the job is terminal. Every older attempt's leftover goes, read first.
+    it('reads the exit code, log and session, keeps the read run and sweeps the older leftovers', async () => {
         const { exec, calls, logs } = daemon(listing());
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
@@ -5176,18 +5193,53 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             outcome: { exitCode: 0, started: true, timedOut: false, sessionId: SESSION },
         });
         expect(adopted!.outcome.output).toContain('did the work');
-        const read = calls.findIndex((args) => args[0] === 'logs');
-        const removed = calls.findIndex((args) => args[0] === 'rm' && args.includes('runner-id'));
-        expect(read).toBeGreaterThanOrEqual(0);
-        expect(removed).toBeGreaterThan(read);
         expect(calls[0]).toEqual(expect.arrayContaining(['ps', '-a', `label=factory.job=${job.id}`, 'status=exited']));
-        // The earlier attempt's other leftovers go with it, read first: the fence the sync would run.
-        const swept = calls.findIndex((args) => args[0] === 'rm' && args.includes('exporter-id'));
+        const read = calls.findIndex((args) => args[0] === 'logs');
+        const swept = calls.findIndex((args) => args[0] === 'rm' && args.includes('older-id'));
+        expect(read).toBeGreaterThanOrEqual(0);
         expect(swept).toBeGreaterThan(read);
+        expect(removals(calls)).toEqual(['older-id', 'older-mailbox']);
+    });
+
+    it('keeps the read run through every later fence of the adopting attempt', async () => {
+        const { exec, calls, logs } = daemon(listing());
+        const runner = dockerRunner(exec, { spawn: logs });
+
+        await runner.adopt(adopter);
+        calls.length = 0;
+        await runner.probeTree(adopter, new AbortController().signal).catch(() => null);
+
+        expect(calls.some((args) => args[0] === 'ps' && !args.includes('status=exited'))).toBe(true);
+        expect(removals(calls)).not.toContain('runner-id');
+        expect(removals(calls)).not.toContain('exporter-id');
+        expect(removals(calls)).not.toContain('read-mailbox');
+    });
+
+    it('still sweeps every earlier attempt for a claim that adopted nothing', async () => {
+        const { exec, calls, logs } = daemon(listing());
+
+        await dockerRunner(exec, { spawn: logs })
+            .probeTree(adopter, new AbortController().signal)
+            .catch(() => null);
+
+        expect(removals(calls)).toEqual(
+            expect.arrayContaining(['runner-id', 'exporter-id', 'older-id', 'read-mailbox', 'older-mailbox'])
+        );
+    });
+
+    // A run whose driver could not land its verdict closed its control endpoint and left the group:
+    // with nothing left to serve, its supervisor exited finalized — the run the next claim adopts.
+    it('adopts a group whose supervisor exited finalized after its endpoint closed', async () => {
+        const { exec, logs } = daemon(listing(), String(SUPERVISOR_EXIT.finalized));
+
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
+
+        expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0, started: true, timedOut: false } });
+        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
     });
 
     // Issue #796: a run read but never swept is no adoption — the attempt runs the job itself.
-    it('rejects when the read run cannot be swept', async () => {
+    it('rejects when an older leftover cannot be swept', async () => {
         const { exec: base, calls, logs } = daemon(listing());
         const exec = (args: string[]) => {
             if (args[0] !== 'rm') return base(args);
@@ -5270,8 +5322,8 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         expect(adopted?.outcome).toMatchObject({ started: true, ...fields });
         expect(adopted?.outcome).not.toHaveProperty('infraLoss');
-        // The record is the earlier attempt's, read before the fence sweeps it with the rest.
-        expect(calls.some((args) => args[0] === 'rm' && args.includes('runner-id'))).toBe(true);
+        // The record is the earlier attempt's, kept with the read run for a later adoption (#821).
+        expect(calls.some((args) => args[0] === 'rm' && args.includes('runner-id'))).toBe(false);
     });
 
     it('adopts a supervised stop its lost driver recorded for a full spool, with the spool fault', async () => {

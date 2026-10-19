@@ -10,6 +10,7 @@ import type { EvidencePolicy } from './evidence-policy.js';
 import { enforceCompletionPolicy } from './job-store-evidence.js';
 import { answeredQuestionsOf } from './job-store-questions.js';
 import { fingerprintOf, missedSettle, recordReceipt, type SettleKey } from './job-store-receipts.js';
+import { stagedFingerprint } from './job-store-staged.js';
 import {
     exists,
     insertWorkflowSuccessor,
@@ -167,6 +168,9 @@ export interface CompleteVerdict {
 
 type CompleteAnswer = { result: 'ok'; threadDone: boolean; reclaimId: string | null };
 
+/** What a complete answers: the verdict's answer, or why it was refused. */
+export type CompleteOutcome = Awaited<ReturnType<JobStore['complete']>>;
+
 /**
  * A complete that missed its lease-guarded update: the receipt's answer, with a reclaim order the
  * board has since acked, let lapse or handed another acquisition answered as none (issue #821) — a
@@ -189,21 +193,21 @@ export async function completeJob(
     leaseToken: string,
     result: CompleteResult
 ): ReturnType<JobStore['complete']> {
-    const { sql, orgId, wallTick, prs } = ctx;
-    const {
-        status,
-        exitCode,
-        output,
-        contextTokens,
-        contextCostUsd,
-        agentTurns,
-        setupMs = null,
-        summary,
-        failureKind,
-        failureCause,
-        publication,
-    } = result;
-    const treeChanged = result.treeChanged ?? null;
+    // One transaction, because the terminality answer must describe the thread AS THE VERDICT
+    // lands: the walk runs on the same connection, where the just-updated row's new status is
+    // visible and no follow-up inserted after the commit can be.
+    return ctx.sql.begin((tx) => completeInTx(tx, ctx, { id, leaseToken, result }));
+}
+
+/** Whether the attempt staged a conclusion other than this request under its lease (issue #821). */
+async function stagedApart(tx: TransactionSql, key: SettleKey): Promise<boolean> {
+    const staged = await stagedFingerprint(tx, key);
+    return staged !== null && staged !== key.fingerprint;
+}
+
+/** The verdict's column values, each by the overwrite rule its comment names. */
+function verdictPatchOf(tx: TransactionSql, result: CompleteResult) {
+    const { contextTokens, contextCostUsd, agentTurns, setupMs = null, summary, failureKind, failureCause } = result;
     // The context stats ride the verdict and merge into the runtime vitals — the row keeps
     // its last CPU sample AND gains the context the run reached. The stats are stored
     // under the keys the task view reads (`contextTokens`, `costUsd`; the wire field is
@@ -213,7 +217,7 @@ export async function completeJob(
     // → the column is left exactly as the samples left it.
     const context =
         typeof contextTokens === 'number' || typeof contextCostUsd === 'number'
-            ? sql.json({
+            ? tx.json({
                   ...(typeof contextTokens === 'number' ? { contextTokens } : {}),
                   ...(typeof contextCostUsd === 'number' ? { costUsd: contextCostUsd } : {}),
               } as never)
@@ -231,158 +235,224 @@ export async function completeJob(
     const failureKindPatch = failureKind ?? null;
     // The cause under that kind (065, issue #581), same overwrite rule.
     const failureCausePatch = failureCause ?? null;
-    const evidencePatch = result.evidence ? sql.json(result.evidence as never) : null;
-    const runtimeUpdate = context === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${context}`;
+    const evidencePatch = result.evidence ? tx.json(result.evidence as never) : null;
+    const runtimeUpdate = context === null ? tx`runtime` : tx`coalesce(runtime, '{}'::jsonb) || ${context}`;
+    return {
+        setupMs,
+        agentTurnsPatch,
+        summaryPatch,
+        failureKindPatch,
+        failureCausePatch,
+        evidencePatch,
+        runtimeUpdate,
+    };
+}
+
+/**
+ * The verdict's transaction body, shared by the driver's complete and the board's commit of a
+ * staged conclusion (`job-store-conclusions.ts`, issue #821). `staged` is the commit's: the policy
+ * the attempt staged under, which the completion check reads instead of the row's — a later claim
+ * may have stamped another. Without it, a conclusion staged under the lease binds the attempt: a
+ * different verdict is refused as the conflict it is.
+ */
+export async function completeInTx(
+    tx: TransactionSql,
+    ctx: JobStoreContext,
+    attempt: { id: string; leaseToken: string; result: CompleteResult; staged?: { policy: EvidencePolicy | null } }
+): Promise<CompleteOutcome> {
+    const { orgId, wallTick } = ctx;
+    const { id, leaseToken, result, staged } = attempt;
+    const { status, exitCode, output } = result;
+    const {
+        setupMs,
+        agentTurnsPatch,
+        summaryPatch,
+        failureKindPatch,
+        failureCausePatch,
+        evidencePatch,
+        runtimeUpdate,
+    } = verdictPatchOf(tx, result);
     // The settle receipt's fingerprint (issue #821): the whole store input, so only the identical
     // verdict replays the answer this attempt's conclusion recorded.
     const key: SettleKey = { orgId, jobId: id, leaseToken, operation: 'complete', fingerprint: fingerprintOf(result) };
-    // One transaction, because the terminality answer must describe the thread AS THE
-    // VERDICT lands: the walk below runs on the same connection, where the just-updated
-    // row's new status is visible and no follow-up inserted after the commit can be.
-    return sql.begin(async (tx) => {
-        const rows = await tx<
-            {
-                id: string;
-                root_job_id: string;
-                repo: string | null;
-                claimed_by: string | null;
-                stop_pending: boolean;
-                workflow_node: string | null;
-                policy: EvidencePolicy | null;
-            }[]
-        >`
-            update job set
-                status      = ${status},
-                exit_code   = ${exitCode},
-                output      = ${output},
-                finished_at = now(),
-                -- The lease token is RETAINED, deliberately — the only settle point that
-                -- keeps it (dead and suspend clear theirs). The reporter's final --once
-                -- tail sample lands after this verdict, and it authenticates with the
-                -- attempt's job-id + lease-token pair; clearing the token here would
-                -- 401 that sample into silence and lose the run's last branch state. The
-                -- pair stays attempt-scoped anyway: a reclaim rotates the token on the
-                -- row, so a superseded attempt's pair stops resolving the moment the
-                -- job is handed out again.
-                -- The verdict is the last settle point of the attempt: bank its segment,
-                -- so the task's clock covers the run that just ended.
-                wall_clock_ms = ${wallTick},
-                -- A stop request that never landed is settled by the run ending: the task
-                -- finished, there is nothing left to park.
-                cancel_requested_at = null,
-                agent_turns = ${agentTurnsPatch},
-                -- Same overwrite rule (069, issue #733): no setup on this verdict stores null.
-                setup_ms = ${setupMs},
-                summary = ${summaryPatch},
-                failure_kind = ${failureKindPatch},
-                failure_cause = ${failureCausePatch},
-                -- The attempt's evidence record, same overwrite rule: a retry never inherits the
-                -- killed attempt's tree or gate outcome.
-                evidence = ${evidencePatch},
-                runtime     = ${runtimeUpdate}
-            where org_id = ${orgId} and id = ${id}
-              and status = 'running' and lease_token = ${leaseToken}
-            -- The subselect reads the row as the statement began: the stamp this UPDATE cleared.
-            returning id, root_job_id, repo, claimed_by, workflow_node, policy,
-                (select cancel_requested_at is not null from job where org_id = ${orgId} and id = ${id}) as stop_pending
-        `;
-        // The identical verdict replayed after its answer was lost answers that answer again
-        // (issue #821) — read here, after the update waited out a concurrent identical one. Any
-        // other report from a worker whose lease was concluded or reclaimed is refused, not
-        // merged: the job is someone else's now, and the two runs did different work.
-        if (!rows[0]) return replayComplete(tx, key);
-        const completedId = rows[0]!.id;
-        const rootJobId = rows[0]!.root_job_id;
-        const jobRepo = rows[0]!.repo;
-        const stopPending = rows[0]!.stop_pending;
+    // Without a staged policy this is the driver's complete: a conclusion it staged binds it.
+    if (!staged && (await stagedApart(tx, key))) return { result: 'conflict' };
+    const rows = await tx<
+        {
+            id: string;
+            root_job_id: string;
+            repo: string | null;
+            claimed_by: string | null;
+            stop_pending: boolean;
+            workflow_node: string | null;
+            policy: EvidencePolicy | null;
+        }[]
+    >`
+        update job set
+            status      = ${status},
+            exit_code   = ${exitCode},
+            output      = ${output},
+            finished_at = now(),
+            -- The lease token is RETAINED, deliberately — the only settle point that
+            -- keeps it (dead and suspend clear theirs). The reporter's final --once
+            -- tail sample lands after this verdict, and it authenticates with the
+            -- attempt's job-id + lease-token pair; clearing the token here would
+            -- 401 that sample into silence and lose the run's last branch state. The
+            -- pair stays attempt-scoped anyway: a reclaim rotates the token on the
+            -- row, so a superseded attempt's pair stops resolving the moment the
+            -- job is handed out again.
+            -- The verdict is the last settle point of the attempt: bank its segment,
+            -- so the task's clock covers the run that just ended.
+            wall_clock_ms = ${wallTick},
+            -- A stop request that never landed is settled by the run ending: the task
+            -- finished, there is nothing left to park.
+            cancel_requested_at = null,
+            agent_turns = ${agentTurnsPatch},
+            -- Same overwrite rule (069, issue #733): no setup on this verdict stores null.
+            setup_ms = ${setupMs},
+            summary = ${summaryPatch},
+            failure_kind = ${failureKindPatch},
+            failure_cause = ${failureCausePatch},
+            -- The attempt's evidence record, same overwrite rule: a retry never inherits the
+            -- killed attempt's tree or gate outcome.
+            evidence = ${evidencePatch},
+            runtime     = ${runtimeUpdate}
+        where org_id = ${orgId} and id = ${id}
+          and status = 'running' and lease_token = ${leaseToken}
+        -- The subselect reads the row as the statement began: the stamp this UPDATE cleared.
+        returning id, root_job_id, repo, claimed_by, workflow_node, policy,
+            (select cancel_requested_at is not null from job where org_id = ${orgId} and id = ${id}) as stop_pending
+    `;
+    // The identical verdict replayed after its answer was lost answers that answer again
+    // (issue #821) — read here, after the update waited out a concurrent identical one. Any
+    // other report from a worker whose lease was concluded or reclaimed is refused, not
+    // merged: the job is someone else's now, and the two runs did different work.
+    if (!rows[0]) return replayComplete(tx, key);
+    return settleVerdict(tx, ctx, { row: rows[0], key, result, staged });
+}
 
-        // The caller's verdict ends its separate reviews (issue #549): one still queued or running
-        // has nothing left to inform, so it is stopped rather than left to finish orphaned.
-        await stopReviewsOf(tx, { orgId, wallTick, stoppedBy: null }, [completedId]);
-        // A review is a thread nobody marks done: its own verdict is the end of it, so the stamp
-        // lands here and the thread aggregate below reads `done` — the driver is told to reclaim
-        // the review's worktree on this very answer instead of leaving it on the volume.
-        await tx`
-            update job set done_at = coalesce(done_at, now())
-            where org_id = ${orgId} and id = ${completedId} and review_of is not null
-        `;
+/** The verdict's settle row: the columns the walk after the update reads, off the row it landed on. */
+interface VerdictRow {
+    id: string;
+    root_job_id: string;
+    repo: string | null;
+    claimed_by: string | null;
+    stop_pending: boolean;
+    workflow_node: string | null;
+    policy: EvidencePolicy | null;
+}
 
-        await maybeRecordPublicationAndClose(tx, ctx, { rootJobId, jobRepo, publication: publication ?? null });
+/**
+ * Everything the verdict's transaction does once the row landed: the reviews it ends, the
+ * publication, the completion policy, the workflow walk and the thread's done-ness — and the
+ * receipt that answers its replay.
+ */
+async function settleVerdict(
+    tx: TransactionSql,
+    ctx: JobStoreContext,
+    landed: {
+        row: VerdictRow;
+        key: SettleKey;
+        result: CompleteResult;
+        staged: { policy: EvidencePolicy | null } | undefined;
+    }
+): Promise<CompleteOutcome> {
+    const { orgId, wallTick, prs } = ctx;
+    const { row, key, result, staged } = landed;
+    const { status, output, publication } = result;
+    const treeChanged = result.treeChanged ?? null;
+    const failureKindPatch = result.failureKind ?? null;
+    const completedId = row.id;
+    const rootJobId = row.root_job_id;
+    const jobRepo = row.repo;
+    const stopPending = row.stop_pending;
 
-        // The workflow transition, when this thread walks a graph — decided HERE, in the
-        // verdict's transaction (docs/workflows.md). A workflow-less thread has no
-        // snapshot on its root and skips it: its completes behave byte-identically to
-        // before 027.
-        const [root] = await tx<WorkflowTransitionRoot[]>`
-            select mode, workflow_id, workflow_name, workflow_snapshot, workflow_params, command, created_by, repo
-            from job
-            where org_id = ${orgId} and id = ${rootJobId}
-        `;
-        // The policy gate on completion: a succeeded verdict that ENDS work must carry the
-        // evidence the repository requires, however the agent ran. A refusal rewrites the verdict
-        // to a failed `policy` one inside this transaction, so the thread never sees the success.
-        const verdict = await enforceCompletionPolicy(
-            tx,
-            { orgId, rootJobId, id: completedId },
-            {
-                node: rows[0]!.workflow_node,
-                snapshot: root?.workflow_snapshot,
-                policy: rows[0]!.policy,
-                evidence: result.evidence,
-            },
-            { status: status as JobOutcome, output, failureKind: failureKindPatch }
-        );
+    // The caller's verdict ends its separate reviews (issue #549): one still queued or running
+    // has nothing left to inform, so it is stopped rather than left to finish orphaned.
+    await stopReviewsOf(tx, { orgId, wallTick, stoppedBy: null }, [completedId]);
+    // A review is a thread nobody marks done: its own verdict is the end of it, so the stamp
+    // lands here and the thread aggregate below reads `done` — the driver is told to reclaim
+    // the review's worktree on this very answer instead of leaving it on the volume.
+    await tx`
+        update job set done_at = coalesce(done_at, now())
+        where org_id = ${orgId} and id = ${completedId} and review_of is not null
+    `;
 
-        // A Stop the verdict outran is honored: the thread stays where the Stop left it.
-        if (root && !stopPending) {
-            await runWorkflowTransition(tx, {
-                orgId,
-                rootJobId,
-                root,
-                completedId,
-                ...verdict,
-                treeChanged,
-                prs,
-            });
-        }
+    await maybeRecordPublicationAndClose(tx, ctx, { rootJobId, jobRepo, publication: publication ?? null });
 
-        // The thread's state, read off the root column the row already carries (022) —
-        // every member answers to the same root_job_id. The just-updated row's verdict
-        // status is visible here, and the aggregate answers in one row: terminal means
-        // every member reached `succeeded`/`failed`/`dead`/`stopped`; done means ONE member carries
-        // the user's `done_at` (the UI marks the thread's head, so the column can sit on
-        // any member). Both must hold before the tree may go. A transition-inserted row
-        // above is queued, not terminal — the aggregate then says the thread moves on,
-        // which is exactly why this read runs after the insert decision.
-        const [thread] = await tx<{ total: number; terminal: number; done: number }[]>`
-            select count(*)::int as total,
-                   count(*) filter (where status in ('succeeded','failed','dead','stopped'))::int as terminal,
-                   count(*) filter (where done_at is not null)::int as done
-            from job
-            where org_id = ${orgId} and root_job_id = ${rootJobId}
-        `;
-        // Issue #390's late done-stamp: a merge-marked thread whose members all went terminal
-        // WITHOUT any done landing (the closure skips running rows; the other settles close a
-        // marked thread from their own arms). The shared conditional settle re-checks the marker
-        // under the lock and stamps every terminal member (no actor), so the thread reads done
-        // and the tree reclaims at this verdict. It no-ops on unmarked threads — one indexed
-        // marker lookup is the whole cost of never deciding this on a stale pre-read.
-        let threadDone = (thread?.total ?? 0) > 0 && thread!.total === thread!.terminal && thread!.done > 0;
-        if (!threadDone) {
-            threadDone = await settleIfMergeClosed(ctx, rootJobId, tx);
-        }
-        // A threadDone-true verdict IS the worktree-reclaim order, queued owned by this attempt's
-        // lease token in the verdict's transaction (issue #821): the driver removes the tree on this answer
-        // and acks the row, and the ack — not this verdict — stamps `worktree_reclaimed_at`, so
-        // reopen never reads "tree gone" for a tree still on the volume, and a driver that dies
-        // mid-removal leaves the row to the queue once its lease expires.
-        const reclaimId = threadDone
-            ? await issueVerdictReclaim(tx, ctx, rootJobId, { worker: rows[0]!.claimed_by, leaseToken })
-            : null;
-        const answer = { result: 'ok', threadDone, reclaimId } as const;
-        await recordReceipt(tx, key, answer);
-        return answer;
-    });
+    // The workflow transition, when this thread walks a graph — decided HERE, in the
+    // verdict's transaction (docs/workflows.md). A workflow-less thread has no
+    // snapshot on its root and skips it: its completes behave byte-identically to
+    // before 027.
+    const [root] = await tx<WorkflowTransitionRoot[]>`
+        select mode, workflow_id, workflow_name, workflow_snapshot, workflow_params, command, created_by, repo
+        from job
+        where org_id = ${orgId} and id = ${rootJobId}
+    `;
+    // The policy gate on completion: a succeeded verdict that ENDS work must carry the
+    // evidence the repository requires, however the agent ran. A refusal rewrites the verdict
+    // to a failed `policy` one inside this transaction, so the thread never sees the success.
+    const verdict = await enforceCompletionPolicy(
+        tx,
+        { orgId, rootJobId, id: completedId },
+        {
+            node: row.workflow_node,
+            snapshot: root?.workflow_snapshot,
+            policy: staged ? staged.policy : row.policy,
+            evidence: result.evidence,
+        },
+        { status: status as JobOutcome, output, failureKind: failureKindPatch }
+    );
+
+    // A Stop the verdict outran is honored: the thread stays where the Stop left it.
+    if (root && !stopPending) {
+        await runWorkflowTransition(tx, {
+            orgId,
+            rootJobId,
+            root,
+            completedId,
+            ...verdict,
+            treeChanged,
+            prs,
+        });
+    }
+
+    // The thread's state, read off the root column the row already carries (022) —
+    // every member answers to the same root_job_id. The just-updated row's verdict
+    // status is visible here, and the aggregate answers in one row: terminal means
+    // every member reached `succeeded`/`failed`/`dead`/`stopped`; done means ONE member carries
+    // the user's `done_at` (the UI marks the thread's head, so the column can sit on
+    // any member). Both must hold before the tree may go. A transition-inserted row
+    // above is queued, not terminal — the aggregate then says the thread moves on,
+    // which is exactly why this read runs after the insert decision.
+    const [thread] = await tx<{ total: number; terminal: number; done: number }[]>`
+        select count(*)::int as total,
+               count(*) filter (where status in ('succeeded','failed','dead','stopped'))::int as terminal,
+               count(*) filter (where done_at is not null)::int as done
+        from job
+        where org_id = ${orgId} and root_job_id = ${rootJobId}
+    `;
+    // Issue #390's late done-stamp: a merge-marked thread whose members all went terminal
+    // WITHOUT any done landing (the closure skips running rows; the other settles close a
+    // marked thread from their own arms). The shared conditional settle re-checks the marker
+    // under the lock and stamps every terminal member (no actor), so the thread reads done
+    // and the tree reclaims at this verdict. It no-ops on unmarked threads — one indexed
+    // marker lookup is the whole cost of never deciding this on a stale pre-read.
+    let threadDone = (thread?.total ?? 0) > 0 && thread!.total === thread!.terminal && thread!.done > 0;
+    if (!threadDone) {
+        threadDone = await settleIfMergeClosed(ctx, rootJobId, tx);
+    }
+    // A threadDone-true verdict IS the worktree-reclaim order, queued owned by this attempt's
+    // lease token in the verdict's transaction (issue #821): the driver removes the tree on this answer
+    // and acks the row, and the ack — not this verdict — stamps `worktree_reclaimed_at`, so
+    // reopen never reads "tree gone" for a tree still on the volume, and a driver that dies
+    // mid-removal leaves the row to the queue once its lease expires.
+    const reclaimId = threadDone
+        ? await issueVerdictReclaim(tx, ctx, rootJobId, { worker: row.claimed_by, leaseToken: key.leaseToken })
+        : null;
+    const answer = { result: 'ok', threadDone, reclaimId } as const;
+    await recordReceipt(tx, key, answer);
+    return answer;
 }
 
 export async function maybeRecordPublication(

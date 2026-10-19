@@ -16,6 +16,8 @@ import {
 } from './job-store-rows.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
 import { fingerprintOf, missedSettle, recordReceipt, settleReplayOf, type SettleKey } from './job-store-receipts.js';
+import { commitStagedForStop } from './job-store-conclusions.js';
+import { stagedFingerprint } from './job-store-staged.js';
 import { TERMINAL_STATUSES } from './task-summary.js';
 import { stopReviewsOf } from './job-store-reviews.js';
 import { type IdempotencyInput, replayOf, stampKey } from './job-store-idempotency.js';
@@ -504,8 +506,14 @@ export async function stopJob(ctx: JobStoreContext, id: string, stoppedBy: strin
     // coalesce keeps the FIRST request, which is what makes /stop idempotent rather than
     // a rewrite of when it was asked. stopped_by coalesces beside it unconditionally —
     // every status this UPDATE touches is a stoppable one, so this caller acted, and the
-    // first asker is the actor that survives.
-    const rows = await stopRows(sql, { orgId, wallTick, stoppedBy, where: sql`id = ${id}` });
+    // first asker is the actor that survives. Under the row's lock, an expired attempt that staged its
+    // conclusion (issue #821) is committed first, its Stop stamped with it: the verdict stands, and
+    // the row the statement then finds terminal answers the conflict below with the committed status.
+    const rows = await sql.begin(async (tx) => {
+        await tx`select id from job where org_id = ${orgId} and id = ${id} for update`;
+        await commitStagedForStop(ctx, tx, { id, stoppedBy });
+        return stopRows(tx, { orgId, wallTick, stoppedBy, where: tx`id = ${id}` });
+    });
     const row = rows[0];
     if (!row) {
         // Nothing settled or moving — a task that already ended has no turn to stop, and
@@ -550,6 +558,7 @@ export async function suspendJob(
     // its settle receipt (issue #821) commit together, so a replay after a lost answer gets it.
     const key: SettleKey = { orgId, jobId: id, leaseToken, operation: 'suspend', fingerprint: fingerprintOf(null) };
     return sql.begin(async (tx) => {
+        if ((await stagedFingerprint(tx, key)) !== null) return { result: 'conflict' };
         const rows = await tx<{ id: string; status: JobStatus; root_job_id: string }[]>`
             update job set
                 status           = 'stopped',
@@ -607,6 +616,7 @@ export async function requeueJob(
     // The settle receipt (issue #821) commits with it.
     const key: SettleKey = { orgId, jobId: id, leaseToken, operation: 'requeue', fingerprint: fingerprintOf(null) };
     return sql.begin(async (tx) => {
+        if ((await stagedFingerprint(tx, key)) !== null) return { result: 'conflict' };
         const rows = await tx<{ status: JobStatus; root_job_id: string }[]>`
             update job set
                 status           = case when cancel_requested_at is null then 'queued' else 'stopped' end,
@@ -671,6 +681,8 @@ export async function interruptJob(
         fingerprint: fingerprintOf({ reason, release, claimSeq }),
     };
     return sql.begin(async (tx) => {
+        // A staged conclusion is the attempt's outcome (issue #821): nothing hands it back instead.
+        if (release && (await stagedFingerprint(tx, key)) !== null) return { result: 'conflict' };
         const rows = await tx<{ status: JobStatus; root_job_id: string }[]>`
             update job set
                 status           = case when not ${release} then status

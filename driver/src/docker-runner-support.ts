@@ -127,17 +127,18 @@ export const LEASE_FORMAT = (field: 'ID' | 'Name'): string => `{{.${field}}}\t{{
 
 /**
  * A `LEASE_FORMAT` listing narrowed to the job's OTHER attempts: this attempt's own — the services
- * and the gate environment the loop started before the runner — are never a leftover.
+ * and the gate environment the loop started before the runner — are never a leftover, and neither
+ * is the earlier run it adopted (`spared`, issue #821), kept until the reaper takes it.
  */
 export async function listOtherAttemptsOrThrow(
     execDocker: ExecDocker,
     args: string[],
     what: string,
-    job: BoardJob
+    kept: { leaseToken: string; spared?: string | undefined }
 ): Promise<string[]> {
     return (await listByLabelOrThrow(execDocker, args, what)).flatMap((line) => {
         const [name = '', lease = ''] = line.split('\t');
-        return name && lease !== job.leaseToken ? [name] : [];
+        return name && lease !== kept.leaseToken && lease !== kept.spared ? [name] : [];
     });
 }
 

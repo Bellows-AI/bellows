@@ -441,6 +441,10 @@ function stubStore(
                 ? { result: 'ok', threadDone: options.threadDone ?? false, reclaimId: options.reclaimId ?? null }
                 : { result: verdict };
         },
+        async stageConclusion() {
+            boom();
+            return { result: options.verdict ?? 'ok' };
+        },
         async gates(id, _token, results) {
             boom();
             stub.gatesReported.push({ id, results });

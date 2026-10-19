@@ -135,6 +135,8 @@ interface RunnerDeps {
     /** The attempts whose whole group `dockerKill` took down (`TeardownDeps.hardKilled`). */
     hardKilled: Set<BoardJob['leaseToken']>;
     deadlines: DeadlineRegistry;
+    /** Each adopting lease's adopted earlier lease (`dockerAdopt`): its fences keep that group (issue #821). */
+    adopted: Map<BoardJob['leaseToken'], BoardJob['leaseToken']>;
 }
 
 /*
@@ -166,11 +168,13 @@ interface RunnerDeps {
  * never have existed.
  */
 async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob): Promise<void> {
+    // The run this attempt adopted is kept, as kubernetes keeps its Job, for a later claim (issue #821).
+    const kept = { leaseToken: job.leaseToken, spared: deps.adopted.get(job.leaseToken) };
     const containerIds = await listOtherAttemptsOrThrow(
         deps.execDocker,
         ['ps', '-a', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', LEASE_FORMAT('ID')],
         `the re-claim fence could not list the leftover containers of job ${job.id}`,
-        job
+        kept
     );
     await removeEachTolerantly(
         deps.execDocker,
@@ -183,7 +187,7 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob): Promise<void
         deps.execDocker,
         ['network', 'ls', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', LEASE_FORMAT('Name')],
         `the re-claim fence could not list the leftover networks of job ${job.id}`,
-        job
+        kept
     );
     await removeEachTolerantly(
         deps.execDocker,
@@ -198,7 +202,7 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob): Promise<void
         deps.execDocker,
         ['volume', 'ls', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', LEASE_FORMAT('Name')],
         `the re-claim fence could not list the leftover control volumes of job ${job.id}`,
-        job
+        kept
     );
     await removeEachTolerantly(
         deps.execDocker,
@@ -729,6 +733,7 @@ export function createDockerRunner(
         hardKilled: new Set(),
         deadlines,
         groups: new Map(),
+        adopted: new Map(),
         ...(steps ? { steps } : {}),
         ...(endpoint ? { endpoint } : {}),
     };

@@ -8,9 +8,8 @@ import { followUpRefusal, retryRefusal, waitControlRefusal } from './job-refusal
 import { guardKeyed, idempotencyOf, sendQueued } from './job-idempotency.js';
 import {
     validateCommandField,
-    validateCompleteFields,
     validateListQuery,
-    validatePublication,
+    validateVerdictBody,
     validateWaitQuery,
 } from './job-field-validation.js';
 import { bad, body, guard } from './helpers.js';
@@ -24,6 +23,7 @@ import {
     HTTP_NOT_FOUND,
     HTTP_NO_CONTENT,
     HTTP_OK,
+    conclusionConflict,
     LEASE_SECONDS_MAX,
     leaseLost,
     leaseSeconds,
@@ -434,19 +434,19 @@ export async function handleCompleteJob(orgs: OrgRegistry, request: FastifyReque
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
         return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
     }
-    const parsed = validateCompleteFields(fields);
+    const parsed = validateVerdictBody(fields);
     if (!parsed.ok) return bad(reply, parsed.code, parsed.message);
-    const publicationResult = validatePublication(fields.publication ?? null);
-    if (!publicationResult.ok) return bad(reply, ERROR_CODES.BAD_PUBLICATION, publicationResult.message);
 
     const result = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'job complete failed'),
-        () => store.complete(id, leaseToken, { ...parsed.value, publication: publicationResult.value })
+        () => store.complete(id, leaseToken, parsed.value)
     );
     if (!result.ok) return reply;
     if (result.value.result !== 'ok') {
         if (result.value.result === 'missing') return notFoundJob(reply);
+        // A conclusion the attempt staged is its outcome (issue #821): a different verdict is refused.
+        if (result.value.result === 'conflict') return conclusionConflict(reply);
         return leaseLost(reply);
     }
     return reply.code(HTTP_OK).send({

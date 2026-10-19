@@ -24,6 +24,8 @@ import {
     CONTEXT_COST_MAX,
     CONTEXT_TOKENS_MAX,
     GATE_NAME_LIMIT,
+    INT4_MAX,
+    INT4_MIN,
     LEASE_SECONDS_MAX,
     LIST_LIMIT_DEFAULT,
     LIST_LIMIT_MAX,
@@ -284,7 +286,11 @@ function badFailureKind(failureKind: unknown): boolean {
 }
 
 function badExitCode(exitCode: unknown): boolean {
-    return exitCode !== undefined && exitCode !== null && !Number.isInteger(exitCode);
+    return (
+        exitCode !== undefined &&
+        exitCode !== null &&
+        (!Number.isInteger(exitCode) || (exitCode as number) < INT4_MIN || (exitCode as number) > INT4_MAX)
+    );
 }
 
 function badOutputField(output: unknown): boolean {
@@ -387,7 +393,10 @@ function measuredFieldRefusal(fields: Record<string, unknown>): { code: string; 
         return { code: ERROR_CODES.BAD_STATUS, message: "status must be 'succeeded' or 'failed'" };
     }
     if (badExitCode(exitCode)) {
-        return { code: ERROR_CODES.BAD_EXIT_CODE, message: 'exitCode must be an integer or null' };
+        return {
+            code: ERROR_CODES.BAD_EXIT_CODE,
+            message: `exitCode must be an integer ${INT4_MIN}..${INT4_MAX} or null`,
+        };
     }
     if (badOutputField(output)) {
         return { code: ERROR_CODES.BAD_OUTPUT, message: 'output must be a string or null' };
@@ -478,8 +487,8 @@ export function validatePublication(
     if (typeof repo !== 'string' || repoReason(repo) !== null) {
         return { ok: false, message: 'publication.repo must be an owner/name' };
     }
-    if (!Number.isInteger(prNumber) || (prNumber as number) < 1) {
-        return { ok: false, message: 'publication.prNumber must be a positive integer' };
+    if (!Number.isInteger(prNumber) || (prNumber as number) < 1 || (prNumber as number) > INT4_MAX) {
+        return { ok: false, message: `publication.prNumber must be an integer 1..${INT4_MAX}` };
     }
     if (typeof prUrl !== 'string' || prUrl.length > PR_URL_LIMIT || !PR_URL.test(prUrl)) {
         return { ok: false, message: 'publication.prUrl must be a github.com pull url' };
@@ -502,6 +511,22 @@ export function validatePublication(
             baseBranch: baseBranch as string,
         },
     };
+}
+
+/**
+ * The verdict a complete body carries, parsed once for `complete` and the staged conclusion alike
+ * (issue #821): the board fingerprints the parsed value, so the two routes must never parse apart.
+ */
+export function validateVerdictBody(
+    fields: Record<string, unknown>
+):
+    | { ok: true; value: CompleteFields & { publication: Publication | null } }
+    | { ok: false; code: string; message: string } {
+    const parsed = validateCompleteFields(fields);
+    if (!parsed.ok) return parsed;
+    const publication = validatePublication(fields.publication ?? null);
+    if (!publication.ok) return { ok: false, code: ERROR_CODES.BAD_PUBLICATION, message: publication.message };
+    return { ok: true, value: { ...parsed.value, publication: publication.value } };
 }
 
 export function validateListQuery(query: {

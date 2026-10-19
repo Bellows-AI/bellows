@@ -15,6 +15,7 @@ import type {
     TaskSummary,
     JobStoreContext,
 } from './job-store-types.js';
+import { stagedUnderLease } from './job-store-staged.js';
 
 /** The row's interruptions (071); the per-run lists do not select them, and serve none. */
 const interruptionsOf = (row: JobRow): JobInterruption[] => row.interruptions ?? [];
@@ -354,6 +355,8 @@ export function stopRows(
             stopped_by = coalesce(stopped_by, ${stoppedBy})
         where org_id = ${orgId} and ${where}
           and status in ('queued','running')
+          -- An expired attempt that staged its conclusion is the board's to commit (issue #821).
+          and not (status = 'running' and lease_expires_at <= now() and ${stagedUnderLease(sql, 'job')})
         returning id, status, cancel_requested_at, root_job_id
     `;
 }

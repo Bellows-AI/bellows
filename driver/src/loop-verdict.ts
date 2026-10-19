@@ -21,7 +21,8 @@ import {
     publishEligible,
     statusOf,
 } from './loop-ledger.js';
-import type { LoopRuntime } from './loop-types.js';
+import { concludeAttempt } from './loop-fence.js';
+import type { AttemptCtx, LoopRuntime, VerdictBody } from './loop-types.js';
 import { type PublishOptions, type PublishResult, publishFailed } from './publish.js';
 import type { DeadService, RunOutcome } from './runner.js';
 import type { GateRunNote, TimeoutActivity } from './timeout-note.js';
@@ -165,8 +166,18 @@ export const setupSpentNote = (config: { jobTimeoutMs: number }, job: BoardJob):
 const setupMsOf = (job: BoardJob): { setupMs?: number } =>
     typeof job.setupMs === 'number' ? { setupMs: job.setupMs } : {};
 
-/** Reports the run's final verdict to the board, after settle() and any publish attempt. */
-export async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<void> {
+/**
+ * Lands the run's final verdict after any publish attempt: staged, completed, then the attempt torn
+ * down (`concludeAttempt`, issue #821). A verdict is decided once and never rewritten (issue #820).
+ */
+export async function reportFinish(ctx: AttemptCtx, finish: FinishCtx): Promise<void> {
+    const body = verdictOf(ctx.rt, finish);
+    const verdict = await concludeAttempt(ctx, body);
+    if (verdict !== null) ctx.rt.log(finishLine(finish, verdict, body.status, body.exitCode));
+}
+
+/** The verdict body a finished run reports, built from its fault ledger. */
+function verdictOf(rt: LoopRuntime, finish: FinishCtx): VerdictBody {
     const { job, outcome, failure, published } = finish;
     const ledger = ledgerOf(finish);
     const status = statusOf(ledger);
@@ -176,7 +187,7 @@ export async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<
     const failureKind = kindOf(ledger);
     const failureCause = causeOf(ledger);
 
-    const verdict = await deliver(rt, job, {
+    return {
         status,
         exitCode,
         output,
@@ -193,8 +204,7 @@ export async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<
         ...(finish.treeChanged !== null ? { treeChanged: finish.treeChanged } : {}),
         ...(finish.evidence ? { evidence: finish.evidence } : {}),
         ...(publication ? { publication } : {}),
-    });
-    if (verdict !== null) rt.log(finishLine(finish, verdict, status, exitCode));
+    };
 }
 
 /** The line a delivered verdict leaves in the log. */
@@ -202,23 +212,6 @@ function finishLine(finish: FinishCtx, verdict: LeaseState, status: string, exit
     const { job, failure, helperFailure } = finish;
     if (verdict === 'lost') return `job ${job.id}: finished ${status}, but the board had already reclaimed it`;
     return `job ${job.id}: ${status} (exit ${exitCode}${failure ? ', gates' : ''}${helperFailure ? ', helper' : ''})`;
-}
-
-/**
- * Reports a decided verdict, never rewritten (issue #820): one the board would not take is left to
- * the lease as it stands — null — not handed to runJob's catch to report as a runner_error.
- */
-async function deliver(
-    rt: LoopRuntime,
-    job: BoardJob,
-    result: Parameters<Board['complete']>[1]
-): Promise<LeaseState | null> {
-    return report(rt, job, result).catch((e: Error) => {
-        rt.log(
-            `job ${job.id}: the ${result.status} verdict was not delivered, left to the lease unrewritten: ${e.message}`
-        );
-        return null;
-    });
 }
 
 export async function report(

@@ -94,6 +94,12 @@ export const CONTEXT_COST_MAX = 1_000_000;
 /** `job.agent_turns` is an int4 column: the route is the boundary that keeps the verdict writable. */
 export const AGENT_TURNS_MAX = 2_147_483_647;
 /**
+ * The int4 range `job.exit_code` and `job_pr.pr_number` store: a value past it would fail the
+ * verdict's transaction — and a staged one every claim that commits it (issue #821).
+ */
+export const INT4_MIN = -2_147_483_648;
+export const INT4_MAX = 2_147_483_647;
+/**
  * The close-time summary is one line of prose, not a log — the driver truncates to a line and
  * the route is the boundary past which a stream cannot enter the list payload.
  */
@@ -289,6 +295,12 @@ export const LEASE_BATCH_MAX = 100;
 /** The body limit shared by every worker/person control route below — no payload, just ids and a token. */
 export const CONTROL_BODY_LIMIT = 4096;
 
+/**
+ * The staged conclusion's limit (issue #821): the complete body the driver fit to `BODY_LIMIT`,
+ * byte for byte so the board fingerprints both alike, plus the lease length beside it.
+ */
+export const CONCLUSION_BODY_LIMIT = BODY_LIMIT + CONTROL_BODY_LIMIT;
+
 export const HTTP_OK = 200;
 export const HTTP_CREATED = 201;
 export const HTTP_ACCEPTED = 202;
@@ -313,4 +325,11 @@ export function notFoundJob(reply: FastifyReply) {
 
 export function leaseLost(reply: FastifyReply) {
     return reply.code(HTTP_CONFLICT).send({ error: 'Lease lost', code: ERROR_CODES.LEASE_LOST });
+}
+
+/** A settle under a lease whose attempt staged another conclusion (issue #821): that one is its outcome. */
+export function conclusionConflict(reply: FastifyReply) {
+    return reply
+        .code(HTTP_CONFLICT)
+        .send({ error: 'The attempt staged a different conclusion', code: ERROR_CODES.CONCLUSION_CONFLICT });
 }

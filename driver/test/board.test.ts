@@ -737,3 +737,68 @@ describe('the complete verdict: the request budget', () => {
         expect(JSON.parse(bodies[0]!)).toMatchObject({ output, summary: 's' });
     });
 });
+
+// Issue #821 (D1): the final envelope is staged on the board under the lease before the verdict and
+// the teardown — the very body `complete` sends, so the board's fingerprint of both is one.
+describe('the staged conclusion', () => {
+    const job = boardJob();
+    const verdict = {
+        status: 'failed',
+        exitCode: 1,
+        output: 'boom',
+        failureKind: 'gate',
+        failureCause: 'verification',
+    } as const;
+
+    it('posts complete’s fitted body to the conclusion route, with the lease length beside it', async () => {
+        const { calls, fetch } = recorder(() => Response.json({ id: 'job-1', status: 'failed' }, { status: 200 }));
+        const board = boardOn(fetch, 'fwt_abc');
+
+        expect(await board.stageConclusion(job, verdict)).toBe('held');
+        await board.complete(job, verdict);
+
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/conclusion');
+        expect(calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
+        expect(calls[0]!.body).toEqual({ ...(calls[1]!.body as object), leaseSeconds: 300 });
+    });
+
+    it('fits a long output exactly as complete does', async () => {
+        const { calls, fetch } = recorder(() => Response.json({ threadDone: false }, { status: 200 }));
+        const board = boardOn(fetch);
+        const long = { status: 'failed', exitCode: 1, output: '\u0001'.repeat(60_000) } as const;
+
+        await board.stageConclusion(job, long);
+        await board.complete(job, long);
+
+        const { leaseSeconds: _lease, ...staged } = calls[0]!.body as Record<string, unknown>;
+        expect(staged).toEqual(calls[1]!.body);
+        expect(staged.output).toMatch(/^\[driver\] \d+ bytes of the oldest output were dropped/);
+    });
+
+    it.each<[string, string, number, Record<string, unknown>]>([
+        ['a lost lease', 'lost', 409, { code: 'LEASE_LOST' }],
+        ['a different staged conclusion', 'conflict', 409, { code: 'CONCLUSION_CONFLICT' }],
+        ['a removed thread', 'removed', 404, { code: 'NOT_FOUND' }],
+    ])('reads %s as %s', async (_what, answer, status, body) => {
+        const { fetch } = recorder(() => Response.json(body, { status }));
+
+        expect(await boardOn(fetch).stageConclusion(job, verdict)).toBe(answer);
+    });
+
+    it('throws a 5xx for the retry to take', async () => {
+        const { fetch } = recorder(() => Response.json({ error: 'down' }, { status: 503 }));
+
+        await expect(boardOn(fetch).stageConclusion(job, verdict)).rejects.toMatchObject({ status: 503 });
+    });
+
+    it('is a route limit the board leaves room for beside complete’s', () => {
+        const limits = readFileSync(new URL('../../server/src/routes/job-limits.ts', import.meta.url), 'utf8');
+        expect(limits).toContain('export const CONCLUSION_BODY_LIMIT = BODY_LIMIT + CONTROL_BODY_LIMIT;');
+    });
+
+    it('reads a complete the staged conclusion refuses as lost, flagged as the conflict', async () => {
+        const { fetch } = recorder(() => Response.json({ code: 'CONCLUSION_CONFLICT' }, { status: 409 }));
+
+        expect(await boardOn(fetch).complete(job, verdict)).toEqual({ state: 'lost', reclaimId: null, conflict: true });
+    });
+});

@@ -8003,6 +8003,31 @@ describe('finishing a group that ended by itself (#821)', () => {
         });
     });
 
+    // Issue #821 (D1), the stated limit: a driver whose board took neither the staged conclusion nor
+    // the verdict leaves its group and its checkout claim (no `finish`, no release). The next claim
+    // takes the stale claim over — an older claim sequence — and adopts the finished run.
+    it('takes a never-released claim over from an older attempt, then adopts the group it left', async () => {
+        const { request, calls } = routed((method, path) => {
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                const own = decodeURIComponent(path).includes(`factory.lease!=${repoJob.leaseToken}`);
+                return { status: 200, body: JSON.stringify({ items: own || jobDeleted(calls) ? [] : [finished] }) };
+            }
+        });
+        await build(request).syncCheckout(repoJob, undefined, SESSION_OF);
+        const before = await request('GET', claimPathFor(repoJob.id));
+        expect(JSON.parse(before.body)).toMatchObject({ data: { holder: repoJob.leaseToken } });
+
+        const adopter: BoardJob = { ...repoJob, leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
+        expect(await build(request).adopt(adopter)).toMatchObject({
+            claimSeq: 1,
+            outcome: { exitCode: 0, started: true, sessionId: SESSION },
+        });
+
+        expect(jobDeleted(calls)).toBe(false);
+        const held = await request('GET', claimPathFor(repoJob.id));
+        expect(JSON.parse(held.body)).toMatchObject({ data: { holder: NEW_TOKEN } });
+    });
+
     it('counts a finished pod as no writer, and keeps the claim while a live one is listed', async () => {
         const done = { metadata: { name: 'gate-done' }, status: { phase: 'Succeeded' } };
         const live = { metadata: { name: 'gate-live' }, status: { phase: 'Running' } };

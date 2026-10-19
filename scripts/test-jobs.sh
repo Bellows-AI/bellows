@@ -1168,7 +1168,8 @@ driver_pid=""
     [ "$(docker inspect -f '{{.State.ExitCode}}' "$killed_runner" 2>/dev/null)" = '0' ] &&
     ok 'the runner of a killed driver runs to its end' ||
     bad 'the runner of a killed driver runs to its end' "$(docker ps -a --filter "label=factory.job=$killed" --format '{{.Names}} {{.Status}}')"
-disruption_driver
+# A fast reaper round: the adopted run is kept until its verdict lands (issue #821), then reaped.
+disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
 expect_contains 'the next claim settles the killed run' "$(await_settled "$killed" "$ADOPT_S")" succeeded
 killed_body="$(body "$(api GET "/api/jobs/$killed")")"
 expect_contains 'the adopted output is the first runner output' "$(field "$killed_body" output)" "ran in $killed_runner"
@@ -1178,8 +1179,16 @@ killed_int="$(interruptions_of "$killed_body")"
     bad 'one interruption records the expiry of claim 1' "count|claimSeq|reason: $killed_int"
 grep -qF "job $killed: $ADOPTED" "$work/driver.log" && ok 'the driver logs the adoption' ||
     bad 'the driver logs the adoption' "$(grep -F "job $killed:" "$work/driver.log" | tail -5)"
-[ -z "$(first_runner "$killed")" ] && ok 'the adoption removes the adopted runner' ||
-    bad 'the adoption removes the adopted runner' "$(first_runner "$killed")"
+reaped=""
+for _ in $(seq 1 30); do
+    [ -z "$(first_runner "$killed")" ] && {
+        reaped=1
+        break
+    }
+    sleep 1
+done
+[ -n "$reaped" ] && ok 'the adopted runner is kept until the verdict, then reaped' ||
+    bad 'the adopted runner is kept until the verdict, then reaped' "$(first_runner "$killed")"
 stop_driver
 
 # b. The handover: SIGTERM, and a drain that outlasts DRIVER_HANDOVER_MS hands the run back as an

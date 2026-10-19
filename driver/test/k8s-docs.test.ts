@@ -162,6 +162,16 @@ describe('the executor isolation record (#382)', () => {
         expect(kubernetesDocs).toContain('`ttlSecondsAfterFinished`');
     });
 
+    // Issue #821 (D1): a board that takes neither the staged conclusion nor the verdict for a whole
+    // lease leaves the group to adoption, which keeps the agent's outcome but not the rest.
+    it('states what an outage past the lease costs a finished attempt', () => {
+        expect(kubernetesDocs).toContain('Stated limit: a verdict neither staged nor completed within one lease');
+        expect(prose(kubernetesDocs)).toContain(
+            'its agent outcome is adopted, but the gates and the post-processing run again'
+        );
+        expect(prose(kubernetesDocs)).toContain('can retire `dead` before it is adopted');
+    });
+
     // Issue #533: the question relay lands on both executors, but only docker has the real-agent
     // round trip; the kubernetes half is a stated limit, never a silent skip.
     it('states that the kubernetes question round trip is not run on a cluster, and what pins the relay', () => {
