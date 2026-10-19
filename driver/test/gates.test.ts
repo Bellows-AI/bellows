@@ -764,6 +764,17 @@ describe('the gate server: questions (issue #226)', () => {
         await server.close();
     });
 
+    it('answers 400 invalid question for a JSON body that is null or an array', async () => {
+        const { server, forwarded, port } = await opened();
+        for (const body of ['null', '[]']) {
+            const response = await post(port, 'tok-q', body);
+            expect(response.status).toBe(400);
+            await expect(response.json()).resolves.toEqual({ error: 'invalid question' });
+        }
+        expect(forwarded).toEqual([]);
+        await server.close();
+    });
+
     it('refuses with 429 refused when the board is at its limit, and records nothing', async () => {
         const { server, port } = await opened('refused');
         const response = await post(port, 'tok-q', report('toolu_1'));

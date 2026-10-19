@@ -1,6 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { ChunkAnswer } from './board.js';
 import { readBody, readBodyBytes } from './http.js';
+import { parseJsonObject } from './json-parse.js';
 
 /**
  * The control endpoint's transcript-export routes, one set per control token — so one lease. The
@@ -73,20 +74,8 @@ const BAD_REQUEST: ExportAnswer = { status: HTTP_BAD_REQUEST, body: { error: 'ma
 const TOO_LARGE: ExportAnswer = { status: HTTP_PAYLOAD_TOO_LARGE, body: { error: 'body too large' } };
 const GONE: ExportAnswer = { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
 
-const isObject = (value: unknown): value is Record<string, unknown> =>
-    typeof value === 'object' && value !== null && !Array.isArray(value);
-
 const count = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-
-const parseJson = (raw: string): Record<string, unknown> | null => {
-    try {
-        const parsed: unknown = JSON.parse(raw);
-        return isObject(parsed) ? parsed : null;
-    } catch {
-        return null;
-    }
-};
 
 /** A chunk answer on the wire: the statuses the board's own chunk route answers with. */
 function chunkAnswer(answer: ChunkAnswer): ExportAnswer {
@@ -116,7 +105,7 @@ async function serveChunk(relay: ExportRelay, request: IncomingMessage, open: ()
 async function serveManifest(relay: ExportRelay, request: IncomingMessage, open: () => boolean): Promise<ExportAnswer> {
     const raw = await readBody(request, EXPORT_JSON_BODY_LIMIT);
     if (raw === null) return TOO_LARGE;
-    const body = parseJson(raw);
+    const body = parseJsonObject(raw);
     if (!body) return BAD_REQUEST;
     const { session, state, terminalCause, startedAt, finishedAt } = body;
     if (typeof session !== 'string' || !SESSION.test(session)) return BAD_REQUEST;
@@ -141,7 +130,7 @@ async function serveManifest(relay: ExportRelay, request: IncomingMessage, open:
 async function serveState(relay: ExportRelay, request: IncomingMessage, open: () => boolean): Promise<ExportAnswer> {
     const raw = await readBody(request, EXPORT_JSON_BODY_LIMIT);
     if (raw === null) return TOO_LARGE;
-    const body = parseJson(raw);
+    const body = parseJsonObject(raw);
     if (!body) return BAD_REQUEST;
     const { pendingBytes, oldestUnackedMs, spoolFull, done } = body;
     if (!count(pendingBytes) || !count(oldestUnackedMs)) return BAD_REQUEST;

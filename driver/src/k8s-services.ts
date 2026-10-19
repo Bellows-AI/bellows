@@ -1,6 +1,6 @@
 import type { BoardJob, ServiceStatus } from './board.js';
 import { jobPodsPath, podLogPath } from './k8s-auxspec.js';
-import { groupsOf, stepHostFor, stepHostOf } from './k8s-group.js';
+import { groupsOf, stepHostFor } from './k8s-group.js';
 import { runnerName } from './k8s-podspec.js';
 import { HTTP_ERROR_STATUS, livePodOfItems, parse } from './k8s-transport.js';
 import type { K8sContainerStatus, K8sDeps, K8sPod } from './k8s-transport.js';
@@ -15,7 +15,7 @@ import {
 } from './runner.js';
 import { awaitServicesRunning, ServicesNotRunning, throwIfStoodDown } from './service-restart.js';
 import { groupServices, type ServiceSpec } from './services.js';
-import { runServiceGenerationStep, type StepHost } from './supervised-steps.js';
+import { runServiceGenerationStep, type StepHost, stepHostOf } from './supervised-steps.js';
 import { SERVICE_NOT_ACKED_EXIT, serviceContainerOf } from './supervisor-contract.js';
 
 /**

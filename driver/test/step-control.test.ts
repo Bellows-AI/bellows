@@ -313,6 +313,19 @@ describe('the control routes of a step channel', () => {
         expect((await call(SUPERVISOR, 'POST', '/report', unsaid)).status).toBe(400);
     });
 
+    it('refuses a step answer or a report that is not a JSON object with 400', async () => {
+        const raw = (path: string, body: string) =>
+            fetch(`${base}${path}`, { method: 'POST', headers: { authorization: `Bearer ${SUPERVISOR}` }, body });
+        for (const body of ['not json', 'null', '[]']) {
+            const answer = await raw('/step/s1', body);
+            expect(answer.status).toBe(400);
+            expect(await answer.json()).toEqual({ error: 'not a step result' });
+            const report = await raw('/report', body);
+            expect(report.status).toBe(400);
+            expect(await report.json()).toEqual({ error: 'not a supervisor report' });
+        }
+    });
+
     it('opens neither route to the agent’s token, and refuses an unknown or closed one', async () => {
         expect((await call(AGENT, 'GET', '/step?wait=0')).status).toBe(403);
         expect((await call(AGENT, 'POST', '/step/s1', result())).status).toBe(403);

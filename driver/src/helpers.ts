@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { parseLastJsonLine } from './json-parse.js';
 import { REVIEW_HELPER_DESCRIPTORS } from './review-helpers.js';
 
 /**
@@ -189,11 +190,8 @@ export function parseHelperOutput(descriptor: HelperDescriptor, stdout: string):
             message: `the helper's output exceeded its ${descriptor.outputCapBytes}-byte bound`,
         };
     }
-    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(line);
-    } catch {
+    const parsed = parseLastJsonLine<unknown>(stdout, () => undefined);
+    if (parsed === undefined) {
         return { ok: false, reason: 'malformed_output', message: 'the helper answered nothing readable as JSON' };
     }
     const o = (typeof parsed === 'object' && parsed !== null ? parsed : {}) as Record<string, unknown>;

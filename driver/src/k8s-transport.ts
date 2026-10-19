@@ -63,7 +63,7 @@ export const LOG_TAIL_LINES = 1_000;
 
 /**
  * The k8s API server's status thresholds, named once for every read below: `< HTTP_ERROR_STATUS`
- * is success, `>= HTTP_OK_STATUS && < HTTP_ERROR_STATUS` is the 2xx range, and the rest name the
+ * is success, `is2xx` is the 2xx range, and the rest name the
  * specific codes this driver branches on.
  */
 export const HTTP_OK_STATUS = 200;
@@ -73,6 +73,8 @@ export const HTTP_NOT_FOUND = 404;
 export const HTTP_CONFLICT = 409;
 export const HTTP_TOO_MANY_REQUESTS = 429;
 export const HTTP_SERVER_ERROR_STATUS = 500;
+
+export const is2xx = (status: number): boolean => status >= HTTP_OK_STATUS && status < HTTP_ERROR_STATUS;
 
 /** How much of a failed response body rides an error message — a preview, not the whole payload. */
 export const ERROR_PREVIEW_CHARS = 200;

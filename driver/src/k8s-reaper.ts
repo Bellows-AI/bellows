@@ -4,7 +4,7 @@ import {
     HTTP_CONFLICT,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
-    HTTP_OK_STATUS,
+    is2xx,
     JOB_ID,
     parse,
     wait,
@@ -80,7 +80,7 @@ const listBySelector = async (request: K8sRequest, path: string): Promise<Listed
     } catch {
         return null;
     }
-    if (response.status < HTTP_OK_STATUS || response.status >= HTTP_ERROR_STATUS) return null;
+    if (!is2xx(response.status)) return null;
     return parse<{ items?: ListedItem[] }>(response.body).items ?? [];
 };
 
@@ -217,7 +217,7 @@ const reapDerivedSecrets = async (
 const observedClaim = async (deps: K8sDeps, job: BoardJob): Promise<{ uid: string; holder: string } | null> => {
     try {
         const read = await deps.request('GET', claimPath(deps.config.k8sNamespace, job));
-        if (read.status < HTTP_OK_STATUS || read.status >= HTTP_ERROR_STATUS) return null;
+        if (!is2xx(read.status)) return null;
         const claim = parse<{ metadata?: { uid?: string }; data?: { holder?: string } }>(read.body);
         const uid = claim.metadata?.uid;
         const holder = claim.data?.holder;

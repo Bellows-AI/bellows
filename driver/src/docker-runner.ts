@@ -15,32 +15,20 @@ import { randomUUID } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
-import { lookupHelper } from './helpers.js';
-import { noStepChannel, type StepSink, type SupervisorEndpoint, stepLost } from './step-control.js';
+import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import {
     attachSteps,
     controlTokenOf,
     orderFinish,
     orderGo,
     releaseSteps,
-    runHelperStep,
     runReclaimStep,
     runSyncStep,
     type StepHost,
-    supervisedStepRunner,
+    stepHostOf,
+    supervisedStepMembers,
 } from './supervised-steps.js';
-import {
-    probeTreeFingerprint,
-    publishCheckout,
-    RELEASE_DEADLINE_MS,
-    type PublishOptions,
-    type PublishResult,
-    repoPath,
-    worktreeDir,
-    type ReclaimResult,
-    type SyncResult,
-} from './publish.js';
+import { RELEASE_DEADLINE_MS, repoPath, worktreeDir, type ReclaimResult, type SyncResult } from './publish.js';
 import { groupServices, missingDeclaredServices, serviceContainerName } from './services.js';
 import {
     containerName,
@@ -51,7 +39,6 @@ import {
     toolTreeReleaseArgs,
 } from './docker.js';
 import { envFileBody } from './claim.js';
-import { snapshotTree } from './review-snapshot.js';
 import {
     appendTailKept,
     composeRuntimeSample,
@@ -204,9 +191,6 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal?: Abor
     );
 }
 
-/** The step host of this runner: the channel its supervisor serves, or a refusal naming the missing one. */
-const stepHostOf = (deps: RunnerDeps): StepHost => ({ config: deps.config, sink: deps.steps ?? noStepChannel });
-
 /**
  * Creates the attempt's container group once, under the re-claim fence: the supervisor, the
  * exporter and the mailboxes, started beside each other — the agent is created and started by
@@ -351,59 +335,6 @@ async function dockerStartServices(deps: RunnerDeps, job: BoardJob, signal?: Abo
         signal
     );
 }
-
-/**
- * One allowlisted helper step. An unknown helper id creates nothing (`runHelperStep` refuses it
- * first), and a group the daemon refuses is a failed helper; only a lost supervisor (`stepLost`)
- * is thrown.
- */
-async function dockerRunHelper(
-    deps: RunnerDeps,
-    job: BoardJob,
-    plan: HelperPlan,
-    call: HelperCall
-): Promise<HelperResult> {
-    if (!lookupHelper(plan.helperId)) return runHelperStep(stepHostOf(deps), job, plan, call);
-    try {
-        return await runHelperStep(await stepHostFor(deps, job), job, plan, call);
-    } catch (e) {
-        if (stepLost(e)) throw e;
-        return { ok: false, reason: 'runner_error', message: dockerErrorDetail(e).slice(0, ERROR_DETAIL_MAX_CHARS) };
-    }
-}
-
-/** The publish: the one workflow both executors run, over the task supervisor's steps. */
-async function dockerPublishGit(
-    deps: RunnerDeps,
-    job: BoardJob,
-    githubToken?: string,
-    options?: PublishOptions
-): Promise<PublishResult> {
-    const host = await stepHostFor(deps, job);
-    return publishCheckout(
-        deps.config,
-        job,
-        options,
-        supervisedStepRunner(host, job, { kind: 'publish', githubToken })
-    );
-}
-
-/** The probe and the review snapshot: the steps that read the task worktree, over the supervisor. */
-const dockerTreeSteps = (deps: RunnerDeps): Pick<Runner, 'probeTree' | 'snapshotTree'> => ({
-    probeTree: async (job, signal) =>
-        probeTreeFingerprint(
-            deps.config,
-            job,
-            supervisedStepRunner(await stepHostFor(deps, job), job, { kind: 'probe', signal })
-        ),
-    snapshotTree: async (job, key, signal) =>
-        snapshotTree(
-            deps.config,
-            job,
-            key,
-            supervisedStepRunner(await stepHostFor(deps, job), job, { kind: 'snapshot', signal })
-        ),
-});
 
 // The container is named by this attempt's lease token, so a sample can only ever resolve
 // its own attempt's runner — the same attempt-scoping every per-attempt operation here
@@ -736,11 +667,13 @@ export function createDockerRunner(
             dockerSyncCheckout(deps, job, session ?? null, githubToken),
         finish: (job) => finishGroup(deps, job),
         reclaimWorktree: (job) => dockerReclaimWorktree(deps, job),
-        publishGit: (job, githubToken, options) => dockerPublishGit(deps, job, githubToken, options),
-        // The probe and the review snapshot need no claim env; like every step they run in the
-        // supervisor, and a stand-down ends the wait for the answer, never the supervisor.
-        ...dockerTreeSteps(deps),
-        runHelper: (job, plan, call = {}) => dockerRunHelper(deps, job, plan, call),
+        ...supervisedStepMembers({
+            host: stepHostOf(deps),
+            hasGroup: (job) => deps.groups.has(job.leaseToken),
+            createGroup: (job) => ensureGroup(deps, job, null),
+            // A group the daemon refuses fails the helper in the daemon's own words, bounded.
+            errorDetail: (e) => dockerErrorDetail(e).slice(0, ERROR_DETAIL_MAX_CHARS),
+        }),
         runGate: (job, gate, signal) => runDockerGate(gateDeps(deps, job), job, gate, signal),
         resizeGate: async () => false, // no in-place resize: the gate container keeps its GATE_* sizing
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),

@@ -38,13 +38,19 @@ import {
     type TeardownIdentity,
 } from './k8s-teardown.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
-import { HTTP_ERROR_STATUS, HTTP_OK_STATUS, JOB_ID, MS_PER_SECOND, parse, POLL_MS } from './k8s-transport.js';
+import { is2xx, JOB_ID, MS_PER_SECOND, parse, POLL_MS } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
 import type { ReclaimResult } from './publish.js';
 import type { RunSession } from './runner.js';
 import { StartupRefused } from './startup-cause.js';
-import { noStepChannel } from './step-control.js';
-import { type StepHost, attachSteps, orderFinish, releaseSteps, runReclaimStep } from './supervised-steps.js';
+import {
+    attachSteps,
+    orderFinish,
+    releaseSteps,
+    runReclaimStep,
+    type StepHost,
+    stepHostOf,
+} from './supervised-steps.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
 
 /**
@@ -112,7 +118,7 @@ export async function holderGroupsOf(deps: K8sDeps, job: BoardJob, holder: strin
         `${JOB_LABEL}=${job.id},${HOLDER_LABEL}=${holder}`
     )}`;
     const listed = await deps.request('GET', path).catch(() => null);
-    if (!listed || listed.status < HTTP_OK_STATUS || listed.status >= HTTP_ERROR_STATUS) return null;
+    if (!listed || !is2xx(listed.status)) return null;
     const groups: GroupRef[] = [runnerGroupOf({ ...job, leaseToken: holder })];
     for (const item of parse<{ items?: ListedGroupJob[] }>(listed.body).items ?? []) {
         const lease = item.metadata?.labels?.[LEASE_LABEL];
@@ -185,9 +191,6 @@ export const groupsOf = (deps: K8sDeps): Map<string, TaskGroup> => {
     return deps.groups;
 };
 
-/** The step channel this runner submits through; with none wired, every step is refused with the reason. */
-export const stepHostOf = (deps: K8sDeps): StepHost => ({ config: deps.config, sink: deps.steps ?? noStepChannel });
-
 /**
  * Waits until the group's supervisor has pulled from the driver at least once, failing at once on a
  * held container whose words prove why (issue #302; typed by #824 D11) and past `GROUP_UP_WAIT_MS` —
@@ -246,11 +249,10 @@ export async function ensureGroup(deps: K8sDeps, job: BoardJob, session: RunSess
 }
 
 /**
- * The step host of an attempt whose first step is not its sync — an adopted run, whose agent
- * already ended under an earlier claim: a group is created for it on demand, a supervisor and no
- * agent, because the gates' probe, the helpers and the publish are still its steps. A group the
- * sync already created is simply answered. The claim the group took is the group's end's to give
- * back (`finishGroup`), never this call's.
+ * The step host of an attempt whose first step is not its sync — an adopted run, or a gate or
+ * service step before any sync: a group is created for it on demand, a supervisor and no agent.
+ * A group the sync already created is simply answered. The claim the group took is the group's end's to
+ * give back (`finishGroup`), never this call's.
  */
 export async function stepHostFor(deps: K8sDeps, job: BoardJob): Promise<StepHost> {
     if (!groupsOf(deps).has(job.leaseToken)) await ensureGroup(deps, { ...job, agent: false }, null);

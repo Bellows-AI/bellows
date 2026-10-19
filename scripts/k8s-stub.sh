@@ -30,6 +30,41 @@ const once = () => {
 };
 once();' "$1" "$2"
 }
+# `factory-stub-stop` (issue #770): a wait below ends cleanly on the supervisor's Stop, as the real
+# CLI's stop hook does.
+stoppable=''
+case "$*" in *factory-stub-stop*) stoppable=1 ;; esac
+# `factory-stub-ask-<seconds>` (issue #770): after <seconds> of run budget, one question to the
+# supervisor through the agent's mailbox, as claude-bridge.cjs asks it, then the answer polled until
+# settled; the run goes on to any wait.
+case "$*" in
+*factory-stub-ask-*)
+    after="${*##*factory-stub-ask-}"
+    after="${after%%[!0-9]*}"
+    [ -n "$after" ] || exit 1
+    sleep "$after"
+    qid="stub-${HOSTNAME:-stub}"
+    mkdir -p "$FACTORY_CTL_OUT/questions"
+    printf '%s' "{\"questionId\":\"$qid\",\"questions\":[{\"question\":\"Which colour should the report use?\",\"header\":\"Colour\",\"options\":[{\"label\":\"Red\",\"description\":\"red\"},{\"label\":\"Blue\",\"description\":\"blue\"}],\"multiSelect\":false}]}" \
+        >"$FACTORY_CTL_OUT/questions/$qid.json.tmp"
+    mv "$FACTORY_CTL_OUT/questions/$qid.json.tmp" "$FACTORY_CTL_OUT/questions/$qid.json"
+    echo "asked in ${HOSTNAME:-stub}"
+    deadline=$(($(date +%s) + ${FACTORY_STUB_TIMEOUT_SECONDS:-120}))
+    state=''
+    while :; do
+        answer="$(cat "$FACTORY_CTL_IN/answers/$qid.json" 2>/dev/null || true)"
+        state="$(printf '%s' "$answer" | node -e 'let s="";process.stdin.on("data",(c)=>(s+=c)).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).state??""))}catch{}})')"
+        case "$state" in '' | pending) ;; *) break ;; esac
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo 'stub question timed out' >&2
+            exit 1
+        fi
+        sleep 0.2
+    done
+    echo "ANSWER: $answer"
+    [ "$state" = answered ] || exit 1
+    ;;
+esac
 for arg in "$@"; do
     case "$arg" in
     *factory-stub-services*)
@@ -60,6 +95,10 @@ for arg in "$@"; do
         echo "waiting in ${HOSTNAME:-stub}"
         deadline=$(($(date +%s) + ${FACTORY_STUB_TIMEOUT_SECONDS:-120}))
         while [ ! -f "$release" ]; do
+            if [ -n "$stoppable" ] && [ -f "${FACTORY_CTL_IN:-/nonexistent}/stop" ]; then
+                echo "stopped in ${HOSTNAME:-stub}"
+                exit 0
+            fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
                 echo 'stub release timed out' >&2
                 exit 1

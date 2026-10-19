@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
 import { claimEnv, claimRestoresTree, runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
+import { serviceRestartArgv } from './container-scripts.js';
 import { withHelperReceipt } from './helper-receipts.js';
 import {
     HELPER_TIMEOUT_MS,
@@ -13,12 +14,14 @@ import {
     lookupHelper,
     parseHelperOutput,
 } from './helpers.js';
+import { parseLastJsonLine } from './json-parse.js';
 import {
     baseBranchOf,
     CREDENTIAL_HELPER,
     gitWorktreeRemoveScript,
     gitWorktreeScript,
-    parseLastJsonLine,
+    probeTreeFingerprint,
+    publishCheckout,
     type PublishStep,
     type ReclaimResult,
     reclaimUnreadable,
@@ -30,8 +33,9 @@ import {
     worktreeBranch,
     worktreeDir,
 } from './publish.js';
-import { serviceRestartArgv } from './container-scripts.js';
-import { StepTimedOut, type StepSink, stepLost } from './step-control.js';
+import { snapshotTree } from './review-snapshot.js';
+import type { Runner } from './runner.js';
+import { noStepChannel, StepTimedOut, type StepSink, stepLost } from './step-control.js';
 import { SUPERVISOR_ENV, type StepKind, type StepRequest, type StepResult } from './supervisor-contract.js';
 
 /**
@@ -52,6 +56,12 @@ export interface StepHost {
     config: DriverConfig;
     sink: StepSink;
 }
+
+/** The step host of a runner: the channel its supervisor serves, or a refusal naming the missing one. */
+export const stepHostOf = (deps: { config: DriverConfig; steps?: StepSink }): StepHost => ({
+    config: deps.config,
+    sink: deps.steps ?? noStepChannel,
+});
 
 /** One publish step's own bound, the kubelet deadline the aux Jobs carried. */
 const PUBLISH_STEP_TIMEOUT_MS = 600_000;
@@ -424,3 +434,69 @@ export const orderGo = (host: StepHost, job: BoardJob): Promise<StepResult> =>
 /** `finish`: ends the attempt's group; the supervisor finalizes and exits. */
 export const orderFinish = (host: StepHost, job: BoardJob): Promise<StepResult> =>
     submitStep(host, job, request(job, 'finish', { id: '1', timeoutMs: ORDER_TIMEOUT_MS }));
+
+/** What an executor lends the shared supervised-step members: its host, its groups, its own error words. */
+export interface SupervisedGroups {
+    host: StepHost;
+    /** Whether the attempt's group already exists, read on every call. */
+    hasGroup(job: BoardJob): boolean;
+    /** Creates the attempt's group; a refusal rejects. */
+    createGroup(job: BoardJob): Promise<unknown>;
+    /** A refused group, as a failed helper's message. */
+    errorDetail(e: unknown): string;
+}
+
+/**
+ * The step host of an attempt whose first step is not its sync — an adopted run, whose agent
+ * already ended under an earlier claim: a group is created for it on demand, a supervisor and no
+ * agent, because the gates' probe, the helpers and the publish are still its steps. A group the
+ * sync already created is simply answered.
+ */
+async function stepHostFor(groups: SupervisedGroups, job: BoardJob): Promise<StepHost> {
+    if (!groups.hasGroup(job)) await groups.createGroup({ ...job, agent: false });
+    return groups.host;
+}
+
+/**
+ * The supervised steps both executors run the same way: the publish (`publishCheckout`, the one
+ * workflow), the post-gate tree probe, the review snapshot and the allowlisted helpers, each over
+ * the attempt's supervisor. The probe and the review snapshot need no claim env; a stand-down ends
+ * the wait for the answer, never the supervisor. An unknown helper id creates nothing
+ * (`runHelperStep` refuses it first), and a group the executor refuses is a failed helper; only a
+ * lost supervisor (`stepLost`) is thrown.
+ */
+export function supervisedStepMembers(
+    groups: SupervisedGroups
+): Pick<Runner, 'publishGit' | 'probeTree' | 'snapshotTree' | 'runHelper'> {
+    return {
+        publishGit: async (job, githubToken, options) =>
+            publishCheckout(
+                groups.host.config,
+                job,
+                options,
+                supervisedStepRunner(await stepHostFor(groups, job), job, { kind: 'publish', githubToken })
+            ),
+        probeTree: async (job, signal) =>
+            probeTreeFingerprint(
+                groups.host.config,
+                job,
+                supervisedStepRunner(await stepHostFor(groups, job), job, { kind: 'probe', signal })
+            ),
+        snapshotTree: async (job, key, signal) =>
+            snapshotTree(
+                groups.host.config,
+                job,
+                key,
+                supervisedStepRunner(await stepHostFor(groups, job), job, { kind: 'snapshot', signal })
+            ),
+        runHelper: async (job, plan, call = {}) => {
+            if (!lookupHelper(plan.helperId)) return runHelperStep(groups.host, job, plan, call);
+            try {
+                return await runHelperStep(await stepHostFor(groups, job), job, plan, call);
+            } catch (e) {
+                if (stepLost(e)) throw e;
+                return { ok: false, reason: 'runner_error', message: groups.errorDetail(e) };
+            }
+        },
+    };
+}

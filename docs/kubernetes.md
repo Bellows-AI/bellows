@@ -70,7 +70,7 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
   (`driver/src/scripts/service-generation-probe.sh`) fails on every run without them.
 - Stated limit: the kubernetes question round trip (a real claude CLI through the bridge)
   is not run on a kind cluster — the cluster lane installs the stub executor image. The relay is pinned offline in
-  `driver/test/k8s.test.ts`; docker's lane is `ask_roundtrip_lane` in `scripts/test-jobs.sh`.
+  `driver/test/k8s.test.ts` and run through the supervisor with the stub's question (`--phase control`); docker's lane is `ask_roundtrip_lane` in `scripts/test-jobs.sh`.
 
 ## Operational facts
 
