@@ -30,8 +30,12 @@ approve it.
 3. A non-zero exit or an empty `.out` is a failed round, not a clean one: read the `.log`, retry
    once, then STOP and report.
 4. Codex is a reviewer, not an authority. A finding the code disproves is rejected with a one-line
-   reason; from round 2 on, the brief lists every earlier finding with `fixed: <how>` or
-   `rejected: <why>`.
+   reason; from round 2 on, the brief lists every earlier finding with its class and
+   `fixed: <how, every instance>`, `rejected: <why>` or `deferred: #<issue>`.
+5. From round 2 on, the brief also carries the sweep block (below) over every class accepted so
+   far, and from round 3 on only a correctness or data-loss defect counts as a blocker. A round
+   whose blockers all repeat an accepted class makes the next round sweep-only: the sweep block,
+   no open hunt.
 
 ## Phase 2 addition — Codex plan review (max 2 rounds)
 
@@ -84,6 +88,8 @@ area. Then check the plan against the code in the current directory, in priority
   is fixed?
 - Scope: steps beyond the issue, speculative abstractions, anything AGENTS.md forbids.
 - Ambiguity: anything in the issue the plan settled by guessing.
+- Hazards: the plan's Hazards section — a read, wait or destructive call it leaves undecided, or
+  decided in a way the code contradicts.
 
 Verify before reporting: a claim five seconds of reading would disprove is noise.
 
@@ -121,9 +127,17 @@ Hunt, in priority order:
 - Repo rules: anything AGENTS.md or the area's docs/ file forbids or requires.
 - Security: committed secrets, injection, errors leaking internals.
 
+Name each finding's class, and report every instance of that class in the code the diff adds or
+calls — never only the first. A defect in pre-existing code the diff does not call goes under
+"Follow-up", never as a blocker.
+
+<Rounds 2+ only — the sweep block: "Accepted classes:" then each class. For each, list every
+remaining instance, or state "none remain".>
+
 Verify before reporting: a claim five seconds of reading would disprove is noise.
 
-Output a numbered list. Each item: `blocker` or `nitpick`, `file:line`, one or two sentences on what
-breaks and the concrete input that breaks it; blockers add the fix you suggest. Nothing found: reply
-exactly "No blockers." No praise, no padding.
+Output a numbered list. Each item: `blocker` or `nitpick`, its class, `file:line`, one or two
+sentences on what breaks and the concrete input that breaks it; blockers add the fix you suggest.
+Then "Follow-up:" with any out-of-path defects. Nothing found: reply exactly "No blockers." No
+praise, no padding.
 ```

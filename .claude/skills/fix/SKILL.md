@@ -130,11 +130,18 @@ For each round, up to 3:
 3. Triage its findings:
    - Blockers (bugs, broken error handling, missing coverage for the change, security issues):
      fix, re-run the focused suite, continue to the next round.
+   - **Fix the class, not the line.** Name each accepted blocker's class (an unconfirmed read
+     taken as empty, a signal that never reaches a delete, a missing counterpart, …) and fix every
+     instance of it in the code the change adds or calls — search for them; the line the reviewer
+     named is one instance. A later round that finds the same class again means this fix was
+     incomplete.
+   - A defect in pre-existing code the change does not call is not this PR's blocker: file it as
+     an issue (`gh issue create`) and record it as `deferred: #<issue>`.
    - Nitpicks/style: fix only if trivial; do not loop on them.
 4. A round with zero blockers ends the loop.
 
 After 3 rounds with blockers remaining: STOP. Commit nothing, push nothing. Report the remaining
-findings to the user with your analysis.
+findings to the user with your analysis. The cap is the user's to raise, never the run's.
 
 ## Phase 5 — Ship
 

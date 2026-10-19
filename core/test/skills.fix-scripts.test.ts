@@ -61,6 +61,17 @@ describe('the fix skills', () => {
         expect(fix).toContain('The full `npm test` runs once, as the Phase 5 gate');
         expect(readFileSync(join(skill, '../fix-local/SKILL.md'), 'utf8')).toContain('re-run the focused suite');
     });
+
+    it('fix a review finding by its class, sweep accepted classes and defer out-of-path defects', () => {
+        const fix = readFileSync(join(skill, 'SKILL.md'), 'utf8');
+        expect(fix).toContain('**Fix the class, not the line.**');
+        expect(fix).toContain('`deferred: #<issue>`');
+        expect(fix).toContain("The cap is the user's to raise, never the run's.");
+        const local = readFileSync(join(skill, '../fix-local/SKILL.md'), 'utf8');
+        expect(local).toContain('the sweep block');
+        expect(local).toContain('only a correctness or data-loss defect counts as a blocker');
+        expect(readFileSync(join(skill, '../../agents/fix-planner.md'), 'utf8')).toContain('- **Hazards**:');
+    });
 });
 
 describe('heavy.sh', () => {
