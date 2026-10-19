@@ -2792,21 +2792,19 @@ describe('the poll loop', () => {
         }
     );
 
-    it('refuses a service named like the host of a forwarded URL, and runs one that shadows nothing', async () => {
-        const shadowing = {
+    it("runs a service the claim's own env points at: a repo reaching its database by name shadows nothing", async () => {
+        const declared = {
             ...job(1),
-            env: { API_BASE: 'https://models:8443/v1' },
-            services: [{ name: 'models', image: 'redis', environment: [] }],
+            env: { DATABASE_URL: 'postgres://db:5432/test' },
+            services: [{ name: 'db', image: 'postgres', environment: [] }],
         };
-        const harmless = { ...job(2), services: [{ name: 'cache', image: 'redis', environment: [] }] };
-        const board = stubBoard([shadowing, harmless]);
+        const board = stubBoard([declared]);
         const runner = stubRunner(async () => ok());
 
         await drive({ ...board, runner });
 
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
-        expect(board.board.completed[0]?.output).toContain('service "models" would shadow the host of API_BASE');
-        expect(runner.startedServices).toEqual([job(2).id]);
+        expect(board.board.completed[0]?.failureKind).not.toBe('config');
+        expect(runner.startedServices).toEqual([job(1).id]);
     });
 
     it('fails a job with a plan refusal before the checkout fence is ever taken', async () => {

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { plannedServices, serviceContainerName, serviceRunArgs } from '../src/services.js';
+import { plannedServices, serviceContainerName, servicePlanRefusal, serviceRunArgs } from '../src/services.js';
 import { supervisorName } from '../src/docker-mailbox.js';
 import { awaitServicesRunning, ServicesNotRunning } from '../src/service-restart.js';
 import { Inconclusive } from '../src/runner.js';
@@ -263,5 +263,24 @@ describe('awaitServicesRunning (issue #560)', () => {
             awaitServicesRunning(specs, async () => [status('db', 'running')], sleep, options)
         ).rejects.toThrow('service "cache" not running 300s after the restart');
         expect(slept).toBe(budget);
+    });
+});
+
+// R3-1, as Codex round 1 narrowed it: only hosts this driver hands a container are guarded — its own
+// endpoints and the env it forwards from its environment. The claim's env is the repo's, and a repo
+// pointing a URL at its own service is the point of declaring one.
+describe('servicePlanRefusal: the hosts a declared name may not shadow', () => {
+    const config = { ...loadDriverConfig({ RUNNER_ENV: 'MODEL_BASE_URL' }), servicesEnabled: true };
+    const declaring = (name: string, env: Record<string, string> = {}): BoardJob =>
+        ({ id: 'job-1', env, services: [{ name, image: 'redis', environment: [] }] }) as unknown as BoardJob;
+
+    it('refuses a name shadowing a URL this driver forwards from its own environment', () => {
+        expect(servicePlanRefusal(config, declaring('models'), { MODEL_BASE_URL: 'https://models:8443/v1' })).toContain(
+            'service "models" would shadow the host of MODEL_BASE_URL'
+        );
+    });
+
+    it("never refuses a name the claim's own env points at", () => {
+        expect(servicePlanRefusal(config, declaring('db', { DATABASE_URL: 'postgres://db:5432/test' }), {})).toBeNull();
     });
 });

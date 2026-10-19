@@ -25,6 +25,7 @@ import {
     MAILBOX_FILES,
     MAILBOXES,
     STEP_KINDS,
+    STEP_OUTPUT_LIMIT_BYTES,
     SUPERVISOR_EXIT,
     SUPERVISOR_REPORT_MS,
     SUPERVISOR_REPORT_PREFIX,
@@ -151,6 +152,10 @@ interface Driver {
     /** The steps still to be pulled, and the answers the supervisor posted back. */
     queue: QueuedStep[];
     answers: Map<string, StepAnswer>;
+    /** Every step answer body as it arrived, the refused ones too. */
+    answerBodies: string[];
+    /** How a step's answer is answered, before the size bound applies. */
+    stepAnswer: (id: string) => number;
     reports: Report[];
     /** How the n-th report delivery (from 1) is answered: a status, or `drop` — the answer is lost. */
     reportAnswer: (n: number) => number | 'drop';
@@ -203,6 +208,8 @@ async function startDriver({ release = true }: { release?: boolean } = {}): Prom
         posted: [],
         queue: release ? [ORDER_GO] : [],
         answers: new Map(),
+        answerBodies: [],
+        stepAnswer: () => 200,
         reports: [],
         reportAnswer: () => 200,
         autoFinish: true,
@@ -227,7 +234,13 @@ async function startDriver({ release = true }: { release?: boolean } = {}): Prom
             }
             if (request.method === 'POST' && request.url?.startsWith('/step/')) {
                 const id = decodeURIComponent(request.url.slice('/step/'.length));
-                driver.answers.set(id, JSON.parse(await readBody(request)) as StepAnswer);
+                const body = await readBody(request);
+                driver.answerBodies.push(body);
+                const status = driver.stepAnswer(id);
+                if (status !== 200) return send(status, {});
+                // The driver's own bound (step-control.ts): two capped streams plus framing.
+                if (Buffer.byteLength(body) > STEP_OUTPUT_LIMIT_BYTES * 2 + 4096) return send(413, {});
+                driver.answers.set(id, JSON.parse(body) as StepAnswer);
                 return send(200, { ok: true });
             }
             if (request.method === 'POST' && request.url === '/report') {
@@ -1140,6 +1153,57 @@ describe('the supervisor run: gate steps through the gate mailbox', () => {
         await until('the gate answer', () => driver.answers.has('gate-1'));
         expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: null, timedOut: false });
         expect(driver.answers.get('gate-1')?.stderr).toMatch(/lost mid-run/);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers a gate whose output escapes to many times its bytes within the driver bound', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        // A NUL is one byte on disk and six (`\\u0000`) in the JSON answer.
+        const output = `${'\0'.repeat(STEP_OUTPUT_LIMIT_BYTES)}the tail`;
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output }));
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        const answer = driver.answers.get('gate-1');
+        expect(answer).toMatchObject({ exitCode: 0, timedOut: false });
+        expect(answer?.stdout.endsWith('the tail')).toBe(true);
+        expect(Buffer.byteLength(JSON.stringify(answer?.stdout))).toBeLessThanOrEqual(STEP_OUTPUT_LIMIT_BYTES);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers a command step whose streams escape past their bytes within the driver bound', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const script = `process.stdout.write('\\x01'.repeat(${STEP_OUTPUT_LIMIT_BYTES}) + 'the tail')`;
+        driver.order(step('helper-1', 'helper', ['node', '-e', script], { timeoutMs: 30_000 }));
+        await until('the helper answer', () => driver.answers.has('helper-1'));
+        const answer = driver.answers.get('helper-1');
+        expect(answer?.stdout.endsWith('the tail')).toBe(true);
+        expect(Buffer.byteLength(JSON.stringify(answer?.stdout))).toBeLessThanOrEqual(STEP_OUTPUT_LIMIT_BYTES);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('re-posts a refused-as-too-large answer without its streams, keeping the verdict', async () => {
+        const driver = await startDriver();
+        let refused = false;
+        driver.stepAnswer = (id) => {
+            if (id !== 'gate-1' || refused) return 200;
+            refused = true;
+            return 413;
+        };
+        const supervised = run(driver, GATED);
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 3, output: '1 failing' }));
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')).toMatchObject({
+            exitCode: 3,
+            stdout: '',
+            stderr: 'the step output was too large to deliver',
+            timedOut: false,
+        });
         supervised.agentExits(0);
         await supervised.done;
     });

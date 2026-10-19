@@ -14,7 +14,6 @@
  */
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import type { BoardJob, ServiceStatus } from './board.js';
-import { claimEnv } from './claim.js';
 import { type DriverConfig, gateAdvertiseUrlFor } from './config.js';
 
 /** One service of the claim's plan, as the board resolved it. `environment` preserves the file's order. */
@@ -127,13 +126,13 @@ function hostOf(value: string): string | null {
 }
 
 /**
- * Every host a container of the attempt's group dials, with what it is: the driver's control
- * endpoint, the board, the telemetry collector, and the host of each forwarded env value that is a
- * URL — the claim's own env and the credentials this driver forwards from its environment.
+ * Every host this driver hands a container of the attempt's group, with what it is: the driver's
+ * control endpoint, the board, the telemetry collector, and the host of each env value it forwards
+ * from its own environment that is a URL. The claim's own env is the repository's: a URL there
+ * naming a declared service is how a repo reaches it, never a shadow.
  */
 function dialedHosts(
     config: Pick<DriverConfig, 'gateAdvertiseUrl' | 'boardUrl' | 'statsUrl' | 'otelEndpoint' | 'passEnv'>,
-    job: BoardJob,
     env: NodeJS.ProcessEnv
 ): [string, string][] {
     const named: [string, string][] = [
@@ -141,7 +140,6 @@ function dialedHosts(
         [config.boardUrl, 'the board'],
         [config.statsUrl, 'the board'],
         [config.otelEndpoint, 'the telemetry collector'],
-        ...Object.entries(claimEnv(job)).map(([name, value]): [string, string] => [value, `the host of ${name}`]),
         ...config.passEnv.map((name): [string, string] => [env[name] ?? '', `the host of ${name}`]),
     ];
     return named.flatMap(([url, what]) => {
@@ -166,7 +164,7 @@ export function servicePlanRefusal(
 ): string | null {
     const services = groupServices(config, job);
     if (services.length === 0) return null;
-    const hosts = dialedHosts(config, job, env);
+    const hosts = dialedHosts(config, env);
     for (const { name } of services) {
         const shadowed = hosts.find(([host]) => host === name.toLowerCase());
         if (shadowed) {

@@ -157,6 +157,7 @@ const HTTP_MULTIPLE_CHOICES = 300;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
+const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_SERVER_ERROR = 500;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -389,7 +390,25 @@ const orphaned = (run) => Boolean(run.settings.url) && run.now() - run.contacted
 
 const ledgerFile = (run, id) => path.join(run.file.ledger, `${encodeURIComponent(id)}.json`);
 
-const stepResult = (exitCode, stdout = '', stderr = '', timedOut = false) => ({ exitCode, stdout, stderr, timedOut });
+/**
+ * The tail of a stream whose JSON form fits the step output cap. Escaping can turn one byte into six
+ * (a NUL is `\u0000`), and the driver bounds the answer body, not the bytes a command printed.
+ */
+function fitTail(text) {
+    let tail = text;
+    for (let size = Buffer.byteLength(JSON.stringify(tail)); size > STEP_OUTPUT_LIMIT; ) {
+        tail = tail.slice(Math.ceil((tail.length * (size - STEP_OUTPUT_LIMIT)) / size) + 1);
+        size = Buffer.byteLength(JSON.stringify(tail));
+    }
+    return tail;
+}
+
+const stepResult = (exitCode, stdout = '', stderr = '', timedOut = false) => ({
+    exitCode,
+    stdout: fitTail(stdout),
+    stderr: fitTail(stderr),
+    timedOut,
+});
 
 /** Keeps the tail of a stream at the step output cap, byte-true enough: the cap is a bound, not a format. */
 const keepTail = (text) => (text.length <= STEP_OUTPUT_LIMIT ? text : text.slice(text.length - STEP_OUTPUT_LIMIT));
@@ -727,9 +746,14 @@ async function runCall(run, entry, step) {
 
 /** Posts a call's answer until the driver acknowledges it (or says the attempt is over). */
 async function postStepResult(run, step, result) {
-    const body = { invocation: step.invocation, ...result };
+    let body = { invocation: step.invocation, ...result };
     for (let attempt = 1; attempt <= STEP_RESULT_ATTEMPTS && !run.abort.signal.aborted; attempt += 1) {
         const answer = await ask(run, 'POST', `${STEP_PATH}/${encodeURIComponent(step.id)}`, { body });
+        if (answer?.status === HTTP_PAYLOAD_TOO_LARGE) {
+            // Refused, not taken: the verdict still goes back, without the streams the driver would not hold.
+            body = { ...body, stdout: '', stderr: 'the step output was too large to deliver' };
+            continue;
+        }
         if (answer && answer.status < HTTP_SERVER_ERROR) {
             if (answer.status === HTTP_UNAUTHORIZED) run.closed = true;
             return;
