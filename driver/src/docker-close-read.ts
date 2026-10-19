@@ -262,12 +262,19 @@ function readRunnerLog(spawnFn: Spawn, name: string): Promise<KeptLog> {
  * The docker `Runner.adopt` (issue #792): a driver restarted while its runner container ran on, and
  * the claim that superseded it reads the container that has since exited — its exit code, its log,
  * the close-time session readouts — exactly as the attached run would have, then runs the re-claim
- * `fence` the skipped sync would have run, which removes it and everything else the earlier
- * attempt left. A timeout the dead driver enforced reads as the exit it caused: the deadline died
- * with it.
+ * `fence` the skipped sync would have run, which removes everything older attempts left. The read
+ * run itself is kept (`adopted`, issue #821), as the kubernetes adoption keeps its Job: a claim lost
+ * before its verdict lands leaves it for the next to adopt, and the reaper takes it once the job is
+ * terminal. A timeout the dead driver enforced reads as the exit it caused: the deadline died with it.
  */
 export async function dockerAdopt(
-    deps: { execDocker: ExecDocker; spawnFn: Spawn; config: DriverConfig; fence: (job: BoardJob) => Promise<void> },
+    deps: {
+        execDocker: ExecDocker;
+        spawnFn: Spawn;
+        config: DriverConfig;
+        fence: (job: BoardJob) => Promise<void>;
+        adopted: Map<string, string>;
+    },
     job: BoardJob
 ): Promise<AdoptedRun | null> {
     const { execDocker, config } = deps;
@@ -314,6 +321,13 @@ export async function dockerAdopt(
         session ? { id: session, resume: false } : null
     );
     if (session && !outcome.sessionId) outcome.sessionId = session;
-    await deps.fence(job);
+    deps.adopted.set(job.leaseToken, prior.leaseToken);
+    try {
+        await deps.fence(job);
+    } catch (e) {
+        // Not adopted after all: the sync's fence that follows sweeps the read run like any other.
+        deps.adopted.delete(job.leaseToken);
+        throw e;
+    }
     return { outcome, claimSeq };
 }

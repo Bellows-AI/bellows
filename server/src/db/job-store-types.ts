@@ -652,8 +652,10 @@ export type LeaseResult = 'ok' | 'lost' | 'missing';
  * - `lost`    the job is no longer running under this token — the lease expired and someone else
  *             has it, or the board gave up on it. The caller must stop working.
  * - `missing` no such job in this organization.
+ * - `conflict` the attempt staged a conclusion under this token (issue #821): that is its outcome.
  */
-export type SuspendResult = { result: 'ok'; status: JobStatus } | { result: 'lost' } | { result: 'missing' };
+export type SuspendResult = { result: 'ok'; status: JobStatus } | SettleRefusal;
+type SettleRefusal = { result: 'lost' } | { result: 'missing' } | { result: 'conflict' };
 
 /**
  * Why a follow-up was refused.
@@ -1238,7 +1240,19 @@ export interface JobStore {
                 baseBranch: string;
             } | null;
         }
-    ): Promise<{ result: 'ok'; threadDone: boolean; reclaimId: string | null } | { result: 'lost' | 'missing' }>;
+    ): Promise<
+        { result: 'ok'; threadDone: boolean; reclaimId: string | null } | { result: 'lost' | 'missing' | 'conflict' }
+    >;
+    /**
+     * Stages the attempt's final envelope, the input `complete` takes, under its lease (issue #821),
+     * renewing it by `leaseSeconds`: immutable, and binding — see `job-store-conclusions.ts`.
+     */
+    stageConclusion(
+        id: string,
+        leaseToken: string,
+        result: Parameters<JobStore['complete']>[2],
+        leaseSeconds: number
+    ): Promise<{ result: 'ok' | 'lost' | 'missing' | 'conflict' }>;
     /**
      * The whole follow-up chain containing `id` — the root task and every adjustment after it,
      * oldest first. Accepts ANY member of the chain (the UI keeps one URL per conversation, so a

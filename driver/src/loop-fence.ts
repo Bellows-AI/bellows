@@ -7,11 +7,12 @@
 
 import { down } from './loop-attempt.js';
 import { withBoardRetry } from './board-retry.js';
-import type { BoardJob } from './board.js';
+import type { BoardJob, LeaseState } from './board.js';
 import type { RunOutcome } from './runner.js';
 import { withConflictContext, type SyncResult } from './publish.js';
-import type { AttemptCtx, LoopRuntime, SetupHalt } from './loop-types.js';
-import { report } from './loop-verdict.js';
+import type { AttemptCtx, LoopRuntime, SetupHalt, VerdictBody } from './loop-types.js';
+
+const MS_PER_SECOND = 1_000;
 
 /**
  * Why the loop reports no verdict for this outcome, or null when it reports: a container that never
@@ -121,29 +122,91 @@ async function park(ctx: AttemptCtx, phase: string): Promise<void> {
 }
 
 /**
- * The ONE setup conclusion: the claim goes back, the attempt settles, the line is said, the verdict
- * is reported (or the claim requeued) — in that order, because a replacement claimant may start the moment the job is
- * completed (issue #469).
+ * The ONE verdict conclusion (issue #821): the final envelope is staged under the lease, then
+ * completed, and only then does the attempt give the checkout claim back and tear its group down —
+ * the heartbeat renewing the lease throughout (`JobState.concluding`), so the evidence the group
+ * holds outlives every moment the verdict could still be lost. A stage the board answers as lost,
+ * removed or another's settles at once with no verdict. A board that takes neither the stage nor the
+ * verdict leaves the group and the claim standing (`keepGroup`) for the next claim to adopt. Each
+ * board call is retried for the lease, like a verdict. Answers what the complete answered, or null.
+ */
+export async function concludeAttempt(ctx: AttemptCtx, verdict: VerdictBody): Promise<LeaseState | null> {
+    const { rt, job, state } = ctx;
+    state.concluding = true;
+    const staged = await withBoardRetry(
+        rt,
+        `job ${job.id}: the staged verdict was not accepted`,
+        () => rt.board.stageConclusion(job, verdict),
+        { budgetMs: rt.config.leaseSeconds * MS_PER_SECOND }
+    ).catch((e: Error) => {
+        rt.log(`job ${job.id}: the ${verdict.status} verdict could not be staged: ${e.message}`);
+        return null;
+    });
+    if (staged !== null && staged !== 'held') return unstaged(ctx, staged);
+    let tornDown: () => void = () => {};
+    const after = new Promise<void>((resolve) => {
+        tornDown = resolve;
+    });
+    try {
+        const answer = await rt.report(job, verdict, { after }).catch((e: Error) => {
+            rt.log(
+                `job ${job.id}: the ${verdict.status} verdict was not delivered, left to the lease unrewritten: ${e.message}`
+            );
+            return null;
+        });
+        await ctx.quiesce();
+        if (staged === 'held' || answer !== null) {
+            await handBackFence(ctx);
+        } else {
+            state.keepGroup = true;
+            rt.log(
+                `job ${job.id}: neither the stage nor the verdict was accepted; the group and checkout claim are left for the next claim to adopt`
+            );
+        }
+        await ctx.settle();
+        return answer;
+    } finally {
+        tornDown();
+    }
+}
+
+/** A stage the board refused: the lease, the thread or the conclusion is no longer this verdict's. */
+async function unstaged(ctx: AttemptCtx, answer: 'lost' | 'conflict' | 'removed'): Promise<LeaseState | null> {
+    const { rt, job } = ctx;
+    await handBackFence(ctx);
+    await ctx.settle();
+    if (answer === 'lost') return 'lost';
+    rt.log(
+        answer === 'removed'
+            ? `job ${job.id}: removed before its verdict was staged; the queue owns the tree`
+            : `job ${job.id}: the board holds a different conclusion this attempt staged, and it stands`
+    );
+    return null;
+}
+
+/**
+ * The ONE setup conclusion. A left, requeued or interrupted attempt gives the claim back, settles
+ * and says why — in that order, because a replacement claimant may start the moment the job is
+ * handed back (issue #469). A fault or a conclusion says why and lands its verdict through
+ * `concludeAttempt`, which gives the claim back once the verdict is in (issue #821).
  */
 export async function concludeSetup(ctx: AttemptCtx, halt: SetupHalt): Promise<void> {
     if (halt.halt === 'interrupt') return interruptAttempt(ctx, halt.reason, null);
     const { rt, job } = ctx;
+    if (halt.halt === 'fault' || halt.halt === 'concluded') {
+        rt.log(`job ${job.id}: ${halt.log}`);
+        await concludeAttempt(ctx, halt.verdict);
+        return;
+    }
     await handBackFence(ctx);
     await ctx.settle();
     rt.log(`job ${job.id}: ${halt.log}`);
     if (halt.halt === 'leave') return;
-    if (halt.halt === 'requeue') {
-        // A refused requeue (a lost lease, a stop that won the race) leaves the board's answer
-        // standing; retried like a verdict, and one that still fails leaves the job to its lease,
-        // exactly like `leave`.
-        await withBoardRetry(rt, `job ${job.id}: the requeue was not accepted`, () => rt.board.requeue(job)).catch(
-            (e: Error) => rt.log(`job ${job.id}: could not requeue: ${e.message}`)
-        );
-        return;
-    }
-    const what = halt.halt === 'concluded' ? 'conclusion' : 'failure';
-    await report(rt, job, halt.verdict).catch((e: Error) =>
-        rt.log(`job ${job.id}: could not report the ${what}: ${e.message}`)
+    // A refused requeue (a lost lease, a stop that won the race) leaves the board's answer
+    // standing; retried like a verdict, and one that still fails leaves the job to its lease,
+    // exactly like `leave`.
+    await withBoardRetry(rt, `job ${job.id}: the requeue was not accepted`, () => rt.board.requeue(job)).catch(
+        (e: Error) => rt.log(`job ${job.id}: could not requeue: ${e.message}`)
     );
 }
 

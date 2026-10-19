@@ -14,6 +14,7 @@ import {
     validateGates,
     validateRepoField,
     validateSkillsField,
+    validateVerdictBody,
 } from './job-field-validation.js';
 import { skillCatalog } from '../skills.js';
 import { bad, body, guard } from './helpers.js';
@@ -29,6 +30,7 @@ import {
     LEASE_SECONDS_MAX,
     OUTPUT_LIMIT,
     SESSION_ID,
+    conclusionConflict,
     leaseSeconds,
     leaseLost,
     noBoard,
@@ -391,6 +393,7 @@ export async function handleSuspend(orgs: OrgRegistry, request: FastifyRequest, 
     if (!result.ok) return reply;
     if (result.value.result === 'missing') return notFoundJob(reply);
     if (result.value.result === 'lost') return leaseLost(reply);
+    if (result.value.result === 'conflict') return conclusionConflict(reply);
     return reply.code(HTTP_OK).send({ id, status: result.value.status });
 }
 
@@ -415,7 +418,41 @@ export async function handleRequeue(orgs: OrgRegistry, request: FastifyRequest, 
     if (!result.ok) return reply;
     if (result.value.result === 'missing') return notFoundJob(reply);
     if (result.value.result === 'lost') return leaseLost(reply);
+    if (result.value.result === 'conflict') return conclusionConflict(reply);
     return reply.code(HTTP_OK).send({ id, status: result.value.status });
+}
+
+// The attempt's final envelope, staged under its lease before its verdict and its teardown (issue
+// #821): the very body complete takes, parsed by the same validation so the staged fingerprint is
+// the receipt's, with the lease renewed by `leaseSeconds`. The board commits it should the lease
+// expire before the complete lands; a different one under the lease is a 409 of its own.
+export async function handleConclusion(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
+
+    const fields = body(request.body);
+    const { leaseToken } = fields;
+    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
+        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
+    }
+    const lease = leaseSeconds(fields.leaseSeconds);
+    if (lease === null) {
+        return bad(reply, ERROR_CODES.BAD_LEASE, `leaseSeconds must be an integer 1..${LEASE_SECONDS_MAX}`);
+    }
+    const parsed = validateVerdictBody(fields);
+    if (!parsed.ok) return bad(reply, parsed.code, parsed.message);
+
+    const result = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job conclusion failed'),
+        () => store.stageConclusion(id, leaseToken, parsed.value, lease)
+    );
+    if (!result.ok) return reply;
+    if (result.value.result === 'missing') return notFoundJob(reply);
+    if (result.value.result === 'lost') return leaseLost(reply);
+    if (result.value.result === 'conflict') return conclusionConflict(reply);
+    return reply.code(HTTP_OK).send({ id, status: parsed.value.status });
 }
 
 /** The longest interruption reason the board records (issue #792): one driver sentence. */
@@ -463,6 +500,7 @@ export async function handleInterrupt(orgs: OrgRegistry, request: FastifyRequest
     if (!result.ok) return reply;
     if (result.value.result === 'missing') return notFoundJob(reply);
     if (result.value.result === 'lost') return leaseLost(reply);
+    if (result.value.result === 'conflict') return conclusionConflict(reply);
     if (result.value.result === 'exhausted') {
         return bad(
             reply,

@@ -1,11 +1,11 @@
 import { artifactCalls } from './artifact-calls.js';
 import { BoardHttpError } from './board-retry.js';
 import { githubCredentialCall } from './github-credential-call.js';
+import { verdictCalls } from './board-verdict.js';
 import type { EvidencePolicy, GatesOutcome, ReviewEvidence } from './evidence-policy.js';
 import { type ExecutorType, isExecutorType } from './executors.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, LEASE_LOST_CODE, NOT_FOUND_CODE } from './http.js';
 import type { HelperPlan } from './helpers.js';
-import { fitCompleteBody } from './verdict-budget.js';
 import type { ServiceSpec } from './services.js';
 
 /**
@@ -616,7 +616,18 @@ export interface Board {
                 baseBranch: string;
             } | null;
         }
-    ): Promise<{ state: LeaseState; reclaimId: string | null }>;
+    ): Promise<{ state: LeaseState; reclaimId: string | null; conflict?: true }>;
+    /**
+     * Stages the attempt's final envelope under its lease before the verdict and the teardown
+     * (issue #821): the very body `complete` sends, so the board fingerprints both alike, with the
+     * lease renewed beside it. The board commits it should the lease expire before the complete
+     * lands. `lost` when the lease is not this attempt's, `conflict` when it staged another,
+     * `removed` when the thread is gone; any other failure throws for the retry.
+     */
+    stageConclusion(
+        job: BoardJob,
+        result: Parameters<Board['complete']>[1]
+    ): Promise<LeaseState | 'conflict' | 'removed'>;
 }
 
 type Fetch = typeof globalThis.fetch;
@@ -663,54 +674,6 @@ const bestEffortLeases = async (
         return null;
     }
 };
-
-/**
- * The verdict's POST body: every measured field rides, and absent stays absent — the never-zero
- * contract is the driver's to keep on the wire too. Extracted from `complete` so the client
- * method stays a round trip, not a payload builder.
- */
-function completeBody({
-    status,
-    exitCode,
-    output,
-    contextTokens,
-    contextCostUsd,
-    agentTurns,
-    setupMs,
-    summary,
-    failureKind,
-    failureCause,
-    treeChanged,
-    evidence,
-    publication,
-}: Parameters<Board['complete']>[1]): Record<string, unknown> {
-    return {
-        status,
-        exitCode,
-        output,
-        ...(typeof contextTokens === 'number' ? { contextTokens } : {}),
-        ...(typeof contextCostUsd === 'number' ? { contextCostUsd } : {}),
-        // A number only: null and absent both stay off the wire, and the board stores
-        // unmeasured — the never-zero contract is the driver's to keep too.
-        ...(typeof agentTurns === 'number' ? { agentTurns } : {}),
-        ...(typeof setupMs === 'number' ? { setupMs } : {}),
-        ...(summary ? { summary } : {}),
-        // The structured failure reason, when there is one (issue #339); absent stays null.
-        ...(failureKind ? { failureKind } : {}),
-        ...(failureCause ? { failureCause } : {}),
-        // Measured only after a failed gate; unknown stays off the wire.
-        ...(typeof treeChanged === 'boolean' ? { treeChanged } : {}),
-        // What the gates and the review assessed, for the board's completion check.
-        ...(evidence ? { evidence } : {}),
-        // The identity of what was published, when anything was — the board keys review
-        // traffic and the thread's wait on it.
-        ...(publication ? { publication } : {}),
-    };
-}
-
-/** The verdict POST carries the lease token beside the payload, like every worker write, fit to the route's limit. */
-const completeWireBody = (job: BoardJob, result: Parameters<Board['complete']>[1]): Record<string, unknown> =>
-    fitCompleteBody({ leaseToken: job.leaseToken, ...completeBody(result) });
 
 /** A claim text field read defensively: the string the board sent, else null. */
 const textOrNull = (value: unknown): string | null => (typeof value === 'string' ? value : null);
@@ -917,6 +880,7 @@ export function createBoard({
 
         ...reviewCalls(post),
 
+        ...verdictCalls(post, leaseSeconds),
         ...artifactCalls({ url, token, fetch }),
         ...githubCredentialCall({ url, fetch }),
 
@@ -985,19 +949,6 @@ export function createBoard({
 
         async leases(ids) {
             return bestEffortLeases(post, ids);
-        },
-
-        async complete(job, result) {
-            const response = await post(`/api/jobs/${job.id}/complete`, completeWireBody(job, result));
-            // 409 is a verdict, not a failure: the lease is gone and with it any say over the
-            // thread — no reclaim was ordered, not an unknown one.
-            if (response.status === HTTP_CONFLICT) return { state: 'lost', reclaimId: null };
-            // Read defensively, like every other board field: anything but a non-empty string —
-            // absent, null, a body that is not the shape we asked for — means "the user may
-            // still want this thread's tree", which is the only safe reading of an unclear answer.
-            const body = (await response.json()) as { reclaimId?: unknown };
-            const reclaimId = typeof body.reclaimId === 'string' && body.reclaimId !== '' ? body.reclaimId : null;
-            return { state: 'held', reclaimId };
         },
     };
 }

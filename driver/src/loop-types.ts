@@ -38,7 +38,15 @@ export interface LoopRuntime {
     syncs: SyncQueue;
     /** Overrides `SYNC_QUEUE_WAIT_MS` — a test seam, never set in production. */
     syncWaitMs?: number;
-    report: (job: BoardJob, result: Parameters<Board['complete']>[1]) => Promise<LeaseState>;
+    /**
+     * Reports a verdict; a verdict-time worktree reclaim it orders waits for `after` — the
+     * attempt's teardown (issue #821) — before it removes the tree.
+     */
+    report: (
+        job: BoardJob,
+        result: Parameters<Board['complete']>[1],
+        options?: { after?: Promise<void> }
+    ) => Promise<LeaseState>;
     /** The attempts in flight, by job id — what a drain hands over (`Loop.handover`, issue #792). */
     live?: Map<string, { job: BoardJob; state: JobState }>;
 }
@@ -52,7 +60,10 @@ export interface AttemptCtx {
     rt: LoopRuntime;
     job: BoardJob;
     state: JobState;
+    /** Ends the attempt: `quiesce`, then its group's teardown — once, however many conclusions ask. */
     settle: () => Promise<void>;
+    /** Stops the heartbeat and leaves the group standing (issue #821): the half of `settle` a verdict waits for. */
+    quiesce: () => Promise<void>;
     /**
      * Whether this attempt holds the kubernetes checkout claim: taken by a successful sync, handed
      * to the runner at launch, and given back by `handBackFence` (`loop-fence.ts`) and by nothing

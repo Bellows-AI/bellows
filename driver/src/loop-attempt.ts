@@ -60,6 +60,17 @@ export interface JobState {
      */
     handedOver: boolean;
     /**
+     * True from the moment the attempt stages its verdict until it is torn down (issue #821): the
+     * heartbeat keeps renewing the lease the verdict needs, and a lost or stop beat meanwhile acts
+     * on nothing — the staged conclusion is the attempt's outcome, and the board commits it.
+     */
+    concluding: boolean;
+    /**
+     * True when neither the staged verdict nor the complete reached the board (issue #821): the
+     * teardown leaves the group and the checkout claim for the next claim to adopt.
+     */
+    keepGroup: boolean;
+    /**
      * True once `runner.run` has been called. The heartbeat paces itself at `SETUP_POLL_MS` until
      * this turns — a verdict arriving during the setup phase must be answered in seconds, not a
      * beat period — and at the lease's third afterwards (issue #126).
@@ -124,6 +135,8 @@ export function newJobState(): JobState {
         stopped: false,
         removed: false,
         handedOver: false,
+        concluding: false,
+        keepGroup: false,
         launched: false,
         gateToken: null,
         control: null,
@@ -267,7 +280,7 @@ async function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, co
         const graceMs = rt.stopGraceMs ?? STOP_GRACE_MS;
         rt.log(`job ${job.id}: stop requested, letting the agent finish its current step (${graceMs}ms grace)`);
         state.graceTimer = setTimeout(() => {
-            if (state.finished || down(state)) return;
+            if (state.finished || state.concluding || down(state)) return;
             state.stopped = true;
             rt.log(`job ${job.id}: the agent did not stop within ${graceMs}ms, killing the runner`);
             state.abortNow();
@@ -281,6 +294,13 @@ async function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, co
     });
 }
 
+/**
+ * Whether a heartbeat verdict may no longer act on the attempt: a handed-over attempt's runner
+ * belongs to the next claim (issue #792), and a concluding one's outcome is staged — only the
+ * teardown that follows its verdict ends it (issue #821).
+ */
+const beyondVerdicts = (state: JobState): boolean => state.handedOver || state.concluding;
+
 /** Folds one heartbeat verdict into the attempt's state, and kills the runner when it stands down. */
 export async function applyHeartbeatVerdict(
     rt: LoopRuntime,
@@ -289,8 +309,7 @@ export async function applyHeartbeatVerdict(
     verdict: HeartbeatVerdict
 ) {
     const { runner, log } = rt;
-    // A handed-over attempt's runner belongs to the next claim (issue #792).
-    if (state.handedOver) return;
+    if (beyondVerdicts(state)) return;
     if (
         typeof verdict === 'object' &&
         !verdict.cancelRequested &&

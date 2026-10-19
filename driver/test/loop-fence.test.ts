@@ -53,7 +53,12 @@ function fencedAttempt(fenced = true): { ctx: AttemptCtx; calls: string[]; lines
                     calls.push(`interrupt:${interrupted.id}`);
                     return 'held' as LeaseState;
                 },
+                stageConclusion: async (staged: BoardJob) => {
+                    calls.push(`stage:${staged.id}`);
+                    return 'held' as LeaseState;
+                },
             },
+            config: { leaseSeconds: 300 },
             report: async (reported: BoardJob) => {
                 calls.push(`complete:${reported.id}`);
                 return 'ok' as LeaseState;
@@ -67,6 +72,9 @@ function fencedAttempt(fenced = true): { ctx: AttemptCtx; calls: string[]; lines
         state: newJobState(),
         settle: async () => {
             calls.push('settle');
+        },
+        quiesce: async () => {
+            calls.push('quiesce');
         },
         fenced,
         treeBefore: null,
@@ -200,10 +208,8 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
     });
 
     it.each([
-        ['a fault', FAULT, 'complete:job-1'],
         ['a leave', LEAVE, null],
         ['a requeue', REQUEUE, 'requeue:job-1'],
-        ['a conclusion', CONCLUDED, 'complete:job-1'],
     ] satisfies readonly (readonly [string, SetupHalt, string | null])[])(
         'concludes %s only after the claim is back',
         async (_what, halt, reported) => {
@@ -211,10 +217,26 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
 
             await concludeSetup(ctx, halt);
 
-            // Issue #469: a replacement claimant starts the moment the job is completed, so the
-            // release can never land after the report. A `leave` reports nothing at all; a
-            // `requeue` hands the claim back instead of reporting (issue #559).
+            // A `leave` reports nothing at all; a `requeue` hands the claim back instead of
+            // reporting (issue #559).
             expect(calls).toEqual([...CLAIM_BACK, 'log', ...(reported === null ? [] : [reported])]);
+            expect(lines.join('\n')).toContain(halt.log);
+        }
+    );
+
+    // Issue #821 (D1): a verdict is staged under the lease, then completed, and only then does the
+    // attempt give the claim back and tear its group down — the heartbeat stops between the two.
+    it.each([
+        ['a fault', FAULT],
+        ['a conclusion', CONCLUDED],
+    ] satisfies readonly (readonly [string, SetupHalt])[])(
+        'stages and completes %s before the claim goes back and the group ends',
+        async (_what, halt) => {
+            const { ctx, calls, lines } = fencedAttempt();
+
+            await concludeSetup(ctx, halt);
+
+            expect(calls).toEqual(['log', 'stage:job-1', 'complete:job-1', 'quiesce', 'release:job-1', 'settle']);
             expect(lines.join('\n')).toContain(halt.log);
         }
     );

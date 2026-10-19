@@ -7,6 +7,7 @@
  * - `job-store-rows.ts` — row shapes, mappers and the shared SQL fragments.
  * - `job-store-claim.ts` — the worker's claim and the reclaim claim/ack.
  * - `job-store-worker.ts` — heartbeat, reports, `complete` and the workflow walk.
+ * - `job-store-conclusions.ts` — the staged final envelope and the board's commit of it (076).
  * - `job-store-actions.ts` — member actions: create, follow up, done, reopen, stop, suspend,
  *   remove, and the wait-control pair (issue #328).
  * - `job-store-questions.ts` — the agent's questions (050): ask, expire, answer, and their reads.
@@ -56,6 +57,7 @@ import {
 } from './job-store-rows.js';
 import type { CreateJobStoreDeps, JobStore, JobStoreContext, RuntimeVitals } from './job-store-types.js';
 import { heartbeatJob, sessionReport, progressReport, gatesReport, completeJob } from './job-store-worker.js';
+import { stageConclusion } from './job-store-conclusions.js';
 
 /**
  * The worker-report method bindings — the claim-to-verdict half of the store. Split out of
@@ -76,6 +78,7 @@ function workerMethods(
     | 'requestReview'
     | 'readReview'
     | 'complete'
+    | 'stageConclusion'
     | 'leases'
     | 'artifactScope'
 > {
@@ -123,6 +126,11 @@ function workerMethods(
         async complete(id, leaseToken, result) {
             await gate();
             return completeJob(ctx, id, leaseToken, result);
+        },
+
+        async stageConclusion(id, leaseToken, result, leaseSeconds) {
+            await gate();
+            return stageConclusion(ctx, { id, leaseToken }, result, leaseSeconds);
         },
 
         async leases(ids) {

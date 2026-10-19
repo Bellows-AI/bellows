@@ -18,6 +18,7 @@ import {
 } from './loop-gates.js';
 import { drainTranscriptExport } from './loop-export.js';
 import { heartbeat, newJobState, raceStep, stopIfDraining, watchOutput } from './loop-attempt.js';
+import { attemptSettlement } from './loop-conclusion.js';
 import type { GateRunNote } from './timeout-note.js';
 import {
     concludeSetup,
@@ -641,21 +642,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     const session = pickSession(job, executorType);
 
     // Once per attempt, however many conclusions ask (issue #820): a second call awaits the first.
-    let settling: Promise<void> | null = null;
-    const settle = () => (settling ??= settleOnce());
-    const settleOnce = async () => {
-        state.finished = true;
-        rt.live?.delete(job.id);
-        if (state.graceTimer) clearTimeout(state.graceTimer);
-        state.wake();
-        await beating;
-        // The attempt's task group (issue #771) lives from its sync to here, not to the agent's
-        // exit: its supervisor serves the probe, the helpers and the publish. It ends while the
-        // control channel its order travels is still open — and never for an attempt handed over by
-        // a drain, whose runner is left for the next claim to adopt.
-        if (!state.handedOver) await rt.runner.finish(job).catch(() => undefined);
-        closeRunControl(rt, state);
-    };
+    const { quiesce, settle } = attemptSettlement(rt, job, state, beating);
 
     /*
      * Lands a verdict the heartbeat observed before the runner spawned — a Stop, a lost lease
@@ -663,7 +650,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
      * its gate environment (issue #126). `standDown` (`loop-fence.ts`) is the only thing that
      * acts on one: it releases a claim the runner never took, settles and parks the attempt.
      */
-    const ctx: AttemptCtx = { rt, job, state, settle, fenced: false, treeBefore: null, session };
+    const ctx: AttemptCtx = { rt, job, state, settle, quiesce, fenced: false, treeBefore: null, session };
     try {
         log(
             `job ${job.id}: attempt ${job.attempts} ` +
@@ -688,10 +675,10 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
             const closing = await runPostHelpersAndPublish(ctx, outcome);
             if (closing === null) return;
             const { helperFailure, published, policyRefusal } = closing;
-            await settle();
-            // The liveness read and the gate verdicts are read BEFORE the finally below
-            // releases the gate session — unregistering clears the recorded runs.
-            await reportFinish(rt, {
+            // Staged, completed, then torn down (issue #821). The liveness read and the gate
+            // verdicts are read BEFORE the finally below releases the gate session — unregistering
+            // clears the recorded runs.
+            await reportFinish(ctx, {
                 job,
                 outcome: outcome.outcome,
                 failure: outcome.failure,

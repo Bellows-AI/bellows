@@ -14,6 +14,8 @@ import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-cl
 import { readReviewEvidence } from './job-store-evidence.js';
 import { stopReviewsOf } from './job-store-reviews.js';
 import { workspacePathFor } from './job-store-rows.js';
+import { commitStagedConclusions } from './job-store-conclusions.js';
+import { stagedUnderLease } from './job-store-staged.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
 import type {
     JobStoreContext,
@@ -32,6 +34,20 @@ import { skillCatalog } from '../skills.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from './workflow-blocks/runtime.js';
 import { type WorkflowDefinition, isAgentlessNode, isPublishNode, nodeOf, nodeSkipsGates } from './workflow-schema.js';
 
+/** An expired running row of the org that `rule` selects: what a claim sweep settles. */
+const dueRows = (ctx: JobStoreContext, tx: TransactionSql, rule: Fragment): Fragment =>
+    tx`(org_id = ${ctx.orgId} and status = 'running' and lease_expires_at <= now() and ${rule})`;
+
+/**
+ * The rows `due` selects, locked first (issue #821): a stage holding one is skipped, never waited
+ * on, so the sweep's own statement — a fresh read under the locks — sees every conclusion staged
+ * before it, and a single UPDATE's re-check never decides on a snapshot older than the stage.
+ */
+async function lockedCandidates(tx: TransactionSql, due: Fragment): Promise<string[]> {
+    const rows = await tx<{ id: string }[]>`select id from job where ${due} for update skip locked`;
+    return rows.map((row) => row.id);
+}
+
 /**
  * Retire what has burned its attempts, before looking for work. Without this a command that kills
  * its worker is reclaimed every time its lease expires, forever. An expired lease is first an
@@ -43,11 +59,14 @@ import { type WorkflowDefinition, isAgentlessNode, isPublishNode, nodeOf, nodeSk
  */
 async function retireExhaustedAttempts(ctx: JobStoreContext, tx: TransactionSql): Promise<void> {
     const { orgId, wallTick } = ctx;
+    const due = dueRows(ctx, tx, claimRules(ctx).exhausted);
+    const ids = await lockedCandidates(tx, due);
+    if (ids.length === 0) return;
     const retired = await tx<{ id: string; root_job_id: string }[]>`
         update job set status = 'dead', finished_at = now(), lease_token = null,
                        wall_clock_ms = ${wallTick}
-        where org_id = ${orgId} and status = 'running'
-          and lease_expires_at <= now() and ${claimRules(ctx).exhausted}
+        where id = any(${ids}::uuid[]) and ${due}
+          and not ${stagedUnderLease(tx, 'job')}
         returning id, root_job_id
     `;
     // A retired caller's separate reviews (issue #549) have no one left to read them.
@@ -197,6 +216,7 @@ async function reserveCandidate(ctx: JobStoreContext): Promise<ReservedCandidate
               and (j.attempts < j.max_attempts or ${recovering})
               and (j.claim_deferred_until is null or j.claim_deferred_until <= now())
               and ${sameThreadRunning(sql`j.id`, sql`j.root_job_id`)}
+              and not ${stagedUnderLease(sql, 'j')}
             order by coalesce(j.claim_deferred_until, j.created_at), j.created_at, j.id
             limit 1
             -- Below the limit in the plan, so a row another claimer is reserving is skipped
@@ -311,6 +331,7 @@ async function acquireCandidate(
               and lease_expires_at <= now()
               and (attempts < max_attempts or ${recovering})
               and ${sameThreadRunning(reserved.id, rootJobId)}
+              and not ${stagedUnderLease(tx, 'job')}
             -- parent_job_id and command_delivered_at are not written above, so RETURNING reads
             -- their pre-update values: delivered-so-far is exactly "this row was suspended at
             -- least once with its command in the transcript". A fresh or crashed follow-up has
@@ -422,6 +443,11 @@ export async function claimJob(
 ): ReturnType<JobStore['claim']> {
     const { sql, orgId, wallTick, prs } = ctx;
 
+    // An expired attempt that staged its conclusion is committed before anything else reads the
+    // board (issue #821): no stop settle, retirement, takeover or remote read may come first, and a
+    // staged row is invisible to each of them until it is committed — a row that expires after this
+    // pass waits for the next poll.
+    await commitStagedConclusions(ctx);
     // The wake sweep (issue #231), before looking for queued work: a parked block-wait round with
     // folded deliveries becomes exactly one queued continuation here, so claimNextCandidate below
     // can find it like any other row. Each candidate wakes in its own transaction, under that
@@ -441,26 +467,31 @@ export async function claimJob(
      * try — and the last segment banks with the same overcount the dead retirement
      * accepts, because the board cannot know when the run actually stopped.
      *
-     * Committed as its own statement, deliberately OUTSIDE the claim (review of PR #153):
+     * Committed on its own, deliberately OUTSIDE the claim (review of PR #153), its rows locked
+     * before the statement decides on them (issue #821, `lockedCandidates`):
      * the claim's preparation — the plan read, the env resolution — awaits calls that
      * throw, and a settle that rode with them would be lost to every failed poll: the
      * stamped zombie would stay `running` and the follow-up the member queued would keep
      * answering not_finished — the exact stuck state this settle exists to end.
      */
-    const stampedStops = await sql<{ root_job_id: string }[]>`
-        update job set
-            status             = 'stopped',
-            finished_at        = now(),
-            wall_clock_ms      = ${wallTick},
-            attempts           = greatest(attempts - 1, 0),
-            lease_token        = null,
-            lease_expires_at   = now(),
-            cancel_requested_at = null
-        where org_id = ${orgId} and status = 'running'
-          and cancel_requested_at is not null
-          and lease_expires_at <= now()
-        returning root_job_id
-    `;
+    const stampedStops = await sql.begin(async (tx) => {
+        const due = dueRows(ctx, tx, tx`cancel_requested_at is not null`);
+        const ids = await lockedCandidates(tx, due);
+        if (ids.length === 0) return [] as { root_job_id: string }[];
+        return tx<{ root_job_id: string }[]>`
+            update job set
+                status             = 'stopped',
+                finished_at        = now(),
+                wall_clock_ms      = ${wallTick},
+                attempts           = greatest(attempts - 1, 0),
+                lease_token        = null,
+                lease_expires_at   = now(),
+                cancel_requested_at = null
+            where id = any(${ids}::uuid[]) and ${due}
+              and not ${stagedUnderLease(tx, 'job')}
+            returning root_job_id
+        `;
+    });
     for (const root of [...new Set(stampedStops.map((r) => r.root_job_id))].sort()) {
         // A merge-marked thread whose last moving member was this undelivered stop closes here
         // (issue #390) — the shared conditional settle the other settle points run. This

@@ -72,6 +72,8 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
 
 interface BoardStub extends Board {
     completed: ({ id: string } & Parameters<Board['complete']>[1])[];
+    /** The final envelopes the loop staged before each verdict (issue #821). */
+    staged: ({ id: string } & Parameters<Board['complete']>[1])[];
     sessions: { id: string; sessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeReport | null }[];
     suspended: string[];
@@ -124,6 +126,8 @@ function stubBoard(
         artifactsDown?: boolean;
         /** The board's answer to an interruption report (issue #792); held when absent. */
         interruptVerdict?: LeaseState | 'exhausted';
+        /** The board's answer to a staged conclusion (issue #821); held when absent. */
+        stageAnswer?: Awaited<ReturnType<Board['stageConclusion']>>;
     } = {}
 ): { board: BoardStub; attach: (loop: Loop) => void } {
     let loop: Loop | null = null;
@@ -134,6 +138,7 @@ function stubBoard(
 
     const board: BoardStub = {
         completed: [],
+        staged: [],
         sessions: [],
         progressed: [],
         suspended: [],
@@ -226,6 +231,10 @@ function stubBoard(
         async githubCredential(claimed) {
             board.githubAsks.push(claimed.id);
             return options.githubToken ?? null;
+        },
+        async stageConclusion(claimed, result) {
+            board.staged.push({ id: claimed.id, ...result });
+            return options.stageAnswer ?? 'held';
         },
         async complete(claimed, result) {
             board.completed.push({ id: claimed.id, ...result });
@@ -2433,7 +2442,9 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
     });
 
-    it('releases the checkout fence before failing a job that declares gates this driver cannot run', async () => {
+    // Issue #821 (D1): the claim goes back once the verdict is in — the claim is keyed by the job
+    // id, and a completed row is never claimed again, so no replacement waits on it.
+    it('releases the checkout fence once the failure of a job declaring gates this driver cannot run is in', async () => {
         const board = stubBoard([gatedJob(1)]);
         const runner = stubRunner(async () => {
             throw new Error('the runner must never be reached');
@@ -2442,7 +2453,7 @@ describe('the poll loop', () => {
 
         await drive({ ...board, runner });
 
-        expect(events).toEqual([`release:${job(1).id}`, `complete:${job(1).id}`]);
+        expect(events).toEqual([`complete:${job(1).id}`, `release:${job(1).id}`]);
         expect(board.board.completed[0]?.output).toContain('no gate environment configured');
     });
 
@@ -6379,5 +6390,207 @@ describe('a stop the board cannot take (issue #820)', () => {
             process.off('unhandledRejection', record);
             unhandled.length = 0;
         }
+    });
+});
+
+// Issue #821 (D1): the final envelope is staged under the lease, then completed, and only then is
+// the attempt torn down — the heartbeat renewing the lease meanwhile, the order the reproduction
+// found inverted (`finish → complete`). A board that takes neither leaves the group for the next
+// claim to adopt.
+describe('final envelope (issue #821 D1)', () => {
+    const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const landed: PublishResult = {
+        ok: true,
+        published: true,
+        branch: 'fix/1',
+        prUrl: 'https://github.com/o/r/pull/1',
+        reason: null,
+        cause: null,
+        repository: 'o/r',
+        baseBranch: 'main',
+        prNumber: 1,
+    };
+
+    /** The board and runner of one attempt, recording the order of the stage, verdict and teardown. */
+    function ordered(claimed: BoardJob, options: Parameters<typeof stubBoard>[1] = {}) {
+        const order: string[] = [];
+        const board = stubBoard([claimed], options);
+        const stage = board.board.stageConclusion.bind(board.board);
+        const complete = board.board.complete.bind(board.board);
+        board.board.stageConclusion = async (j, result) => {
+            order.push('stage');
+            return stage(j, result);
+        };
+        board.board.complete = async (j, result) => {
+            order.push('complete');
+            return complete(j, result);
+        };
+        const runner = stubRunner(async () => ok(), { publish: landed });
+        runner.finish = async () => {
+            order.push('finish');
+        };
+        return { order, board, runner };
+    }
+
+    it('stages, then completes, then finishes the group — the staged body the very verdict', async () => {
+        const { order, board, runner } = ordered({ ...job(1), repo: 'Bellows-AI/factory' });
+
+        await drive({ ...board, runner });
+
+        expect(order).toEqual(['stage', 'complete', 'finish']);
+        expect(board.board.staged).toEqual(board.board.completed);
+        // The whole envelope rides the stage: a driver lost after it leaves the board everything.
+        expect(board.board.staged[0]).toMatchObject({ status: 'succeeded', publication: { prNumber: 1 } });
+    });
+
+    it('stages a setup fault before its verdict and finishes after it', async () => {
+        const claimed = job(1);
+        const order: string[] = [];
+        const board = stubBoard([claimed]);
+        const stage = board.board.stageConclusion.bind(board.board);
+        board.board.stageConclusion = async (j, result) => {
+            order.push('stage');
+            return stage(j, result);
+        };
+        const complete = board.board.complete.bind(board.board);
+        board.board.complete = async (j, result) => {
+            order.push('complete');
+            return complete(j, result);
+        };
+        const runner = stubRunner(async () => ok(), { sync: { ok: false, reason: 'the remote said no' } });
+        runner.finish = async () => {
+            order.push('finish');
+        };
+
+        await drive({ ...board, runner });
+
+        expect(order).toEqual(['stage', 'complete', 'finish']);
+        expect(board.board.staged[0]).toMatchObject({
+            status: 'failed',
+            output: expect.stringContaining('remote said no'),
+        });
+    });
+
+    it('keeps the heartbeat renewing while the verdict is in flight, and a lost or stop beat meanwhile acts on nothing', async () => {
+        for (const beat of ['lost', 'stop'] as const) {
+            const { order, board, runner } = ordered(job(1));
+            let concluding = false;
+            board.board.stageConclusion = async (j, result) => {
+                order.push('stage');
+                board.board.staged.push({ id: j.id, ...result });
+                concluding = true;
+                return 'held';
+            };
+            board.board.heartbeat = async () => {
+                board.board.beats += 1;
+                if (!concluding) return { result: 'held', cancelRequested: false };
+                return beat === 'lost' ? 'lost' : { result: 'held', cancelRequested: true };
+            };
+            board.board.complete = async (j, result) => {
+                order.push('complete');
+                const before = board.board.beats;
+                while (board.board.beats < before + 2) await tick();
+                board.board.completed.push({ id: j.id, ...result });
+                return { state: 'held', reclaimId: null };
+            };
+
+            await drive({ ...board, runner });
+
+            expect(order).toEqual(['stage', 'complete', 'finish']);
+            expect(runner.killed).toEqual([]);
+            expect(board.board.suspended).toEqual([]);
+            expect(board.board.completed).toHaveLength(1);
+        }
+    });
+
+    it('never hands a concluding attempt over to a drain', async () => {
+        const { board, runner } = ordered(job(1));
+        let loop: Loop | null = null;
+        const attach = board.attach;
+        board.attach = (l) => {
+            loop = l;
+            attach(l);
+        };
+        const complete = board.board.complete.bind(board.board);
+        board.board.complete = async (j, result) => {
+            await (loop as Loop | null)?.handover('the driver was drained');
+            return complete(j, result);
+        };
+
+        await drive({ ...board, runner });
+
+        expect(board.board.interrupted).toEqual([]);
+        expect(board.board.completed).toHaveLength(1);
+    });
+
+    it('reclaims a done thread’s tree only after the group finished', async () => {
+        const { order, board, runner } = ordered(job(1), { reclaimId: 'reclaim-1' });
+        const reclaim = runner.reclaimWorktree.bind(runner);
+        runner.reclaimWorktree = async (j) => {
+            order.push('reclaim');
+            return reclaim(j);
+        };
+
+        await drive({ ...board, runner });
+        for (let i = 0; i < 20 && board.board.reclaimAcks.length === 0; i++) await tick();
+
+        expect(order).toEqual(['stage', 'complete', 'finish', 'reclaim']);
+        expect(board.board.reclaimAcks).toEqual(['reclaim-1']);
+    });
+
+    it('tears the group down when the stage held but the verdict never landed', async () => {
+        const logs: string[] = [];
+        const { order, board, runner } = ordered(job(1));
+        board.board.complete = async () => {
+            order.push('complete');
+            throw new BoardHttpError(503, '/api/jobs/x/complete answered 503: busy');
+        };
+
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
+
+        expect(order.at(-1)).toBe('finish');
+        expect(logs.some((l) => l.includes('the succeeded verdict was not delivered'))).toBe(true);
+    });
+
+    // F5 and the stated limit: a board that takes neither the stage nor the verdict leaves the
+    // group and the checkout claim to the next claim's adoption — no finish, no release.
+    it('leaves the group and the claim when neither the stage nor the verdict was accepted', async () => {
+        const logs: string[] = [];
+        const { stack, gates } = stubGateStack({}, { control: true });
+        const { order, board, runner } = ordered(job(1));
+        const released: string[] = [];
+        runner.releaseFence = async (j) => {
+            released.push(j.id);
+        };
+        board.board.stageConclusion = async () => {
+            order.push('stage');
+            throw new BoardHttpError(503, '/api/jobs/x/conclusion answered 503: down');
+        };
+        board.board.complete = async () => {
+            order.push('complete');
+            throw new BoardHttpError(503, '/api/jobs/x/complete answered 503: down');
+        };
+
+        await drive({ ...board, runner, gates, log: (m) => logs.push(m) });
+
+        expect(order).not.toContain('finish');
+        expect(released).toEqual([]);
+        expect(stack.controlClosed).toHaveLength(1);
+        expect(
+            logs.some((l) =>
+                l.includes(
+                    'neither the stage nor the verdict was accepted; the group and checkout claim are left for the next claim to adopt'
+                )
+            )
+        ).toBe(true);
+    });
+
+    it('settles without a verdict when the stage answers the lease lost', async () => {
+        const { order, board, runner } = ordered(job(1), { stageAnswer: 'lost' });
+
+        await drive({ ...board, runner });
+
+        expect(order).toEqual(['stage', 'finish']);
+        expect(board.board.completed).toEqual([]);
     });
 });
