@@ -181,8 +181,11 @@ command -v docker >/dev/null || {
 }
 
 echo 'starting postgres'
-compose up -d postgres >/dev/null 2>&1
-for _ in $(seq 1 30); do
+# --no-recreate: the stack's postgres is shared, and a run from another checkout carries another
+# config hash, so a plain `up` would replace the container mid-write. A replaced one can spend most
+# of a minute in crash recovery, hence the wait.
+compose up -d --no-recreate postgres >/dev/null 2>&1
+for _ in $(seq 1 120); do
     compose exec -T postgres pg_isready -U factory >/dev/null 2>&1 && break
     sleep 1
 done
