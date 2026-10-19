@@ -946,6 +946,8 @@ async function supervise(env = process.env, log = (line) => process.stdout.write
         drained,
         performed: machine.performed(),
         delegated: machine.delegated(),
+        // The volume's record of the ack goes with the pod: the log line is what outlives it.
+        acknowledged: run.reportAcked === serving(run),
     };
     log(`${REPORT_PREFIX}${JSON.stringify(report)}`);
     if (machine.outcome === 'timed_out') return EXIT.deadline;

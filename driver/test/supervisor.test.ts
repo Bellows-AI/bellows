@@ -851,6 +851,8 @@ describe('the supervisor run: its report, delivered until acknowledged', () => {
         expect(driver.reports).toHaveLength(3);
         driver.order(ORDER_FINISH);
         expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        // The logged line says so too: the volume is gone with the pod, the log is what a lane reads.
+        expect(supervised.report()).toMatchObject({ acknowledged: true });
     });
 
     it('redelivers a report whose answer was lost, under the same id', async () => {
@@ -873,7 +875,7 @@ describe('the supervisor run: its report, delivered until acknowledged', () => {
         expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
         expect(driver.reports).toHaveLength(1);
         expect(supervised.kept()).toMatchObject({ report: { outcome: 'completed' }, acknowledged: false });
-        expect(supervised.report()).toMatchObject({ outcome: 'completed' });
+        expect(supervised.report()).toMatchObject({ outcome: 'completed', acknowledged: false });
     });
 
     it('departs under the same report id when a kill arrives while it serves, without waiting for `finish`', async () => {
@@ -888,6 +890,7 @@ describe('the supervisor run: its report, delivered until acknowledged', () => {
         expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
         expect(driver.reports.at(-1)).toMatchObject({ id: driver.reports[0]!.id, serving: false });
         expect(supervised.kept()).toMatchObject({ report: { serving: false }, acknowledged: true });
+        expect(supervised.report()).toMatchObject({ acknowledged: true });
     });
 
     it('departs when a kill lands between a failed delivery and its retry', async () => {
@@ -937,6 +940,7 @@ describe('the supervisor run: its report, delivered until acknowledged', () => {
         expect(Date.now() - ended).toBeLessThan(10_000);
         expect(driver.reports.length).toBeGreaterThan(0);
         expect(supervised.kept()).toMatchObject({ report: { serving: false }, acknowledged: false });
+        expect(supervised.report()).toMatchObject({ acknowledged: false });
     });
 });
 
