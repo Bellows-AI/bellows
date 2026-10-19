@@ -23,6 +23,7 @@ import {
     STEP_KINDS,
     SUPERVISOR_EXIT,
     SUPERVISOR_REPORT_MS,
+    SUPERVISOR_REPORT_PREFIX,
 } from '../src/supervisor-contract.js';
 
 /*
@@ -1032,6 +1033,7 @@ describe('what crosses the mailboxes', () => {
         expect(supervisor.FILES).toEqual(MAILBOX_FILES);
         expect(supervisor.EXIT).toEqual(SUPERVISOR_EXIT);
         expect(supervisor.REPORT_MS).toBe(SUPERVISOR_REPORT_MS);
+        expect(supervisor.REPORT_PREFIX).toBe(SUPERVISOR_REPORT_PREFIX);
         expect(supervisor.STEP_KINDS).toEqual([...STEP_KINDS]);
     });
 

@@ -19,6 +19,7 @@ const LANES = [
         callers: [
             ['hard', 'the hard-kill job'],
             ['lost', 'the lost-together job'],
+            ['final', 'the finalizing job'],
         ],
     },
     {

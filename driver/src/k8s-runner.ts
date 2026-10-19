@@ -372,7 +372,7 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     if (watch.report === null) releaseSteps(host, job);
     const { jobSucceeded } = polled;
     const { exitCode, output, fullLog, logTruncated, vanished, unfinalized, supervisorDeadline } =
-        await readRunnerVerdict(deps, job, jobSucceeded, watch.report);
+        await readRunnerVerdict(deps, job, jobSucceeded, { report: watch.report });
     // The run budget ends the agent through the supervisor (its report, then its exit 124), the
     // kubelet's deadline only a supervisor that stopped doing so: either is the timeout's verdict.
     // A deadline kill deletes the pod too: that is the timeout's verdict, never a loss.
@@ -643,7 +643,8 @@ export function createKubernetesRunner(
         publishGit: (job: BoardJob, githubToken?: string, options?: PublishOptions) =>
             publishGit(deps, job, githubToken, options),
         probeTree: (job: BoardJob, signal?: AbortSignal) => probeTree(deps, job, signal),
-        adopt: (job: BoardJob) => adoptFinishedRunner(deps, job, { scrapeClaudeCloseRead, attachOpencodeOutcome }),
+        adopt: (job: BoardJob, signal?: AbortSignal) =>
+            adoptFinishedRunner(deps, job, { scrapeClaudeCloseRead, attachOpencodeOutcome }, signal),
         snapshotTree: (job: BoardJob, key: string, signal?: AbortSignal) => snapshotReviewTree(deps, job, key, signal),
         runHelper: (job: BoardJob, plan: HelperPlan, call: HelperCall = {}) => runHelper(deps, job, plan, call),
         syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>

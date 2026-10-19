@@ -167,30 +167,37 @@ interface RunnerDeps {
  * unlabelled-network rm below keeps tolerating absent outright — it removes by a NAME that may
  * never have existed.
  */
-async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob): Promise<void> {
+async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal?: AbortSignal): Promise<void> {
+    // An adoption's fence stops at its attempt's stand-down: no call of it is made after (#824).
+    const execDocker: ExecDocker = signal
+        ? async (args, options) => {
+              if (signal.aborted) throw new Error('the fence was abandoned: the attempt stood down');
+              return deps.execDocker(args, options);
+          }
+        : deps.execDocker;
     // The run this attempt adopted is kept, as kubernetes keeps its Job, for a later claim (issue #821).
     const kept = { leaseToken: job.leaseToken, spared: deps.adopted.get(job.leaseToken) };
     const containerIds = await listOtherAttemptsOrThrow(
-        deps.execDocker,
+        execDocker,
         ['ps', '-a', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', LEASE_FORMAT('ID')],
         `the re-claim fence could not list the leftover containers of job ${job.id}`,
         kept
     );
     await removeEachTolerantly(
-        deps.execDocker,
+        execDocker,
         containerIds,
         (id) => ['rm', '-f', id],
         (id) => `the re-claim fence could not remove the leftover container ${id} of job ${job.id}`
     );
 
     const staleNetworks = await listOtherAttemptsOrThrow(
-        deps.execDocker,
+        execDocker,
         ['network', 'ls', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', LEASE_FORMAT('Name')],
         `the re-claim fence could not list the leftover networks of job ${job.id}`,
         kept
     );
     await removeEachTolerantly(
-        deps.execDocker,
+        execDocker,
         staleNetworks,
         (name) => ['network', 'rm', name],
         (name) => `the re-claim fence could not remove the leftover network ${name} of job ${job.id}`
@@ -199,13 +206,13 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob): Promise<void
     // The supervisor's mailboxes of those attempts, after their containers: transient control —
     // a Stop, an answer, a heartbeat — never finished work, which lives on the task volume.
     const staleVolumes = await listOtherAttemptsOrThrow(
-        deps.execDocker,
+        execDocker,
         ['volume', 'ls', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', LEASE_FORMAT('Name')],
         `the re-claim fence could not list the leftover control volumes of job ${job.id}`,
         kept
     );
     await removeEachTolerantly(
-        deps.execDocker,
+        execDocker,
         staleVolumes,
         (name) => ['volume', 'rm', '-f', name],
         (name) => `the re-claim fence could not remove the leftover control volume ${name} of job ${job.id}`
@@ -215,7 +222,7 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob): Promise<void
     // labels at all, so the sweep above cannot see them. Remove the pre-redesign name
     // outright; tolerated absent. This line may be dropped once no pre-redesign leftover
     // can exist any more.
-    await deps.execDocker(['network', 'rm', `factory-job-${job.id}-services`]).catch(() => undefined);
+    await execDocker(['network', 'rm', `factory-job-${job.id}-services`]).catch(() => undefined);
 }
 
 /** The step host of this runner: the channel its supervisor serves, or a refusal naming the missing one. */
@@ -756,7 +763,8 @@ export function createDockerRunner(
         startServices: (job, signal) =>
             startJobServices(job, config, { ...deps, serviceTeardown: (j) => dockerServiceTeardown(deps, j) }, signal),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
-        adopt: (job) => dockerAdopt({ ...deps, fence: (fenced) => dockerReclaimFence(deps, fenced) }, job),
+        adopt: (job, signal) =>
+            dockerAdopt({ ...deps, fence: (fenced) => dockerReclaimFence(deps, fenced, signal) }, job, signal),
         stopAgent: (job) => dockerStopAgent(deps, job),
         recordKill: (job, kill) => recordDockerKill(execDocker, job, kill),
     };

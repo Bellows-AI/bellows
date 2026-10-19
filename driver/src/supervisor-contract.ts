@@ -156,6 +156,37 @@ export interface SupervisorReport {
     serving: boolean;
 }
 
+/** The line the supervisor logs its final report on, last thing before it exits; `REPORT_PREFIX` of supervisor.cjs. */
+export const SUPERVISOR_REPORT_PREFIX = 'FACTORY_SUPERVISOR_REPORT ';
+
+/** The final report as the supervisor logged it: what a claim adopting its group reads back (issue #824). */
+export type FinalReport = Pick<SupervisorReport, 'outcome' | 'cause' | 'agentExit' | 'agentEnd' | 'drained'>;
+
+/** The last final report in a supervisor's log; null when it logged none, or none that parses. */
+export function finalReportOf(log: string): FinalReport | null {
+    const line = log
+        .split('\n')
+        .reverse()
+        .find((l) => l.startsWith(SUPERVISOR_REPORT_PREFIX));
+    if (!line) return null;
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(line.slice(SUPERVISOR_REPORT_PREFIX.length));
+    } catch {
+        return null;
+    }
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const { outcome, cause, agentExit, agentEnd, drained } = parsed as Record<string, unknown>;
+    if (typeof agentEnd !== 'string' || typeof drained !== 'boolean') return null;
+    return {
+        outcome: typeof outcome === 'string' ? outcome : null,
+        cause: typeof cause === 'string' ? cause : null,
+        agentExit: typeof agentExit === 'number' ? agentExit : null,
+        agentEnd,
+        drained,
+    };
+}
+
 /** The routes a supervisor reaches the driver's control endpoint by, beside `GET /control`. */
 export const STEP_PATH = '/step';
 export const REPORT_PATH = '/report';

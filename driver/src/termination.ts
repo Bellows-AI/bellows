@@ -1,5 +1,6 @@
 import { KILL_MARK_PREFIX } from './labels.js';
 import type { RunOutcome } from './runner.js';
+import type { FinalReport } from './supervisor-contract.js';
 
 /**
  * How a started run ended, decided once over both executors: what the executor saw (a runner the
@@ -56,6 +57,23 @@ export function infraLossOf(e: TerminationEvidence): string | null {
     if (e.killedByDriver || e.timedOut) return null;
     if (e.vanished !== null) return e.vanished;
     return e.reported ? null : e.unfinalized;
+}
+
+/**
+ * Whether a supervisor's logged final report says it finalized a run. A group whose driver was lost
+ * before the agent was released reports too (`unlaunched`), and exits 75: nothing ran to finalize.
+ */
+export const reportFinalized = (report: FinalReport | null): boolean =>
+    report !== null && report.agentEnd !== 'unlaunched';
+
+/** The outcome fields a supervisor's final report stands for: the budget, or a full spool it raised itself. */
+export function reportVerdictOf(
+    report: FinalReport | null
+): Partial<Pick<RunOutcome, 'timedOut' | 'artifactSpoolFull'>> {
+    const fields: Partial<Pick<RunOutcome, 'timedOut' | 'artifactSpoolFull'>> = {};
+    if (report?.outcome === 'timed_out') fields.timedOut = true;
+    if (report?.cause === 'artifact_spool_full') fields.artifactSpoolFull = 'the supervisor reported the spool full';
+    return fields;
 }
 
 /**

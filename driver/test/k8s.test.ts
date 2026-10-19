@@ -7,6 +7,7 @@ import {
     GO_MARKER,
     SUPERVISOR_CONTAINER,
     SUPERVISOR_EXIT,
+    SUPERVISOR_REPORT_PREFIX,
     SUPERVISOR_STEPS_MS,
     SUPERVISOR_WINDDOWN_MS,
     type StepRequest,
@@ -975,7 +976,8 @@ const FAKE: Record<string, unknown> = {
             items: [
                 {
                     metadata: { name: podName },
-                    status: { containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
+                    // Ran to its end: an adoption takes no pod still running for a group over (#824).
+                    status: { phase: 'Succeeded', containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
                 },
             ],
         }),
@@ -7062,7 +7064,8 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
             pods: {
                 status: 200,
                 body: JSON.stringify({
-                    items: [{ metadata: { name: podName, deletionTimestamp: 'now' }, status: {} }],
+                    // Deleted under the run: its containers killed, the pod over.
+                    items: [{ metadata: { name: podName, deletionTimestamp: 'now' }, status: { phase: 'Failed' } }],
                 }),
             },
         });
@@ -7182,6 +7185,748 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         });
     });
 
+    /*
+     * Issue #824 (D13): the agent exited, and the lost driver's supervisor is still finalizing — it
+     * drains, reports and ends by itself once its orphan bound passes. The next claim waits that out
+     * and adopts the run instead of sweeping it, and reads the final report the supervisor logged.
+     */
+    const runnerPods = (agent: Record<string, unknown>, supervisor: Record<string, unknown>, metadata = {}) => ({
+        status: 200,
+        body: JSON.stringify({
+            items: [
+                {
+                    metadata: { name: podName, ...metadata },
+                    status: {
+                        phase: 'Running',
+                        containerStatuses: [
+                            { name: AGENT_CONTAINER, state: agent },
+                            { name: SUPERVISOR_CONTAINER, state: supervisor },
+                        ],
+                    },
+                },
+            ],
+        }),
+    });
+    const FINALIZING = runnerPods({ terminated: { exitCode: 0 } }, { running: {} });
+    const FINALIZED = runnerPods({ terminated: { exitCode: 0 } }, { terminated: { exitCode: 0 } });
+    const jobAnswer = (status: Record<string, unknown>): K8sResponse => ({
+        status: 200,
+        body: JSON.stringify({ metadata: { name: priorName }, status }),
+    });
+    const STILL_FINALIZING = jobAnswer({ active: 1 });
+    const reportLog = (report: Record<string, unknown>): K8sResponse => ({
+        status: 200,
+        body: `serving steps\n${SUPERVISOR_REPORT_PREFIX}${JSON.stringify({
+            outcome: 'completed',
+            cause: null,
+            agentExit: 0,
+            agentEnd: 'exit',
+            drained: true,
+            ...report,
+        })}\n`,
+    });
+    const isSupervisorLogRead = (path: string): boolean =>
+        path.startsWith(`/api/v1/namespaces/${namespace}/pods/${podName}/log`) &&
+        path.includes(`container=${SUPERVISOR_CONTAINER}`);
+    const isRunnerPodList = (path: string): boolean =>
+        path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=');
+    const isPriorStatusRead = (method: K8sMethod, path: string): boolean =>
+        method === 'GET' && path.split('?')[0] === jobPath(namespace, priorName);
+
+    /**
+     * withRunners over one earlier runner `item`, whose own status reads answer `statuses` in turn
+     * (the last from then on) — a terminal one lands on the listed Job too, as the apiserver lists
+     * it — whose supervisor log answers `supervisorLog`, and whose `onPoll` runs on each status read.
+     */
+    const earlier = ({
+        item = priorItem({ active: 1 }),
+        statuses = [STILL_FINALIZING],
+        // The runner pod as the Job is: its supervisor running until the Job lists over.
+        pods = () => ('succeeded' in item.status || 'failed' in item.status ? FINALIZED : FINALIZING),
+        supervisorLog,
+        onPoll,
+    }: {
+        item?: ReturnType<typeof priorItem>;
+        statuses?: K8sResponse[];
+        pods?: K8sResponse | (() => K8sResponse);
+        supervisorLog?: K8sResponse | (() => K8sResponse);
+        onPoll?: (poll: number, request: K8sRequest) => void | Promise<void>;
+    } = {}) => {
+        const base = withRunners([item], { pods: typeof pods === 'function' ? FINALIZING : pods });
+        let polls = 0;
+        const request: K8sRequest = async (method, path, body) => {
+            if (typeof pods === 'function' && method === 'GET' && isRunnerPodList(path)) {
+                base.calls.push({ method, path, body });
+                return pods();
+            }
+            if (isPriorStatusRead(method, path)) {
+                base.calls.push({ method, path, body });
+                const answer = statuses[Math.min(polls, statuses.length - 1)]!;
+                polls += 1;
+                await onPoll?.(polls, request);
+                const status =
+                    (answer.status === 200 ? (JSON.parse(answer.body) as { status?: object } | null)?.status : null) ??
+                    {};
+                if ('succeeded' in status || 'failed' in status) item.status = { startTime: START, ...status };
+                return answer;
+            }
+            if (method === 'GET' && supervisorLog && isSupervisorLogRead(path)) {
+                base.calls.push({ method, path, body });
+                return typeof supervisorLog === 'function' ? supervisorLog() : supervisorLog;
+            }
+            return base.request(method, path, body);
+        };
+        const polled = () => base.calls.filter((call) => isPriorStatusRead(call.method as K8sMethod, call.path));
+        return { request, calls: base.calls, polled };
+    };
+    const deletedPrior = (calls: Call[]): boolean =>
+        calls.some(
+            (call) =>
+                call.method === 'DELETE' &&
+                (call.path.startsWith(jobPath(namespace, priorName)) ||
+                    call.path.endsWith(`/secrets/${secretName(job)}`))
+        );
+    const claimedAt = (calls: Call[]): number =>
+        calls.findIndex((call) => call.method === 'POST' && call.path === configmapsPath);
+
+    it('waits out a supervisor still finalizing after its agent exited, then adopts its run (#824)', async () => {
+        const { request, calls, polled } = earlier({
+            statuses: [STILL_FINALIZING, STILL_FINALIZING, jobAnswer({ succeeded: 1 })],
+        });
+
+        const adopted = await runner(request).adopt(adopter);
+
+        expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0, started: true, sessionId: SESSION } });
+        expect(polled()).toHaveLength(3);
+        // The claim is taken before the wait: no other contender reads or sweeps the group alongside.
+        expect(claimedAt(calls)).toBeGreaterThanOrEqual(0);
+        expect(calls.indexOf(polled()[0]!)).toBeGreaterThan(claimedAt(calls));
+        expect(
+            calls.some((call) => call.method === 'DELETE' && call.path.startsWith(jobPath(namespace, priorName)))
+        ).toBe(false);
+        const held = await request('GET', claimPathFor(job.id));
+        expect(JSON.parse(held.body)).toMatchObject({ data: { holder: NEW_TOKEN } });
+    });
+
+    // The docker twin's bound: a supervisor that never ends in its own wind-down is no run to adopt.
+    it('leaves a supervisor that never finalizes in the bound to the sync’s sweep, its claim given back', async () => {
+        const { request, calls, polled } = earlier();
+
+        expect(await runner(request).adopt(adopter)).toBeNull();
+
+        expect(polled().length).toBeGreaterThan(1);
+        expect(claimedAt(calls)).toBeGreaterThanOrEqual(0);
+        expect(deletedPrior(calls)).toBe(false);
+        expect((await request('GET', claimPathFor(job.id))).status).toBe(404);
+    });
+
+    // Failure injection: status reads that never answer are no confirmation the supervisor hangs.
+    it('stands down, deleting nothing, when the finalizing runner cannot be read to its end', async () => {
+        const { request, calls } = earlier({ statuses: [{ status: 503, body: 'unavailable' }] });
+
+        await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(deletedPrior(calls)).toBe(false);
+        expect((await request('GET', claimPathFor(job.id))).status).toBe(404);
+    });
+
+    // Failure injection: a pod list that cannot be read cannot tell an exited agent from a running one.
+    it('stands down, claiming nothing, when it cannot read whether the agent of a running Job ended', async () => {
+        const { request, calls } = earlier({ pods: { status: 503, body: 'unavailable' } });
+
+        await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(claimedAt(calls)).toBe(-1);
+        expect(deletedPrior(calls)).toBe(false);
+    });
+
+    it('takes a runner Job deleted while its supervisor finalized as taken away, its claim given back', async () => {
+        const { request, calls } = earlier({
+            statuses: [STILL_FINALIZING, { status: 404, body: '{"kind":"Status","reason":"NotFound"}' }],
+        });
+
+        expect(await runner(request).adopt(adopter)).toBeNull();
+
+        expect(claimedAt(calls)).toBeGreaterThanOrEqual(0);
+        expect((await request('GET', claimPathFor(job.id))).status).toBe(404);
+    });
+
+    // A pod being deleted is still the run's: one whose Job has not ended is waited out like any
+    // other, and one that never ends in the bound is the sweep's, its claim given back.
+    it('waits out a runner whose pod is being deleted while its Job has not ended', async () => {
+        const { request, calls } = earlier({
+            pods: runnerPods(
+                { terminated: { exitCode: 0 } },
+                { terminated: { exitCode: 137 } },
+                { deletionTimestamp: 'now' }
+            ),
+        });
+
+        expect(await runner(request).adopt(adopter)).toBeNull();
+
+        expect(claimedAt(calls)).toBeGreaterThanOrEqual(0);
+        expect(deletedPrior(calls)).toBe(false);
+        expect((await request('GET', claimPathFor(job.id))).status).toBe(404);
+    });
+
+    // A Stop or a lost lease mid-wait: the abandoned adoption reads and deletes nothing more.
+    it('abandons the wait when the attempt stands down, deleting nothing', async () => {
+        const standDown = new AbortController();
+        const { request, calls, polled } = earlier({
+            onPoll: (poll) => {
+                if (poll === 2) standDown.abort();
+            },
+        });
+
+        await expect(runner(request).adopt(adopter, standDown.signal)).rejects.toThrow(/abandoned/);
+
+        expect(polled()).toHaveLength(2);
+        expect(deletedPrior(calls)).toBe(false);
+    });
+
+    // A newer claim took the checkout while this one waited: the run is no longer this attempt's.
+    it('stands down, deleting nothing, when its claim is taken over while the supervisor finalized', async () => {
+        const OTHER = '44444444-4444-4444-8444-444444444444';
+        const { request, calls } = earlier({
+            statuses: [STILL_FINALIZING, jobAnswer({ succeeded: 1 })],
+            onPoll: async (poll, req) => {
+                if (poll !== 2) return;
+                await req('DELETE', claimPathFor(job.id));
+                await req('POST', configmapsPath, {
+                    metadata: { name: `factory-job-${job.id}-claim` },
+                    data: { holder: OTHER, claimSeq: '3' },
+                });
+            },
+        });
+
+        await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(deletedPrior(calls)).toBe(false);
+        const held = await request('GET', claimPathFor(job.id));
+        expect(JSON.parse(held.body)).toMatchObject({ data: { holder: OTHER } });
+    });
+
+    it('adopts a full spool the supervisor raised itself, from its final report (#824)', async () => {
+        const { request } = earlier({
+            item: priorItem({ succeeded: 1 }),
+            supervisorLog: reportLog({ outcome: 'failed', cause: 'artifact_spool_full', agentEnd: 'killed' }),
+        });
+
+        const adopted = await runner(request).adopt(adopter);
+
+        expect(adopted?.outcome.artifactSpoolFull).toBe('the supervisor reported the spool full');
+        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+    });
+
+    // The report is the supervisor's finalization: a crash after it does not unsay it.
+    it('adopts a run whose supervisor crashed after logging its final report', async () => {
+        const { request } = earlier({
+            item: priorItem({ failed: 1 }),
+            pods: runnerPods({ terminated: { exitCode: 0 } }, { terminated: { exitCode: 70 } }),
+            supervisorLog: reportLog({}),
+        });
+
+        expect(await runner(request).adopt(adopter)).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0 } });
+    });
+
+    // A group whose driver was lost before it released the agent reports too, and exits 75: no run.
+    it('never adopts a group whose logged report says its agent was never launched', async () => {
+        const { request } = earlier({
+            item: priorItem({ failed: 1 }),
+            pods: runnerPods({ terminated: { exitCode: 0 } }, { terminated: { exitCode: SUPERVISOR_EXIT.lost } }),
+            supervisorLog: reportLog({
+                outcome: 'lost',
+                cause: 'driver_lost',
+                agentExit: null,
+                agentEnd: 'unlaunched',
+            }),
+        });
+
+        expect(await runner(request).adopt(adopter)).toBeNull();
+    });
+
+    // Failure injection: a log the apiserver would not serve is no answer — not "no report", which
+    // would make a supervisor that reported and then crashed a loss, and the run swept unread.
+    it('stands down, deleting nothing, when the supervisor log cannot be read', async () => {
+        const { request, calls } = earlier({
+            item: priorItem({ failed: 1 }),
+            pods: runnerPods({ terminated: { exitCode: 0 } }, { terminated: { exitCode: 70 } }),
+            supervisorLog: { status: 503, body: 'unavailable' },
+        });
+
+        await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(deletedPrior(calls)).toBe(false);
+    });
+
+    it('reads the supervisor log again after a refusal, and adopts the run it reported', async () => {
+        let refusals = 1;
+        const { request } = earlier({
+            item: priorItem({ failed: 1 }),
+            pods: runnerPods({ terminated: { exitCode: 0 } }, { terminated: { exitCode: 70 } }),
+            supervisorLog: () => (refusals-- > 0 ? { status: 503, body: 'unavailable' } : reportLog({})),
+        });
+
+        expect(await runner(request).adopt(adopter)).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0 } });
+    });
+
+    // A Stop during a finished run's close-time read: the abandoned adoption sweeps and deletes nothing.
+    it('abandons the adoption of a finished run when the attempt stands down during its read', async () => {
+        const standDown = new AbortController();
+        const { request: base, calls } = earlier({ item: priorItem({ succeeded: 1 }) });
+        const request: K8sRequest = (method, path, body) => {
+            if (method === 'GET' && isAgentLogRead(path)) standDown.abort();
+            return base(method, path, body);
+        };
+
+        await expect(runner(request).adopt(adopter, standDown.signal)).rejects.toThrow(/abandoned/);
+
+        expect(deletedPrior(calls)).toBe(false);
+    });
+
+    // The bound is the wind-down in time: status reads that each take long end it sooner than polls would.
+    it('ends the wait at the wind-down deadline however slowly the status reads answer', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+            const { request, polled } = earlier({
+                onPoll: () => {
+                    vi.setSystemTime(Date.now() + 60_000);
+                },
+            });
+
+            expect(await runner(request).adopt(adopter)).toBeNull();
+
+            expect(polled().length).toBeLessThanOrEqual(Math.ceil(SUPERVISOR_WINDDOWN_MS / 60_000) + 1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    // The deadline bounds the reads too: an apiserver that never answers spends the wind-down, not
+    // the verdict reads' own retries on top of every poll.
+    it('stands down at the wind-down deadline when the status reads never answer', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+            const { request, calls, polled } = earlier({
+                statuses: [{ status: 503, body: 'unavailable' }],
+                onPoll: () => {
+                    vi.setSystemTime(Date.now() + 30_000);
+                },
+            });
+
+            await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+            expect(polled().length).toBeLessThanOrEqual(Math.ceil(SUPERVISOR_WINDDOWN_MS / 30_000) + 1);
+            expect(deletedPrior(calls)).toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    // A Stop mid-sweep: the abandoned adoption deletes nothing past the request in flight.
+    it('stops deleting the moment the attempt stands down during its sweep', async () => {
+        const OLDER = '55555555-5555-4555-8555-555555555555';
+        const olderPair = { ...job, leaseToken: OLDER };
+        const standDown = new AbortController();
+        const { request: base, calls } = withRunners([
+            priorItem({ succeeded: 1 }),
+            priorItem({ succeeded: 1 }, '0', runnerJobName(olderPair), OLDER),
+        ]);
+        const request: K8sRequest = (method, path, body) => {
+            if (method === 'DELETE' && path.endsWith(`/secrets/${secretName(olderPair)}`)) standDown.abort();
+            return base(method, path, body);
+        };
+
+        await expect(runner(request).adopt(adopter, standDown.signal)).rejects.toThrow(/abandoned/);
+
+        const deletes = calls.filter((call) => call.method === 'DELETE' && !call.path.startsWith(configmapsPath));
+        const aborted = deletes.findIndex((call) => call.path.endsWith(`/secrets/${secretName(olderPair)}`));
+        expect(aborted).toBeGreaterThanOrEqual(0);
+        expect(deletes.slice(aborted + 1)).toEqual([]);
+    });
+
+    // The Job controller marks a Job failed (FailureTarget) before its pod is over: a supervisor still
+    // running is still finalizing, its report still to come — waited out, never read early.
+    it('waits out a Job already marked failed while its supervisor still runs, then reads its report', async () => {
+        let podReads = 0;
+        let ended = false;
+        const { request, calls } = earlier({
+            item: priorItem({ failed: 1, conditions: [{ type: 'FailureTarget', reason: 'PodFailurePolicy' }] }),
+            statuses: [jobAnswer({ failed: 1 })],
+            pods: () => {
+                podReads += 1;
+                ended = podReads > 2;
+                return ended
+                    ? runnerPods({ terminated: { exitCode: 137 } }, { terminated: { exitCode: 0 } })
+                    : runnerPods({ terminated: { exitCode: 137 } }, { running: {} });
+            },
+            supervisorLog: () =>
+                ended
+                    ? reportLog({ outcome: 'failed', cause: 'artifact_spool_full', agentEnd: 'killed' })
+                    : { status: 200, body: 'serving steps\n' },
+        });
+
+        const adopted = await runner(request).adopt(adopter);
+
+        expect(adopted?.outcome.artifactSpoolFull).toBe('the supervisor reported the spool full');
+        expect(podReads).toBeGreaterThan(2);
+        const secretGone = calls.findIndex(
+            (call) => call.method === 'DELETE' && call.path.endsWith(`/secrets/${secretName(job)}`)
+        );
+        expect(secretGone).toBeGreaterThan(-1);
+    });
+
+    // Failure injection: a listing the apiserver refused for a moment is read again, never taken for
+    // "nothing to adopt" or a reason to run afresh — whose fence would sweep a finalizing group unread.
+    it('lists the earlier runners again after a refusal, and adopts the one it finds', async () => {
+        let refusals = 1;
+        const { request: base } = earlier({ item: priorItem({ succeeded: 1 }) });
+        const request: K8sRequest = (method, path, body) =>
+            method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`) && refusals-- > 0
+                ? Promise.resolve({ status: 503, body: 'unavailable' })
+                : base(method, path, body);
+
+        expect(await runner(request).adopt(adopter)).toMatchObject({ claimSeq: 1 });
+    });
+
+    it('stands down, claiming nothing, when the earlier runners cannot be listed', async () => {
+        const { request: base, calls } = earlier();
+        const request: K8sRequest = (method, path, body) =>
+            method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)
+                ? Promise.resolve({ status: 503, body: 'unavailable' })
+                : base(method, path, body);
+
+        await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(claimedAt(calls)).toBe(-1);
+    });
+
+    // A pod the kubelet rejected before any container started has no supervisor log to read (400):
+    // no report, and a group nothing finalized — the run redone in its session, never a takeover
+    // that stands down again and again.
+    it('takes a runner pod rejected before its supervisor started as taken away, not unreadable', async () => {
+        const rejected = {
+            status: 200,
+            body: JSON.stringify({
+                items: [
+                    {
+                        metadata: { name: podName },
+                        status: { phase: 'Failed', reason: 'UnexpectedAdmissionError', message: 'device unavailable' },
+                    },
+                ],
+            }),
+        };
+        const { request, calls } = earlier({
+            item: priorItem({ failed: 1 }),
+            pods: rejected,
+            supervisorLog: { status: 400, body: 'container "supervisor" in pod is not available' },
+        });
+
+        expect(await runner(request).adopt(adopter)).toBeNull();
+
+        expect(deletedPrior(calls)).toBe(false);
+        expect((await request('GET', claimPathFor(job.id))).status).toBe(404);
+    });
+
+    // The lost driver can still record why it ended the run while this claim waits: the record on
+    // the Job as it ends is the one read, as docker reads its markers after the wait.
+    it('reads the kill record the Job carries once it ends, not the one it was listed with', async () => {
+        const { request } = earlier({
+            statuses: [
+                STILL_FINALIZING,
+                {
+                    status: 200,
+                    body: JSON.stringify({
+                        metadata: { annotations: { 'factory.kill.artifact_spool_full': '2000000000 bytes' } },
+                        status: { succeeded: 1 },
+                    }),
+                },
+            ],
+        });
+
+        const adopted = await runner(request).adopt(adopter);
+
+        expect(adopted?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
+    });
+
+    // Failure injection: a pod list that answers 200 with no list in it proves no pod over.
+    it('stands down, deleting nothing, when the pod list of a finished Job answers malformed', async () => {
+        let podReads = 0;
+        const { request, calls } = earlier({
+            statuses: [jobAnswer({ succeeded: 1 })],
+            pods: () => (++podReads === 1 ? FINALIZING : { status: 200, body: '{"kind":"Status"}' }),
+        });
+
+        await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(deletedPrior(calls)).toBe(false);
+    });
+
+    it('stands down, deleting nothing, when the pod list of a finished Job answers null', async () => {
+        let podReads = 0;
+        const { request, calls } = earlier({
+            statuses: [jobAnswer({ succeeded: 1 })],
+            pods: () => (++podReads === 1 ? FINALIZING : { status: 200, body: 'null' }),
+        });
+
+        await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(deletedPrior(calls)).toBe(false);
+    });
+
+    // Once an earlier run is found, nothing unexpected may fall through to a fresh run, whose
+    // sync's fence would sweep that run unread: any throw stands the attempt down.
+    it('stands down, deleting nothing, on any unexpected throw once an earlier run is found', async () => {
+        const { request: base, calls } = earlier({ item: priorItem({ succeeded: 1 }) });
+        const request: K8sRequest = (method, path, body) =>
+            method === 'POST' && path === configmapsPath
+                ? Promise.reject(new TypeError('something unforeseen'))
+                : base(method, path, body);
+
+        const adopting = runner(request).adopt(adopter);
+
+        await expect(adopting).rejects.toBeInstanceOf(AdoptionBlocked);
+        await expect(adopting).rejects.toThrow('something unforeseen');
+        expect(deletedPrior(calls)).toBe(false);
+    });
+
+    // A supervisor the kubelet could not start reads terminated (`StartError`), never having run.
+    it('takes a supervisor that failed to start as never having run, not as an unreadable log', async () => {
+        const { request, calls } = earlier({
+            item: priorItem({ failed: 1 }),
+            pods: {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        {
+                            metadata: { name: podName },
+                            status: {
+                                phase: 'Failed',
+                                containerStatuses: [
+                                    { name: AGENT_CONTAINER, state: { waiting: { reason: 'PodInitializing' } } },
+                                    {
+                                        name: SUPERVISOR_CONTAINER,
+                                        state: {
+                                            terminated: { exitCode: 128, reason: 'StartError', message: 'exec failed' },
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                }),
+            },
+            supervisorLog: { status: 400, body: 'container "supervisor" in pod is not available' },
+        });
+
+        expect(await runner(request).adopt(adopter)).toBeNull();
+
+        expect(deletedPrior(calls)).toBe(false);
+        expect((await request('GET', claimPathFor(job.id))).status).toBe(404);
+    });
+
+    it('stands down, claiming nothing, when the earlier runner list answers malformed', async () => {
+        const { request: base, calls } = earlier();
+        const request: K8sRequest = (method, path, body) =>
+            method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)
+                ? Promise.resolve({ status: 200, body: '{"kind":"Status"}' })
+                : base(method, path, body);
+
+        await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(claimedAt(calls)).toBe(-1);
+    });
+
+    /*
+     * Class (a), #824: a read that is not confirmed is never taken for "none", "running" or "gone".
+     * Each row answers one read of the adoption with something that proves nothing; the adoption
+     * stands down, and nothing of the earlier run is deleted.
+     */
+    const ENDED_FAILED = runnerPods({ terminated: { exitCode: 0 } }, { terminated: { exitCode: 0 } });
+    const nthPodList = (n: number, answer: K8sResponse) => {
+        let reads = 0;
+        return () => (++reads === n ? answer : ENDED_FAILED);
+    };
+    it.each<[string, Parameters<typeof earlier>[0], ((base: K8sRequest) => K8sRequest)?]>([
+        ['a finalizing Job read answering {}', { statuses: [{ status: 200, body: '{}' }] }],
+        [
+            'a pod not over that says nothing of its supervisor',
+            {
+                item: priorItem({ succeeded: 1 }),
+                statuses: [jobAnswer({ succeeded: 1 })],
+                pods: {
+                    status: 200,
+                    body: JSON.stringify({
+                        items: [
+                            {
+                                metadata: { name: podName },
+                                status: {
+                                    phase: 'Running',
+                                    containerStatuses: [
+                                        { name: AGENT_CONTAINER, state: { terminated: { exitCode: 0 } } },
+                                    ],
+                                },
+                            },
+                        ],
+                    }),
+                },
+            },
+        ],
+        [
+            'a runner Job list with a null entry',
+            {},
+            (base) => (method, path, body) =>
+                method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)
+                    ? Promise.resolve({ status: 200, body: '{"items":[null]}' })
+                    : base(method, path, body),
+        ],
+        [
+            'the verdict pod list answering {}',
+            { item: priorItem({ failed: 1 }), pods: nthPodList(3, { status: 200, body: '{}' }) },
+        ],
+        [
+            'an agent log that never answers',
+            { item: priorItem({ succeeded: 1 }) },
+            (base) => (method, path, body) =>
+                method === 'GET' && isAgentLogRead(path)
+                    ? Promise.resolve({ status: 503, body: 'unavailable' })
+                    : base(method, path, body),
+        ],
+        [
+            "the sweep's pod list answering {}",
+            { item: priorItem({ succeeded: 1 }) },
+            (base) => (method, path, body) =>
+                method === 'GET' &&
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('factory.lease!=')
+                    ? Promise.resolve({ status: 200, body: '{}' })
+                    : base(method, path, body),
+        ],
+    ])('stands down, deleting nothing, on %s', async (_what, setup, wrap) => {
+        const { request: base, calls } = earlier(setup);
+        const request = wrap ? wrap(base) : base;
+
+        await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(deletedPrior(calls)).toBe(false);
+    });
+
+    it('reads the agent log again after a refusal, and adopts the run with its output', async () => {
+        let refusals = 1;
+        const { request: base } = earlier({ item: priorItem({ succeeded: 1 }) });
+        const request: K8sRequest = (method, path, body) =>
+            method === 'GET' && isAgentLogRead(path) && refusals-- > 0
+                ? Promise.resolve({ status: 503, body: 'unavailable' })
+                : base(method, path, body);
+
+        expect((await runner(request).adopt(adopter))?.outcome.output).toContain('did the work');
+    });
+
+    // A Stop while the earlier runners are read: no claim is taken, so no stale claim is deleted.
+    it('takes no claim once the attempt stands down during discovery', async () => {
+        const standDown = new AbortController();
+        const { request: base, calls } = earlier({ item: priorItem({ succeeded: 1 }) });
+        const request: K8sRequest = (method, path, body) => {
+            if (method === 'GET' && isRunnerPodList(path)) standDown.abort();
+            return base(method, path, body);
+        };
+
+        await expect(runner(request).adopt(adopter, standDown.signal)).rejects.toThrow(/abandoned/);
+
+        expect(calls.some((call) => call.path.startsWith(configmapsPath) && call.method !== 'GET')).toBe(false);
+    });
+
+    // A node drained mid-finalization: the pod is terminating, its agent exited, its supervisor still
+    // running — the group a claim must wait out, never sweep (#824).
+    it('waits out a supervisor finalizing on a terminating pod, then adopts its run', async () => {
+        let ended = false;
+        const terminating = { deletionTimestamp: 'now' };
+        const { request, calls } = earlier({
+            statuses: [STILL_FINALIZING, jobAnswer({ succeeded: 1 })],
+            pods: () =>
+                ended
+                    ? runnerPods({ terminated: { exitCode: 0 } }, { terminated: { exitCode: 0 } }, terminating)
+                    : runnerPods({ terminated: { exitCode: 0 } }, { running: {} }, terminating),
+            onPoll: (poll) => {
+                ended = poll >= 2;
+            },
+            supervisorLog: reportLog({}),
+        });
+
+        const adopted = await runner(request).adopt(adopter);
+
+        expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0, started: true, sessionId: SESSION } });
+        expect(adopted?.outcome.output).toContain('did the work');
+        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect(calls.some((call) => isSupervisorLogRead(call.path))).toBe(true);
+        expect(claimedAt(calls)).toBeGreaterThanOrEqual(0);
+    });
+
+    // The drain deleted the pod after its supervisor finalized: it is still listed, being deleted,
+    // its report readable — the run it finished, read as such, never taken for a pod gone.
+    it('adopts the run of a pod being deleted after its supervisor reported, with the report’s verdict', async () => {
+        const { request, calls } = earlier({
+            item: priorItem({ failed: 1 }),
+            statuses: [jobAnswer({ failed: 1 })],
+            pods: runnerPods(
+                { terminated: { exitCode: 137 } },
+                { terminated: { exitCode: 0 } },
+                { deletionTimestamp: 'now' }
+            ),
+            supervisorLog: reportLog({
+                outcome: 'failed',
+                cause: 'artifact_spool_full',
+                agentExit: 137,
+                agentEnd: 'killed',
+            }),
+        });
+
+        const adopted = await runner(request).adopt(adopter);
+
+        expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 137, started: true, sessionId: SESSION } });
+        expect(adopted?.outcome.artifactSpoolFull).toBe('the supervisor reported the spool full');
+        expect(adopted?.outcome.output).toContain('did the work');
+        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        // The read run's Job is kept for a later claim (#821); only its Secrets go.
+        expect(
+            calls.some((call) => call.method === 'DELETE' && call.path.startsWith(jobPath(namespace, priorName)))
+        ).toBe(false);
+    });
+
+    it.each([
+        ['a 400 that is no never-started refusal stands down', 'Bad Request: invalid tailLines', true],
+        ['a never-started agent is no log', 'container "agent" in pod "p" is waiting to start: PodInitializing', false],
+    ])('reads an agent log answered 400: %s', async (_what, body, blocked) => {
+        const { request: base, calls } = earlier({ item: priorItem({ succeeded: 1 }) });
+        const request: K8sRequest = (method, path, b) =>
+            method === 'GET' && isAgentLogRead(path)
+                ? Promise.resolve({ status: 400, body: JSON.stringify({ kind: 'Status', message: body }) })
+                : base(method, path, b);
+
+        const adopting = runner(request).adopt(adopter);
+
+        if (blocked) {
+            await expect(adopting).rejects.toBeInstanceOf(AdoptionBlocked);
+            expect(deletedPrior(calls)).toBe(false);
+        } else {
+            expect((await adopting)?.outcome.output).toBe('');
+        }
+    });
+
+    // Discovery is contained too: a malformed field anywhere in what it reads stands the attempt down.
+    it('stands down, claiming nothing, when discovery meets a malformed pod', async () => {
+        const { request, calls } = earlier({
+            pods: {
+                status: 200,
+                body: JSON.stringify({ items: [{ metadata: { name: podName }, status: { containerStatuses: 'x' } }] }),
+            },
+        });
+
+        await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(claimedAt(calls)).toBe(-1);
+    });
+
     it('answers null when this job has no earlier runner', async () => {
         const { request } = withRunners([]);
         expect(await runner(request).adopt(adopter)).toBeNull();
@@ -7201,6 +7946,12 @@ describe('the bound a runner pod outlives a lost driver by', () => {
         expect(orphanBoundMs(loadDriverConfig({ DRIVER_LEASE_SECONDS: '120' }))).toBe(30_000);
         expect(orphanBoundMs(loadDriverConfig({ DRIVER_LEASE_SECONDS: '300' }))).toBe(75_000);
         expect(orphanBoundMs(loadDriverConfig({ DRIVER_LEASE_SECONDS: '3600' }))).toBe(90_000);
+    });
+
+    // Issue #824: the adopting claim waits out a finalizing supervisor for its wind-down, longer than
+    // the most an orphaned one keeps serving steps — a lost driver's group ends inside that wait.
+    it('is shorter than the wind-down an adopting claim waits a finalizing supervisor out for', () => {
+        expect(orphanBoundMs(loadDriverConfig({ DRIVER_LEASE_SECONDS: '3600' }))).toBeLessThan(SUPERVISOR_WINDDOWN_MS);
     });
 
     it('reaches the supervisor as its orphan bound and the exporter as its drain give-up', () => {

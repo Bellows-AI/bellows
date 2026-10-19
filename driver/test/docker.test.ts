@@ -22,6 +22,7 @@ import {
 } from '../src/docker.js';
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
 import {
+    AdoptionBlocked,
     currentActivity,
     reportTail,
     type RunOutcome,
@@ -61,6 +62,7 @@ import {
     MAILBOXES,
     SUPERVISOR_ENV,
     SUPERVISOR_EXIT,
+    SUPERVISOR_REPORT_PREFIX,
     type StepKind,
     type StepRequest,
     type StepResult,
@@ -5160,6 +5162,14 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             if (args[0] === 'wait') return Promise.resolve({ stdout: `${supervisorExit}\n` });
             if (args[0] === 'ps') return Promise.resolve({ stdout: args.includes('status=exited') ? ps : FENCE_PS });
             if (args[0] === 'volume' && args[1] === 'ls') return Promise.resolve({ stdout: FENCE_VOLUMES });
+            // No kill marker recorded: the daemon's own refusal for a volume that does not exist.
+            if (args[0] === 'volume' && args[1] === 'inspect') {
+                return Promise.reject(
+                    Object.assign(new Error('docker volume inspect exited 1'), {
+                        stderr: 'Error response from daemon: get factory-kill: no such volume',
+                    })
+                );
+            }
             if (args[0] === 'inspect') {
                 return Promise.resolve({
                     stdout: '{"Status":"exited","ExitCode":0,"StartedAt":"2026-10-01T00:00:00Z"}\n',
@@ -5179,6 +5189,24 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         calls
             .filter((args) => args[0] === 'rm' || (args[0] === 'volume' && args[1] === 'rm'))
             .map((args) => args.at(-1));
+    /** Whether the runner's own log was read, or anything removed — the supervisor's report is read first. */
+    const readOrRemoved = (calls: string[][]) =>
+        calls.some((args) => (args[0] === 'logs' && !args.includes(supervisorName(job))) || args[0] === 'rm');
+    /** The daemon of `daemon`, whose earlier supervisor logged `report` as its last line. */
+    const withReport =
+        (base: (args: string[]) => Promise<{ stdout: string }>, report: Record<string, unknown>) => (args: string[]) =>
+            args[0] === 'logs' && args.includes(supervisorName(job))
+                ? Promise.resolve({
+                      stdout: `serving steps\n${SUPERVISOR_REPORT_PREFIX}${JSON.stringify({
+                          outcome: 'completed',
+                          cause: null,
+                          agentExit: 0,
+                          agentEnd: 'exit',
+                          drained: true,
+                          ...report,
+                      })}\n`,
+                  })
+                : base(args);
 
     // Issue #821 (D1): the read run is the evidence a later claim adopts again if this one is lost
     // before its verdict lands — kept, like the kubernetes Job the adoption spares, until the
@@ -5238,7 +5266,8 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         expect(adopted?.outcome).not.toHaveProperty('infraLoss');
     });
 
-    // Issue #796: a run read but never swept is no adoption — the attempt runs the job itself.
+    // Issue #796: a run read but never swept is no adoption — and, like the kubernetes twin, the
+    // attempt stands down to its lease rather than run afresh over that run's tree (#824).
     it('rejects when an older leftover cannot be swept', async () => {
         const { exec: base, calls, logs } = daemon(listing());
         const exec = (args: string[]) => {
@@ -5247,7 +5276,9 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             return Promise.reject(new Error('the daemon answered 503'));
         };
 
-        await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter)).rejects.toThrow('the daemon answered 503');
+        const adopting = dockerRunner(exec, { spawn: logs }).adopt(adopter);
+        await expect(adopting).rejects.toBeInstanceOf(AdoptionBlocked);
+        await expect(adopting).rejects.toThrow('the daemon answered 503');
 
         const read = calls.findIndex((args) => args[0] === 'logs');
         expect(read).toBeGreaterThanOrEqual(0);
@@ -5274,14 +5305,195 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const { exec, calls, logs } = daemon(listing(), '137');
 
         expect(await dockerRunner(exec, { spawn: logs }).adopt(adopter)).toBeNull();
-        expect(calls.some((args) => args[0] === 'logs' || args[0] === 'rm')).toBe(false);
+        expect(readOrRemoved(calls)).toBe(false);
     });
 
     it('adopts nothing when the earlier supervisor lost its driver before it released the agent', async () => {
         const { exec, calls, logs } = daemon(listing(), String(SUPERVISOR_EXIT.lost));
 
         expect(await dockerRunner(exec, { spawn: logs }).adopt(adopter)).toBeNull();
-        expect(calls.some((args) => args[0] === 'logs' || args[0] === 'rm')).toBe(false);
+        expect(readOrRemoved(calls)).toBe(false);
+    });
+
+    // A group whose driver was lost before it released the agent reports too, and exits 75: no run.
+    it('adopts nothing when the lost supervisor logged that its agent was never launched', async () => {
+        const { exec: base, calls, logs } = daemon(listing(), String(SUPERVISOR_EXIT.lost));
+        const exec = withReport(base, {
+            outcome: 'lost',
+            cause: 'driver_lost',
+            agentExit: null,
+            agentEnd: 'unlaunched',
+        });
+
+        expect(await dockerRunner(exec, { spawn: logs }).adopt(adopter)).toBeNull();
+        expect(readOrRemoved(calls)).toBe(false);
+    });
+
+    // Issue #824: the report is the supervisor's finalization — a crash after it does not unsay it.
+    it('adopts a run whose supervisor crashed after logging its final report', async () => {
+        const { exec: base, logs } = daemon(listing(), String(SUPERVISOR_EXIT.failed));
+
+        const adopted = await dockerRunner(withReport(base, {}), { spawn: logs }).adopt(adopter);
+
+        expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0, started: true } });
+        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+    });
+
+    /** The daemon of `daemon`, refusing the earlier supervisor's `docker logs` with `stderr`. */
+    const refusingSupervisorLog =
+        (base: (args: string[]) => Promise<{ stdout: string }>, stderr: string) => (args: string[]) =>
+            args[0] === 'logs' && args.includes(supervisorName(job))
+                ? Promise.reject(Object.assign(new Error('docker logs exited 1'), { stderr }))
+                : base(args);
+
+    // Failure injection: a supervisor log the daemon would not serve is no answer — not "no report".
+    it('stands down, removing nothing, when the earlier supervisor log cannot be read', async () => {
+        const { exec: base, calls, logs } = daemon(listing(), String(SUPERVISOR_EXIT.failed));
+        const exec = refusingSupervisorLog(base, 'Error response from daemon: i/o timeout');
+
+        await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+        expect(readOrRemoved(calls)).toBe(false);
+    });
+
+    it('reads a supervisor container already gone as one that logged no report', async () => {
+        const { exec: base, calls, logs } = daemon(listing(), String(SUPERVISOR_EXIT.failed));
+        const exec = refusingSupervisorLog(base, 'Error response from daemon: No such container: factory-supervisor');
+
+        expect(await dockerRunner(exec, { spawn: logs }).adopt(adopter)).toBeNull();
+        expect(readOrRemoved(calls)).toBe(false);
+    });
+
+    // A Stop while the re-claim fence lists what to remove: the abandoned adoption removes nothing.
+    it('removes nothing once the attempt stands down during the fence of an adopted run', async () => {
+        const { exec: base, calls, logs } = daemon(listing());
+        const standDown = new AbortController();
+        const exec = (args: string[]) => {
+            if (args[0] === 'ps' && !args.includes('status=exited')) standDown.abort();
+            return base(args);
+        };
+
+        await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter, standDown.signal)).rejects.toThrow(/abandoned/);
+        expect(removals(calls)).toEqual([]);
+    });
+
+    // Once an exited earlier runner is found, nothing unexpected may fall through to a fresh run,
+    // whose fence would remove that run unread: any throw stands the attempt down.
+    it('stands down, removing nothing, on any unexpected throw once an exited runner is found', async () => {
+        const { exec: base, calls, logs } = daemon(listing());
+        const exec = (args: string[]) =>
+            args[0] === 'inspect' ? Promise.reject(new TypeError('something unforeseen')) : base(args);
+
+        const adopting = dockerRunner(exec, { spawn: logs }).adopt(adopter);
+
+        await expect(adopting).rejects.toBeInstanceOf(AdoptionBlocked);
+        await expect(adopting).rejects.toThrow('something unforeseen');
+        expect(removals(calls)).toEqual([]);
+    });
+
+    /** The daemon of `daemon`, refusing the adoption's exited-runner listing `refusals` times. */
+    const refusingDiscovery = (base: (args: string[]) => Promise<{ stdout: string }>, refusals: number) => {
+        let left = refusals;
+        return (args: string[]) =>
+            args[0] === 'ps' && args.includes('status=exited') && left-- > 0
+                ? Promise.reject(new Error('Cannot connect to the Docker daemon'))
+                : base(args);
+    };
+
+    // Failure injection: a listing the daemon refused is no "nothing to adopt" — a fresh run's fence
+    // would remove a finalizing group unread once the daemon answers again.
+    it('stands down, removing nothing, when the exited runners cannot be listed', async () => {
+        const { exec: base, calls, logs } = daemon(listing());
+
+        await expect(dockerRunner(refusingDiscovery(base, 99), { spawn: logs }).adopt(adopter)).rejects.toBeInstanceOf(
+            AdoptionBlocked
+        );
+        expect(removals(calls)).toEqual([]);
+    });
+
+    it('lists the exited runners again after a refusal, and adopts the one it finds', async () => {
+        const { exec: base, logs } = daemon(listing());
+
+        expect(await dockerRunner(refusingDiscovery(base, 1), { spawn: logs }).adopt(adopter)).toMatchObject({
+            claimSeq: 1,
+        });
+    });
+
+    /*
+     * Class (a), #824: a docker answer that is not confirmed is never taken for "gone", "no record"
+     * or an exit. Each row answers one read of the adoption with something that proves nothing.
+     */
+    const answering =
+        (base: (args: string[]) => Promise<{ stdout: string }>, match: (args: string[]) => boolean, stdout: string) =>
+        (args: string[]) =>
+            match(args) ? Promise.resolve({ stdout }) : base(args);
+    const isWait = (args: string[]) => args[0] === 'wait';
+    it.each<
+        [
+            string,
+            (base: (args: string[]) => Promise<{ stdout: string }>) => (args: string[]) => Promise<{ stdout: string }>,
+        ]
+    >([
+        ['an empty `docker wait` answer', (base) => answering(base, isWait, '')],
+        ['a non-numeric `docker wait` answer', (base) => answering(base, isWait, 'exited\n')],
+        ['a `docker wait` answer with trailing garbage', (base) => answering(base, isWait, '0 garbage\n')],
+        ['an inspect state with no exit code', (base) => answering(base, (args) => args[0] === 'inspect', '{}\n')],
+        [
+            'kill marker labels that are not JSON',
+            (base) => answering(base, (args) => args[0] === 'volume' && args[1] === 'inspect', '{not json\n'),
+        ],
+        [
+            'kill marker labels that are not a label map',
+            (base) => withMarks(base, { [killMarkName(job, 'timeout')]: 'x' as never }),
+        ],
+        [
+            'a supervisor log refused with a generic "not found"',
+            (base) => refusingSupervisorLog(base, 'Error response from daemon: page not found'),
+        ],
+    ])('stands down, removing nothing, on %s', async (_what, wrap) => {
+        const { exec: base, calls, logs } = daemon(listing());
+
+        await expect(dockerRunner(wrap(base), { spawn: logs }).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+        expect(readOrRemoved(calls)).toBe(false);
+    });
+
+    /** The daemon of `daemon`, whose `docker wait` on the earlier supervisor rejects with `error`. */
+    const failingWait = (base: (args: string[]) => Promise<{ stdout: string }>, error: Error) => (args: string[]) =>
+        args[0] === 'wait' ? Promise.reject(error) : base(args);
+
+    // Failure injection: a `docker wait` the daemon failed is no answer — not the wind-down elapsed,
+    // which would leave a supervisor still finalizing to the sweep.
+    it('stands down, removing nothing, when the wait on the earlier supervisor fails', async () => {
+        const { exec: base, calls, logs } = daemon(listing());
+        const failure = Object.assign(new Error('docker wait exited 1'), {
+            stderr: 'Error response from daemon: connection reset',
+        });
+
+        await expect(dockerRunner(failingWait(base, failure), { spawn: logs }).adopt(adopter)).rejects.toBeInstanceOf(
+            AdoptionBlocked
+        );
+        expect(readOrRemoved(calls)).toBe(false);
+    });
+
+    it('takes a supervisor still running at the end of the wind-down as one that did not finalize', async () => {
+        const { exec: base, calls, logs } = daemon(listing());
+        const timedOut = Object.assign(new Error('docker wait timed out'), { killed: true, signal: 'SIGTERM' });
+
+        expect(await dockerRunner(failingWait(base, timedOut), { spawn: logs }).adopt(adopter)).toBeNull();
+        expect(readOrRemoved(calls)).toBe(false);
+    });
+
+    // A Stop or a lost lease while the supervisor finalizes: the abandoned adoption removes nothing.
+    it('abandons the wait when the attempt stands down, removing nothing', async () => {
+        const { exec: base, calls, logs } = daemon(listing());
+        const standDown = new AbortController();
+        // The supervisor ends at the very moment the attempt stands down.
+        const exec = (args: string[]) => {
+            if (args[0] === 'wait') standDown.abort();
+            return base(args);
+        };
+
+        await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter, standDown.signal)).rejects.toThrow(/abandoned/);
+        expect(readOrRemoved(calls)).toBe(false);
     });
 
     /** The daemon of `daemon`, holding the kill marker volumes `marks` (name → labels); any other is no such volume. */
@@ -5345,7 +5557,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             const exec = withMarks(base, mark('artifact_spool_full', '2000000000 bytes'));
 
             expect(await dockerRunner(exec, { spawn: logs }).adopt(adopter)).toBeNull();
-            expect(calls.some((args) => args[0] === 'logs' || args[0] === 'rm')).toBe(false);
+            expect(readOrRemoved(calls)).toBe(false);
         }
     );
 
@@ -5356,9 +5568,18 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         expect(await dockerRunner(exec, { spawn: logs }).adopt(adopter)).toBeNull();
     });
 
-    // Stated limit: a stop the supervisor raised itself (its budget, its own spool watch) is in its
-    // report, which the adoption does not read — the agent's exit is the verdict.
-    it('reads a stop the earlier supervisor raised itself by the agent’s exit alone', async () => {
+    // Issue #824: a stop the supervisor raised itself (its own spool watch) is in the report it logged.
+    it('adopts a full spool the earlier supervisor raised itself, from its final report', async () => {
+        const { exec: base, logs } = daemon(listing(), '0');
+        const exec = withReport(base, { outcome: 'failed', cause: 'artifact_spool_full', agentEnd: 'killed' });
+
+        const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
+
+        expect(adopted?.outcome.artifactSpoolFull).toBe('the supervisor reported the spool full');
+        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+    });
+
+    it('reads no stop from a supervisor that logged no report', async () => {
         const { exec, logs } = daemon(listing(), '0');
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
@@ -5382,7 +5603,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const line = 'body line\n';
         const { exec: base, calls, logs } = daemon(listing(), '0', line.repeat(EXEC_MAX_BUFFER / line.length + 1));
         const exec = (args: string[]) =>
-            args[0] === 'logs'
+            args[0] === 'logs' && !args.includes(supervisorName(job))
                 ? Promise.reject(
                       Object.assign(new Error('stdout maxBuffer length exceeded'), {
                           code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',

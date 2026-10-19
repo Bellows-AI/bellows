@@ -4,8 +4,11 @@ import {
     infraLossOf,
     killEndsGroup,
     killRecordsOf,
+    reportFinalized,
+    reportVerdictOf,
     type TerminationEvidence,
 } from '../src/termination.js';
+import { finalReportOf, SUPERVISOR_REPORT_PREFIX } from '../src/supervisor-contract.js';
 
 const NONE: TerminationEvidence = {
     killedByDriver: false,
@@ -75,5 +78,38 @@ describe('the recorded kill reasons', () => {
         // An empty detail still says the reason stood.
         expect(adoptedVerdictOf([{ reason: 'cache_lost', detail: '' }]).cacheLost).toBeTruthy();
         expect(adoptedVerdictOf([{ reason: 'artifact_spool_full', detail: '' }]).artifactSpoolFull).toBeTruthy();
+    });
+});
+
+describe('the final report a supervisor logs (#824)', () => {
+    const line = (report: Record<string, unknown>) => `${SUPERVISOR_REPORT_PREFIX}${JSON.stringify(report)}`;
+    const COMPLETED = { outcome: 'completed', cause: null, agentExit: 0, agentEnd: 'exit', drained: true };
+
+    it('reads the last report line of the log, and nothing from a log without one', () => {
+        const log = ['serving', line({ ...COMPLETED, agentExit: 1 }), 'more', line(COMPLETED), ''].join('\n');
+        expect(finalReportOf(log)).toEqual(COMPLETED);
+        expect(finalReportOf('serving\nno report\n')).toBeNull();
+    });
+
+    it('reads a malformed report as none', () => {
+        expect(finalReportOf(`${SUPERVISOR_REPORT_PREFIX}{not json`)).toBeNull();
+        expect(finalReportOf(line({ outcome: 'completed' }))).toBeNull();
+    });
+
+    it('takes a report as finalization unless its agent was never launched', () => {
+        expect(reportFinalized(null)).toBe(false);
+        expect(reportFinalized(COMPLETED)).toBe(true);
+        expect(reportFinalized({ ...COMPLETED, outcome: 'lost', cause: 'driver_lost', agentEnd: 'unlaunched' })).toBe(
+            false
+        );
+    });
+
+    it('turns a budget and a full spool the supervisor raised itself into their outcome fields', () => {
+        expect(reportVerdictOf(null)).toEqual({});
+        expect(reportVerdictOf(COMPLETED)).toEqual({});
+        expect(reportVerdictOf({ ...COMPLETED, outcome: 'timed_out', cause: 'timeout' })).toEqual({ timedOut: true });
+        expect(reportVerdictOf({ ...COMPLETED, outcome: 'failed', cause: 'artifact_spool_full' })).toEqual({
+            artifactSpoolFull: 'the supervisor reported the spool full',
+        });
     });
 });

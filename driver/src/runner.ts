@@ -220,10 +220,21 @@ export interface AdoptedRun {
 
 /**
  * Thrown by `Runner.adopt` once a finished run was read but something of an earlier attempt could
- * not be confirmed gone (issue #821): the attempt is left to its lease, never run afresh over the
+ * not be confirmed gone (issue #821), or an earlier runner could not be read far enough to tell
+ * whether it is a run to adopt (#824): the attempt is left to its lease, never run afresh over the
  * tree that run left — the next claim adopts it again.
  */
 export class AdoptionBlocked extends Error {}
+
+/**
+ * A read that proves nothing — a transport failure past its retries, an answer that is neither the
+ * thing nor its confirmed absence, a body that is not the shape asked for (#824). Never read as
+ * empty or gone: whoever decides a delete or a negative verdict on it stands down instead.
+ */
+export class Inconclusive extends Error {}
+
+/** Thrown by `Runner.adopt` once the attempt stood down mid-adoption: nothing more of it is its to delete. */
+export const adoptionAbandoned = (): Error => new Error('the adoption was abandoned: the attempt stood down');
 
 export interface Runner {
     /**
@@ -313,9 +324,10 @@ export interface Runner {
      * session are this attempt's outcome instead of a second run. Null when there is none — no
      * earlier runner, one still running, or one the platform took away. The earlier attempt's
      * objects are swept only once read. Under kubernetes it takes the checkout claim, which the
-     * attempt holds from here as the sync would have taken it.
+     * attempt holds from here as the sync would have taken it. `signal` is the attempt's stand-down:
+     * an adoption still waiting on a finalizing supervisor (#824) is abandoned and deletes nothing.
      */
-    adopt(job: BoardJob): Promise<AdoptedRun | null>;
+    adopt(job: BoardJob, signal?: AbortSignal): Promise<AdoptedRun | null>;
     /**
      * Freezes the task tree's current state under a snapshot ref of the shared clone, for a named
      * reviewer to start from (issue #549) — over the same transport `probeTree` uses, so both

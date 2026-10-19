@@ -401,7 +401,7 @@ export interface K8sPod {
             /** The container's name — the runner pod holds several, so its verdict reads them by name. */
             name?: string;
             state?: {
-                terminated?: { exitCode?: number; reason?: string; message?: string };
+                terminated?: { exitCode?: number; reason?: string; message?: string; startedAt?: string };
                 running?: { startedAt?: string };
                 waiting?: { reason?: string; message?: string };
             };

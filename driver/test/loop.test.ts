@@ -451,7 +451,7 @@ function stubRunner(
         /** The pre-gate fleet restart (issue #560); every call is recorded in `restartedServices`. */
         restartServices?: (signal: AbortSignal) => Promise<void>;
         /** A finished runner of an earlier claim to adopt (issue #792); absent finds none. */
-        adopt?: (job: BoardJob) => Promise<AdoptedRun | null>;
+        adopt?: (job: BoardJob, signal?: AbortSignal) => Promise<AdoptedRun | null>;
     } = {}
 ): Runner & {
     killed: string[];
@@ -3033,6 +3033,34 @@ describe('the poll loop', () => {
         expect(launched).toBe(1);
         expect(runner.synced).toHaveLength(1);
         expect(board.board.interrupted).toEqual([]);
+    });
+
+    // Issue #824: an adoption waiting out a finalizing supervisor is handed the stand-down's signal,
+    // and a Stop fires it — the abandoned adoption deletes nothing more, while the attempt parks.
+    it('hands the adoption the stand-down signal and fires it when a stop lands mid-wait', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        let seen: AbortSignal | undefined;
+        const runner = stubRunner(
+            async () => {
+                throw new Error('the runner must not spawn');
+            },
+            {
+                adopt: async (_job, signal) => {
+                    seen = signal;
+                    options.cancelRequested = true;
+                    await new Promise((resolve) => setTimeout(resolve, 30));
+                    return null;
+                },
+            }
+        );
+
+        await drive({ ...board, runner });
+
+        expect(seen?.aborted).toBe(true);
+        expect(runner.synced).toHaveLength(0);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
     });
 
     // A failed adoption is no verdict — a read that threw, or a run read but never swept (issue

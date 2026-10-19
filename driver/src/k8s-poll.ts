@@ -1,6 +1,6 @@
 import type { BoardJob } from './board.js';
 import { executorImage } from './config.js';
-import { ARTIFACT_LIMIT, reportTail, tailKept } from './runner.js';
+import { ARTIFACT_LIMIT, Inconclusive, reportTail, tailKept } from './runner.js';
 import { jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
 import { RunnerKilled, vanishedRunner, wasKilled } from './k8s-kill.js';
 import { runnerName } from './k8s-podspec.js';
@@ -9,8 +9,10 @@ import {
     containerStatusOf,
     ERROR_PREVIEW_CHARS,
     expectOk,
+    HTTP_BAD_REQUEST,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
+    HTTP_OK_STATUS,
     HTTP_SERVER_ERROR_STATUS,
     HTTP_TOO_MANY_REQUESTS,
     isMalformedRequest400,
@@ -40,7 +42,7 @@ import {
  */
 
 /** A Job's status object, read as one of its three states — never both `succeeded` and `failed`. */
-function jobOutcome(status: K8sJobStatus): 'succeeded' | 'failed' | 'pending' {
+export function jobOutcome(status: K8sJobStatus): 'succeeded' | 'failed' | 'pending' {
     if ((status.succeeded ?? 0) >= 1) return 'succeeded';
     if ((status.failed ?? 0) >= 1) return 'failed';
     return 'pending';
@@ -79,6 +81,63 @@ export async function readVerdict(deps: K8sDeps, path: string, what: string, fai
     }
     await deps.sleep(POLL_MS);
     return readVerdict(deps, path, what, failures + 1);
+}
+
+/** The answer of a typed read whose object the apiserver confirmed absent (404). */
+export const ABSENT = Symbol('absent');
+
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** A listed pod, as far as its shape is read: an object whose status, when it carries one, is one too. */
+export const asPod = (value: unknown): K8sPod | null =>
+    isRecord(value) && (value.status === undefined || isRecord(value.status)) ? (value as K8sPod) : null;
+
+/**
+ * One GET as a typed read (#824): the value `shape` makes of the body, `ABSENT` on a 404, or an
+ * `Inconclusive` throw — a transport failure past the verdict reads' retries (`once`: no retry), a
+ * non-2xx answer, or a body that is not JSON or not the shape asked for. Never `{}` or `null`.
+ */
+export async function readObject<T>(
+    deps: K8sDeps,
+    path: string,
+    what: string,
+    { shape, once = false }: { shape: (value: unknown) => T | null; once?: boolean }
+): Promise<T | typeof ABSENT> {
+    let response: K8sResponse;
+    try {
+        response = once ? await deps.request('GET', path) : await readVerdict(deps, path, what);
+    } catch (e) {
+        throw new Inconclusive(`${what}: ${(e as Error).message}`);
+    }
+    if (response.status === HTTP_NOT_FOUND) return ABSENT;
+    if (response.status < HTTP_OK_STATUS || response.status >= HTTP_ERROR_STATUS) {
+        throw new Inconclusive(`${what} answered ${response.status}`);
+    }
+    let body: unknown;
+    try {
+        body = JSON.parse(response.body);
+    } catch {
+        throw new Inconclusive(`${what} answered a body that is not JSON`);
+    }
+    const value = shape(body);
+    if (value === null) throw new Inconclusive(`${what} answered an unexpected shape`);
+    return value;
+}
+
+/** `readObject` of a list: every entry `entry` accepts, or `Inconclusive` for a body with no list or any entry it refuses. */
+export function readList<T>(
+    deps: K8sDeps,
+    path: string,
+    what: string,
+    { entry, once = false }: { entry: (value: unknown) => T | null; once?: boolean }
+): Promise<T[] | typeof ABSENT> {
+    const shape = (body: unknown): T[] | null => {
+        if (!isRecord(body) || !Array.isArray(body.items)) return null;
+        const items = body.items.map(entry);
+        return items.every((item) => item !== null) ? (items as T[]) : null;
+    };
+    return readObject(deps, path, what, { shape, once });
 }
 
 /**
@@ -244,23 +303,41 @@ export async function pollJobToTerminal(
  * exit code and the log are always this run's. The log read has no retry at all: the pod may be
  * gone for good, and the answer is already known to be "whatever we can get". `tail` is the line
  * tail the log is read at (null: the whole log); `truncated` says the transport kept only its end.
+ * `strict` (an adoption's read, #824) takes nothing unconfirmed for "no pod" or "no output": a pod
+ * list that is not one, or a log that failed past the retries, throws `Inconclusive`.
  */
 export async function readJobPodVerdict(
     deps: K8sDeps,
     jobName: string,
-    { succeeded, container, tail = LOG_TAIL_LINES }: { succeeded: boolean; container?: string; tail?: number | null },
+    {
+        succeeded,
+        container,
+        tail = LOG_TAIL_LINES,
+        strict = false,
+    }: { succeeded: boolean; container?: string; tail?: number | null; strict?: boolean },
     what: string
 ): Promise<{ exitCode: number | null; output: string; truncated: boolean; pods: K8sPod[] }> {
-    const podsResponse = await readVerdict(deps, jobPodsPath(deps.config.k8sNamespace, jobName), what);
-    expectOk(podsResponse, what);
-    const pods = parse<K8sPodList>(podsResponse.body).items ?? [];
-    const pod = livePodOfItems(pods);
+    const podsPath = jobPodsPath(deps.config.k8sNamespace, jobName);
+    let pods: K8sPod[];
+    if (strict) {
+        const listed = await readList(deps, podsPath, what, { entry: asPod });
+        pods = listed === ABSENT ? [] : listed;
+    } else {
+        const podsResponse = await readVerdict(deps, podsPath, what);
+        expectOk(podsResponse, what);
+        pods = parse<K8sPodList>(podsResponse.body).items ?? [];
+    }
+    const pod = strict ? runnerPodOf(pods) : livePodOfItems(pods);
     // `container` names the one whose verdict this is when the pod holds several (the runner pod's
     // agent); an aux pod's only container is read by position, as ever.
     const exitCode = containerStatusOf(pod, container)?.state?.terminated?.exitCode ?? (succeeded ? 0 : null);
     let output = '';
     let truncated = false;
-    if (pod?.metadata?.name) {
+    if (pod?.metadata?.name && strict) {
+        const log = await readPodLog(deps, podLogPath(deps.config.k8sNamespace, pod.metadata.name, tail, container));
+        output = log.body;
+        truncated = log.truncated === true;
+    } else if (pod?.metadata?.name) {
         let log: K8sResponse;
         try {
             log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name, tail, container));
@@ -273,6 +350,38 @@ export async function readJobPodVerdict(
         }
     }
     return { exitCode, output, truncated, pods };
+}
+
+/** A pod log refusal that says its container never started, in the kubelet's own words — never any 400. */
+export const neverStartedLog = (body: string): boolean => /is waiting to start|is not available/i.test(body);
+
+/**
+ * The runner's own pod, as an adoption reads it (#824): the live one, else the one being deleted —
+ * its Job runs one pod, so the listed pod is the run's whatever its deletion, and a node drained
+ * after (or while) its supervisor finalized leaves that pod's report and log to read.
+ */
+export function runnerPodOf(pods: K8sPod[]): K8sPod | undefined {
+    return livePodOfItems(pods) ?? pods[0];
+}
+
+/**
+ * A pod log as a confirmed read: the log, or an empty one for a pod the apiserver says is gone (404)
+ * or a container it says never started (`neverStartedLog`). Anything else past the verdict reads'
+ * retries throws `Inconclusive`.
+ */
+async function readPodLog(deps: K8sDeps, path: string): Promise<K8sResponse> {
+    const what = 'reading the runner pod log';
+    let log: K8sResponse;
+    try {
+        log = await readVerdict(deps, path, what);
+    } catch (e) {
+        throw new Inconclusive(`${what}: ${(e as Error).message}`);
+    }
+    if (log.status === HTTP_NOT_FOUND || (log.status === HTTP_BAD_REQUEST && neverStartedLog(log.body))) {
+        return { status: log.status, body: '' };
+    }
+    if (log.status >= HTTP_ERROR_STATUS) throw new Inconclusive(`${what} answered ${log.status}`);
+    return log;
 }
 
 /**
@@ -432,7 +541,10 @@ export async function readRunnerVerdict(
     deps: K8sDeps,
     job: BoardJob,
     jobSucceeded: boolean,
-    report: SupervisorReport | null = null
+    {
+        report = null,
+        strict = false,
+    }: { report?: Pick<SupervisorReport, 'agentExit' | 'outcome'> | null; strict?: boolean } = {}
 ): Promise<{
     exitCode: number | null;
     output: string;
@@ -452,15 +564,15 @@ export async function readRunnerVerdict(
     const verdict = await readJobPodVerdict(
         deps,
         runnerName(job),
-        { succeeded: jobSucceeded, container: AGENT_CONTAINER, tail: null },
+        { succeeded: jobSucceeded, container: AGENT_CONTAINER, tail: null, strict },
         'listing the runner pods'
     );
     // The tail for the verdict's output field, and the full log (issue #325) tail-kept at the
     // artifact cap for the loop's upload — both cut from the one pod log this read exists for,
     // truncated when either the cap or the transport cut it.
     const full = tailKept(verdict.output, ARTIFACT_LIMIT);
-    const supervisorExit = containerStatusOf(livePodOfItems(verdict.pods), SUPERVISOR_CONTAINER)?.state?.terminated
-        ?.exitCode;
+    const pod = strict ? runnerPodOf(verdict.pods) : livePodOfItems(verdict.pods);
+    const supervisorExit = containerStatusOf(pod, SUPERVISOR_CONTAINER)?.state?.terminated?.exitCode;
     return {
         // The supervisor's report carries the agent's own exit when the kubelet's status has not caught up
         // with a pod that is still running its supervisor (the group outlives the agent).
@@ -470,7 +582,7 @@ export async function readRunnerVerdict(
         logTruncated: full.truncated || verdict.truncated,
         // What the run's end amounts to is `infraLossOf`'s to decide, over both executors.
         vanished: jobSucceeded ? null : runnerLossOf(verdict.pods),
-        unfinalized: jobSucceeded ? null : supervisorLossOf(livePodOfItems(verdict.pods), supervisorExit),
+        unfinalized: jobSucceeded ? null : supervisorLossOf(pod, supervisorExit),
         // The budget ended the agent: the supervisor's report says so while it still serves, and its
         // exit 124 says so once the group is over.
         supervisorDeadline: supervisorExit === SUPERVISOR_EXIT.deadline || report?.outcome === 'timed_out',

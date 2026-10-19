@@ -108,9 +108,23 @@ export function linesOf(stdout: string): string[] {
  * anything.
  */
 export function alreadyGone(e: unknown): boolean {
+    return /no such (container|network|object|volume)|not found/i.test(refusalText(e));
+}
+
+/**
+ * Whether a docker read was refused because the named object does not exist, in docker's own words
+ * for `kinds` (`no such container`, `no such volume`) — never a generic "not found", which a
+ * daemon, a proxy or a registry can say of anything (#824).
+ */
+export function noSuchObject(e: unknown, kinds: readonly string[]): boolean {
+    return new RegExp(`no such (${kinds.join('|')})`, 'i').test(refusalText(e));
+}
+
+/** A failed docker call's stderr and message, as one string. */
+function refusalText(e: unknown): string {
     const err = e as { stderr?: string | Buffer; message?: string };
     const stderr = typeof err.stderr === 'string' ? err.stderr : (err.stderr?.toString('utf8') ?? '');
-    return /no such (container|network|object|volume)|not found/i.test(`${stderr} ${err.message ?? ''}`);
+    return `${stderr} ${err.message ?? ''}`;
 }
 
 /** Lists names by label, or throws `${what}: <the daemon's own message>`. */
