@@ -82,7 +82,13 @@ export function createOrgOfReclaim({
 }): (reclaimId: string) => Promise<string | null> {
     return async (reclaimId) => {
         if (ready) await ready;
-        const rows = await sql<{ org_id: string }[]>`select org_id from task_reclaim where id = ${reclaimId}`;
+        // An acked row is gone, its receipt kept: a replayed ack must still find its board.
+        const rows = await sql<{ org_id: string }[]>`
+            select org_id from task_reclaim where id = ${reclaimId}
+            union all
+            select org_id from task_reclaim_ack where reclaim_id = ${reclaimId}
+            limit 1
+        `;
         return rows[0]?.org_id ?? null;
     };
 }

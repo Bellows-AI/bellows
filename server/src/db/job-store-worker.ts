@@ -169,8 +169,8 @@ type CompleteAnswer = { result: 'ok'; threadDone: boolean; reclaimId: string | n
 
 /**
  * A complete that missed its lease-guarded update: the receipt's answer, with a reclaim order the
- * board has since withdrawn, acked or re-leased answered as none (issue #821) — a late retry must
- * never remove a tree a reopened thread is running in.
+ * board has since acked, let lapse or handed another acquisition answered as none (issue #821) — a
+ * late retry must never remove a tree under somebody else's reclaim.
  */
 async function replayComplete(
     tx: TransactionSql,
@@ -178,7 +178,7 @@ async function replayComplete(
 ): Promise<CompleteAnswer | { result: 'lost' } | { result: 'missing' }> {
     const answer = await missedSettle<CompleteAnswer>(tx, key);
     if (answer.result !== 'ok' || answer.reclaimId === null) return answer;
-    return (await liveVerdictReclaim(tx, key.orgId, key.jobId, answer.reclaimId))
+    return (await liveVerdictReclaim(tx, key.orgId, key.leaseToken, answer.reclaimId))
         ? answer
         : { ...answer, reclaimId: null };
 }
@@ -371,12 +371,14 @@ export async function completeJob(
         if (!threadDone) {
             threadDone = await settleIfMergeClosed(ctx, rootJobId, tx);
         }
-        // A threadDone-true verdict IS the worktree-reclaim order, queued claimed by this worker
-        // in the verdict's transaction (issue #821): the driver removes the tree on this answer
+        // A threadDone-true verdict IS the worktree-reclaim order, queued owned by this attempt's
+        // lease token in the verdict's transaction (issue #821): the driver removes the tree on this answer
         // and acks the row, and the ack — not this verdict — stamps `worktree_reclaimed_at`, so
         // reopen never reads "tree gone" for a tree still on the volume, and a driver that dies
         // mid-removal leaves the row to the queue once its lease expires.
-        const reclaimId = threadDone ? await issueVerdictReclaim(tx, ctx, rootJobId, rows[0]!.claimed_by) : null;
+        const reclaimId = threadDone
+            ? await issueVerdictReclaim(tx, ctx, rootJobId, { worker: rows[0]!.claimed_by, leaseToken })
+            : null;
         const answer = { result: 'ok', threadDone, reclaimId } as const;
         await recordReceipt(tx, key, answer);
         return answer;

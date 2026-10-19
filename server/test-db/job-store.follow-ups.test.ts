@@ -636,11 +636,10 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             expect(await store.reopen(ABSENT)).toBe('missing');
         });
 
-        // A live reclaim claim means a driver is mid-removal: reopening over it would answer 200
-        // for a tree that is about to come down (the review race on #367). The person retries once
-        // the reclaim settles — ack (marker set → reclaimed) or lease expiry, which is how a
-        // crashed worker's claim is relinquished everywhere else in this system (#152's rule).
-        it('refuses while a worker holds a live claim, and an expired claim withdraws', async () => {
+        // An acquired reclaim may be mid-removal whether or not its lease is live — a kubernetes
+        // reclaim group outlives its driver — so reopening over it would answer 200 for a tree
+        // that may be coming down. Only the ack ends the refusal (marker set → reclaimed).
+        it('refuses while any acquisition holds the row, live or expired, until the ack', async () => {
             const root = await finishWithSession('drive me');
             await store.markDone(root, null);
             const claim = await store.claimReclaim('w1', LEASE_SECONDS);
@@ -650,20 +649,61 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             expect(await reclaimRows(root)).toHaveLength(1);
             expect((await store.get(root))?.doneAt).not.toBeNull();
 
-            // The expired lease reverts the row to withdrawable: the reopen lands, the row is
-            // gone, and the slow worker's later ack finds nothing.
             await sql`update task_reclaim set lease_expires_at = now() - interval '1 second'
                 where org_id = ${ORG} and root_job_id = ${root}`;
-            expect(await store.reopen(root)).toEqual({ result: 'ok' });
-            expect(await reclaimRows(root)).toHaveLength(0);
-            expect(await store.ackReclaim(claim!.id, 'w1')).toBe('missing');
+            expect(await store.reopen(root)).toBe('reclaiming');
+            expect(await reclaimRows(root)).toHaveLength(1);
+            expect((await store.get(root))?.doneAt).not.toBeNull();
+
+            expect(await store.ackReclaim(claim!.id, claim!.token)).toBe('ok');
+            expect(await store.reopen(root)).toBe('reclaimed');
+        });
+
+        // Ack and reopen take the same per-root lock: whichever commits second sees the first.
+        it.each([
+            ['the ack first: reopen then answers reclaimed', 'ack'],
+            ['the reopen first: it answers reclaiming and the ack waits it out', 'reopen'],
+        ] as const)('serializes an ack and a reopen racing on one row — %s', async (_label, first) => {
+            const root = await finishWithSession('drive me');
+            await store.markDone(root, null);
+            const claim = await store.claimReclaim('w1', LEASE_SECONDS);
+            const holding = await sql.reserve();
+            try {
+                await holding`begin`;
+                await holding`select pg_advisory_xact_lock(hashtextextended(${root}::text, 0))`;
+                const settled: string[] = [];
+                const track = <T>(name: string, p: Promise<T>) =>
+                    p.then((value) => {
+                        settled.push(name);
+                        return value;
+                    });
+                const ack = first === 'ack' ? track('ack', store.ackReclaim(claim!.id, claim!.token)) : null;
+                await new Promise((resolve) => setTimeout(resolve, 200));
+                const reopen = track('reopen', store.reopen(root));
+                await new Promise((resolve) => setTimeout(resolve, 200));
+                const lateAck = first === 'reopen' ? track('ack', store.ackReclaim(claim!.id, claim!.token)) : null;
+                await new Promise((resolve) => setTimeout(resolve, 200));
+                expect(settled).toEqual([]);
+                await holding`commit`;
+                if (first === 'ack') {
+                    expect(await ack).toBe('ok');
+                    expect(await reopen).toBe('reclaimed');
+                } else {
+                    expect(await reopen).toBe('reclaiming');
+                    expect(await lateAck).toBe('ok');
+                    expect(settled).toEqual(['reopen', 'ack']);
+                    expect(await store.reopen(root)).toBe('reclaimed');
+                }
+            } finally {
+                holding.release();
+            }
         });
 
         it('refuses reclaimed once the ack landed, and the marker sits on the root', async () => {
             const root = await finishWithSession('drive me');
             await store.markDone(root, null);
             const claim = await store.claimReclaim('w1', LEASE_SECONDS);
-            expect(await store.ackReclaim(claim!.id, 'w1')).toBe('ok');
+            expect(await store.ackReclaim(claim!.id, claim!.token)).toBe('ok');
 
             expect((await reclaimedAt(root))[0]?.worktree_reclaimed_at).not.toBeNull();
             expect(await store.reopen(root)).toBe('reclaimed');
@@ -687,7 +727,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
             expect(await store.reopen(root)).toBe('reclaiming');
             if (verdict.result !== 'ok' || !verdict.reclaimId) throw new Error('no reclaim was issued');
-            expect(await store.ackReclaim(verdict.reclaimId, 'w1')).toBe('ok');
+            expect(await store.ackReclaim(verdict.reclaimId, claim!.leaseToken)).toBe('ok');
             expect(await store.reopen(root)).toBe('reclaimed');
         });
     });

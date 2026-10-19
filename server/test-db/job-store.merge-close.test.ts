@@ -309,7 +309,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         expect((await reclaimRowsOf(root)).length).toBe(1);
         expect(await reclaimedAtOf(root)).toBeNull();
         if (done.result !== 'ok' || !done.reclaimId) throw new Error('no reclaim was issued');
-        expect(await store.ackReclaim(done.reclaimId, WORKER)).toBe('ok');
+        expect(await store.ackReclaim(done.reclaimId, claim.leaseToken)).toBe('ok');
         expect(await reclaimedAtOf(root)).not.toBeNull();
         expect(await prs.publicationOf(root)).not.toBeNull();
     });
@@ -339,7 +339,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         expect(members[0]!.n).toBe(2);
         expect(await reclaimedAtOf(root)).toBeNull();
         if (done.result !== 'ok' || !done.reclaimId) throw new Error('no reclaim was issued');
-        expect(await store.ackReclaim(done.reclaimId, WORKER)).toBe('ok');
+        expect(await store.ackReclaim(done.reclaimId, lease)).toBe('ok');
         expect(await reclaimedAtOf(root)).not.toBeNull();
     });
 
@@ -574,7 +574,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         await store.closeMergedPr(REPO, PULL, 'guid-ack');
         const claimed = await store.claimReclaim('reaper-1', LEASE_SECONDS);
         expect(claimed?.rootJobId).toBe(root);
-        expect(await store.ackReclaim(claimed!.id, 'reaper-1')).toBe('ok');
+        expect(await store.ackReclaim(claimed!.id, claimed!.token)).toBe('ok');
 
         expect(await store.reopen(root)).toBe('reclaimed');
     });
