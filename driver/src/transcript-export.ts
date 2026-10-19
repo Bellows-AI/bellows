@@ -36,21 +36,21 @@ export const EXPORT_SCHEMA_VERSION = 1;
 
 /**
  * Whether this run streams its transcript out while it runs: a claude-code session whose attempt
- * has a control endpoint to relay through (the supervisor's pair — the exporter is the one other
- * container that holds it). Opencode keeps its close-time read until its own exporter lands.
+ * has a control endpoint to relay through (the control URL and the exporter's own token, which
+ * opens the export routes alone). Opencode keeps its close-time read until its own exporter lands.
  */
 export function exportsTranscript(job: BoardJob, session: RunSession | null): boolean {
     return (
         job.executorType === CLAUDE_CODE &&
         session !== null &&
         Boolean(job.supervisorEnv?.[SUPERVISOR_ENV.controlUrl]) &&
-        Boolean(job.supervisorEnv?.[SUPERVISOR_ENV.controlToken])
+        Boolean(job.supervisorEnv?.[SUPERVISOR_ENV.exportToken])
     );
 }
 
 /**
  * The exporter's env: the literals (paths, the attempt's start, the caps, its mailbox with the
- * supervisor) and the control pair — the one credential-like value, the per-attempt token, which
+ * supervisor) and the control pair — the one credential-like value, its own per-attempt token, which
  * each executor delivers by reference (an env file in docker, the attempt's Secret in kubernetes),
  * never in argv or a spec. `control` pairs the exporter's own name with the supervisor-side name
  * the value is stored under: the exporter script reads `BELLOWS_CONTROL_*`.
@@ -73,7 +73,7 @@ export function exportEnv(
         ],
         control: [
             { name: CONTROL_URL_ENV, source: SUPERVISOR_ENV.controlUrl },
-            { name: CONTROL_TOKEN_ENV, source: SUPERVISOR_ENV.controlToken },
+            { name: CONTROL_TOKEN_ENV, source: SUPERVISOR_ENV.exportToken },
         ],
     };
 }

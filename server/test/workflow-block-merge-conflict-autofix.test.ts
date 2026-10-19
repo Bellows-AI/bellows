@@ -127,7 +127,7 @@ describe('builtin/merge-conflict-autofix', () => {
         // guard allows for a tree an interrupted rebase left mid-flight (`--continue`/`--abort`),
         // and explicitly away from what it denies (an initiating `git rebase`/`git merge`,
         // `git switch`/`checkout` of a branch, `gh pr create`) — so a prompt change here cannot
-        // silently reintroduce job 43379d3a's stranded-thread failure mode.
+        // silently reintroduce the stranded-thread failure mode.
         const result = compileDefinition(graphUsing('reconcile'), BLOCK_REGISTRY);
         if (!result.ok) throw new Error('expected compile to succeed');
         const repair = result.definition.nodes.find((n) => n.name === 'reconcile--repair');

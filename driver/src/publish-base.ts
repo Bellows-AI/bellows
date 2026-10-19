@@ -63,7 +63,7 @@ export const isBranchName = (name: string): boolean =>
  * operation to the value VERBATIM, so the constant is the file TRIMMED: the file keeps its
  * POSIX trailing newline, but in the value that newline strands ` get` on a second line and
  * the helper exits 127 after answering — git only happens to keep a dead helper's stdout
- * (observed 2026-09-13, job 43379d3a: `get: 2: get: not found` in the publish container).
+ * (a dead helper's stdout: `get: 2: get: not found` in the publish container).
  * The scripts suite pins the exact spawn shape and its exit status.
  */
 export const CREDENTIAL_HELPER = script('credential-helper.sh').trim();

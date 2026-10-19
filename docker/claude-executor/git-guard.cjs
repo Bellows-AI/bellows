@@ -5,7 +5,7 @@
  * rewrite refs in the task worktree, and `gh pr checkout`, which would move HEAD onto a PR
  * (issue #82). Opening and updating a PR is the agent's to do (issue #573). The tree standing on `factory/<root>` is the
  * driver's invariant (docs/jobs.md) — the restore-mode sync refuses a wrong checkout only after
- * the damage, and the damage strands the thread (job 43379d3a, 2026-09-13). This hook exists to
+ * the damage, and the damage strands the thread. This hook exists to
  * keep threads runnable; it is a guardrail, not a security boundary — the agent is root in
  * its container, and the driver-side sync refusal stays the last line of defense.
  *
@@ -609,9 +609,8 @@ function analyze(segment, depth) {
             // As with rebase: --abort/--quit unwind an in-progress merge, and --continue
             // completes one (git commit, also allowed, does the same). Initiation is allowed
             // ONLY for origin remote-tracking refs: merging origin/<ref> in is the one way a
-            // thread resolves the conflicts the driver's sync rebase refused (job 3e85c499,
-            // 2026-09-20 — the /fix skill's own up-to-date step was the command the guard
-            // denied), and a merge can neither move HEAD off the task branch nor rewrite the
+            // thread resolves the conflicts the driver's sync rebase refused (the /fix skill's
+            // own up-to-date step was the command the guard denied), and a merge can neither move HEAD off the task branch nor rewrite the
             // published commits, so the invariant survives it. A local branch, a sha or a
             // bare merge stays denied. -m/--message/-F/--file take a VALUE the operand scan
             // must not mistake for a merge target.
@@ -624,7 +623,7 @@ function analyze(segment, depth) {
             }
             if (operands.length > 0 && operands.every((t) => /^origin\/[A-Za-z0-9._/-]+$/.test(t))) return ALLOW;
             // The generic reason read as "merging is forbidden" and a thread asked to update from
-            // main gave up (job 72d9fa14) — name the shape that IS allowed. A batch task's run
+            // main gave up — name the shape that IS allowed. A batch task's run
             // carries its base (BASE_BRANCH), which is the branch to bring in, not origin/HEAD.
             const base = process.env.BASE_BRANCH;
             return {
@@ -749,7 +748,7 @@ const CASES = [
     ['allow', "sh -c 'gh pr create --fill'"],
     ['allow', 'gh pr edit 82 --title x'],
     ['allow', 'gh pr ready 82'],
-    // A `'` inside double quotes is a literal (job 2bfc0e63, 2026-10-11): the apostrophe in a PR
+    // A `'` inside double quotes is a literal: the apostrophe in a PR
     // body read as an unclosed single quote, and the agent's own `gh pr create` was denied.
     ['allow', 'gh pr create --title "x" --body "the run\'s own failure"'],
     ['allow', 'git commit -m "don\'t move HEAD"'],
@@ -877,7 +876,7 @@ const CASES = [
     ['allow', 'git merge origin/hotfix'],
     ['allow', 'git merge origin/feature/nested'],
     ['allow', 'git merge -m "merge main" origin/main'],
-    // Redirections are not operands (job 72d9fa14, 2026-09-23): `2>&1` once split on its `&`
+    // Redirections are not operands: `2>&1` once split on its `&`
     // and left `2>` as a merge target, so the one allowed merge was denied in the shape agents
     // actually type it.
     ['allow', 'git merge origin/main 2>&1'],

@@ -32,6 +32,10 @@ function opened() {
                 grantAgent: (_token: string, agentToken: string) => {
                     calls[0]?.push(agentToken);
                 },
+                // The exporter's token: the sixth entry, after the agent's.
+                grantExporter: (_token: string, exporterToken: string) => {
+                    calls[0]?.push(exporterToken);
+                },
             },
             advertiseUrl: (port: number) => `http://driver:${port}`,
         },
@@ -45,25 +49,28 @@ describe('openRunControl', () => {
         const job = { ...JOB } as BoardJob;
         const { rt, calls, state } = opened();
         await openRunControl(rt, job, state);
-        const [token, questions, publisher, reviewer, agentToken] = calls[0] as [
+        const [token, questions, publisher, reviewer, agentToken, exporterToken] = calls[0] as [
             string,
             object,
             object,
             { request: unknown; read: unknown },
             string,
+            string,
         ];
         expect(questions).toBeDefined();
         expect(publisher).toBeDefined();
         expect(reviewer).toMatchObject({ request: expect.any(Function), read: expect.any(Function) });
-        // Two tokens of one lease: the agent's rides its env beside the endpoint, the supervisor's
-        // only the supervisor's own env — never the agent's.
-        expect(agentToken).not.toBe(token);
+        // Three tokens of one lease: the agent's rides its env beside the endpoint, the supervisor's
+        // and the exporter's only the supervisor-side env — never the agent's.
+        expect(new Set([token, agentToken, exporterToken]).size).toBe(3);
         expect(job.gateEnv).toMatchObject({ [CONTROL_URL_ENV]: 'http://driver:9099', [CONTROL_TOKEN_ENV]: agentToken });
         expect(job.supervisorEnv).toEqual({
             [SUPERVISOR_ENV.controlUrl]: 'http://driver:9099',
             [SUPERVISOR_ENV.controlToken]: token,
+            [SUPERVISOR_ENV.exportToken]: exporterToken,
         });
         expect(JSON.stringify(job.gateEnv)).not.toContain(token);
+        expect(JSON.stringify(job.gateEnv)).not.toContain(exporterToken);
         expect(state.control).toBe(token);
     });
 

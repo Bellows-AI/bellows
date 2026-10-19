@@ -50,7 +50,11 @@ const job = {
     rootCommand: 'fix the failing build',
     repo: 'Bellows-AI/factory',
     env: { GITHUB_TOKEN: 'ghs_claim' },
-    supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: CONTROL_TOKEN },
+    supervisorEnv: {
+        [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130',
+        [SUPERVISOR_ENV.controlToken]: CONTROL_TOKEN,
+        [SUPERVISOR_ENV.exportToken]: 'tok-export',
+    },
 } as BoardJob;
 
 const ok = (stdout = ''): StepResult => ({ exitCode: 0, stdout, stderr: '', timedOut: false });

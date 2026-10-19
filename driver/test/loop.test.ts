@@ -639,6 +639,8 @@ function stubGateStack(
 ) {
     const stack = {
         controlOpened: [] as string[],
+        /** Each exporter token granted, beside the supervisor token it belongs to. */
+        exportersGranted: [] as [string, string][],
         stopsRaised: [] as string[],
         killsRaised: [] as string[],
         deadNotes: [] as [string, string | null][],
@@ -696,6 +698,9 @@ function stubGateStack(
             grantAgent: (token: string, agentToken: string) => {
                 const control = stack.controls.get(token);
                 if (control) stack.controls.set(agentToken, control);
+            },
+            grantExporter: (token: string, exporterToken: string) => {
+                stack.exportersGranted.push([token, exporterToken]);
             },
             attachExporter: (token: string, exporter: ExportRelay) => {
                 const control = stack.controls.get(token);
@@ -5268,7 +5273,7 @@ describe('a service that dies during the gates (issue #437)', () => {
 
 /**
  * Gates judge work: a run that did not finish cleanly left none, and a failed gate over it would
- * fire the workflow's `gate-failed` edge on work that never happened (task d0a4146f).
+ * fire the workflow's `gate-failed` edge on work that never happened.
  */
 describe('the gate environment’s GitHub token (docs/connections.md)', () => {
     // A gate run after an hour-long agent turn must not start on the token minted before it.
@@ -5874,11 +5879,24 @@ describe('a cooperative stop (issue #442)', () => {
         await driveControlled({ ...board, runner, gates });
 
         // Ungated job, yet the endpoint opened: the control channel is not a gate feature.
-        // The agent holds its own publish/review token; the supervisor's pair rides apart from it.
+        // The agent holds its own publish/review token; the supervisor's pair and the exporter's own
+        // token ride apart from it, three distinct tokens of one attempt.
         expect(Object.keys(launchedEnv ?? {}).sort()).toEqual(['BELLOWS_CONTROL_TOKEN', 'BELLOWS_CONTROL_URL']);
-        expect(Object.keys(supervisorEnv ?? {}).sort()).toEqual(['SUPERVISOR_CONTROL_TOKEN', 'SUPERVISOR_CONTROL_URL']);
-        expect(launchedEnv?.BELLOWS_CONTROL_TOKEN).not.toBe(supervisorEnv?.SUPERVISOR_CONTROL_TOKEN);
+        expect(Object.keys(supervisorEnv ?? {}).sort()).toEqual([
+            'SUPERVISOR_CONTROL_TOKEN',
+            'SUPERVISOR_CONTROL_URL',
+            'SUPERVISOR_EXPORT_TOKEN',
+        ]);
+        const tokens = [
+            launchedEnv?.BELLOWS_CONTROL_TOKEN,
+            supervisorEnv?.SUPERVISOR_CONTROL_TOKEN,
+            supervisorEnv?.SUPERVISOR_EXPORT_TOKEN,
+        ];
+        expect(new Set(tokens).size).toBe(3);
         expect(stack.controlOpened).toEqual([supervisorEnv?.SUPERVISOR_CONTROL_TOKEN]);
+        expect(stack.exportersGranted).toEqual([
+            [supervisorEnv?.SUPERVISOR_CONTROL_TOKEN, supervisorEnv?.SUPERVISOR_EXPORT_TOKEN],
+        ]);
         // Repeated stop beats are idempotent: one raise, scoped to this attempt's token.
         expect(stack.stopsRaised).toEqual(stack.controlOpened);
         expect(runner.killed).toEqual([]);

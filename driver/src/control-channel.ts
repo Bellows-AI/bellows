@@ -20,15 +20,17 @@ import {
 
 /**
  * The per-attempt run-control channel the gate server hosts beside the ad-hoc gate route, keyed by
- * two tokens of one lease that open different doors:
+ * three tokens of one lease that open different doors:
  *
- *  - the SUPERVISOR token — held by the task supervisor and the transcript exporter, never by the
- *    agent container — reads the run's stop and kill orders (`GET /control`), relays the agent's
- *    questions (`POST /question`, `GET /question/:id`) and carries the transcript chunks (`/export`);
+ *  - the SUPERVISOR token — held by the task supervisor alone — reads the run's stop and kill orders
+ *    (`GET /control`), relays the agent's questions (`POST /question`, `GET /question/:id`) and pulls
+ *    and answers the supervised steps (`/step`, `POST /report`);
+ *  - the EXPORTER token — all the transcript exporter holds — carries the transcript chunks
+ *    (`/export`) and nothing else;
  *  - the AGENT token — all the agent container holds — reaches only the draft publication
  *    (`POST /publish`) and the named reviewers (`/review`), the two routes the baked skills call.
  *
- * A token used on the other's route is 403; a gate token is no key here, and an unknown or closed
+ * A token used on another's route is 403; a gate token is no key here, and an unknown or closed
  * token is 401. One entry per attempt, so one per lease.
  */
 
@@ -55,6 +57,8 @@ export interface ControlChannel {
     open(token: string, relay?: QuestionRelay, publisher?: PublishRelay, reviewer?: ReviewRelay): void;
     /** Opens the agent's own token beside the open supervisor `token`: the publish and review routes, no other. */
     grantAgent(token: string, agentToken: string): void;
+    /** Opens the transcript exporter's own token beside the open supervisor `token`: the export routes, no other. */
+    grantExporter(token: string, exporterToken: string): void;
     /** Gives an open token its transcript exporter's relay: the `/export` routes answer 400 until then. */
     attachExporter(token: string, exporter: ExportRelay): void;
     /** Whether the supervisor has contacted this token — its control poll, or a question POST. */
@@ -63,7 +67,7 @@ export interface ControlChannel {
     raiseStop(token: string): void;
     /** Raises the kill order — the stop, and the supervisor ends the agent now; repeated calls do nothing. */
     raiseKill(token: string): void;
-    /** Ends the attempt: its stop flag and its questions are dropped, and both tokens get 401. */
+    /** Ends the attempt: its stop flag and its questions are dropped, and every token of it gets 401. */
     close(token: string): void;
     /** Drops every token — the server is closing. */
     clear(): void;
@@ -106,8 +110,9 @@ function routeOf(request: IncomingMessage): Route | null {
     return isPostOrGetOf(request, REVIEW_PATH) ? 'review' : null;
 }
 
-/** The routes each token opens: the supervisor's, and the agent's two. */
-const SUPERVISOR_ROUTES: readonly Route[] = ['control', 'export', 'question', 'report', 'step'];
+/** The routes each token opens: the supervisor's, the exporter's one and the agent's two. */
+const SUPERVISOR_ROUTES: readonly Route[] = ['control', 'question', 'report', 'step'];
+const EXPORTER_ROUTES: readonly Route[] = ['export'];
 const AGENT_ROUTES: readonly Route[] = ['publish', 'review'];
 
 /** `GET /step`, `POST /step/:id` and `POST /report`: the supervised steps' routes, under the supervisor token. */
@@ -154,10 +159,18 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
     const controls = new Map<string, ControlEntry>();
     /** An agent token, to the supervisor token of the attempt it belongs to. */
     const agents = new Map<string, string>();
+    /** A transcript exporter's token, to the supervisor token of the attempt it belongs to. */
+    const exporters = new Map<string, string>();
 
-    /** The attempt a token of either role belongs to, or undefined once it is closed. */
+    /** The attempt a token of any role belongs to, or undefined once it is closed. */
     const entryOf = (auth: string): ControlEntry | undefined =>
-        controls.get(auth) ?? controls.get(agents.get(auth) ?? '');
+        controls.get(auth) ?? controls.get(agents.get(auth) ?? exporters.get(auth) ?? '');
+
+    /** The doors a token of a known attempt opens. */
+    const doorsOf = (auth: string): readonly Route[] => {
+        if (controls.has(auth)) return SUPERVISOR_ROUTES;
+        return exporters.has(auth) ? EXPORTER_ROUTES : AGENT_ROUTES;
+    };
 
     /** `POST /question` / `GET /question/:id`, once the token is known. */
     const serveQuestion = async (control: ControlEntry, request: IncomingMessage, auth: string) => {
@@ -201,6 +214,9 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
         grantAgent(token, agentToken) {
             if (agentToken !== token) agents.set(agentToken, token);
         },
+        grantExporter(token, exporterToken) {
+            if (exporterToken !== token) exporters.set(exporterToken, token);
+        },
         attachExporter(token, exporter) {
             const control = controls.get(token);
             if (control) control.exporting.relay = exporter;
@@ -220,11 +236,13 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
             controls.delete(token);
             steps.close(token);
             for (const [agent, owner] of agents) if (owner === token) agents.delete(agent);
+            for (const [exporter, owner] of exporters) if (owner === token) exporters.delete(exporter);
         },
         clear() {
             for (const token of controls.keys()) steps.close(token);
             controls.clear();
             agents.clear();
+            exporters.clear();
         },
         resolveQuestion: (token, id, resolution) => {
             const control = controls.get(token);
@@ -246,7 +264,7 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
                 await serveWithoutEntry(route, { steps, token: auth }, request, reply);
                 return true;
             }
-            const doors = controls.get(auth) === control ? SUPERVISOR_ROUTES : AGENT_ROUTES;
+            const doors = doorsOf(auth);
             if (!doors.includes(route)) {
                 respondJson(reply, HTTP_FORBIDDEN, { error: 'this token does not open that route' });
                 return true;
