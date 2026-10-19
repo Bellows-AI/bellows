@@ -15,6 +15,8 @@ import {
     runHelperStep,
     runReclaimStep,
     runSyncStep,
+    type SupervisedGroups,
+    supervisedStepMembers,
     supervisedStepRunner,
 } from '../src/supervised-steps.js';
 import {
@@ -25,7 +27,7 @@ import {
     type StepRequest,
     type StepResult,
 } from '../src/supervisor-contract.js';
-import { lookupHelper } from '../src/helpers.js';
+import { type HelperPlan, lookupHelper } from '../src/helpers.js';
 
 /**
  * The supervised steps (issue #771): what the sync, the probe, the publish, the helpers and the
@@ -373,6 +375,78 @@ describe('the sync, the reclaim and the helpers over the supervisor', () => {
         const budget = Number(s.submitted[0]!.env.BUDGET_MS);
         expect(budget).toBeGreaterThan(0);
         expect(budget).toBe(runTimeoutMs(config, job) - 120_000);
+    });
+});
+
+describe('the supervised-step members both executors share', () => {
+    const NOOP: HelperPlan = { phase: 'pre', helperId: 'noop', input: {}, githubWriting: false };
+
+    /** An executor's groups stood in: whether the attempt has one, and every group it was asked to create. */
+    function groupsOver(s: ReturnType<typeof sink>, opts: { has?: boolean; refuse?: Error } = {}) {
+        const created: BoardJob[] = [];
+        let has = opts.has ?? false;
+        const groups: SupervisedGroups = {
+            host: s.host,
+            hasGroup: () => has,
+            createGroup: async (attempt) => {
+                created.push(attempt);
+                if (opts.refuse) throw opts.refuse;
+                has = true;
+            },
+            errorDetail: (e) => `in the executor's words: ${(e as Error).message}`,
+        };
+        return { members: supervisedStepMembers(groups), created };
+    }
+
+    it('creates a supervisor-only group once, and only for an attempt that has none', async () => {
+        const s = sink(() => ok('{}'));
+        const fresh = groupsOver(s);
+        await fresh.members.probeTree(job);
+        await fresh.members.snapshotTree(job, 'review-1');
+        expect(fresh.created).toEqual([{ ...job, agent: false }]);
+
+        const synced = groupsOver(s, { has: true });
+        await synced.members.probeTree(job);
+        expect(synced.created).toEqual([]);
+        expect(s.submitted.map((step) => step.kind)).toEqual(['probe', 'snapshot', 'probe']);
+    });
+
+    it('creates nothing and submits nothing for an unknown helper id', async () => {
+        const s = sink();
+        const { members, created } = groupsOver(s);
+        expect(await members.runHelper(job, { ...NOOP, helperId: 'rm-rf' })).toMatchObject({
+            ok: false,
+            reason: 'unknown_helper',
+        });
+        expect(created).toEqual([]);
+        expect(s.submitted).toEqual([]);
+    });
+
+    it('fails a helper whose group is refused in the executor’s words, and throws a lost supervisor', async () => {
+        const refused = sink();
+        const { members } = groupsOver(refused, { refuse: new Error('the group was refused') });
+        expect(await members.runHelper(job, NOOP)).toEqual({
+            ok: false,
+            reason: 'runner_error',
+            message: "in the executor's words: the group was refused",
+        });
+        expect(refused.submitted).toEqual([]);
+
+        const lost = groupsOver(
+            sink(() => new StepChannelClosed('the helper')),
+            { has: true }
+        );
+        await expect(lost.members.runHelper(job, NOOP)).rejects.toBeInstanceOf(StepChannelClosed);
+    });
+
+    it('throws a refused group from the publish, the probe and the snapshot, submitting nothing', async () => {
+        const refusal = new Error('the group was refused');
+        const s = sink();
+        const { members } = groupsOver(s, { refuse: refusal });
+        await expect(members.publishGit(job)).rejects.toBe(refusal);
+        await expect(members.probeTree(job)).rejects.toBe(refusal);
+        await expect(members.snapshotTree(job, 'review-1')).rejects.toBe(refusal);
+        expect(s.submitted).toEqual([]);
     });
 });
 

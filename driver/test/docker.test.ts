@@ -4723,6 +4723,36 @@ describe('publishing the produced work', () => {
         expect(await runner.probeTree(ISSUE_JOB)).toBeNull();
     });
 
+    // The review snapshot of an attempt with no group yet (an adopted run): a supervisor-only group
+    // is made for it, and its one `snapshot` step carries the stand-down signal.
+    it('snapshots the tree as one snapshot step with the signal, making the supervisor-only group', async () => {
+        const cancel = new AbortController();
+        const seen: { step: StepRequest; signal: AbortSignal | undefined }[] = [];
+        const sink: StepSink = {
+            submit: async (_token, step, signal) => {
+                seen.push({ step, signal });
+                return ok('{"ok":true}');
+            },
+            awaitReport: () => Promise.resolve(FINALIZED),
+            contacted: () => true,
+            release: () => undefined,
+            attach: () => undefined,
+        };
+        const docker: string[][] = [];
+        const exec = (async (args: string[]) => {
+            docker.push(args);
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = dockerRunner(exec, { spawn: spawnChild(''), steps: sink });
+
+        expect(await runner.snapshotTree(ISSUE_JOB, 'review-1', cancel.signal)).toMatchObject({ ok: true });
+
+        expect(seen.map(({ step }) => step.kind)).toEqual(['snapshot']);
+        expect(seen[0]?.signal).toBe(cancel.signal);
+        const created = docker.filter((a) => a[0] === 'create').map((a) => a[a.indexOf('--name') + 1]);
+        expect(created).toEqual([supervisorName(ISSUE_JOB)]);
+    });
+
     it('branches, commits, pushes and opens the PR — in that order', async () => {
         // The checkout sits on main with no fix branch yet: the plain switch refuses (no such
         // branch), and `-c` creates it — both calls are part of the expected shape.
@@ -4873,6 +4903,22 @@ describe('the block-helper transport (issue #207)', () => {
             reason: 'unknown_helper',
             message: expect.stringContaining('not-a-real-helper'),
         });
+        expect(supervised.steps()).toEqual([]);
+    });
+
+    // A group the daemon refuses is a failed helper in the daemon's own words, bounded — never a throw.
+    it('fails a helper whose group the daemon refuses with the first 300 chars of its stderr', async () => {
+        const stderr = `  Error response from daemon: ${'x'.repeat(400)}  \n`;
+        const supervised = fakeSteps(() => ok(NOOP_VERDICT));
+        const exec = (async (args: string[]) => {
+            if (args[0] === 'create') throw Object.assign(new Error('Command failed: docker create'), { stderr });
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = dockerRunner(exec, { steps: supervised.sink });
+
+        const result = await runner.runHelper(repoJob, plan());
+
+        expect(result).toEqual({ ok: false, reason: 'runner_error', message: stderr.trim().slice(0, 300) });
         expect(supervised.steps()).toEqual([]);
     });
 
