@@ -14,6 +14,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
 PHASE=all
+CLI_WORKERS=2
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --phase)
@@ -24,12 +25,18 @@ while [ "$#" -gt 0 ]; do
         *) echo 'test-jobs: invalid --phase (see --help)'; exit 2 ;;
         esac
         ;;
+    --cli-workers)
+        shift
+        CLI_WORKERS="${1:-}"
+        case "$CLI_WORKERS" in 1|2) ;; *) echo 'test-jobs: --cli-workers must be 1 or 2'; exit 2 ;; esac
+        ;;
     --help)
-        echo 'Usage: scripts/test-jobs.sh [--phase PHASE]'
+        echo 'Usage: scripts/test-jobs.sh [--phase PHASE] [--cli-workers 1|2]'
         echo 'Phases: all (default), board, driver, github-credential, services, orphan-reaper,'
         echo '        node-disruption, workflows, compose-driver, auth, cooperative-stop,'
         echo '        tool-isolation, ask-user-question, question-round-trip'
         echo 'Each phase provisions its own prerequisites; standalone CLI phases need no database or build.'
+        echo 'Standalone CLI cases use at most two workers; --cli-workers 1 runs them serially.'
         echo 'TIMINGS_FILE overrides artifacts/jobs/<run>.tsv; check timings and process logs are saved beside it.'
         exit 0
         ;;
@@ -77,6 +84,8 @@ driver_pid=""
 mint_pid=""
 compose_pid=""
 db_created=""
+lane_worker_pids=''
+lane_worker_name=main
 # Preflight before creating or removing any shared lane resource.
 for tool in docker node timeout; do
     command -v "$tool" >/dev/null || { echo "test-jobs: $tool is required"; exit 1; }
@@ -103,9 +112,11 @@ fi
 
 TIMINGS_FILE="${TIMINGS_FILE:-$REPO/artifacts/jobs/$(date +%Y%m%d-%H%M%S)-$$.tsv}"
 CHECKS_FILE="${TIMINGS_FILE%.tsv}.checks.tsv"
+LIFECYCLE_FILE="${TIMINGS_FILE%.tsv}.lifecycle.tsv"
 mkdir -p "$(dirname "$TIMINGS_FILE")" || exit 1
 printf 'phase\tseconds\n' >"$TIMINGS_FILE" || exit 1
 printf 'phase\tseconds\tresult\tcheck\n' >"$CHECKS_FILE" || exit 1
+printf 'phase\tcase\tstep\tseconds\texit\n' >"$LIFECYCLE_FILE" || exit 1
 lane_started=$SECONDS
 phase_name=''
 phase_started=$SECONDS
@@ -127,6 +138,14 @@ check_timing() {
     printf '%s\t%s\t%s\t%s\n' "$phase_name" "$((SECONDS - check_started))" "$1" "$2" >>"$CHECKS_FILE"
     check_started=$SECONDS
 }
+lane_timed() { # lane_timed <case> <step> <command...> — preserve the command's stdout and status
+    local case_name="$1" step="$2" started=$SECONDS result
+    shift 2
+    "$@"
+    result=$?
+    printf '%s\t%s\t%s\t%s\t%s\n' "$phase_name" "$case_name" "$step" "$((SECONDS - started))" "$result" >>"$LIFECYCLE_FILE"
+    return "$result"
+}
 work="$(mktemp -d)" || exit 1
 
 ok() {
@@ -144,6 +163,12 @@ bad() {
 cleanup() {
     local result=$?
     begin_phase cleanup
+    for pid in $lane_worker_pids; do kill -TERM "$pid" 2>/dev/null || true; done
+    for marker in "$work"/*.endpoint "$work"/*.group; do
+        [ -f "$marker" ] || continue
+        worker="${marker##*/}"
+        lane_resources_cleanup "${worker%.*}"
+    done
     [ -n "$driver_pid" ] && kill "$driver_pid" 2>/dev/null
     [ -n "$compose_pid" ] && kill "$compose_pid" 2>/dev/null
     [ -n "$mint_pid" ] && kill "$mint_pid" 2>/dev/null
@@ -161,7 +186,7 @@ cleanup() {
         docker volume rm "$VOLUME" >/dev/null 2>&1
         docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_BASE" >/dev/null 2>&1
     fi
-    for log in "$work"/*.log; do
+    for log in "$work"/*.log "$work"/*.supervisor-*.json "$work"/*.worker-*.tsv; do
         [ -f "$log" ] && cp "$log" "${TIMINGS_FILE%.tsv}.$(basename "$log")"
     done
     rm -rf "$work"
@@ -314,6 +339,7 @@ write_bellows() { # write_bellows <contents>
 }
 lane_group_up() { # lane_group_up <name> <image> <control-url>
     local name="$RUN_ID-$1" image="$2" url="$3" box
+    printf '%s\n' "$name" >"$work/$lane_worker_name.group"
     for box in in out export supervisor; do
         docker volume create "lane-$name-$box" >/dev/null
     done
@@ -334,12 +360,108 @@ lane_group_agent_args() { # lane_group_agent_args <name>: the agent's half of th
 }
 
 lane_group_down() { # lane_group_down <name>: the supervisor finalizes after the agent exits; then the group goes
-    local name="$RUN_ID-$1" box
-    timeout 60 docker wait "lane-sup-$name" >/dev/null 2>&1
-    docker rm -f "lane-sup-$name" >/dev/null 2>&1
+    local name="$RUN_ID-$1" waited result
+    lane_timed "$1" supervisor-wait timeout 60 docker wait "lane-sup-$name" >"$work/$1.supervisor-wait.log" 2>"$work/$1.supervisor-wait-error.log"
+    result=$?
+    waited="$(cat "$work/$1.supervisor-wait.log")"
+    lane_group_diagnostics "$name"
+    lane_timed "$1" cleanup lane_group_remove "$name"
+    rm -f "$work/$lane_worker_name.group"
+    if [ "$result" = 0 ] && [ "$waited" = 0 ]; then
+        ok "$1 supervisor finalizes on its own"
+    else
+        bad "$1 supervisor finalizes on its own" "wait exit $result, supervisor exit '$waited': $(tail -3 "$work/$1.supervisor.log") $(tail -3 "$work/$1.supervisor-wait-error.log")"
+    fi
+}
+
+lane_group_diagnostics() { # lane_group_diagnostics <run-qualified name>
+    local name="$1" case_name="${1#"$RUN_ID-"}" box
+    docker logs "lane-sup-$name" >"$work/$case_name.supervisor.log" 2>&1
+    for box in state report; do
+        docker cp "lane-sup-$name:/factory/supervisor/$box.json" "$work/$case_name.supervisor-$box.json" >/dev/null 2>&1 || true
+    done
+}
+
+lane_group_remove() { # lane_group_remove <run-qualified name>
+    local name="$1" box
+    docker rm -f "lane-agent-$name" "lane-sup-$name" >/dev/null 2>&1
     for box in in out export supervisor; do
         docker volume rm -f "lane-$name-$box" >/dev/null 2>&1
     done
+}
+
+lane_endpoint_started() { printf '%s\n' "$1" >"$work/$lane_worker_name.endpoint"; }
+lane_endpoint_stop() {
+    kill "$1" 2>/dev/null || true
+    wait "$1" 2>/dev/null || true
+    rm -f "$work/$lane_worker_name.endpoint"
+}
+
+lane_resources_cleanup() { # lane_resources_cleanup <worker>: only resources this worker registered
+    local worker="$1" pid name
+    if [ -f "$work/$worker.endpoint" ]; then
+        read -r pid <"$work/$worker.endpoint"
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        rm -f "$work/$worker.endpoint"
+    fi
+    if [ -f "$work/$worker.group" ]; then
+        read -r name <"$work/$worker.group"
+        lane_group_diagnostics "$name"
+        lane_group_remove "$name"
+        rm -f "$work/$worker.group"
+    fi
+}
+
+lane_worker_exit() {
+    local result=$?
+    lane_resources_cleanup "$lane_worker_name"
+    printf '%s %s %s\n' "$pass" "$fail" "$result" >"$work/$lane_worker_name.counts"
+    trap - EXIT
+    exit "$result"
+}
+
+lane_pair() { # lane_pair <first case function> <second case function>; at most two isolated workers
+    if [ "$CLI_WORKERS" = 1 ]; then "$1"; "$2"; return; fi
+    local fn pid first_pid='' second_pid='' result successes failures recorded
+    for fn in "$1" "$2"; do
+        (
+            trap - EXIT
+            trap 'exit 130' INT
+            trap 'exit 143' TERM
+            lane_worker_name="$phase_name-$fn"
+            pass=0 fail=0 check_started=$SECONDS
+            CHECKS_FILE="$work/$lane_worker_name.worker-checks.tsv"
+            LIFECYCLE_FILE="$work/$lane_worker_name.worker-lifecycle.tsv"
+            : >"$CHECKS_FILE"
+            : >"$LIFECYCLE_FILE"
+            trap lane_worker_exit EXIT
+            "$fn"
+        ) >"$work/$phase_name-$fn.worker.log" 2>&1 &
+        if [ -z "$first_pid" ]; then first_pid=$!; else second_pid=$!; fi
+    done
+    lane_worker_pids="$first_pid $second_pid"
+    for fn in "$1" "$2"; do
+        if [ "$fn" = "$1" ]; then pid="$first_pid"; else pid="$second_pid"; fi
+        wait "$pid"
+        result=$?
+        if [ "$pid" = "$first_pid" ]; then lane_worker_pids="$second_pid"; else lane_worker_pids=''; fi
+        lane_resources_cleanup "$phase_name-$fn"
+        cat "$work/$phase_name-$fn.worker.log"
+        cat "$work/$phase_name-$fn.worker-checks.tsv" >>"$CHECKS_FILE"
+        cat "$work/$phase_name-$fn.worker-lifecycle.tsv" >>"$LIFECYCLE_FILE"
+        if [ -f "$work/$phase_name-$fn.counts" ] &&
+            read -r successes failures recorded <"$work/$phase_name-$fn.counts" &&
+            [[ "$successes $failures $recorded" =~ ^[0-9]+\ [0-9]+\ [0-9]+$ ]]; then
+            pass=$((pass + successes))
+            fail=$((fail + failures))
+            if [ "$result" != 0 ] && [ "$failures" = 0 ]; then bad "$fn completes" "exit $result"; fi
+        else
+            bad "$fn reports its checks" "exit $result"
+        fi
+    done
+    lane_worker_pids=''
+    check_started=$SECONDS
 }
 
 # --- Bring up everything it needs -------------------------------------------------------------
@@ -1637,13 +1759,14 @@ stop_lane() { # stop_lane <claude|opencode>
     chmod 777 "$dir"
     node scripts/fake-model-endpoint.mjs --first-delay-ms 3000 --tool-steps 3 >"$work/fake-$cli.port" &
     fake_pid=$!
+    lane_endpoint_started "$fake_pid"
     for _ in $(seq 1 20); do
         [ -s "$work/fake-$cli.port" ] && break
         sleep 0.25
     done
     port="$(cat "$work/fake-$cli.port")"
-    local host="http://host.docker.internal:$port" run=(docker run --rm --add-host host.docker.internal:host-gateway)
-    lane_group_up "stop-$cli" "$image" "$host"
+    local host="http://host.docker.internal:$port" run=(docker run --rm --name "lane-agent-$RUN_ID-stop-$cli" --add-host host.docker.internal:host-gateway)
+    lane_timed "stop-$cli" setup lane_group_up "stop-$cli" "$image" "$host"
     run+=(-v "$dir:/workspace" -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key)
     while IFS= read -r word; do run+=("$word"); done < <(lane_group_agent_args "stop-$cli")
     if [ "$cli" = claude ]; then
@@ -1653,12 +1776,12 @@ stop_lane() { # stop_lane <claude|opencode>
             -p 'touch the step markers')
     else
         run+=(-e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
-            "$image" run 'touch the step markers')
+            "$image" --print-logs --log-level DEBUG run 'touch the step markers')
     fi
     # On its own, and 0 for both CLIs: opencode's `Error: Aborted` exit after the stop plugin's abort
     # is mapped to 0 by its entrypoint (docker/opencode-executor/entrypoint.sh).
     local status
-    timeout 180 "${run[@]}" >"$work/stop-$cli.log" 2>&1
+    lane_timed "stop-$cli" agent timeout 180 "${run[@]}" >"$work/stop-$cli.log" 2>&1
     status=$?
     lane_group_down "stop-$cli"
     if [ "$status" = 0 ]; then
@@ -1667,8 +1790,7 @@ stop_lane() { # stop_lane <claude|opencode>
         bad "$cli exits on its own after the stop" "exit $status: $(tail -5 "$work/stop-$cli.log")"
     fi
     requests="$(node -e 'fetch(process.argv[1] + "/requests").then((r) => r.json()).then((j) => console.log(j.agentRequests))' "http://127.0.0.1:$port")"
-    kill "$fake_pid" 2>/dev/null
-    wait "$fake_pid" 2>/dev/null
+    lane_endpoint_stop "$fake_pid"
     if [ "$requests" = 1 ]; then
         ok "$cli makes no model request after the stop"
     else
@@ -1681,8 +1803,9 @@ stop_lane() { # stop_lane <claude|opencode>
     fi
 }
 
-stop_lane claude
-stop_lane opencode
+claude_stop_lane() { stop_lane claude; }
+opencode_stop_lane() { stop_lane opencode; }
+lane_pair claude_stop_lane opencode_stop_lane
 
 fi
 
@@ -1713,14 +1836,15 @@ kill_lane() { # kill_lane <claude|opencode> <isolated|control>
     chmod 777 "$dir"
     node scripts/fake-model-endpoint.mjs --kill-tools --tool-steps 2 >"$work/fake-$name.port" &
     fake_pid=$!
+    lane_endpoint_started "$fake_pid"
     for _ in $(seq 1 20); do
         [ -s "$work/fake-$name.port" ] && break
         sleep 0.25
     done
     port="$(cat "$work/fake-$name.port")"
-    local host="http://host.docker.internal:$port" run=(docker run --rm --add-host host.docker.internal:host-gateway)
+    local host="http://host.docker.internal:$port" run=(docker run --rm --name "lane-agent-$RUN_ID-$name" --add-host host.docker.internal:host-gateway)
     if [ "$mode" = isolated ]; then run+=("${AGENT_FLAGS[@]}"); fi
-    lane_group_up "$name" "$image" "$host"
+    lane_timed "$name" setup lane_group_up "$name" "$image" "$host"
     run+=(-v "$dir:/workspace" -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key)
     while IFS= read -r word; do run+=("$word"); done < <(lane_group_agent_args "$name")
     if [ "$cli" = claude ]; then
@@ -1728,15 +1852,14 @@ kill_lane() { # kill_lane <claude|opencode> <isolated|control>
             -p 'touch the step markers')
     else
         run+=(-e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
-            "$image" run 'touch the step markers')
+            "$image" --print-logs --log-level DEBUG run 'touch the step markers')
     fi
-    timeout 180 "${run[@]}" >"$work/$name.log" 2>&1
+    lane_timed "$name" agent timeout 180 "${run[@]}" >"$work/$name.log" 2>&1
     status=$?
     lane_group_down "$name"
     counts="$(node -e 'Promise.all(["/requests", "/tool-results"].map((p) => fetch(process.argv[1] + p).then((r) => r.json())))
         .then(([a, b]) => console.log(`${a.agentRequests} ${b.toolResults}`))' "http://127.0.0.1:$port")"
-    kill "$fake_pid" 2>/dev/null
-    wait "$fake_pid" 2>/dev/null
+    lane_endpoint_stop "$fake_pid"
     if [ "$mode" = isolated ]; then
         if [ "$status" = 0 ] && [ "$counts" = '3 2' ] && [ -e "$dir/step-1" ] && [ -e "$dir/step-2" ]; then
             ok "$cli survives its tools signalling everything they may, and finishes"
@@ -1753,10 +1876,9 @@ kill_lane() { # kill_lane <claude|opencode> <isolated|control>
     fi
 }
 
-kill_lane claude control
-kill_lane claude isolated
-kill_lane opencode control
-kill_lane opencode isolated
+claude_isolation_lanes() { kill_lane claude control; kill_lane claude isolated; }
+opencode_isolation_lanes() { kill_lane opencode control; kill_lane opencode isolated; }
+lane_pair claude_isolation_lanes opencode_isolation_lanes
 
 fi
 
@@ -1788,15 +1910,16 @@ ask_lane() {
     chmod 777 "$dir"
     node scripts/fake-model-endpoint.mjs "$flag" >"$portfile" &
     fake_pid=$!
+    lane_endpoint_started "$fake_pid"
     for _ in $(seq 1 20); do
         [ -s "$portfile" ] && break
         sleep 0.25
     done
     port="$(cat "$portfile")"
     local host="http://host.docker.internal:$port" agent_words=() word
-    lane_group_up "ask-$mode" "$image" "$host"
+    lane_timed "ask-$mode" setup lane_group_up "ask-$mode" "$image" "$host"
     while IFS= read -r word; do agent_words+=("$word"); done < <(lane_group_agent_args "ask-$mode")
-    if timeout 180 docker run --rm --add-host host.docker.internal:host-gateway -v "$dir:/workspace" -e WORKDIR=/workspace \
+    if lane_timed "ask-$mode" agent timeout 180 docker run --rm --name "lane-agent-$RUN_ID-ask-$mode" --add-host host.docker.internal:host-gateway -v "$dir:/workspace" -e WORKDIR=/workspace \
         -e ANTHROPIC_API_KEY=fake-key -e "ANTHROPIC_BASE_URL=$host" "${agent_words[@]}" \
         "$image" --dangerously-skip-permissions --model fake-model -p 'ask which colour' >"$log" 2>&1; then
         ok "claude exits 0 after the question is answered ($mode)"
@@ -1806,8 +1929,7 @@ ask_lane() {
     lane_group_down "ask-$mode"
     posts="$(node -e 'fetch(process.argv[1] + "/questions").then((r) => r.json()).then((j) => console.log(j.questionPosts))' "http://127.0.0.1:$port")"
     hooks="$(node -e 'fetch(process.argv[1] + "/hooks").then((r) => r.json()).then((j) => console.log(j.hookRequests))' "http://127.0.0.1:$port")"
-    kill "$fake_pid" 2>/dev/null
-    wait "$fake_pid" 2>/dev/null
+    lane_endpoint_stop "$fake_pid"
     if grep -q 'ANSWER=Blue' "$log"; then
         ok "the answer reaches the same run (ANSWER=Blue in the progress output, $mode)"
     else
@@ -1828,8 +1950,9 @@ ask_lane() {
     fi
 }
 
-ask_lane tool --ask
-ask_lane prose --ask-prose
+tool_ask_lane() { ask_lane tool --ask; }
+prose_ask_lane() { ask_lane prose --ask-prose; }
+lane_pair tool_ask_lane prose_ask_lane
 
 fi
 
@@ -1867,6 +1990,7 @@ await_pending_question() { # await_pending_question <job-id> [seconds] -> the qu
 start_ask_endpoint() { # start_ask_endpoint <name> -> sets ask_pid and ask_port
     node scripts/fake-model-endpoint.mjs --ask >"$work/fake-$1.port" &
     ask_pid=$!
+    lane_endpoint_started "$ask_pid"
     for _ in $(seq 1 20); do
         [ -s "$work/fake-$1.port" ] && break
         sleep 0.25
@@ -1905,8 +2029,7 @@ ask_roundtrip_lane() {
     answered="$(api POST "/api/jobs/$id/questions/$qid/answer" "$answer")"
     expect_status 'a second answer is refused' 409 POST "/api/jobs/$id/questions/$qid/answer" "$answer"
     expect_contains 'the refusal names the answered question' "$answered" 'QUESTION_ANSWERED'
-    kill "$ask_pid" 2>/dev/null
-    wait "$ask_pid" 2>/dev/null
+    lane_endpoint_stop "$ask_pid"
 
     # Stop while pending: the question is cancelled, the CLI interrupted, the job parked stopped.
     start_ask_endpoint stop
@@ -1920,8 +2043,7 @@ ask_roundtrip_lane() {
     closed) ok 'the stopped job'"'"'s question reads closed' ;;
     *) bad 'the stopped job'"'"'s question reads closed' "$answered" ;;
     esac
-    kill "$ask_pid" 2>/dev/null
-    wait "$ask_pid" 2>/dev/null
+    lane_endpoint_stop "$ask_pid"
     stop_driver
 }
 

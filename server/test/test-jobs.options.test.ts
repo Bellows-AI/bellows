@@ -9,16 +9,8 @@ const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SCRIPT = join(ROOT, 'scripts/test-jobs.sh');
 const directories: string[] = [];
 
-// Exercise routing, preflight and artifact handling through the real shell script. These tools
-// emulate only the standalone Stop lane's boundaries; the live lane still proves the agent behavior.
-function fixture() {
-    const dir = mkdtempSync(join(tmpdir(), 'jobs-options-'));
-    directories.push(dir);
-    const trace = join(dir, 'commands');
-    const timings = join(dir, 'timings.tsv');
-    writeFileSync(trace, '');
-    const commands = {
-        docker: `printf '%s\n' "$*" >>"$HARNESS_TRACE"
+const COMMANDS = {
+    docker: `printf '%s\n' "$*" >>"$HARNESS_TRACE"
 case "$1 $2" in
     'image inspect') [ "$3" != "\${MISSING_IMAGE:-}" ] || exit 1 ;;
     'compose up')
@@ -28,21 +20,55 @@ case "$1 $2" in
         fi
         ;;
     'run --rm')
+        image=''
+        for arg do
+            case "$arg" in claude-executor|opencode-executor) image="$arg" ;; esac
+        done
+        if [ "$EXPECT_PAIR" = 1 ]; then
+            touch "$HARNESS_GATE/$image.started"
+            attempts=0
+            while ! { [ -f "$HARNESS_GATE/claude-executor.started" ] && [ -f "$HARNESS_GATE/opencode-executor.started" ]; }; do
+                attempts=$((attempts + 1))
+                [ "$attempts" -lt 200 ] || exit 99
+                sleep 0.01
+            done
+        fi
+        if [ -n "$ABORT_WORKER" ] && [ "$ABORT_WORKER" = "$image" ]; then
+            kill -KILL "$PPID"
+            exit 0
+        fi
         for arg do
             case "$arg" in *:/workspace) touch "\${arg%:/workspace}/step-1" ;; esac
         done
         ;;
+    'wait '*) printf '%s\n' "\${SUPERVISOR_EXIT:-0}" ;;
+    'logs '*) echo 'supervisor diagnostics' ;;
 esac
 exit 0`,
-        node: `case "$1" in
+    node: `case "$1" in
     scripts/fake-model-endpoint.mjs) printf '1234\n' ;;
     -e) printf '1\n' ;;
     *) exit 99 ;;
 esac`,
-        npm: 'echo unexpected-npm >>"$HARNESS_TRACE"; exit 99',
-        timeout: '[ "$AGENT_TIMEOUT" != 1 ] || exit 124; shift; exec "$@"',
-    };
-    for (const [name, body] of Object.entries(commands)) {
+    npm: 'echo unexpected-npm >>"$HARNESS_TRACE"; exit 99',
+    timeout: `shift
+if [ "$1" = docker ] && [ "$2" = wait ]; then
+    [ -z "$SUPERVISOR_WAIT_STATUS" ] || exit "$SUPERVISOR_WAIT_STATUS"
+else
+    [ "$AGENT_TIMEOUT" != 1 ] || exit 124
+fi
+exec "$@"`,
+};
+
+// Exercise routing, preflight and artifact handling through the real shell script. These tools
+// emulate only the standalone Stop lane's boundaries; the live lane still proves the agent behavior.
+function fixture() {
+    const dir = mkdtempSync(join(tmpdir(), 'jobs-options-'));
+    directories.push(dir);
+    const trace = join(dir, 'commands');
+    const timings = join(dir, 'timings.tsv');
+    writeFileSync(trace, '');
+    for (const [name, body] of Object.entries(COMMANDS)) {
         writeFileSync(join(dir, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
     }
     return {
@@ -53,9 +79,14 @@ esac`,
                     ...process.env,
                     PATH: `${dir}:${process.env.PATH}`,
                     HARNESS_TRACE: trace,
+                    HARNESS_GATE: dir,
                     TIMINGS_FILE: timings,
                     AGENT_TIMEOUT: '',
                     POSTGRES_START_FAIL: '',
+                    SUPERVISOR_WAIT_STATUS: '',
+                    SUPERVISOR_EXIT: '0',
+                    EXPECT_PAIR: '',
+                    ABORT_WORKER: '',
                     ...env,
                 },
                 encoding: 'utf8',
@@ -64,6 +95,7 @@ esac`,
         trace: () => readFileSync(trace, 'utf8'),
         timings: () => readFileSync(timings, 'utf8'),
         checks: () => readFileSync(join(dir, 'timings.checks.tsv'), 'utf8'),
+        lifecycle: () => readFileSync(join(dir, 'timings.lifecycle.tsv'), 'utf8'),
         log: (name: string) => readFileSync(join(dir, `timings.${name}.log`), 'utf8'),
     };
 }
@@ -82,7 +114,14 @@ describe('test-jobs phase options', () => {
         expect(lane.trace()).toBe('');
     });
 
-    it.each([['--phase'], ['--phase', 'unknown'], ['--unknown']])('rejects invalid arguments %j', (...args) => {
+    it.each([
+        ['--phase'],
+        ['--phase', 'unknown'],
+        ['--unknown'],
+        ['--cli-workers'],
+        ['--cli-workers', '0'],
+        ['--cli-workers', '3'],
+    ])('rejects invalid arguments %j', (...args) => {
         const lane = fixture();
         expect(lane.run(args).status).toBe(2);
         expect(lane.trace()).toBe('');
@@ -115,18 +154,38 @@ describe('test-jobs phase options', () => {
         expect(lane.trace().trim().split('\n')).toEqual(['info', 'compose version']);
     });
 
-    it('runs standalone CLI checks with no database, build, board phases or board cleanup', () => {
+    it.each(['1', '2'])('runs every standalone CLI check with %s workers and no board setup', (workers) => {
         const lane = fixture();
-        const result = lane.run(['--phase', 'cooperative-stop']);
+        const result = lane.run(['--phase', 'cooperative-stop', '--cli-workers', workers]);
         expect(result.stderr).toBe('');
         expect(result.status).toBe(0);
-        expect(result.stdout).toContain('6 passed, 0 failed');
+        expect(result.stdout).toContain('8 passed, 0 failed');
         expect(lane.trace()).not.toMatch(/compose|unexpected-npm|factory-jobs-smoke/);
         expect(lane.timings()).toMatch(/^cooperative-stop\t\d+$/m);
         expect(lane.timings()).toMatch(/^cleanup\t\d+$/m);
         expect(lane.timings()).toMatch(/^total\t\d+$/m);
-        expect(lane.checks().trim().split('\n')).toHaveLength(7);
+        expect(lane.checks().trim().split('\n')).toHaveLength(9);
+        expect(lane.lifecycle()).toMatch(/^cooperative-stop\tstop-opencode\tagent\t\d+\t0$/m);
+        expect(lane.lifecycle()).toMatch(/^cooperative-stop\tstop-opencode\tsupervisor-wait\t\d+\t0$/m);
+        expect(lane.lifecycle()).toMatch(/^cooperative-stop\tstop-opencode\tcleanup\t\d+\t0$/m);
         expect(lane.log('stop-claude')).toBe('');
+    });
+
+    it('starts both CLI workers before either agent is allowed to finish', () => {
+        const lane = fixture();
+        const result = lane.run(['--phase', 'cooperative-stop'], { EXPECT_PAIR: '1' });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('8 passed, 0 failed');
+    });
+
+    it('fails an abruptly lost worker and cleans its resources without losing the other worker results', () => {
+        const lane = fixture();
+        const result = lane.run(['--phase', 'cooperative-stop'], { ABORT_WORKER: 'claude-executor' });
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain('claude_stop_lane reports its checks');
+        expect(result.stdout).toContain('opencode exits on its own after the stop');
+        expect(lane.trace()).toMatch(/rm -f lane-agent-.*stop-claude lane-sup-.*stop-claude/);
+        expect(lane.checks()).toContain('\tFAIL\t');
     });
 
     it('does not recreate shared Postgres and preserves startup errors before any build', () => {
@@ -169,5 +228,28 @@ describe('test-jobs phase options', () => {
         expect(lane.timings()).toMatch(/^total\t\d+$/m);
         expect(lane.checks()).toContain('\tFAIL\t');
         expect(lane.log('stop-opencode')).toBe('');
+    });
+
+    it.each(['124', '125'])(
+        'fails a supervisor wait with status %s after collecting diagnostics and cleaning up',
+        (status) => {
+            const lane = fixture();
+            const result = lane.run(['--phase', 'cooperative-stop'], { SUPERVISOR_WAIT_STATUS: status });
+            expect(result.status).toBe(1);
+            expect(result.stdout).toContain(`wait exit ${status}`);
+            expect(lane.log('stop-opencode.supervisor')).toContain('supervisor diagnostics');
+            expect(lane.lifecycle()).toMatch(new RegExp(`\\tsupervisor-wait\\t\\d+\\t${status}`));
+            expect(lane.trace()).toMatch(/rm -f lane-agent-.* lane-sup-/);
+            expect(lane.trace()).toMatch(/volume rm -f lane-/);
+        }
+    );
+
+    it('fails a nonzero supervisor verdict even when docker wait itself succeeds', () => {
+        const lane = fixture();
+        const result = lane.run(['--phase', 'cooperative-stop'], { SUPERVISOR_EXIT: '70' });
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain("supervisor exit '70'");
+        expect(lane.log('stop-opencode.supervisor-wait')).toBe('70\n');
+        expect(lane.trace()).toMatch(/rm -f lane-agent-.* lane-sup-/);
     });
 });

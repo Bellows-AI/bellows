@@ -150,8 +150,10 @@ Operational facts behind those:
   `--timeout`/`--json`/`--yes` as its own configuration and drops the flag silently.
   `core/test/skills.task-control.test.ts`.
 - **Iterate with a job phase, validate with the full lane.** Selected `test:jobs` phases provision
-  their own fixtures; standalone CLI phases skip Postgres and TypeScript builds. The full default
-  lane remains required for Docker runner behavior. `scripts/test-jobs.sh`, `docs/executor-testing.md`.
+  their own fixtures; standalone CLI phases skip Postgres and TypeScript builds and use at most
+  two isolated workers (`--cli-workers 1` selects serial cases). Board/driver phases stay sequential.
+  The full default lane remains required for Docker runner behavior.
+  `scripts/test-jobs.sh`, `docs/executor-testing.md`.
 - **Job fixtures are per run; the host is shared.** Stub image tags, the default disposable database,
   workspace/mailbox volumes and compose projects use run-specific names (`scripts/test-jobs.sh`).
   Postgres remains shared; do not recreate it or prune images while a lane is active. Board phases
