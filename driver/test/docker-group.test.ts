@@ -9,6 +9,8 @@ import {
     ctlVolumeArgs,
     exporterCreateArgs,
     exporterName,
+    gateCreateArgs,
+    gateName,
     removeGroup,
     startGroup,
     supervisorCreateArgs,
@@ -18,6 +20,7 @@ import {
 import { ctlVolumeName } from '../src/docker-mailbox.js';
 import { type RunnerFiles, startupRefusalOf } from '../src/docker-runner-support.js';
 import { StartupRefused } from '../src/startup-cause.js';
+import { gateLoopArgv } from '../src/container-scripts.js';
 import { MAILBOXES, SUPERVISOR_CREDENTIAL_NAMES, SUPERVISOR_EXIT } from '../src/supervisor-contract.js';
 import { orphanBoundMs } from '../src/supervisor-plan.js';
 
@@ -62,6 +65,12 @@ const job: BoardJob = {
 const START = '2026-09-01T00:00:00Z';
 
 const mounts = (argv: string[]): string[] => argv.filter((_arg, i) => argv[i - 1] === '--mount');
+/** The same attempt, whose checkout declares a gate: its group holds a gate container. */
+const gated: BoardJob = {
+    ...job,
+    repo: 'Bellows-AI/factory',
+    gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+};
 const volumeOf = (box: keyof typeof MAILBOXES): string => `src=${ctlVolumeName(job, MAILBOXES[box])},`;
 
 describe('the supervisor container', () => {
@@ -69,10 +78,10 @@ describe('the supervisor container', () => {
 
     // The supervisor runs the attempt's steps (sync, probe, publish, helpers, reclaim) as children
     // of its own container, so it mounts the member's workspace — only the member's own subtree.
-    it('mounts all four mailboxes and the member’s own workspace subtree, nothing broader', () => {
+    it('mounts every mailbox and the member’s own workspace subtree, nothing broader', () => {
         const mounted = mounts(argv);
-        expect(mounted).toHaveLength(5);
-        for (const box of ['in', 'out', 'export', 'supervisor'] as const) {
+        expect(mounted).toHaveLength(6);
+        for (const box of ['in', 'out', 'export', 'supervisor', 'gate'] as const) {
             expect(mounted.some((mount) => mount.includes(volumeOf(box)))).toBe(true);
         }
         const workspace = mounted.filter((mount) => mount.includes('workspaces'));
@@ -166,10 +175,10 @@ describe('creating and starting the group', () => {
         return { calls, written, removed, deps: { config, execDocker, files } };
     };
 
-    it('creates the four labelled volumes, then the supervisor, then the exporter', async () => {
+    it('creates the labelled mailbox volumes, then the supervisor, then the exporter', async () => {
         const { calls, deps } = recorder();
         await createGroup(deps, job, SESSION, { startedAt: START });
-        expect(calls.slice(0, 4)).toEqual(ctlVolumeArgs(job));
+        expect(calls.slice(0, Object.keys(MAILBOXES).length)).toEqual(ctlVolumeArgs(job));
         const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
         expect(created).toEqual([supervisorName(job), exporterName(job)]);
     });
@@ -209,6 +218,43 @@ describe('creating and starting the group', () => {
             ['start', supervisorName(job)],
             ['start', exporterName(job)],
         ]);
+    });
+
+    // Issue #773: the gate container is the group's own, after the supervisor — whose image owns the
+    // mailbox mount points the volumes take their owner from — told by the supervisor's env it is there.
+    it('creates and starts the gate container of a gated checkout after the supervisor, and tells the supervisor', async () => {
+        const { calls, deps } = recorder();
+        await createGroup(deps, gated, SESSION, { startedAt: START });
+        const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
+        expect(created).toEqual([supervisorName(gated), exporterName(gated), gateName(gated)]);
+        expect(gateName(gated)).toBe(`factory-gate-${gated.id}-${gated.leaseToken}`);
+        const supervisor = calls.find((argv) => argv.includes(supervisorName(gated)))!;
+        expect(supervisor).toContain('SUPERVISOR_GATE=1');
+        const startCalls: string[][] = [];
+        const recordStart = async (argv: string[]) => {
+            startCalls.push(argv);
+            return { stdout: '' };
+        };
+        await startGroup(recordStart, gated, SESSION);
+        expect(startCalls).toEqual([
+            ['start', supervisorName(gated)],
+            ['start', exporterName(gated)],
+            ['start', gateName(gated)],
+        ]);
+    });
+
+    it('creates no gate container, and tells the supervisor of none, for a checkout that declares no gates', async () => {
+        const { calls, deps } = recorder();
+        await createGroup(deps, job, SESSION, { startedAt: START });
+        expect(calls.some((argv) => argv.includes(gateName(job)) && argv[0] === 'create')).toBe(false);
+        expect(calls.find((argv) => argv.includes(supervisorName(job)))).not.toContain('SUPERVISOR_GATE=1');
+    });
+
+    it('removes the whole group, the gate container included, when the daemon refuses the gate', async () => {
+        const { calls, deps } = recorder((argv) => argv[0] === 'create' && argv.includes(gateName(gated)));
+        await expect(createGroup(deps, gated, SESSION, { startedAt: START })).rejects.toThrow('daemon said no');
+        expect(calls).toContainEqual(['rm', '-f', gateName(gated)]);
+        expect(calls).toContainEqual(['rm', '-f', supervisorName(gated)]);
     });
 
     it('removeGroup tolerates anything already gone', async () => {
@@ -287,5 +333,89 @@ describe('a refused sidecar create', () => {
             role: 'executor',
             message: 'Error response from daemon: manifest unknown',
         });
+    });
+});
+
+describe('the gate container (issue #773)', () => {
+    const argv = gateCreateArgs(config, gated, 'node:24');
+    const literals = (line: string[]) => line.filter((_arg, i) => line[i - 1] === '-e');
+
+    it('runs the gate loop over the gate mailbox in the declared image, the gate shell beside it', () => {
+        expect(argv.slice(-(gateLoopArgv().length + 2))).toEqual([
+            '--entrypoint',
+            'sh',
+            'node:24',
+            ...gateLoopArgv().slice(1),
+        ]);
+        expect(argv).toEqual(expect.arrayContaining(['-w', MAILBOXES.gate.path]));
+    });
+
+    it('mounts the member’s own subtree and the gate mailbox, and no other mailbox', () => {
+        const mounted = mounts(argv);
+        expect(mounted).toHaveLength(2);
+        expect(mounted.some((mount) => mount.includes(`volume-subpath=bellows/${USER}`))).toBe(true);
+        expect(mounted.some((mount) => mount.includes(volumeOf('gate')))).toBe(true);
+    });
+
+    // The gate writes the shared task worktree, so it writes as the uid:gid every other writer on
+    // that tree uses (1000:1000), with a HOME that uid can write (observed: root-written files left
+    // a worktree the uid-1000 reclaim could never remove).
+    it('runs as the runner uid:gid with the gate env’s own literals, and no claim value or credential', () => {
+        expect(argv).toEqual(expect.arrayContaining(['--user', '1000:1000']));
+        expect(literals(argv)).toEqual(['HOME=/tmp', 'NPM_CONFIG_UPDATE_NOTIFIER=false']);
+        expect(argv).not.toContain('--env-file');
+        expect(argv.join(' ')).not.toMatch(/tok-supervisor|tok-agent|tok-export|SUPERVISOR_/);
+    });
+
+    it('leaves the npm notice to a claim that names it, and points a declared cache into the repo cache', () => {
+        const named = gateCreateArgs(config, { ...gated, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } }, 'node:24');
+        expect(literals(named)).toEqual(['HOME=/tmp']);
+        const cacheJob = { ...gated, repo: 'acme/widgets', gates: { ...gated.gates!, cache: ['NPM_CONFIG_CACHE'] } };
+        expect(literals(gateCreateArgs(config, cacheJob, 'node:24'))).toContain(
+            `NPM_CONFIG_CACHE=/workspaces/bellows/${USER}/.cache/acme/widgets/NPM_CONFIG_CACHE`
+        );
+    });
+
+    it('is hardened, labelled for the fence and the reaper, and joins the runner network only when configured', () => {
+        expect(argv).toEqual(expect.arrayContaining(['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges']));
+        expect(argv).toEqual(
+            expect.arrayContaining(['--label', `factory.lease=${gated.leaseToken}`, '--label', 'factory.role=gate'])
+        );
+        expect(argv).not.toContain('--network');
+        const networked = gateCreateArgs(loadDriverConfig({ RUNNER_NETWORK: 'factory-ai_default' }), gated, 'node:24');
+        expect(networked).toEqual(expect.arrayContaining(['--network', 'factory-ai_default']));
+    });
+
+    // Issue #507: sized by GATE_*, each unset slot the runner's; nothing configured leaves it unthrottled.
+    it('carries the gate resources before the image, and none when unconfigured', () => {
+        const sized = gateCreateArgs(
+            loadDriverConfig({ RUNNER_CPU_LIMIT: '4', GATE_MEMORY_LIMIT: '8Gi', GATE_MEMORY_REQUEST: '2Gi' }),
+            gated,
+            'node:24'
+        );
+        expect(sized.slice(0, sized.indexOf('node:24'))).toEqual(
+            expect.arrayContaining(['--cpus', '4', '--memory', '8589934592', '--memory-reservation', '2147483648'])
+        );
+        expect(argv).not.toContain('--cpus');
+        expect(argv).not.toContain('--memory');
+    });
+
+    it('refuses a declared image that smuggles a flag, whitespace or an expansion, before anything is created', async () => {
+        for (const image of ['-v /:/host', 'node:24 alpine', 'node:$TAG']) {
+            const calls: string[][] = [];
+            const deps = {
+                config,
+                execDocker: async (line: string[]) => {
+                    calls.push(line);
+                    return { stdout: '' };
+                },
+                files: { writeFile: (async () => undefined) as never, rm: (async () => undefined) as never },
+            };
+            await expect(
+                createGroup(deps, { ...gated, gates: { ...gated.gates!, image } }, SESSION, { startedAt: START }),
+                image
+            ).rejects.toThrow(/image/);
+            expect(calls.filter((line) => line[0] === 'create' && line.includes(gateName(gated)))).toEqual([]);
+        }
     });
 });

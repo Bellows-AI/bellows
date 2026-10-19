@@ -13,7 +13,8 @@ import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.j
  * honors a kill order and writes agent.exit — the real entrypoints' half of the contract.
  */
 
-const MAILBOX = 'mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory';
+const MAILBOX =
+    'mkdir -p /factory/in /factory/out /factory/export /factory/supervisor /factory/gate && chown -R node:node /factory';
 const COPY = 'COPY ctl-agent.cjs stub-agent.sh /usr/local/bin/\n';
 // Issue #814: the driver starts every agent container as root, so every stub drops to node behind
 // the tool broker, the executor images' own launcher.

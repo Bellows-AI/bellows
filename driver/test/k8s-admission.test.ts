@@ -6,7 +6,7 @@ import { servicePodSpec } from '../src/k8s-auxspec.js';
 import { AGENT_LAUNCH_CAPS, workspacePath } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
 import { UNHARDENED_LABEL } from '../src/labels.js';
-import { gateEnvSecretName, runnerJobSpec, secretName } from '../src/k8s-podspec.js';
+import { runnerJobSpec, secretName } from '../src/k8s-podspec.js';
 import { reclaimGroupSpec } from '../src/k8s-group.js';
 import { WORKSPACE_PATH } from '../src/publish.js';
 import { AGENT_CONTAINER } from '../src/supervisor-contract.js';
@@ -40,17 +40,15 @@ const job: BoardJob = {
 } as BoardJob;
 
 describe('the admission policy Secret pattern', () => {
-    it.each([
-        ['runner claim env', secretName(job)],
-        ['gate env', gateEnvSecretName(job)],
-    ])('admits the %s Secret name', (_label, name) => {
-        expect(name).toMatch(pattern);
+    it('admits the runner claim env Secret name', () => {
+        expect(secretName(job)).toMatch(pattern);
     });
 
     // Issue #771: the sync, the publish steps and the helpers run in the task supervisor and hold
-    // no Secret of their own, so the policy admits no name for them — a Secret by one of these
-    // names is a driver doing something the design forbids, and admission refuses it.
-    it.each(['sync', 'publish', 'helper'])('refuses a retired %s env Secret name', (kind) => {
+    // no Secret of their own, and neither do the gates (issue #773): their env rides each request.
+    // A Secret by one of these names is a driver doing something the design forbids, and admission
+    // refuses it.
+    it.each(['sync', 'publish', 'helper', 'gate'])('refuses a retired %s env Secret name', (kind) => {
         expect(`factory-${kind}-0123456789abcdef-env`).not.toMatch(pattern);
     });
 

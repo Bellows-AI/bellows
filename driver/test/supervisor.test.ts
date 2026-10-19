@@ -5,6 +5,7 @@ import {
     readdirSync,
     readFileSync,
     realpathSync,
+    renameSync,
     rmSync,
     statSync,
     writeFileSync,
@@ -18,6 +19,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readRepoFile as read } from './fixtures/repo-files.js';
 import {
     AGENT_MAILBOX_DIR,
+    GATE_CANCEL_GRACE_MS,
+    GATE_FILES,
+    GATE_LOST_MS,
     MAILBOX_FILES,
     MAILBOXES,
     STEP_KINDS,
@@ -54,6 +58,9 @@ interface SupervisorModule {
     REPORT_PREFIX: string;
     REPORT_MS: number;
     STEP_KINDS: string[];
+    GATE_FILES: Record<string, string>;
+    GATE_LOST_MS: number;
+    GATE_CANCEL_MS: number;
     createMachine(initial?: string): Machine;
     supervise(env: Record<string, string>, log: (line: string) => void): Promise<number>;
 }
@@ -136,6 +143,8 @@ interface Driver {
     url: string;
     stop: boolean;
     kill: boolean;
+    /** The gate steps the driver cancelled: what `/control` answers beside the stop and the kill. */
+    cancel: string[];
     /** A driver that no longer knows the token: every route answers 401. */
     closed: boolean;
     posted: { id: string; body: unknown }[];
@@ -189,6 +198,7 @@ async function startDriver({ release = true }: { release?: boolean } = {}): Prom
         url: '',
         stop: false,
         kill: false,
+        cancel: [],
         closed: false,
         posted: [],
         queue: release ? [ORDER_GO] : [],
@@ -206,7 +216,8 @@ async function startDriver({ release = true }: { release?: boolean } = {}): Prom
             };
             if (driver.closed || request.headers.authorization !== `Bearer ${TOKEN}`) return send(401, {});
             if (request.method === 'GET' && request.url === '/control') {
-                return send(200, { stop: driver.stop, kill: driver.kill });
+                const cancel = driver.cancel.length > 0 ? { cancel: driver.cancel } : {};
+                return send(200, { stop: driver.stop, kill: driver.kill, ...cancel });
             }
             if (request.method === 'GET' && request.url?.startsWith('/step?')) {
                 const next = driver.queue.shift();
@@ -256,7 +267,7 @@ function run(driver: Driver | null, env: Record<string, string> = {}) {
     const root = mkdtempSync(join(tmpdir(), 'supervisor-'));
     dirs.push(root);
     const dir = (box: keyof typeof MAILBOXES) => join(root, MAILBOXES[box].path.split('/').pop()!);
-    const box = { in: dir('in'), out: dir('out'), export: dir('export'), own: dir('supervisor') };
+    const box = { in: dir('in'), out: dir('out'), export: dir('export'), own: dir('supervisor'), gate: dir('gate') };
     for (const path of Object.values(box)) mkdirSync(path, { recursive: true });
     // The agent's own directories inside its two mailboxes, which the supervisor creates (issue #814).
     const agent = { in: join(box.in, AGENT_MAILBOX_DIR), out: join(box.out, AGENT_MAILBOX_DIR) };
@@ -993,6 +1004,276 @@ describe('the supervisor run: a step still running when it stops serving', () =>
     });
 });
 
+/** What one gate request carried across the mailbox, as the gate loop read it. */
+interface GateRequestSeen {
+    id: string;
+    command: string;
+    cwd: string;
+    env: string;
+}
+/** How the fake loop answers one request: its exit and output, after `holdMs`. */
+interface GatePlan {
+    exitCode: number;
+    output: string;
+    holdMs?: number;
+}
+
+/**
+ * The gate container's loop (`scripts/gate-loop.sh`), PLAYED in JS over the same mailbox: it claims a
+ * request by renaming it into `running/`, reads its files, drops the env, honors a `cancel`, and
+ * answers `output` and `exit` before renaming it into `done/`. The real loop is never executed here:
+ * its `kill -KILL -1` would end every process of the user running the suite.
+ */
+function fakeGateLoop(
+    gateDir: string,
+    plan: (request: GateRequestSeen) => GatePlan = () => ({ exitCode: 0, output: 'ok' })
+) {
+    const at = (...parts: string[]) => join(gateDir, ...parts);
+    for (const sub of [GATE_FILES.requests, GATE_FILES.running, GATE_FILES.done])
+        mkdirSync(at(sub), { recursive: true });
+    const loop = {
+        seen: [] as GateRequestSeen[],
+        cancelled: [] as string[],
+        beating: true,
+        taking: true,
+    };
+    const held = new Map<string, { plan: GatePlan; since: number }>();
+    const answer = (id: string, exitCode: number, output: string) => {
+        writeFileSync(at(GATE_FILES.running, id, GATE_FILES.output), output);
+        writeFileSync(at(GATE_FILES.running, id, 'exit.tmp'), `${exitCode}\n`);
+        renameSync(at(GATE_FILES.running, id, 'exit.tmp'), at(GATE_FILES.running, id, GATE_FILES.exit));
+        renameSync(at(GATE_FILES.running, id), at(GATE_FILES.done, id));
+        held.delete(id);
+    };
+    const tick = () => {
+        if (loop.beating) writeFileSync(at(GATE_FILES.alive), '');
+        if (loop.taking) {
+            for (const id of readdirSync(at(GATE_FILES.requests))) {
+                renameSync(at(GATE_FILES.requests, id), at(GATE_FILES.running, id));
+                const file = (name: string) => readFileSync(at(GATE_FILES.running, id, name), 'utf8');
+                const request = {
+                    id,
+                    command: file(GATE_FILES.command),
+                    cwd: file(GATE_FILES.cwd),
+                    env: file(GATE_FILES.env),
+                };
+                rmSync(at(GATE_FILES.running, id, GATE_FILES.env));
+                loop.seen.push(request);
+                held.set(id, { plan: plan(request), since: Date.now() });
+            }
+        }
+        for (const [id, { plan: answerPlan, since }] of held) {
+            if (existsSync(at(GATE_FILES.running, id, GATE_FILES.cancel))) {
+                loop.cancelled.push(id);
+                answer(id, 137, 'killed');
+            } else if (loop.beating && Date.now() - since >= (answerPlan.holdMs ?? 0)) {
+                answer(id, answerPlan.exitCode, answerPlan.output);
+            }
+        }
+    };
+    const timer = setInterval(tick, 5);
+    loops.push(timer);
+    return loop;
+}
+const loops: NodeJS.Timeout[] = [];
+afterEach(() => {
+    for (const timer of loops.splice(0)) clearInterval(timer);
+});
+
+const GATED = { SUPERVISOR_GATE: '1', SUPERVISOR_GATE_LOST_MS: '300', SUPERVISOR_GATE_CANCEL_MS: '300' };
+const WORKTREE = '/workspaces/org/44444444-4444-4444-8444-444444444444/.worktrees/55555555-5555-4555-8555-555555555555';
+const gateStep = (id: string, command: string, extra: Partial<QueuedStep> = {}): QueuedStep =>
+    step(id, 'gate', [command], { cwd: WORKTREE, ...extra });
+
+describe('the supervisor run: gate steps through the gate mailbox', () => {
+    it('hands the gate its command, worktree and env, and answers the exit and the output', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 3, output: '1 failing' }));
+        driver.order(gateStep('gate-1', 'npm test', { env: { CI: 'true', TOKEN: 'gh-value' } }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: 3, stdout: '1 failing', timedOut: false });
+        expect(loop.seen).toEqual([
+            { id: 'gate-1', command: 'npm test', cwd: WORKTREE, env: 'CI=true\nTOKEN=gh-value\n' },
+        ]);
+        // The answer is read and gone: the mailbox keeps no finished request.
+        expect(readdirSync(join(supervised.box.gate, GATE_FILES.done))).toEqual([]);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('cancels a gate past its deadline and answers it timed out, as the 124 of `timeout`', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: '', holdMs: 60_000 }));
+        driver.order(gateStep('gate-1', 'sleep 60', { timeoutMs: 200 }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(loop.cancelled).toEqual(['gate-1']);
+        expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: 124, timedOut: true });
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers no exit — never a verdict — for a request the gate loop never took', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const loop = fakeGateLoop(supervised.box.gate);
+        loop.beating = false;
+        loop.taking = false;
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: null, timedOut: false });
+        expect(driver.answers.get('gate-1')?.stderr).toMatch(/never took/);
+        // Never taken, so never to be taken: the request is withdrawn.
+        expect(readdirSync(join(supervised.box.gate, GATE_FILES.requests))).toEqual([]);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers no exit for a request the gate loop took and then went silent on', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: '', holdMs: 60_000 }));
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the gate to be taken', () => loop.seen.length === 1);
+        loop.beating = false;
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: null, timedOut: false });
+        expect(driver.answers.get('gate-1')?.stderr).toMatch(/lost mid-run/);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers another step while a gate runs: a gate never holds the step queue', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: 'passed', holdMs: 1_500 }));
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        driver.order(step('draft-1', 'publish', ['node', '-e', 'console.log("drafted")']));
+        await until('the publish answer', () => driver.answers.has('draft-1'));
+        expect(driver.answers.has('gate-1')).toBe(false);
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: 0, stdout: 'passed' });
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('takes a cancel off the control poll, not the step queue, even with a long step running', async () => {
+        const driver = await startDriver();
+        // The driver's own pace is slow here: a gate in flight is what quickens the poll.
+        const supervised = run(driver, { ...GATED, SUPERVISOR_CONTROL_MS: '60000' });
+        const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: '', holdMs: 60_000 }));
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the gate to be taken', () => loop.seen.length === 1);
+        driver.order(step('helper-1', 'helper', ['node', '-e', 'setTimeout(() => {}, 60000)'], { timeoutMs: 60_000 }));
+        await until('the helper to start', () =>
+            existsSync(join(supervised.box.own, MAILBOX_FILES.steps, 'helper-1.json'))
+        );
+        driver.cancel.push('gate-1');
+        await until('the cancel to reach the gate loop', () => loop.cancelled.includes('gate-1'), 2_000);
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')?.timedOut).toBe(false);
+        // The helper still holds the step queue: the group ends by its closed endpoint, read off the report.
+        supervised.agentExits(0);
+        driver.closed = true;
+        await supervised.done;
+    });
+
+    it('withdraws a cancelled gate the loop has not taken yet, without running it', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const loop = fakeGateLoop(supervised.box.gate);
+        loop.taking = false;
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the request', () => readdirSync(join(supervised.box.gate, GATE_FILES.requests)).length === 1);
+        driver.cancel.push('gate-1');
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        loop.taking = true;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(loop.seen).toEqual([]);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('interrupts a gate still running when the driver orders `finish`', async () => {
+        const driver = await startDriver();
+        driver.autoFinish = false;
+        const supervised = run(driver, GATED);
+        const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: '', holdMs: 60_000 }));
+        supervised.agentExits(0);
+        await until('the report', () => driver.reports.length === 1);
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the gate to be taken', () => loop.seen.length === 1);
+        driver.order(ORDER_FINISH);
+        const finished = Date.now();
+        await supervised.done;
+        expect(Date.now() - finished).toBeLessThan(10_000);
+        expect(loop.cancelled).toEqual(['gate-1']);
+        expect(supervised.ledger('gate-1').invocations['i-1']).toMatchObject({ state: 'interrupted' });
+    });
+
+    it('refuses a gate step in a group with no gate container, without writing a request', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver);
+        driver.order(gateStep('gate-1', 'npm test'));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: 126 });
+        expect(driver.answers.get('gate-1')?.stderr).toMatch(/no gate container/);
+        expect(existsSync(join(supervised.box.gate, GATE_FILES.requests))).toBe(false);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it.each([
+        ['a name sh cannot export', { 'NPM.CONFIG': '1' }, /cannot be exported/],
+        ['a value holding a newline', { CI: 'a\nEVIL=1' }, /newline/],
+    ])('refuses a gate whose env carries %s, without writing a request', async (_what, env, why) => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const loop = fakeGateLoop(supervised.box.gate);
+        driver.order(gateStep('gate-1', 'npm test', { env }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: 126 });
+        expect(driver.answers.get('gate-1')?.stderr).toMatch(why);
+        expect(loop.seen).toEqual([]);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('runs every gate execution it is asked for, and answers a redelivered one from its ledger', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: 'passed', holdMs: 300 }));
+        // The same named gate, asked twice: two executions, two ids.
+        driver.order(gateStep('gate-a', 'npm test'));
+        await until('the first answer', () => driver.answers.has('gate-a'));
+        driver.order(gateStep('gate-b', 'npm test'));
+        await until('the second answer', () => driver.answers.has('gate-b'));
+        // A delivery of the first again, under its own invocation: answered as it ended, never run.
+        driver.answers.delete('gate-a');
+        driver.order(gateStep('gate-a', 'npm test'));
+        await until('the redelivered answer', () => driver.answers.has('gate-a'));
+        expect(driver.answers.get('gate-a')).toMatchObject({ exitCode: 0, replayed: true });
+        expect(loop.seen.map((seen) => seen.id)).toEqual(['gate-a', 'gate-b']);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('joins a delivery of a gate still running instead of running it twice', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: 'passed', holdMs: 500 }));
+        driver.order(gateStep('gate-1', 'npm test'));
+        await until('the gate to be taken', () => loop.seen.length === 1);
+        driver.order(gateStep('gate-1', 'npm test'));
+        await until('the answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: 0, stdout: 'passed' });
+        expect(loop.seen).toHaveLength(1);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+});
+
 describe('what crosses the mailboxes', () => {
     it('writes no credential into a directory the agent mounts, nor into the exporter’s', async () => {
         const driver = await startDriver();
@@ -1035,6 +1316,9 @@ describe('what crosses the mailboxes', () => {
         expect(supervisor.REPORT_MS).toBe(SUPERVISOR_REPORT_MS);
         expect(supervisor.REPORT_PREFIX).toBe(SUPERVISOR_REPORT_PREFIX);
         expect(supervisor.STEP_KINDS).toEqual([...STEP_KINDS]);
+        expect(supervisor.GATE_FILES).toEqual(GATE_FILES);
+        expect(supervisor.GATE_LOST_MS).toBe(GATE_LOST_MS);
+        expect(supervisor.GATE_CANCEL_MS).toBe(GATE_CANCEL_GRACE_MS);
     });
 
     it('gives the agent `in` read-only and `out` read-write, and no other mailbox', () => {
@@ -1044,6 +1328,13 @@ describe('what crosses the mailboxes', () => {
         expect(MAILBOXES.supervisor.agent).toBeNull();
         expect(MAILBOXES.supervisor.exporter).toBeNull();
         expect(MAILBOXES.export.exporter).toBe('rw');
+    });
+
+    it('gives the gate mailbox to the supervisor and the gate container alone', () => {
+        expect(MAILBOXES.gate).toMatchObject({ supervisor: 'rw', agent: null, exporter: null, gate: 'rw' });
+        for (const box of [MAILBOXES.in, MAILBOXES.out, MAILBOXES.export, MAILBOXES.supervisor]) {
+            expect(box.gate, box.name).toBeNull();
+        }
     });
 
     it('names no Kubernetes API in the supervisor, which has none to reach', () => {

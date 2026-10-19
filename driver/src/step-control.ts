@@ -67,6 +67,12 @@ export interface StepSink {
     release(token: string): void;
     /** A runner makes a group under the token: a fresh supervisor, with no contact, report or refusal yet. */
     attach(token: string): void;
+    /**
+     * Cancels a gate step (issue #773): one not pulled yet is dropped and its waiter rejected; one the
+     * supervisor holds is named on its control poll (`cancels`) until its answer settles it — never a
+     * step of its own, so a cancel never queues behind the step it cancels.
+     */
+    cancel(token: string, id: string): void;
 }
 
 /**
@@ -89,6 +95,8 @@ export interface StepBroker extends StepSink {
     next(token: string, waitMs: number, signal: AbortSignal): Promise<StepRequest | null | 'closed'>;
     /** Records one call's result; false for an unknown token or a call nobody waits for. */
     settle(token: string, id: string, invocation: string, result: StepResult): boolean;
+    /** The pulled steps the driver cancelled, which the supervisor's control poll reads. */
+    cancels(token: string): string[];
     /**
      * Takes the supervisor's report: `accepted` the first time, or a serving report's departure under
      * the same id; `duplicate` for a redelivery; `conflict` for another report than the one taken.
@@ -118,6 +126,8 @@ interface Slot {
     gone: string | null;
     /** The reports of groups a runner made again since: a late delivery of one is never the new group's. */
     retired: Set<string>;
+    /** The pulled steps the driver cancelled, until their answers settle them. */
+    cancelled: Set<string>;
 }
 
 const newSlot = (): Slot => ({
@@ -129,6 +139,7 @@ const newSlot = (): Slot => ({
     reportWaiters: [],
     gone: null,
     retired: new Set(),
+    cancelled: new Set(),
 });
 
 const callKey = (id: string, invocation: string): string => `${id}\n${invocation}`;
@@ -141,6 +152,21 @@ function abandon(slot: Slot, why: string): void {
     slot.waiters.clear();
     for (const waiter of waiters) waiter.reject(new StepChannelClosed(`its step was answered: ${why}`));
     for (const poller of [...slot.pollers]) poller.resolve(null);
+}
+
+/** Cancels one step on its slot (`StepSink.cancel`). */
+function cancelStep(slot: Slot, id: string): void {
+    const queued = slot.queue.findIndex((step) => step.id === id);
+    const calls = [...slot.waiters.entries()].filter(([key]) => key.startsWith(`${id}\n`));
+    if (queued < 0) {
+        if (calls.length > 0) slot.cancelled.add(id);
+        return;
+    }
+    slot.queue.splice(queued, 1);
+    for (const [key, waiter] of calls) {
+        slot.waiters.delete(key);
+        waiter.reject(new StepChannelClosed(`step ${id} was pulled: it was cancelled first`));
+    }
 }
 
 /** The report waiters of a group that is gone: its report will never come. */
@@ -287,9 +313,15 @@ export function createStepBroker(): StepBroker {
             const waiter = slot?.waiters.get(key);
             if (!slot || !waiter) return false;
             slot.waiters.delete(key);
+            slot.cancelled.delete(id);
             waiter.resolve(result);
             return true;
         },
+        cancel(token, id) {
+            const slot = slots.get(token);
+            if (slot) cancelStep(slot, id);
+        },
+        cancels: (token) => [...(slots.get(token)?.cancelled ?? [])],
         report(token, report) {
             const slot = slots.get(token);
             return slot ? takeReport(slot, report) : 'conflict';
@@ -307,6 +339,7 @@ export const noStepChannel: StepSink = {
     contacted: () => false,
     release: () => undefined,
     attach: () => undefined,
+    cancel: () => undefined,
 };
 
 const HTTP_OK = 200;

@@ -28,6 +28,7 @@ import {
 } from '../src/review.js';
 import {
     claudeTurnsScript,
+    gateLoopScript,
     gateShellScript,
     opencodeCacheProbeScript,
     opencodeReadoutScript,
@@ -67,6 +68,9 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['opencode-cache-probe.cjs', 'node'],
     ['credential-helper.sh', 'sh'],
     ['gate-shell.sh', 'sh'],
+    // `sh -n` below only parses it: the gate loop is never run outside its container
+    // (scripts-gate-loop.test.ts says why).
+    ['gate-loop.sh', 'sh'],
     ['review-collect.cjs', 'node'],
     ['review-reply.cjs', 'node'],
     ['helper-noop.cjs', 'node'],
@@ -125,6 +129,7 @@ describe('the container scripts', () => {
         expect(opencodeCacheProbeScript).toBe(readFileSync(pathOf('opencode-cache-probe.cjs'), 'utf8'));
         expect(CREDENTIAL_HELPER).toBe(readFileSync(pathOf('credential-helper.sh'), 'utf8').trim());
         expect(gateShellScript).toBe(readFileSync(pathOf('gate-shell.sh'), 'utf8'));
+        expect(gateLoopScript).toBe(readFileSync(pathOf('gate-loop.sh'), 'utf8'));
         expect(reviewCollectScript).toBe(readFileSync(pathOf('review-collect.cjs'), 'utf8'));
         expect(reviewReplyScript).toBe(readFileSync(pathOf('review-reply.cjs'), 'utf8'));
         expect(HELPER_REGISTRY.get('noop')?.scriptBody).toBe(readFileSync(pathOf('helper-noop.cjs'), 'utf8'));

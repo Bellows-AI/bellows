@@ -48,6 +48,7 @@ import {
     readVerdict,
 } from './k8s-poll.js';
 import { deadServices, restartServiceFleet, startServiceFleet, teardownServices } from './k8s-services.js';
+import { resizeGateSidecar, runGateInGroup } from './k8s-gate.js';
 import {
     answerPreview,
     expectOk,
@@ -349,6 +350,8 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
         },
         () => undefined
     );
+    // The agent's run is the gate sidecar's idle phase: its requests come down until the verify.
+    await resizeGateSidecar(deps, job, 'idle');
     await orderGo(host, job);
 
     let polled: { timedOut: boolean; jobSucceeded: boolean };
@@ -643,6 +646,8 @@ export function createKubernetesRunner(
             adoptFinishedRunner(deps, job, { scrapeClaudeCloseRead, attachOpencodeOutcome }, signal),
         snapshotTree: (job: BoardJob, key: string, signal?: AbortSignal) => snapshotReviewTree(deps, job, key, signal),
         runHelper: (job: BoardJob, plan: HelperPlan, call: HelperCall = {}) => runHelper(deps, job, plan, call),
+        runGate: (job, gate, signal) => runGateInGroup(deps, job, gate, signal),
+        resizeGate: (job, phase) => resizeGateSidecar(deps, job, phase),
         syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
             syncCheckout(deps, job, session ?? null, githubToken),
         finish: (job: BoardJob) => finishGroup(deps, job),

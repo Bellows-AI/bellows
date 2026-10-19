@@ -321,8 +321,12 @@ expect_contains     'the driver role names the service DNS objects' "$rbac" \
 expect_contains     'the driver role reads why a service pod vanished' "$rbac" \
     "resources: ['events']
       verbs: ['list']"
-# Arbitrary exec into a running pod is the one escalation the design never needed: gates run as
-# Jobs this driver specs itself, never as exec calls into somebody else's container.
+# The gate sidecar's in-place resize (issue #773): patch on the resize subresource and no more.
+expect_contains     'the driver role resizes the gate sidecar' "$rbac" \
+    "resources: ['pods/resize']
+      verbs: ['patch']"
+# Arbitrary exec into a running pod is the one escalation the design never needed: gates run in
+# the gate sidecar this driver specs itself, never as exec calls into somebody else's container.
 expect_not_contains 'the driver role never execs into pods' "$rbac" 'pods/exec'
 expect_not_contains 'the driver role never watches'         "$rbac" 'watch'
 # The runner vitals: a read-only get against the metrics API, which the metrics-server serves
@@ -774,8 +778,12 @@ admission="$(awk '/^# Source: factory\/templates\/driver-admission.yaml/,/^---/'
 expect_contains 'the admission policy binds the driver identity' "$admission" \
     "system:serviceaccount:$NAMESPACE:$RELEASE-factory-driver"
 expect_contains 'the admission policy names the per-attempt Secret pattern' "$admission" \
-    '^factory-(job|gate)-[a-z0-9-]+-env$'
+    '^factory-job-[a-z0-9-]+-env$'
 expect_contains 'the admission policy fences deletes by label' "$admission" "'factory.job' in variables.target.metadata.labels"
+# The gate sidecar's resize (issue #773) changes the `gate` container alone.
+expect_contains 'the admission policy matches the gate resize' "$admission" "operations: ['UPDATE']
+              resources: ['pods/resize']"
+expect_contains 'the admission policy lets a resize change only the gate' "$admission" "c.name == 'gate'"
 # The Role's namespace-wide configmaps `patch` (issue #821) reaches only a checkout claim, and only
 # to revoke it: labels and data kept, no annotation but factory.revoked changed.
 expect_contains 'the admission policy matches configmap updates' "$admission" "operations: ['UPDATE']

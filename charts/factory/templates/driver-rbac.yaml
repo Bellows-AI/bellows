@@ -63,6 +63,11 @@ rules:
     - apiGroups: ['']
       resources: ['pods/log']
       verbs: ['get']
+    # The gate sidecar's in-place resize (issue #773): low while the agent runs, the gate requests
+    # for verify. The admission policy's `-resize` lets it change the `gate` container alone.
+    - apiGroups: ['']
+      resources: ['pods/resize']
+      verbs: ['patch']
     # Why a declared service pod vanished mid-run (evicted, its node removed): its events outlive
     # it, and the verdict quotes the newest. Listed by name, one read per vanished pod.
     - apiGroups: ['']

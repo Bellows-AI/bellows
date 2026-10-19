@@ -217,7 +217,17 @@ export function postRefusal(res: K8sResponse, what: string, ...tolerate: number[
 
 export type K8sMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
-export type K8sRequest = (method: K8sMethod, path: string, body?: unknown) => Promise<K8sResponse>;
+/**
+ * One API call. A PATCH is a JSON merge patch unless `contentType` names another patch type — the
+ * gate resize's strategic merge patch (issue #773), which merges `initContainers` by name where a
+ * merge patch would replace the whole list.
+ */
+export type K8sRequest = (
+    method: K8sMethod,
+    path: string,
+    body?: unknown,
+    contentType?: string
+) => Promise<K8sResponse>;
 
 /**
  * Every k8s-executor function's transport bundle, in one parameter — the same `RunnerDeps`
@@ -342,7 +352,7 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
     // handshake per poll tick and buys the elimination of the reuse race by construction.
     const agent = deps.agent ?? new Agent({ keepAlive: false });
 
-    return (method, path, body) =>
+    return (method, path, body, contentType) =>
         new Promise<K8sResponse>((resolve, reject) => {
             const req = request(
                 {
@@ -356,7 +366,8 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
                     headers: {
                         // Read per call: a rotated ServiceAccount token must not be remembered.
                         authorization: `Bearer ${readFile(`${serviceAccountDir}/token`, 'utf8').trim()}`,
-                        [CONTENT_TYPE_HEADER]: method === 'PATCH' ? MERGE_PATCH_CONTENT_TYPE : JSON_CONTENT_TYPE,
+                        [CONTENT_TYPE_HEADER]:
+                            contentType ?? (method === 'PATCH' ? MERGE_PATCH_CONTENT_TYPE : JSON_CONTENT_TYPE),
                     },
                 },
                 (res) =>
@@ -390,6 +401,8 @@ export interface K8sJobStatus {
 
 export interface K8sPod {
     metadata?: { name?: string; deletionTimestamp?: string };
+    /** The containers as specced: what names a sidecar's image when its status does not (#773). */
+    spec?: { initContainers?: { name?: string; image?: string }[] };
     status?: {
         phase?: string;
         /** The pod-level ending — `Evicted` and its message — when no container recorded one. */

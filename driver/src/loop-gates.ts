@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { BoardJob, DeclaredGate } from './board.js';
 import { CONTROL_TOKEN_ENV, CONTROL_URL_ENV, gateEnvBody, setupTimeoutMs } from './claim.js';
 import { tailBytes, type DeadService } from './runner.js';
+import { stepLost } from './step-control.js';
 import { declaredTimeoutMs, type GateRun } from './gates.js';
 import { clearPendingQuestions, down, raceStep } from './loop-attempt.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
@@ -99,6 +100,10 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
             job,
             gates: job.gates.gates,
             freshEnv: () => gateEnvNow(rt, job, 'a gate run'),
+            // The agent's ad-hoc gate found the supervisor lost: the attempt's, once its run is over.
+            onInfraLoss: (reason) => {
+                state.gateLoss ??= reason;
+            },
         });
         // Beside `env`, not inside it: the reserved-name filter keeps a member-configured
         // BELLOWS_GATE_* out of the claim lines, and these are the driver's own minted values.
@@ -126,9 +131,7 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
             endPass: declared.length > 0 || Boolean(job.setupFailure),
         };
     } catch (e) {
-        // The container came up but registration did not. Released — not stopped — so the
-        // cooldown owns it and the next turn reuses it, instead of leaking one live
-        // environment per failed claim until the driver restarts.
+        // Filed but never registered: the checkout is forgotten again, so no entry outlives the claim.
         gates.manager.release(key, job);
         throw e;
     }
@@ -172,10 +175,11 @@ export const setupFailureNote = (failure: NonNullable<BoardJob['setupFailure']>)
 async function runEnvironmentSetup(rt: LoopRuntime, job: BoardJob, key: string, state: JobState): Promise<void> {
     const manager = rt.gates?.manager;
     if (!manager || !job.gates?.setup) return;
+    await sizeGateForVerify(rt, job);
     const started = Date.now();
     const running = manager
         .runSetup(key, { signal: state.signal, timeoutMs: setupTimeoutMs(rt.config, job) })
-        .catch((e: Error): GateRun => ({ exitCode: REFUSED_TO_RUN_EXIT_CODE, output: e.message }));
+        .catch(refusedToRun);
     const raced = await raceStep(state.signal, running);
     const run = raced?.value;
     if (!run || down(state)) return;
@@ -272,6 +276,23 @@ const gateEnvNow = async (rt: LoopRuntime, job: BoardJob, what: string): Promise
     return gateEnvBody({ ...job, gateEnv }, await askGithubToken(rt, job, what));
 };
 
+/**
+ * A gate the transport could not run is a failed gate (125) — but a lost supervisor (`stepLost`,
+ * issue #773) is no verdict on the gate at all: it is rethrown, and the attempt is interrupted.
+ */
+const refusedToRun = (e: Error): GateRun => {
+    if (stepLost(e)) throw e;
+    return { exitCode: REFUSED_TO_RUN_EXIT_CODE, output: e.message };
+};
+
+/**
+ * Asks the runner to size the gate container for the setup and the gates (issue #773). Best-effort:
+ * whatever it answers, the setup and the gates run.
+ */
+export async function sizeGateForVerify(rt: LoopRuntime, job: BoardJob): Promise<void> {
+    await rt.runner.resizeGate(job, 'verify').catch(() => false);
+}
+
 /** The gate server's URL and token, the agent's alone. */
 const GATE_SERVER_PAIR: readonly string[] = ['BELLOWS_GATE_URL', 'BELLOWS_GATE_TOKEN'];
 
@@ -293,7 +314,7 @@ async function runOneGate(ctx: GatesRunCtx, gate: DeclaredGate): Promise<GateRun
                 timeoutMs: declaredTimeoutMs(gate),
             });
         })
-        .catch((e: Error) => ({ exitCode: REFUSED_TO_RUN_EXIT_CODE, output: e.message }));
+        .catch(refusedToRun);
 }
 
 /**
@@ -306,11 +327,8 @@ async function runOneGate(ctx: GatesRunCtx, gate: DeclaredGate): Promise<GateRun
  * run at all is a failed gate — an exit code of 125 is docker's "container not there", and
  * treating it as a pass would be the one lie this loop must never tell.
  *
- * Each gate re-acquires the environment first, exactly as the ad-hoc endpoint does: the
- * cooldown the agent's last ad-hoc gate call armed can fire while the agent keeps working,
- * and a run that outlives GATE_COOLDOWN_MS must not fail at the finish line over an
- * environment that acquire can revive (acquire cancels a pending teardown and recreates a
- * torn-down one).
+ * Each gate re-acquires the environment first, exactly as the ad-hoc endpoint does: every gate
+ * run starts on a GitHub token of its own (docs/connections.md).
  */
 export async function runDeclaredGates(
     rt: LoopRuntime,
@@ -393,7 +411,7 @@ async function retryFailedSetup(ctx: GatesRunCtx): Promise<GateFailure | null> {
     const retried = gateEnvNow(rt, job, 'the setup retry')
         .then((envBody) => manager.acquire(gateSession.key, gateSession.image, envBody, { job }))
         .then(() => (down(state) ? null : manager.runSetup(gateSession.key, { signal })))
-        .catch((e: Error): GateRun => ({ exitCode: REFUSED_TO_RUN_EXIT_CODE, output: e.message }));
+        .catch(refusedToRun);
     const outcome = (await raceStep(state.signal, retried))?.value;
     if (!outcome || down(state)) return null;
     if (outcome.exitCode === 0) {
@@ -418,7 +436,7 @@ export async function probeDeadServices(rt: LoopRuntime, job: BoardJob): Promise
     }
 }
 
-/** One gate session's teardown: the environment goes back to its cooldown, the token dies. */
+/** One gate session's teardown: the checkout is forgotten, the token dies. */
 export function releaseGateSession(rt: LoopRuntime, session: GateSession, job: BoardJob): void {
     rt.gates?.server.unregister(session.token);
     rt.gates?.manager.release(session.key, job);

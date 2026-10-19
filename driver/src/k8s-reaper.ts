@@ -15,14 +15,7 @@ import {
 import { claimPath, podsPath, secretsPath, servicesPath } from './k8s-auxspec.js';
 import { releaseClaimAfterGroupEnd } from './k8s-fence.js';
 import { holderGroupsOf } from './k8s-group.js';
-import {
-    finishedAgentRun,
-    gateEnvSecretName,
-    jobsPath,
-    type ListedRunnerJob,
-    runnerJobName,
-    secretName,
-} from './k8s-podspec.js';
+import { finishedAgentRun, jobsPath, type ListedRunnerJob, runnerJobName, secretName } from './k8s-podspec.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict } from './reaper.js';
 
@@ -34,10 +27,10 @@ import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict } from './reaper
  *
  * RBAC needs nothing new: `list` on jobs, pods and services is the fence's grant, `delete` on all resource
  * kinds is already the chart's Role. `list secrets` stays deliberately ungranted — which is why
- * the attempt-scoped env Secrets are reaped by DERIVED NAME, never enumerated. The runner and gate
- * env Secrets' names hash the same (job id, lease token) pair the labels carry, so every one of
- * them is derivable: the sync, publish and helper steps run in the task supervisor and have no
- * Secret of their own, which is also why no nonce-named Secret is left for this arm to miss. A
+ * the attempt-scoped env Secret is reaped by DERIVED NAME, never enumerated. Its name hashes the
+ * same (job id, lease token) pair the labels carry, so it is derivable: the sync, publish, helper
+ * and gate steps run in the task group and have no Secret of their own, which is also why no
+ * nonce-named Secret is left for this arm to miss. A
  * runner Job its driver suspended because its teardown went unconfirmed (`k8s-teardown.ts`) is
  * the anchor those names are derived from: reaped, never adopted. A gone job's checkout claim goes
  * through the fence's one deletion (`releaseClaimAfterGroupEnd`), never on an unconfirmed end.
@@ -203,13 +196,13 @@ const deleteNamed = async (request: K8sRequest, path: string, uid?: string): Pro
     }
 };
 
-/** The attempt-scoped env Secrets, re-derived through the builders that created them. */
+/** The attempt-scoped env Secret, re-derived through the builder that created it. */
 const derivedSecretPaths = (config: DriverConfig, group: OrphanGroup): string[] => {
     const job = attemptPair(group.jobId, group.leaseToken!);
     const namespace = config.k8sNamespace;
     // Every one of these hashes the same (job id, lease token) pair the labels carry — see the
     // file header for why the helper env Secret is the one left out.
-    return [secretName(job), gateEnvSecretName(job)].map((name) => `${secretsPath(namespace)}/${name}`);
+    return [`${secretsPath(namespace)}/${secretName(job)}`];
 };
 
 const uuidScoped = (group: OrphanGroup): group is OrphanGroup & { leaseToken: string } =>

@@ -14,9 +14,18 @@ import type {
 } from '../src/board.js';
 import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board-retry.js';
 import { loadDriverConfig, type DriverConfig } from '../src/config.js';
-import type { AdoptedRun, DeadService, RunOutcome, RunSession, Runner, RuntimeSample } from '../src/runner.js';
+import type {
+    AdoptedRun,
+    DeadService,
+    GateSizing,
+    RunOutcome,
+    RunSession,
+    Runner,
+    RuntimeSample,
+} from '../src/runner.js';
 import { AdoptionBlocked } from '../src/runner.js';
-import type { GateManager, GateRun, GateRunOptions, GateServer } from '../src/gates.js';
+import type { GateClaim, GateManager, GateRun, GateRunOptions, GateServer } from '../src/gates.js';
+import type { StepResult } from '../src/supervisor-contract.js';
 import { setupTimeoutMs } from '../src/claim.js';
 import { ServicesNotRunning } from '../src/service-restart.js';
 import {
@@ -474,6 +483,8 @@ function stubRunner(
     startedServices: string[];
     /** The runtime budget pause/resume requests, by job id and paused state. */
     paused: { id: string; paused: boolean }[];
+    /** Every gate resize the loop asked for (issue #773), in order. */
+    resized: GateSizing[];
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
@@ -570,6 +581,15 @@ function stubRunner(
         },
         async runHelper(): Promise<HelperResult> {
             throw new Error('no helper scripted');
+        },
+        // The gate stack is stubbed whole in this suite; the runner's own gate step never runs here.
+        async runGate(): Promise<StepResult> {
+            throw new Error('no gate step scripted');
+        },
+        resized: [] as GateSizing[],
+        async resizeGate(_job: BoardJob, phase: GateSizing) {
+            runner.resized.push(phase);
+            return true;
         },
         ...(options.reapOrphanedClaim
             ? {
@@ -4227,11 +4247,10 @@ describe('verification gates', () => {
         expect(board.board.completed[0]?.output).toContain('No such container');
     });
 
-    // The gate cooldown can tear the environment down mid-run — the agent's last ad-hoc gate
-    // call armed it, and a run that keeps working past GATE_COOLDOWN_MS watches the timer fire
-    // before the gates pass. The close-of-run gates re-acquire, exactly as the ad-hoc endpoint
-    // does, so a cooldown teardown can never fail a finished run at the finish line.
-    it('re-acquires the gate environment before each gate, so a cooldown teardown mid-run cannot fail the close-of-run gates', async () => {
+    // The close-of-run gates re-acquire before each gate, exactly as the ad-hoc endpoint does: each
+    // gate run files the attempt again with an env (a GitHub token) of its own, so an environment
+    // forgotten mid-run can never fail a finished run at the finish line.
+    it('re-acquires the gate environment before each gate, so an environment forgotten mid-run cannot fail the close-of-run gates', async () => {
         const board = stubBoard([gatedJob(1)]);
         const stack = stubGateStack();
         let up = true;
@@ -4247,7 +4266,7 @@ describe('verification gates', () => {
             return { exitCode: 0, output: `${name} ok` };
         };
         const key = `bellows/${USER}/.worktrees/${gatedJob(1).id}`;
-        // The cooldown fired while the agent kept working past its last ad-hoc gate call.
+        // The environment was forgotten while the agent kept working.
         const runner = stubRunner(async () => {
             up = false;
             return ok({ output: 'agent did the work' });
@@ -7052,5 +7071,129 @@ describe('final envelope (issue #821 D1)', () => {
 
         expect(order).toEqual(['stage', 'finish']);
         expect(board.board.completed).toEqual([]);
+    });
+});
+
+// Issue #773 (R1-2): a gate or setup whose supervisor was lost is the attempt's loss — handed back as
+// an interruption on every path that runs one, never a failed gate or a failed setup.
+describe('a lost supervisor under the gates and the setup', () => {
+    const lost = () => new StepChannelClosed('its step was answered: the task group ended or was taken away');
+    const setupJob = (n: number): BoardJob => ({ ...gatedJob(n), gates: { ...gatedJob(n).gates!, setup: 'npm ci' } });
+    const interruptedOnly = (board: ReturnType<typeof stubBoard>) => {
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.interrupted).toEqual([
+            { id: job(1).id, reason: expect.stringContaining('infrastructure loss'), release: true },
+        ]);
+    };
+
+    it('interrupts an attempt whose setup before the agent lost its supervisor, and launches nothing', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { stack, gates } = stubGateStack();
+        stack.manager.runSetup = async () => {
+            throw lost();
+        };
+        let launched = false;
+        const runner = stubRunner(async () => {
+            launched = true;
+            return ok();
+        });
+        await drive({ ...board, runner, gates });
+        expect(launched).toBe(false);
+        interruptedOnly(board);
+    });
+
+    it('interrupts an agent-less attempt whose setup lost its supervisor', async () => {
+        const board = stubBoard([{ ...setupJob(1), agent: false }]);
+        const { stack, gates } = stubGateStack();
+        stack.manager.runSetup = async () => {
+            throw lost();
+        };
+        await drive({ ...board, runner: stubRunner(async () => ok()), gates });
+        interruptedOnly(board);
+    });
+
+    it('interrupts an attempt whose end-of-run setup retry lost its supervisor', async () => {
+        const board = stubBoard([{ ...setupJob(1), gates: { image: 'node:24', setup: 'npm ci', gates: [] } }]);
+        const { stack, gates } = stubGateStack();
+        let setups = 0;
+        stack.manager.runSetup = async () => {
+            setups += 1;
+            if (setups === 1) return { exitCode: 1, output: 'registry down' };
+            throw lost();
+        };
+        await drive({ ...board, runner: stubRunner(async () => ok()), gates });
+        expect(setups).toBe(2);
+        interruptedOnly(board);
+    });
+
+    it('interrupts an attempt whose declared gate lost its supervisor, with no gate-failed verdict', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const { stack, gates } = stubGateStack();
+        stack.manager.runGate = async () => {
+            throw lost();
+        };
+        await drive({ ...board, runner: stubRunner(async () => ok()), gates });
+        interruptedOnly(board);
+    });
+
+    it('interrupts an attempt once its run is over when an ad-hoc gate found the supervisor lost', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const { stack, gates } = stubGateStack();
+        let claim: GateClaim | undefined;
+        stack.server.register = (_token, registered) => {
+            claim = registered;
+        };
+        const runner = stubRunner(async () => {
+            claim?.onInfraLoss?.('the task supervisor running the gate was lost');
+            return ok();
+        });
+        await drive({ ...board, runner, gates });
+        expect(stack.ran.names).toEqual([]);
+        interruptedOnly(board);
+    });
+});
+
+// Issue #773 (D6): the gate container is sized for verify before the setup and the declared gates;
+// a resize is best-effort and never what decides whether they run.
+describe('the gate container resize around the setup and the gates', () => {
+    it('asks for the verify size before the setup and again before the declared gates', async () => {
+        const board = stubBoard([{ ...gatedJob(1), gates: { ...gatedJob(1).gates!, setup: 'npm ci' } }]);
+        const { stack, gates } = stubGateStack({}, { setup: { exitCode: 0, output: '' } });
+        const order: string[] = [];
+        const runner = stubRunner(async () => {
+            order.push('run');
+            return ok();
+        });
+        const resize = runner.resizeGate.bind(runner);
+        runner.resizeGate = async (resizedJob, phase) => {
+            order.push(`resize ${phase}`);
+            return resize(resizedJob, phase);
+        };
+        const runSetup = stack.manager.runSetup.bind(stack.manager);
+        stack.manager.runSetup = async (key, setupOptions) => {
+            order.push('setup');
+            return runSetup(key, setupOptions);
+        };
+        const runGate = stack.manager.runGate.bind(stack.manager);
+        stack.manager.runGate = async (key, name, command, gateOptions) => {
+            order.push(`gate ${name}`);
+            return runGate(key, name, command, gateOptions);
+        };
+        await drive({ ...board, runner, gates });
+        expect(order).toEqual(['resize verify', 'setup', 'run', 'resize verify', 'gate test', 'gate lint']);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    it.each([
+        ['refused', async () => false],
+        ['rejected', async () => Promise.reject(new Error('the API server is unreachable'))],
+    ])('runs the gates whatever a %s resize answered', async (_how, answer) => {
+        const board = stubBoard([gatedJob(1)]);
+        const { stack, gates } = stubGateStack();
+        const runner = stubRunner(async () => ok());
+        runner.resizeGate = answer;
+        await drive({ ...board, runner, gates });
+        expect(stack.ran.names).toEqual(['test', 'lint']);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
     });
 });

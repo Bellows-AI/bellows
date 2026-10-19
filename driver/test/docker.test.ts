@@ -13,9 +13,6 @@ import {
     containerName,
     dockerArgs,
     envFilePath,
-    gateEnvArgs,
-    gateEnvContainerName,
-    gateExecArgs,
     opencodeSessionReadoutArgs,
     parseDockerServicePs,
     parseDockerStats,
@@ -33,7 +30,6 @@ import {
     tailKept,
 } from '../src/runner.js';
 import { claudeTurnsArgs, opencodeCacheProbeArgs } from '../src/docker-close-read.js';
-import { gateShellScript } from '../src/container-scripts.js';
 import {
     CACHE_WATCH_TURNS,
     cacheCollapse,
@@ -45,7 +41,14 @@ import {
 import { ARTIFACT_LIMIT, commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import { claudeTurnsScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { createDockerRunner } from '../src/docker-runner.js';
-import { exporterCreateArgs, exporterName, supervisorCreateArgs, supervisorName } from '../src/docker-group.js';
+import {
+    exporterCreateArgs,
+    exporterName,
+    gateCreateArgs,
+    gateName,
+    supervisorCreateArgs,
+    supervisorName,
+} from '../src/docker-group.js';
 import { HELPER_TIMEOUT_MS, lookupHelper, type HelperPlan } from '../src/helpers.js';
 import {
     forgetDeclaredServices,
@@ -153,6 +156,7 @@ function fakeSteps(
             released.push(token);
         },
         attach: () => undefined,
+        cancel: () => undefined,
     };
     const ofKind = (kind: StepKind) => submitted.filter((entry) => entry.step.kind === kind).map((entry) => entry.step);
     return { sink, submitted, released, steps: () => submitted.map((entry) => entry.step), ofKind };
@@ -1224,177 +1228,6 @@ describe('the cache watch', () => {
     });
 });
 
-/**
- * The gate environment container: one long-lived `docker run -d` per task worktree, a `docker exec`
- * per gate. Pure and pinned for the same reason dockerArgs is — everything security-relevant about
- * the environment runner is decided in these arrays, and the values they interpolate arrive from
- * the board and from a file in a member's checkout.
- */
-describe('the gate environment container', () => {
-    const ROOT = '55555555-5555-4555-8555-555555555555';
-    const KEY = `bellows/${USER}/.worktrees/${ROOT}`;
-    const config = loadDriverConfig({});
-
-    it('names the container after the worktree key, exec-able and orphan-findable', () => {
-        expect(gateEnvContainerName(KEY)).toBe(`factory-env-bellows-${USER}-.worktrees-${ROOT}`);
-        expect(gateEnvArgs(config, KEY, 'node:24')).toEqual(
-            expect.arrayContaining([
-                '-d',
-                '--name',
-                `factory-env-bellows-${USER}-.worktrees-${ROOT}`,
-                '--label',
-                `factory.gates=${KEY}`,
-            ])
-        );
-    });
-
-    it('mounts the checkouts volume and works inside the worktree, like the coding agent does', () => {
-        // Scoped to the checkout key's own `<orgId>/<userId>` half — the same subtree the
-        // runner and every other aux container get for this job.
-        expect(gateEnvArgs(config, KEY, 'node:24')).toEqual(
-            expect.arrayContaining([
-                '--mount',
-                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
-                '-w',
-                `/workspaces/${KEY}`,
-            ])
-        );
-    });
-
-    // sleep infinity: the container's only job is to BE an environment. Gates enter it by exec,
-    // which is what keeps npm install's state alive across gates and turns.
-    it('runs the declared image as a detached sleeper', () => {
-        const line = gateEnvArgs(config, KEY, 'node:24');
-        expect(line.slice(-4)).toEqual(['--entrypoint', 'sleep', 'node:24', 'infinity']);
-        expect(line[line.length - 1]).toBe('infinity');
-    });
-
-    it('joins a network only when one is configured, and takes an env file only when given one', () => {
-        expect(gateEnvArgs(config, KEY, 'node:24')).not.toContain('--network');
-        expect(gateEnvArgs(config, KEY, 'node:24')).not.toContain('--env-file');
-        expect(gateEnvArgs(loadDriverConfig({ RUNNER_NETWORK: 'factory-ai_default' }), KEY, 'node:24')).toEqual(
-            expect.arrayContaining(['--network', 'factory-ai_default'])
-        );
-        expect(gateEnvArgs(config, KEY, 'node:24', { envFile: '/tmp/gate.env' })).toEqual(
-            expect.arrayContaining(['--env-file', '/tmp/gate.env'])
-        );
-    });
-
-    // The gate env writes the shared task worktree, so it writes as the uid:gid every other
-    // writer on that tree uses — the executor images' USER node (1000:1000). Its own default is
-    // usually root, and root-written files are ones the uid-1000 sync/reclaim can never remove
-    // (observed 2026-09-13: a gate-built core/dist left a worktree unremovable).
-    it('runs as the runner uid:gid, with a HOME the non-root uid can write', () => {
-        const line = gateEnvArgs(config, KEY, 'node:24');
-        expect(line).toEqual(expect.arrayContaining(['--user', '1000:1000', '-e', 'HOME=/tmp']));
-    });
-
-    // Issue #507, the docker half: the gate container is sized by GATE_* (each slot falling back
-    // to the runner's), rendered as the runner's own flags; nothing configured leaves it unthrottled.
-    it('carries the gate resources as docker flags before the image, and none when unconfigured', () => {
-        const sized = gateEnvArgs(
-            loadDriverConfig({ RUNNER_CPU_LIMIT: '4', GATE_MEMORY_LIMIT: '8Gi', GATE_MEMORY_REQUEST: '2Gi' }),
-            KEY,
-            'node:24'
-        );
-        expect(sized.slice(0, sized.indexOf('node:24'))).toEqual(
-            expect.arrayContaining(['--cpus', '4', '--memory', '8589934592', '--memory-reservation', '2147483648'])
-        );
-        const plain = gateEnvArgs(config, KEY, 'node:24');
-        expect(plain).not.toContain('--cpus');
-        expect(plain).not.toContain('--memory');
-        expect(plain).not.toContain('--memory-reservation');
-    });
-
-    // A gate's tail is what the job output shows; npm's update notice must not be its last word
-    // (#511). Container env, so every `docker exec` of a gate inherits it.
-    it('silences npm update notices for every gate exec', () => {
-        const line = gateEnvArgs(config, KEY, 'node:24');
-        const at = line.indexOf('NPM_CONFIG_UPDATE_NOTIFIER=false');
-        expect(line[at - 1]).toBe('-e');
-        expect(at).toBeLessThan(line.indexOf('node:24'));
-    });
-
-    it('leaves the npm notice to a claim that names it, in the gate env file', () => {
-        const envJob = { id: 'j', leaseToken: 'l', workspacePath: null, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } };
-        const line = gateEnvArgs(config, KEY, 'node:24', { envFile: '/tmp/gate.env', job: envJob });
-        expect(line.filter((_, i) => line[i - 1] === '-e')).toEqual(['HOME=/tmp']);
-    });
-
-    it('never puts a member value on the command line — the env file is the only carrier', () => {
-        const line = gateEnvArgs(config, KEY, 'node:24', { envFile: '/tmp/gate.env' });
-        // The only -e values are the driver's own literals — HOME for the non-root uid and the
-        // npm notice switch (above); every claim value travels the env file.
-        expect(line.filter((_, i) => line[i - 1] === '-e')).toEqual(['HOME=/tmp', 'NPM_CONFIG_UPDATE_NOTIFIER=false']);
-    });
-
-    // Issue #734: the gate env (and so the setup step exec'd into it) gets the same repo cache
-    // path the runner does, inside the one member mount it already has.
-    it('points each declared cache name into the repo cache, with no extra mount', () => {
-        const cacheJob = {
-            ...job,
-            repo: 'acme/widgets',
-            gates: { image: 'node:24', cache: ['NPM_CONFIG_CACHE'], gates: [] },
-        };
-        const line = gateEnvArgs(config, KEY, 'node:24', { job: cacheJob });
-        expect(line.filter((_, i) => line[i - 1] === '-e')).toEqual([
-            'HOME=/tmp',
-            'NPM_CONFIG_UPDATE_NOTIFIER=false',
-            `NPM_CONFIG_CACHE=/workspaces/bellows/${USER}/.cache/acme/widgets/NPM_CONFIG_CACHE`,
-        ]);
-        expect(line.filter((arg) => arg === '--mount')).toHaveLength(1);
-        const claimed = { ...cacheJob, env: { NPM_CONFIG_CACHE: '/elsewhere' } };
-        const own = gateEnvArgs(config, KEY, 'node:24', { envFile: '/tmp/gate.env', job: claimed });
-        expect(own.some((arg) => arg.startsWith('NPM_CONFIG_CACHE='))).toBe(false);
-    });
-
-    it('refuses an image that smuggles a flag, whitespace or expansion', () => {
-        for (const image of ['-v /:/host', 'node:24 alpine', 'node:$TAG', '']) {
-            expect(() => gateEnvArgs(config, KEY, image), image).toThrow(/image/);
-        }
-    });
-
-    // The key is interpolated into argv (-w) and into a container NAME. It arrives from the
-    // board's claim plus a repo label — asserted, not trusted, the WORKSPACE_PATH posture. The
-    // worktree key is the only shape now: gates run in the tree the agent edits, and that tree
-    // is `<org>/<uuid>/.worktrees/<root id>`, never the pristine clone.
-    it('refuses a key that is not <org>/<uuid>/.worktrees/<uuid>', () => {
-        for (const key of [
-            '../../etc',
-            `bellows/${USER}`,
-            `bellows/not-a-uuid/.worktrees/${ROOT}`,
-            `bellows/${USER}/.worktrees/not-a-uuid`,
-            `bellows/${USER}/factory`,
-            `bellows/${USER}/../..`,
-            `bellows/${USER}/.worktrees/${ROOT}/../..`,
-            '',
-        ]) {
-            expect(() => gateEnvArgs(config, key, 'node:24'), key).toThrow();
-        }
-    });
-
-    it('execs gates as sh -c inside the named container, and refuses a strange container name', () => {
-        const name = gateEnvContainerName(KEY);
-        expect(gateExecArgs(name, 'npm test')).toEqual(['exec', name, 'sh', '-c', gateShellScript, 'gate', 'npm test']);
-        expect(() => gateExecArgs('bad name; rm -rf', 'x')).toThrow();
-    });
-
-    // The name validator and the name generator must agree: a long org + long uuid produces the
-    // longest key the pattern allows (org 39 + uuid 36 + the worktree segment + root uuid 36),
-    // and every gate of that checkout must still be exec-able.
-    it('accepts the longest container name the worktree-key pattern can produce', () => {
-        const longestUuid = `${'f'.repeat(8)}-${'f'.repeat(4)}-${'f'.repeat(4)}-${'f'.repeat(4)}-${'f'.repeat(12)}`;
-        const key = `${'a'.repeat(39)}/${USER}/.worktrees/${longestUuid}`;
-        const name = gateEnvContainerName(key);
-        expect(() => gateExecArgs(name, 'npm test')).not.toThrow();
-        expect(gateEnvArgs(config, key, 'node:24')).toEqual(expect.arrayContaining(['--name', name]));
-    });
-});
-
-/**
- * The runner-side plumbing for gated jobs: the env file carries the ad-hoc gate credentials AFTER
- * the claim's own lines, and the runner can resolve the default gate URL on a Linux daemon.
- */
 describe('the runner env for a gated job', () => {
     const gated: BoardJob = {
         ...job,
@@ -4101,7 +3934,7 @@ describe('publishing the produced work', () => {
         // Issue #821 D16: the group's supervisor and every mailbox carry the reclaim mark, so the
         // orphan reaper never reads its lease of its own as a dead attempt's.
         const volumes = d.calls.filter((a) => a[0] === 'volume' && a[1] === 'create');
-        expect(volumes).toHaveLength(4);
+        expect(volumes).toHaveLength(Object.keys(MAILBOXES).length);
         for (const made of [create, ...volumes]) expect(made).toEqual(expect.arrayContaining(['factory.reclaim=true']));
     });
 
@@ -4230,6 +4063,7 @@ describe('publishing the produced work', () => {
             contacted: () => true,
             release: () => undefined,
             attach: () => undefined,
+            cancel: () => undefined,
         };
         const runner = dockerRunner(d.exec, { steps: sink });
 
@@ -4649,6 +4483,7 @@ describe('publishing the produced work', () => {
             contacted: () => true,
             release: () => undefined,
             attach: () => undefined,
+            cancel: () => undefined,
         };
         const exec = (async () => ({ stdout: '' })) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const runner = dockerRunner(exec, { spawn: spawnChild(''), steps: sink });
@@ -4858,6 +4693,7 @@ describe('the block-helper transport (issue #207)', () => {
             contacted: () => true,
             release: () => undefined,
             attach: () => undefined,
+            cancel: () => undefined,
         };
         const runner = dockerRunner(emptyDaemon, { steps: sink });
 
@@ -4937,7 +4773,7 @@ describe('every container the driver runs is hardened (#382)', () => {
     const config = () => loadDriverConfig({});
     const builders: [string, () => string[]][] = [
         ['the runner', () => dockerArgs(config(), job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })],
-        ['a gate', () => gateEnvArgs(config(), `bellows/${USER}/.worktrees/${job.id}`, 'node:24')],
+        ['the gate container', () => gateCreateArgs(config(), job, 'node:24')],
         ['the opencode session readout', () => opencodeSessionReadoutArgs(config(), opencodeJob, START)],
         ['the opencode cache probe', () => opencodeCacheProbeArgs(config(), opencodeJob)],
         ['the claude turns readout', () => claudeTurnsArgs(config(), job, SESSION, START)],
@@ -5993,5 +5829,56 @@ describe('how a refused group start ends, on docker (the startup conformance tab
             );
         expect((thrown as Error).message).toContain('EACCES');
         expect(startupDecisionOf(thrown)).toBe('unclassified');
+    });
+});
+
+// Issue #773: a gate is a step of the attempt's group, whose gate container runs it. Until the
+// docker group shares one network namespace, the gate container joins the attempt's services
+// network before a gate runs, once per attempt, so a gate reaches the services by name.
+describe('the docker runner and the gates', () => {
+    const gated: BoardJob = {
+        ...job,
+        repo: 'Bellows-AI/factory',
+        gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+    };
+    const gate = {
+        command: 'npm test',
+        cwd: `/workspaces/bellows/${USER}/.worktrees/${job.id}`,
+        env: {},
+        timeoutMs: 1000,
+    };
+    const recording = () => {
+        const calls: string[][] = [];
+        const exec = (async (args: string[]) => {
+            calls.push(args);
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        return { calls, exec };
+    };
+
+    it('runs a gate as a step of a group it makes on demand, its gate container joined to the services once', async () => {
+        const daemon = recording();
+        const supervised = fakeSteps(() => ok('passed'));
+        const runner = dockerRunner(daemon.exec, { steps: supervised.sink });
+
+        expect(await runner.runGate(gated, gate)).toEqual(ok('passed'));
+        await runner.runGate(gated, gate);
+
+        expect(supervised.ofKind('gate')).toHaveLength(2);
+        expect(supervised.ofKind('gate')[0]).toMatchObject({ argv: ['npm test'], cwd: gate.cwd });
+        const created = daemon.calls
+            .filter((args) => args[0] === 'create')
+            .map((args) => args[args.indexOf('--name') + 1]);
+        expect(created).toContain(gateName(gated));
+        const connects = daemon.calls.filter((args) => args[0] === 'network' && args[1] === 'connect');
+        expect(connects).toEqual([['network', 'connect', networkName(gated), gateName(gated)]]);
+    });
+
+    it('joins no network when services are off, and resizes nothing', async () => {
+        const daemon = recording();
+        const runner = dockerRunner(daemon.exec, { env: { RUNNER_SERVICES: '0' }, steps: fakeSteps().sink });
+        await runner.runGate(gated, gate);
+        expect(daemon.calls.some((args) => args[0] === 'network' && args[1] === 'connect')).toBe(false);
+        expect(await runner.resizeGate(gated, 'verify')).toBe(false);
     });
 });

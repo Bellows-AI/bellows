@@ -17,7 +17,6 @@ import {
 } from './k8s-auxspec.js';
 import {
     finishedAgentRun,
-    gateEnvSecretName,
     type JobOwner,
     jobsPath,
     type ListedRunnerJob,
@@ -439,10 +438,8 @@ async function deleteLeftoverSecrets(
         // The adopted run's lease keeps its Job listed: its Secrets stay derivable from it, and
         // their cleanup is never what holds a recovered run back (issue #821).
         if (adopted !== undefined && runnerName(pair) === adopted) continue;
-        for (const name of [secretName(pair), gateEnvSecretName(pair)]) {
-            sweepAbandoned(signal);
-            if ((await deleteSecretAcked(deps, name)) === 'failed') return false;
-        }
+        sweepAbandoned(signal);
+        if ((await deleteSecretAcked(deps, secretName(pair))) === 'failed') return false;
     }
     return true;
 }

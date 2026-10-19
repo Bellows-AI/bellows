@@ -343,6 +343,7 @@ describe('the stated limit of a gate environment’s token', () => {
     it('is in docs/connections.md: asked at each gate run’s start, never renewed during it', () => {
         const docs = readFileSync(join(ROOT, 'docs/connections.md'), 'utf8').replace(/\s+/g, ' ');
         expect(docs).toContain("A gate run's GitHub token is asked at its start and never renewed during it");
-        expect(docs).toContain('Secret replaced for the run (`driver/src/k8s-gates.ts`)');
+        // Issue #773: the token rides the gate run's own step, exported for that run alone.
+        expect(docs).toContain("It rides that run's gate step, whose env the gate container exports for the run alone");
     });
 });

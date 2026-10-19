@@ -199,13 +199,14 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
     // Every container of the pod, not the first: the runner pod holds the agent, the supervisor and
     // the exporter, and any one of them blocked on its image holds the whole run. The init list is
     // read first (#773 D10): a sidecar held on its image keeps every main container initializing.
-    const status = livePod(pods.body)?.status;
+    const pod = livePod(pods.body);
+    const status = pod?.status;
     const containers = status?.containerStatuses ?? [];
     const holder = [...(status?.initContainerStatuses ?? []), ...containers].find((c) =>
         STUCK_REASONS.has(c.state?.waiting?.reason ?? '')
     );
     const waiting = holder?.state?.waiting;
-    const held = heldOf(holder);
+    const held = heldOf(holder, pod);
     const startedAny = containers.some((c) => c.state?.terminated !== undefined || c.state?.running !== undefined);
     const agentStarted = containers.some(
         (c) => c.name === AGENT_CONTAINER && (c.state?.terminated !== undefined || c.state?.running !== undefined)
@@ -222,8 +223,20 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
     return { blocked: null, containerSeen, waiting: stuck, held, podState, agentStarted };
 }
 
-const heldOf = (holder: K8sContainerStatus | undefined): ImagePullStatus['held'] =>
-    holder ? { ...heldContainerOf(holder.name), ...(holder.image ? { image: holder.image } : {}) } : null;
+/**
+ * The held container and its image: the status's own, else — for a sidecar — the image the pod spec
+ * gave it (#773), never the executor image a caller would otherwise fill in.
+ */
+function heldOf(holder: K8sContainerStatus | undefined, pod: K8sPod | undefined): ImagePullStatus['held'] {
+    if (!holder) return null;
+    const role = heldContainerOf(holder.name);
+    const specced =
+        role.role === 'executor'
+            ? undefined
+            : pod?.spec?.initContainers?.find((container) => container.name === holder.name)?.image;
+    const image = holder.image || specced;
+    return { ...role, ...(image ? { image } : {}) };
+}
 
 export type PodStartState = 'unread' | 'none' | 'starting' | 'started';
 

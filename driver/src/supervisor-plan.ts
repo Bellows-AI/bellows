@@ -1,6 +1,7 @@
 import type { BoardJob } from './board.js';
 import { runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
+import { GATE_IMAGE, worktreeRelDir } from './publish.js';
 import {
     AGENT_IN,
     AGENT_OUT,
@@ -32,11 +33,25 @@ export const orphanBoundMs = (config: DriverConfig): number =>
         Math.max(SUPERVISOR_ORPHAN_MIN_MS, (config.leaseSeconds * MS_PER_SECOND) / SUPERVISOR_ORPHAN_LEASE_SHARE)
     );
 
-/** The supervisor's own env literals: the budget it enforces, the paces it works at, whether an exporter waits. */
+/**
+ * The declared gate image of the attempt's group (issue #773), or null when the group runs no gate
+ * container: the checkout declares neither gates nor setup, or the job has no worktree to run them
+ * in. One decision for both executors' group specs; the image is asserted before it lands in one.
+ */
+export function gateImageOf(job: BoardJob): string | null {
+    const declared = job.gates;
+    if (!declared || (declared.gates.length === 0 && !declared.setup) || !worktreeRelDir(job)) return null;
+    if (!GATE_IMAGE.test(declared.image)) {
+        throw new Error(`refusing to run a gate in an image that is not a plain image reference: "${declared.image}"`);
+    }
+    return declared.image;
+}
+
+/** The supervisor's own env literals: the budget it enforces, the paces it works at, whether an exporter and a gate container wait. */
 export function supervisorLiterals(
     config: DriverConfig,
     job: BoardJob,
-    group: { exporting: boolean; agentless?: boolean }
+    group: { exporting: boolean; agentless?: boolean; gated?: boolean }
 ): [string, string][] {
     return [
         [SUPERVISOR_ENV.controlMs, String(RUN_CONTROL_POLL_MS)],
@@ -45,6 +60,7 @@ export function supervisorLiterals(
         [SUPERVISOR_ENV.orphanMs, String(orphanBoundMs(config))],
         ...(group.exporting ? ([[SUPERVISOR_ENV.exports, '1']] as [string, string][]) : []),
         ...(group.agentless ? ([[SUPERVISOR_ENV.agentless, '1']] as [string, string][]) : []),
+        ...(group.gated ? ([[SUPERVISOR_ENV.gate, '1']] as [string, string][]) : []),
     ];
 }
 

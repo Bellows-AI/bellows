@@ -79,6 +79,11 @@ export interface JobState {
     /** The attempt's gate-endpoint token once its gate session booted — where the sampler tells the agent a service died. */
     gateToken: string | null;
     /**
+     * Why an ad-hoc gate found the attempt's supervisor lost while the agent ran (issue #773): the
+     * attempt is interrupted once its run is over, never given a verdict. Null while none did.
+     */
+    gateLoss: string | null;
+    /**
      * The attempt's run-control token (`BELLOWS_CONTROL_TOKEN`), set once the control endpoint is
      * open for it; null until then, and for a driver with no endpoint at all.
      */
@@ -139,6 +144,7 @@ export function newJobState(): JobState {
         keepGroup: false,
         launched: false,
         gateToken: null,
+        gateLoss: null,
         control: null,
         transcriptExport: null,
         running: false,

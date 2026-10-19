@@ -1,5 +1,5 @@
 import { AGENT_LAUNCH_CAPS } from './claim.js';
-import type { DriverConfig } from './config.js';
+import { cpuQuantityToCores, type DriverConfig, memoryQuantityToBytes } from './config.js';
 import type { ExecutorType } from './executors.js';
 import { type Mailbox, MAILBOXES } from './supervisor-contract.js';
 import { telemetryConfig, telemetryConfigK8s, type TelemetryConfigVolume } from './telemetry-config.js';
@@ -50,6 +50,38 @@ export function resourcesField(config: DriverConfig, block = config.runnerResour
         ...(Object.keys(limits).length > 0 ? { limits } : {}),
     };
     return Object.keys(resources).length > 0 ? { resources } : {};
+}
+
+/** What the gate container asks for while the agent runs (issue #773): the measured idle loop, no more. */
+const GATE_IDLE_REQUESTS = { cpu: '100m', memory: '128Mi' } as const;
+
+/** The smaller of two quantities, by the parser `toNumber`; the first when the second is absent. */
+const smaller = (a: string, b: string | null, toNumber: (q: string) => string): string =>
+    b !== null && Number(toNumber(b)) < Number(toNumber(a)) ? b : a;
+
+/**
+ * The gate container's requests at one phase (issue #773): `idle` while the agent runs — the idle
+ * loop's figures, never above what the gate is configured to request or limited to — and `verify`,
+ * the configured gate requests (GATE_*, over RUNNER_*) for the setup and the gates. A slot with no
+ * configured request keeps its idle figure at verify: a resize cannot take a request away.
+ */
+export function gateRequests(config: DriverConfig, phase: 'idle' | 'verify'): { cpu: string; memory: string } {
+    const { cpuRequest, cpuLimit, memoryRequest, memoryLimit } = config.gateResources;
+    const idle = {
+        cpu: smaller(GATE_IDLE_REQUESTS.cpu, cpuRequest ?? cpuLimit, cpuQuantityToCores),
+        memory: smaller(GATE_IDLE_REQUESTS.memory, memoryRequest ?? memoryLimit, memoryQuantityToBytes),
+    };
+    if (phase === 'idle') return idle;
+    return { cpu: cpuRequest ?? idle.cpu, memory: memoryRequest ?? idle.memory };
+}
+
+/**
+ * The gate container's resources at its creation: the idle requests, and the gate limits from the
+ * start — only requests are ever resized, so no memory limit is ever lowered under a running suite.
+ */
+export function gateResourcesField(config: DriverConfig): { resources: PodResources } {
+    const limits = resourcesField(config, config.gateResources).resources?.limits;
+    return { resources: { requests: gateRequests(config, 'idle'), ...(limits ? { limits } : {}) } };
 }
 
 /**

@@ -1,6 +1,6 @@
 import type { BoardJob } from './board.js';
 import { jobPath, podsPath, secretsPath } from './k8s-auxspec.js';
-import { gateEnvSecretName, secretName } from './k8s-podspec.js';
+import { secretName } from './k8s-podspec.js';
 import { HTTP_CONFLICT, HTTP_ERROR_STATUS, HTTP_NOT_FOUND, HTTP_OK_STATUS, parse, POLL_MS } from './k8s-transport.js';
 import type { K8sDeps, K8sResponse } from './k8s-transport.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
@@ -51,7 +51,7 @@ export async function deleteSecretAcked(deps: K8sDeps, name: string, uid?: strin
 }
 
 /**
- * The pods that can still write the attempt's tree: its runner, gate and readout pods — every pod
+ * The pods that can still write the attempt's tree: its runner and readout pods — every pod
  * of the (job, lease) pair but the declared services (`!factory.service`), which mount no worktree
  * and are torn down by the loop's `releaseServices` on their own schedule.
  */
@@ -163,12 +163,9 @@ async function confirmEnded(deps: K8sDeps, { pair, jobName, keep = false, uids }
     return 'held';
 }
 
-/** An identity's two Secrets: its own by the uid its create answered, when known, and its gate environment's. */
+/** An identity's Secret: its own, by the uid its create answered when known. */
 async function deleteSecretsOf(deps: K8sDeps, group: GroupRef): Promise<SecretDelete[]> {
-    return [
-        await deleteSecretAcked(deps, secretName(group.pair), group.uids?.secret),
-        await deleteSecretAcked(deps, gateEnvSecretName(group.pair)),
-    ];
+    return [await deleteSecretAcked(deps, secretName(group.pair), group.uids?.secret)];
 }
 
 /** The Secrets first, acknowledged; then the Job, Foreground — a kept one is not deleted; then the confirmation. */

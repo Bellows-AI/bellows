@@ -70,7 +70,14 @@ interface Created {
 
 /** A fake apiserver that keeps the checkout claim honest and records every Job and Secret the driver creates. */
 function cluster(
-    options: { ended?: boolean; imagePull?: string; agentExit?: number; vanished?: boolean; podStatus?: unknown } = {}
+    options: {
+        ended?: boolean;
+        imagePull?: string;
+        agentExit?: number;
+        vanished?: boolean;
+        podStatus?: unknown;
+        podSpec?: unknown;
+    } = {}
 ) {
     const created: Created = { jobs: [], secrets: [], deletedJobs: [], deletedSecrets: [] };
     const claims = new Map<string, { uid: string; holder: string; claimSeq: string }>();
@@ -134,7 +141,10 @@ function cluster(
         // The sweep's selector lists, and the pod discovery by `job-name`.
         if (path.includes('labelSelector')) {
             if (!decodeURIComponent(path).includes('job-name=')) return json({ items: [] });
-            if (options.podStatus) return json({ items: [{ metadata: { name: 'pod-1' }, status: options.podStatus }] });
+            if (options.podStatus) {
+                const spec = options.podSpec ? { spec: options.podSpec } : {};
+                return json({ items: [{ metadata: { name: 'pod-1' }, ...spec, status: options.podStatus }] });
+            }
             if (options.imagePull) {
                 return json({
                     items: [
@@ -191,6 +201,7 @@ function steps(answer: (step: StepRequest) => StepResult = () => ok(), contacted
             released.push(token);
         },
         attach: () => undefined,
+        cancel: () => undefined,
     };
     return { sink, submitted, tokens, report, released };
 }
@@ -383,6 +394,22 @@ describe('the task group of one attempt', () => {
         }
     );
 
+    it('names a held sidecar’s image from the pod spec when its status names none, never the executor’s', async () => {
+        const status = heldSidecar('gate', '', 'ErrImagePull', 'manifest unknown');
+        const { image: _none, ...imageless } = status.initContainerStatuses[0]!;
+        const api = cluster({
+            podStatus: { ...status, initContainerStatuses: [imageless] },
+            podSpec: { initContainers: [{ name: 'gate', image: 'registry.example/gate:2' }] },
+        });
+        const k8s = runner(api.request, steps(() => ok(), false).sink);
+
+        await expect(k8s.syncCheckout(job, undefined, SESSION)).rejects.toMatchObject({
+            startupCause: 'image',
+            role: 'gate',
+            message: 'the gate image "registry.example/gate:2" cannot be pulled: ErrImagePull — manifest unknown',
+        });
+    });
+
     it('names the sidecar a back-off of no proven cause held to the bound, never the executor', async () => {
         const api = cluster({
             podStatus: heldSidecar('svc-db', 'registry.example/db:17', 'ImagePullBackOff', 'Back-off pulling image'),
@@ -523,12 +550,10 @@ describe('the reclaim of a thread with no attempt', () => {
         // Its Secret is not the attempt's, and it is deleted with the group.
         expect(api.created.secrets).toHaveLength(1);
         expect(api.created.secrets[0]).not.toBe(secretName(job));
-        // Its own Secret, by the uid its create answered, then its gate environment's name — both
-        // acknowledged before the Job (issue #821); a lease of its own, random per invocation.
+        // Its own Secret, by the uid its create answered, acknowledged before the Job (issue #821) —
+        // the only one: the gates hold none (issue #773); a lease of its own, random per invocation.
         const [own] = api.created.secrets;
-        expect(api.created.deletedSecrets[0]).toBe(own);
-        expect(api.created.deletedSecrets).toHaveLength(2);
-        expect(api.created.deletedSecrets[1]).toMatch(/^factory-gate-[0-9a-f]{16}-env$/);
+        expect(api.created.deletedSecrets).toEqual([own]);
     });
 
     it('refuses without an endpoint to serve the group from, never by running the reclaim some other way', async () => {

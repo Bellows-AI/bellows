@@ -139,9 +139,9 @@ export async function dockerServiceTeardown(deps: TeardownDeps, job: BoardJob): 
     for (const id of linesOf(found.stdout)) {
         await deps.execDocker(['rm', '-f', id]).catch(() => undefined);
     }
-    // The gate environment joins this network to reach the fleet, and outlives the attempt on
-    // its cooldown; docker refuses to remove a network with an endpoint still attached, so
-    // whatever is left on it is detached first.
+    // The group's gate container joins this network to reach the fleet and may still be attached;
+    // docker refuses to remove a network with an endpoint still attached, so whatever is left on
+    // it is detached first.
     const attached = await deps
         .execDocker([
             'network',

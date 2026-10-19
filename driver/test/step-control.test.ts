@@ -202,6 +202,34 @@ describe('the step broker', () => {
         // The step itself is still the supervisor's to run: a stand-down never half-aborts a write.
         expect(await broker.next('t', 0, never)).toMatchObject({ id: 's1' });
     });
+
+    it('drops a cancelled step the supervisor has not pulled yet, and rejects its waiter', async () => {
+        const broker = createStepBroker();
+        broker.open('t');
+        const waiting = broker.submit('t', step('g1', { kind: 'gate' }));
+        broker.cancel('t', 'g1');
+        await expect(waiting).rejects.toBeInstanceOf(StepChannelClosed);
+        expect(await broker.next('t', 0, never)).toBeNull();
+        // Never delivered, so there is nothing for the supervisor to stop.
+        expect(broker.cancels('t')).toEqual([]);
+    });
+
+    it('names a cancelled step the supervisor already pulled until its answer settles it', async () => {
+        const broker = createStepBroker();
+        broker.open('t');
+        const answered = broker.submit('t', step('g1', { kind: 'gate' }));
+        await broker.next('t', 0, never);
+        broker.cancel('t', 'g1');
+        expect(broker.cancels('t')).toEqual(['g1']);
+        broker.settle('t', 'g1', 'i-1', result('cancelled'));
+        await answered;
+        expect(broker.cancels('t')).toEqual([]);
+        // A cancel for a token or a step it does not know changes nothing.
+        broker.cancel('t', 'unknown');
+        broker.cancel('nobody', 'g1');
+        expect(broker.cancels('t')).toEqual([]);
+        expect(broker.cancels('nobody')).toEqual([]);
+    });
 });
 
 describe('the control routes of a step channel', () => {
@@ -311,6 +339,28 @@ describe('the control routes of a step channel', () => {
         expect(await answered).toEqual(result('x'));
         expect((await call(SUPERVISOR, 'POST', '/report', REPORT)).status).toBe(200);
         expect(await reported).toMatchObject({ agentExit: 0, drained: true });
+    });
+
+    it('answers the supervisor’s control poll with the gate steps the driver cancelled, beside the stop', async () => {
+        void steps.submit(SUPERVISOR, step('g1', { kind: 'gate' })).catch(() => undefined);
+        await call(SUPERVISOR, 'GET', '/step?wait=0');
+        expect(await (await call(SUPERVISOR, 'GET', '/control')).json()).toEqual({ stop: false, kill: false });
+        steps.cancel(SUPERVISOR, 'g1');
+        expect(await (await call(SUPERVISOR, 'GET', '/control')).json()).toEqual({
+            stop: false,
+            kill: false,
+            cancel: ['g1'],
+        });
+        steps.open('reclaim-token');
+        void steps.submit('reclaim-token', step('g2', { kind: 'gate' })).catch(() => undefined);
+        await call('reclaim-token', 'GET', '/step?wait=0');
+        steps.cancel('reclaim-token', 'g2');
+        expect(await (await call('reclaim-token', 'GET', '/control')).json()).toEqual({
+            stop: false,
+            kill: false,
+            cancel: ['g2'],
+        });
+        steps.close('reclaim-token');
     });
 
     it('serves a supervisor-only token — a group with no attempt — its steps and a control that never stops', async () => {

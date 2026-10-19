@@ -133,6 +133,12 @@ function serveSupervisorStep(
     return serveStepPoll(steps, token, request, hangup.signal);
 }
 
+/** `GET /control`'s answer: the stop and kill orders, and the gate steps the driver cancelled when there are any. */
+function controlAnswer(steps: StepBroker, token: string, orders: { stop: boolean; kill: boolean }) {
+    const cancel = steps.cancels(token);
+    return cancel.length > 0 ? { ...orders, cancel } : orders;
+}
+
 /**
  * A token with no control entry: refused, unless it is a supervisor-only token (a reclaim's group,
  * no attempt) open on the step broker alone — it polls its orders and answers its steps, and has
@@ -147,7 +153,7 @@ async function serveWithoutEntry(
     if (!channel.steps.has(channel.token) || !(route === 'step' || route === 'report' || route === 'control')) {
         respondJson(reply, HTTP_UNAUTHORIZED, { error: 'unknown token' });
     } else if (route === 'control') {
-        respondJson(reply, HTTP_OK, { stop: false, kill: false });
+        respondJson(reply, HTTP_OK, controlAnswer(channel.steps, channel.token, { stop: false, kill: false }));
     } else {
         const answer = await serveSupervisorStep(route, channel, request, reply);
         respondJson(reply, answer.status, answer.body);
@@ -279,7 +285,7 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
             // or its question is what says a Stop can be cooperative.
             if (doors === SUPERVISOR_ROUTES) control.polled = true;
             if (route === 'control') {
-                respondJson(reply, HTTP_OK, { stop: control.stop, kill: control.kill });
+                respondJson(reply, HTTP_OK, controlAnswer(steps, auth, { stop: control.stop, kill: control.kill }));
                 return true;
             }
             const serveStep = async () =>

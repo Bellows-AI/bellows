@@ -8,7 +8,7 @@ the API fails the install loudly rather than installing an unfenced driver.
 `-pods` fences what a pod the driver specs may hold — the runner, every aux Job, every service
 pod — because `create pods` would otherwise be `read every Secret`:
   - Secrets a container can read (volumes, env, envFrom) only when they are the driver's own
-    per-attempt ones (factory-{job,gate}-…-env, docs/kubernetes.md) or the
+    per-attempt ones (factory-job-…-env, docs/kubernetes.md) or the
     runner credentials. The chart's pull secrets only under imagePullSecrets — the kubelet reads
     those, a container never does. The dashboard Secret is none of these.
   - volumes: the workspaces claim, emptyDir, and such Secrets — no hostPath, no other claim, no
@@ -23,6 +23,8 @@ pod — because `create pods` would otherwise be `read every Secret`:
     which carries `factory.unhardened: "true"` so this policy can tell one from a driver that
     quietly stopped hardening. Forbidding `privileged` and requiring the drop are different
     controls; a client that sets neither satisfies only the first.
+`-resize` fences the one in-place resize the driver makes (issue #773): a `pods/resize` update of a
+pod it labelled `factory.job` that changes no main container and no init container but `gate`.
 `-objects` fences what the driver may create and delete: only objects labelled `factory.job` (the
 label every runner-owned object carries), so the dashboard's Secret, Service and ConfigMaps are
 out of reach; Secrets only under the per-attempt names and only Opaque (a service-account-token
@@ -47,7 +49,7 @@ it is a smaller share of one shared kernel, not a different one (docs/security.m
 {{- if include "factory.runnerSecretEnabled" . }}
 {{- $allowed = append $allowed (include "factory.runnerSecretName" .) }}
 {{- end }}
-{{- $secretName := "^factory-(job|gate)-[a-z0-9-]+-env$" }}
+{{- $secretName := "^factory-job-[a-z0-9-]+-env$" }}
 {{- $workspaceSubPath := "^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" }}
 {{/* The declared-service hardening opt-out (#382) — driver/src/labels.ts, UNHARDENED_LABEL. */}}
 {{- $unhardenedLabel := "factory.unhardened" }}
@@ -211,6 +213,52 @@ metadata:
         {{- include "factory.labels" . | nindent 8 }}
 spec:
     policyName: {{ $name }}-pods
+    validationActions: [Deny]
+    matchResources:
+        namespaceSelector:
+            matchLabels:
+                kubernetes.io/metadata.name: {{ .Release.Namespace }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: {{ $name }}-resize
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: ['']
+              apiVersions: ['v1']
+              operations: ['UPDATE']
+              resources: ['pods/resize']
+    matchConditions:
+        - name: the-driver
+          expression: {{ printf "request.userInfo.username == '%s'" $user | quote }}
+    variables:
+        - name: oldInit
+          expression: "has(oldObject.spec.initContainers) ? oldObject.spec.initContainers : []"
+        - name: newInit
+          expression: "has(object.spec.initContainers) ? object.spec.initContainers : []"
+    validations:
+        - expression: "has(object.metadata.labels) && 'factory.job' in object.metadata.labels"
+          message: 'the driver resizes only pods it labelled factory.job'
+        - expression: "object.spec.containers == oldObject.spec.containers"
+          message: 'a driver resize changes no main container'
+        - expression: >-
+              size(variables.newInit) == size(variables.oldInit) &&
+              variables.newInit.all(c, c.name == 'gate' || variables.oldInit.exists(o, o == c))
+          message: 'a driver resize changes the gate container alone'
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: {{ $name }}-resize
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+spec:
+    policyName: {{ $name }}-resize
     validationActions: [Deny]
     matchResources:
         namespaceSelector:

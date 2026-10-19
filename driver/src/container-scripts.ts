@@ -37,3 +37,9 @@ export const gateShellScript = script('gate-shell.sh');
 
 /** A gate's argv on both executors: the declared command is one element after the gate shell. */
 export const gateShellArgv = (command: string): string[] => ['sh', '-c', gateShellScript, 'gate', command];
+
+/** The gate container's loop over the gate mailbox: see scripts/gate-loop.sh. */
+export const gateLoopScript = script('gate-loop.sh');
+
+/** The gate container's command on both executors: the loop, with the gate shell it runs each request under. */
+export const gateLoopArgv = (): string[] => ['sh', '-c', gateLoopScript, 'gate-loop', gateShellScript];

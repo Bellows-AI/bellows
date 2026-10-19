@@ -339,6 +339,46 @@ async function submitHelper(
     }
 }
 
+/** One declared gate (or the setup) as the gate container runs it: the command, in the worktree, with its env. */
+export interface GateStepRequest {
+    command: string;
+    cwd: string;
+    env: Record<string, string>;
+    timeoutMs: number;
+}
+
+/**
+ * One gate execution as a supervised step (issue #773): the supervisor hands it to the group's gate
+ * container through the gate mailbox. Every execution is a step of its own — a gate run again is run
+ * again — while a redelivery of this one call keeps its id and invocation (`submitStep`), so the
+ * supervisor's ledger only ever answers the same request. An abort of `signal` cancels it through the
+ * channel (`StepSink.cancel`), never as a step queued behind the one it cancels. A lost supervisor
+ * rejects (`stepLost`): no verdict on the gate.
+ */
+export async function runGateStep(
+    host: Pick<StepHost, 'sink'>,
+    job: BoardJob,
+    gate: GateStepRequest,
+    signal?: AbortSignal
+): Promise<StepResult> {
+    if (signal?.aborted) throw new Error('the gate was cancelled before it was submitted');
+    const token = controlTokenOf(job);
+    const step = request(job, 'gate', {
+        id: randomUUID(),
+        argv: [gate.command],
+        cwd: gate.cwd,
+        env: gate.env,
+        timeoutMs: gate.timeoutMs,
+    });
+    const cancel = (): void => host.sink.cancel(token, step.id);
+    signal?.addEventListener('abort', cancel, { once: true });
+    try {
+        return await submitStep(host, job, step, signal);
+    } finally {
+        signal?.removeEventListener('abort', cancel);
+    }
+}
+
 /**
  * `go`: releases the attempt's agent, whose entrypoint waits for it, and hands the supervisor the
  * run budget as it stands now — the sync and the environment setup came out of it after the group

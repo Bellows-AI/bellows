@@ -58,6 +58,7 @@ const dockerSync = async (job: BoardJob): Promise<Record<string, string>> => {
         contacted: () => true,
         release: () => undefined,
         attach: () => undefined,
+        cancel: () => undefined,
     };
     const supervised: BoardJob = {
         ...job,

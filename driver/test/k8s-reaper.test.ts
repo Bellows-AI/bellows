@@ -3,7 +3,7 @@ import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { JOB_LABEL, LEASE_LABEL } from '../src/labels.js';
 import { configmapsPath, podsPath, secretsPath, servicesPath } from '../src/k8s-auxspec.js';
-import { gateEnvSecretName, jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
+import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { createReaper, type OrphanGroup } from '../src/reaper.js';
@@ -255,7 +255,7 @@ describe('the kubernetes reaper arm: reap', () => {
         expect(await arm.reap(group(), 'gone')).toEqual([]);
     });
 
-    it('deletes the attempt-scoped env Secrets by their derived names, and answers them to the log', async () => {
+    it('deletes the attempt-scoped env Secret by its derived name, and answers it to the log', async () => {
         const runnerSecret = `${secretsPath(NAMESPACE)}/${secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob)}`;
         const { request, calls } = router([
             ...emptyLists,
@@ -271,11 +271,9 @@ describe('the kubernetes reaper arm: reap', () => {
         const removed = await arm.reap(group(), 'gone');
 
         const secrets = deleteCalls(calls).filter((path) => path.startsWith(secretsPath(NAMESPACE)));
-        expect(secrets).toEqual([
-            runnerSecret,
-            `${secretsPath(NAMESPACE)}/${gateEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob)}`,
-        ]);
-        // A 2xx Secret delete is a removal like any other; the gate Secret’s 404 is not.
+        // The attempt's one Secret (issue #773: the gates hold none of their own).
+        expect(secrets).toEqual([runnerSecret]);
+        // A 2xx Secret delete is a removal like any other.
         expect(removed).toContain(`secret ${runnerSecret.split('/').pop()}`);
     });
 
@@ -329,12 +327,11 @@ describe('the kubernetes reaper arm: reap', () => {
     it('deletes the derived Secrets BEFORE the Pod and Service, and stops the round when one fails', async () => {
         // Once the listed Pod and Service are gone, no next scan can rediscover the (job, lease)
         // pair to re-derive these names — a Secret has no ownerReferences. So a failed Secret
-        // delete must hold back the fleet: here the FIRST Secret answers 500, and nothing but
-        // that one Secret may be deleted all round.
-        const names = [
-            secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
-            gateEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
-        ].map((name) => `${secretsPath(NAMESPACE)}/${name}`);
+        // delete must hold back the fleet: here the Secret answers 500, and nothing but it may be
+        // deleted all round.
+        const names = [secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob)].map(
+            (name) => `${secretsPath(NAMESPACE)}/${name}`
+        );
         const { request, calls } = router([['DELETE', names[0]!, { status: 500, body: '' }]]);
         const arm = createKubernetesReaper({ config, request });
 
@@ -345,10 +342,9 @@ describe('the kubernetes reaper arm: reap', () => {
     });
 
     it('deletes Secrets ahead of the fleet, and 404 Secrets do not block teardown', async () => {
-        const names = [
-            secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
-            gateEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
-        ].map((name) => `${secretsPath(NAMESPACE)}/${name}`);
+        const names = [secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob)].map(
+            (name) => `${secretsPath(NAMESPACE)}/${name}`
+        );
         const { request, calls } = router([
             ...names.map((path): readonly [K8sMethod, string, K8sResponse] => [
                 'DELETE',
@@ -364,8 +360,8 @@ describe('the kubernetes reaper arm: reap', () => {
 
         const removed = await arm.reap(group(), 'gone');
 
-        // Ordering is the point: the two Secret deletes are the FIRST two calls, before any
-        // fleet object — and already-gone Secrets never hold the round back.
+        // Ordering is the point: the Secret delete is the FIRST call, before any fleet object —
+        // and an already-gone Secret never holds the round back.
         expect(deleteCalls(calls).slice(0, names.length)).toEqual(names);
         expect(removed).toEqual([`pod ${JOB}-${LEASE}-svc-postgres`, 'service factory-svc-abc']);
     });
@@ -551,7 +547,7 @@ describe('the kubernetes reaper arm: suspended runners and confirmed claims (#82
         claimPath,
         { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-1' }, data: { holder: LEASE } }) },
     ];
-    const secrets = [secretName(pair), gateEnvSecretName(pair)].map((name) => `${secretsPath(NAMESPACE)}/${name}`);
+    const secrets = [secretName(pair)].map((name) => `${secretsPath(NAMESPACE)}/${name}`);
     const sweep = (request: K8sRequest) =>
         createReaper({
             // The job is terminal: a live job's runner Job is its next claim's fence's (issue #821).
@@ -567,7 +563,7 @@ describe('the kubernetes reaper arm: suspended runners and confirmed claims (#82
         expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, runner: true }]);
     });
 
-    it('reaps a suspended runner of a terminal job Secrets first, the gate Secret, then the Job', async () => {
+    it('reaps a suspended runner of a terminal job Secret first, then the Job', async () => {
         const { request, calls } = router([
             ...lists([suspendedRunner]),
             ...secrets.map((path) => ['DELETE', path, { status: 200, body: '' }] as const),
@@ -579,11 +575,10 @@ describe('the kubernetes reaper arm: suspended runners and confirmed claims (#82
         ]);
     });
 
-    it('stops the round at a refused gate Secret delete, the suspended Job still listed', async () => {
+    it('stops the round at a refused Secret delete, the suspended Job still listed', async () => {
         const { request, calls } = router([
             ...lists([suspendedRunner]),
-            ['DELETE', secrets[0]!, { status: 200, body: '' }],
-            ['DELETE', secrets[1]!, { status: 500, body: '' }],
+            ['DELETE', secrets[0]!, { status: 500, body: '' }],
         ]);
         await sweep(request);
         expect(deleteCalls(calls)).toEqual(secrets);
@@ -657,9 +652,7 @@ describe('the kubernetes reaper arm: only the condemned attempt’s claim (#821)
         const deletes = await reapWithHolder(OTHER);
         const other = { id: JOB, leaseToken: OTHER } as BoardJob;
         expect(deletes.some((path) => path.includes(OTHER) || path.includes(runnerJobName(other)))).toBe(false);
-        expect(
-            deletes.some((path) => path.includes(secretName(other)) || path.includes(gateEnvSecretName(other)))
-        ).toBe(false);
+        expect(deletes.some((path) => path.includes(secretName(other)))).toBe(false);
         expect(deletes.some((path) => path.startsWith(claimPath))).toBe(false);
     });
 

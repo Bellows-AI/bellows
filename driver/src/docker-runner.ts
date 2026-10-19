@@ -1,5 +1,6 @@
 import { JOB_LABEL } from './labels.js';
 import { awaitSupervisor, closeEndOf, createGroup, removeGroup, startGroup, supervisorLossOf } from './docker-group.js';
+import { type DockerGateDeps, runDockerGate } from './docker-gate.js';
 import {
     dockerKill,
     dockerKillFor,
@@ -307,9 +308,11 @@ async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<R
         };
     }
     const opened = await deps.endpoint.open();
+    // A supervisor alone (#773 D11): no agent, and no gate container its checkout's gates would bring.
     const group: BoardJob = {
         ...job,
         agent: false,
+        gates: null,
         leaseToken: randomUUID(),
         supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: opened.url, [SUPERVISOR_ENV.controlToken]: opened.token },
     };
@@ -344,6 +347,13 @@ async function stepHostFor(deps: RunnerDeps, job: BoardJob): Promise<StepHost> {
     if (!deps.groups.has(job.leaseToken)) await ensureGroup(deps, { ...job, agent: false }, null);
     return stepHostOf(deps);
 }
+
+/** The attempt's group as a gate run reaches it (`docker-gate.ts`). */
+const gateDeps = (deps: RunnerDeps, job: BoardJob): DockerGateDeps => ({
+    ...deps,
+    host: () => stepHostFor(deps, job),
+    group: () => deps.groups.get(job.leaseToken),
+});
 
 /**
  * One allowlisted helper step. An unknown helper id creates nothing (`runHelperStep` refuses it
@@ -737,6 +747,8 @@ export function createDockerRunner(
         // supervisor, and a stand-down ends the wait for the answer, never the supervisor.
         ...dockerTreeSteps(deps),
         runHelper: (job, plan, call = {}) => dockerRunHelper(deps, job, plan, call),
+        runGate: (job, gate, signal) => runDockerGate(gateDeps(deps, job), job, gate, signal),
+        resizeGate: async () => false, // no in-place resize: the gate container keeps its GATE_* sizing
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
         restartServices: (job, signal) => restartJobServices(job, execDocker, signal),

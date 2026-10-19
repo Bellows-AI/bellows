@@ -5,6 +5,7 @@ import {
     AGENT_CONTAINER,
     EXPORTER_CONTAINER,
     GO_MARKER,
+    MAILBOXES,
     SUPERVISOR_CONTAINER,
     SUPERVISOR_CREDENTIAL_NAMES,
     SUPERVISOR_EXIT,
@@ -16,7 +17,7 @@ import {
     type SupervisorReport,
 } from '../src/supervisor-contract.js';
 import { StepChannelClosed, type StepSink } from '../src/step-control.js';
-import { claudeTurnsScript, claudeExportScript, gateShellScript } from '../src/container-scripts.js';
+import { claudeTurnsScript, claudeExportScript, gateLoopArgv } from '../src/container-scripts.js';
 import {
     AdoptionBlocked,
     ARTIFACT_LIMIT,
@@ -44,10 +45,7 @@ import { orphanBoundMs } from '../src/supervisor-plan.js';
 import {
     claudeTurnsJobName,
     claudeTurnsJobSpec,
-    envBodyToData,
     fleetDnsField,
-    gateEnvSecretName,
-    gateJobSpec,
     jobsPath,
     opencodeReadoutJobName,
     opencodeReadoutJobSpec,
@@ -57,7 +55,6 @@ import {
     serviceSubdomain,
 } from '../src/k8s-podspec.js';
 import { claimName, jobPath, serviceDnsSpec, servicePodSpec } from '../src/k8s-auxspec.js';
-import { createKubernetesGateManager } from '../src/k8s-gates.js';
 import { reclaimGroupSpec } from '../src/k8s-group.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
@@ -616,7 +613,7 @@ describe('the runner job spec', () => {
  */
 const POD_NAMES = [
     'the runner',
-    'the gate',
+    'the gate sidecar',
     'the opencode session readout',
     'the claude turns readout',
     'the task supervisor',
@@ -628,7 +625,7 @@ type PodName = (typeof POD_NAMES)[number];
 /** Every Job-backed pod — all of them but the declared service's bare Pod. */
 const JOB_POD_NAMES = POD_NAMES.filter((name) => name !== 'the service pod');
 
-type JobSpecOf = ReturnType<typeof runnerJobSpec> | ReturnType<typeof gateJobSpec>;
+type JobSpecOf = ReturnType<typeof runnerJobSpec> | ReturnType<typeof claudeTurnsJobSpec>;
 type ServicePodOf = ReturnType<typeof servicePodSpec>;
 interface PodView {
     /** The Job object — absent on the service's bare Pod. */
@@ -678,17 +675,28 @@ const containerView = (config: DriverConfig, of: BoardJob, name: string): PodVie
     return { ...view, pod: { ...view.pod, containers: [container] } };
 };
 
-/** The gate builder's input, the one argument object every gate spec here starts from. */
-const gateArgs = (over: Partial<Parameters<typeof gateJobSpec>[2]> = {}): Parameters<typeof gateJobSpec>[2] => ({
-    key: `bellows/${USER}/.worktrees/${job.id}`,
-    image: 'node:24',
-    gateName: 't',
-    command: 'npm test',
-    run: 1,
-    envSecretName: null,
-    gateTimeoutMs: 30_000,
-    ...over,
+/** The suite's job, with a checkout that declares a gate: its pod holds the gate sidecar (issue #773). */
+const gatedOf = (of: BoardJob): BoardJob => ({
+    ...of,
+    repo: 'Bellows-AI/factory',
+    gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
 });
+
+/** The gated run's pod, seen through its gate sidecar alone — as `containerView` sees one main container. */
+const gateView = (config: DriverConfig, of: BoardJob): PodView => {
+    const spec = runnerJobSpec(
+        config,
+        { ...gatedOf(of), executorType: 'claude-code', ...SUPERVISED },
+        {
+            id: SESSION,
+            resume: false,
+        }
+    );
+    const view = jobView(spec);
+    const gate = spec.spec.template.spec.initContainers?.find((candidate) => candidate.name === 'gate');
+    if (!gate) throw new Error("the gated run's pod has no gate sidecar");
+    return { ...view, pod: { ...view.pod, containers: [gate] } };
+};
 
 const everyPodSpec = (env: NodeJS.ProcessEnv = {}, of: BoardJob = job): Record<PodName, () => PodView> => {
     const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, ...env });
@@ -696,7 +704,7 @@ const everyPodSpec = (env: NodeJS.ProcessEnv = {}, of: BoardJob = job): Record<P
     const startedAt = '2026-09-01T00:00:00Z';
     return {
         'the runner': () => jobView(runnerJobSpec(config, of, { id: SESSION, resume: false })),
-        'the gate': () => jobView(gateJobSpec(config, of, gateArgs())),
+        'the gate sidecar': () => gateView(config, of),
         'the opencode session readout': () => jobView(opencodeReadoutJobSpec(config, of, startedAt)),
         'the claude turns readout': () => jobView(claudeTurnsJobSpec(config, of, SESSION, startedAt)),
         'the task supervisor': () => containerView(config, of, SUPERVISOR_CONTAINER),
@@ -722,7 +730,8 @@ describe('resources on every pod the driver specs', () => {
     // scripts, and a request on each would multiply the pod's reservation by three. The reclaim
     // group is a supervisor alone, so it carries no request at all.
     const SIDECARS: readonly PodName[] = ['the task supervisor', 'the transcript exporter', 'the reclaim group'];
-    const SIZED_POD_NAMES = POD_NAMES.filter((name) => !SIDECARS.includes(name));
+    // The gate sidecar is sized by GATE_* and resized in place (issue #773): its own pins below.
+    const SIZED_POD_NAMES = POD_NAMES.filter((name) => !SIDECARS.includes(name) && name !== 'the gate sidecar');
 
     it.each(SIDECARS)('leaves %s unsized: the pod is sized by its agent', (name) => {
         const { pod } = everyPodSpec({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' })[name]();
@@ -734,9 +743,10 @@ describe('resources on every pod the driver specs', () => {
         expect(pod.containers[0]!.resources).toEqual(REQUESTS);
     });
 
-    // Issue #507: a gate runs the whole suite, so it is sized by GATE_* — every other aux Job
-    // keeps the runner's sizing, and an unset GATE_ slot inherits the runner's.
-    it('sizes the gate Job by GATE_* while every other aux Job keeps the runner resources', () => {
+    // Issue #507 and #773 (D6): a gate runs the whole suite, so it is limited by GATE_* from the
+    // start, and requests the idle loop's figures while the agent runs — resized up for verify, so
+    // no memory limit is ever lowered under a running suite. An unset GATE_ slot is the runner's.
+    it('sizes the gate sidecar idle under the GATE_* limits while the agent keeps the runner resources', () => {
         const config = loadDriverConfig({
             EXECUTOR: 'kubernetes',
             K8S_NAMESPACE: namespace,
@@ -746,9 +756,8 @@ describe('resources on every pod the driver specs', () => {
             GATE_CPU_REQUEST: '2',
             GATE_MEMORY_REQUEST: '2Gi',
         });
-        const gate = gateJobSpec(config, job, gateArgs());
-        expect(gate.spec.template.spec.containers[0]!.resources).toEqual({
-            requests: { cpu: '2', memory: '2Gi' },
+        expect(gateView(config, job).pod.containers[0]!.resources).toEqual({
+            requests: { cpu: '100m', memory: '128Mi' },
             limits: { cpu: '4' },
         });
         // The runner's pod keeps the runner's sizing, through its agent.
@@ -761,6 +770,24 @@ describe('resources on every pod the driver specs', () => {
 
     it.each(SIZED_POD_NAMES)('carries no resources on %s when none are configured', (name) => {
         expect(everyPodSpec()[name]().pod.containers[0]!.resources).toBeUndefined();
+    });
+
+    // R1-6: the idle request never exceeds what the gate is configured to request or limited to.
+    it('keeps the gate sidecar’s idle requests within limits set below the idle figures', () => {
+        const config = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            K8S_NAMESPACE: namespace,
+            GATE_CPU_LIMIT: '50m',
+            GATE_MEMORY_LIMIT: '64Mi',
+        });
+        expect(gateView(config, job).pod.containers[0]!.resources).toEqual({
+            requests: { cpu: '50m', memory: '64Mi' },
+            limits: { cpu: '50m', memory: '64Mi' },
+        });
+        const unset = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+        expect(gateView(unset, job).pod.containers[0]!.resources).toEqual({
+            requests: { cpu: '100m', memory: '128Mi' },
+        });
     });
 });
 
@@ -908,17 +935,16 @@ describe('the pod hardening on every pod the driver specs (#382)', () => {
         expect(pod.spec.containers[0]!.securityContext?.runAsUser).toBeUndefined();
     });
 
-    // The merge, not the replace. The gate writes the shared worktree as a fixed uid:gid, and that
-    // pod-level securityContext is the same field the seccomp profile lands in — a builder that
-    // assigns instead of spreading silently drops one of the two, and only one of the two has a
-    // visible symptom.
-    it('keeps the gate uid:gid beside the seccomp profile', () => {
-        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
-        const gate = gateJobSpec(config, job, gateArgs());
-        expect(gate.spec.template.spec.securityContext).toEqual({
+    // The gate writes the shared worktree as a fixed uid:gid, on its own container: the pod's
+    // securityContext keeps the seccomp profile alone, for every container of the pod.
+    it('runs the gate sidecar as the gate uid:gid beside its hardening, the pod keeping the seccomp profile', () => {
+        const { pod } = gateView(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), job);
+        expect(pod.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' } });
+        expect(pod.containers[0]!.securityContext).toEqual({
+            allowPrivilegeEscalation: false,
+            capabilities: { drop: ['ALL'] },
             runAsUser: 1000,
             runAsGroup: 1000,
-            seccompProfile: { type: 'RuntimeDefault' },
         });
     });
 });
@@ -1138,6 +1164,7 @@ function fakeSteps(answer: (step: StepRequest) => StepResult | Promise<StepResul
         contacted: () => true,
         release: () => undefined,
         attach: () => undefined,
+        cancel: () => undefined,
     };
     return { sink, submitted, tokens, signals, report };
 }
@@ -2396,6 +2423,7 @@ describe('publishing the produced work', () => {
             contacted: () => true,
             release: () => undefined,
             attach: () => undefined,
+            cancel: () => undefined,
         };
 
         expect(await publishing({ sink }).probeTree(ISSUE_JOB, cancel.signal)).toBeNull();
@@ -3059,11 +3087,10 @@ describe('the kubernetes runner', () => {
                 (call) => call.method === 'DELETE' && call.path?.startsWith(jobPath(namespace, runnerJobName(envJob)))
             )
         ).toBe(true);
-        // Both of the attempt's Secrets, the runner's and the gate environment's (issue #821), and
-        // both before the Job: nothing could derive their names once it is gone.
+        // The attempt's Secret (issue #821; the gates hold none of their own, issue #773), before the
+        // Job: nothing could derive its name once it is gone.
         expect(calls.filter((call) => call.path?.includes('/secrets')).map((call) => call.path)).toEqual([
             `/api/v1/namespaces/${namespace}/secrets/${secretName(envJob)}`,
-            `/api/v1/namespaces/${namespace}/secrets/${gateEnvSecretName(envJob)}`,
         ]);
         const secretAt = calls.findIndex((call) => call.path?.includes('/secrets'));
         const jobAt = calls.findIndex(
@@ -3103,10 +3130,7 @@ describe('the kubernetes runner', () => {
         // replacement's is a different name.
         await runner(request).kill(oldJob);
         const deleted = calls.slice(afterRun).filter((call) => call.path?.includes('/secrets'));
-        expect(deleted.map((call) => call.path)).toEqual([
-            secretOf(oldJob),
-            `/api/v1/namespaces/${namespace}/secrets/${gateEnvSecretName(oldJob)}`,
-        ]);
+        expect(deleted.map((call) => call.path)).toEqual([secretOf(oldJob)]);
         expect(secretName(oldJob)).not.toBe(secretName(newJob));
 
         // The replacement's own `finish` is what reaps its Secret.
@@ -4700,12 +4724,11 @@ describe('the kubernetes runner', () => {
         // group's steps are over with the Job, and a 404 is the ordinary end — then the Job, its
         // confirming read, then the lease-scoped pod and service lists (and 404 deletes for
         // whatever they ever named).
-        expect(calls.slice(0, 3)).toEqual([
+        expect(calls.slice(0, 2)).toEqual([
             { method: 'DELETE', path: `/api/v1/namespaces/${namespace}/secrets/${secretName(job)}` },
-            { method: 'DELETE', path: `/api/v1/namespaces/${namespace}/secrets/${gateEnvSecretName(job)}` },
             { method: 'DELETE', path: `${jobPath(namespace, runnerJobName(job))}?propagationPolicy=Foreground` },
         ]);
-        expect(calls.filter((call) => call.path?.includes('/secrets'))).toHaveLength(4);
+        expect(calls.filter((call) => call.path?.includes('/secrets'))).toHaveLength(2);
         expect(
             calls.every(
                 (call) =>
@@ -4819,9 +4842,8 @@ describe('the runner verdict log (#825)', () => {
 });
 
 // ==============================================================================================
-// Gates under kubernetes: a gate run IS a Job — the declared image over the workspaces PVC,
-// workingDir at the checkout, env by reference. Everything security-relevant about a gate Job is
-// decided in gateJobSpec and pinned here, exactly as the runner's is in runnerJobSpec.
+// Gates under kubernetes (issue #773): the declared image as a native sidecar of the attempt's
+// pod, running the gate loop over the gate mailbox; a gate is a supervised step, never a Job.
 // ==============================================================================================
 
 const gatedConfig = loadDriverConfig({
@@ -4830,546 +4852,195 @@ const gatedConfig = loadDriverConfig({
     GATE_TIMEOUT_MS: '30000',
 });
 
-describe('the gate job spec', () => {
-    const ROOT_KEY = '55555555-5555-4555-8555-555555555555';
-    const gateSpec = (overrides = 1, envSecret: string | null = 'the-secret') =>
-        gateJobSpec(gatedConfig, job, {
-            key: `bellows/${USER}/.worktrees/${ROOT_KEY}`,
-            image: 'node:24',
-            gateName: 'test',
-            command: 'npm test',
-            run: overrides,
-            envSecretName: envSecret,
-            gateTimeoutMs: 30_000,
-        });
+describe('the gate sidecar', () => {
+    const podOf = (of: BoardJob, config: DriverConfig = gatedConfig) =>
+        runnerJobSpec(config, { ...of, ...SUPERVISED }, { id: SESSION, resume: false }).spec.template.spec;
+    const gateOf = (of: BoardJob, config: DriverConfig = gatedConfig) => {
+        const gate = podOf(of, config).initContainers?.find((container) => container.name === 'gate');
+        if (!gate) throw new Error('no gate sidecar');
+        return gate;
+    };
+    const gated = gatedOf(job);
 
-    it('is a batch/v1 Job named after the job id, lease and gate, unique per run', () => {
-        expect(gateSpec().apiVersion).toBe('batch/v1');
-        expect(gateSpec().metadata.name).toMatch(/^factory-gate-test-[0-9a-f]{16}$/);
-        // A second run of the same gate is a different object — ad-hoc calls land mid-run, and
-        // two runs of one gate must never race for one name.
-        expect(gateSpec(2).metadata.name).not.toBe(gateSpec(1).metadata.name);
+    it('runs the gate loop in the declared image as a native sidecar, up before the supervisor', () => {
+        const gate = gateOf(gated);
+        expect(gate.restartPolicy).toBe('Always');
+        expect(gate.image).toBe('node:24');
+        expect(gate.command).toEqual(gateLoopArgv());
+        expect(podOf(gated).initContainers).toHaveLength(1);
     });
 
-    // The command travels as ONE argv element after the gate shell — the same single element docker
-    // exec's gate runs receive. It is never interpolated into a larger shell line.
-    it('runs the declared command through the gate shell as one argv element', () => {
-        expect(gateSpec().spec.template.spec.containers[0]!.command).toEqual([
-            'sh',
-            '-c',
-            gateShellScript,
-            'gate',
-            'npm test',
-        ]);
+    // R2-2: the sync may delete and recreate the worktree, so each request names it; the sidecar
+    // itself works in the mailbox.
+    it('works in the gate mailbox: each request names its worktree', () => {
+        expect(gateOf(gated).workingDir).toBe(MAILBOXES.gate.path);
     });
 
-    it('works at the checkout the coding agent edits — the same tree, via the same PVC', () => {
-        const container = gateSpec().spec.template.spec.containers[0]!;
-        expect(container.workingDir).toBe(`/workspaces/bellows/${USER}/.worktrees/${ROOT_KEY}`);
-        expect(container.image).toBe('node:24');
-        expect(gateSpec().spec.template.spec.volumes).toEqual([
-            { name: 'workspaces', persistentVolumeClaim: { claimName: 'factory-ai_workspaces' } },
-        ]);
-    });
-
-    // The gate mounts the same per-job subtree the job's runner does — the checkout key's own
-    // `<orgId>/<userId>` half — so the gate reads and writes one checkout and no sibling's or
-    // foreign org's tree is reachable from it.
-    it("mounts the checkout's own subtree only — the same scoping the runner gets", () => {
-        const container = gateSpec().spec.template.spec.containers[0]!;
-        expect(container.volumeMounts).toEqual([
+    it('mounts the member’s own subtree and the gate mailbox, and no other mailbox', () => {
+        expect(gateOf(gated).volumeMounts).toEqual([
             { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
+            { name: MAILBOXES.gate.name, mountPath: MAILBOXES.gate.path },
         ]);
+        expect(podOf(gated).volumes).toContainEqual({ name: MAILBOXES.gate.name, emptyDir: {} });
     });
 
-    it('carries the attempt labels and no ServiceAccount token', () => {
-        const s = gateSpec();
-        expect(s.metadata.labels).toEqual({
-            'factory.job': job.id,
-            'factory.lease': job.leaseToken,
-        });
-        expect(s.spec.template.metadata.labels).toEqual(s.metadata.labels);
-    });
-
-    // The kubelet's deadline is the gate's wall-clock cap; the driver reads DeadlineExceeded
-    // off the finished Job and reports exit 124.
-    it('bounds the run with activeDeadlineSeconds from GATE_TIMEOUT_MS', () => {
-        expect(gateSpec().spec.activeDeadlineSeconds).toBe(30);
-    });
-
-    // The env travels by reference and never as literals — the same rule that keeps claim
-    // values out of the runner pod spec keeps them out of a gate pod spec. The literals are the
-    // driver's own: HOME for the non-root uid (below) and the npm notice switch.
-    it('reads the env from a Secret by reference, and skips envFrom entirely when there is none', () => {
-        const container = gateSpec().spec.template.spec.containers[0]!;
-        expect(container.envFrom).toEqual([{ secretRef: { name: 'the-secret' } }]);
-        expect(container.env).toEqual([
+    // The claim env and the GitHub token ride each request: anyone who can `get pods` reads this spec.
+    it('carries the gate env’s own literals and no Secret reference', () => {
+        const gate = gateOf(gated);
+        expect(gate.env).toEqual([
             { name: 'HOME', value: '/tmp' },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
         ]);
-        expect(gateSpec(1, null).spec.template.spec.containers[0]!.envFrom).toBeUndefined();
-        // The two pinned just above are the only literal values anywhere in the spec.
-        expect(JSON.stringify(gateSpec()).match(/"value":/g)).toHaveLength(2);
+        expect(JSON.stringify(gate)).not.toContain('secretKeyRef');
+        expect(JSON.stringify(gateOf({ ...gated, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } }).env)).toBe(
+            JSON.stringify([{ name: 'HOME', value: '/tmp' }])
+        );
     });
 
-    // The gate writes the shared task worktree, so it writes as the uid:gid every other writer
-    // on that tree uses — the executor images' USER node (1000:1000), which the sync, reclaim
-    // and runner Jobs run as. The declared image's own default (root, usually) would leave
-    // gate-written files the uid-1000 reclaim can never remove (observed 2026-09-13 on the
-    // docker twin: a gate-built core/dist left a worktree unremovable and its thread stuck).
-    it('writes the worktree as the runner uid:gid, with a HOME that uid can write', () => {
-        const s = gateSpec();
-        // The uid:gid half only — the same field also carries the #382 seccomp profile, whose
-        // merge with these two is pinned in 'keeps the gate uid:gid beside the seccomp profile'.
-        expect(s.spec.template.spec.securityContext).toMatchObject({ runAsUser: 1000, runAsGroup: 1000 });
-        const container = s.spec.template.spec.containers[0]!;
-        expect(container.env).toEqual([
-            { name: 'HOME', value: '/tmp' },
-            { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
-        ]);
-    });
-
-    // A gate's tail is what the job output shows; npm's update notice must not be its last word
-    // (#511) — the docker gate env's twin.
-    it('silences npm update notices for every gate run', () => {
-        expect(gateSpec().spec.template.spec.containers[0]!.env).toContainEqual({
-            name: 'NPM_CONFIG_UPDATE_NOTIFIER',
-            value: 'false',
-        });
-    });
-
-    // Issue #734: the gate Job and the runner pod name the same cache path, inside the one
-    // member subPath mount both already carry — the docker gate env's twin.
-    it('points each declared cache name into the repo cache, the same path the runner pod gets', () => {
+    // Issue #734: the gate and the agent name the same cache path, inside the one member mount.
+    it('points each declared cache name into the repo cache, the same path the agent gets', () => {
         const cacheJob: BoardJob = {
-            ...job,
+            ...gated,
             repo: 'acme/widgets',
-            rootJobId: ROOT_KEY,
-            gates: { image: 'node:24', cache: ['NPM_CONFIG_CACHE'], gates: [] },
+            gates: { image: 'node:24', cache: ['NPM_CONFIG_CACHE'], gates: [{ name: 't', command: 't' }] },
         };
         const path = `/workspaces/bellows/${USER}/.cache/acme/widgets/NPM_CONFIG_CACHE`;
-        const gate = gateJobSpec(gatedConfig, cacheJob, {
-            key: `bellows/${USER}/.worktrees/${ROOT_KEY}`,
-            image: 'node:24',
-            gateName: 'test',
-            command: 'npm test',
-            run: 1,
-            envSecretName: 'the-secret',
-            gateTimeoutMs: 30_000,
-        }).spec.template.spec.containers[0]!;
-        expect(gate.env).toContainEqual({ name: 'NPM_CONFIG_CACHE', value: path });
-        expect(gate.volumeMounts).toEqual([
-            { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
-        ]);
-        const runner = runnerJobSpec(gatedConfig, cacheJob, { id: SESSION, resume: false }).spec.template.spec
-            .containers[0]!;
-        expect(runner.env).toContainEqual({ name: 'NPM_CONFIG_CACHE', value: path });
-        const claimed: BoardJob = { ...cacheJob, env: { NPM_CONFIG_CACHE: '/elsewhere' } };
-        const env = runnerJobSpec(gatedConfig, claimed, { id: SESSION, resume: false }).spec.template.spec
-            .containers[0]!.env;
-        expect(env.filter((entry) => entry.name === 'NPM_CONFIG_CACHE')).toEqual([
-            {
-                name: 'NPM_CONFIG_CACHE',
-                valueFrom: { secretKeyRef: { name: secretName(claimed), key: 'NPM_CONFIG_CACHE' } },
-            },
-        ]);
+        expect(gateOf(cacheJob).env).toContainEqual({ name: 'NPM_CONFIG_CACHE', value: path });
+        const agent = podOf(cacheJob).containers.find((container) => container.name === 'agent')!;
+        expect(agent.env).toContainEqual({ name: 'NPM_CONFIG_CACHE', value: path });
     });
 
-    // The claim's value arrives by envFrom, which an explicit `env` entry would beat.
-    it('leaves the npm notice to a claim that names it, in the gate env Secret', () => {
-        const envJob: BoardJob = { ...job, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } };
-        const s = gateJobSpec(gatedConfig, envJob, {
-            key: `bellows/${USER}/.worktrees/${ROOT_KEY}`,
-            image: 'node:24',
-            gateName: 'test',
-            command: 'npm test',
-            run: 1,
-            envSecretName: 'the-secret',
-            gateTimeoutMs: 30_000,
+    it('tells the supervisor its gate container is there, and gives the gate mailbox to it alone', () => {
+        const pod = podOf(gated);
+        const container = (name: string) => pod.containers.find((candidate) => candidate.name === name)!;
+        expect(container('supervisor').env).toContainEqual({ name: 'SUPERVISOR_GATE', value: '1' });
+        expect(container('supervisor').volumeMounts).toContainEqual({
+            name: MAILBOXES.gate.name,
+            mountPath: MAILBOXES.gate.path,
         });
-        expect(s.spec.template.spec.containers[0]!.env).toEqual([{ name: 'HOME', value: '/tmp' }]);
+        for (const name of ['agent', 'exporter']) {
+            expect(JSON.stringify(container(name).volumeMounts), name).not.toContain(MAILBOXES.gate.name);
+        }
     });
 
-    it('sanitizes a hostile gate name into a legal k8s name without carrying it raw', () => {
-        const s = gateJobSpec(gatedConfig, job, {
-            key: `bellows/${USER}/.worktrees/${ROOT_KEY}`,
-            image: 'node:24',
-            gateName: 'UPPER Case!!',
-            command: 'npm test',
-            run: 1,
-            envSecretName: null,
-            gateTimeoutMs: 30_000,
-        });
-        expect(s.metadata.name).toMatch(/^factory-gate-[a-z0-9.-]+-[0-9a-f]{16}$/);
-        expect(s.metadata.name).not.toContain('UPPER');
-        expect(s.metadata.name).not.toContain('Case');
+    it('specs no gate sidecar for a checkout that declares neither gates nor setup, or has no worktree', () => {
+        const { repo: _repo, ...repoless } = gated;
+        for (const of of [job, repoless, { ...gated, gates: { image: 'node:24', gates: [] } }]) {
+            const pod = podOf(of);
+            expect(pod.initContainers).toBeUndefined();
+            const supervisor = pod.containers.find((candidate) => candidate.name === 'supervisor')!;
+            expect(supervisor.env).not.toContainEqual({ name: 'SUPERVISOR_GATE', value: '1' });
+        }
+        expect(gateOf({ ...gated, gates: { image: 'node:24', setup: 'npm ci', gates: [] } }).name).toBe('gate');
     });
 
-    it('refuses a checkout key or image that is not the shape the board legally produces', () => {
-        expect(() => gateSpec(1, null)).not.toThrow();
-        expect(() =>
-            gateJobSpec(gatedConfig, job, {
-                key: '../other-member/repo',
-                image: 'node:24',
-                gateName: 'test',
-                command: 'npm test',
-                run: 1,
-                envSecretName: null,
-                gateTimeoutMs: 30_000,
-            })
-        ).toThrow(/checkout key/);
-        expect(() =>
-            gateJobSpec(gatedConfig, job, {
-                key: `bellows/${USER}/.worktrees/${ROOT_KEY}`,
-                image: '-flag-image',
-                gateName: 'test',
-                command: 'npm test',
-                run: 1,
-                envSecretName: null,
-                gateTimeoutMs: 30_000,
-            })
-        ).toThrow(/image reference/);
+    // D11: the adopted run's group (made on demand, no agent) still runs its gates; the reclaim's
+    // group is a supervisor alone whatever its checkout declares.
+    it('specs the agentless group of an adopted run with the gate, and the reclaim group without one', () => {
+        expect(gateOf({ ...gated, agent: false }).name).toBe('gate');
+        const reclaim = reclaimGroupSpec(gatedConfig, gated, gated.leaseToken).spec.template.spec;
+        expect(reclaim.initContainers?.map((container) => container.name)).toEqual(['release']);
+        const { repo: _repo, ...treeless } = gated;
+        const treelessSpec = reclaimGroupSpec(gatedConfig, treeless, gated.leaseToken);
+        expect(treelessSpec.spec.template.spec.initContainers).toBeUndefined();
+    });
+
+    it('refuses a declared image that is not a plain image reference, before the spec exists', () => {
+        expect(() => podOf({ ...gated, gates: { ...gated.gates!, image: '-flag-image' } })).toThrow(/image reference/);
     });
 });
 
-describe('the gate env body', () => {
-    it('parses NAME=value lines and drops nothing but the newlines', () => {
-        expect(envBodyToData('A=1\nB=hello world\n')).toEqual({ A: '1', B: 'hello world' });
-    });
-
-    it('refuses a line that is not NAME=value, before it becomes a Secret key', () => {
-        expect(() => envBodyToData('A=1\nnot-a-pair\n')).toThrow(/NAME=value/);
-        expect(() => envBodyToData('bad key!=1')).toThrow(/NAME=value/);
-    });
-});
-
-describe('the kubernetes gate manager', () => {
-    const KEY = `bellows/${USER}/.worktrees/55555555-5555-4555-8555-555555555555`;
-    const GATE_JOB = /^factory-gate-test-[0-9a-f]{16}$/;
-    const GATE_JOB_PATH = /\/jobs\/factory-gate-test-[0-9a-f]{16}\?/;
-
-    /** A fake that routes the objects one gate run touches: env Secret, Job, its pod, its log. */
-    const gateFake = (
-        options: {
-            job?: K8sResponse;
-            pods?: K8sResponse;
-            log?: K8sResponse;
-            secretCreate?: K8sResponse;
-            jobCreate?: K8sResponse;
-        } = {}
-    ) => {
-        const calls: Call[] = [];
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            const respond = (r: K8sResponse) => Promise.resolve(r);
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return respond({ status: 200, body: '{}' });
-                return respond(options.secretCreate ?? { status: 201, body: '{}' });
-            }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/secrets/`))
-                return respond({ status: 200, body: '{}' });
-            if (path === jobsPath(namespace)) {
-                if (method === 'DELETE') return respond({ status: 200, body: '{}' });
-                return respond(options.jobCreate ?? { status: 201, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}/`)) {
-                return respond(options.job ?? { status: 200, body: JSON.stringify({ status: { succeeded: 1 } }) });
-            }
-            if (path.includes('pods?') && decodeURIComponent(path).includes('job-name=')) {
-                return respond(
-                    options.pods ?? {
-                        status: 200,
-                        body: JSON.stringify({
-                            items: [
-                                {
-                                    metadata: { name: 'gate-pod' },
-                                    status: { containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
-                                },
-                            ],
-                        }),
-                    }
-                );
-            }
-            if (path.includes('/log')) return respond(options.log ?? { status: 200, body: 'gate said hi\n' });
-            return Promise.reject(new Error(`gate fake has no answer for ${method} ${path}`));
-        };
-        return { request, calls };
+describe('the kubernetes runner and the gates', () => {
+    const gated = { ...gatedOf(job), ...SUPERVISED };
+    const gate = {
+        command: 'npm test',
+        cwd: `/workspaces/bellows/${USER}/.worktrees/${job.id}`,
+        env: {},
+        timeoutMs: 1000,
     };
 
-    const manager = (request: K8sRequest) =>
-        createKubernetesGateManager({ config: gatedConfig, request, sleep: async () => {} });
+    it('runs a gate as a step of the attempt’s own group, which it makes when none is up, and no Job or Secret of its own', async () => {
+        const { request, calls } = fakeRequest();
+        const steps = fakeSteps((step) => stepOk(step.kind === 'gate' ? 'passed' : ''));
+        const k8s = runner(request, {}, undefined, steps.sink);
 
-    it('creates the attempt env Secret before the Job, and reaps the Job with the verdict', async () => {
-        const { request, calls } = gateFake();
-        const m = manager(request);
-        await m.acquire(KEY, 'node:24', 'CORE_TOKEN=shh\n', { job });
-        const outcome = await m.runGate(KEY, 'test', 'npm test');
+        expect(await k8s.runGate(gated, gate)).toEqual(stepOk('passed'));
 
-        expect(outcome).toEqual({ exitCode: 0, output: 'gate said hi' });
-        const secretPost = calls.findIndex((c) => c.method === 'POST' && c.path?.endsWith('/secrets'));
-        const jobPost = calls.findIndex((c) => c.method === 'POST' && c.path === jobsPath(namespace));
-        expect(secretPost).toBeGreaterThanOrEqual(0);
-        expect(secretPost).toBeLessThan(jobPost);
-        // The Secret carries the env values, labeled to this attempt — one per attempt, created
-        // before any gate Job references it.
-        expect(calls[secretPost]?.body).toMatchObject({
-            kind: 'Secret',
-            stringData: { CORE_TOKEN: 'shh' },
-            metadata: { labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken } },
-        });
-        expect(calls[secretPost]?.body).toMatchObject({
-            metadata: { name: gateEnvSecretName(job) },
-        });
-        // The Job goes once the verdict and log have been read; the Secret's life is the
-        // attempt's, and release() is what ends it.
-        expect(calls.some((c) => c.method === 'DELETE' && c.path?.startsWith(`${jobsPath(namespace)}/`))).toBe(true);
-        expect(calls.some((c) => c.method === 'DELETE' && c.path?.includes('/secrets/'))).toBe(false);
-        await m.release(KEY, job);
-        expect(
-            calls.some(
-                (c) =>
-                    c.method === 'DELETE' &&
-                    c.path === `/api/v1/namespaces/${namespace}/secrets/${gateEnvSecretName(job)}`
-            )
-        ).toBe(true);
+        expect(steps.submitted.map((step) => step.kind)).toEqual(['gate']);
+        expect(steps.submitted[0]).toMatchObject({ argv: ['npm test'], cwd: gate.cwd });
+        const posts = calls.filter((call) => call.method === 'POST');
+        const jobs = posts.filter((call) => call.path === jobsPath(namespace));
+        expect(jobs.map((call) => (call.body as { metadata: { name: string } }).metadata.name)).toEqual([
+            runnerJobName(gated),
+        ]);
+        const pod = (jobs[0]!.body as ReturnType<typeof runnerJobSpec>).spec.template.spec;
+        expect(pod.initContainers?.map((container) => container.name)).toEqual(['gate']);
+        const secrets = posts.filter((call) => call.path === `/api/v1/namespaces/${namespace}/secrets`);
+        expect(secrets.map((call) => (call.body as { metadata: { name: string } }).metadata.name)).toEqual([
+            secretName(gated),
+        ]);
+        expect(JSON.stringify(posts)).not.toContain('factory-gate-');
     });
 
-    // A gate run's own GitHub token (asked at each run's start, docs/connections.md) reaches the
-    // gate Job's pod through the Secret it reads at start: a changed body replaces the Secret.
-    it('replaces the attempt env Secret when a re-acquire brings a different body, and only then', async () => {
-        const { request, calls } = gateFake();
-        const m = manager(request);
-        const secretCalls = () => calls.filter((c) => c.path?.includes('/secrets'));
-        await m.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_first\n', { job });
-        await m.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_second\n', { job });
-
-        const after = secretCalls().map((c) => c.method);
-        expect(after).toEqual(['POST', 'DELETE', 'POST']);
-        expect(secretCalls()[2]?.body).toMatchObject({ stringData: { GITHUB_TOKEN: 'ghs_second' } });
-
-        // The same body again replaces nothing: its create answers 409, and the Secret stands.
-        await m.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_second\n', { job });
-        expect(secretCalls().filter((c) => c.method === 'DELETE')).toHaveLength(1);
-    });
-
-    it('runs a gate with no env at all without touching a Secret', async () => {
-        const { request, calls } = gateFake();
-        const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', { job });
-        await m.runGate(KEY, 'test', 'npm test');
-        expect(calls.some((c) => c.path?.includes('/secrets'))).toBe(false);
-    });
-
-    it('reports the kubelet deadline as exit 124, the docker timeout convention', async () => {
-        const { request } = gateFake({
-            job: {
-                status: 200,
-                body: JSON.stringify({
-                    status: { failed: 1, conditions: [{ type: 'Failed', reason: 'DeadlineExceeded' }] },
-                }),
-            },
-        });
-        const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', { job });
-        const outcome = await m.runGate(KEY, 'test', 'npm test');
-        expect(outcome.exitCode).toBe(124);
-    });
-
-    /*
-     * What a deadline looks like the moment it fires on a current cluster (observed on v1.37): the
-     * Job already counts the pod failed but carries only `FailureTarget` — `Failed` lands later,
-     * once the pod is gone — and the pod is terminating, so there is no live pod to read. Read as
-     * an ordinary failure, that reported "exit 1, empty output" over a gate that simply ran long.
-     */
-    it('reports a deadline still at FailureTarget, pod terminating, as the timeout it is', async () => {
-        const { request } = gateFake({
-            job: {
-                status: 200,
-                body: JSON.stringify({
-                    status: { failed: 1, conditions: [{ type: 'FailureTarget', reason: 'DeadlineExceeded' }] },
-                }),
-            },
-            pods: {
-                status: 200,
-                body: JSON.stringify({
-                    items: [{ metadata: { name: 'gate-pod', deletionTimestamp: '2026-09-26T05:40:24Z' } }],
-                }),
-            },
-        });
-        const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', { job });
-        const outcome = await m.runGate(KEY, 'test', 'npm test');
-        expect(outcome.exitCode).toBe(124);
-        expect(outcome.output).toMatch(/gate killed after \d+ms/);
-    });
-
-    // A gate's own `timeout:` (issue #576) is its Job's deadline; setup keeps GATE_TIMEOUT_MS.
-    it("files the gate Job with the gate's own activeDeadlineSeconds, setup with the default", async () => {
-        const { request, calls } = gateFake();
-        const m = manager(request);
-        const withSetup = { ...job, gates: { image: 'node:24', setup: 'npm ci', gates: [] } };
-        await m.acquire(KEY, 'node:24', '', { job: withSetup });
-        await m.runGate(KEY, 'ui', 'npm run verify:ui', { timeoutMs: 2_700_000 });
-
-        const deadlines = calls
-            .filter((c) => c.method === 'POST' && c.path === jobsPath(namespace))
-            .map((c) => (c.body as { spec: { activeDeadlineSeconds: number } }).spec.activeDeadlineSeconds);
-        expect(deadlines).toEqual([30, 2700]);
-    });
-
-    it("names the gate's own deadline when the kubelet kills it", async () => {
-        const { request } = gateFake({
-            job: {
-                status: 200,
-                body: JSON.stringify({
-                    status: { failed: 1, conditions: [{ type: 'Failed', reason: 'DeadlineExceeded' }] },
-                }),
-            },
-            log: { status: 200, body: '' },
-        });
-        const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', { job });
-        const outcome = await m.runGate(KEY, 'ui', 'npm run verify:ui', { timeoutMs: 2_700_000 });
-        expect(outcome).toEqual({ exitCode: 124, output: '[driver] gate killed after 2700000ms' });
-    });
-
-    // A Stop or Remove ends the gate where it stands: its Job goes Foreground, its pod with it.
-    it('deletes the running gate Job when the signal aborts, and stops polling', async () => {
-        const { request, calls } = gateFake({ job: { status: 200, body: JSON.stringify({ status: { active: 1 } }) } });
-        const cancel = new AbortController();
-        const watching: K8sRequest = (method, path, body) => {
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) cancel.abort();
-            return request(method, path, body);
+    /** fakeRequest, with every pod resize answered `resize` and recorded with its patch type. */
+    const resizing = (resize: K8sResponse = { status: 200, body: '{}' }) => {
+        const base = fakeRequest();
+        const patches: { path: string; body: unknown; contentType: string | undefined }[] = [];
+        const order: string[] = [];
+        const request: K8sRequest = (method, path, body, contentType) => {
+            if (method === 'PATCH' && path.endsWith('/resize')) {
+                patches.push({ path, body, contentType });
+                order.push('resize');
+                return Promise.resolve(resize);
+            }
+            return base.request(method, path, body);
         };
-        const m = createKubernetesGateManager({
-            config: gatedConfig,
-            request: watching,
-            sleep: () => new Promise((resolve) => setTimeout(resolve, 1)),
-        });
-        await m.acquire(KEY, 'node:24', '', { job });
+        return { request, calls: base.calls, patches, order };
+    };
 
-        await expect(m.runGate(KEY, 'test', 'npm test', { signal: cancel.signal })).rejects.toMatchObject({
-            code: 125,
+    it('resizes the gate sidecar idle before it releases the agent', async () => {
+        const api = resizing();
+        const steps = fakeSteps((step) => {
+            api.order.push(step.kind);
+            return defaultStepAnswer(step);
         });
-
-        const deletes = calls.filter((c) => c.method === 'DELETE' && c.path?.startsWith(`${jobsPath(namespace)}/`));
-        expect(deletes.some((c) => c.path?.includes('propagationPolicy=Foreground'))).toBe(true);
-        expect(deletes[0]?.path).toMatch(GATE_JOB_PATH);
+        await runner(api.request, {}, undefined, steps.sink).run(gated, { id: SESSION, resume: false });
+        expect(api.order.slice(0, 2)).toEqual(['resize', 'go']);
+        expect(api.patches[0]?.body).toEqual({
+            spec: { initContainers: [{ name: 'gate', resources: { requests: { cpu: '100m', memory: '128Mi' } } }] },
+        });
     });
 
-    it('creates no Job for a signal already aborted', async () => {
-        const { request, calls } = gateFake();
-        const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', { job });
-
-        await expect(m.runGate(KEY, 'test', 'npm test', { signal: AbortSignal.abort() })).rejects.toMatchObject({
-            code: 125,
-        });
-
-        expect(calls.some((c) => c.method === 'POST' && c.path === jobsPath(namespace))).toBe(false);
-    });
-
-    // The api-server row is a verified bug (docs/plans/k8s-runner-prune.md Step 0): a transport
-    // failure that exhausts the status-poll retries used to rethrow the raw error with no
-    // CONTAINER_GONE code, while the 429/5xx exhaustion arm already wrapped it — so `gates.ts`'s
-    // ad-hoc endpoint (which maps CONTAINER_GONE to 409) answered 500 for a kubernetes API-server
-    // outage where docker answers 409 for the same harness failure.
-    it.each<[string, () => K8sRequest]>([
-        ['the cluster refuses the run', () => gateFake({ jobCreate: { status: 403, body: 'forbidden' } }).request],
-        [
-            'the api server cannot be reached at all',
-            () => (method, path) => {
-                if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                    return Promise.resolve({ status: 201, body: '{}' });
-                }
-                if (path === jobsPath(namespace)) return Promise.resolve({ status: 201, body: '{}' });
-                if (path.startsWith(`${jobsPath(namespace)}/`)) return Promise.reject(new Error('ECONNREFUSED'));
-                return Promise.reject(new Error(`gate fake has no answer for ${method} ${path}`));
+    // R1-1: a merge patch would replace the whole init container list; the strategic merge patch
+    // merges by container name, so only the gate's requests change.
+    it('resizes for verify with a strategic merge patch naming the gate container alone', async () => {
+        const api = resizing();
+        const k8s = runner(api.request, { GATE_CPU_REQUEST: '2', GATE_MEMORY_REQUEST: '2Gi' });
+        expect(await k8s.resizeGate(gated, 'verify')).toBe(true);
+        expect(api.patches).toEqual([
+            {
+                path: `/api/v1/namespaces/${namespace}/pods/${podName}/resize`,
+                body: {
+                    spec: { initContainers: [{ name: 'gate', resources: { requests: { cpu: '2', memory: '2Gi' } } }] },
+                },
+                contentType: 'application/strategic-merge-patch+json',
             },
-        ],
-    ])('rejects with the harness code when %s', async (_when, request) => {
-        const m = manager(request());
-        await m.acquire(KEY, 'node:24', '', { job });
-        await expect(m.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
+        ]);
     });
 
-    it('names an unpullable gate image instead of burning the deadline', async () => {
-        const { request } = gateFake({
-            job: { status: 200, body: '{"status":{}}' },
-            pods: {
-                status: 200,
-                body: JSON.stringify({
-                    items: [
-                        {
-                            metadata: { name: 'gate-pod' },
-                            status: {
-                                containerStatuses: [
-                                    { state: { waiting: { reason: 'ImagePullBackOff', message: 'no such image' } } },
-                                ],
-                            },
-                        },
-                    ],
-                }),
-            },
-        });
-        const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', { job });
-        const error = await m.runGate(KEY, 'test', 'npm test').then(
-            () => null,
-            (e: Error) => e
+    it('answers a refused or impossible resize as not resized, never an error, and resizes no ungated pod', async () => {
+        for (const status of [403, 422, 500]) {
+            const api = resizing({ status, body: '{}' });
+            expect(await runner(api.request).resizeGate(gated, 'verify'), String(status)).toBe(false);
+        }
+        const unlisted = routed((method, path) =>
+            method === 'GET' && path.includes('/pods?') ? { status: 500, body: '' } : undefined
         );
-        expect((error as Error | null)?.message).toBe(
-            'the gate image "node:24" cannot be pulled: ImagePullBackOff — no such image'
-        );
-        // The harness code, not a bare error: gates.ts maps CONTAINER_GONE to the endpoint's 409.
-        expect((error as { code?: number } | null)?.code).toBe(125);
-    });
-
-    it('refuses a run whose attempt context was never acquired, like docker refuses a missing container', async () => {
-        const { request } = gateFake();
-        await expect(manager(request).runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
-    });
-
-    it('validates the checkout key and image shapes at acquire, before anything runs', async () => {
-        const { request } = gateFake();
-        const m = manager(request);
-        await expect(m.acquire('../other/repo', 'node:24', '', { job })).rejects.toThrow(/checkout key/);
-        await expect(m.acquire(KEY, 'not an image!!', '', { job })).rejects.toThrow(/image reference/);
-        await expect(m.acquire(KEY, 'node:24', '', { job })).resolves.toBeUndefined();
-    });
-
-    it('names the gate Job so two runs of one gate never collide', async () => {
-        const { request, calls } = gateFake();
-        const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', { job });
-        await m.runGate(KEY, 'test', 'npm test');
-        await m.runGate(KEY, 'test', 'npm test');
-        const names = calls
-            .filter((c) => c.method === 'POST' && c.path === jobsPath(namespace))
-            .map((c) => (c.body as { metadata?: { name?: string } })?.metadata?.name);
-        expect(names[0]).toMatch(GATE_JOB);
-        expect(names[0]).not.toBe(names[1]);
-    });
-
-    // The close-of-run gates re-acquire before every run (the cooldown heal, issue #78), so a
-    // re-acquire of the SAME attempt must not reset the run counter back onto a name a previous
-    // run of that gate already used — the reaped Job can still exist when the create lands.
-    // The re-acquire also re-POSTs the attempt's env Secret, answered 409 already-exists —
-    // the tolerance the production re-acquire relies on.
-    it('keeps the run counter across re-acquires of the same attempt, so a re-acquired run never reuses a name', async () => {
-        const { request, calls } = gateFake({ secretCreate: { status: 409, body: '{}' } });
-        const m = manager(request);
-        await m.acquire(KEY, 'node:24', 'GATE_VAR=1', { job });
-        await m.runGate(KEY, 'test', 'npm test');
-        await m.acquire(KEY, 'node:24', 'GATE_VAR=1', { job });
-        await m.runGate(KEY, 'test', 'npm test');
-        const names = calls
-            .filter((c) => c.method === 'POST' && c.path === jobsPath(namespace))
-            .map((c) => (c.body as { metadata?: { name?: string } })?.metadata?.name);
-        expect(names).toHaveLength(2);
-        expect(names[0]).toMatch(GATE_JOB);
-        expect(names[1]).toMatch(GATE_JOB);
-        expect(names[0]).not.toBe(names[1]);
+        expect(await runner(unlisted.request).resizeGate(gated, 'verify')).toBe(false);
+        expect(unlisted.calls.some((call) => call.method === 'PATCH')).toBe(false);
+        const plain = resizing();
+        expect(await runner(plain.request).resizeGate({ ...job, ...SUPERVISED }, 'idle')).toBe(false);
+        expect(plain.calls).toEqual([]);
     });
 });
 
@@ -5458,22 +5129,14 @@ describe('the service pod and DNS specs', () => {
         expect(serviceDnsSpec(config, retry).metadata.name).not.toBe(serviceDnsSpec(config, job).metadata.name);
     });
 
-    it('puts the attempt search domain on the runner and gate pods, and only when services are on', () => {
+    // The gate sidecar is a container of the runner pod (issue #773): it resolves with the pod's search domain.
+    it('puts the attempt search domain on the runner pod, and only when services are on', () => {
         const searches = [`${serviceSubdomain(job)}.${namespace}.svc.cluster.local`];
         const on = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' });
         expect(fleetDnsField(on, job)).toEqual({ dnsConfig: { searches } });
         const session = { id: SESSION, resume: false };
         expect(runnerJobSpec(on, job, session).spec.template.spec.dnsConfig).toEqual({ searches });
-        const gate = gateJobSpec(on, job, {
-            key: `bellows/${USER}/.worktrees/55555555-5555-4555-8555-555555555555`,
-            image: 'node:22',
-            gateName: 'test',
-            command: 'npm test',
-            run: 1,
-            envSecretName: null,
-            gateTimeoutMs: 60_000,
-        });
-        expect(gate.spec.template.spec.dnsConfig).toEqual({ searches });
+        expect(runnerJobSpec(on, gatedOf(job), session).spec.template.spec.dnsConfig).toEqual({ searches });
 
         const domain = loadDriverConfig({
             EXECUTOR: 'kubernetes',
@@ -6147,13 +5810,10 @@ describe("scoping the kubernetes mounts to the job's own subtree", () => {
 
     // A claim whose workspace path fails the segment assertions is refused before any pod spec
     // exists — the mount can never name a path the assertions did not clear.
-    it.each(JOB_POD_NAMES.filter((name) => name !== 'the gate'))(
-        'refuses to build %s for a claim with a malformed workspace path',
-        (name) => {
-            const build = everyPodSpec({ RUNNER_SERVICES: '0' }, { ...job, workspacePath: '../../etc' })[name];
-            expect(build).toThrow(/workspace path/);
-        }
-    );
+    it.each(JOB_POD_NAMES)('refuses to build %s for a claim with a malformed workspace path', (name) => {
+        const build = everyPodSpec({ RUNNER_SERVICES: '0' }, { ...job, workspacePath: '../../etc' })[name];
+        expect(build).toThrow(/workspace path/);
+    });
 });
 
 describe('the runner job spec under opencode', () => {
@@ -8290,10 +7950,7 @@ describe('acknowledged Secret-first teardown (#821 D16)', () => {
     };
     const lifecycles = Object.entries(LIFECYCLES);
 
-    const secretPaths = (pair: BoardJob) => [
-        `${secretsBase}/${secretName(pair)}`,
-        `${secretsBase}/${gateEnvSecretName(pair)}`,
-    ];
+    const secretPaths = (pair: BoardJob) => [`${secretsBase}/${secretName(pair)}`];
     const jobDeletes = (calls: Call[], jobName: string) =>
         calls.flatMap((call, at) =>
             call.method === 'DELETE' && call.path.startsWith(`${jobPath(namespace, jobName)}?`) ? [at] : []
@@ -8386,20 +8043,17 @@ describe('acknowledged Secret-first teardown (#821 D16)', () => {
         }
     );
 
-    it.each(lifecycles)(
-        '%s: a transport throw between the two Secret deletes leaves the Job listed',
-        async (_n, life) => {
-            const { request, calls } = clusterOf(life, {
-                secret: (name) => (name === gateEnvSecretName(life.pair) ? 'throws' : null),
-            });
-            await life.drive(request);
+    it.each(lifecycles)('%s: a transport throw on the Secret delete leaves the Job listed', async (_n, life) => {
+        const { request, calls } = clusterOf(life, {
+            secret: (name) => (name === secretName(life.pair) ? 'throws' : null),
+        });
+        await life.drive(request);
 
-            const after = posted(calls, life.jobName);
-            expect(jobDeletes(calls, life.jobName).filter((at) => at > after)).toEqual([]);
-            expect(suspended(calls, life.jobName)).toBe(true);
-            expect(claimDeleted(calls)).toBe(false);
-        }
-    );
+        const after = posted(calls, life.jobName);
+        expect(jobDeletes(calls, life.jobName).filter((at) => at > after)).toEqual([]);
+        expect(suspended(calls, life.jobName)).toBe(true);
+        expect(claimDeleted(calls)).toBe(false);
+    });
 
     // A declared service pod mounts no worktree: it never holds the group's end, whatever its lease.
     it('confirms the end with the declared services still up — they are no writer of the tree', async () => {
@@ -8630,15 +8284,12 @@ describe('claims of an unconfirmed group (#821)', () => {
         const deleteOf = (path: string) =>
             calls.flatMap((call, at) => (call.method === 'DELETE' && call.path === path ? [at] : []));
         const runnerSecret = deleteOf(`${secretsBase}/${secretName(old)}`);
-        const gateSecret = deleteOf(`${secretsBase}/${gateEnvSecretName(old)}`);
         const jobDelete = calls.findIndex(
             (call) => call.method === 'DELETE' && call.path.startsWith(`${jobPath(namespace, runnerJobName(old))}?`)
         );
-        // Round one: the refused Secret, nothing else deleted. Round two: both Secrets, then the Job.
+        // Round one: the refused Secret, nothing else deleted. Round two: the Secret, then the Job.
         expect(runnerSecret).toHaveLength(2);
-        expect(gateSecret).toHaveLength(1);
-        expect(gateSecret[0]).toBeGreaterThan(runnerSecret[0]!);
-        expect(jobDelete).toBeGreaterThan(gateSecret[0]!);
+        expect(jobDelete).toBeGreaterThan(runnerSecret[1]!);
     });
 
     // F6: a post-create stand-down ends its own Job the acknowledged way; a delete refused there
@@ -8717,10 +8368,7 @@ describe('claims of an unconfirmed group (#821)', () => {
         const secretDeletes = calls.flatMap((call, at) =>
             call.method === 'DELETE' && call.path.startsWith(`${secretsBase}/`) ? [at] : []
         );
-        expect(secretDeletes.map((at) => calls[at]!.path)).toEqual([
-            `${secretsBase}/${secretName(job)}`,
-            `${secretsBase}/${gateEnvSecretName(job)}`,
-        ]);
+        expect(secretDeletes.map((at) => calls[at]!.path)).toEqual([`${secretsBase}/${secretName(job)}`]);
         expect(jobDelete).toBe(-1);
     });
 
@@ -8749,37 +8397,6 @@ describe('claims of an unconfirmed group (#821)', () => {
                 : undefined
         );
         expect(await runner(request).adopt(adopter)).toBeNull();
-    });
-});
-
-describe('the kubernetes gate manager acknowledges its Secret deletes (#821)', () => {
-    const KEY = `bellows/${USER}/.worktrees/55555555-5555-4555-8555-555555555555`;
-    const gatePath = `/api/v1/namespaces/${namespace}/secrets/${gateEnvSecretName(job)}`;
-
-    it('keeps a Secret whose delete the release saw refused, and deletes it at stop', async () => {
-        let refusals = 1;
-        const deletes: number[] = [];
-        const request: K8sRequest = async (method, path) => {
-            if (method === 'DELETE' && path === gatePath) {
-                const status = refusals > 0 ? 500 : 200;
-                refusals -= 1;
-                deletes.push(status);
-                return { status, body: '{}' };
-            }
-            return { status: 201, body: '{}' };
-        };
-        const m = createKubernetesGateManager({ config: gatedConfig, request, sleep: async () => {} });
-        await m.acquire(KEY, 'node:24', 'CORE_TOKEN=shh\n', { job });
-
-        m.release(KEY, job);
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        expect(deletes).toEqual([500]);
-
-        await m.stop();
-        expect(deletes).toEqual([500, 200]);
-        // Acknowledged once: a later stop has nothing left to delete.
-        await m.stop();
-        expect(deletes).toEqual([500, 200]);
     });
 });
 
@@ -8832,9 +8449,9 @@ describe('finishing a group that ended by itself (#821)', () => {
         await first.finish(repoJob);
 
         expect(jobDeleted(calls)).toBe(false);
-        for (const name of [secretName(repoJob), gateEnvSecretName(repoJob)]) {
-            expect(calls).toContainEqual(expect.objectContaining({ method: 'DELETE', path: `${secretsBase}/${name}` }));
-        }
+        expect(calls).toContainEqual(
+            expect.objectContaining({ method: 'DELETE', path: `${secretsBase}/${secretName(repoJob)}` })
+        );
         expect(claimDeleted(calls)).toBe(true);
 
         // This driver is lost before its verdict: the replacement claim reads the run it left.

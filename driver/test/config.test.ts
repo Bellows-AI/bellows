@@ -212,18 +212,11 @@ describe('the driver config: policy and gates', () => {
         expect(() => loadDriverConfig({ RUNNER_IMAGE_PULL_POLICY: 'sometimes' })).toThrow(/RUNNER_IMAGE_PULL_POLICY/);
     });
 
-    // The gate environment cooldown: how long a container outlives the task that started it, so
-    // the task's NEXT turn does not pay startup again. The issue names ten minutes as the default.
-    const DEFAULT_GATE_MS = 600_000;
-    it('keeps gate environments alive for a configurable cooldown, ten minutes by default', () => {
-        const OVERRIDE_GATE_COOLDOWN_MS = 60_000;
-        expect(loadDriverConfig({}).gateCooldownMs).toBe(DEFAULT_GATE_MS);
-        expect(loadDriverConfig({ GATE_COOLDOWN_MS: '0' }).gateCooldownMs).toBe(0);
-        expect(loadDriverConfig({ GATE_COOLDOWN_MS: String(OVERRIDE_GATE_COOLDOWN_MS) }).gateCooldownMs).toBe(
-            OVERRIDE_GATE_COOLDOWN_MS
-        );
-        expect(() => loadDriverConfig({ GATE_COOLDOWN_MS: '-1' })).toThrow(/GATE_COOLDOWN_MS/);
-        expect(() => loadDriverConfig({ GATE_COOLDOWN_MS: 'later' })).toThrow(/GATE_COOLDOWN_MS/);
+    // Issue #773: a gate container lives and ends with its task group, so there is no cooldown to
+    // configure — the setting is gone, and a leftover value is read by nothing.
+    it('keeps no gate environment cooldown: the gate container ends with its group', () => {
+        expect('gateCooldownMs' in loadDriverConfig({})).toBe(false);
+        expect('gateCooldownMs' in loadDriverConfig({ GATE_COOLDOWN_MS: '60000' })).toBe(false);
     });
 
     // The ad-hoc gate channel binds loopback by default — the dashboard's rule: the bind address
@@ -254,7 +247,7 @@ describe('the driver config: policy and gates', () => {
     // A timed-out gate is a failed gate, not a stalled verdict.
     it('bounds each gate with a configurable timeout, ten minutes by default', () => {
         const OVERRIDE_GATE_TIMEOUT_MS = 30_000;
-        expect(loadDriverConfig({}).gateTimeoutMs).toBe(DEFAULT_GATE_MS);
+        expect(loadDriverConfig({}).gateTimeoutMs).toBe(600_000);
         expect(loadDriverConfig({ GATE_TIMEOUT_MS: String(OVERRIDE_GATE_TIMEOUT_MS) }).gateTimeoutMs).toBe(
             OVERRIDE_GATE_TIMEOUT_MS
         );
@@ -436,8 +429,7 @@ describe('the driver config: runner resources', () => {
 describe('the driver config: the orphan reaper', () => {
     // Issue #301: the periodic watcher that reaps service objects whose owning job can no longer
     // use them. Default-on: every delete is board-gated and attempt-scoped, so an idle reaper is
-    // five minutes of nothing. 0 is the off switch — the GATE_COOLDOWN_MS convention, not a
-    // refusal.
+    // five minutes of nothing. 0 is the off switch, not a refusal.
     it('sweeps every five minutes with a ten-minute grace, both overridable, interval zero off', () => {
         expect(loadDriverConfig({}).reapIntervalMs).toBe(300_000);
         expect(loadDriverConfig({}).reapGraceMs).toBe(600_000);

@@ -102,7 +102,6 @@ describe('the docker reaper arm: scan', () => {
         // job+lease volumes, neither of which this daemon holds.
         expect(calls).toEqual([
             PS_ARGS,
-            ['ps', '-a', '--filter', 'label=factory.gates', '--format', '{{json .}}'],
             ['ps', '-a', '--filter', 'label=factory.role', '--format', '{{json .}}'],
             [
                 'volume',
@@ -141,61 +140,53 @@ describe('the docker reaper arm: scan', () => {
     });
 });
 
-describe('the docker reaper arm: gate environments (issue #667)', () => {
+describe('the docker reaper arm: a group’s gate container (issue #773)', () => {
     const OLD = '2026-09-01 00:00:00 +0000 UTC';
-    const gateLine = (id: string, name: string, jobId: string, lease: string) =>
+    const gateLine = (id: string, lease: string) =>
         JSON.stringify({
             ID: id,
-            Names: name,
-            Labels: `factory.gates=k,factory.job=${jobId},factory.lease=${lease}`,
+            Names: `factory-gate-${JOB}-${lease}`,
+            Labels: `factory.role=gate,factory.job=${JOB},factory.lease=${lease}`,
             CreatedAt: OLD,
         });
 
-    /** A sweep over one gate list, answering the board's lease for JOB and JOB2. */
-    const sweep = async (lines: string[], leases: { id: string; leaseToken: string | null }[], held: string[]) => {
+    /** A sweep over the role scope's list, the board answering `leases`; every `ps` filter is kept. */
+    const sweep = async (lines: string[], leases: { id: string; leaseToken: string }[]) => {
         const removed: string[] = [];
+        const filters: string[] = [];
         const execDocker: ExecDocker = async (args) => {
-            if (args[0] === 'ps') return { stdout: args.includes('label=factory.gates') ? lines.join('\n') : '' };
+            if (args[0] === 'ps') {
+                filters.push(args[3]!);
+                return { stdout: args.includes('label=factory.role') ? lines.join('\n') : '' };
+            }
             if (args[0] === 'rm') removed.push(args[2]!);
             return { stdout: '' };
         };
         const reaper = createReaper({
-            board: { leases: async () => leases.map((l) => ({ ...l, status: 'running' as const })) },
-            arm: createDockerReaper(execDocker, (name) => held.includes(name)),
+            board: { leases: async () => leases.map((lease) => ({ ...lease, status: 'running' as const })) },
+            arm: createDockerReaper(execDocker),
             intervalMs: 0,
             graceMs: 0,
             log: () => undefined,
             now: () => Date.now(),
         });
         await reaper.sweep();
-        return removed;
+        return { removed, filters };
     };
 
-    it('removes an environment whose creating attempt is dead and no live manager holds', async () => {
-        const removed = await sweep(
-            [gateLine('orphan', 'factory-env-a', JOB, LEASE)],
-            [{ id: JOB, leaseToken: LEASE2 }],
-            []
-        );
+    it('removes the gate container of a job the board no longer knows, with its group', async () => {
+        const { removed } = await sweep([gateLine('orphan', LEASE)], []);
         expect(removed).toEqual(['orphan']);
     });
 
-    it('keeps an environment whose creating lease is still the live one', async () => {
-        const removed = await sweep(
-            [gateLine('live', 'factory-env-a', JOB, LEASE)],
-            [{ id: JOB, leaseToken: LEASE }],
-            []
-        );
+    it('keeps the gate container of the live lease', async () => {
+        const { removed } = await sweep([gateLine('live', LEASE)], [{ id: JOB, leaseToken: LEASE }]);
         expect(removed).toEqual([]);
     });
 
-    it('keeps an environment this driver still holds in its cooldown, whatever its labels say', async () => {
-        const removed = await sweep(
-            [gateLine('warm', 'factory-env-a', JOB, LEASE)],
-            [{ id: JOB, leaseToken: LEASE2 }],
-            ['factory-env-a']
-        );
-        expect(removed).toEqual([]);
+    it('lists no gate-environment scope: a gate container lives and ends with its group', async () => {
+        const { filters } = await sweep([], []);
+        expect(filters).not.toContain('label=factory.gates');
     });
 });
 
@@ -382,7 +373,6 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
 
     it.each([
         ['the service list', (args: string[]) => args[0] === 'ps' && args.includes('label=factory.service')],
-        ['the gate list', (args: string[]) => args[0] === 'ps' && args.includes('label=factory.gates')],
         ['the role list', (args: string[]) => args[0] === 'ps' && args.includes('label=factory.role')],
         ['the volume list', (args: string[]) => args[0] === 'volume' && args[1] === 'ls'],
         ['the volume inspect', (args: string[]) => args[0] === 'volume' && args[1] === 'inspect'],

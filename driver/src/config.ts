@@ -139,13 +139,6 @@ export interface DriverConfig {
      */
     runnerDoNotDisrupt: boolean;
     /**
-     * How long a gate environment container outlives the task that started it. The issue's
-     * cooldown: a container that stays up across a coding task's turns saves each turn the
-     * environment's startup, and ten minutes is the default because that is what the issue
-     * names. Zero tears the container down as soon as the task ends.
-     */
-    gateCooldownMs: number;
-    /**
      * Where the ad-hoc gate server binds. Loopback by default — this endpoint runs shell
      * commands, and the bind address is the access control, exactly as it is for the dashboard.
      */
@@ -297,8 +290,6 @@ const MAX_CONCURRENCY = 32;
 const MIN_POLL_MS = 250;
 /** The upper bound on DRIVER_POLL_MS. */
 const MAX_POLL_MS = 300_000;
-/** The default GATE_COOLDOWN_MS: ten minutes, per the issue this cooldown implements. */
-const DEFAULT_GATE_COOLDOWN_MS = 600_000;
 /** The default GATE_TIMEOUT_MS. */
 const DEFAULT_GATE_TIMEOUT_MS = 600_000;
 /** The lower bound on GATE_TIMEOUT_MS. */
@@ -728,10 +719,6 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         imagePullPolicy: pullPolicyRaw,
         imagePullSecrets: nameList(env.RUNNER_IMAGE_PULL_SECRETS),
         runnerDoNotDisrupt: flag(env.RUNNER_DO_NOT_DISRUPT),
-        gateCooldownMs: int(env.GATE_COOLDOWN_MS, 'GATE_COOLDOWN_MS', DEFAULT_GATE_COOLDOWN_MS, {
-            min: 0,
-            max: 24 * MS_PER_HOUR,
-        }),
         gateListenHost: text(env.GATE_LISTEN_HOST, 'GATE_LISTEN_HOST', '127.0.0.1'),
         gateAdvertiseUrl: (env.GATE_ADVERTISE_URL ?? '').trim() || null,
         heartbeatFile: optionalText(env.DRIVER_HEARTBEAT_FILE),

@@ -17,19 +17,32 @@ import {
 import {
     claudeTurnsScript,
     claudeExportScript,
-    gateShellArgv,
+    gateLoopArgv,
     opencodeReadoutScript,
     supervisorScript,
 } from './container-scripts.js';
 import { commandMark, OPENCODE_EXPORT_LIMIT, type RunSession } from './runner.js';
 import { exportEnv, exportsTranscript } from './transcript-export.js';
-import { AGENT_CONTAINER, EXPORTER_CONTAINER, MAILBOXES, SUPERVISOR_CONTAINER } from './supervisor-contract.js';
-import { agentMailboxEnv, backstopMs, supervisorControlNames, supervisorLiterals } from './supervisor-plan.js';
+import {
+    AGENT_CONTAINER,
+    EXPORTER_CONTAINER,
+    GATE_CONTAINER,
+    MAILBOXES,
+    SUPERVISOR_CONTAINER,
+} from './supervisor-contract.js';
+import {
+    agentMailboxEnv,
+    backstopMs,
+    gateImageOf,
+    supervisorControlNames,
+    supervisorLiterals,
+} from './supervisor-plan.js';
 import { JOB_ID, MS_PER_SECOND, TTL_SECONDS } from './k8s-transport.js';
 import {
     agentLaunchHardeningField,
     containerHardeningField,
     doNotDisruptField,
+    gateResourcesField,
     mailboxMount,
     mailboxVolumes,
     podHardeningField,
@@ -42,13 +55,12 @@ import {
     type RunnerMount,
     type RunnerVolume,
 } from './k8s-podfields.js';
-import { GATE_IMAGE, GATE_KEY } from './publish.js';
 import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
 
 /**
  * The kubernetes executor's pure Job/pod spec builders — the `dockerArgs` analogue for every
- * shape this driver POSTs to the API server: the runner pod (the agent, the task supervisor and
- * the transcript exporter), the gate runner, and the opencode-session / claude-turns aux
+ * shape this driver POSTs to the API server: the runner pod (the agent, the task supervisor, the
+ * transcript exporter and the gate container), and the opencode-session / claude-turns aux
  * readouts. Everything security-relevant
  * about a runner is decided here, and pinned by tests for that reason. The transport, polling,
  * fence and runner assembly live in the sibling `k8s-*.ts` files this one has no dependency on;
@@ -62,11 +74,13 @@ interface EnvVar {
     valueFrom?: { secretKeyRef: { name: string; key: string; optional?: boolean } };
 }
 
-/** One container of the runner pod: the agent, the task supervisor, or the transcript exporter. */
+/** One container of the runner pod: the agent, the task supervisor, the transcript exporter, or the gate. */
 export interface RunnerPodContainer {
     name: string;
     image: string;
     imagePullPolicy: string;
+    /** `Always` makes an init container a native sidecar: the gate, up beside the pod's main containers. */
+    restartPolicy?: 'Always';
     resources?: PodResources;
     /** The executor hardening (#382) — `containerHardeningField`, always present. */
     securityContext: ContainerSecurityContext;
@@ -74,6 +88,7 @@ export interface RunnerPodContainer {
     /** The supervisor and the exporter run a script by content; the agent runs its image's entrypoint. */
     command?: string[];
     args?: string[];
+    workingDir?: string;
     volumeMounts: RunnerMount[];
 }
 
@@ -112,7 +127,7 @@ export interface RunnerJobSpec {
                 nodeSelector?: Record<string, string>;
                 tolerations?: Record<string, unknown>[];
                 affinity?: Record<string, unknown>;
-                /** The reclaim group's release pass (issue #814); no other group runs one. */
+                /** The gate sidecar (issue #773), or the reclaim group's release pass (issue #814). */
                 initContainers?: RunnerPodContainer[];
                 /** The agent, the supervisor beside it and, for a run that exports its transcript, the exporter. */
                 containers: RunnerPodContainer[];
@@ -201,7 +216,7 @@ function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
 function supervisorContainer(
     config: DriverConfig,
     job: BoardJob,
-    group: { exporting: boolean; agentless: boolean }
+    group: { exporting: boolean; agentless: boolean; gated: boolean }
 ): RunnerPodContainer {
     return {
         name: SUPERVISOR_CONTAINER,
@@ -220,6 +235,33 @@ function supervisorContainer(
             workspaceMount(config, workspacePath(job)),
             ...Object.values(MAILBOXES).map((box) => mailboxMount(box, 'rw')),
         ],
+    };
+}
+
+/**
+ * The gate container (issue #773): the declared gate image as a native sidecar, up beside the
+ * supervisor for the whole group, running the gate loop over the mailbox only the two of them mount
+ * (`scripts/gate-loop.sh`). Its working directory is that mailbox: each request names its worktree,
+ * which the sync may have recreated since. It writes the shared task worktree, so it writes as the
+ * uid:gid every other writer on that tree uses — the executor images' `USER node` (1000:1000) — with a
+ * HOME that uid can write; the declared image's own default (root, usually) would leave files the
+ * uid-1000 reclaim can never remove. Its env is the gate env's own literals: the claim env and the
+ * GitHub token ride each request, never this spec. It is sized idle (`gateResourcesField`) and
+ * resized in place for verify.
+ */
+function gateSidecar(config: DriverConfig, job: BoardJob, image: string): RunnerPodContainer {
+    const hardened = containerHardeningField().securityContext;
+    return {
+        name: GATE_CONTAINER,
+        image,
+        imagePullPolicy: config.imagePullPolicy,
+        restartPolicy: 'Always',
+        ...gateResourcesField(config),
+        securityContext: { ...hardened, runAsUser: GATE_UID, runAsGroup: GATE_GID },
+        command: gateLoopArgv(),
+        workingDir: MAILBOXES.gate.path,
+        env: gateEnv(config, job).map(([name, value]) => ({ name, value })),
+        volumeMounts: [workspaceMount(config, workspacePath(job)), mailboxMount(MAILBOXES.gate, 'rw')],
     };
 }
 
@@ -368,6 +410,8 @@ export function runnerJobSpec(
     const agentless = job.agent === false;
     const agent = agentless ? null : agentPart(config, job, session);
     const exporting = !agentless && exportsTranscript(job, session);
+    // The declared gates and setup run in the group's own gate container (issue #773).
+    const gateImage = gateImageOf(job);
     const volumes: RunnerVolume[] = agent?.volumes ?? [
         { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
     ];
@@ -429,9 +473,10 @@ export function runnerJobSpec(
                     ...pullSecretsField(config),
                     ...schedulingField(config),
                     ...fleetDnsField(config, job),
+                    ...(gateImage ? { initContainers: [gateSidecar(config, job, gateImage)] } : {}),
                     containers: [
                         ...(agent ? [agent.container] : []),
-                        supervisorContainer(config, job, { exporting, agentless }),
+                        supervisorContainer(config, job, { exporting, agentless, gated: gateImage !== null }),
                         ...(exporting ? [exporterContainer(config, job, startedAt, path)] : []),
                     ],
                     volumes: [...volumes, ...mailboxVolumes()],
@@ -465,10 +510,9 @@ export const secretName = (job: BoardJob): string => {
 
 /**
  * The Secret object an attempt-scoped env becomes — the ONE shape for every Secret this driver
- * creates: the runner's claim env and the gate environment's. Values ride in stringData, nowhere
- * else. The name is the caller's because each of those has its own (secretName, gateEnvSecretName);
- * everything else — the labels above all — is identical by construction rather than by two copies
- * agreeing. `factory.job` is what the re-claim fence sweeps by; `factory.lease` is what scopes a
+ * creates: the attempt group's claim env and control pair. Values ride in stringData, nowhere
+ * else. The name is the caller's (secretName); everything else — the labels above all — is the
+ * same for every group. `factory.job` is what the re-claim fence sweeps by; `factory.lease` is what scopes a
  * reap to the attempt that created it.
  */
 export const secretBody = (job: BoardJob, name: string, env: Record<string, string>, owner?: JobOwner) => ({
@@ -518,8 +562,8 @@ export const finishedAgentRun = (item: ListedRunnerJob, pair: BoardJob): boolean
     agentRunJob(item, pair) && ((item.status?.succeeded ?? 0) >= 1 || (item.status?.failed ?? 0) >= 1);
 
 /**
- * A batch Job this driver creates for its own auxiliary work — one gate run, or the
- * readout — as opposed to a runner. Structural like `RunnerJobSpec`, and
+ * A batch Job this driver creates for its own auxiliary work — a close-time readout — as opposed
+ * to a runner. Structural like `RunnerJobSpec`, and
  * deliberately a second interface rather than a widening of it: the runner's shape is pinned
  * field by field (claude argv, WORKDIR, per-name secretKeyRef), and an aux Job decides different
  * things. Sharing a type would make "the runner has no envFrom" unreadable.
@@ -543,14 +587,8 @@ export interface AuxJobSpec {
             spec: {
                 restartPolicy: 'Never';
                 automountServiceAccountToken: false;
-                /**
-                 * The executor hardening's pod half (#382, always present) MERGED with the uid:gid
-                 * the gate writes the shared worktree as (GATE_UID/GATE_GID, gate only). One
-                 * field, two writers — see `auxJobSpec`, which spreads rather than assigns.
-                 */
+                /** The executor hardening's pod half (#382, always present). */
                 securityContext: PodSecurityContext;
-                /** The attempt's service search domain — gate only. */
-                dnsConfig?: FleetDnsConfig;
                 /** The runner group's scheduling knobs — `schedulingField`, absent when unset. */
                 nodeSelector?: Record<string, string>;
                 tolerations?: Record<string, unknown>[];
@@ -562,16 +600,10 @@ export interface AuxJobSpec {
                     resources?: PodResources;
                     /** The executor hardening (#382) — `containerHardeningField`, always present. */
                     securityContext: ContainerSecurityContext;
-                    /** One gate run: `sh -c` with the command as the single argv element. */
+                    /** The readout script, by content. */
                     command?: string[];
-                    workingDir?: string;
-                    /**
-                     * A handful of literal entries (the sync's three paths), never a
-                     * credential — values travel by `envFrom` below.
-                     */
+                    /** A handful of literal entries (paths and bounds), never a credential. */
                     env?: EnvVar[];
-                    /** The whole claim env at once, by reference — never the values. */
-                    envFrom?: { secretRef: { name: string } }[];
                     volumeMounts: { name: string; mountPath: string; subPath: string; readOnly?: boolean }[];
                 }[];
                 volumes: { name: string; persistentVolumeClaim: { claimName: string } }[];
@@ -592,10 +624,6 @@ interface AuxJobSpecInput {
     name: string;
     deadlineSeconds: number;
     container: AuxContainer;
-    /** The uid:gid the gate writes the shared worktree as — GATE_UID/GATE_GID. Gate only. */
-    securityContext?: { runAsUser: number; runAsGroup: number };
-    /** The attempt's service search domain. Gate only — the gates test against the fleet. */
-    dnsConfig?: FleetDnsConfig;
 }
 
 /**
@@ -646,16 +674,9 @@ export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpe
                     automountServiceAccountToken: false,
                     ...pullSecretsField(config),
                     ...schedulingField(config),
-                    // One field, two writers (#382): the hardening's seccomp profile is on every
-                    // aux Job, the uid:gid only on the gate. SPREAD, never assigned — an
-                    // assignment here drops whichever of the two was written first, and only one
-                    // of the two has a symptom anybody would notice.
-                    securityContext: { ...input.securityContext, ...podHardeningField() },
-                    ...(input.dnsConfig ? { dnsConfig: input.dnsConfig } : {}),
-                    // One spread covers every aux Job — the gates, the readouts, the sync, the
-                    // reclaim, the publish steps, the block helpers — the same way
-                    // pullSecretsField above covers their image pulls. A builder's own sizing
-                    // (the gate's, issue #507) wins over the runner's.
+                    securityContext: { ...podHardeningField() },
+                    // One spread covers every aux Job, the same way pullSecretsField above covers
+                    // their image pulls.
                     containers: [{ ...resourcesField(config), ...input.container, ...containerHardeningField() }],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
                 },
@@ -710,131 +731,6 @@ export function fleetDnsField(config: DriverConfig, job: BoardJob): { dnsConfig?
     const domain = `${serviceSubdomain(job)}.${config.k8sNamespace}.svc.${config.k8sClusterDomain}`;
     return { dnsConfig: { searches: [domain] } };
 }
-
-/**
- * The raw gate name is repo content, so it never joins a k8s name directly: lowercased, every
- * character outside the DNS-subdomain alphabet folded to `-`, and anything leading rejected.
- * Uniqueness across runs of the same gate comes from the hash beside it, not from the
- * sanitization being invertible — it is not, and must not need to be.
- */
-/** A k8s name part's own budget within the 253-byte object-name ceiling, once joined with the rest. */
-const NAME_PART_MAX_LENGTH = 100;
-
-const sanitizeNamePart = (value: string): string =>
-    value
-        .toLowerCase()
-        .replace(/[^a-z0-9.-]+/g, '-')
-        .replace(/^[^a-z0-9]+/, '')
-        .slice(0, NAME_PART_MAX_LENGTH);
-
-/** One gate run's Job name. The run counter keeps a second ad-hoc call of the same gate off the first's name. */
-export const gateJobName = (job: BoardJob, gateName: string, run: number): string =>
-    `factory-gate-${sanitizeNamePart(gateName)}-${hash16(`${job.id}|${job.leaseToken}|${gateName}|${run}`)}`;
-
-/**
- * The gated attempt's Secret carrying the gate environment. Per ATTEMPT, not per run — the env
- * is the claim's stacked resolution and is identical for every gate run of the attempt, so one
- * Secret created at acquire serves them all, and a driver crash leaks at most one, the same
- * accepted-leak posture (and the same `factory.job` cleanup label) the runner's env Secret has.
- */
-export const gateEnvSecretName = (job: BoardJob): string => `factory-gate-${hash16(`${job.id}|${job.leaseToken}`)}-env`;
-
-/**
- * One gate run, as a Job. Pure and exported for the pinning, exactly like `runnerJobSpec`:
- *
- * - The declared image runs the declared command — `sh -c` with the command as ONE argv
- *   element, the same single element docker exec's gate runs receive.
- * - `workingDir` is the checkout itself — the same tree the coding agent edits, via the same
- *   workspaces PVC at the same mount point.
- * - The env travels by reference (`envFrom` against the per-run Secret), because the same rule
- *   that keeps claim values out of the runner pod spec keeps them out of a gate pod spec —
- *   anyone who can `get pods` can read one, and the values are member-scoped.
- * - The deadline is the kubelet's: the gate's own `timeout:`, else `GATE_TIMEOUT_MS`, maps onto
- *   `activeDeadlineSeconds` (`gateDeadlineMs`), so a
- *   hung gate dies even if this driver dies first. The driver reads the
- *   `DeadlineExceeded` condition and reports exit 124 — the convention the docker manager's
- *   own timeout kill uses.
- *
- * What it deliberately does NOT carry: the checkout claim (the gate runs while the runner holds
- * the checkout and is swept by the same `factory.job` fence if it outlives its attempt), and any
- * ServiceAccount token (the pin every pod this driver creates shares).
- */
-interface GateJobSpecInput {
-    key: string;
-    image: string;
-    gateName: string;
-    command: string;
-    run: number;
-    envSecretName: string | null;
-    gateTimeoutMs: number;
-}
-
-export function gateJobSpec(config: DriverConfig, job: BoardJob, gate: GateJobSpecInput): AuxJobSpec {
-    const { key, image, gateName, command, run, envSecretName, gateTimeoutMs } = gate;
-    if (!JOB_ID.test(job.id) || !JOB_ID.test(job.leaseToken)) {
-        throw new Error(`refusing to run a gate of job ${job.id}: its ids are not the uuids the board claims`);
-    }
-    if (!GATE_KEY.test(key)) {
-        throw new Error(`refusing to run a gate in a checkout key that is not <org>/<uuid>/.worktrees/<uuid>: ${key}`);
-    }
-    if (!GATE_IMAGE.test(image)) {
-        throw new Error(`refusing to run a gate in an image that is not a plain image reference: "${image}"`);
-    }
-    const jobName = gateJobName(job, gateName, run);
-    return auxJobSpec(config, job, {
-        name: jobName,
-        deadlineSeconds: Math.max(1, Math.round(gateTimeoutMs / MS_PER_SECOND)),
-        // The gate writes the shared task worktree, so it writes as the same uid:gid every
-        // other writer on that tree uses — the executor images' `USER node` (uid 1000), which
-        // the sync, reclaim and runner Jobs run as. The declared image's own default (root,
-        // usually) would leave gate-written files the uid-1000 reclaim can never remove, and the
-        // tree would stick for every later turn of the thread (observed 2026-09-13 on the docker
-        // twin). HOME moves to /tmp with the uid: the image's own HOME (/root) is unwritable for
-        // a non-root uid, and a gate that npm-installs needs a writable cache directory.
-        securityContext: { runAsUser: GATE_UID, runAsGroup: GATE_GID },
-        ...fleetDnsField(config, job),
-        container: {
-            ...resourcesField(config, config.gateResources), // GATE_*, issue #507
-            // A container name is a 63-char DNS label — the Job name's roomy subdomain bound
-            // does not apply to it, so the short hash stands in.
-            name: `gate-${hash16(`${jobName}|${command}`)}`,
-            image,
-            imagePullPolicy: config.imagePullPolicy,
-            command: gateShellArgv(command),
-            workingDir: `${config.workspaceMount}/${key}`,
-            env: gateEnv(config, job).map(([name, value]) => ({ name, value })),
-            ...(envSecretName ? { envFrom: [{ secretRef: { name: envSecretName } }] } : {}),
-            // The mount is scoped to the checkout key's own `<orgId>/<userId>` half — the same subtree
-            // the job's runner mounts. Both segments are asserted by GATE_KEY before the split.
-            volumeMounts: [workspaceMount(config, key.split('/').slice(0, 2).join('/'))],
-        },
-    });
-}
-
-/**
- * The env-file body becomes Secret stringData. Lines were written by `envFileBody` on this
- * side and are re-asserted here line by line, because this function is the one place the body
- * becomes cluster objects: a line without a `=`, or a name outside what a Secret key may hold,
- * is a bug or a forged claim, and both must fail loud rather than start a gate with half an env.
- */
-/** How much of a rejected env line rides the refusal message — a preview, not the whole line. */
-const ENV_LINE_PREVIEW_CHARS = 64;
-
-export const envBodyToData = (body: string): Record<string, string> => {
-    const data: Record<string, string> = Object.create(null);
-    for (const line of body.split('\n')) {
-        if (!line) continue;
-        const eq = line.indexOf('=');
-        const name = eq > 0 ? line.slice(0, eq) : '';
-        if (!name || !/^[-._a-zA-Z0-9]+$/.test(name)) {
-            throw new Error(
-                `refusing to build a gate env Secret: "${line.slice(0, ENV_LINE_PREVIEW_CHARS)}" is not a NAME=value line`
-            );
-        }
-        data[name] = line.slice(eq + 1);
-    }
-    return data;
-};
 
 /**
  * The runner Job's name, hashed rather than `containerName(job)`'s raw

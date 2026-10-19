@@ -128,7 +128,8 @@ export async function holderGroupsOf(deps: K8sDeps, job: BoardJob, holder: strin
 const RECLAIM_GROUP_SECONDS = 1200;
 
 export function reclaimGroupSpec(config: DriverConfig, job: BoardJob, holder: string): RunnerJobSpec {
-    const spec = runnerJobSpec(config, { ...job, agent: false }, null);
+    // A supervisor alone (#773 D11): no agent, and no gate container its checkout's gates would bring.
+    const spec = runnerJobSpec(config, { ...job, agent: false, gates: null }, null);
     const worktree = worktreeDir(config, job);
     const pod = spec.spec.template.spec;
     // The checkout holder it serves, on the Job and its pods: how what it left is found again.
