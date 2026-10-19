@@ -111,6 +111,7 @@ describe('test-jobs phase options', () => {
         expect(result.status).toBe(0);
         expect(result.stdout).toContain('all (default)');
         expect(result.stdout).toContain('question-round-trip');
+        expect(result.stdout).toContain('run-deadline');
         expect(lane.trace()).toBe('');
     });
 
