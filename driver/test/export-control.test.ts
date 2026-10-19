@@ -7,7 +7,9 @@ import type { ExportRelay } from '../src/export-control.js';
 
 /** The control channel's transcript-export routes: their statuses, their validation, and what they never touch. */
 
+/** One attempt's supervisor token, and its exporter's own token — the one the export routes take. */
 const TOKEN = 'tok';
+const EXPORTER = 'tok-export';
 
 let server: Server;
 let channel: ControlChannel;
@@ -15,16 +17,17 @@ let base: string;
 let answer: () => Promise<ChunkAnswer>;
 const seen: { chunks: [string, number, number][]; reports: unknown[] } = { chunks: [], reports: [] };
 
-const relay: ExportRelay = {
+const relayInto = (into: typeof seen): ExportRelay => ({
     putChunk: (session, offset, bytes) => {
-        seen.chunks.push([session, offset, bytes.length]);
+        into.chunks.push([session, offset, bytes.length]);
         return answer();
     },
     finalize: async () => 'stored',
     report: (report) => {
-        seen.reports.push(report);
+        into.reports.push(report);
     },
-};
+});
+const relay = relayInto(seen);
 
 beforeEach(async () => {
     seen.chunks = [];
@@ -47,10 +50,13 @@ afterEach(() => {
 
 const openExporting = (): void => {
     channel.open(TOKEN);
+    channel.grantExporter(TOKEN, EXPORTER);
     channel.attachExporter(TOKEN, relay);
 };
 
-const call = (method: string, path: string, body?: string | Uint8Array, token = TOKEN) =>
+const STATE = JSON.stringify({ pendingBytes: 0, oldestUnackedMs: 0, spoolFull: false, done: false });
+
+const call = (method: string, path: string, body?: string | Uint8Array, token = EXPORTER) =>
     fetch(`${base}${path}`, { method, headers: { authorization: `Bearer ${token}` }, ...(body ? { body } : {}) });
 
 describe('the export routes of the control channel', () => {
@@ -69,13 +75,9 @@ describe('the export routes of the control channel', () => {
 
     it('never mark the token polled: only the supervisor’s own control poll does', async () => {
         openExporting();
-        await call(
-            'POST',
-            '/export/state',
-            JSON.stringify({ pendingBytes: 0, oldestUnackedMs: 0, spoolFull: false, done: false })
-        );
+        expect((await call('POST', '/export/state', STATE)).status).toBe(200);
         expect(channel.polled(TOKEN)).toBe(false);
-        await call('GET', '/control');
+        await call('GET', '/control', undefined, TOKEN);
         expect(channel.polled(TOKEN)).toBe(true);
     });
 
@@ -114,6 +116,7 @@ describe('the export routes of the control channel', () => {
 
     it('answer 400 where the attempt exports no transcript', async () => {
         channel.open(TOKEN);
+        channel.grantExporter(TOKEN, EXPORTER);
         expect((await call('PUT', '/export/chunk?session=abc&offset=0', new Uint8Array([1]))).status).toBe(400);
     });
 
@@ -121,5 +124,53 @@ describe('the export routes of the control channel', () => {
         openExporting();
         channel.close(TOKEN);
         expect((await call('PUT', '/export/chunk?session=abc&offset=0', new Uint8Array([1]))).status).toBe(401);
+    });
+});
+
+describe('the exporter token of the control channel', () => {
+    // The exporter holds its own token: it opens the export routes and no supervisor door, and the
+    // supervisor's token no longer opens the export routes.
+    it('opens the export routes alone, and the supervisor token is refused on them', async () => {
+        openExporting();
+        expect((await call('GET', '/control')).status).toBe(403);
+        expect((await call('GET', '/step?wait=0')).status).toBe(403);
+        expect((await call('POST', '/step/s1', '{}')).status).toBe(403);
+        expect((await call('POST', '/report', '{}')).status).toBe(403);
+        expect((await call('POST', '/question', '{}')).status).toBe(403);
+        expect((await call('GET', '/question/q1')).status).toBe(403);
+        expect((await call('POST', '/publish')).status).toBe(403);
+        expect((await call('GET', '/review/r1')).status).toBe(403);
+        expect(channel.polled(TOKEN)).toBe(false);
+        expect((await call('POST', '/export/state', STATE, TOKEN)).status).toBe(403);
+        expect((await call('PUT', '/export/chunk?session=abc&offset=0', new Uint8Array([1]), TOKEN)).status).toBe(403);
+        expect(seen.chunks).toEqual([]);
+        expect((await call('POST', '/export/state', STATE)).status).toBe(200);
+        expect(seen.reports).toHaveLength(1);
+    });
+
+    it('closes with its attempt, and a new attempt’s exporter token relays to its own attempt only', async () => {
+        openExporting();
+        const next: typeof seen = { chunks: [], reports: [] };
+        channel.open('tok-2');
+        channel.grantExporter('tok-2', 'tok-2-export');
+        channel.attachExporter('tok-2', relayInto(next));
+        channel.close(TOKEN);
+
+        expect((await call('POST', '/export/state', STATE)).status).toBe(401);
+        expect(
+            (await call('PUT', '/export/chunk?session=abc&offset=0', new Uint8Array([1, 2]), 'tok-2-export')).status
+        ).toBe(200);
+        expect(next.chunks).toEqual([['abc', 0, 2]]);
+        expect(seen.chunks).toEqual([]);
+        expect((await call('GET', '/control', undefined, 'tok-2-export')).status).toBe(403);
+        expect((await call('GET', '/control', undefined, 'tok-2')).status).toBe(200);
+    });
+
+    it('never stands in for the supervisor token it is granted beside', async () => {
+        channel.open(TOKEN);
+        channel.grantExporter(TOKEN, TOKEN);
+        channel.attachExporter(TOKEN, relay);
+        expect((await call('POST', '/export/state', STATE, TOKEN)).status).toBe(403);
+        expect((await call('GET', '/control', undefined, TOKEN)).status).toBe(200);
     });
 });

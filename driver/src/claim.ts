@@ -183,12 +183,13 @@ export const RESERVED_ENV_NAMES = [
     'BELLOWS_GATE_URL',
     'BELLOWS_GATE_TOKEN',
     // The run-control channel the loop mints per launched attempt (issue #442): the agent's own
-    // publish/review pair, and the task supervisor's pair — a member value under the supervisor's
-    // names would reach the agent by the same Secret key the supervisor's credential lives under.
+    // publish/review pair, the task supervisor's pair and the exporter's token — a member value under
+    // those names would reach the agent by the same Secret key the minted credential lives under.
     CONTROL_URL_ENV,
     CONTROL_TOKEN_ENV,
     SUPERVISOR_ENV.controlUrl,
     SUPERVISOR_ENV.controlToken,
+    SUPERVISOR_ENV.exportToken,
     'CRED_HELPER',
     'RESTORE',
     'REVIEW_REF',

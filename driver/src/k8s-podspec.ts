@@ -227,7 +227,8 @@ function supervisorContainer(
  * The continuous claude-code transcript exporter (`claude-export.cjs`), the third container of the
  * pod: beside the agent and under the supervisor, so a kill of the agent leaves it running to drain
  * what the agent wrote — the pod only ends once the supervisor has had it close its manifests. The
- * control pair comes from the attempt's Secret BY REFERENCE, under the names the script reads; it
+ * control URL and its own export-only token come from the attempt's Secret BY REFERENCE, under the
+ * names the script reads; it
  * mounts the member's workspace (the transcripts, its own cursor files) and the one mailbox it
  * shares with the supervisor.
  */

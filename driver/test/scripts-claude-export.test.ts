@@ -16,6 +16,8 @@ import { pathOf } from './fixtures/scripts-support.js';
  */
 
 const SESSION = '44444444-4444-4444-8444-444444444444';
+/** The attempt's supervisor token, and the exporter's own export-only token beside it. */
+const SUPERVISOR = 'supervisor-token';
 const TOKEN = 'export-token';
 const WAIT_MS = 15_000;
 
@@ -77,8 +79,9 @@ async function harness(): Promise<Harness> {
     const manifests: ExportManifestRequest[] = [];
     const reports: ExportReport[] = [];
     const board = { down: false, delayMs: 0 };
-    channel.open(TOKEN);
-    channel.attachExporter(TOKEN, {
+    channel.open(SUPERVISOR);
+    channel.grantExporter(SUPERVISOR, TOKEN);
+    channel.attachExporter(SUPERVISOR, {
         putChunk: async (session, offset, bytes) => {
             if (board.down) throw new Error('the board is down');
             await new Promise((resolve) => setTimeout(resolve, board.delayMs));
@@ -122,7 +125,7 @@ async function harness(): Promise<Harness> {
                 return null;
             }
         },
-        close: () => channel.close(TOKEN),
+        close: () => channel.close(SUPERVISOR),
         stopServer: () => server.close(),
         start: (env = {}) => {
             const child = spawn('node', [pathOf('claude-export.cjs')], {

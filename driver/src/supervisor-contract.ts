@@ -227,10 +227,14 @@ export const SUPERVISOR_EXIT = { finalized: 0, deadline: 124, failed: 70, lost: 
 /** Why a group whose supervisor exited `SUPERVISOR_EXIT.lost` is an interruption, in both executors' words. */
 export const DRIVER_LOST_LOSS = 'the task supervisor lost its driver before the agent was released';
 
-/** The supervisor's environment names. Only the supervisor container carries the control pair. */
+/**
+ * The supervisor's environment names. Only the supervisor container carries the control pair; the
+ * transcript exporter's own token (`exportToken`) rides into the exporter alone.
+ */
 export const SUPERVISOR_ENV = {
     controlUrl: 'SUPERVISOR_CONTROL_URL',
     controlToken: 'SUPERVISOR_CONTROL_TOKEN',
+    exportToken: 'SUPERVISOR_EXPORT_TOKEN',
     controlMs: 'SUPERVISOR_CONTROL_MS',
     deadlineMs: 'SUPERVISOR_DEADLINE_MS',
     drainMs: 'SUPERVISOR_DRAIN_MS',
@@ -239,8 +243,12 @@ export const SUPERVISOR_ENV = {
     agentless: 'SUPERVISOR_AGENTLESS',
 } as const;
 
-/** The two names that carry the supervisor's credential: the agent container never receives either. */
-export const SUPERVISOR_CREDENTIAL_NAMES: readonly string[] = [SUPERVISOR_ENV.controlUrl, SUPERVISOR_ENV.controlToken];
+/** The names that carry the supervisor's and the exporter's credentials: the agent container never receives one. */
+export const SUPERVISOR_CREDENTIAL_NAMES: readonly string[] = [
+    SUPERVISOR_ENV.controlUrl,
+    SUPERVISOR_ENV.controlToken,
+    SUPERVISOR_ENV.exportToken,
+];
 
 /** The container names of a run's pod, and the docker group's name suffixes. */
 export const SUPERVISOR_CONTAINER = 'supervisor';

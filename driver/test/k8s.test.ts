@@ -6,6 +6,7 @@ import {
     EXPORTER_CONTAINER,
     GO_MARKER,
     SUPERVISOR_CONTAINER,
+    SUPERVISOR_CREDENTIAL_NAMES,
     SUPERVISOR_EXIT,
     SUPERVISOR_REPORT_PREFIX,
     SUPERVISOR_STEPS_MS,
@@ -84,9 +85,13 @@ const WINDDOWN_S = (SUPERVISOR_WINDDOWN_MS + SUPERVISOR_STEPS_MS) / 1000;
 const MASTER_PROMPT =
     'Factory execution contract (factory-master-prompt/v1)\n\nFactory execution context\n- Mode: standalone';
 
-/** The control pair a run with a control endpoint carries for its supervisor — the exporter's, too. */
+/** The control pair a run with a control endpoint carries for its supervisor, and the exporter's own token. */
 const SUPERVISED: Pick<BoardJob, 'supervisorEnv'> = {
-    supervisorEnv: { SUPERVISOR_CONTROL_URL: 'http://driver:7000', SUPERVISOR_CONTROL_TOKEN: 'tok-supervisor' },
+    supervisorEnv: {
+        SUPERVISOR_CONTROL_URL: 'http://driver:7000',
+        SUPERVISOR_CONTROL_TOKEN: 'tok-supervisor',
+        SUPERVISOR_EXPORT_TOKEN: 'tok-export',
+    },
 };
 
 /** The step channel every attempt here is reached through: the control token the fake sink is keyed by. */
@@ -6259,7 +6264,7 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
      */
     const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
 
-    it('claude: the exporter is a container of the run’s pod with the control pair by Secret reference, never a value', () => {
+    it('claude: the exporter is a container of the run’s pod with its own token by Secret reference, never a value', () => {
         const spec = runnerJobSpec(config, { ...job, ...SUPERVISED }, { id: SESSION, resume: false }, START);
         const container = spec.spec.template.spec.containers.find((c) => c.name === EXPORTER_CONTAINER)!;
         expect(container.command).toEqual(['node', '-e', claudeExportScript]);
@@ -6271,8 +6276,16 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
         expect(container.env).toContainEqual({ name: 'FACTORY_EXPORT_DIR', value: '/factory/export' });
         expect(container.env).toContainEqual({
             name: 'BELLOWS_CONTROL_TOKEN',
-            valueFrom: { secretKeyRef: { name: secretName(job), key: 'SUPERVISOR_CONTROL_TOKEN' } },
+            valueFrom: { secretKeyRef: { name: secretName(job), key: 'SUPERVISOR_EXPORT_TOKEN' } },
         });
+        // Each credential reaches its own container only: the exporter never references the
+        // supervisor's token, the supervisor never the exporter's, the agent neither.
+        const keysOf = (name: string) =>
+            JSON.stringify(spec.spec.template.spec.containers.find((c) => c.name === name)?.env ?? []);
+        expect(keysOf(EXPORTER_CONTAINER)).not.toContain('SUPERVISOR_CONTROL_TOKEN');
+        expect(keysOf(SUPERVISOR_CONTAINER)).toContain('SUPERVISOR_CONTROL_TOKEN');
+        expect(keysOf(SUPERVISOR_CONTAINER)).not.toContain('SUPERVISOR_EXPORT_TOKEN');
+        for (const name of SUPERVISOR_CREDENTIAL_NAMES) expect(keysOf(AGENT_CONTAINER)).not.toContain(name);
         expect(JSON.stringify(spec)).not.toMatch(/"value":"[^"]*tok-/);
         // The member's subtree and the one mailbox it shares with the supervisor — nothing else.
         expect(container.volumeMounts).toEqual([

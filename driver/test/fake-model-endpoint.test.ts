@@ -389,7 +389,8 @@ describe('the tool-isolation lanes (issue #814)', () => {
 
     /** kill_lane's verdict for the control, run in bash with `ok`/`bad` stubbed to name which fired. */
     const controlVerdict = (status: number, counts: string, markers: string[]) => {
-        const lane = script.slice(script.indexOf('kill_lane() {'), script.indexOf('\nkill_lane claude control'));
+        const start = script.indexOf('kill_lane() {');
+        const lane = script.slice(start, script.indexOf('\n}', start) + '\n}'.length);
         const verdict = lane.slice(lane.indexOf('    if [ "$mode" = isolated ]; then\n'), lane.lastIndexOf('\n}'));
         const dir = mkdtempSync(join(tmpdir(), 'kill-lane-'));
         try {

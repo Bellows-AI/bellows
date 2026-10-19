@@ -2,7 +2,7 @@
 /**
  * The rate-limit watch: kills the CLI when the provider has rate-limited it into a zombie.
  *
- * Measured 2026-09-13 (job 3f7aa94c): opencode's `run` took a 429 "Rate limit exceeded" on its
+ * Measured: opencode's `run` took a 429 "Rate limit exceeded" on its
  * first model call, logged the stream error, and then hung on its spinner for an hour — no exit,
  * no retry, no output — while the driver dutifully renewed the lease and the board showed
  * "running". The error reaches only opencode's own log file; the session database keeps an empty

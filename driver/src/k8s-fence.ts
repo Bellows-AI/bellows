@@ -63,8 +63,8 @@ import type { K8sClaim, K8sDeps, K8sResponse } from './k8s-transport.js';
 
 /**
  * The Secret's contents: the claim env, the loop's minted gate credentials, the task supervisor's
- * control pair (referenced by the supervisor and exporter containers only — the agent's env is
- * built from the first two and the attempt pair, never from these names) and the runner's own
+ * control pair and the exporter's token (each referenced by its own container only — the agent's
+ * env is built from the first two and the attempt pair, never from these names) and the runner's own
  * attempt pair — the branch-ingest credential, always present, because it is how the reporter
  * authenticates at all.
  */
