@@ -37,6 +37,7 @@ import type { Loop } from '../src/loop.js';
 import type { RunOutcome } from '../src/runner.js';
 import { StepChannelClosed } from '../src/step-control.js';
 import { drive, gatedJob, ok, stubBoard, stubGateStack, stubRunner } from './fixtures/loop-stubs.js';
+import { exactly } from './fixtures/read-faults.js';
 
 /** The wall-clock cap on every wait the harness makes: a delivery, the settle-wait, the drive. */
 const CAP_MS = 5_000;
@@ -167,12 +168,6 @@ function violationsOf(run: Observed, expected: Expected): string[] {
     if (finishAt >= 0 && closeAt >= 0 && closeAt < finishAt) v.push('I5: runner.finish after control.close');
     return v;
 }
-
-/** Whether `violations` is exactly the documented set: every line matched by one pin, every pin once. */
-const exactly = (violations: readonly string[], pins: readonly RegExp[]): boolean =>
-    violations.length === pins.length &&
-    pins.every((pin) => violations.filter((line) => pin.test(line)).length === 1) &&
-    violations.every((line) => pins.some((pin) => pin.test(line)));
 
 /** Wraps one call so the timeline records its invocation, then its acceptance or its throw. */
 function recorded<A extends unknown[], R>(
