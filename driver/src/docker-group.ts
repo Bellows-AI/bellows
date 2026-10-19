@@ -143,7 +143,9 @@ export function exporterCreateArgs(config: DriverConfig, job: BoardJob, startedA
  * The gate container's `docker create` argv (issue #773) — the declared image, running the gate loop
  * over the gate mailbox (`scripts/gate-loop.sh`), the pod's gate sidecar's twin. It writes the
  * shared task worktree as the uid:gid every other writer on that tree uses, with a HOME that uid can
- * write; its working directory is the mailbox, since each request names its worktree. No claim env
+ * write; its working directory is the image's own, since each request names its worktree. No `-w`
+ * into the mailbox: on an image without that directory the daemon would create it in the volume as
+ * root before the supervisor's image could give the volume its owner. No claim env
  * and no credential: those ride each request. Sized by GATE_* (issue #507), in its supervisor's
  * network namespace — the registry a setup installs from, and the declared services on loopback.
  */
@@ -159,8 +161,6 @@ export function gateCreateArgs(config: DriverConfig, job: BoardJob, image: strin
         ...gateEnv(config, job).flatMap((pair) => ['-e', pair.join('=')]),
         ...workspacesMountArgs(config, workspacePath(job)),
         ...mailboxMountArgs(job, MAILBOXES.gate, 'rw'),
-        '-w',
-        MAILBOXES.gate.path,
         ...groupNetworkArgs(job),
         ...resourceArgs(config.gateResources),
         '--entrypoint',

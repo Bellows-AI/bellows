@@ -377,7 +377,11 @@ describe('the gate container (issue #773)', () => {
             'node:24',
             ...gateLoopArgv().slice(1),
         ]);
-        expect(argv).toEqual(expect.arrayContaining(['-w', MAILBOXES.gate.path]));
+        // No `-w` into the mailbox: on an image without that directory, the daemon creates it in the
+        // volume as root at the gate's create — before the supervisor's start copies its image's
+        // ownership in — and the uid-1000 supervisor then cannot write its own mailbox (observed in
+        // test:jobs: EACCES on mkdir '/factory/gate/staging'). The loop names the mailbox absolutely.
+        expect(argv).not.toContain('-w');
     });
 
     it('mounts the member’s own subtree and the gate mailbox, and no other mailbox', () => {
