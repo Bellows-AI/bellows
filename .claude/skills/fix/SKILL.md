@@ -12,6 +12,28 @@ each phase). Track progress with the todo tool throughout.
 Everything from Phase 1 on — planning included — runs inside a dedicated git worktree, never the
 main checkout.
 
+## Heavy commands and cleanup
+
+Several fix runs share one host, and unqueued suites saturate it until tests time out. Two scripts
+beside this file prevent that; call them by absolute path from the main checkout — HEAVY is
+`<root>/.claude/skills/fix/heavy.sh`, CLEANUP is `<root>/.claude/skills/fix/cleanup.sh`. These rules
+cover every command this skill names below.
+
+- Heavy commands run as `sh HEAVY <command>`: `npm test`, `npm run typecheck`, `npm run build`, a
+  directory-wide `npx vitest run <dir>`, `docker build`, `make runners` and `codex exec`. A
+  single-file `npx vitest run <path>` and `npm run lint:changed` run bare.
+- Lanes with fixed ports or project names run as `sh HEAVY --exclusive <command>`:
+  `npm run test:jobs`, `npm run test:k8s`, `npm run verify:ui`.
+- HEAVY waits for a free slot (2 per host, `FACTORY_HEAVY_SLOTS`) and prints who holds them. The wait
+  is the point: never bypass it, never kill a holder. Launch long ones with `run_in_background`.
+- Name everything the run creates outside the worktree `fix<N>` or `fix<N>-<what>` — kind clusters
+  (`make cluster CLUSTER=fix<N>`), compose projects, containers (`fix<N>-pg`), volumes, networks.
+  CLEANUP finds them by that name and nothing else.
+- `sh CLEANUP <N>` removes them, kills processes still running from the issue's worktrees and
+  orphaned test progress filters, and leaves worktrees and branches alone. Run it at every exit of
+  this skill — done, or any STOP — and before Phase 1 when an earlier run of the issue may have left
+  something behind.
+
 ## Phase 0 — Fetch the issue
 
 - If no issue URL/number was given, ask for one and stop.
@@ -184,6 +206,6 @@ Stop conditions — hand back to the user instead of improvising:
   — resolve it and keep going.
 - **Five rounds with comments still open**: STOP. Report what remains and why.
 
-Done means: zero unaddressed comments, the worktree still in place, and the PR unmerged — merging
-is the maintainer's call. Final report: the PR URL, rounds spent, comments addressed, and anything
+Done means: zero unaddressed comments, the worktree still in place, `sh CLEANUP <N>` run, and the
+PR unmerged — merging is the maintainer's call. Final report: the PR URL, rounds spent, comments addressed, and anything
 left unresolved with the reason.
