@@ -1255,6 +1255,12 @@ await_first_runner() { # await_first_runner <job-id> <status> [seconds] -> the c
     printf '%s' "$c"
 }
 
+runner_host() { # runner_host <runner container> -> the $HOSTNAME its commands see
+    # The agent joins its supervisor's network namespace (issue #773), and with it the supervisor's
+    # hostname: the short id of the container named by its network mode, not its own.
+    docker inspect -f '{{.HostConfig.NetworkMode}}' "$1" 2>/dev/null | sed 's/^container://' | cut -c1-12
+}
+
 await_released() { # await_released <runner container> -> success once the supervisor released its agent (`go`)
     # A driver lost before `go` leaves nothing to adopt: the group ends lost (supervisor exit 75) and the run is redone.
     local i=0
@@ -1300,6 +1306,7 @@ killed="$(create_job 'sleep 8; echo "ran in $HOSTNAME"')"
 capped="$(last_attempt "$killed")" && ok 'the hard-kill job runs at max_attempts 1' ||
     bad 'the hard-kill job runs at max_attempts 1' "job '$killed': $capped"
 killed_runner="$(await_first_runner "$killed" running)"
+killed_host="$(runner_host "$killed_runner")"
 [ -n "$killed_runner" ] && ok 'the hard-kill runner is running' ||
     bad 'the hard-kill runner is running' "job: $(body "$(api GET "/api/jobs/$killed")")"
 await_released "$killed_runner" && ok 'the hard-kill runner released its agent' ||
@@ -1320,7 +1327,7 @@ driver_pid=""
 disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
 expect_contains 'the next claim settles the killed run' "$(await_settled "$killed" "$ADOPT_S")" succeeded
 killed_body="$(body "$(api GET "/api/jobs/$killed")")"
-expect_contains 'the adopted output is the first runner output' "$(field "$killed_body" output)" "ran in $killed_runner"
+expect_contains 'the adopted output is the first runner output' "$(field "$killed_body" output)" "ran in ${killed_host:-unknown}"
 expect_field 'the killed attempt is refunded' "$killed_body" attempts 1
 killed_int="$(interruptions_of "$killed_body")"
 [ "$killed_int" = "1|1|$EXPIRED" ] && ok 'one interruption records the expiry of claim 1' ||
@@ -1345,6 +1352,7 @@ stop_driver
 disruption_driver DRIVER_HANDOVER_MS=2000
 drained="$(create_job 'sleep 12; echo "ran in $HOSTNAME"')"
 drained_runner="$(await_first_runner "$drained" running)"
+drained_host="$(runner_host "$drained_runner")"
 [ -n "$drained_runner" ] && ok 'the handover runner is running' ||
     bad 'the handover runner is running' "job: $(body "$(api GET "/api/jobs/$drained")")"
 kill -TERM "$driver_pid" 2>/dev/null
@@ -1370,7 +1378,7 @@ driver_pid=""
 disruption_driver
 expect_contains 'the next claim adopts the handed-over run' "$(await_settled "$drained" "$ADOPT_S")" succeeded
 drained_body="$(body "$(api GET "/api/jobs/$drained")")"
-expect_contains 'the handed-over output is the first runner output' "$(field "$drained_body" output)" "ran in $drained_runner"
+expect_contains 'the handed-over output is the first runner output' "$(field "$drained_body" output)" "ran in ${drained_host:-unknown}"
 expect_field 'the handed-over attempt is refunded' "$drained_body" attempts 1
 drained_int="$(interruptions_of "$drained_body")"
 [ "$drained_int" = "1|1|$DRAINED" ] && ok 'the handover and its adoption are one interruption' ||
