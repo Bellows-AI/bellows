@@ -156,8 +156,9 @@ Operational facts behind those:
   `scripts/test-jobs.sh`, `docs/executor-testing.md`.
 - **Job fixtures are per run; the host is shared.** Stub image tags, the default disposable database,
   workspace/mailbox volumes and compose projects use run-specific names (`scripts/test-jobs.sh`).
-  Postgres remains shared; do not recreate it or prune images while a lane is active. Board phases
-  use `PORT` through `PORT + 2` (default 8129–8131). Keep `test:jobs` runs serial on one Docker daemon:
+  Postgres remains shared; worktrees set `COMPOSE_PROJECT_NAME` to the existing development stack
+  before board phases. Do not recreate Postgres or prune images while a lane is active. Board phases
+  use `PORT` through `PORT + 2` (default 8129–8131). Keep separate `test:jobs` runs serial on one Docker daemon:
   the reaper scans daemon-wide (`driver/src/docker-reaper.ts`), and one checkout also shares `dist`.
   Phase totals, check intervals and process logs stay under `artifacts/jobs/`; `TIMINGS_FILE` overrides
   the output path (`server/test/test-jobs.options.test.ts`).
