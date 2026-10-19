@@ -25,6 +25,16 @@ describe('kind lane argument validation', () => {
         expect(result.stdout).not.toContain('# chart');
         expect(result.stderr).toBe('');
     });
+
+    it('offers the supervisor control phase (issue #770)', () => {
+        const result = spawnSync('bash', ['scripts/test-k8s.sh', '--help'], {
+            cwd: REPO_ROOT,
+            encoding: 'utf8',
+            timeout: 5000,
+        });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('|recovery|control]');
+    });
 });
 
 /*
