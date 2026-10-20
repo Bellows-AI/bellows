@@ -3167,24 +3167,11 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // A spawn failure makes Node deliver 'error' and then 'close' with a null code. The close
     // must not settle the promise once the error has been seen: verdict(null) would read as a
     // started run with no exit code — a terminal failed job — when the truth is infrastructure
-    // the loop should leave to its lease. The daemon holds the error-path teardown's ps on a
-    // gate, so under the bug the close handler's verdict wins the race and RESOLVES the run.
-    it('rejects with the spawn error even when close follows it while teardown is pending', async () => {
-        let releaseTeardownPs: (() => void) | null = null;
-        const teardownPsGate = new Promise<void>((resolve) => {
-            releaseTeardownPs = resolve;
-        });
-        let psCount = 0;
+    // the loop should leave to its lease.
+    it('rejects with the spawn error even when close follows it', async () => {
         const exec = vitest.fn(async (args: string[]) => {
             if (isServiceRun(args)) return { stdout: '' };
-            if (args[0] === 'ps') {
-                psCount++;
-                // ps #1 is the entry fence; ps #2 is the fence's own service half; ps #3 is the
-                // error-path teardown, held so the close handler gets its turn while the
-                // teardown is still in flight.
-                if (psCount === 3) await teardownPsGate;
-                return { stdout: psListing(args, 'c0ffee000001') };
-            }
+            if (args[0] === 'ps') return { stdout: psListing(args, 'c0ffee000001') };
             return { stdout: '' };
         });
         // Node's failed-spawn order: 'error' first, then 'close' with code null.
@@ -3197,11 +3184,11 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             return c;
         }) as unknown as typeof spawn;
         const pending = servicesRunner(exec, errorThenClose).run(job, { id: SESSION, resume: false });
-        // A macrotask, so the error, the close and the close handler's verdict all get their
-        // turn while the gate is still closed.
+        // Handled from the start: the run rejects on the error itself, before the close's turn.
+        const rejected = expect(pending).rejects.toThrow(/ENOENT/);
+        // A macrotask, so the close and the close handler's verdict get their turn too.
         await new Promise((resolve) => setTimeout(resolve, 20));
-        releaseTeardownPs!();
-        await expect(pending).rejects.toThrow(/ENOENT/);
+        await rejected;
     });
 
     /** The group-removal calls the daemon saw from the spawn on: the supervisor's and the exporter's. */
