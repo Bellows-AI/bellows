@@ -176,6 +176,13 @@ describe('awaitServicesRunning (issue #560)', () => {
         expect(lists).toBe(3);
     });
 
+    it('is inconclusive, not ServicesNotRunning, when the budget was spent before any listing (#869)', async () => {
+        const list = () => Promise.reject(new Error('the request deadline passed'));
+        const thrown = await awaitServicesRunning(specs, list, noWait, { timeoutMs: 0 }).catch((e: unknown) => e);
+        expect(thrown).toBeInstanceOf(Inconclusive);
+        expect(thrown).not.toBeInstanceOf(ServicesNotRunning);
+    });
+
     it('throws at once, naming it, when a restarted service is already dead', async () => {
         let lists = 0;
         const list = async () => {

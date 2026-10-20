@@ -36,6 +36,16 @@ describe('pollFor', () => {
         expect(n).toBe(3);
     });
 
+    it('reads once even with no budget left, so an undefined answer always follows a read', async () => {
+        let n = 0;
+        const found = await pollFor({ ms: 0, everyMs: 100, sleep: instant }, async (deadline) => {
+            n += 1;
+            expect(timeLeft(deadline)).toBe(0);
+        });
+        expect(found).toBeUndefined();
+        expect(n).toBe(1);
+    });
+
     it('throws abandoned() when aborted before a step, with no step call', async () => {
         const controller = new AbortController();
         controller.abort();
