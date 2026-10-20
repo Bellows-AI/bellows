@@ -51,7 +51,7 @@ export function gateImageOf(job: BoardJob): string | null {
 export function supervisorLiterals(
     config: DriverConfig,
     job: BoardJob,
-    group: { exporting: boolean; agentless?: boolean; gated?: boolean }
+    group: { exporting: boolean; agentless?: boolean; gated?: boolean; reviewing?: boolean }
 ): [string, string][] {
     return [
         [SUPERVISOR_ENV.controlMs, String(RUN_CONTROL_POLL_MS)],
@@ -61,6 +61,7 @@ export function supervisorLiterals(
         ...(group.exporting ? ([[SUPERVISOR_ENV.exports, '1']] as [string, string][]) : []),
         ...(group.agentless ? ([[SUPERVISOR_ENV.agentless, '1']] as [string, string][]) : []),
         ...(group.gated ? ([[SUPERVISOR_ENV.gate, '1']] as [string, string][]) : []),
+        ...(group.reviewing ? ([[SUPERVISOR_ENV.reviewer, '1']] as [string, string][]) : []),
     ];
 }
 

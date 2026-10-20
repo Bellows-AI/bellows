@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
 import type { BoardJob, VerdictEvidence } from './board.js';
 import { uploadRunArtifacts } from './artifact-upload.js';
-import { claimRestoresTree, repoCacheProblem } from './claim.js';
+import { claimContinuesSession, repoCacheProblem } from './claim.js';
+import { pickSession } from './runner-plan.js';
 import { evidenceDecision, evidencePolicyActive, type GatesOutcome, gatesEvidenceOf } from './evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from './runner.js';
 import { adoptStep } from './loop-adopt.js';
@@ -51,15 +51,6 @@ import {
     startServicesStep,
 } from './loop-services.js';
 import { servicePlanRefusal } from './services.js';
-
-function pickSession(job: BoardJob, executorType: BoardJob['executorType']): RunSession | null {
-    // opencode mints its own session ids (`ses_…`) and cannot adopt one, so a fresh run gets
-    // none — the runner scrapes the id the run used and reports it when the outcome lands. A
-    // follow-up claim carries the session opencode itself created, restored via `--session` on
-    // the runner.
-    if (executorType === OPENCODE) return job.resumeSessionId ? { id: job.resumeSessionId, resume: true } : null;
-    return job.resumeSessionId ? { id: job.resumeSessionId, resume: true } : { id: randomUUID(), resume: false };
-}
 
 /** The refusal reason for an executor selection this loop cannot run, or null when it can. */
 function executorRefusalReason(_rt: LoopRuntime, job: BoardJob): string | null {
@@ -122,8 +113,8 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     if (ctx.adopted) return null;
     const turn = await awaitSyncTurn(ctx);
     if (turn === STOOD_DOWN || 'halt' in turn) return turn;
-    // A starting claim's fetch reaches GitHub; a restore, a reviewer's tree and a repo-less job do not.
-    const fetches = Boolean(job.repo) && !job.reviewRun && !claimRestoresTree(job);
+    // A starting claim's fetch reaches GitHub; a restore and a repo-less job do not.
+    const fetches = Boolean(job.repo) && !claimContinuesSession(job);
     const githubToken = fetches ? await askGithubToken(rt, job, 'the checkout sync') : null;
     const syncing = runner.syncCheckout(job, state.signal, ctx.session, githubToken ?? undefined);
     // The turn is held until the sync's writes are over (`settled`), however the sync answered.

@@ -33,11 +33,14 @@ describe.skipIf(!hasGit())('the worktree reclaim script', () => {
 
     const wtPath = (name: string): string => join(dir, 'worktrees', name);
 
-    const remove = (wt: string): { stdout: string; verdict: { ok: boolean; removed?: boolean; reason?: string } } => {
+    const remove = (
+        wt: string,
+        reviewRoots?: string
+    ): { stdout: string; verdict: { ok: boolean; removed?: boolean; reason?: string } } => {
         // The script FILE itself, not a -e wrap: the artifact the reclaim container runs is what
         // is under test.
         const stdout = execFileSync('node', [pathOf('git-worktree-remove.cjs')], {
-            env: { ...process.env, REPO: clone, WORKTREE: wt },
+            env: { ...process.env, REPO: clone, WORKTREE: wt, ...(reviewRoots ? { REVIEW_ROOTS: reviewRoots } : {}) },
             encoding: 'utf8',
         });
         return { stdout, verdict: JSON.parse(stdout.trim().split('\n').filter(Boolean).pop()!) };
@@ -54,6 +57,53 @@ describe.skipIf(!hasGit())('the worktree reclaim script', () => {
         dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-reclaim-')));
         clone = join(dir, 'clone');
         makeOriginClone(dir, clone);
+    });
+
+    // Issue #774: a review's worktree is a registered worktree of the same clone, filed under
+    // `<task tree>.reviews/<review root>`. The caller thread's reclaim removes every one with it.
+    describe('the thread’s review roots', () => {
+        const REVIEW_A = '88888888-8888-4888-8888-888888888888';
+        const REVIEW_B = '99999999-9999-4999-8999-999999999999';
+        const reviewRoots = (): string => `${wtPath(ROOT)}.reviews`;
+        const addReview = (name: string): string => {
+            const wt = join(reviewRoots(), name);
+            git(clone, 'worktree', 'add', '-b', `factory/${name}`, wt);
+            writeFileSync(join(wt, 'scratch.txt'), 'x');
+            return wt;
+        };
+
+        it('removes every registered review worktree, the directory and the registrations with the task tree', () => {
+            const task = addWorktree(ROOT);
+            const a = addReview(REVIEW_A);
+            const b = addReview(REVIEW_B);
+            expect(remove(task, reviewRoots()).verdict).toEqual({ ok: true, removed: true });
+            for (const gone of [task, a, b, reviewRoots()]) expect(existsSync(gone), gone).toBe(false);
+            const registered = git(clone, 'worktree', 'list', '--porcelain');
+            for (const name of [ROOT, REVIEW_A, REVIEW_B]) expect(registered).not.toContain(name);
+        });
+
+        it('removes the review roots of a thread whose own tree is already gone', () => {
+            const a = addReview(REVIEW_A);
+            expect(remove(wtPath(ROOT), reviewRoots()).verdict).toEqual({ ok: true, removed: true });
+            expect(existsSync(a)).toBe(false);
+        });
+
+        it('is the task tree’s verdict alone when the thread asked for no review', () => {
+            const task = addWorktree(ROOT);
+            expect(remove(task, reviewRoots()).verdict).toEqual({ ok: true, removed: true });
+            expect(existsSync(reviewRoots())).toBe(false);
+        });
+
+        it('refuses a git tree under the review roots that is not a registered worktree, deleting nothing', () => {
+            const stray = join(reviewRoots(), UNREGISTERED);
+            mkdirSync(stray, { recursive: true });
+            git(stray, 'init');
+            const { stdout, verdict } = remove(wtPath(ROOT), reviewRoots());
+            expect(verdict.ok).toBe(false);
+            expect(verdict.reason).toMatch(/refusing to remove/);
+            expect(stdout.trim().split('\n')).toHaveLength(1);
+            expect(existsSync(join(stray, '.git'))).toBe(true);
+        });
     });
 
     it('removes a registered worktree whose directory is there', () => {

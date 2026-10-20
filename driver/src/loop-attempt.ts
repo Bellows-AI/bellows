@@ -44,6 +44,12 @@ const MIN_HEARTBEAT_PERIOD_MS = 1_000;
 const HEARTBEAT_PERIOD_DIVISOR = 3;
 const MS_PER_SECOND = 1_000;
 
+/** One review being supervised: the order to cancel it, and its end (after the review row is settled and the reviewer released). */
+export interface ReviewSupervision {
+    cancel: () => void;
+    settled: Promise<void>;
+}
+
 export interface JobState {
     /**
      * Stops the output pump's periodic writes and waits out the one in flight (issue #773): a park
@@ -117,6 +123,16 @@ export interface JobState {
     draining: boolean;
     /** The grace deadline's timer while draining; cleared when the attempt settles. */
     graceTimer: ReturnType<typeof setTimeout> | null;
+    /**
+     * The reviews this attempt supervises, by key (issue #774): each runs in this attempt's task
+     * group and ends with it. A key already here starts no second supervisor (`loop-review.ts`).
+     */
+    reviews: Map<string, ReviewSupervision>;
+    /**
+     * The review leases (`id:claimSeq`) this attempt has already ended (completed, failed or released):
+     * a delayed answer carrying one starts nothing, a newer lease of the same review is supervised.
+     */
+    endedReviewLeases: Set<string>;
     /** Questions whose answers have not been delivered yet. */
     pendingQuestions: Set<string>;
     questionPausedAt: number | null;
@@ -138,6 +154,19 @@ export interface JobState {
      */
     signal: AbortSignal;
     abortNow: () => void;
+}
+
+/**
+ * The stop of one review the attempt supervises (issue #774): its own controller, so a refused
+ * heartbeat on the review's row ends that review alone, aborted too when the attempt stands down.
+ * Minted here beside the attempt's one signal, never in the supervision.
+ */
+export function newReviewStop(state: JobState): { stop: AbortController; release: () => void } {
+    const stop = new AbortController();
+    const standDown = (): void => stop.abort();
+    if (state.signal.aborted) stop.abort();
+    state.signal.addEventListener('abort', standDown, { once: true });
+    return { stop, release: () => state.signal.removeEventListener('abort', standDown) };
 }
 
 export function newJobState(): JobState {
@@ -163,6 +192,8 @@ export function newJobState(): JobState {
         running: false,
         draining: false,
         graceTimer: null,
+        reviews: new Map(),
+        endedReviewLeases: new Set(),
         pendingQuestions: new Set(),
         questionPausedAt: null,
         deadlineUpdate: Promise.resolve(),

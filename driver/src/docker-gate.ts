@@ -1,4 +1,5 @@
 import type { BoardJob } from './board.js';
+import { type ReviewRun, runReviewSteps } from './review-step.js';
 import { type GateStepRequest, runGateStep, type StepHost } from './supervised-steps.js';
 import type { StepResult } from './supervisor-contract.js';
 
@@ -20,4 +21,9 @@ export async function runDockerGate(
     signal?: AbortSignal
 ): Promise<StepResult> {
     return runGateStep(await deps.host(), job, gate, signal);
+}
+
+/** One review in the caller's group (issue #774): its reviewer container runs it, beside the gate container, in the same namespace. */
+export async function runDockerReview(deps: DockerGateDeps, run: ReviewRun, signal?: AbortSignal): Promise<StepResult> {
+    return runReviewSteps(await deps.host(), run, signal);
 }

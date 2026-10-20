@@ -1,7 +1,7 @@
 import { AGENT_LAUNCH_CAPS } from './claim.js';
 import { cpuQuantityToCores, type DriverConfig, memoryQuantityToBytes } from './config.js';
 import type { ExecutorType } from './executors.js';
-import { type Mailbox, MAILBOXES } from './supervisor-contract.js';
+import { type Mailbox, mailboxesOf } from './supervisor-contract.js';
 import { telemetryConfig, telemetryConfigK8s, type TelemetryConfigVolume } from './telemetry-config.js';
 
 /**
@@ -82,6 +82,30 @@ export function gateRequests(config: DriverConfig, phase: 'idle' | 'verify'): { 
 export function gateResourcesField(config: DriverConfig): { resources: PodResources } {
     const limits = resourcesField(config, config.gateResources).resources?.limits;
     return { resources: { requests: gateRequests(config, 'idle'), ...(limits ? { limits } : {}) } };
+}
+
+/** What the reviewer container asks for while no review runs (issue #774): a sleeping loop, no more. */
+const REVIEWER_IDLE_REQUESTS = { cpu: '50m', memory: '64Mi' } as const;
+
+/**
+ * The reviewer container's requests at one phase (issue #774): `idle` while no review runs, `run`
+ * the runner's own requests (RUNNER_*) for the review — a reviewer is an agent. A slot with no
+ * configured request keeps its idle figure at run: a resize cannot take a request away.
+ */
+export function reviewerRequests(config: DriverConfig, phase: 'idle' | 'run'): { cpu: string; memory: string } {
+    const { cpuRequest, cpuLimit, memoryRequest, memoryLimit } = config.runnerResources;
+    const idle = {
+        cpu: smaller(REVIEWER_IDLE_REQUESTS.cpu, cpuRequest ?? cpuLimit, cpuQuantityToCores),
+        memory: smaller(REVIEWER_IDLE_REQUESTS.memory, memoryRequest ?? memoryLimit, memoryQuantityToBytes),
+    };
+    if (phase === 'idle') return idle;
+    return { cpu: cpuRequest ?? idle.cpu, memory: memoryRequest ?? idle.memory };
+}
+
+/** The reviewer container's resources at its creation: the idle requests, the runner's limits from the start. */
+export function reviewerResourcesField(config: DriverConfig): { resources: PodResources } {
+    const limits = resourcesField(config).resources?.limits;
+    return { resources: { requests: reviewerRequests(config, 'idle'), ...(limits ? { limits } : {}) } };
 }
 
 /**
@@ -220,8 +244,8 @@ export type RunnerVolume =
  * mailboxes it names, and kubelet-created subPath directories (root-owned) cannot lock a non-root
  * container out of its own.
  */
-export const mailboxVolumes = (): RunnerVolume[] =>
-    Object.values(MAILBOXES).map((box) => ({ name: box.name, emptyDir: {} }));
+export const mailboxVolumes = (reviewing: boolean): RunnerVolume[] =>
+    mailboxesOf(reviewing).map((box) => ({ name: box.name, emptyDir: {} }));
 
 /** One mailbox as a container mount — read-only where the contract says the container may only read it. */
 export const mailboxMount = (box: Mailbox, access: 'ro' | 'rw'): RunnerMount => ({

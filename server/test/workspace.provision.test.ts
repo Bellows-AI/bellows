@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -39,6 +39,20 @@ describe('ensureUserWorkspace', () => {
         provision(root);
         expect(provision(root)).toBe(join(root, 'acme', USER));
         expect(existsSync(join(root, 'acme', USER))).toBe(true);
+    });
+
+    // Issue #774: the reviewer sidecar mounts `.factory/reviewer` of the member tree read-write; a
+    // missing subPath is made by the kubelet as root, which uid 1002 cannot write.
+    it('creates the reviewer home group-writable, for a member provisioned before it existed too', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'factory-provision-'));
+        const root = join(dir, 'workspaces');
+        const member = provision(root) as string;
+        const home = join(member, '.factory', 'reviewer');
+
+        expect(statSync(home).mode & 0o070).toBe(0o070);
+        rmSync(join(member, '.factory'), { recursive: true });
+        provision(root);
+        expect(statSync(home).mode & 0o070).toBe(0o070);
     });
 
     // Issue #814: the agent's tools run as their own uid in group 1000 and create the member's

@@ -8,6 +8,7 @@
 import type { BoardJob } from './board.js';
 import type { JobState } from './loop-attempt.js';
 import { closeRunControl } from './loop-gates.js';
+import { cancelReviews } from './loop-review.js';
 import type { LoopRuntime } from './loop-types.js';
 
 export function attemptSettlement(
@@ -26,6 +27,8 @@ export function attemptSettlement(
             if (state.graceTimer) clearTimeout(state.graceTimer);
             state.wake();
             await beating;
+            // A review still running ends with its caller: cancelled, its row settled, the reviewer released.
+            await cancelReviews(state);
         })());
     const teardown = () =>
         (tearingDown ??= (async () => {

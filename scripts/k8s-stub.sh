@@ -82,6 +82,27 @@ for arg in "$@"; do
         env | grep -q -e '^GITHUB_TOKEN=' -e '^GH_TOKEN=' || echo 'github no env token'
         break
         ;;
+    *factory-stub-review*)
+        # `factory-stub-review` (issue #774): ask the declared `audit` reviewer for key `rv-k` on the
+        # control endpoint and wait for its verdict. A re-claimed run asks the same key again.
+        node -e '
+const base = process.env.BELLOWS_CONTROL_URL.replace(/\/$/, "");
+const headers = { authorization: "Bearer " + process.env.BELLOWS_CONTROL_TOKEN, "content-type": "application/json" };
+const call = async (method, path, body) => {
+    const r = await fetch(base + path, { method, headers, body });
+    return { status: r.status, text: await r.text() };
+};
+(async () => {
+    let last = await call("POST", "/review", JSON.stringify({ key: "rv-k", profile: "audit" }));
+    console.log("review-request=" + last.status);
+    for (let i = 0; i < 200 && !(JSON.parse(last.text).done); i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        last = await call("GET", "/review/rv-k");
+    }
+    console.log("review-final=" + last.text);
+})().catch((e) => { console.error(e.message); process.exit(1); });' || exit 1
+        break
+        ;;
     *factory-stub-kill-tools*)
         "$SHELL" -c 'kill -TERM 1 2>/dev/null; kill -KILL -1 2>/dev/null; echo "the tool ran as $(id -u)"'
         echo 'agent survived'

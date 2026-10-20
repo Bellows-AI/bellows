@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Board, BoardJob } from '../src/board.js';
+import type { Board, BoardJob, ReviewClaim } from '../src/board.js';
 import { type DriverConfig, loadDriverConfig } from '../src/config.js';
 import {
     AGENT_CONTAINER,
     EXPORTER_CONTAINER,
     GO_MARKER,
     MAILBOXES,
+    REVIEWER_CONTAINER,
     SUPERVISOR_CONTAINER,
     SUPERVISOR_CREDENTIAL_NAMES,
     SUPERVISOR_EXIT,
@@ -19,10 +20,14 @@ import {
     type SupervisorReport,
 } from '../src/supervisor-contract.js';
 import { StepChannelClosed, type StepSink } from '../src/step-control.js';
+import { newJobState } from '../src/loop-attempt.js';
+import { createReviewRelay } from '../src/loop-review.js';
+import type { LoopRuntime } from '../src/loop-types.js';
 import {
     claudeTurnsScript,
     claudeExportScript,
     gateLoopArgv,
+    reviewLoopArgv,
     serviceProbeArgv,
     serviceRestartArgv,
 } from '../src/container-scripts.js';
@@ -57,6 +62,16 @@ import {
 import { claimName, jobPath, podLogPath } from '../src/k8s-auxspec.js';
 import { KUBELET_RESTART_NOTE, sidecarStatuses } from '../src/k8s-services.js';
 import { reclaimGroupSpec } from '../src/k8s-group.js';
+import {
+    GATE_GID,
+    GATE_UID,
+    GITHUB_CACHE_DIR,
+    REVIEWER_HOME,
+    REVIEWER_TREE_DIR,
+    REVIEWER_UID,
+    TOOL_UID,
+} from '../src/claim.js';
+import { reviewerRequests } from '../src/k8s-podfields.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
 import { throughTransport } from './fixtures/k8s-transport-bridge.js';
@@ -1124,13 +1139,129 @@ describe('the worktree sync', () => {
         expect(steps.tokens).toEqual(new Set([CONTROL_TOKEN]));
     });
 
-    it('creates no Job of its own: the sync rides the attempt’s one group', async () => {
-        const { request, calls } = fakeRequest();
-        await sync(repoJob, fakeSteps(), request);
-        const jobs = calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace));
-        expect(jobs.map((call) => (call.body as { metadata: { name: string } }).metadata.name)).toEqual([
-            runnerJobName(repoJob),
+    // The whole attempt in one pod (issues #771-#774): the sync, the setup, a gate, a declared
+    // service, a review (snapshot, restore, run, export) and the caller's finish are steps of the
+    // task Job's supervisor, so the cluster is asked for the task Job, its Secret and the claim
+    // ConfigMap and for nothing else. A new object here is a regression, not an allowance.
+    it('creates only the task Job, its Secret and the claim ConfigMap for a full attempt, review included', async () => {
+        const reviewing: BoardJob = {
+            ...gatedOf(repoJob),
+            ...SUPERVISED,
+            services: [{ name: 'cache', image: 'redis', environment: [] }],
+            reviewerProfiles: ['security'],
+        };
+        const api = routed((method, path) => {
+            if (method !== 'GET' || !decodeURIComponent(path).includes('job-name=')) return;
+            return {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        {
+                            metadata: { name: podName },
+                            status: {
+                                phase: 'Running',
+                                initContainerStatuses: [
+                                    {
+                                        name: 'svc-cache',
+                                        image: 'redis',
+                                        state: { running: { startedAt: '2026-10-19T00:00:00Z' } },
+                                        restartCount: 0,
+                                    },
+                                ],
+                                containerStatuses: [{ state: { running: {} } }],
+                            },
+                        },
+                    ],
+                }),
+            };
+        });
+        const steps = fakeSteps((step) => {
+            if (step.kind === 'sync') return stepOk('{"ok":true,"reason":null}\n');
+            if (step.kind === 'probe') return stepOk(`${JSON.stringify({ cloned: true, fingerprint: 'h:1' })}\n`);
+            if (step.kind === 'snapshot') return stepOk('{"ok":true}');
+            return stepOk('done');
+        });
+        const k8s = runner(api.request, { RUNNER_SERVICES: '1' }, undefined, steps.sink);
+
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+        const reviewRow = {
+            ...reviewing,
+            id: '77777777-7777-4777-8777-777777777777',
+            rootJobId: reviewing.id,
+            leaseToken: NEW_TOKEN,
+            executorType: 'claude-code',
+            reviewRun: { profile: 'security', ref: 'refs/factory/review/root/sec-1', timeoutMinutes: 5 },
+        } as unknown as ReviewClaim;
+        const completed: unknown[] = [];
+        // The board's real answers: a review is leased in-band with its claim, and completing it
+        // answers no reclaim (the caller's thread owns the tree: amendment B6).
+        const board = {
+            requestReview: async () => ({
+                result: 'ok',
+                created: true,
+                claim: reviewRow,
+                review: { key: 'sec-1', evidence: { state: 'none' } },
+            }),
+            heartbeat: async () => ({ cancelRequested: false }),
+            session: async () => undefined,
+            complete: async (_row: unknown, body: unknown) => {
+                completed.push(body);
+                return { state: 'ok', reclaimId: null };
+            },
+        };
+        const rt = {
+            runner: k8s,
+            board,
+            config,
+            log: () => undefined,
+            sleep: () => new Promise<void>(() => undefined),
+            gates: {
+                server: { grantExporter: () => undefined, revokeExporter: () => undefined },
+            },
+        } as unknown as LoopRuntime;
+
+        const state = newJobState();
+        expect(await k8s.syncCheckout(reviewing, undefined, SESSION_OF)).toEqual({ ok: true, reason: null });
+        const gateAt = { cwd: WORKTREE, env: {}, timeoutMs: 1000 };
+        await k8s.runGate(reviewing, { command: 'npm ci', ...gateAt });
+        await k8s.runGate(reviewing, { command: 'npm test', ...gateAt });
+        expect(await k8s.startServices(reviewing)).toBeNull();
+        const verdict = await createReviewRelay(rt, reviewing, state).request('sec-1', 'security');
+        expect(verdict).toMatchObject({ created: true });
+        await Promise.all([...state.reviews.values()].map((review) => review.settled));
+        await k8s.finish(reviewing);
+
+        expect(completed).toEqual([expect.objectContaining({ status: 'succeeded' })]);
+        // setup and gate, the services' start, the review (home, restore, run, and the export the reviewer container runs), the finish.
+        expect(kindsOf(steps)).toEqual([
+            'sync',
+            'gate',
+            'gate',
+            'restart',
+            'probe',
+            'snapshot',
+            'sync',
+            'sync',
+            'review',
+            'review',
+            'finish',
         ]);
+        // The session readout Jobs of the close are split to issue #882 and are the only exception.
+        const readouts = new Set([opencodeReadoutJobName(reviewing), claudeTurnsJobName(reviewing)]);
+        const created = api.calls
+            .filter((call) => call.method === 'POST')
+            .map((call) => ({ path: call.path, name: (call.body as { metadata: { name: string } }).metadata.name }))
+            .filter((call) => !readouts.has(call.name));
+        // The claim is taken by the sync and again by the group's creation: one name, one object.
+        const objects = [...new Map(created.map((call) => [`${call.path} ${call.name}`, call])).values()];
+        expect(objects).toHaveLength(3);
+        expect(objects).toEqual(
+            expect.arrayContaining([
+                { path: configmapsPath, name: expect.any(String) },
+                { path: `/api/v1/namespaces/${namespace}/secrets`, name: secretName(reviewing) },
+                { path: jobsPath(namespace), name: runnerJobName(reviewing) },
+            ])
+        );
     });
 
     // The sync's fetch needs a credential helper to read the token git never reads from the
@@ -1649,7 +1780,12 @@ describe('the worktree reclaim', () => {
         const step = steps.submitted.find((s) => s.kind === 'reclaim')!;
         expect(step.argv).toEqual(['node', '-e', gitWorktreeRemoveScript]);
         // No BRANCH, no credential-helper code, no claim env: reclaim authenticates nothing.
-        expect(step.env).toEqual({ REPO: `/workspaces/bellows/${USER}/factory`, WORKTREE });
+        expect(step.env).toEqual({
+            REPO: `/workspaces/bellows/${USER}/factory`,
+            WORKTREE,
+            // The thread's review roots go with it (issue #774).
+            REVIEW_ROOTS: `${WORKTREE}.reviews`,
+        });
         expect(steps.tokens).toEqual(new Set([RECLAIM_TOKEN]));
     });
 
@@ -4685,6 +4821,152 @@ describe('the gate sidecar', () => {
 
     it('refuses a declared image that is not a plain image reference, before the spec exists', () => {
         expect(() => podOf({ ...gated, gates: { ...gated.gates!, image: '-flag-image' } })).toThrow(/image reference/);
+    });
+});
+
+// ==============================================================================================
+// The reviewer sidecar (issue #774): a claim that lists reviewer profiles gets one dormant
+// reviewer container in the task pod, beside the supervisor, serving the review mailbox.
+// ==============================================================================================
+
+describe('the reviewer sidecar (issue #774)', () => {
+    const reviewing: BoardJob = { ...gatedOf(job), ...SUPERVISED, reviewerProfiles: ['security'] };
+    const podOf = (of: BoardJob, config: DriverConfig = gatedConfig) =>
+        runnerJobSpec(config, of, { id: SESSION, resume: false }).spec.template.spec;
+    const reviewerOf = (of: BoardJob = reviewing) => {
+        const reviewer = podOf(of).initContainers?.find((container) => container.name === REVIEWER_CONTAINER);
+        if (!reviewer) throw new Error('no reviewer sidecar');
+        return reviewer;
+    };
+
+    it('a claim with reviewer profiles gets one dormant reviewer sidecar; none without', () => {
+        const reviewer = reviewerOf();
+        expect(reviewer.restartPolicy).toBe('Always');
+        expect(reviewer.image).toBe(podOf(reviewing).containers.find((c) => c.name === 'agent')!.image);
+        expect(reviewer.command).toEqual(reviewLoopArgv());
+        expect(reviewer.workingDir).toBe(MAILBOXES.review.path);
+        expect(podOf(reviewing).initContainers?.map((container) => container.name)).toEqual(['gate', 'reviewer']);
+        for (const none of [undefined, []]) {
+            const { reviewerProfiles: _profiles, ...rest } = reviewing;
+            const pod = podOf(none ? { ...rest, reviewerProfiles: none } : rest);
+            expect(pod.initContainers?.map((container) => container.name)).toEqual(['gate']);
+            expect(JSON.stringify(pod)).not.toContain(MAILBOXES.review.name);
+        }
+    });
+
+    it('the reviewer runs as REVIEWER_UID ≠ TOOL_UID, mounts only its read-only tree, its mailbox and its home', () => {
+        const reviewer = reviewerOf();
+        expect(REVIEWER_UID).not.toBe(TOOL_UID);
+        expect(REVIEWER_UID).not.toBe(GATE_UID);
+        expect(reviewer.securityContext).toMatchObject({ runAsUser: REVIEWER_UID, runAsGroup: GATE_GID });
+        expect(reviewer.volumeMounts).toEqual([
+            {
+                name: 'workspaces',
+                mountPath: `/workspaces/bellows/${USER}`,
+                subPath: `bellows/${USER}`,
+                readOnly: true,
+            },
+            { name: MAILBOXES.review.name, mountPath: MAILBOXES.review.path },
+            {
+                name: 'workspaces',
+                mountPath: REVIEWER_HOME,
+                subPath: `bellows/${USER}/${REVIEWER_TREE_DIR}`,
+            },
+        ]);
+        expect(podOf(reviewing).volumes).toContainEqual({ name: MAILBOXES.review.name, emptyDir: {} });
+    });
+
+    it('the agent mounts none of the reviewer’s mounts, and the exporter and gate neither', () => {
+        const pod = podOf(reviewing);
+        for (const name of ['agent', 'exporter']) {
+            const mounts = JSON.stringify(pod.containers.find((container) => container.name === name)?.volumeMounts);
+            expect(mounts, name).not.toContain(MAILBOXES.review.name);
+            expect(mounts, name).not.toContain(REVIEWER_TREE_DIR);
+        }
+        const gate = pod.initContainers?.find((container) => container.name === 'gate');
+        expect(JSON.stringify(gate?.volumeMounts)).not.toContain(MAILBOXES.review.name);
+        const supervisor = pod.containers.find((container) => container.name === 'supervisor');
+        expect(supervisor?.volumeMounts).toContainEqual({
+            name: MAILBOXES.review.name,
+            mountPath: MAILBOXES.review.path,
+        });
+    });
+
+    it('the reviewer’s env and mounts carry no publish token and no credential helper, no attempt-Secret ref', () => {
+        const reviewer = reviewerOf({ ...reviewing, env: { SOME_TOKEN: 'claim-secret' } });
+        expect(JSON.stringify(reviewer)).not.toContain('secretKeyRef');
+        expect(JSON.stringify(reviewer)).not.toContain(secretName(reviewing));
+        expect(JSON.stringify(reviewer)).not.toContain('claim-secret');
+        // The command is the loop's own text, which names these words in its comments: env and mounts only.
+        const text = JSON.stringify({ env: reviewer.env, mounts: reviewer.volumeMounts });
+        expect(text).not.toMatch(/GITHUB_TOKEN|GH_TOKEN|PUBLISH|BELLOWS_|credential/i);
+        expect(text).not.toContain(GITHUB_CACHE_DIR);
+        expect(reviewer.env).toEqual([{ name: 'HOME', value: REVIEWER_HOME }]);
+    });
+
+    it('the reviewer reads the same model credentials as the agent from the credentials Secret, and no other Secret', () => {
+        const config = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            K8S_NAMESPACE: namespace,
+            RUNNER_CREDENTIALS_SECRET: 'model-credentials',
+            RUNNER_ENV: 'MODEL_KEY,OTHER_KEY',
+        });
+        const pod = podOf({ ...reviewing, env: { SOME_TOKEN: 'claim-secret' } }, config);
+        const reviewer = pod.initContainers?.find((container) => container.name === REVIEWER_CONTAINER);
+        const ref = (name: string) => ({
+            name,
+            valueFrom: { secretKeyRef: { name: 'model-credentials', key: name, optional: true } },
+        });
+        expect(reviewer?.env).toEqual([{ name: 'HOME', value: REVIEWER_HOME }, ref('MODEL_KEY'), ref('OTHER_KEY')]);
+        const agentEnv = pod.containers.find((container) => container.name === 'agent')?.env ?? [];
+        expect(agentEnv).toContainEqual(ref('MODEL_KEY'));
+        expect(agentEnv).toContainEqual(ref('OTHER_KEY'));
+        expect(JSON.stringify(reviewer)).not.toContain(secretName(reviewing));
+        expect(JSON.stringify(reviewer)).not.toContain('envFrom');
+    });
+
+    it('sizes the reviewer idle-low at creation, with the runner’s limits', () => {
+        const { resources } = reviewerOf();
+        expect(resources?.requests).toEqual(reviewerRequests(gatedConfig, 'idle'));
+        expect(reviewerRequests(gatedConfig, 'idle')).toEqual({ cpu: '50m', memory: '64Mi' });
+    });
+
+    /** fakeRequest, with every pod resize answered 200 and recorded. */
+    const resizing = () => {
+        const base = fakeRequest();
+        const patches: { path: string; body: unknown; contentType: string | undefined }[] = [];
+        const request: K8sRequest = (method, path, body, contentType) => {
+            if (method === 'PATCH' && path.endsWith('/resize')) {
+                patches.push({ path, body, contentType });
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            return base.request(method, path, body);
+        };
+        return { request, patches };
+    };
+
+    it('resizes the reviewer alone, by a strategic merge patch naming its container', async () => {
+        const api = resizing();
+        const k8s = runner(api.request, { RUNNER_CPU_REQUEST: '2', RUNNER_MEMORY_REQUEST: '4Gi' });
+        expect(await k8s.resizeReviewer(reviewing, 'run')).toBe(true);
+        expect(api.patches).toEqual([
+            {
+                path: `/api/v1/namespaces/${namespace}/pods/${podName}/resize`,
+                body: {
+                    spec: {
+                        initContainers: [{ name: 'reviewer', resources: { requests: { cpu: '2', memory: '4Gi' } } }],
+                    },
+                },
+                contentType: 'application/strategic-merge-patch+json',
+            },
+        ]);
+    });
+
+    it('resizes no pod whose claim lists no reviewer', async () => {
+        const api = resizing();
+        const { reviewerProfiles: _profiles, ...plain } = reviewing;
+        expect(await runner(api.request).resizeReviewer(plain, 'run')).toBe(false);
+        expect(api.patches).toEqual([]);
     });
 });
 

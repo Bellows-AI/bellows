@@ -11,6 +11,7 @@
 //   <root>/export  supervisor <-> exporter: `drain.json`, `status.json`, `supervisor.alive`
 //   <root>/supervisor  the supervisor's own state: `state.json`, `report.json`, the step ledger; no other container mounts it
 //   <root>/gate    supervisor <-> gate container: `requests/`, `running/`, `done/`, `alive` (`GATE_FILES` below)
+//   <root>/review  supervisor <-> reviewer container (issue #774): the same layout, served beside the gates
 //
 // The group lives for the whole attempt, not just the agent's run. The driver submits STEPS to it —
 // the startup sync, the tree probe, the review snapshot, the publish steps, the allowlisted helpers
@@ -19,7 +20,8 @@
 // A `gate` step (the declared gates and setup) is not a child of this container: it is handed to the
 // gate container through the gate mailbox, served beside the other steps rather than before them — a
 // ten-minute suite never holds a publish behind it — one at a time, bounded by its own deadline, and
-// cancelled by the driver through the control poll, never the step queue.
+// cancelled by the driver through the control poll, never the step queue. A `review` step (one named
+// reviewer's run) rides the same machinery to the reviewer container, in a lane of its own.
 // Two steps are the group's own orders: `go` releases the agent (the supervisor writes `in/go`, the
 // agent's entrypoint waits on it) and `finish` ends the group. A step's id is its effect and its
 // `invocation` one call of it, both kept in a ledger under the supervisor's own directory: an effect
@@ -55,6 +57,7 @@
 //   SUPERVISOR_STEP_WAIT_MS   — one `GET /step` long poll (default 15000).
 //   SUPERVISOR_REPORT_MS      — how long a departure's report is redelivered before finalizing (default 60000).
 //   SUPERVISOR_GATE           — `1` when a gate container serves the gate mailbox; absent, a gate step is refused.
+//   SUPERVISOR_REVIEWER       — `1` when a reviewer container serves the review mailbox; absent, a review step is refused.
 //   SUPERVISOR_GATE_LOST_MS   — a gate loop heartbeat older than this is a lost gate container (default 30000).
 //   SUPERVISOR_GATE_CANCEL_MS — how long a cancelled gate may take to answer (default 10000).
 //
@@ -88,6 +91,12 @@ const OUTCOMES = ['completed', 'failed', 'cancelled', 'timed_out', 'lost'];
  */
 const AGENT_DIR = 'agent';
 const AGENT_DIR_MODE = 0o700;
+/** The review mailbox is served by another uid of this group (REVIEWER_UID, issue #774): its directories and requests are group-writable. */
+const REVIEW_DIR_MODE = 0o775;
+/** A review's env file is its credential: readable by that group, never written. */
+const REVIEW_ENV_MODE = 0o640;
+/** A gate request's env file: its owner alone. */
+const GATE_ENV_MODE = 0o600;
 
 const FILES = {
     stop: 'stop',
@@ -105,7 +114,19 @@ const FILES = {
     report: 'report.json',
 };
 /** The supervised steps, by kind; the two last are the group's own orders (`STEP_KINDS` of supervisor-contract.ts). */
-const STEP_KINDS = ['sync', 'reclaim', 'probe', 'snapshot', 'publish', 'helper', 'gate', 'restart', 'go', 'finish'];
+const STEP_KINDS = [
+    'sync',
+    'reclaim',
+    'probe',
+    'snapshot',
+    'publish',
+    'helper',
+    'gate',
+    'review',
+    'restart',
+    'go',
+    'finish',
+];
 /** The gate mailbox's layout (`GATE_FILES` of supervisor-contract.ts; scripts/gate-loop.sh spells the same). */
 const GATE_FILES = {
     staging: 'staging',
@@ -124,6 +145,8 @@ const GATE_FILES = {
 const GATE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** How much of a refused env name its refusal quotes. */
 const ENV_NAME_PREVIEW = 64;
+/** The step kinds a container other than this one runs, each in a lane of its own: one at a time, answered beside the rest. */
+const LANES = ['gate', 'review'];
 /** What a gate the driver cancelled answers — discarded by the driver that cancelled it. */
 const GATE_CANCELLED_EXIT = 130;
 const STEP_ID = /^[A-Za-z0-9_.:-]{1,160}$/;
@@ -248,6 +271,7 @@ function settingsOf(env) {
             export: path.join(root, 'export'),
             own: path.join(root, 'supervisor'),
             gate: path.join(root, 'gate'),
+            review: path.join(root, 'review'),
         },
         url: env.SUPERVISOR_CONTROL_URL || null,
         token: env.SUPERVISOR_CONTROL_TOKEN || null,
@@ -263,6 +287,7 @@ function settingsOf(env) {
         stepWaitMs: positive(env, 'SUPERVISOR_STEP_WAIT_MS', DEFAULT_STEP_WAIT_MS),
         reportMs: positive(env, 'SUPERVISOR_REPORT_MS', DEFAULT_REPORT_MS),
         gate: env.SUPERVISOR_GATE === '1',
+        review: env.SUPERVISOR_REVIEWER === '1',
         gateLostMs: positive(env, 'SUPERVISOR_GATE_LOST_MS', DEFAULT_GATE_LOST_MS),
         gateCancelMs: positive(env, 'SUPERVISOR_GATE_CANCEL_MS', DEFAULT_GATE_CANCEL_MS),
         // A step's children get the image's environment and the step's own: never the supervisor's credential.
@@ -293,6 +318,9 @@ function filesOf({ dirs }) {
         ledger: path.join(dirs.own, FILES.steps),
         report: path.join(dirs.own, FILES.report),
         gate: Object.fromEntries(Object.entries(GATE_FILES).map(([key, name]) => [key, path.join(dirs.gate, name)])),
+        review: Object.fromEntries(
+            Object.entries(GATE_FILES).map(([key, name]) => [key, path.join(dirs.review, name)])
+        ),
     };
 }
 
@@ -357,15 +385,8 @@ function newRun(settings, now, log) {
         // Aborted when the group stops taking steps; `inflight` interrupts the one still running.
         pulling: new AbortController(),
         inflight: null,
-        // The gate steps: one at a time (`gateTurn`), each call joined by a redelivery of it while it
-        // runs (`gateCalls`), the ones the driver cancelled (`gateCancels`, read off the control poll),
-        // their answers still being delivered (`gateAnswers`), and the order to stop them all.
-        gateTurn: Promise.resolve(),
-        gateCalls: new Map(),
-        gateCancels: new Set(),
-        gateAnswers: new Set(),
-        gatesInFlight: 0,
-        gatesStopped: false,
+        // The gate and review steps, a lane each (`newLane`).
+        lanes: { gate: newLane(), review: newLane() },
         // The report once minted, the `serving` the driver acknowledged it with, and its redelivery.
         report: null,
         reportAcked: null,
@@ -477,20 +498,57 @@ function spawnStep(run, step) {
     });
 }
 
-/** Why a gate step cannot be handed to the gate container, or null: what the loop could not run as asked. */
-function gateRefusal(run, step) {
-    if (!run.settings.gate) return 'this group has no gate container: its checkout declares no gates';
-    if (step.argv.length !== 1 || typeof step.argv[0] !== 'string' || step.argv[0] === '') {
-        return 'a gate step carries exactly one command';
+/**
+ * One lane's state: its steps one at a time (`turn`), each call joined by a redelivery of it while it
+ * runs (`calls`), the ones the driver cancelled (`cancels`, read off the control poll), their
+ * answers still being delivered (`answers`), and the order to stop them all.
+ */
+function newLane() {
+    return {
+        turn: Promise.resolve(),
+        calls: new Map(),
+        cancels: new Set(),
+        answers: new Set(),
+        inFlight: 0,
+        stopped: false,
+    };
+}
+
+/** A word a shell reads back as one argument: single-quoted, a quote inside closed and reopened. */
+const shellQuote = (word) => `'${word.replace(/'/g, `'\\''`)}'`;
+
+/** What a lane's container runs for a step: a gate's one command, or a review's argv as one quoted line. */
+const laneCommand = (step) => (step.kind === 'review' ? step.argv.map(shellQuote).join(' ') : step.argv[0]);
+
+/** Why a lane's step carries no usable command, or null: a gate's one command, a review's argv. */
+function commandRefusal(step) {
+    if (step.kind === 'gate') {
+        const oneCommand = step.argv.length === 1 && typeof step.argv[0] === 'string' && step.argv[0] !== '';
+        return oneCommand ? null : 'a gate step carries exactly one command';
     }
+    const words = step.argv.length > 0 && step.argv.every((word) => typeof word === 'string' && !/\0/.test(word));
+    return words ? null : 'a review step carries its command as argv';
+}
+
+/** Why a gate or review step cannot be handed to its container, or null: what the loop could not run as asked. */
+function gateRefusal(run, step) {
+    const lane = step.kind;
+    if (!run.settings[lane]) {
+        return lane === 'gate'
+            ? 'this group has no gate container: its checkout declares no gates'
+            : 'this group has no reviewer container: its claim lists no reviewer profile';
+    }
+    const unusable = commandRefusal(step);
+    if (unusable) return unusable;
     if (typeof step.cwd !== 'string' || !path.isAbsolute(step.cwd) || /[\n\0]/.test(step.cwd)) {
-        return 'a gate step needs the absolute path of its worktree';
+        return `a ${lane} step needs the absolute path of its worktree`;
     }
     for (const [name, value] of Object.entries(step.env ?? {})) {
         if (!GATE_ENV_NAME.test(name)) {
-            return `the gate env name "${name.slice(0, ENV_NAME_PREVIEW)}" cannot be exported by sh`;
+            return `the ${lane} env name "${name.slice(0, ENV_NAME_PREVIEW)}" cannot be exported by sh`;
         }
-        if (typeof value !== 'string' || /[\n\0]/.test(value)) return `the gate env value of ${name} holds a newline`;
+        if (typeof value !== 'string' || /[\n\0]/.test(value))
+            return `the ${lane} env value of ${name} holds a newline`;
     }
     return null;
 }
@@ -513,8 +571,8 @@ function readTail(file) {
 }
 
 /** The answer of a finished request (`done/<id>`), read and removed; null while it is not done. */
-function takeGateAnswer(run, name) {
-    const done = path.join(run.file.gate.done, name);
+function takeGateAnswer(run, lane, name) {
+    const done = path.join(run.file[lane].done, name);
     if (!fs.existsSync(done)) return null;
     let code = Number.NaN;
     try {
@@ -531,10 +589,10 @@ function takeGateAnswer(run, name) {
 }
 
 /** How long the gate loop has been silent: since its last heartbeat, or since the request when it never beat. */
-function gateSilentMs(run, since) {
+function gateSilentMs(run, lane, since) {
     let beat = since;
     try {
-        beat = Math.max(since, fs.statSync(run.file.gate.alive).mtimeMs);
+        beat = Math.max(since, fs.statSync(run.file[lane].alive).mtimeMs);
     } catch {
         // No heartbeat yet: silent since the request.
     }
@@ -545,15 +603,15 @@ function gateSilentMs(run, since) {
  * Orders the gate stopped: a request the loop has not taken is withdrawn (true — it never ran), a
  * taken one gets `cancel`, which the loop answers by killing it.
  */
-function cancelGate(run, name) {
-    const withdrawn = path.join(run.file.gate.staging, `${name}.withdrawn`);
+function cancelGate(run, lane, name) {
+    const withdrawn = path.join(run.file[lane].staging, `${name}.withdrawn`);
     try {
-        fs.renameSync(path.join(run.file.gate.requests, name), withdrawn);
+        fs.renameSync(path.join(run.file[lane].requests, name), withdrawn);
         fs.rmSync(withdrawn, { recursive: true, force: true });
         return true;
     } catch {
         try {
-            fs.writeFileSync(path.join(run.file.gate.running, name, GATE_FILES.cancel), 'cancel\n');
+            fs.writeFileSync(path.join(run.file[lane].running, name, GATE_FILES.cancel), 'cancel\n');
         } catch {
             // Already answered: the answer is read on the next tick.
         }
@@ -561,43 +619,51 @@ function cancelGate(run, name) {
     }
 }
 
-/** The gate mailbox's directories this supervisor makes, when a gate container serves it. */
-const gateDirs = (run) => {
-    const { staging, requests, running, done } = run.file.gate;
-    return run.settings.gate ? [staging, requests, running, done] : [];
-};
+/** The lane mailboxes' directories this supervisor makes, for each container that serves one. */
+const gateDirs = (run) =>
+    LANES.filter((lane) => run.settings[lane]).flatMap((lane) => {
+        const { staging, requests, running, done } = run.file[lane];
+        return [staging, requests, running, done];
+    });
 
 /** Stages the request whole and renames it into `requests/`: the loop never sees half of one. */
 function postGateRequest(run, step, name) {
-    const staged = path.join(run.file.gate.staging, name);
+    const lane = step.kind;
+    const staged = path.join(run.file[lane].staging, name);
     fs.rmSync(staged, { recursive: true, force: true });
     fs.mkdirSync(staged, { recursive: true });
-    fs.writeFileSync(path.join(staged, GATE_FILES.command), step.argv[0]);
+    const reviewing = lane === 'review';
+    if (reviewing) fs.chmodSync(staged, REVIEW_DIR_MODE);
+    fs.writeFileSync(path.join(staged, GATE_FILES.command), laneCommand(step));
     fs.writeFileSync(path.join(staged, GATE_FILES.cwd), step.cwd);
     const env = Object.entries(step.env ?? {}).map(([n, v]) => `${n}=${v}\n`);
-    fs.writeFileSync(path.join(staged, GATE_FILES.env), env.join(''), { mode: 0o600 });
-    fs.renameSync(staged, path.join(run.file.gate.requests, name));
+    fs.writeFileSync(path.join(staged, GATE_FILES.env), env.join(''), {
+        mode: reviewing ? REVIEW_ENV_MODE : GATE_ENV_MODE,
+    });
+    fs.renameSync(staged, path.join(run.file[lane].requests, name));
 }
 
 /** Why the supervisor stops a gate it handed over, or null: the driver's cancel, the group's end, the deadline. */
 function gateStopReason(run, step, startedAt) {
-    if (run.gateCancels.has(step.id)) return 'cancelled';
-    if (run.gatesStopped) return 'interrupted';
+    const lane = run.lanes[step.kind];
+    if (lane.cancels.has(step.id)) return 'cancelled';
+    if (lane.stopped) return 'interrupted';
     return run.now() - startedAt >= step.timeoutMs ? 'deadline' : null;
 }
 
 /** What a stopped gate answers: the deadline is a verdict (124), a cancel is discarded, an interruption is unknown. */
 function stoppedGateResult(why, step, output) {
+    const what = step.kind;
     if (why === 'deadline') {
         return {
-            result: stepResult(EXIT_DEADLINE, output, `the gate exceeded its ${step.timeoutMs}ms deadline`, true),
+            result: stepResult(EXIT_DEADLINE, output, `the ${what} exceeded its ${step.timeoutMs}ms deadline`, true),
             interrupted: false,
         };
     }
     if (why === 'cancelled')
-        return { result: stepResult(GATE_CANCELLED_EXIT, output, 'the gate was cancelled'), interrupted: false };
+        return { result: stepResult(GATE_CANCELLED_EXIT, output, `the ${what} was cancelled`), interrupted: false };
     return {
-        result: stepResult(null, output, 'the gate was interrupted: the group stopped serving'),
+        result: stepResult(null, output, `the ${what} was interrupted: the group stopped serving`),
         interrupted: true,
     };
 }
@@ -605,15 +671,16 @@ function stoppedGateResult(why, step, output) {
 /** The loop's answer to a request: a stopped gate's (its own output kept), or the gate's own exit. */
 function answeredGateResult(why, step, answer) {
     if (why) return stoppedGateResult(why, step, answer.output);
-    const lost = answer.exitCode === null ? 'the gate container lost the request mid-run: it answered no exit' : '';
+    const lost =
+        answer.exitCode === null ? `the ${step.kind} container lost the request mid-run: it answered no exit` : '';
     return { result: stepResult(answer.exitCode, answer.output, lost), interrupted: false };
 }
 
 /** A gate loop gone silent: no exit — never a verdict — whether it never took the request or went quiet on it. */
-function lostGateResult(run, name) {
-    const lost = cancelGate(run, name)
-        ? 'the gate container never took the request: its loop is not running'
-        : 'the gate container was lost mid-run: its loop stopped answering';
+function lostGateResult(run, step) {
+    const lost = cancelGate(run, step.kind, step.id)
+        ? `the ${step.kind} container never took the request: its loop is not running`
+        : `the ${step.kind} container was lost mid-run: its loop stopped answering`;
     return { result: stepResult(null, '', lost), interrupted: false };
 }
 
@@ -622,18 +689,18 @@ function lostGateResult(run, name) {
  * when): its answer, a stopped gate's past the cancel grace, a lost loop's, or null to wait on.
  */
 function gateTick(run, step, flight) {
-    const answer = takeGateAnswer(run, step.id);
+    const answer = takeGateAnswer(run, step.kind, step.id);
     if (answer) return answeredGateResult(flight.why, step, answer);
     if (!flight.why) {
         flight.why = gateStopReason(run, step, flight.startedAt);
         flight.stoppedAt = run.now();
         // Withdrawn before the loop took it: it never ran, and answers at once.
-        if (flight.why && cancelGate(run, step.id)) return stoppedGateResult(flight.why, step, '');
+        if (flight.why && cancelGate(run, step.kind, step.id)) return stoppedGateResult(flight.why, step, '');
     }
     if (flight.why && run.now() - flight.stoppedAt >= run.settings.gateCancelMs) {
         return stoppedGateResult(flight.why, step, '');
     }
-    return gateSilentMs(run, flight.startedAt) > run.settings.gateLostMs ? lostGateResult(run, step.id) : null;
+    return gateSilentMs(run, step.kind, flight.startedAt) > run.settings.gateLostMs ? lostGateResult(run, step) : null;
 }
 
 /**
@@ -651,14 +718,15 @@ async function execGate(run, step) {
     }
 }
 
-/** A gate in its turn: one gate at a time in the group, whatever the driver sends. */
+/** A gate or review in its turn: one at a time per lane, whatever the driver sends. */
 function runGate(run, step) {
-    const turn = run.gateTurn.then(() => execGate(run, step));
-    run.gateTurn = turn.catch(() => undefined);
-    run.gatesInFlight += 1;
+    const lane = run.lanes[step.kind];
+    const turn = lane.turn.then(() => execGate(run, step));
+    lane.turn = turn.catch(() => undefined);
+    lane.inFlight += 1;
     return turn.finally(() => {
-        run.gatesInFlight -= 1;
-        run.gateCancels.delete(step.id);
+        lane.inFlight -= 1;
+        lane.cancels.delete(step.id);
     });
 }
 
@@ -714,7 +782,7 @@ async function performStep(run, step) {
         run.finishRequested = true;
         return stepResult(0);
     }
-    const gateRefused = kind === 'gate' && gateRefusal(run, step);
+    const gateRefused = LANES.includes(kind) && gateRefusal(run, step);
     if (gateRefused) return stepResult(STEP_REFUSED_EXIT, '', gateRefused);
     // An effect that landed is never run again, whoever asks: that is the harm the ledger prevents. A
     // call already taken is answered as it ended — a failure or a timeout too, which may have half
@@ -734,7 +802,7 @@ async function performStep(run, step) {
 /** Runs a new call — a child of this container, or a gate the gate container runs — its ledger kept as it goes. */
 async function runCall(run, entry, step) {
     recordCall(run, entry, step.invocation, { state: 'running' });
-    const { result, interrupted } = step.kind === 'gate' ? await runGate(run, step) : await spawnStep(run, step);
+    const { result, interrupted } = LANES.includes(step.kind) ? await runGate(run, step) : await spawnStep(run, step);
     if (interrupted) {
         recordCall(run, entry, step.invocation, { state: 'interrupted', result });
         return result;
@@ -768,22 +836,23 @@ async function postStepResult(run, step, result) {
  * delivery of a gate call still running joins it rather than running it twice.
  */
 async function answerStep(run, step) {
-    if (step.kind !== 'gate') {
+    if (!LANES.includes(step.kind)) {
         await postStepResult(run, step, await performStep(run, step));
         return;
     }
+    const lane = run.lanes[step.kind];
     const call = `${step.id}\n${step.invocation}`;
-    const running = run.gateCalls.get(call);
+    const running = lane.calls.get(call);
     const answering = (running ?? performStep(run, step)).then((result) => postStepResult(run, step, result));
     if (!running) {
-        const performing = answering.finally(() => run.gateCalls.delete(call));
-        run.gateCalls.set(
+        const performing = answering.finally(() => lane.calls.delete(call));
+        lane.calls.set(
             call,
             performing.then(() => readLedgerResult(run, step))
         );
     }
-    run.gateAnswers.add(answering);
-    void answering.finally(() => run.gateAnswers.delete(answering));
+    lane.answers.add(answering);
+    void answering.finally(() => lane.answers.delete(answering));
 }
 
 /** The result a call's ledger entry recorded: what a joined delivery of a gate answers. */
@@ -945,7 +1014,7 @@ async function serveQuestions(run) {
 async function pollControl(run) {
     const { settings } = run;
     // A gate in flight is polled at the mailbox pace: its cancel is the driver's, and it must not wait.
-    const pace = run.gatesInFlight > 0 ? settings.tickMs : settings.controlMs;
+    const pace = LANES.some((lane) => run.lanes[lane].inFlight > 0) ? settings.tickMs : settings.controlMs;
     if (!settings.url || run.now() - run.lastControlAt < pace) return;
     run.lastControlAt = run.now();
     const answer = await ask(run, 'GET', '/control');
@@ -956,7 +1025,7 @@ async function pollControl(run) {
     }
     if (answer.json?.stop === true) raiseStop(run);
     for (const id of Array.isArray(answer.json?.cancel) ? answer.json.cancel : []) {
-        if (typeof id === 'string') run.gateCancels.add(id);
+        if (typeof id === 'string') for (const lane of LANES) run.lanes[lane].cancels.add(id);
     }
     if (answer.json?.kill === true) {
         intend(run, 'cancelled', CAUSE.killed);
@@ -1185,6 +1254,16 @@ async function drainExporter(run) {
     return false;
 }
 
+/** The review mailbox is served by another uid of this group: its directories are group-writable. */
+function openReviewMailbox(run) {
+    if (!run.settings.review) return;
+    const { requests, running, done } = run.file.review;
+    for (const dir of [run.settings.dirs.review, requests, running, done]) {
+        // A kubernetes emptyDir root belongs to root and is already 0777: only its owner may chmod it.
+        if ((fs.statSync(dir).mode & 0o020) === 0) fs.chmodSync(dir, REVIEW_DIR_MODE);
+    }
+}
+
 /**
  * Runs the supervisor to its report. Returns the exit status; `now` and `log` are test seams.
  * Never throws for the attempt's own failures: those are the outcome. A bug throws, and the
@@ -1201,6 +1280,7 @@ async function supervise(env = process.env, log = (line) => process.stdout.write
     // directory already exists.
     for (const dir of [run.file.agentIn, run.file.agentOut]) fs.chmodSync(dir, AGENT_DIR_MODE);
     for (const dir of [run.file.answers, run.file.questions, ...gateDirs(run)]) fs.mkdirSync(dir, { recursive: true });
+    openReviewMailbox(run);
     beat(run);
     run.machine.enter('setup'); // delegated: the gate environment's setup is the driver's
     persist(run);
@@ -1233,11 +1313,11 @@ async function supervise(env = process.env, log = (line) => process.stdout.write
     // its ledger says its effect may have landed.
     run.pulling.abort();
     run.inflight?.interrupt();
-    run.gatesStopped = true;
+    for (const lane of LANES) run.lanes[lane].stopped = true;
     if (run.machine.stage === 'publish') run.machine.enter('finalize');
     run.abort.abort();
     await stepping;
-    await Promise.all([...run.gateAnswers]);
+    await Promise.all(LANES.flatMap((lane) => [...run.lanes[lane].answers]));
     run.machine.enter('report');
     persist(run);
     const { machine, agentEnd } = run;
