@@ -54,7 +54,7 @@ export async function deleteSecretAcked(deps: K8sDeps, name: string, uid?: strin
 
 /**
  * The pods that can still write the attempt's tree: every pod of the (job, lease) pair — its runner
- * pod, whose gate and service sidecars go with it (issue #773), and its readout pods.
+ * pod, whose gate and service sidecars go with it (issue #773), and any aux pod of the pair.
  */
 export const writerPodsPath = (namespace: string, pair: BoardJob): string =>
     `${podsPath(namespace)}?labelSelector=${encodeURIComponent(`${JOB_LABEL}=${pair.id},${LEASE_LABEL}=${pair.leaseToken}`)}`;
