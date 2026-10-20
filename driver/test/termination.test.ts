@@ -163,9 +163,9 @@ describe('settleEnd', () => {
         expect(settleEnd({ ...END, report: lost, budgetEnded: true }).infraLoss).toBeNull();
     });
 
-    it('gates a vanished runner by the report finalizing', () => {
+    it('takes a runner taken away under the run as a loss, whatever its supervisor reported on the way down', () => {
         expect(settleEnd({ ...END, vanished: VANISHED }).infraLoss).toBe(VANISHED);
-        expect(settleEnd({ ...END, report: REPORT, vanished: VANISHED }).infraLoss).toBeNull();
+        expect(settleEnd({ ...END, report: REPORT, vanished: VANISHED }).infraLoss).toBe(VANISHED);
         expect(settleEnd({ ...END, report: { ...REPORT, agentEnd: 'unlaunched' }, vanished: VANISHED }).infraLoss).toBe(
             VANISHED
         );

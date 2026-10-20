@@ -40,7 +40,7 @@ import {
     SUPERVISOR_WINDDOWN_MS,
 } from './supervisor-contract.js';
 import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from './adopt-skeleton.js';
-import { type KillRecord, killRecordsOf } from './termination.js';
+import { type KillRecord, killRecordsOf, reportFinalized } from './termination.js';
 
 /** One runner Job of an earlier claim, as the label listing answers it. */
 interface ListedRunner extends ListedRunnerJob {
@@ -328,7 +328,7 @@ function k8sAdoption(deps: K8sDeps, reads: CloseReads): AdoptPrimitives<EarlierR
                     driverKilledHard: false,
                     report,
                     budgetEnded: timedOutOf(status) || verdict.supervisorDeadline,
-                    vanished: verdict.vanished,
+                    vanished: reportFinalized(report) ? null : verdict.vanished,
                     unfinalized: verdict.unfinalized ?? neverRan,
                 },
                 body: async () => ({

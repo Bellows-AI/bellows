@@ -122,7 +122,8 @@ const LOST_AGENT = 'the supervisor lost the agent before it exited';
 /**
  * The one close-time classification, over all five ends of a started run (attached and adopted, on
  * both executors, and a vanished runner): a supervisor that finalized the run (`reportFinalized`)
- * leaves nothing for a vanished runner to explain, and counts as reported.
+ * counts as reported. A runner taken away under an attached run is a loss whatever its supervisor
+ * logged on the way down; an adoption drops a deletion after the report before it gets here.
  */
 export function settleEnd(e: EndEvidence): SettledEnd {
     const timedOut = e.budgetEnded || e.report?.outcome === 'timed_out' || e.kills.some((k) => k.reason === 'timeout');
@@ -133,7 +134,7 @@ export function settleEnd(e: EndEvidence): SettledEnd {
             killedByDriver: e.driverKilledHard || e.kills.some((k) => killEndsGroup(k.reason)),
             timedOut,
             reported: finalized,
-            vanished: finalized ? null : e.vanished,
+            vanished: e.vanished,
             unfinalized: e.unfinalized ?? (e.report?.agentEnd === 'lost' ? LOST_AGENT : null),
         }),
         fields: { ...reportVerdictOf(e.report), ...adoptedVerdictOf(e.kills) },
