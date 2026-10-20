@@ -169,6 +169,8 @@ interface Driver {
     calls: number;
     /** While set, a step pull waits for it before the queue is read: a holder that hands its step late. */
     hold: Promise<void> | null;
+    /** How many step pulls are waiting on `hold`. */
+    held: number;
     /** While set, every request is dropped unanswered: a driver that is gone. */
     silent: boolean;
 }
@@ -219,6 +221,7 @@ async function startDriver({
         token,
         calls: 0,
         hold: null,
+        held: 0,
         silent: false,
         stop: false,
         kill: false,
@@ -248,7 +251,12 @@ async function startDriver({
                 return send(200, { stop: driver.stop, kill: driver.kill, ...cancel });
             }
             if (request.method === 'GET' && request.url?.startsWith('/step?')) {
-                if (driver.hold) await driver.hold;
+                if (driver.hold) {
+                    driver.held += 1;
+                    await driver.hold;
+                }
+                // A pull held across a close answers as the closed driver does.
+                if (driver.closed) return send(401, {});
                 const next = driver.queue.shift();
                 if (next) return send(200, { step: next });
                 await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1703,14 +1711,33 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
         expect(next.reports[0]!.id).toBe(old.reports[0]!.id);
     });
 
-    it('ignores the old holder closing its endpoint once it has rebound', async () => {
+    it('keeps the report unacknowledged on its volume at a rebind: the new holder has not taken it', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        old.autoFinish = false;
+        next.silent = true;
+        const { supervised, name, rebound } = bound(old);
+        supervised.agentExits(0);
+        await until('the old holder to acknowledge', () => old.reports.length === 1 && supervised.kept().acknowledged);
+        name(next, 2);
+        await until('the rebind', rebound);
+        expect(supervised.kept().acknowledged).toBe(false);
+        next.silent = false;
+        await supervised.done;
+    });
+
+    it('ignores the old holder answering 401 to a request in flight across the rebind', async () => {
         const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
         const { supervised, name, rebound } = bound(old);
         await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        // A step pull of the old holder is in flight across the rebind and answers 401 after it.
+        let release = () => {};
+        old.hold = new Promise<void>((resolve) => (release = resolve));
+        await until('a step pull held at the old holder', () => old.held > 0);
         name(next, 2);
         await until('the rebind', rebound);
         old.closed = true;
-        await new Promise((resolve) => setTimeout(resolve, 150));
+        release();
+        await new Promise((resolve) => setTimeout(resolve, 300));
         expect(supervised.saw(MAILBOX_FILES.kill)).toBe(false);
         supervised.agentExits(0);
         expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
@@ -1747,17 +1774,17 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
     it('restarts the orphan bound at a rebind, and keeps it against the new holder', async () => {
         const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
         old.autoFinish = false;
-        const { supervised, name } = bound(old, { SUPERVISOR_ORPHAN_MS: '600' });
+        const { supervised, name } = bound(old, { SUPERVISOR_ORPHAN_MS: '1000' });
         let finished = false;
         void supervised.done.then(() => (finished = true));
         supervised.agentExits(0);
         await until('the report at the old holder', () => old.reports.length === 1);
         old.silent = true;
         next.silent = true;
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        await new Promise((resolve) => setTimeout(resolve, 500));
         name(next, 2);
         // Past the bound counted from the old holder's last word, inside the one counted from the rebind.
-        await new Promise((resolve) => setTimeout(resolve, 400));
+        await new Promise((resolve) => setTimeout(resolve, 700));
         expect(finished).toBe(false);
         await supervised.done;
     });

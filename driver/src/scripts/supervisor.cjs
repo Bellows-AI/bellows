@@ -481,6 +481,7 @@ function followBinding(run) {
     run.reportRefused = false;
     run.reportTries = 0;
     run.reportDueAt = 0;
+    if (run.report) keepReport(run);
     for (const known of run.questions.values()) known.posted = false;
     run.log(`supervisor: rebound to claim ${next.claimSeq}`);
 }

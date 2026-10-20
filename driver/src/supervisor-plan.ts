@@ -52,15 +52,20 @@ export function gateImageOf(job: BoardJob): string | null {
 export function supervisorLiterals(
     config: DriverConfig,
     job: BoardJob,
-    group: { exporting: boolean; agentless?: boolean; gated?: boolean; reviewing?: boolean }
+    group: { exporting: boolean; agentless?: boolean; gated?: boolean; reviewing?: boolean; reclaim?: boolean }
 ): [string, string][] {
     return [
         [SUPERVISOR_ENV.controlMs, String(RUN_CONTROL_POLL_MS)],
         [SUPERVISOR_ENV.deadlineMs, String(runTimeoutMs(config, job))],
         [SUPERVISOR_ENV.drainMs, String(SUPERVISOR_DRAIN_MS)],
         [SUPERVISOR_ENV.orphanMs, String(orphanBoundMs(config))],
-        [SUPERVISOR_ENV.claimSeq, String(job.claimSeq)],
-        [SUPERVISOR_ENV.bindingFile, SUPERVISOR_BINDING_PATH],
+        // A reclaim group's job is synthesised, its claim sequence a placeholder: it follows no binding.
+        ...(group.reclaim
+            ? []
+            : ([
+                  [SUPERVISOR_ENV.claimSeq, String(job.claimSeq)],
+                  [SUPERVISOR_ENV.bindingFile, SUPERVISOR_BINDING_PATH],
+              ] as [string, string][])),
         ...(group.exporting ? ([[SUPERVISOR_ENV.exports, '1']] as [string, string][]) : []),
         ...(group.agentless ? ([[SUPERVISOR_ENV.agentless, '1']] as [string, string][]) : []),
         ...(group.gated ? ([[SUPERVISOR_ENV.gate, '1']] as [string, string][]) : []),

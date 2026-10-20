@@ -151,6 +151,8 @@ export async function holderGroupsOf(deps: K8sDeps, job: BoardJob, holder: strin
 /** The bound of a reclaim group: its one step's deadline, and the time to finalize. */
 const RECLAIM_GROUP_SECONDS = 1200;
 
+const FOLLOWING_ENV: ReadonlySet<string> = new Set([SUPERVISOR_ENV.claimSeq, SUPERVISOR_ENV.bindingFile]);
+
 export function reclaimGroupSpec(config: DriverConfig, job: BoardJob, holder: string): RunnerJobSpec {
     // A supervisor alone (#773 D11): no agent, and no gate or service sidecar its checkout would bring.
     const spec = runnerJobSpec(config, { ...job, agent: false, gates: null, services: [] }, null);
@@ -174,7 +176,15 @@ export function reclaimGroupSpec(config: DriverConfig, job: BoardJob, holder: st
                     ...spec.spec.template.metadata,
                     labels: { ...spec.spec.template.metadata.labels, ...holderLabel },
                 },
-                spec: { ...pod, ...(worktree ? { initContainers: [releaseContainer(config, job, worktree)] } : {}) },
+                spec: {
+                    ...pod,
+                    // The job is synthesised, its claim sequence a placeholder: a reclaim group follows no binding.
+                    containers: pod.containers.map((container) => ({
+                        ...container,
+                        env: container.env?.filter((entry) => !FOLLOWING_ENV.has(entry.name)),
+                    })),
+                    ...(worktree ? { initContainers: [releaseContainer(config, job, worktree)] } : {}),
+                },
             },
         },
     };

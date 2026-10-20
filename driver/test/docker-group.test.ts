@@ -131,6 +131,16 @@ describe('the supervisor container', () => {
         expect(argv).toContain(`SUPERVISOR_BINDING_FILE=${SUPERVISOR_BINDING_PATH}`);
     });
 
+    it('does not tell a reclaim group its claim or the binding: it follows no newer holder', () => {
+        const reclaiming = supervisorCreateArgs(
+            config,
+            reviewing,
+            { exporting: false, agentless: true, reclaim: true },
+            '/tmp/supervisor.env'
+        );
+        expect(reclaiming.filter((arg) => /^SUPERVISOR_(CLAIM_SEQ|BINDING_FILE)=/.test(arg))).toEqual([]);
+    });
+
     it('takes its control pair by env file, never by argv', () => {
         expect(argv).toContain('--env-file');
         expect(argv.join(' ')).not.toMatch(/tok-supervisor|tok-agent/);

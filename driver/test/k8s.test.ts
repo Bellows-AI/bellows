@@ -7975,6 +7975,14 @@ describe('the holder a supervisor follows, on kubernetes', () => {
         const others = pod.containers.filter((container) => container.name !== SUPERVISOR_CONTAINER);
         expect(JSON.stringify(others)).not.toMatch(/SUPERVISOR_(CLAIM_SEQ|BINDING_FILE)/);
     });
+
+    it('leaves a reclaim group without its claim and the binding: it follows no newer holder', () => {
+        const pod = reclaimGroupSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), job, job.leaseToken).spec.template
+            .spec;
+        const names = pod.containers.flatMap((container) => (container.env ?? []).map((entry) => entry.name));
+        expect(names).toContain('SUPERVISOR_ORPHAN_MS');
+        expect(names.filter((name) => /^SUPERVISOR_(CLAIM_SEQ|BINDING_FILE)$/.test(name))).toEqual([]);
+    });
 });
 
 describe('how a started run ends, on kubernetes (the conformance table)', () => {
