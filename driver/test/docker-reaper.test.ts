@@ -70,6 +70,11 @@ describe("parseDockerCreatedAt — docker's own timestamp spelling", () => {
         expect(parseDockerCreatedAt('2026-09-14 12:30:00 +0200 CEST')).toBe(Date.parse('2026-09-14T10:30:00Z'));
     });
 
+    it("reads Go's numeric zone names, which tzdata prints when a zone has no letter abbreviation", () => {
+        expect(parseDockerCreatedAt('2026-09-14 10:00:00 -0300 -03')).toBe(Date.parse('2026-09-14T13:00:00Z'));
+        expect(parseDockerCreatedAt('2026-09-14 10:00:00 +0400 +04')).toBe(Date.parse('2026-09-14T06:00:00Z'));
+    });
+
     it('answers null for anything it cannot read — never the epoch, which would end a grace window (#869)', () => {
         expect(parseDockerCreatedAt('')).toBeNull();
         expect(parseDockerCreatedAt('yesterday, probably')).toBeNull();

@@ -47,7 +47,8 @@ export function parseRfc3339(raw: string): number | null {
     return calendarMillis([y, mo, d, h, mi, s].map(Number), offset, millis);
 }
 
-const DOCKER_CREATED_AT = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2}) ([+-])(\d{2})(\d{2}) [A-Z]+$/;
+const DOCKER_CREATED_AT =
+    /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2}) ([+-])(\d{2})(\d{2}) (?:[A-Za-z]+|[+-]\d{2}(?:\d{2})?)$/;
 
 /** Docker's `CreatedAt` spelling for a container: `2026-09-14 10:00:00 +0000 UTC`. */
 export function parseDockerTimestamp(raw: string): number | null {
