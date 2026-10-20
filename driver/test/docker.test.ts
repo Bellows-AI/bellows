@@ -2363,8 +2363,8 @@ describe('the docker runner', () => {
             expect(parseDockerStats('{"CPUPerc":"93.00%","MemUsage":"? / 8GiB"}')).toBeNull();
         });
 
-        it('throws on a null last line, and takes null for valid JSON followed by a non-JSON last line', () => {
-            expect(() => parseDockerStats('null')).toThrow(TypeError);
+        it('takes null for a null last line, and for valid JSON followed by a non-JSON last line', () => {
+            expect(parseDockerStats('null')).toBeNull();
             expect(parseDockerStats('{"CPUPerc":"93.00%","MemUsage":"544MiB / 7.754GiB"}\nnoise')).toBeNull();
         });
     });

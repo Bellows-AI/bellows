@@ -318,6 +318,12 @@ describe('the sync, the reclaim and the helpers over the supervisor', () => {
             ok: false,
             reason: expect.stringContaining('answered nothing readable'),
         });
+        for (const verdict of ['null', '[]']) {
+            expect(await runSyncStep(sink(() => ok(`${verdict}\n`)).host, job)).toMatchObject({
+                ok: false,
+                reason: expect.stringContaining('answered nothing readable'),
+            });
+        }
         const slow = sink(() => ({ exitCode: null, stdout: '', stderr: '', timedOut: true }));
         expect(await runSyncStep(slow.host, job)).toMatchObject({
             ok: false,

@@ -194,7 +194,7 @@ export function parseHelperOutput(descriptor: HelperDescriptor, stdout: string):
     if (parsed === undefined) {
         return { ok: false, reason: 'malformed_output', message: 'the helper answered nothing readable as JSON' };
     }
-    const o = (typeof parsed === 'object' && parsed !== null ? parsed : {}) as Record<string, unknown>;
+    const o = parsed as Record<string, unknown>;
     if (o.schema !== descriptor.schema || o.version !== descriptor.version) {
         return {
             ok: false,

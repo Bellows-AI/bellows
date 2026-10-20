@@ -12,6 +12,7 @@ import type { KillLedger } from './kill-ledger.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import type { TaskGroup } from './k8s-group.js';
 import type { TeardownIdentity } from './k8s-teardown.js';
+import { parseJsonObject } from './json-parse.js';
 
 /**
  * The kubernetes executor's shared low-level vocabulary: the wire types (`K8sResponse`,
@@ -590,12 +591,8 @@ const memMbOfQuantity = (value: string): number | null => {
  * the number the docker dashboard renders either.
  */
 export function parsePodMetrics(body: string): Omit<RuntimeSample, 'sampledAt'> | null {
-    let metrics: { containers?: { usage?: { cpu?: unknown; memory?: unknown } }[] };
-    try {
-        metrics = JSON.parse(body) as { containers?: { usage?: { cpu?: unknown; memory?: unknown } }[] };
-    } catch {
-        return null;
-    }
+    const metrics = parseJsonObject(body) as { containers?: { usage?: { cpu?: unknown; memory?: unknown } }[] } | null;
+    if (metrics === null) return null;
     const usage = metrics.containers?.[0]?.usage;
     const millicores = typeof usage?.cpu === 'string' ? cpuMillicores(usage.cpu) : null;
     const memUsedMb = typeof usage?.memory === 'string' ? memMbOfQuantity(usage.memory) : null;

@@ -14,6 +14,7 @@ import type { PublishRelay } from './publish-control.js';
 import type { ReviewRelay } from './review-control.js';
 import type { ExportRelay } from './export-control.js';
 import type { QuestionRelay, QuestionResolution } from './question-control.js';
+import { parseJsonObject } from './json-parse.js';
 
 const HTTP_OK = 200;
 const HTTP_BAD_REQUEST = 400;
@@ -413,12 +414,8 @@ type GateRequest = { ok: true; gate: string } | { ok: false; status: number; err
 const parseGateRequest = async (request: IncomingMessage): Promise<GateRequest> => {
     const raw = await readBody(request, BODY_LIMIT);
     if (raw === null) return { ok: false, status: HTTP_PAYLOAD_TOO_LARGE, error: 'body too large' };
-    let parsed: { gate?: unknown };
-    try {
-        parsed = JSON.parse(raw) as { gate?: unknown };
-    } catch {
-        return { ok: false, status: HTTP_BAD_REQUEST, error: 'body must be JSON' };
-    }
+    const parsed = parseJsonObject(raw);
+    if (parsed === null) return { ok: false, status: HTTP_BAD_REQUEST, error: 'body must be JSON' };
     if (typeof parsed.gate !== 'string' || !parsed.gate.trim()) {
         return { ok: false, status: HTTP_BAD_REQUEST, error: 'gate must be a name' };
     }

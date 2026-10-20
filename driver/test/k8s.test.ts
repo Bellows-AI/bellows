@@ -2350,6 +2350,7 @@ describe('the runner vitals', () => {
             memPercent: null,
         });
         expect(parsePodMetrics('')).toBeNull();
+        expect(parsePodMetrics('null')).toBeNull();
         expect(parsePodMetrics('{"containers":[]}')).toBeNull();
         expect(
             parsePodMetrics(JSON.stringify({ containers: [{ usage: { cpu: 'busy', memory: '150Mi' } }] }))
