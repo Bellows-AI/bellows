@@ -216,7 +216,9 @@ export async function dockerStopAgent(deps: TeardownDeps, job: BoardJob): Promis
     for (const id of running.value) {
         await deps
             .execDocker(['kill', id])
-            .catch(() => deps.execDocker(['rm', '-f', id]))
+            // Tried again, never removed: an agent that exited meanwhile is the run the next claim
+            // adopts, and only end() removes it (#828).
+            .catch(() => deps.execDocker(['kill', id]))
             .catch(() => undefined);
     }
 }

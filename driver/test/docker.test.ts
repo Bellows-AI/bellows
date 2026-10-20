@@ -5177,12 +5177,19 @@ describe('stopping an agent whose supervisor already exited (#805)', () => {
         ]);
     });
 
-    it('force-removes the agent when its kill fails', async () => {
+    // #828: a kill that fails (the agent exited between the listing and the kill, or the daemon
+    // refused once) is tried again, never answered with a removal: the exited container is the run
+    // the next claim adopts, and only end() removes it.
+    it('tries a failed kill again and never removes the agent', async () => {
         const { exec, calls } = daemon('70', 'a1a1a1a1a1a1\n', (args) => args[0] === 'kill');
 
         await dockerRunner(exec).stopAgent(job);
 
-        expect(calls).toContainEqual(['rm', '-f', 'a1a1a1a1a1a1']);
+        expect(kills(calls)).toEqual([
+            ['kill', 'a1a1a1a1a1a1'],
+            ['kill', 'a1a1a1a1a1a1'],
+        ]);
+        expect(calls.filter((args) => args[0] === 'rm')).toEqual([]);
     });
 });
 
