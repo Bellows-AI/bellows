@@ -477,6 +477,15 @@ interface OutputPump {
     complained: boolean;
     /** Each service the sampler saw die and what it read of its ending, by name (issue #487). */
     dead: Map<string, DeadService>;
+    /** The progress write in flight, or the last one settled: every write chains on it, so none overtakes another. */
+    writing: Promise<unknown>;
+}
+
+/** One progress write, after any still in flight: a later tail never lands before an older one. */
+function serialFlush(rt: LoopRuntime, job: BoardJob, pump: OutputPump): Promise<'held' | 'lost' | 'skip'> {
+    const next = pump.writing.then(() => flushIfChanged(rt, job, pump));
+    pump.writing = next.catch(() => undefined);
+    return next;
 }
 
 /**
@@ -591,6 +600,7 @@ export function watchOutput(
         sampling: false,
         dead: new Map(),
         complained: false,
+        writing: Promise.resolve(),
     };
     void (async () => {
         while (!state.finished && !state.lost) {
@@ -601,7 +611,7 @@ export function watchOutput(
             // nothing (issue #126 moved the start earlier to cover the setup phase).
             if (!state.launched) continue;
             kickSample(rt, job, state, pump);
-            const verdict = await flushIfChanged(rt, job, pump);
+            const verdict = await serialFlush(rt, job, pump);
             // The board no longer recognises this attempt. Killing the container is the
             // heartbeat's verdict alone; this pump just stops talking.
             if (verdict === 'lost') return;
@@ -614,10 +624,11 @@ export function watchOutput(
         },
         snapshot: () => ({ lastOutputAt: pump.lastOutputAt, activity: currentActivity(pump.latest) }),
         // The run's own last word, streamed now: what a verdict-less end (a park) leaves the board.
+        // It waits out a write still in flight, so the park follows every tail the board was sent.
         flush: async (tail) => {
             if (tail === '') return;
             pump.latest = tail;
-            await flushIfChanged(rt, job, pump);
+            await serialFlush(rt, job, pump);
         },
     };
 }

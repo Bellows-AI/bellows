@@ -1204,6 +1204,35 @@ describe('the poll loop', () => {
         expect(board.board.suspended).toEqual([job(1).id]);
     });
 
+    // Codex review: the pump's periodic write may still be in flight when the run ends. The final
+    // tail must land after it — never be overwritten by the older one — and the park must wait.
+    it('lands the final output of a stopped run after a progress write still in flight, then parks', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const events: string[] = [];
+        const rawProgress = board.board.progress.bind(board.board);
+        board.board.progress = async (claimed, output, runtime) => {
+            if (output === 'waiting') await new Promise((resolve) => setTimeout(resolve, 150));
+            return rawProgress(claimed, output, runtime);
+        };
+        const rawSuspend = board.board.suspend.bind(board.board);
+        board.board.suspend = async (claimed) => {
+            events.push(`parked after ${board.board.progressed.map((p) => p.output).join('|')}`);
+            return rawSuspend(claimed);
+        };
+        const runner = stubRunner(async (_job, _session, onOutput) => {
+            onOutput?.('waiting');
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return ok({ output: 'waiting\nstopped in the pod' });
+        });
+
+        await drive({ ...board, runner });
+
+        expect(events).toEqual(['parked after waiting|waiting\nstopped in the pod']);
+        expect(board.board.suspended).toEqual([job(1).id]);
+    });
+
     it('reports the scraped session before parking a stopped opencode run', async () => {
         const options: { cancelRequested?: boolean } = {};
         const board = stubBoard([{ ...job(1), executorType: 'opencode' }], options);
