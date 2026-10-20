@@ -1,7 +1,8 @@
 import type { BoardJob } from './board.js';
 import { jobPath, podsPath, secretsPath } from './k8s-auxspec.js';
 import { secretName } from './k8s-podspec.js';
-import { asJob, asPod, jobOutcome, type ReadJobObject, readTyped, readTypedList } from './k8s-poll.js';
+import { asPod } from './k8s-pod-shapes.js';
+import { asJob, jobOutcome, type ReadJobObject, readTyped, readTypedList } from './k8s-poll.js';
 import { HTTP_CONFLICT, HTTP_NOT_FOUND, is2xx, POLL_MS } from './k8s-transport.js';
 import type { K8sDeps, K8sPod, K8sResponse } from './k8s-transport.js';
 import type { Read } from './runner.js';

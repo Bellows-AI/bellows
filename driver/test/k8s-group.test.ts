@@ -159,7 +159,10 @@ function cluster(
                             metadata: { name: 'pod-1' },
                             status: {
                                 containerStatuses: [
-                                    { state: { waiting: { reason: 'ErrImagePull', message: options.imagePull } } },
+                                    {
+                                        name: AGENT_CONTAINER,
+                                        state: { waiting: { reason: 'ErrImagePull', message: options.imagePull } },
+                                    },
                                 ],
                             },
                         },

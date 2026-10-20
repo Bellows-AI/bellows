@@ -38,6 +38,7 @@ import { claudeTurnsJobSpec, jobsPath, opencodeReadoutJobSpec, runnerName } from
 import {
     auxVerdict,
     pollJobToTerminal,
+    podsOf,
     pollRunnerJobUntilTerminal,
     readJobStatus,
     readRunnerVerdict,
@@ -57,7 +58,7 @@ import {
     expectOk,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
-    livePod,
+    livePodOfItems,
     MS_PER_SECOND,
     parse,
     parsePodMetrics,
@@ -129,7 +130,8 @@ async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: st
         );
         if (pods.status >= HTTP_ERROR_STATUS)
             return fail(`listing the session readout pods ${answerPreview(pods.status, pods.body)}`);
-        const pod = livePod(pods.body);
+        const read = podsOf(pods, 'listing the session readout pods');
+        const pod = read.kind === 'value' ? livePodOfItems(read.value) : undefined;
         if (!pod?.metadata?.name) return fail('the session readout left no pod to read its output from');
         const log = await readVerdict(
             deps,
@@ -202,8 +204,8 @@ async function sampleRuntime(deps: K8sDeps, job: BoardJob) {
     } catch {
         return null;
     }
-    if (pods.status >= HTTP_ERROR_STATUS) return null;
-    const live = livePod(pods.body);
+    const read = podsOf(pods, 'listing the runner pods');
+    const live = read.kind === 'value' ? livePodOfItems(read.value) : undefined;
     const services =
         specs.length > 0 && live
             ? sidecarStatuses(live, specs).map(({ name, image, state }) => ({ name, image, state }))

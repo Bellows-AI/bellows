@@ -14,7 +14,8 @@ import {
     readAnswer,
     refusalDiagnosis,
 } from '../src/k8s-transport.js';
-import { asJob, asNamed, readTypedList } from '../src/k8s-poll.js';
+import { asNamed } from '../src/k8s-pod-shapes.js';
+import { asJob, readTypedList } from '../src/k8s-poll.js';
 import type { K8sDeps } from '../src/k8s-transport.js';
 
 const METRICS_PATH = '/apis/metrics.k8s.io/v1beta1/namespaces/factory/pods/runner-1';

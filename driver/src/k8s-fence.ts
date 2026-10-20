@@ -23,7 +23,8 @@ import {
     secretName,
     type RunnerJobSpec,
 } from './k8s-podspec.js';
-import { asIdentified, jobOutcome, readTyped, readTypedList } from './k8s-poll.js';
+import { asIdentified } from './k8s-pod-shapes.js';
+import { jobOutcome, readTyped, readTypedList } from './k8s-poll.js';
 import { isLease, nonEmpty, optionalTimestamp, stringsOnly, validRunnerSpec } from './k8s-shapes.js';
 import type { Read } from './runner.js';
 import {

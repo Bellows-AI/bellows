@@ -451,10 +451,6 @@ export function livePodOfItems(items: K8sPod[]): K8sPod | undefined {
     return items.find((item) => !item.metadata?.deletionTimestamp);
 }
 
-export function livePod(body: string): K8sPod | undefined {
-    return livePodOfItems(parse<K8sPodList>(body).items ?? []);
-}
-
 /** One container's status: the named one in a multi-container pod, the first in an aux pod's only one. */
 export function containerStatusOf(pod: K8sPod | undefined, container?: string) {
     const statuses = pod?.status?.containerStatuses;

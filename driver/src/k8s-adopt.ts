@@ -14,11 +14,10 @@ import {
 } from './k8s-podspec.js';
 import { isLease, validRunnerSpec } from './k8s-shapes.js';
 import { deleteSecretAcked } from './k8s-teardown.js';
+import { asNamed, asPod } from './k8s-pod-shapes.js';
 import {
     ABSENT,
     asJob,
-    asNamed,
-    asPod,
     jobOutcome,
     neverStartedLog,
     readList,

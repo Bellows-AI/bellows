@@ -3,15 +3,8 @@ import { executorImage } from './config.js';
 import { ARTIFACT_LIMIT, Inconclusive, reportTail, tailKept } from './runner.js';
 import type { Read } from './runner.js';
 import { jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
-import {
-    isCount,
-    nonEmpty,
-    optionalStrings,
-    optionalTimestamp,
-    stringsOnly,
-    validContainerStatuses,
-    validPodConditions,
-} from './k8s-shapes.js';
+import { nonEmpty, stringsOnly } from './k8s-shapes.js';
+import { asPod, asStartupPod, validCounters } from './k8s-pod-shapes.js';
 import { ledgerOf, RunnerKilled, vanishedRunner } from './k8s-kill.js';
 import { runnerName } from './k8s-podspec.js';
 import {
@@ -22,12 +15,10 @@ import {
     HTTP_BAD_REQUEST,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
-    HTTP_OK_STATUS,
     HTTP_SERVER_ERROR_STATUS,
     HTTP_TOO_MANY_REQUESTS,
     isMalformedRequest400,
     isRecord,
-    livePod,
     livePodOfItems,
     LOG_TAIL_LINES,
     parse,
@@ -101,59 +92,6 @@ export async function readVerdict(deps: K8sDeps, path: string, what: string, fai
 export const ABSENT = Symbol('absent');
 
 /**
- * A listed or read object that names itself, as far as a decision on it reads (#869): a `metadata`
- * with a non-empty string `name`; `uid` a non-empty string, `labels` and `annotations` string maps
- * and `creationTimestamp` an RFC 3339 time when present; a `status`, when present, a record whose Job
- * counters are counts. One entry that is not this makes the whole read inconclusive; only a
- * well-formed entry out of scope is skipped by its caller.
- */
-export function asNamed<T>(value: unknown): T | null {
-    if (!isRecord(value) || !isRecord(value.metadata)) return null;
-    const { name, uid, labels, annotations, creationTimestamp } = value.metadata;
-    if (!nonEmpty(name) || (uid !== undefined && !nonEmpty(uid)) || !optionalTimestamp(creationTimestamp)) return null;
-    if (labels !== undefined && !stringsOnly(labels)) return null;
-    if (annotations !== undefined && !stringsOnly(annotations)) return null;
-    if (value.status !== undefined && (!isRecord(value.status) || !validCounters(value.status))) return null;
-    return value as T;
-}
-
-/**
- * `asNamed` for a listing a delete is decided on (#869): the entry also carries a non-empty `uid`,
- * which the apiserver always sets and the delete's precondition names. An entry without one makes
- * the whole read inconclusive — it is never deleted unconditionally.
- */
-export function asIdentified<T>(value: unknown): T | null {
-    const item = asNamed<{ metadata: { uid?: string } }>(value);
-    return item && nonEmpty(item.metadata.uid) ? (value as T) : null;
-}
-
-/**
- * A listed or read pod (#869): named, with its deletion time, phase, words, conditions and every
- * container status — named, with a typed state — in the grammar `k8s-shapes.ts` gives them. A pod
- * with no `status` yet is a pod that has not started: no container evidence, which every consumer
- * reads as "nothing seen".
- */
-export const asPod = (value: unknown): K8sPod | null => {
-    const pod = asNamed<K8sPod & { metadata: { deletionTimestamp?: unknown } }>(value);
-    if (pod === null || !optionalTimestamp(pod.metadata.deletionTimestamp)) return null;
-    const { status } = pod;
-    if (status === undefined) return pod;
-    const { phase, reason, message, containerStatuses, conditions } = status;
-    if (!optionalStrings(phase, reason, message) || !validPodConditions(conditions)) return null;
-    return validContainerStatuses(containerStatuses) ? pod : null;
-};
-
-/**
- * A Job's `succeeded`, `failed` and `active` counts, each a non-negative integer when present, and
- * its `conditions` a list of typed records when present (#869).
- */
-const validCounters = (status: Record<string, unknown>): boolean =>
-    (status.conditions === undefined ||
-        (Array.isArray(status.conditions) &&
-            status.conditions.every((c) => isRecord(c) && typeof c.type === 'string'))) &&
-    ['succeeded', 'failed', 'active'].every((field) => status[field] === undefined || isCount(status[field]));
-
-/**
  * A read Job: an identifiable object (`metadata.uid`, which the apiserver always sets and a
  * replacement under the same name never shares) whose `status` is a record too — `{}` for a fresh
  * Job — with valid counts (#869). A Job that cannot say which incarnation it is proves nothing about
@@ -192,6 +130,15 @@ export async function readTyped<T>(
     return readAnswer(response, what, shape);
 }
 
+/** The list shape: every entry `entry` accepts, or null for a body with no list or any entry it refuses. */
+const listOf =
+    <T>(entry: (value: unknown) => T | null) =>
+    (body: unknown): T[] | null => {
+        if (!isRecord(body) || !Array.isArray(body.items)) return null;
+        const items = body.items.map(entry);
+        return items.every((item) => item !== null) ? (items as T[]) : null;
+    };
+
 /** `readTyped` of a list: every entry `entry` accepts, or inconclusive for a body with no list or any entry it refuses. */
 export function readTypedList<T>(
     deps: K8sDeps,
@@ -199,13 +146,12 @@ export function readTypedList<T>(
     what: string,
     { entry, once = false }: { entry: (value: unknown) => T | null; once?: boolean }
 ): Promise<Read<T[]>> {
-    const shape = (body: unknown): T[] | null => {
-        if (!isRecord(body) || !Array.isArray(body.items)) return null;
-        const items = body.items.map(entry);
-        return items.every((item) => item !== null) ? (items as T[]) : null;
-    };
-    return readTyped(deps, path, what, { shape, once });
+    return readTyped(deps, path, what, { shape: listOf(entry), once });
 }
+
+/** A pod list already fetched, read as a typed answer (#869): the pods `entry` accepts, else absent or inconclusive. */
+export const podsOf = (response: K8sResponse, what: string, entry: (value: unknown) => K8sPod | null = asPod) =>
+    readAnswer(response, what, listOf(entry));
 
 /** `readTyped` on the throwing channel (#824): `ABSENT` on a 404, an `Inconclusive` throw for a read that proves nothing. */
 export async function readObject<T>(
@@ -265,12 +211,12 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
     const pods = await deps
         .request('GET', jobPodsPath(deps.config.k8sNamespace, jobName))
         .catch(() => ({ status: 0, body: '' }));
-    const list = pods.status === HTTP_OK_STATUS ? parse<K8sPodList>(pods.body) : null;
-    const items = Array.isArray(list?.items) ? list.items : null;
+    const read = podsOf(pods, `listing the pods of ${jobName}`, asStartupPod);
+    const items = read.kind === 'value' ? read.value : null;
     // Every container of the pod, not the first: the runner pod holds the agent, the supervisor and
     // the exporter, and any one of them blocked on its image holds the whole run. The init list is
     // read first (#773 D10): a sidecar held on its image keeps every main container initializing.
-    const pod = livePod(pods.body);
+    const pod = items === null ? undefined : livePodOfItems(items);
     const status = pod?.status;
     const containers = status?.containerStatuses ?? [];
     const holder = [...(status?.initContainerStatuses ?? []), ...containers].find((c) =>
@@ -588,7 +534,8 @@ async function tailRunnerOutput(
             const pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, runnerName(job)));
             // Skipping terminating pods for the same reason the final read does: a replaced
             // attempt's pod carries the same label, and its log is not this run's output.
-            resolvedPodName = livePod(pods.body)?.metadata?.name ?? null;
+            const read = podsOf(pods, 'listing the runner pods');
+            resolvedPodName = (read.kind === 'value' && livePodOfItems(read.value)?.metadata?.name) || null;
         } catch {
             // Not scheduled yet, or the API server blinked. The next poll looks again.
         }

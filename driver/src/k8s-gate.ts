@@ -4,7 +4,8 @@ import { jobPodsPath } from './k8s-auxspec.js';
 import { gateRequests } from './k8s-podfields.js';
 import { stepHostFor } from './k8s-group.js';
 import { runnerName } from './k8s-podspec.js';
-import { HTTP_ERROR_STATUS, HTTP_OK_STATUS, type K8sDeps, livePod } from './k8s-transport.js';
+import { podsOf } from './k8s-poll.js';
+import { HTTP_ERROR_STATUS, HTTP_OK_STATUS, type K8sDeps, livePodOfItems } from './k8s-transport.js';
 import type { GateSizing } from './runner.js';
 import { type GateStepRequest, runGateStep } from './supervised-steps.js';
 import { GATE_CONTAINER, type StepResult } from './supervisor-contract.js';
@@ -39,7 +40,8 @@ export async function resizeGateSidecar(deps: K8sDeps, job: BoardJob, phase: Gat
         if (!gateImageOf(job)) return false;
         const namespace = deps.config.k8sNamespace;
         const listed = await deps.request('GET', jobPodsPath(namespace, runnerName(job)));
-        const pod = ok(listed.status) ? livePod(listed.body)?.metadata?.name : undefined;
+        const read = podsOf(listed, 'listing the gate pod');
+        const pod = read.kind === 'value' ? livePodOfItems(read.value)?.metadata?.name : undefined;
         if (!pod) return false;
         const patch = {
             spec: {

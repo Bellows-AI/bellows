@@ -27,9 +27,9 @@ import { isLease } from './k8s-shapes.js';
 import { containerHardeningField } from './k8s-podfields.js';
 import { GATE_GID, TOOL_UID, workspacePath } from './claim.js';
 import { RELEASE_DEADLINE_MS, toolTreeReleaseBoundedScript, toolTreeReleaseScript, worktreeDir } from './publish.js';
+import { asIdentified } from './k8s-pod-shapes.js';
 import {
     asJob,
-    asIdentified,
     jobOutcome,
     type PodStartState,
     readImagePullStatus,

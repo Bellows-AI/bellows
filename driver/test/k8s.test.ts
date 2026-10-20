@@ -42,7 +42,7 @@ import type { HelperPlan } from '../src/helpers.js';
 import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { LOG_TAIL_LINES, POLL_MAX_CONSECUTIVE_FAILURES, parsePodMetrics, POLL_MS } from '../src/k8s-transport.js';
 import { GROUP_END_WAIT_MS } from '../src/k8s-teardown.js';
-import { readVerdict, runnerLossOf } from '../src/k8s-poll.js';
+import { readImagePullStatus, readVerdict, runnerLossOf } from '../src/k8s-poll.js';
 import { orphanBoundMs } from '../src/supervisor-plan.js';
 import {
     claudeTurnsJobName,
@@ -55,7 +55,7 @@ import {
     secretName,
 } from '../src/k8s-podspec.js';
 import { claimName, jobPath, podLogPath } from '../src/k8s-auxspec.js';
-import { KUBELET_RESTART_NOTE, sidecarStatuses } from '../src/k8s-services.js';
+import { KUBELET_RESTART_NOTE, readSidecars, sidecarStatuses } from '../src/k8s-services.js';
 import { reclaimGroupSpec } from '../src/k8s-group.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
@@ -1419,7 +1419,12 @@ describe('the worktree sync', () => {
                     {
                         metadata: { name: podName },
                         status: {
-                            containerStatuses: [{ state: { waiting: message ? { reason, message } : { reason } } }],
+                            containerStatuses: [
+                                {
+                                    name: AGENT_CONTAINER,
+                                    state: { waiting: message ? { reason, message } : { reason } },
+                                },
+                            ],
                         },
                     },
                 ],
@@ -1822,6 +1827,7 @@ describe('the worktree reclaim', () => {
                             status: {
                                 containerStatuses: [
                                     {
+                                        name: AGENT_CONTAINER,
                                         state: {
                                             waiting: {
                                                 reason: 'ImagePullBackOff',
@@ -2436,6 +2442,73 @@ describe('the runner vitals', () => {
             cpuPercent: 31,
             memUsedMb: 96,
             memPercent: null,
+        });
+    });
+
+    describe('a pod list read as a typed answer (#869)', () => {
+        const declared: BoardJob = { ...job, services: [{ name: 'db', image: 'postgres:16', environment: [] }] };
+        const depsFor = (body: string): K8sDeps => ({
+            request: async () => ({ status: 200, body }),
+            sleep: async () => {},
+            config: loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' }),
+        });
+        const listing = (init: unknown[], containers: unknown[] = []): string =>
+            JSON.stringify({
+                items: [
+                    {
+                        metadata: { name: podName },
+                        status: { initContainerStatuses: init, containerStatuses: containers },
+                    },
+                ],
+            });
+
+        it('reads a 200 null pod list as unread, never as no pod', async () => {
+            expect((await readImagePullStatus(depsFor('null'), 'factory-runner-x')).podState).toBe('unread');
+        });
+
+        it('reads a pod whose sidecar names an image that is not a string as unread, with no refusal', async () => {
+            const held = {
+                name: 'svc-db',
+                image: 42,
+                state: { waiting: { reason: 'ImagePullBackOff', message: 'no' } },
+            };
+            const read = await readImagePullStatus(depsFor(listing([held])), 'factory-runner-x');
+            expect(read).toMatchObject({ podState: 'unread', blocked: null, held: null });
+            held.image = 'postgres:16' as unknown as number;
+            expect(await readImagePullStatus(depsFor(listing([held])), 'factory-runner-x')).toMatchObject({
+                podState: 'starting',
+                held: { image: 'postgres:16' },
+            });
+        });
+
+        it.each([
+            ['a terminated state without an exit code', { name: 'svc-db', state: { terminated: {} } }],
+            ['a restart count below zero', { name: 'svc-db', state: { running: {} }, restartCount: -1 }],
+            ['a restart count that is a fraction', { name: 'svc-db', state: { running: {} }, restartCount: 1.5 }],
+            [
+                'a previous ending without an exit code',
+                { name: 'svc-db', state: { running: {} }, lastState: { terminated: {} } },
+            ],
+        ])('reads a sidecar with %s as Inconclusive, never as a service failure', async (_name, sidecar) => {
+            await expect(readSidecars(depsFor(listing([sidecar])), declared)).rejects.toBeInstanceOf(Inconclusive);
+            const ended = { name: 'svc-db', state: { terminated: { exitCode: 3 } } };
+            expect((await readSidecars(depsFor(listing([ended])), declared))[0]?.state).toBe('exited');
+        });
+
+        it('reads a null task pod list as Inconclusive', async () => {
+            await expect(readSidecars(depsFor('null'), declared)).rejects.toBeInstanceOf(Inconclusive);
+        });
+
+        it('samples no runtime and resizes nothing over a pod list that is null', async () => {
+            const nulled = routed((method, path) =>
+                method === 'GET' && decodeURIComponent(path).includes('job-name=')
+                    ? { status: 200, body: 'null' }
+                    : undefined
+            );
+            expect(await runner(nulled.request).sampleRuntime(job)).toBeNull();
+            const gated: BoardJob = { ...gatedOf(job), ...SUPERVISED };
+            expect(await runner(nulled.request).resizeGate(gated, 'verify')).toBe(false);
+            expect(nulled.calls.some((call) => call.method === 'PATCH')).toBe(false);
         });
     });
 
@@ -3095,6 +3168,7 @@ describe('the kubernetes runner', () => {
                             status: {
                                 containerStatuses: [
                                     {
+                                        name: AGENT_CONTAINER,
                                         state: {
                                             waiting: {
                                                 reason: 'ImagePullBackOff',
@@ -3149,6 +3223,7 @@ describe('the kubernetes runner', () => {
                     status: {
                         containerStatuses: [
                             {
+                                name: AGENT_CONTAINER,
                                 state: {
                                     waiting: { reason: 'CreateContainerConfigError', message: 'secret "x" not found' },
                                 },
@@ -4967,7 +5042,7 @@ describe('the kubernetes services flow (issue #773)', () => {
                             status: {
                                 phase: 'Succeeded',
                                 initContainerStatuses,
-                                containerStatuses: [{ state: { terminated: { exitCode: 0 } } }],
+                                containerStatuses: [{ name: AGENT_CONTAINER, state: { terminated: { exitCode: 0 } } }],
                             },
                         },
                     ],

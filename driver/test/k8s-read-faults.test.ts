@@ -456,16 +456,4 @@ scenario(
     }
 );
 
-/** The dead-service probe's read of the task pod, whose sidecars the declared services are. */
-const SERVICE_PODS = `GET ${API}/pods?labelSelector=job-name=factory-runner-<lease-hash>`;
-
-scenario(
-    'the dead-service probe of a running service (K-D1)',
-    deadService,
-    { writes: [] },
-    {
-        // A pod list that names no task pod is `Inconclusive` (`k8s-services.ts` `taskPod`): dead is
-        // never inferred from it. Only a body of `null` crashes the list read itself.
-        null: [pin(`CRASH after null at ${SERVICE_PODS}: ${NULL_READ('items')}`)],
-    }
-);
+scenario('the dead-service probe of a running service (K-D1)', deadService, { writes: [] }, {});

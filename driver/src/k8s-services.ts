@@ -2,7 +2,9 @@ import type { BoardJob, ServiceStatus } from './board.js';
 import { jobPodsPath, podLogPath } from './k8s-auxspec.js';
 import { groupsOf, stepHostFor } from './k8s-group.js';
 import { runnerName } from './k8s-podspec.js';
-import { HTTP_ERROR_STATUS, livePodOfItems, parse } from './k8s-transport.js';
+import { asServicePod } from './k8s-pod-shapes.js';
+import { podsOf } from './k8s-poll.js';
+import { HTTP_ERROR_STATUS, livePodOfItems } from './k8s-transport.js';
 import type { K8sContainerStatus, K8sDeps, K8sPod } from './k8s-transport.js';
 import {
     type DeadService,
@@ -87,10 +89,9 @@ async function taskPod(deps: K8sDeps, job: BoardJob): Promise<K8sPod> {
         .catch((e: Error) => {
             throw new Inconclusive(`the task pod could not be listed: ${e.message}`);
         });
-    if (listed.status >= HTTP_ERROR_STATUS) {
-        throw new Inconclusive(`the task pod could not be listed (HTTP ${listed.status})`);
-    }
-    const pod = livePodOfItems(parse<{ items?: K8sPod[] }>(listed.body).items ?? []);
+    const read = podsOf(listed, 'listing the task pod', asServicePod);
+    if (read.kind === 'inconclusive') throw new Inconclusive(read.reason);
+    const pod = read.kind === 'value' ? livePodOfItems(read.value) : undefined;
     if (!pod) throw new Inconclusive('the task pod is not listed');
     return pod;
 }

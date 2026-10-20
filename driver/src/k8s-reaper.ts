@@ -12,7 +12,8 @@ import {
 import { claimPath, secretsPath } from './k8s-auxspec.js';
 import { readClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
 import { holderGroupsOf } from './k8s-group.js';
-import { asIdentified, readTypedList } from './k8s-poll.js';
+import { asIdentified } from './k8s-pod-shapes.js';
+import { readTypedList } from './k8s-poll.js';
 import { finishedAgentRun, jobsPath, type ListedRunnerJob, runnerJobName, secretName } from './k8s-podspec.js';
 import { isLease, runnerSpecReadable } from './k8s-shapes.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
