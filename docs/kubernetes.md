@@ -24,8 +24,9 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
 
 ## Invariants
 
-- **Executor parity** (AGENTS.md): a `k8s-*.ts` importing from `docker*.ts` means the shared name belongs in a
-  neutral file.
+- **Executor parity** (AGENTS.md): a `k8s-*.ts` importing from `docker*.ts` belongs in a neutral file.
+- **An unconfirmed read is inconclusive, never empty**: a failed, timed-out, null or malformed answer stays a typed
+  `Read` the caller leaves alone. `lint/no-silent-empty-read.grit`, `driver/test/k8s-read-faults.test.ts`.
 - **Credentials go by reference, never by value**, and **runner pods hold no ServiceAccount token**
   (`automountServiceAccountToken: false`). Both pinned in `driver/test/k8s.test.ts`.
 - **Every driver-owned object carries `factory.job`**, every Secret follows `factory-job-…-env`, every
@@ -64,8 +65,7 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
 - Stated limit: the kubernetes question round trip (a real claude CLI through the bridge)
   is not run on a kind cluster — the cluster lane installs the stub executor image. The relay is pinned offline in
   `driver/test/k8s.test.ts` and run through the supervisor with the stub's question (`--phase control`); docker's lane is `ask_roundtrip_lane` in `scripts/test-jobs.sh`.
-- `make reset` destroys the local state release and its data; the `volumeClaimTemplate` claim survives
-  `helm uninstall`.
+- `make reset` destroys the local state release and its data; the `volumeClaimTemplate` claim survives `helm uninstall`.
 - `EXECUTOR=kubernetes` with `RUNNER_CACHE_WATCH=1` is fatal at startup (`driver/src/config.ts`).
 - Deliberate docker divergences: no cpu-request flag, no node scheduling, no `imagePullSecrets` twin, no admission
   equivalent; the docker fence keeps its label-sweep shape; on docker (development only) service listeners are
