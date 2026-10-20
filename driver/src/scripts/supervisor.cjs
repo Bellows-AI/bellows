@@ -819,6 +819,8 @@ function runGate(run, step, entry) {
     const lane = run.lanes[step.kind];
     const turn = lane.turn.then(async () => {
         Object.assign(entry, ledgerOf(run, step));
+        // The re-read is the disk's: a call ahead in the lane rewrote it from its own entry, without this call's record.
+        if (!entry.effect) recordCall(run, entry, step.invocation, { state: 'running' });
         const outcome = entry.effect
             ? { result: { ...entry.effect, replayed: true }, interrupted: false }
             : await execGate(run, step);

@@ -480,6 +480,14 @@ export interface Runner {
      * with no supervisor reading it.
      */
     rebind(group: BoardJob, binding: SupervisorBinding, signal: AbortSignal): Promise<void>;
+    /**
+     * The attempt was abandoned — its lease lost past the launch, or a drain's handover — and its
+     * group is the next holder's (#829): ends every in-process timer, interval and poll this runner
+     * started for `job.leaseToken` (the run's backstop deadline, the cache watch, the verdict poll),
+     * so none kills, deletes or records a kill against a group this process no longer owns. It
+     * touches nothing of the group itself and is safe to call twice or for a run not in flight.
+     */
+    abandon(job: BoardJob): void;
 }
 
 /** The two sizes a gate container is resized between: low while the agent runs, the gate requests for verify. */

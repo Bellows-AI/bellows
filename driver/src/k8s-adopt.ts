@@ -34,14 +34,9 @@ import { pollFor } from './poll.js';
 import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse } from './k8s-transport.js';
 import { CLAIM_SEQ_MARK, COMMAND_MARK, isCommandMark, isSeq, LEASE_LABEL, SESSION_MARK } from './labels.js';
 import { AdoptionBlocked, type AdoptedRun, adoptionAbandoned, Inconclusive, type RunOutcome } from './runner.js';
-import {
-    AGENT_CONTAINER,
-    type FinalReport,
-    finalReportOf,
-    SUPERVISOR_CONTAINER,
-    SUPERVISOR_FINALIZE_WAIT_MS,
-} from './supervisor-contract.js';
+import { AGENT_CONTAINER, type FinalReport, finalReportOf, SUPERVISOR_CONTAINER } from './supervisor-contract.js';
 import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from './adopt-skeleton.js';
+import { finalizeWaitMs } from './supervisor-plan.js';
 import { type KillRecord, killRecordsOf, reportFinalized } from './termination.js';
 
 /** One runner Job of an earlier claim, as the label listing answers it. */
@@ -167,8 +162,9 @@ async function groupOver(deps: K8sDeps, prior: BoardJob): Promise<boolean | null
 }
 
 /**
- * Waits out a supervisor finalizing after its agent exited (#824), bounded in time by the wind-down
- * its own drain and report take, and the takeover grace a released group may wait for a holder (#829). Answers the Job's terminal status once its pod is over too; null
+ * Waits out a supervisor finalizing after its agent exited (#824), bounded in time by
+ * `finalizeWaitMs`: the wind-down its own drain and report take, and what a released group may wait
+ * for a holder (#829). Answers the Job's terminal status once its pod is over too; null
  * when the Job is gone (taken away) or confirmed still running at the bound — the sweep's then, as
  * the docker twin leaves it. Each poll is one read, never the verdict reads' retries, so an
  * apiserver that does not answer spends the bound and no more; a bound that ends on reads that
@@ -185,7 +181,7 @@ export async function awaitFinalized(deps: K8sDeps, prior: BoardJob, signal: Abo
     // In time, not polls: a status read that is slow spends the bound as well.
     const live = withSignal(deps, signal);
     const ended = await pollFor<Ended | 'gone'>(
-        { ...waitOf(live, SUPERVISOR_FINALIZE_WAIT_MS), everyMs: POLL_MS, abandoned: adoptionAbandoned },
+        { ...waitOf(live, finalizeWaitMs(deps.config)), everyMs: POLL_MS, abandoned: adoptionAbandoned },
         async (deadline) => {
             const now = await finalizingNow(boundedBy(live, deadline), prior);
             if (now === 'gone' || typeof now === 'object') return now;

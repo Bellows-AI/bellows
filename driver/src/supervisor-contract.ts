@@ -320,11 +320,6 @@ export const SUPERVISOR_ORPHAN_MAX_MS = 90_000;
  */
 export const SUPERVISOR_REBIND_GRACE_MS = 240_000;
 /**
- * How long the next claim waits for the supervisor of a group it adopts to end: the wind-down, and
- * the takeover grace a released group may wait for a holder before it finalizes by itself.
- */
-export const SUPERVISOR_FINALIZE_WAIT_MS = SUPERVISOR_WINDDOWN_MS + SUPERVISOR_REBIND_GRACE_MS;
-/**
  * What the kubelet's (or docker's) backstop allows on top of the run budget for the steps a task
  * group serves before and after its agent — the sync, the gates, the helpers, the publish. The
  * driver ends the group itself well before; this only bounds a group the driver forgot.

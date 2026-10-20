@@ -9,6 +9,7 @@ import type { LoopRuntime } from './loop-types.js';
 import type { ExportRun } from './loop-export.js';
 import type { PublishResult } from './publish.js';
 import { RUN_CONTROL_POLL_MS } from './supervisor-contract.js';
+import { heartbeatPeriodMs } from './supervisor-plan.js';
 import type { KillRecord } from './termination.js';
 import type { TimeoutActivity } from './timeout-note.js';
 
@@ -42,9 +43,6 @@ export { RUN_CONTROL_POLL_MS };
  * current model step) gets before the hard kill lands. Not configurable (issue #442).
  */
 export const STOP_GRACE_MS = 300_000;
-const MIN_HEARTBEAT_PERIOD_MS = 1_000;
-const HEARTBEAT_PERIOD_DIVISOR = 3;
-const MS_PER_SECOND = 1_000;
 
 /** One review being supervised: the order to cancel it, and its end (after the review row is settled and the reviewer released). */
 export interface ReviewSupervision {
@@ -505,10 +503,7 @@ export function heartbeat(rt: LoopRuntime, job: BoardJob, state: JobState): Prom
     const { config, sleep } = rt;
     // Once launched, never slower than the control poll: a Stop reaches the agent within one
     // `RUN_CONTROL_POLL_MS` however long the lease is (issue #442).
-    const every = Math.min(
-        RUN_CONTROL_POLL_MS,
-        Math.max(MIN_HEARTBEAT_PERIOD_MS, Math.floor((config.leaseSeconds * MS_PER_SECOND) / HEARTBEAT_PERIOD_DIVISOR))
-    );
+    const every = Math.min(RUN_CONTROL_POLL_MS, heartbeatPeriodMs(config));
     return (async () => {
         let complained = false;
         while (renewing(state)) {

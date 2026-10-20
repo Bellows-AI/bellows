@@ -335,6 +335,8 @@ export function stubRunner(
     reviewed: { caller: BoardJob; review: BoardJob; session: RunSession | null }[];
     /** Every holder binding the loop wrote to a group's supervisor (#829), in order. */
     rebound: { group: BoardJob; binding: SupervisorBinding }[];
+    /** Every attempt the loop abandoned to the next holder. */
+    abandoned: BoardJob[];
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
@@ -452,6 +454,10 @@ export function stubRunner(
         /** Every review the loop ran in a caller's group (issue #774), replaced by a test that scripts one. */
         reviewed: [] as { caller: BoardJob; review: BoardJob; session: RunSession | null }[],
         rebound: [] as { group: BoardJob; binding: SupervisorBinding }[],
+        abandoned: [] as BoardJob[],
+        abandon(abandonedJob: BoardJob): void {
+            runner.abandoned.push(abandonedJob);
+        },
         async rebind(group: BoardJob, binding: SupervisorBinding): Promise<void> {
             runner.rebound.push({ group, binding });
         },

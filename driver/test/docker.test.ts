@@ -87,13 +87,13 @@ import {
     MAILBOXES,
     SUPERVISOR_ENV,
     SUPERVISOR_EXIT,
-    SUPERVISOR_FINALIZE_WAIT_MS,
     SUPERVISOR_REPORT_PREFIX,
     type StepKind,
     type StepRequest,
     type StepResult,
     type SupervisorReport,
 } from '../src/supervisor-contract.js';
+import { finalizeWaitMs, takeoverBoundMs } from '../src/supervisor-plan.js';
 import { ServicesNotRunning } from '../src/service-restart.js';
 import { telemetryConfig, telemetryConfigTar } from '../src/telemetry-config.js';
 import {
@@ -5764,7 +5764,23 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(timeouts).toEqual([SUPERVISOR_FINALIZE_WAIT_MS]);
+        expect(timeouts).toEqual([finalizeWaitMs(loadDriverConfig({}))]);
+    });
+
+    // The wait scales with the lease it must outlast: a fixed one ends before a long lease's takeover bound.
+    it('waits for the earlier supervisor longer at a long lease', async () => {
+        const { exec: base, logs } = daemon(listing());
+        const timeouts: (number | undefined)[] = [];
+        const exec = (args: string[], options?: { timeout?: number }) => {
+            if (args[0] === 'wait') timeouts.push(options?.timeout);
+            return base(args);
+        };
+        const env = { DRIVER_LEASE_SECONDS: '3600' };
+
+        await dockerRunner(exec, { spawn: logs, env }).adopt(adopter);
+
+        expect(timeouts).toEqual([finalizeWaitMs(loadDriverConfig(env))]);
+        expect(timeouts[0]).toBeGreaterThan(takeoverBoundMs(loadDriverConfig(env)));
     });
 
     // A killed supervisor with no recorded reason is a supervisor lost — also where a record the

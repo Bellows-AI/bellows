@@ -334,7 +334,7 @@ async function launchRun(
     const run = rt.runner.run(job, session, onOutput).finally(() => {
         state.running = false;
     });
-    const outcome = await abandonOnHandover(state, run);
+    const outcome = await abandonOnHandover(state, run, () => rt.runner.abandon(job));
     if (outcome === null) await endIfDown(ctx, 'its run');
     return outcome;
 }

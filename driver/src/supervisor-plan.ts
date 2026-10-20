@@ -28,6 +28,8 @@ import {
  */
 
 const MS_PER_SECOND = 1000;
+const MIN_HEARTBEAT_PERIOD_MS = 1_000;
+const HEARTBEAT_PERIOD_DIVISOR = 3;
 
 /** How long a group whose driver stopped answering keeps going: a share of the lease, so it ends inside it. */
 export const orphanBoundMs = (config: DriverConfig): number =>
@@ -39,6 +41,19 @@ export const orphanBoundMs = (config: DriverConfig): number =>
 /** How long a released group waits for a newer holder: its lease, then the grace to find the group and bind it (#829). */
 export const takeoverBoundMs = (config: DriverConfig): number =>
     config.leaseSeconds * MS_PER_SECOND + SUPERVISOR_REBIND_GRACE_MS;
+
+/** The pace a lease is renewed at while the driver holds it: a third of the lease, never under a second. */
+export const heartbeatPeriodMs = (config: DriverConfig): number =>
+    Math.max(MIN_HEARTBEAT_PERIOD_MS, Math.floor((config.leaseSeconds * MS_PER_SECOND) / HEARTBEAT_PERIOD_DIVISOR));
+
+/**
+ * How long the next claim waits for the supervisor of a group it adopts to end (#829): a lost driver
+ * still alive keeps contact until its next heartbeat learns the lease is gone (`heartbeatPeriodMs`),
+ * the released group then waits `takeoverBoundMs` from that contact, and the wind-down (drain and
+ * report) follows. It scales with the lease like the bounds it outlasts.
+ */
+export const finalizeWaitMs = (config: DriverConfig): number =>
+    SUPERVISOR_WINDDOWN_MS + heartbeatPeriodMs(config) + takeoverBoundMs(config);
 
 /**
  * The declared gate image of the attempt's group (issue #773), or null when the group runs no gate
@@ -104,10 +119,11 @@ export const agentBackstopMs = (config: DriverConfig, job: BoardJob): number =>
 /**
  * The backstop deadline of the whole group (the kubelet's, on the Job): the agent phase's plus the
  * steps the group serves before and after the agent — the sync, the gates, the helpers, the
- * publish. The driver ends the group itself long before; this only ends one it forgot.
+ * publish, and the bound a released group waits for a newer holder after its agent went (#829). The
+ * driver ends the group itself long before; this only ends one it forgot.
  */
 export const backstopMs = (config: DriverConfig, job: BoardJob): number =>
-    agentBackstopMs(config, job) + SUPERVISOR_STEPS_MS;
+    agentBackstopMs(config, job) + SUPERVISOR_STEPS_MS + takeoverBoundMs(config);
 
 const BINDING_TOKEN = /^\S{1,256}$/;
 

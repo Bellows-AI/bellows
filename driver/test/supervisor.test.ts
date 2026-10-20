@@ -1920,6 +1920,25 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
             await supervised.done;
         });
 
+        // The first call's settle rewrites the ledger from its own entry: the waiting call's `running` record must survive.
+        it('keeps the running record of a gate call that waited in the lane while it runs', async () => {
+            const driver = await startDriver();
+            const supervised = run(driver, GATED);
+            let holds = 0;
+            const loop = fakeGateLoop(supervised.box.gate, () => ({
+                exitCode: 3,
+                output: 'failing',
+                holdMs: holds++ === 0 ? 300 : 3_000,
+            }));
+            driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+            await until('the gate to be taken', () => loop.seen.length === 1);
+            driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000, invocation: 'i-2' }));
+            await until('the second call to run the gate', () => loop.seen.length === 2);
+            expect(supervised.ledger('gate-1').invocations['i-2']).toMatchObject({ state: 'running' });
+            supervised.agentExits(0);
+            await supervised.done;
+        });
+
         // Characterization: a second invocation after a FAILED first call runs the gate again.
         it('runs the second invocation of a gate whose first call failed', async () => {
             const driver = await startDriver();

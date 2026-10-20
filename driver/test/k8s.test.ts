@@ -12,7 +12,6 @@ import {
     SUPERVISOR_BINDING,
     SUPERVISOR_BINDING_PATH,
     SUPERVISOR_EXIT,
-    SUPERVISOR_FINALIZE_WAIT_MS,
     SUPERVISOR_REBIND_GRACE_MS,
     SUPERVISOR_REPORT_MS,
     SUPERVISOR_REPORT_PREFIX,
@@ -62,7 +61,13 @@ import {
     readVerdict,
     runnerLossOf,
 } from '../src/k8s-poll.js';
-import { bindingBody, orphanBoundMs, takeoverBoundMs } from '../src/supervisor-plan.js';
+import {
+    bindingBody,
+    finalizeWaitMs,
+    heartbeatPeriodMs,
+    orphanBoundMs,
+    takeoverBoundMs,
+} from '../src/supervisor-plan.js';
 import {
     claudeTurnsJobName,
     claudeTurnsJobSpec,
@@ -119,7 +124,11 @@ const OTHER_SESSION = '44444444-4444-4444-8444-444444444444';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 /** The Job's backstop beyond the agent's budget: the drain and the report, then the hours the group serves steps. */
-const WINDDOWN_S = (SUPERVISOR_WINDDOWN_MS + SUPERVISOR_STEPS_MS) / 1000;
+const WINDDOWN_S =
+    (SUPERVISOR_WINDDOWN_MS +
+        SUPERVISOR_STEPS_MS +
+        takeoverBoundMs(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: 'factory' }))) /
+    1000;
 
 /** A fixed, valid Factory execution context — the shape master-prompt.test.ts pins; only its
  *  presence matters to this file's own tests, none of which assert its exact text. */
@@ -565,6 +574,22 @@ describe('the runner job spec', () => {
         // budget itself; the kubelet's backstop adds the drain and the report on top.
         expect(spec({ DRIVER_JOB_TIMEOUT_MS: '45000' }).spec.activeDeadlineSeconds).toBe(45 + WINDDOWN_S);
     });
+
+    // #829: a released group waits the takeover bound after its agent went; the backstop must not end it first.
+    it.each(['60', '3600'])(
+        'leaves a released group its takeover bound under the deadline at a %s s lease',
+        (lease) => {
+            const config = loadDriverConfig({
+                EXECUTOR: 'kubernetes',
+                DRIVER_JOB_TIMEOUT_MS: '45000',
+                DRIVER_LEASE_SECONDS: lease,
+            });
+            const deadline = runnerJobSpec(config, job, { id: SESSION, resume: false }).spec.activeDeadlineSeconds ?? 0;
+            expect(deadline * 1000).toBeGreaterThanOrEqual(
+                45_000 + SUPERVISOR_WINDDOWN_MS + SUPERVISOR_STEPS_MS + takeoverBoundMs(config)
+            );
+        }
+    );
 
     // Issue #733: environment.setup ran before the agent, inside the same run budget.
     it('takes the time environment.setup spent off the active deadline', () => {
@@ -6613,6 +6638,34 @@ describe('a Stop on kubernetes (issue #427)', () => {
         await expect(r.run(job, { id: SESSION, resume: false })).resolves.toMatchObject({ started: true });
     });
 
+    // #829: an abandoned run's Job is the next holder's: the poll ends, deleting and recording nothing.
+    it('an abandoned run stops polling its Job and deletes nothing', async () => {
+        const base = fakeRequest({ job: { status: 200, body: JSON.stringify({ status: { active: 1 } }) } });
+        const methods: string[] = [];
+        let r: ReturnType<typeof runner> | null = null;
+        let abandoned = false;
+        let polls = 0;
+        const request: K8sRequest = (method, path, body) => {
+            if (path.startsWith(jobPath(namespace, runnerJobName(job)))) {
+                methods.push(method);
+                if (method === 'GET') {
+                    polls += 1;
+                    if (polls === 2) {
+                        abandoned = true;
+                        r?.abandon(job);
+                    }
+                    if (abandoned && polls > 4) throw new Error('still polling an abandoned run');
+                }
+            }
+            return base.request(method, path, body);
+        };
+        r = runner(request);
+
+        await expect(r.run(job, { id: SESSION, resume: false })).resolves.toMatchObject({ started: true });
+
+        expect(methods).not.toContain('DELETE');
+    });
+
     // U2: on Stop the loop's raceStep abandons a pre-helper and the heartbeat calls kill(job),
     // which deletes the runner Job and the services only. The helper's aux Job is deleted in
     // runHelper's finally, i.e. only once helperVerdict returns — the Job runs to completion.
@@ -7502,7 +7555,13 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
             expect(await runner(request).adopt(adopter)).toBeNull();
 
-            expect(polled().length).toBeLessThanOrEqual(Math.ceil(SUPERVISOR_FINALIZE_WAIT_MS / 60_000) + 1);
+            expect(polled().length).toBeLessThanOrEqual(
+                Math.ceil(
+                    finalizeWaitMs(
+                        loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' })
+                    ) / 60_000
+                ) + 1
+            );
         } finally {
             vi.useRealTimers();
         }
@@ -7522,7 +7581,13 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
             await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
 
-            expect(polled().length).toBeLessThanOrEqual(Math.ceil(SUPERVISOR_FINALIZE_WAIT_MS / 30_000) + 1);
+            expect(polled().length).toBeLessThanOrEqual(
+                Math.ceil(
+                    finalizeWaitMs(
+                        loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' })
+                    ) / 30_000
+                ) + 1
+            );
             expect(deletedPrior(calls)).toBe(false);
         } finally {
             vi.useRealTimers();
@@ -8010,9 +8075,22 @@ describe('the holder a supervisor follows, on kubernetes', () => {
             name: 'SUPERVISOR_TAKEOVER_MS',
             value: String(takeoverBoundMs(config)),
         });
-        expect(SUPERVISOR_FINALIZE_WAIT_MS).toBeGreaterThan(SUPERVISOR_REBIND_GRACE_MS + SUPERVISOR_REPORT_MS);
-        expect(SUPERVISOR_FINALIZE_WAIT_MS).toBe(SUPERVISOR_WINDDOWN_MS + SUPERVISOR_REBIND_GRACE_MS);
     });
+
+    // The next claim's wait must outlast a lost-but-alive driver's last contact (its heartbeat learning
+    // the lease is gone), the takeover bound counted from it, and the report: at every lease, not one.
+    it.each(['60', '120', '3600'])(
+        'waits a finalizing supervisor out past the takeover bound at a %s s lease',
+        (lease) => {
+            const config = loadDriverConfig({ EXECUTOR: 'kubernetes', DRIVER_LEASE_SECONDS: lease });
+            expect(finalizeWaitMs(config)).toBeGreaterThanOrEqual(
+                heartbeatPeriodMs(config) + takeoverBoundMs(config) + SUPERVISOR_REPORT_MS
+            );
+            expect(finalizeWaitMs(config)).toBe(
+                SUPERVISOR_WINDDOWN_MS + heartbeatPeriodMs(config) + takeoverBoundMs(config)
+            );
+        }
+    );
 
     it('leaves a reclaim group without its claim and the binding: it follows no newer holder', () => {
         const pod = reclaimGroupSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), job, job.leaseToken).spec.template

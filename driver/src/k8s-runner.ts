@@ -14,7 +14,7 @@ import {
 import type { RunOutcome, RunSession, Runner } from './runner.js';
 import { adoptFinishedRunner } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from './close-read.js';
-import { killedOutcome, ledgerOf, RunnerKilled, RunnerVanished, vanishedOutcome } from './k8s-kill.js';
+import { killedOutcome, ledgerOf, RunnerAbandoned, RunnerKilled, RunnerVanished, vanishedOutcome } from './k8s-kill.js';
 import { claimName, deleteJob, jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
 import {
     acquireClaim,
@@ -415,7 +415,8 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     } catch (e) {
         // A Stop deleted the Job: the loop parks a resolved outcome (docker's killed container
         // resolves exit 137), where a rejection would be left to the lease.
-        if (e instanceof RunnerKilled) return killedOutcome();
+        // An abandoned attempt's outcome is ignored (`abandonOnHandover`): its Job is the next holder's.
+        if (e instanceof RunnerKilled || e instanceof RunnerAbandoned) return killedOutcome();
         // The run cannot be read to its end — the Job vanished, or the cluster refused: nothing
         // more is asked of the group but `finish`, and nothing left may make it wait.
         releaseSteps(host, job);
@@ -657,6 +658,7 @@ export function createKubernetesRunner(
         runReview: (caller, review, session, control) =>
             runReviewInGroup(deps, reviewRunOf(caller, review, session, control), control?.signal),
         rebind: (group, binding, signal) => rebindGroup(deps, group, binding, signal),
+        abandon: (job) => ledgerOf(deps).abandon(job),
         syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
             syncCheckout(deps, job, session ?? null, githubToken),
         finish: (job: BoardJob) => finishGroup(deps, job),

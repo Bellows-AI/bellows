@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { applyHeartbeatVerdict, newJobState } from '../src/loop-attempt.js';
+import { abandonOnHandover } from '../src/loop-conclusion.js';
 import { recordEnding } from '../src/loop-phase.js';
 import type { LoopRuntime } from '../src/loop-types.js';
 
@@ -96,5 +97,27 @@ describe('a lost lease past the launch leaves the runner to the next claim (issu
         await apply(rt, state, 'removed');
 
         expect(calls).toContain('stopAgent');
+    });
+});
+
+describe('an abandoned run is told to end its in-process timers (#829)', () => {
+    it('abandons the runner once a handover lands, and not before', async () => {
+        const state = newJobState();
+        const abandoned = vi.fn();
+        const outcome = abandonOnHandover(state, new Promise<string>(() => undefined), abandoned);
+        await Promise.resolve();
+        expect(abandoned).not.toHaveBeenCalled();
+
+        state.signalHandover();
+
+        await expect(outcome).resolves.toBeNull();
+        expect(abandoned).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves a run that ended by itself alone', async () => {
+        const abandoned = vi.fn();
+
+        await expect(abandonOnHandover(newJobState(), Promise.resolve('done'), abandoned)).resolves.toBe('done');
+        expect(abandoned).not.toHaveBeenCalled();
     });
 });

@@ -1139,4 +1139,17 @@ describe('the gate server: departing a token (#829)', () => {
         expect((await call('agent', 'POST', '/publish')).status).toBe(UNAUTHORIZED_STATUS);
         await server.close();
     });
+
+    it('forgets the earlier batch after its own bound when the control token departs again', async () => {
+        const { server, call } = await departable();
+        server.departControl('sup', 150);
+        server.departControl('sup', 60_000);
+
+        await new Promise((resolve) => setTimeout(resolve, 300));
+
+        expect((await call('agent', 'POST', '/publish')).status).toBe(UNAUTHORIZED_STATUS);
+        expect((await call('exp', 'GET', '/export/chunk')).status).toBe(UNAUTHORIZED_STATUS);
+        await expect(call('sup', 'GET', '/control')).rejects.toThrow();
+        await server.close();
+    });
 });

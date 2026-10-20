@@ -68,9 +68,15 @@ export async function endIfDown(ctx: AttemptCtx, phase: string, beforePark?: () 
  * The run's outcome, or null once a drain's handover abandoned it: the run is contained and its
  * outcome ignored, its runner being the next claim's.
  */
-export function abandonOnHandover<T>(state: JobState, run: Promise<T>): Promise<T | null> {
+export function abandonOnHandover<T>(state: JobState, run: Promise<T>, abandon: () => void): Promise<T | null> {
     run.catch(() => undefined);
-    return Promise.race([run, state.handedOver.then(() => null)]);
+    return Promise.race([
+        run,
+        state.handedOver.then(() => {
+            abandon();
+            return null;
+        }),
+    ]);
 }
 
 async function conclude(ctx: AttemptCtx, decision: EndDecision): Promise<LeaseState | null> {

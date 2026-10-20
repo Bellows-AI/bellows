@@ -32,17 +32,13 @@ import {
     readUtf8,
 } from './docker-runner-support.js';
 import { abortableSleep, anyOf, type Bound, type Sleep, timeLeft } from './poll.js';
+import { finalizeWaitMs } from './supervisor-plan.js';
 import { supervisorLossOf, waitSupervisorExit } from './docker-group.js';
 import { supervisorName } from './docker-mailbox.js';
 import { readDockerKills } from './docker-teardown.js';
 import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from './adopt-skeleton.js';
 import type { KillLedger } from './kill-ledger.js';
-import {
-    type FinalReport,
-    finalReportOf,
-    SUPERVISOR_EXIT,
-    SUPERVISOR_FINALIZE_WAIT_MS,
-} from './supervisor-contract.js';
+import { type FinalReport, finalReportOf, SUPERVISOR_EXIT } from './supervisor-contract.js';
 import { containerName, workspacesMountArgs, opencodeSessionReadoutArgs, containerHardeningArgs } from './docker.js';
 import {
     AdoptionBlocked,
@@ -391,7 +387,7 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
             const supervisorExit = await waitSupervisorExit(
                 execDocker,
                 found.prior,
-                SUPERVISOR_FINALIZE_WAIT_MS,
+                finalizeWaitMs(config),
                 signal
             ).catch((e: Error) => {
                 throw new AdoptionBlocked(`the earlier supervisor could not be waited for: ${e.message}`);

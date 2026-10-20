@@ -216,12 +216,11 @@ function createDepartures() {
     return {
         has: (token: string): boolean => timers.has(token),
         add(tokens: string[], forMs: number): void {
-            const forget = setTimeout(() => {
-                for (const each of tokens) timers.delete(each);
-            }, forMs);
-            forget.unref();
+            // One timer per token: a token departed again must not clear the timer an earlier batch's others share.
             for (const each of tokens) {
                 clearTimeout(timers.get(each));
+                const forget = setTimeout(() => timers.delete(each), forMs);
+                forget.unref();
                 timers.set(each, forget);
             }
         },

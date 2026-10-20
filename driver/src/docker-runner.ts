@@ -66,7 +66,8 @@ import {
     type RunSession,
     type RuntimeSample,
 } from './runner.js';
-import { applyCloseTimeReadout, dockerAdopt, tickCacheWatch } from './docker-close-read.js';
+import { applyCloseTimeReadout, dockerAdopt } from './docker-close-read.js';
+import { armRunTimers } from './docker-run-timers.js';
 import {
     ERROR_DETAIL_MAX_CHARS,
     assertJobNotKilled,
@@ -91,7 +92,6 @@ import {
     type ExecDocker,
     readUtf8,
 } from './docker-runner-support.js';
-import { OPENCODE } from './executors.js';
 import { createDeadlineRegistry, type DeadlineRegistry } from './run-deadline.js';
 import { settleEnd } from './termination.js';
 
@@ -580,35 +580,18 @@ async function dockerRun(
         readUtf8(child.stdout, collect);
         readUtf8(child.stderr, collect);
 
-        // The BACKSTOP: the supervisor ends the agent at the run budget itself (its exit 124), so
-        // this only fires for a group whose supervisor stopped doing that — the budget plus the
-        // wind-down — and then kills all of it.
-        const deadline = deps.deadlines.start(job.leaseToken, agentBackstopMs(config, job), () => {
-            timedOut = true;
-            void dockerKillFor(deps, job, { reason: 'timeout', detail: '' });
-        });
-
-        /*
-         * The cache watch polls on a period while the run is live. Each tick is one
-         * throwaway probe container; a probe that fails once (the daemon is busy, the
-         * session is not there yet) just waits for the next tick, and the trigger itself
-         * needs three consecutive damning turns, so no single answer — or no single fluke —
-         * kills anything. The kill is this attempt's own, label-scoped like every other;
-         * the task-type check below keeps it on opencode, and config keeps it docker-only.
-         */
-        let cacheTimer: NodeJS.Timeout | null = null;
-        if (config.cacheWatch && job.executorType === OPENCODE) {
-            cacheTimer = setInterval(() => {
-                const kill = (j: BoardJob) =>
-                    dockerKillFor(deps, j, { reason: 'cache_lost', detail: cacheState.cacheLost ?? '' });
-                void tickCacheWatch({ execDocker, config, job, kill }, cacheState);
-            }, config.cacheWatchPollMs);
-        }
-
-        const done = () => {
-            deadline.clear();
-            if (cacheTimer) clearInterval(cacheTimer);
-        };
+        const done = armRunTimers(
+            deps,
+            { execDocker, config, job, backstopMs: agentBackstopMs(config, job) },
+            cacheState,
+            {
+                backstop: () => {
+                    timedOut = true;
+                    void dockerKillFor(deps, job, { reason: 'timeout', detail: '' });
+                },
+                cacheLost: (j) => dockerKillFor(deps, j, { reason: 'cache_lost', detail: cacheState.cacheLost ?? '' }),
+            }
+        );
 
         /*
          * A spawn failure makes Node deliver 'error' and then 'close' with a null code.
@@ -748,6 +731,7 @@ export function createDockerRunner(
         runReview: (caller, review, session, control) =>
             runDockerReview(gateDeps(deps, caller), reviewRunOf(caller, review, session, control), control?.signal),
         rebind: (group, binding, signal) => rebindGroup(execDocker, group, binding, signal),
+        abandon: (job) => ledger.abandon(job),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
         restartServices: (job, signal) => restartJobServices(job, execDocker, anyOf(signal, ledger.signal(job))),
