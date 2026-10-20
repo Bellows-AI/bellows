@@ -5,7 +5,7 @@ import { runnerName } from './k8s-podspec.js';
 import { expectOk, HTTP_NOT_FOUND, type K8sDeps } from './k8s-transport.js';
 import type { RunOutcome } from './runner.js';
 import type { SupervisorReport } from './supervisor-contract.js';
-import { type KillRecord, killMarkOf, killRecordsOf, settleEnd } from './termination.js';
+import { type KillRecord, killMarkOf, settleEnd } from './termination.js';
 
 /**
  * What a Stop (`kill`) leaves for the polls it interrupts. Deleting a Job makes the very next
@@ -68,18 +68,7 @@ export function vanishedRunner(deps: K8sDeps, job: BoardJob): Error {
 export const ledgerOf = (deps: K8sDeps): KillLedger =>
     (deps.ledger ??= createKillLedger({
         write: (job, kill) => recordRunnerKill(deps, job, kill),
-        read: (job) => readRunnerKills(deps, job),
     }));
-
-/** The reasons recorded on the attempt's runner Job; a Job already gone has none, any other refusal throws. */
-async function readRunnerKills(deps: K8sDeps, job: BoardJob): Promise<KillRecord[]> {
-    const got = await deps.request('GET', jobPath(deps.config.k8sNamespace, runnerName(job)));
-    if (got.status === HTTP_NOT_FOUND) return [];
-    expectOk(got, 'reading why the runner job was ended');
-    const annotations = (JSON.parse(got.body) as { metadata?: { annotations?: Record<string, string> } }).metadata
-        ?.annotations;
-    return killRecordsOf(annotations);
-}
 
 /**
  * Records why the driver is ending the attempt on its runner Job, one annotation per reason, for the

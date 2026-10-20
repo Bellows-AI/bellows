@@ -33,6 +33,7 @@ import {
 } from './docker-runner-support.js';
 import { supervisorLossOf, waitSupervisorExit } from './docker-group.js';
 import { supervisorName } from './docker-mailbox.js';
+import { readDockerKills } from './docker-teardown.js';
 import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from './adopt-skeleton.js';
 import type { KillLedger } from './kill-ledger.js';
 import { type FinalReport, finalReportOf, SUPERVISOR_EXIT, SUPERVISOR_WINDDOWN_MS } from './supervisor-contract.js';
@@ -381,7 +382,7 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
         // hard kill explains the supervisor's exit, and every reason is the verdict it was live; so does
         // the final report the supervisor logged, which a crash after it does not unsay (#824).
         read: async ({ prior, supervisorExit }) => {
-            const kills = await deps.ledger.read(prior);
+            const kills = await readDockerKills(execDocker, prior);
             const report = await readSupervisorReport(execDocker, prior);
             return {
                 end: {

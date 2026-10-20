@@ -5,7 +5,7 @@ import { boardJob } from './fixtures/board-job.js';
 
 const job = (over: { id?: string; leaseToken?: string } = {}) => ({ ...boardJob(), ...over });
 
-/** The executor's two durable primitives, faked: a volume or annotation per (lease, reason). */
+/** The executor's durable write, faked: a volume or annotation per (lease, reason). */
 function fakeStore() {
     const written: Array<{ lease: string; kill: KillRecord }> = [];
     return {
@@ -13,7 +13,6 @@ function fakeStore() {
         write: async (j: { leaseToken: string }, kill: KillRecord) => {
             written.push({ lease: j.leaseToken, kill });
         },
-        read: async (j: { leaseToken: string }) => written.filter((w) => w.lease === j.leaseToken).map((w) => w.kill),
     };
 }
 
@@ -46,26 +45,20 @@ describe('the kill ledger', () => {
         expect(ledger.was(job({ leaseToken: 'b' })).hard).toBe(true);
     });
 
-    it('records through the executor write and reads back through its read', async () => {
+    it('records through the executor write', async () => {
         const store = fakeStore();
         const ledger = createKillLedger(store);
         await ledger.record(job({ leaseToken: 'a' }), { reason: 'timeout', detail: 'd' });
         expect(store.written).toEqual([{ lease: 'a', kill: { reason: 'timeout', detail: 'd' } }]);
-        expect(await ledger.read(job({ leaseToken: 'a' }))).toEqual([{ reason: 'timeout', detail: 'd' }]);
-        expect(await ledger.read(job({ leaseToken: 'b' }))).toEqual([]);
     });
 
-    it('rejects a refused write and a refused read as they come', async () => {
+    it('rejects a refused write as it comes', async () => {
         const ledger = createKillLedger({
             write: async () => {
                 throw new Error('refused write');
             },
-            read: async () => {
-                throw new Error('refused read');
-            },
         });
         await expect(ledger.record(job(), { reason: 'timeout', detail: '' })).rejects.toThrow('refused write');
-        await expect(ledger.read(job())).rejects.toThrow('refused read');
     });
 
     it('two runner instances addressing one attempt do not see each other kills', () => {

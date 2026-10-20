@@ -6,7 +6,6 @@ import {
     dockerKillFor,
     dockerServiceTeardown,
     dockerStopAgent,
-    readDockerKills,
     recordDockerKill,
 } from './docker-teardown.js';
 import { createKillLedger, type KillLedger } from './kill-ledger.js';
@@ -652,7 +651,6 @@ export function createDockerRunner(
     const deadlines = createDeadlineRegistry();
     const ledger = createKillLedger({
         write: (job, kill) => recordDockerKill(execDocker, job, kill),
-        read: (job) => readDockerKills(execDocker, job),
     });
     const { files = { writeFile, rm }, steps, endpoint, sleep = abortableSleep } = extras;
     const deps: RunnerDeps = {
