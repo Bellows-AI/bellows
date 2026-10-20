@@ -6,6 +6,7 @@ import { stepLost } from './step-control.js';
 import { declaredTimeoutMs, type GateRun } from './gates.js';
 import { clearPendingQuestions, down, raceStep } from './loop-attempt.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
+import { takeoverBoundMs } from './supervisor-plan.js';
 import type { JobState } from './loop-attempt.js';
 import { askGithubToken } from './loop-github.js';
 import { createPublishRelay } from './loop-publish.js';
@@ -241,6 +242,18 @@ export function closeRunControl(rt: LoopRuntime, state: JobState): void {
     if (state.control === null) return;
     rt.gates?.server.closeControl(state.control);
     // Closed once: `end` (`loop-conclusion.ts`) closes it after the group's `finish`.
+    state.control = null;
+}
+
+/**
+ * Leaves the attempt's control token to a newer holder (#829): its group is retained, so the token
+ * is hung up on — never answered 401, which the group's supervisor reads as the end of its attempt —
+ * until the group's takeover bound passes and the holder it waits for has named itself.
+ */
+export function departRunControl(rt: LoopRuntime, state: JobState): void {
+    clearPendingQuestions(state);
+    if (state.control === null) return;
+    rt.gates?.server.departControl(state.control, takeoverBoundMs(rt.config));
     state.control = null;
 }
 

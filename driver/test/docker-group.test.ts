@@ -37,7 +37,7 @@ import {
     SUPERVISOR_CREDENTIAL_NAMES,
     SUPERVISOR_EXIT,
 } from '../src/supervisor-contract.js';
-import { bindingBody, orphanBoundMs } from '../src/supervisor-plan.js';
+import { bindingBody, orphanBoundMs, takeoverBoundMs } from '../src/supervisor-plan.js';
 import { REBIND_DEADLINE_MS } from '../src/runner.js';
 
 /*
@@ -132,6 +132,7 @@ describe('the supervisor container', () => {
     it('is told its claim and where a newer holder names itself, which the control pair is not', () => {
         expect(argv).toContain(`SUPERVISOR_CLAIM_SEQ=${job.claimSeq}`);
         expect(argv).toContain(`SUPERVISOR_BINDING_FILE=${SUPERVISOR_BINDING_PATH}`);
+        expect(argv).toContain(`SUPERVISOR_TAKEOVER_MS=${takeoverBoundMs(config)}`);
     });
 
     it('does not tell a reclaim group its claim or the binding: it follows no newer holder', () => {
@@ -141,7 +142,7 @@ describe('the supervisor container', () => {
             { exporting: false, agentless: true, reclaim: true },
             '/tmp/supervisor.env'
         );
-        expect(reclaiming.filter((arg) => /^SUPERVISOR_(CLAIM_SEQ|BINDING_FILE)=/.test(arg))).toEqual([]);
+        expect(reclaiming.filter((arg) => /^SUPERVISOR_(CLAIM_SEQ|BINDING_FILE|TAKEOVER_MS)=/.test(arg))).toEqual([]);
     });
 
     it('takes its control pair by env file, never by argv', () => {

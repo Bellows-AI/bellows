@@ -2549,8 +2549,8 @@ describe('the poll loop', () => {
         expect(runner.killed).toEqual([]);
     });
 
-    // Issue #828: a lease lost while the agent runs kills it from the heartbeat; the board is told
-    // nothing, and the runner is retained for the new holder, never finished.
+    // Issues #828, #829: a lease lost while the agent runs leaves it running (no kill from the heartbeat); the
+    // board is told nothing, and the runner is retained for the new holder, never finished.
     it('tells the board nothing when the heartbeat reports the lease lost mid-run, and retains the runner', async () => {
         const board = stubBoard([job(1)]);
         let launched = false;
@@ -2567,7 +2567,7 @@ describe('the poll loop', () => {
         const started = drive({ ...board, runner });
         await new Promise((resolve) => setTimeout(resolve, 20));
         expect(launched).toBe(true);
-        expect(runner.killed).toEqual([job(1).id]);
+        expect(runner.killed).toEqual([]);
         expect(board.board.interrupted).toEqual([]);
         expect(board.board.suspended).toEqual([]);
         expect(board.board.completed).toEqual([]);
@@ -4078,8 +4078,8 @@ describe('verification gates', () => {
 
         await drive({ ...board, runner, gates: stack.gates });
 
-        // The heartbeat did mark the lease lost while the re-acquire was pending…
-        expect(runner.killed).toEqual([gatedJob(1).id]);
+        // The heartbeat did mark the lease lost while the re-acquire was pending — past the launch it kills nothing…
+        expect(runner.killed).toEqual([]);
         // …and the gate never ran against the checkout the next attempt now owns — nor does a
         // verdict land: a lost lease settles the attempt the way a lost run does, unreported.
         expect(ran).toEqual([]);
@@ -5636,7 +5636,8 @@ describe('a stand-down after the gates (issue #427)', () => {
 
             await drive({ ...board, runner });
 
-            expect(runner.killed).toEqual([job(1).id]); // the heartbeat DID observe it
+            // The heartbeat DID observe it: a lost lease past the launch leaves the runner, a stop or a removal kills it.
+            expect(runner.killed).toEqual(kind === 'lost' ? [] : [job(1).id]);
             expect(runner.published).toEqual([]);
             expect(board.board.completed).toEqual([]);
             if (kind === 'stop') expect(board.board.suspended).toEqual([job(1).id]);
@@ -5916,7 +5917,7 @@ describe('a cooperative stop (issue #442)', () => {
         expect(runner.killed).toEqual([]);
     });
 
-    it('still kills at once on a lost lease while draining', async () => {
+    it('leaves the runner at once on a lost lease while draining, killing nothing', async () => {
         const board = stubBoard([job(1)]);
         let verdict: HeartbeatVerdict = { result: 'held', cancelRequested: false };
         board.board.heartbeat = async () => {
@@ -5929,13 +5930,14 @@ describe('a cooperative stop (issue #442)', () => {
             const target = board.board.beats + 2;
             await until(() => board.board.beats >= target);
             verdict = 'lost';
-            await until(() => runner.killed.length > 0);
+            const lostAt = board.board.beats + 2;
+            await until(() => board.board.beats >= lostAt);
             return ok();
         });
 
         await driveControlled({ ...board, runner, gates });
 
-        expect(runner.killed).toEqual([job(1).id]);
+        expect(runner.killed).toEqual([]);
         expect(board.board.suspended).toEqual([]);
     });
 
@@ -6208,16 +6210,18 @@ describe('questions (issue #226)', () => {
     });
 
     it('drops the question entry when the lease is lost while pending', async () => {
-        const { stack } = await driveAsking(async ({ control, beat, runner }) => {
+        const { stack } = await driveAsking(async ({ control, beat, stack: running }) => {
             await recordQuestion(control, asked('toolu_1'));
             beat.verdict = 'lost';
-            await until(() => runner.killed.length > 0);
+            await until(() => running.controlDeparted.length > 0);
             return ok();
         });
         await new Promise((resolve) => setTimeout(resolve, 80));
 
         expect(stack.controls.size).toBe(0);
-        expect(stack.controlClosed).toEqual(stack.controlOpened);
+        // The runner is the new holder's: its token is departed, never closed on.
+        expect(stack.controlDeparted.map((departed) => departed.token)).toEqual(stack.controlOpened);
+        expect(stack.controlClosed).toEqual([]);
     });
 
     it('treats a lost lease on the question report as a lease loss', async () => {
@@ -6832,7 +6836,8 @@ describe('final envelope (issue #821 D1)', () => {
 
         expect(order).not.toContain('finish');
         expect(released).toEqual([]);
-        expect(stack.controlClosed).toHaveLength(1);
+        expect(stack.controlDeparted).toHaveLength(1);
+        expect(stack.controlClosed).toEqual([]);
         expect(
             logs.some((l) =>
                 l.includes(

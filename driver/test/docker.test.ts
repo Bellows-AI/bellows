@@ -87,6 +87,7 @@ import {
     MAILBOXES,
     SUPERVISOR_ENV,
     SUPERVISOR_EXIT,
+    SUPERVISOR_FINALIZE_WAIT_MS,
     SUPERVISOR_REPORT_PREFIX,
     type StepKind,
     type StepRequest,
@@ -5750,6 +5751,20 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const waited = calls.findIndex((args) => args[0] === 'wait');
         expect(waited).toBeGreaterThanOrEqual(0);
         expect(calls.findIndex((args) => args[0] === 'logs')).toBeGreaterThan(waited);
+    });
+
+    // #829 S3: a released group's supervisor may wait the takeover grace for a holder before it finalizes.
+    it('waits for the earlier attempt’s supervisor the wind-down and the takeover grace', async () => {
+        const { exec: base, logs } = daemon(listing());
+        const timeouts: (number | undefined)[] = [];
+        const exec = (args: string[], options?: { timeout?: number }) => {
+            if (args[0] === 'wait') timeouts.push(options?.timeout);
+            return base(args);
+        };
+
+        await dockerRunner(exec, { spawn: logs }).adopt(adopter);
+
+        expect(timeouts).toEqual([SUPERVISOR_FINALIZE_WAIT_MS]);
     });
 
     // A killed supervisor with no recorded reason is a supervisor lost — also where a record the

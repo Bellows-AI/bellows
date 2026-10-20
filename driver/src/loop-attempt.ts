@@ -415,6 +415,14 @@ export async function applyHeartbeatVerdict(
     if (beyondVerdicts(state)) return;
     if (verdict === 'lost') {
         recordEnding(state, 'lost');
+        // Past the launch the runner is the new holder's to take over: nothing here kills it or closes its tokens.
+        if (state.ending?.kind === 'lost' && state.launched) {
+            log(`job ${job.id}: lease lost past the launch, leaving the runner to the next claim`);
+            state.abortNow();
+            state.wake();
+            state.signalHandover();
+            return;
+        }
         log(`job ${job.id}: lease lost, killing the runner`);
     } else if (verdict === 'removed') {
         recordEnding(state, 'removed');

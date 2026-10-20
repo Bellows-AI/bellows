@@ -151,7 +151,11 @@ export async function holderGroupsOf(deps: K8sDeps, job: BoardJob, holder: strin
 /** The bound of a reclaim group: its one step's deadline, and the time to finalize. */
 const RECLAIM_GROUP_SECONDS = 1200;
 
-const FOLLOWING_ENV: ReadonlySet<string> = new Set([SUPERVISOR_ENV.claimSeq, SUPERVISOR_ENV.bindingFile]);
+const FOLLOWING_ENV: ReadonlySet<string> = new Set([
+    SUPERVISOR_ENV.claimSeq,
+    SUPERVISOR_ENV.bindingFile,
+    SUPERVISOR_ENV.takeoverMs,
+]);
 
 export function reclaimGroupSpec(config: DriverConfig, job: BoardJob, holder: string): RunnerJobSpec {
     // A supervisor alone (#773 D11): no agent, and no gate or service sidecar its checkout would bring.

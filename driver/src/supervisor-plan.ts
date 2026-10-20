@@ -13,6 +13,7 @@ import {
     SUPERVISOR_ORPHAN_LEASE_SHARE,
     SUPERVISOR_ORPHAN_MAX_MS,
     SUPERVISOR_ORPHAN_MIN_MS,
+    SUPERVISOR_REBIND_GRACE_MS,
     SUPERVISOR_STEPS_MS,
     type SupervisorBinding,
     SUPERVISOR_WINDDOWN_MS,
@@ -34,6 +35,10 @@ export const orphanBoundMs = (config: DriverConfig): number =>
         SUPERVISOR_ORPHAN_MAX_MS,
         Math.max(SUPERVISOR_ORPHAN_MIN_MS, (config.leaseSeconds * MS_PER_SECOND) / SUPERVISOR_ORPHAN_LEASE_SHARE)
     );
+
+/** How long a released group waits for a newer holder: its lease, then the grace to find the group and bind it (#829). */
+export const takeoverBoundMs = (config: DriverConfig): number =>
+    config.leaseSeconds * MS_PER_SECOND + SUPERVISOR_REBIND_GRACE_MS;
 
 /**
  * The declared gate image of the attempt's group (issue #773), or null when the group runs no gate
@@ -66,6 +71,7 @@ export function supervisorLiterals(
             : ([
                   [SUPERVISOR_ENV.claimSeq, String(job.claimSeq)],
                   [SUPERVISOR_ENV.bindingFile, SUPERVISOR_BINDING_PATH],
+                  [SUPERVISOR_ENV.takeoverMs, String(takeoverBoundMs(config))],
               ] as [string, string][])),
         ...(group.exporting ? ([[SUPERVISOR_ENV.exports, '1']] as [string, string][]) : []),
         ...(group.agentless ? ([[SUPERVISOR_ENV.agentless, '1']] as [string, string][]) : []),

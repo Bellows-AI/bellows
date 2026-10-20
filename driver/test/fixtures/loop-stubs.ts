@@ -560,6 +560,7 @@ export function stubGateStack(
         killsRaised: [] as string[],
         deadNotes: [] as [string, string | null][],
         controlClosed: [] as string[],
+        controlDeparted: [] as { token: string; forMs: number }[],
         /** The real control state per open token (issue #226): questions run through the real code. */
         controls: new Map<string, ControlEntry>(),
         acquired: [] as string[],
@@ -638,6 +639,11 @@ export function stubGateStack(
             },
             closeControl: (token: string) => {
                 stack.controlClosed.push(token);
+                const control = stack.controls.get(token);
+                for (const [key, entry] of stack.controls) if (entry === control) stack.controls.delete(key);
+            },
+            departControl: (token: string, forMs: number) => {
+                stack.controlDeparted.push({ token, forMs });
                 const control = stack.controls.get(token);
                 for (const [key, entry] of stack.controls) if (entry === control) stack.controls.delete(key);
             },

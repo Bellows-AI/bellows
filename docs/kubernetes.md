@@ -40,16 +40,17 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
   `driver/test/k8s.test.ts` (`after its attempt was refunded`, `no claim sequence`).
 - **A runner group whose driver is lost ends inside its lease** (`orphanBoundMs`, `driver/src/supervisor-plan.ts`;
   30 s floor under a 120 s lease) and is adopted; lost before `go`, its supervisor exits `SUPERVISOR_EXIT.lost` and
-  the run is redone, never adopted. `driver/test/supervisor.test.ts`, `driver/test/scripts-claude-export.test.ts`,
-  `driver/test/k8s.test.ts`.
+  the run is redone, never adopted; a released group (its agent went, `supervisor: released the agent`) waits
+  `takeoverBoundMs` (the lease plus `SUPERVISOR_REBIND_GRACE_MS`) for a newer holder instead.
+  `driver/test/supervisor.test.ts`, `driver/test/scripts-claude-export.test.ts`, `driver/test/k8s.test.ts`.
 - **The driver never reads a Secret back** — the Role grants no `get`/`list`; attempt Secrets are reaped by
   derived name; the binding patch's answer is discarded unread.
 - **`make start` refuses a state claim initialised without `PGDATA`** and a pre-StatefulSet state release; both name
   `make reset`. `core/test/makefile.state-preflight.test.ts`.
 - Stated limit: a runner still RUNNING when its driver is lost is swept by the next claim's re-claim fence and
   the job redone in its session and tree, an interruption inside the budget; one whose agent exited is waited
-  out (`SUPERVISOR_WINDDOWN_MS`) and adopted with its logged report, and a lost driver still alive steps into it
-  until its lease or the group's orphan bound ends, the wait outlasting both. A finished one is adoptable until
+  out (`SUPERVISOR_FINALIZE_WAIT_MS`) and adopted with its logged report, and a lost driver still alive steps into it
+  until it learns its lease was lost, then hangs up on the group's tokens (`depart`), the wait outlasting both. A finished one is adoptable until
   its Job's one-hour `ttlSecondsAfterFinished`. `driver/src/k8s-adopt.ts`, `driver/src/docker-close-read.ts`.
 - Stated limit: a rebind reaches a live supervisor only once the kubelet refreshes the attempt Secret's volume —
   up to its sync period (default one minute) plus its cache delay; docker's write is seen on the supervisor's next

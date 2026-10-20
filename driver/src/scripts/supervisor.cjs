@@ -54,6 +54,7 @@
 //   SUPERVISOR_EXPORTS        — `1` when an exporter container waits for the drain order.
 //   SUPERVISOR_AGENTLESS      — `1` for an attempt with no agent container: no `go` is awaited.
 //   SUPERVISOR_ORPHAN_MS      — how long an unanswering driver is served before finalizing (default 90000).
+//   SUPERVISOR_TAKEOVER_MS    — the same once the agent was released and a binding file can name a newer holder (default: the orphan bound).
 //   SUPERVISOR_STEP_WAIT_MS   — one `GET /step` long poll (default 15000).
 //   SUPERVISOR_REPORT_MS      — how long a departure's report is redelivered before finalizing (default 60000).
 //   SUPERVISOR_GATE           — `1` when a gate container serves the gate mailbox; absent, a gate step is refused.
@@ -185,6 +186,8 @@ const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_SERVER_ERROR = 500;
 const REQUEST_TIMEOUT_MS = 10_000;
 const REPORT_PREFIX = 'FACTORY_SUPERVISOR_REPORT ';
+/** Logged once when the agent is released: the evidence a newer claim reads to take a running agent over (#829). */
+const RELEASED_LINE = 'supervisor: released the agent';
 const STEP_PATH = '/step';
 const REPORT_PATH = '/report';
 
@@ -287,6 +290,8 @@ function settingsOf(env) {
         exports: env.SUPERVISOR_EXPORTS === '1',
         agentless: env.SUPERVISOR_AGENTLESS === '1',
         orphanMs: positive(env, 'SUPERVISOR_ORPHAN_MS', DEFAULT_ORPHAN_MS),
+        // How long a RELEASED group waits for a newer holder (#829): its agent is the work to adopt.
+        takeoverMs: positive(env, 'SUPERVISOR_TAKEOVER_MS', positive(env, 'SUPERVISOR_ORPHAN_MS', DEFAULT_ORPHAN_MS)),
         stepWaitMs: positive(env, 'SUPERVISOR_STEP_WAIT_MS', DEFAULT_STEP_WAIT_MS),
         reportMs: positive(env, 'SUPERVISOR_REPORT_MS', DEFAULT_REPORT_MS),
         gate: env.SUPERVISOR_GATE === '1',
@@ -427,8 +432,16 @@ async function ask(run, method, route, options = {}) {
     return run.bindingGen === gen ? answer : null;
 }
 
-/** The driver stopped answering for longer than the orphan bound: nobody is left to give this group orders. */
-const orphaned = (run) => Boolean(run.binding.url) && run.now() - run.contactedAt > run.settings.orphanMs;
+/**
+ * A released group with a binding file to be followed waits for a newer holder (#829): its agent is
+ * the work a takeover adopts. A group never released, or one no holder can name itself to, is redone.
+ */
+const waitsForHolder = (run) => run.goAt !== null && !run.settings.agentless && Boolean(run.settings.bindingFile);
+
+/** The driver stopped answering for longer than the orphan bound (the takeover bound once released): nobody is left to give this group orders. */
+const orphaned = (run) =>
+    Boolean(run.binding.url) &&
+    run.now() - run.contactedAt > (waitsForHolder(run) ? run.settings.takeoverMs : run.settings.orphanMs);
 
 /** A binding file's text as a binding strictly newer than `claimSeq`; null for anything else. */
 function newerBinding(text, claimSeq) {
@@ -797,10 +810,20 @@ async function execGate(run, step) {
     }
 }
 
-/** A gate or review in its turn: one at a time per lane, whatever the driver sends. */
-function runGate(run, step) {
+/**
+ * A gate or review in its turn: one at a time per lane, whatever the driver sends. The turn re-reads
+ * the ledger and settles the call inside itself: the call ahead of this one in the lane may have
+ * landed the effect, and the next turn must see it.
+ */
+function runGate(run, step, entry) {
     const lane = run.lanes[step.kind];
-    const turn = lane.turn.then(() => execGate(run, step));
+    const turn = lane.turn.then(async () => {
+        Object.assign(entry, ledgerOf(run, step));
+        const outcome = entry.effect
+            ? { result: { ...entry.effect, replayed: true }, interrupted: false }
+            : await execGate(run, step);
+        return settleCall(run, entry, step, outcome);
+    });
     lane.turn = turn.catch(() => undefined);
     lane.inFlight += 1;
     return turn.finally(() => {
@@ -821,6 +844,7 @@ function orderGo(run, step) {
     const budget = Number(step.env?.BUDGET_MS);
     if (Number.isFinite(budget) && budget > 0) run.budget = budget;
     writeAtomic(run.file.go, `${run.goAt}\n`);
+    run.log(RELEASED_LINE);
     return stepResult(0);
 }
 
@@ -881,7 +905,12 @@ async function performStep(run, step) {
 /** Runs a new call — a child of this container, or a gate the gate container runs — its ledger kept as it goes. */
 async function runCall(run, entry, step) {
     recordCall(run, entry, step.invocation, { state: 'running' });
-    const { result, interrupted } = LANES.includes(step.kind) ? await runGate(run, step) : await spawnStep(run, step);
+    if (LANES.includes(step.kind)) return runGate(run, step, entry);
+    return settleCall(run, entry, step, await spawnStep(run, step));
+}
+
+/** Records how a call ended: an effect that landed, a call done, or one interrupted. */
+function settleCall(run, entry, step, { result, interrupted }) {
     if (interrupted) {
         recordCall(run, entry, step.invocation, { state: 'interrupted', result });
         return result;
@@ -1435,6 +1464,7 @@ module.exports = {
     EXIT,
     CAUSE,
     REPORT_PREFIX,
+    RELEASED_LINE,
     REPORT_MS: DEFAULT_REPORT_MS,
     STEP_KINDS,
     GATE_FILES,

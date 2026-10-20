@@ -75,6 +75,12 @@ export interface ControlChannel {
     raiseKill(token: string): void;
     /** Ends the attempt: its stop flag and its questions are dropped, and every token of it gets 401. */
     close(token: string): void;
+    /**
+     * Leaves the attempt to a newer holder (#829): like `close`, but every token of it — the supervisor's, the
+     * agent's, the exporter's — is hung up on for `forMs` instead of answered 401, which a live supervisor
+     * reads as the end of its attempt. Past the bound the tokens are unknown, as any closed token is.
+     */
+    depart(token: string, forMs: number): void;
     /** Drops every token — the server is closing. */
     clear(): void;
     /** Settles a pending question; false and no change for an unknown token or id or a settled question. */
@@ -166,6 +172,66 @@ async function serveWithoutEntry(
     }
 }
 
+/** What a route answers: its status and JSON body. */
+interface BodyAnswer {
+    status: number;
+    body: unknown;
+}
+
+/** A route that reads a bounded body: 413 past the bound, `stale` once the attempt closed meanwhile, else its answer. */
+async function afterBody(
+    request: IncomingMessage,
+    limit: number,
+    stale: () => BodyAnswer | null,
+    answer: (raw: string) => BodyAnswer | Promise<BodyAnswer>
+): Promise<BodyAnswer> {
+    const raw = await readBody(request, limit);
+    if (raw === null) return { status: HTTP_PAYLOAD_TOO_LARGE, body: { error: 'body too large' } };
+    return stale() ?? answer(raw);
+}
+
+type Stale = () => BodyAnswer | null;
+
+/** `POST /question` / `GET /question/:id`, once the token is known. */
+const serveQuestion = (control: ControlEntry, request: IncomingMessage, stale: Stale) =>
+    request.method === 'GET'
+        ? readQuestion(control, (request.url ?? '').slice(QUESTION_PATH.length + 1))
+        : afterBody(request, QUESTION_BODY_LIMIT, stale, (raw) => recordQuestion(control, raw));
+
+/** `POST /publish`: the body names nothing and is only drained, bounded. */
+const serveDraftPublish = (control: ControlEntry, request: IncomingMessage, stale: Stale) =>
+    afterBody(request, PUBLISH_BODY_LIMIT, stale, () => servePublish(control.publishing, control.publisher));
+
+/** `POST /review` / `GET /review/:key`, once the token is known. */
+const serveReview = (control: ControlEntry, request: IncomingMessage, stale: Stale) =>
+    request.method === 'GET'
+        ? serveReviewRead(control.reviewer, (request.url ?? '').slice(REVIEW_PATH.length + 1))
+        : afterBody(request, REVIEW_BODY_LIMIT, stale, (raw) =>
+              serveReviewRequest(control.reviewing, control.reviewer, raw)
+          );
+
+/** The tokens of attempts left to a newer holder (#829): remembered, to be hung up on, until their bound passes. */
+function createDepartures() {
+    const timers = new Map<string, NodeJS.Timeout>();
+    return {
+        has: (token: string): boolean => timers.has(token),
+        add(tokens: string[], forMs: number): void {
+            const forget = setTimeout(() => {
+                for (const each of tokens) timers.delete(each);
+            }, forMs);
+            forget.unref();
+            for (const each of tokens) {
+                clearTimeout(timers.get(each));
+                timers.set(each, forget);
+            }
+        },
+        clear(): void {
+            for (const timer of timers.values()) clearTimeout(timer);
+            timers.clear();
+        },
+    };
+}
+
 export function createControlChannel(steps: StepBroker = createStepBroker()): ControlChannel {
     /** Every attempt, under its supervisor token. */
     const controls = new Map<string, ControlEntry>();
@@ -173,6 +239,20 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
     const agents = new Map<string, string>();
     /** A transcript exporter's token, to the attempt it belongs to and, for a review's, the relay of its own. */
     const exporters = new Map<string, { owner: string; slot?: ExportSlot }>();
+    const departed = createDepartures();
+
+    const close = (token: string) => {
+        controls.delete(token);
+        steps.close(token);
+        for (const [agent, owner] of agents) if (owner === token) agents.delete(agent);
+        for (const [exporter, { owner }] of exporters) if (owner === token) exporters.delete(exporter);
+    };
+
+    /** A closed attempt's answer: 401, unless it departed, which no answer at all stands for. */
+    const gone = (request: IncomingMessage, auth: string) => {
+        if (departed.has(auth)) request.socket.destroy();
+        return { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
+    };
 
     /** The attempt a token of any role belongs to, or undefined once it is closed. */
     const entryOf = (auth: string): ControlEntry | undefined =>
@@ -182,38 +262,6 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
     const doorsOf = (auth: string): readonly Route[] => {
         if (controls.has(auth)) return SUPERVISOR_ROUTES;
         return exporters.has(auth) ? EXPORTER_ROUTES : AGENT_ROUTES;
-    };
-
-    /** `POST /question` / `GET /question/:id`, once the token is known. */
-    const serveQuestion = async (control: ControlEntry, request: IncomingMessage, auth: string) => {
-        if (request.method === 'GET') return readQuestion(control, (request.url ?? '').slice(QUESTION_PATH.length + 1));
-        const raw = await readBody(request, QUESTION_BODY_LIMIT);
-        if (raw === null) return { status: HTTP_PAYLOAD_TOO_LARGE, body: { error: 'body too large' } };
-        // Closed while the body arrived: the entry read before is the dead attempt's.
-        if (entryOf(auth) !== control) return { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
-        return recordQuestion(control, raw);
-    };
-
-    /** `POST /publish`: the body names nothing and is only drained, bounded. */
-    const serveDraftPublish = async (control: ControlEntry, request: IncomingMessage, auth: string) => {
-        if ((await readBody(request, PUBLISH_BODY_LIMIT)) === null) {
-            return { status: HTTP_PAYLOAD_TOO_LARGE, body: { error: 'body too large' } };
-        }
-        // Closed while the body arrived: the entry read before is the dead attempt's.
-        if (entryOf(auth) !== control) return { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
-        return servePublish(control.publishing, control.publisher);
-    };
-
-    /** `POST /review` / `GET /review/:key`, once the token is known. */
-    const serveReview = async (control: ControlEntry, request: IncomingMessage, auth: string) => {
-        if (request.method === 'GET') {
-            return serveReviewRead(control.reviewer, (request.url ?? '').slice(REVIEW_PATH.length + 1));
-        }
-        const raw = await readBody(request, REVIEW_BODY_LIMIT);
-        if (raw === null) return { status: HTTP_PAYLOAD_TOO_LARGE, body: { error: 'body too large' } };
-        // Closed while the body arrived: the entry read before is the dead attempt's.
-        if (entryOf(auth) !== control) return { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
-        return serveReviewRequest(control.reviewing, control.reviewer, raw);
     };
 
     return {
@@ -246,13 +294,16 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
             control.stop = true;
             control.kill = true;
         },
-        close(token) {
-            controls.delete(token);
-            steps.close(token);
-            for (const [agent, owner] of agents) if (owner === token) agents.delete(agent);
-            for (const [exporter, { owner }] of exporters) if (owner === token) exporters.delete(exporter);
+        close,
+        depart(token, forMs) {
+            const tokens = [token];
+            for (const [agent, owner] of agents) if (owner === token) tokens.push(agent);
+            for (const [exporter, { owner }] of exporters) if (owner === token) tokens.push(exporter);
+            close(token);
+            departed.add(tokens, forMs);
         },
         clear() {
+            departed.clear();
             for (const token of controls.keys()) steps.close(token);
             controls.clear();
             agents.clear();
@@ -271,6 +322,10 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
             if (control) cancelPendingQuestions(control);
         },
         async serve(request, reply, auth) {
+            if (departed.has(auth)) {
+                request.socket.destroy();
+                return true;
+            }
             const route = routeOf(request);
             if (route === null) return false;
             const control = entryOf(auth);
@@ -306,7 +361,9 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
                 step: serveStep,
                 report: serveStep,
             }[route];
-            const answer = await serveRoute(control, request, auth);
+            // Closed while a body arrived: the entry read before is the dead attempt's.
+            const stale = (): BodyAnswer | null => (entryOf(auth) === control ? null : gone(request, auth));
+            const answer = await serveRoute(control, request, stale);
             respondJson(reply, answer.status, answer.body);
             return true;
         },

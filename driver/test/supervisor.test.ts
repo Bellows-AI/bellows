@@ -1813,4 +1813,141 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
         supervised.agentExits(0);
         await supervised.done;
     });
+
+    describe('waiting for a newer holder (#829 S3)', () => {
+        const ORPHAN = { SUPERVISOR_ORPHAN_MS: '300' };
+        const TAKEOVER = { ...ORPHAN, SUPERVISOR_TAKEOVER_MS: '3000' };
+        const lag = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        it('lets a released group outlive the orphan bound after its agent ends, and follow a holder named within the takeover bound', async () => {
+            const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+            old.autoFinish = false;
+            const { supervised, name, rebound } = bound(old, TAKEOVER);
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            old.silent = true;
+            supervised.agentExits(0);
+            let finished = false;
+            void supervised.done.then(() => (finished = true));
+            await lag(1000);
+            expect(finished).toBe(false);
+            expect(old.reports).toHaveLength(0);
+            name(next, 2);
+            await until('the rebind', rebound);
+            expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+            expect(next.reports).toHaveLength(1);
+            expect(old.reports).toHaveLength(0);
+        });
+
+        // Characterization: an unreleased group (no `go` ever ordered) keeps the short bound and is redone.
+        it('keeps the orphan bound for a group never released: it exits lost and is redone', async () => {
+            const old = await startDriver({ release: false });
+            old.silent = true;
+            const { supervised } = bound(old, TAKEOVER);
+            expect(await supervised.done).toBe(SUPERVISOR_EXIT.lost);
+            expect(supervised.saw(MAILBOX_FILES.go)).toBe(false);
+        });
+
+        it('finalizes at the takeover bound when no holder comes', async () => {
+            const old = await startDriver();
+            old.autoFinish = false;
+            const { supervised } = bound(old, { ...ORPHAN, SUPERVISOR_TAKEOVER_MS: '1200' });
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            old.silent = true;
+            supervised.agentExits(0);
+            const ended = Date.now();
+            expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+            expect(Date.now() - ended).toBeGreaterThanOrEqual(1100);
+            expect(supervised.report()).toMatchObject({ outcome: 'completed', agentExit: 0 });
+        });
+
+        // Characterization: without a binding file nothing can name a holder, so the short bound stands.
+        it('keeps the orphan bound after the release when no binding file is configured', async () => {
+            const old = await startDriver();
+            old.autoFinish = false;
+            const supervised = run(old, { ...TAKEOVER });
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            old.silent = true;
+            supervised.agentExits(0);
+            const ended = Date.now();
+            expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+            expect(Date.now() - ended).toBeLessThan(2000);
+        });
+
+        it('logs the release once, on the first go only', async () => {
+            const old = await startDriver();
+            const { supervised } = bound(old, TAKEOVER);
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            old.order(ORDER_GO);
+            await lag(200);
+            supervised.agentExits(0);
+            await supervised.done;
+            expect(supervised.logs.filter((line) => line === 'supervisor: released the agent')).toHaveLength(1);
+        });
+
+        it('never logs a release for a refused go', async () => {
+            const old = await startDriver({ release: false });
+            old.stop = true;
+            const supervised = run(old);
+            await until('the stop', () => supervised.saw(MAILBOX_FILES.stop));
+            old.order(ORDER_GO);
+            await supervised.done;
+            expect(supervised.logs).not.toContain('supervisor: released the agent');
+        });
+
+        it('never logs a release for an agentless group', async () => {
+            const old = await startDriver({ release: false });
+            const supervised = run(old, { SUPERVISOR_AGENTLESS: '1' });
+            old.order(ORDER_FINISH);
+            await supervised.done;
+            expect(supervised.logs).not.toContain('supervisor: released the agent');
+        });
+
+        it('replays a gate that landed while a second invocation of it waited in the lane: the request is posted once', async () => {
+            const driver = await startDriver();
+            const supervised = run(driver, GATED);
+            const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: 'passed', holdMs: 400 }));
+            driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+            await until('the gate to be taken', () => loop.seen.length === 1);
+            driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000, invocation: 'i-2' }));
+            await until('both answers', () => driver.answerBodies.length === 3);
+            expect(loop.seen).toHaveLength(1);
+            // The first body is the release's.
+            const [first, second] = driver.answerBodies.slice(1).map((body) => JSON.parse(body) as StepAnswer);
+            expect(first).toMatchObject({ invocation: 'i-1', exitCode: 0 });
+            expect(second).toMatchObject({ invocation: 'i-2', exitCode: 0, stdout: 'passed', replayed: true });
+            expect(supervised.ledger('gate-1').invocations['i-1']?.state).toBe('done');
+            supervised.agentExits(0);
+            await supervised.done;
+        });
+
+        // Characterization: a second invocation after a FAILED first call runs the gate again.
+        it('runs the second invocation of a gate whose first call failed', async () => {
+            const driver = await startDriver();
+            const supervised = run(driver, GATED);
+            const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 3, output: 'failing', holdMs: 300 }));
+            driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+            await until('the gate to be taken', () => loop.seen.length === 1);
+            driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000, invocation: 'i-2' }));
+            await until('both answers', () => driver.answerBodies.length === 3);
+            expect(loop.seen).toHaveLength(2);
+            supervised.agentExits(0);
+            await supervised.done;
+        });
+
+        // Characterization: a driver that hangs up (a departed old holder) gives no 401, so the agent is kept.
+        it('keeps the agent when the old holder hangs up, and still follows the binding', async () => {
+            const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+            old.autoFinish = false;
+            const { supervised, name, rebound } = bound(old, TAKEOVER);
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            old.silent = true;
+            await lag(500);
+            expect(supervised.saw(MAILBOX_FILES.kill)).toBe(false);
+            name(next, 2);
+            await until('the rebind', rebound);
+            supervised.agentExits(0);
+            expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+            expect(next.reports).toHaveLength(1);
+        });
+    });
 });

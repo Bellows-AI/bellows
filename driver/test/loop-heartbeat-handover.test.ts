@@ -41,3 +41,60 @@ describe('a heartbeat verdict never kills a runner a handover retained (issue #8
         expect(kills).toEqual([]);
     });
 });
+
+describe('a lost lease past the launch leaves the runner to the next claim (issue #829)', () => {
+    /** An attempt and the runner calls a verdict makes on it. */
+    function attempt(launched: boolean) {
+        const state = newJobState();
+        state.launched = launched;
+        state.control = 'control-token';
+        const calls: string[] = [];
+        const logs: string[] = [];
+        const rt = {
+            log: (line: string) => logs.push(line),
+            runner: {
+                kill: async () => void calls.push('kill'),
+                stopAgent: async () => void calls.push('stopAgent'),
+                pauseDeadline: async () => {},
+            },
+            gates: {
+                server: { closeControl: () => calls.push('closeControl'), raiseKill: () => calls.push('raiseKill') },
+            },
+        } as unknown as LoopRuntime;
+        return { state, calls, logs, rt };
+    }
+    const apply = (rt: LoopRuntime, state: ReturnType<typeof newJobState>, verdict: 'lost' | 'removed') =>
+        applyHeartbeatVerdict(rt, JOB, state, verdict as never);
+
+    it('neither kills the agent nor closes the control token, and abandons the run for the handover', async () => {
+        const { state, calls, logs, rt } = attempt(true);
+        let abandoned = false;
+        void state.handedOver.then(() => (abandoned = true));
+
+        await apply(rt, state, 'lost');
+        await Promise.resolve();
+
+        expect(calls).toEqual([]);
+        expect(state.ending?.kind).toBe('lost');
+        expect(abandoned).toBe(true);
+        expect(logs.join('\n')).toContain('lease lost past the launch, leaving the runner to the next claim');
+    });
+
+    // Characterization: before the launch there is no agent to leave, and the best-effort kill stays.
+    it('still kills a runner when the lease is lost before the launch', async () => {
+        const { state, calls, rt } = attempt(false);
+
+        await apply(rt, state, 'lost');
+
+        expect(calls).toEqual(['kill']);
+    });
+
+    // Characterization: a removed task is no one's to take over.
+    it('still kills the agent of a task removed past the launch', async () => {
+        const { state, calls, rt } = attempt(true);
+
+        await apply(rt, state, 'removed');
+
+        expect(calls).toContain('stopAgent');
+    });
+});

@@ -260,6 +260,8 @@ export interface SupervisorReport {
 
 /** The line the supervisor logs its final report on, last thing before it exits; `REPORT_PREFIX` of supervisor.cjs. */
 export const SUPERVISOR_REPORT_PREFIX = 'FACTORY_SUPERVISOR_REPORT ';
+/** Logged once when the agent is released; `RELEASED_LINE` of supervisor.cjs. */
+export const SUPERVISOR_RELEASED_LINE = 'supervisor: released the agent';
 
 /** The final report as the supervisor logged it: what a claim adopting its group reads back (issue #824). */
 export type FinalReport = Pick<SupervisorReport, 'outcome' | 'cause' | 'agentExit' | 'agentEnd' | 'drained'>;
@@ -312,6 +314,17 @@ export const SUPERVISOR_ORPHAN_LEASE_SHARE = 4;
 export const SUPERVISOR_ORPHAN_MIN_MS = 30_000;
 export const SUPERVISOR_ORPHAN_MAX_MS = 90_000;
 /**
+ * What a released group (its agent went) waits for a newer holder on top of the lease (#829): the
+ * next claim must find the group, learn it is released and write its binding, which a driver that
+ * lost its lease only then stops hanging up on. `takeoverBoundMs` is the lease plus this.
+ */
+export const SUPERVISOR_REBIND_GRACE_MS = 240_000;
+/**
+ * How long the next claim waits for the supervisor of a group it adopts to end: the wind-down, and
+ * the takeover grace a released group may wait for a holder before it finalizes by itself.
+ */
+export const SUPERVISOR_FINALIZE_WAIT_MS = SUPERVISOR_WINDDOWN_MS + SUPERVISOR_REBIND_GRACE_MS;
+/**
  * What the kubelet's (or docker's) backstop allows on top of the run budget for the steps a task
  * group serves before and after its agent — the sync, the gates, the helpers, the publish. The
  * driver ends the group itself well before; this only bounds a group the driver forgot.
@@ -339,6 +352,7 @@ export const SUPERVISOR_ENV = {
     deadlineMs: 'SUPERVISOR_DEADLINE_MS',
     drainMs: 'SUPERVISOR_DRAIN_MS',
     orphanMs: 'SUPERVISOR_ORPHAN_MS',
+    takeoverMs: 'SUPERVISOR_TAKEOVER_MS',
     exports: 'SUPERVISOR_EXPORTS',
     agentless: 'SUPERVISOR_AGENTLESS',
     gate: 'SUPERVISOR_GATE',

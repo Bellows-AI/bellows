@@ -39,7 +39,7 @@ import {
     type FinalReport,
     finalReportOf,
     SUPERVISOR_CONTAINER,
-    SUPERVISOR_WINDDOWN_MS,
+    SUPERVISOR_FINALIZE_WAIT_MS,
 } from './supervisor-contract.js';
 import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from './adopt-skeleton.js';
 import { type KillRecord, killRecordsOf, reportFinalized } from './termination.js';
@@ -168,7 +168,7 @@ async function groupOver(deps: K8sDeps, prior: BoardJob): Promise<boolean | null
 
 /**
  * Waits out a supervisor finalizing after its agent exited (#824), bounded in time by the wind-down
- * its own drain and report take. Answers the Job's terminal status once its pod is over too; null
+ * its own drain and report take, and the takeover grace a released group may wait for a holder (#829). Answers the Job's terminal status once its pod is over too; null
  * when the Job is gone (taken away) or confirmed still running at the bound — the sweep's then, as
  * the docker twin leaves it. Each poll is one read, never the verdict reads' retries, so an
  * apiserver that does not answer spends the bound and no more; a bound that ends on reads that
@@ -185,7 +185,7 @@ export async function awaitFinalized(deps: K8sDeps, prior: BoardJob, signal: Abo
     // In time, not polls: a status read that is slow spends the bound as well.
     const live = withSignal(deps, signal);
     const ended = await pollFor<Ended | 'gone'>(
-        { ...waitOf(live, SUPERVISOR_WINDDOWN_MS), everyMs: POLL_MS, abandoned: adoptionAbandoned },
+        { ...waitOf(live, SUPERVISOR_FINALIZE_WAIT_MS), everyMs: POLL_MS, abandoned: adoptionAbandoned },
         async (deadline) => {
             const now = await finalizingNow(boundedBy(live, deadline), prior);
             if (now === 'gone' || typeof now === 'object') return now;

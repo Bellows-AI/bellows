@@ -12,6 +12,9 @@ import {
     SUPERVISOR_BINDING,
     SUPERVISOR_BINDING_PATH,
     SUPERVISOR_EXIT,
+    SUPERVISOR_FINALIZE_WAIT_MS,
+    SUPERVISOR_REBIND_GRACE_MS,
+    SUPERVISOR_REPORT_MS,
     SUPERVISOR_REPORT_PREFIX,
     SUPERVISOR_STEPS_MS,
     SUPERVISOR_WINDDOWN_MS,
@@ -59,7 +62,7 @@ import {
     readVerdict,
     runnerLossOf,
 } from '../src/k8s-poll.js';
-import { bindingBody, orphanBoundMs } from '../src/supervisor-plan.js';
+import { bindingBody, orphanBoundMs, takeoverBoundMs } from '../src/supervisor-plan.js';
 import {
     claudeTurnsJobName,
     claudeTurnsJobSpec,
@@ -7470,8 +7473,25 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         expect(deletedPrior(calls)).toBe(false);
     });
 
-    // The bound is the wind-down in time: status reads that each take long end it sooner than polls would.
-    it('ends the wait at the wind-down deadline however slowly the status reads answer', async () => {
+    // #829 S3: a released group's supervisor may wait the takeover grace for a holder before it finalizes.
+    it('adopts a run whose supervisor ended past the wind-down, within the takeover grace', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+            const { request } = earlier({
+                statuses: [STILL_FINALIZING, STILL_FINALIZING, jobAnswer({ succeeded: 1 })],
+                onPoll: (poll) => {
+                    if (poll === 2) vi.setSystemTime(Date.now() + SUPERVISOR_WINDDOWN_MS + 1_000);
+                },
+            });
+
+            expect(await runner(request).adopt(adopter)).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0 } });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    // The bound is the finalize wait in time: status reads that each take long end it sooner than polls would.
+    it('ends the wait at the finalize-wait deadline however slowly the status reads answer', async () => {
         vi.useFakeTimers({ toFake: ['Date'] });
         try {
             const { request, polled } = earlier({
@@ -7482,15 +7502,15 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
             expect(await runner(request).adopt(adopter)).toBeNull();
 
-            expect(polled().length).toBeLessThanOrEqual(Math.ceil(SUPERVISOR_WINDDOWN_MS / 60_000) + 1);
+            expect(polled().length).toBeLessThanOrEqual(Math.ceil(SUPERVISOR_FINALIZE_WAIT_MS / 60_000) + 1);
         } finally {
             vi.useRealTimers();
         }
     });
 
-    // The deadline bounds the reads too: an apiserver that never answers spends the wind-down, not
+    // The deadline bounds the reads too: an apiserver that never answers spends the finalize wait, not
     // the verdict reads' own retries on top of every poll.
-    it('stands down at the wind-down deadline when the status reads never answer', async () => {
+    it('stands down at the finalize-wait deadline when the status reads never answer', async () => {
         vi.useFakeTimers({ toFake: ['Date'] });
         try {
             const { request, calls, polled } = earlier({
@@ -7502,7 +7522,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
             await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
 
-            expect(polled().length).toBeLessThanOrEqual(Math.ceil(SUPERVISOR_WINDDOWN_MS / 30_000) + 1);
+            expect(polled().length).toBeLessThanOrEqual(Math.ceil(SUPERVISOR_FINALIZE_WAIT_MS / 30_000) + 1);
             expect(deletedPrior(calls)).toBe(false);
         } finally {
             vi.useRealTimers();
@@ -7974,7 +7994,24 @@ describe('the holder a supervisor follows, on kubernetes', () => {
             value: SUPERVISOR_BINDING_PATH,
         });
         const others = pod.containers.filter((container) => container.name !== SUPERVISOR_CONTAINER);
-        expect(JSON.stringify(others)).not.toMatch(/SUPERVISOR_(CLAIM_SEQ|BINDING_FILE)/);
+        expect(JSON.stringify(others)).not.toMatch(/SUPERVISOR_(CLAIM_SEQ|BINDING_FILE|TAKEOVER_MS)/);
+    });
+
+    it('waits for a newer holder the lease plus the rebind grace, and the next claim waits a finalizing supervisor out for more than that', () => {
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', DRIVER_LEASE_SECONDS: '120' });
+        expect(takeoverBoundMs(config)).toBe(120_000 + SUPERVISOR_REBIND_GRACE_MS);
+        const pod = runnerJobSpec(
+            config,
+            { ...job, executorType: 'claude-code', ...SUPERVISED },
+            { id: SESSION, resume: false }
+        ).spec.template.spec;
+        const supervisor = pod.containers.find((container) => container.name === SUPERVISOR_CONTAINER);
+        expect(supervisor?.env).toContainEqual({
+            name: 'SUPERVISOR_TAKEOVER_MS',
+            value: String(takeoverBoundMs(config)),
+        });
+        expect(SUPERVISOR_FINALIZE_WAIT_MS).toBeGreaterThan(SUPERVISOR_REBIND_GRACE_MS + SUPERVISOR_REPORT_MS);
+        expect(SUPERVISOR_FINALIZE_WAIT_MS).toBe(SUPERVISOR_WINDDOWN_MS + SUPERVISOR_REBIND_GRACE_MS);
     });
 
     it('leaves a reclaim group without its claim and the binding: it follows no newer holder', () => {
@@ -7982,7 +8019,7 @@ describe('the holder a supervisor follows, on kubernetes', () => {
             .spec;
         const names = pod.containers.flatMap((container) => (container.env ?? []).map((entry) => entry.name));
         expect(names).toContain('SUPERVISOR_ORPHAN_MS');
-        expect(names.filter((name) => /^SUPERVISOR_(CLAIM_SEQ|BINDING_FILE)$/.test(name))).toEqual([]);
+        expect(names.filter((name) => /^SUPERVISOR_(CLAIM_SEQ|BINDING_FILE|TAKEOVER_MS)$/.test(name))).toEqual([]);
     });
 });
 
