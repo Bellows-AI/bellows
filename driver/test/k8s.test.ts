@@ -6137,23 +6137,31 @@ describe('RUNNER_DO_NOT_DISRUPT on pod templates', () => {
 
 describe('the paused deadline for an agent question', () => {
     it('removes the deadline while waiting and restores it with the actual elapsed wait', async () => {
-        const spec: { activeDeadlineSeconds: number | null } = { activeDeadlineSeconds: 7200 };
-        const annotations: Record<string, string | null> = {};
+        const spec: { activeDeadlineSeconds?: number } = { activeDeadlineSeconds: 7200 };
+        const annotations: Record<string, string> = {};
         const patches: unknown[] = [];
         const request: K8sRequest = async (method, _path, body) => {
             if (method === 'PATCH') {
-                const patch = body as { spec: typeof spec; metadata: { annotations: typeof annotations } };
-                Object.assign(spec, patch.spec);
-                Object.assign(annotations, patch.metadata.annotations);
+                const patch = body as {
+                    spec: { activeDeadlineSeconds: number | null };
+                    metadata: { annotations: Record<string, string | null> };
+                };
+                // A merge patch removes a key set to null.
+                if (patch.spec.activeDeadlineSeconds === null) delete spec.activeDeadlineSeconds;
+                else spec.activeDeadlineSeconds = patch.spec.activeDeadlineSeconds;
+                for (const [key, value] of Object.entries(patch.metadata.annotations)) {
+                    if (value === null) delete annotations[key];
+                    else annotations[key] = value;
+                }
                 patches.push(body);
             }
-            return { status: 200, body: JSON.stringify({ spec, metadata: { annotations } }) };
+            return { status: 200, body: JSON.stringify({ spec, metadata: { uid: 'job-uid', annotations } }) };
         };
         const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
         try {
             const r = runner(request);
             await Promise.all([r.pauseDeadline(job, true), r.pauseDeadline(job, true)]);
-            expect(spec.activeDeadlineSeconds).toBeNull();
+            expect(spec.activeDeadlineSeconds).toBeUndefined();
             expect(patches).toHaveLength(1);
             now.mockReturnValue(1000 + 48 * 3600 * 1000);
             await r.pauseDeadline(job, false);
@@ -6189,7 +6197,9 @@ describe('the paused deadline for an agent question', () => {
                 methods.push(method);
                 return {
                     status: 200,
-                    body: JSON.stringify({ metadata: { annotations: { 'bellows.ai/paused-deadline': saved } } }),
+                    body: JSON.stringify({
+                        metadata: { uid: 'job-uid', annotations: { 'bellows.ai/paused-deadline': saved } },
+                    }),
                 };
             };
             await expect(runner(request).pauseDeadline(job, false)).rejects.toThrow(/saved deadline/);
@@ -6201,8 +6211,41 @@ describe('the paused deadline for an agent question', () => {
         const request: K8sRequest = async (method) =>
             method === 'PATCH'
                 ? { status: 403, body: '{}' }
-                : { status: 200, body: JSON.stringify({ spec: { activeDeadlineSeconds: 60 } }) };
+                : {
+                      status: 200,
+                      body: JSON.stringify({ spec: { activeDeadlineSeconds: 60 }, metadata: { uid: 'job-uid' } }),
+                  };
         await expect(runner(request).pauseDeadline(job, true)).rejects.toThrow(/pausing or resuming/);
+    });
+
+    it('preconditions the PATCH on the uid of the Job it read', async () => {
+        const patches: { metadata: { uid?: string } }[] = [];
+        const request: K8sRequest = async (method, _path, body) => {
+            if (method === 'PATCH') patches.push(body as (typeof patches)[number]);
+            return {
+                status: 200,
+                body: JSON.stringify({ spec: { activeDeadlineSeconds: 60 }, metadata: { uid: 'job-uid' } }),
+            };
+        };
+        await runner(request).pauseDeadline(job, true);
+        expect(patches.map((patch) => patch.metadata.uid)).toEqual(['job-uid']);
+    });
+
+    // A Job whose incarnation cannot be named could be a replacement under the name (#869): no write.
+    it.each([
+        ['no uid', { spec: { activeDeadlineSeconds: 120 }, metadata: {} }],
+        ['no metadata', { spec: { activeDeadlineSeconds: 120 } }],
+        ['an empty uid', { spec: { activeDeadlineSeconds: 120 }, metadata: { uid: '' } }],
+        ['a deadline that is no number', { spec: { activeDeadlineSeconds: '120' }, metadata: { uid: 'job-uid' } }],
+        ['annotations that are not strings', { spec: {}, metadata: { uid: 'job-uid', annotations: { a: 1 } } }],
+    ])('rejects, sending no PATCH, when the Job GET answers %s', async (_name, body) => {
+        const methods: string[] = [];
+        const request: K8sRequest = async (method) => {
+            methods.push(method);
+            return { status: 200, body: JSON.stringify(body) };
+        };
+        await expect(runner(request).pauseDeadline(job, true)).rejects.toThrow(/reading the runner job/);
+        expect(methods).toEqual(['GET']);
     });
 });
 

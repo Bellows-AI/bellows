@@ -70,6 +70,7 @@ import {
     withSignal,
 } from './k8s-transport.js';
 import { abortableSleep, pollFor, type Sleep } from './poll.js';
+import { nonEmpty, stringsOnly } from './k8s-shapes.js';
 import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
 import { repoPath, worktreeDir } from './publish.js';
 import type { ReclaimResult, SyncResult } from './publish.js';
@@ -305,7 +306,19 @@ interface DeadlineJob {
     metadata?: { uid?: string; annotations?: Record<string, string> };
 }
 
-const asDeadlineJob = (value: unknown): DeadlineJob | null => (isRecord(value) ? (value as DeadlineJob) : null);
+/** A Job the deadline patch may write to: it names its incarnation (a uid) and every field consumed is well-typed. */
+const asDeadlineJob = (value: unknown): DeadlineJob | null => {
+    if (!isRecord(value) || !isRecord(value.metadata) || !nonEmpty(value.metadata.uid)) return null;
+    const { spec } = value;
+    if (
+        spec !== undefined &&
+        !(isRecord(spec) && (spec.activeDeadlineSeconds === undefined || Number.isFinite(spec.activeDeadlineSeconds)))
+    ) {
+        return null;
+    }
+    const { annotations } = value.metadata;
+    return annotations === undefined || stringsOnly(annotations) ? (value as DeadlineJob) : null;
+};
 
 /** The saved `{deadline, at}` annotation, or null unless both are finite numbers. */
 function asSavedDeadline(saved: string): { deadline: number; at: number } | null {
@@ -339,7 +352,7 @@ async function patchRunnerDeadline(deps: K8sDeps, job: BoardJob, paused: boolean
     const patched = await deps.request('PATCH', path, {
         metadata: {
             // The incarnation just read, by uid: never one created under the name since.
-            ...(current.metadata?.uid ? { uid: current.metadata.uid } : {}),
+            uid: current.metadata?.uid,
             annotations: {
                 [PAUSED_DEADLINE]: paused ? JSON.stringify({ deadline, at: Date.now() }) : null,
             },
