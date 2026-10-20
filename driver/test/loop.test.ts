@@ -2745,10 +2745,9 @@ describe('the poll loop', () => {
         expect(board.board.completed).toEqual([]);
     });
 
-    // A failed adoption is no verdict — a read that threw, or a run read but never swept (issue
-    // 796; the runners' own tests pin that a failed sweep rejects): the attempt syncs and runs the
-    // job itself, recording no interruption for a run it never took.
-    it('runs the job when the adoption throws', async () => {
+    // A failed adoption is no verdict — a read that threw (issue 796): the attempt is left to its
+    // lease, since an unconfirmed read never licenses a fresh run's sweep (#828).
+    it('leaves the job to its lease, running nothing, when the adoption throws', async () => {
         const board = stubBoard([job(1)]);
         let launched = 0;
         const logs: string[] = [];
@@ -2766,11 +2765,11 @@ describe('the poll loop', () => {
 
         await drive({ ...board, runner, log: (m) => logs.push(m) });
 
-        expect(launched).toBe(1);
-        expect(runner.synced).toHaveLength(1);
+        expect(launched).toBe(0);
+        expect(runner.synced).toEqual([]);
         expect(board.board.interrupted).toEqual([]);
-        expect(board.board.completed[0]?.output).toContain('the fresh run');
-        expect(logs.some((m) => m.includes('could not adopt an earlier runner'))).toBe(true);
+        expect(board.board.completed).toEqual([]);
+        expect(logs.some((m) => m.includes('could not read an earlier runner'))).toBe(true);
     });
 
     // Issue #821: an adoption whose read succeeded but whose earlier attempt left something it

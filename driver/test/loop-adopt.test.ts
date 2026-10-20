@@ -10,6 +10,7 @@ import { newJobState } from '../src/loop-attempt.js';
 import { adoptStep, recordAdopted } from '../src/loop-adopt.js';
 import { type AttemptCtx, STOOD_DOWN } from '../src/loop-types.js';
 import { type AdoptedRun, AdoptionBlocked } from '../src/runner.js';
+import { runJob } from '../src/loop-run.js';
 import { job, ok, stubBoard, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
 
 const adopted: AdoptedRun = { outcome: ok(), claimSeq: 4 };
@@ -79,6 +80,32 @@ describe('adoptStep', () => {
 
         expect(answer).toMatchObject({ halt: 'leave' });
         expect(s.ctx.adopted).toBeUndefined();
+    });
+
+    it('leaves the job to its lease when the earlier run could not be read at all', async () => {
+        const s = setup(job(1), async () => {
+            throw new Error('apiserver said 503');
+        });
+
+        const answer = await adoptStep(s.ctx);
+
+        expect(answer).toMatchObject({ halt: 'leave' });
+        expect(s.ctx.adopted).toBeUndefined();
+        expect(s.ctx.fenced).toBe(false);
+    });
+
+    it('syncs and runs nothing after an unreadable earlier run: no sweep follows', async () => {
+        const board = stubBoard([]).board;
+        const runner = stubRunner(async () => ok(), {
+            adopt: async () => {
+                throw new Error('apiserver said 503');
+            },
+        });
+        await runJob(stubRuntime(board, runner), job(1));
+
+        expect(runner.synced).toEqual([]);
+        expect(board.sessions).toEqual([]);
+        expect(board.completed).toEqual([]);
     });
 
     it('answers a stand-down when the attempt stood down mid-adoption', async () => {

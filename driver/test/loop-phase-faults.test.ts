@@ -518,6 +518,8 @@ function expectedOf(boundary: Boundary, fault: Fault): Expected {
     if (fault === 'lost' || fault === 'removed') return { conclusion: 'none', finishes: 1 };
     if (fault === 'handover') return { conclusion: 'interrupt:release', finishes: 0 };
     switch (boundary) {
+        // An unreadable earlier run is left to the lease, like a sync that threw (never a fresh run's sweep).
+        case 'adopt':
         case 'sync':
         case 'pre-helpers':
             return { conclusion: 'none', finishes: 1 };
