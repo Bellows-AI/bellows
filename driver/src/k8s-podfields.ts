@@ -169,6 +169,7 @@ export interface PodSecurityContext {
     runAsGroup?: number;
     /** The group a fresh task volume's root is made writable for (issue #775). */
     fsGroup?: number;
+    fsGroupChangePolicy?: 'OnRootMismatch';
     seccompProfile?: { type: 'RuntimeDefault' };
 }
 

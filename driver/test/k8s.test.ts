@@ -1,3 +1,4 @@
+import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { Board, BoardJob, ReviewClaim } from '../src/board.js';
 import { type DriverConfig, loadDriverConfig } from '../src/config.js';
@@ -26,6 +27,7 @@ import type { LoopRuntime } from '../src/loop-types.js';
 import {
     claudeTurnsScript,
     claudeExportScript,
+    opencodeReadoutScript,
     gateLoopArgv,
     reviewLoopArgv,
     serviceProbeArgv,
@@ -50,11 +52,9 @@ import { GROUP_END_WAIT_MS } from '../src/k8s-teardown.js';
 import { readVerdict, runnerLossOf } from '../src/k8s-poll.js';
 import { orphanBoundMs } from '../src/supervisor-plan.js';
 import {
-    claudeTurnsJobName,
-    claudeTurnsJobSpec,
+    claudeTurnsStep,
     jobsPath,
-    opencodeReadoutJobName,
-    opencodeReadoutJobSpec,
+    opencodeReadoutStep,
     runnerJobName,
     runnerJobSpec,
     secretName,
@@ -600,24 +600,22 @@ describe('the runner job spec', () => {
 });
 
 /*
- * Every pod the driver specs, by name: the runner, the ten aux builders (all through
- * `auxJobSpec`) and a declared service's sidecar. Each entry is a thunk, built inside the it
- * bodies — the file's `namespace` is declared below, and nothing here may build eagerly. A
- * builder that bypassed `auxJobSpec` altogether would need its own entry here, and the
- * admission policy is the backstop that refuses it at the apiserver either way.
+ * Every container the driver specs, by name: the runner's pod and its sidecars. No other pod
+ * exists (the close-time readouts are supervised steps), and the source-scan test below pins that.
+ * Each entry is a thunk, built inside the it bodies — the file's `namespace` is declared below, and
+ * nothing here may build eagerly. The admission policy is the backstop that refuses any other pod
+ * at the apiserver either way.
  */
 const POD_NAMES = [
     'the runner',
     'the gate sidecar',
-    'the opencode session readout',
-    'the claude turns readout',
     'the task supervisor',
     'the transcript exporter',
     'the service sidecar',
 ] as const;
 type PodName = (typeof POD_NAMES)[number];
 
-type JobSpecOf = ReturnType<typeof runnerJobSpec> | ReturnType<typeof claudeTurnsJobSpec>;
+type JobSpecOf = ReturnType<typeof runnerJobSpec>;
 interface PodView {
     /** The Job object. */
     job: JobSpecOf;
@@ -689,6 +687,30 @@ const gateView = (config: DriverConfig, of: BoardJob): PodView => {
     return { ...view, pod: { ...view.pod, containers: [gate] } };
 };
 
+/**
+ * The task volume is ReadWriteOncePod by default: a second pod mounting it while the task pod holds
+ * it sits Pending. The task pod is the one consumer, so the driver builds exactly one Job (the
+ * runner's) and names the task claim as a volume only in the task pod's own spec; every other
+ * read or write of the volume (the close-time readouts, the probe, the snapshot) is a supervised step.
+ */
+describe('no pod but the task pod mounts the task volume', () => {
+    const sources = readdirSync(new URL('../src/', import.meta.url))
+        .filter((name) => name.endsWith('.ts'))
+        .map((name) => ({ name, text: readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8') }));
+    const filesWith = (needle: string): string[] =>
+        sources.filter(({ text }) => text.includes(needle)).map(({ name }) => name);
+
+    it('builds one kind of Job and no bare Pod', () => {
+        expect(filesWith("kind: 'Job'")).toEqual(['k8s-podspec.ts']);
+        expect(filesWith("kind: 'Pod'")).toEqual([]);
+    });
+
+    it('declares the task claim as a pod volume only in the task pod spec', () => {
+        expect(filesWith('taskPodVolume(')).toEqual(['k8s-podfields.ts', 'k8s-podspec.ts']);
+        expect(filesWith('persistentVolumeClaim:')).toEqual(['k8s-podfields.ts', 'task-volume.ts']);
+    });
+});
+
 /** A run's pod with one declared service, seen through its sidecar alone (issue #773). */
 const serviceSidecarView = (config: DriverConfig, of: BoardJob): PodView => {
     const spec = runnerJobSpec(
@@ -704,12 +726,9 @@ const serviceSidecarView = (config: DriverConfig, of: BoardJob): PodView => {
 
 const everyPodSpec = (env: NodeJS.ProcessEnv = {}, of: BoardJob = job): Record<PodName, () => PodView> => {
     const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, ...env });
-    const startedAt = '2026-09-01T00:00:00Z';
     return {
         'the runner': () => jobView(runnerJobSpec(config, of, { id: SESSION, resume: false })),
         'the gate sidecar': () => gateView(config, of),
-        'the opencode session readout': () => jobView(opencodeReadoutJobSpec(config, of, startedAt)),
-        'the claude turns readout': () => jobView(claudeTurnsJobSpec(config, of, SESSION, startedAt)),
         'the task supervisor': () => containerView(config, of, SUPERVISOR_CONTAINER),
         'the transcript exporter': () => containerView(config, of, EXPORTER_CONTAINER),
         'the service sidecar': () => serviceSidecarView(config, of),
@@ -812,10 +831,8 @@ describe('the lifecycle of every pod the driver specs', () => {
  * stands between that code and the node, and it is unconditional: there is no config knob, because
  * an operator who can turn it off is an operator who will find it off after an incident.
  *
- * What actually protects a NEW aux Job is not the list above — which is hand-written and can fall
- * behind — but the single spread inside `auxJobSpec`, which every aux builder goes through. This
- * suite pins that the spread exists and reaches all ten of today's aux builders (`runnerJobSpec`
- * has its own spread and never goes through it), and the declared service sidecar besides.
+ * The list above is hand-written and can fall behind; the source-scan test below pins that the
+ * runner Job is the only Job the driver builds. This suite pins the hardening on each pod in it.
  */
 describe('the pod hardening on every pod the driver specs (#382)', () => {
     // A capability is a slice of root the kernel hands a process without asking anyone. An agent
@@ -887,7 +904,11 @@ describe('the pod hardening on every pod the driver specs (#382)', () => {
     // securityContext keeps the seccomp profile and the volume's group (fsGroup), for every container of the pod.
     it('runs the gate sidecar as the gate uid:gid beside its hardening, the pod keeping the seccomp profile', () => {
         const { pod } = gateView(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), job);
-        expect(pod.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' }, fsGroup: GATE_GID });
+        expect(pod.securityContext).toEqual({
+            seccompProfile: { type: 'RuntimeDefault' },
+            fsGroup: GATE_GID,
+            fsGroupChangePolicy: 'OnRootMismatch',
+        });
         expect(pod.containers[0]!.securityContext).toEqual({
             allowPrivilegeEscalation: false,
             capabilities: { drop: ['ALL'] },
@@ -909,20 +930,6 @@ const podName = `${runnerJobName(job)}-xxxxx`;
 
 const { FAKE, claimServer, fakeRequest, routed } = k8sApiserver({ namespace, podName });
 
-/**
- * The close-time claude-code turn read, appended to every claude-code run: one aux Job over the
- * PVC, its verdict poll, the pod log it answers through, and the reaping delete. The fake routes
- * the Job status and pod routes to the same canned answers the runner Job gets, so the read
- * "succeeds" with an unparseable log — agentTurns null, the unmeasured answer.
- */
-const cturnsCalls = (j: BoardJob): string[] => [
-    `POST ${jobsPath(namespace)}`,
-    `GET ${jobPath(namespace, claudeTurnsJobName(j))}`,
-    `GET /api/v1/namespaces/factory/pods`,
-    `GET /api/v1/namespaces/factory/pods/${podName}/log`,
-    `DELETE ${jobPath(namespace, claudeTurnsJobName(j))}`,
-];
-
 /** The thread's task volume, as `prepare` asks the apiserver for it: a read that finds nothing, then the create. */
 const taskVolumeCalls = (j: BoardJob): string[] => [
     `GET /api/v1/namespaces/factory/persistentvolumeclaims/${taskVolumeName(j)}`,
@@ -931,15 +938,11 @@ const taskVolumeCalls = (j: BoardJob): string[] => [
 
 /**
  * The methods of a runner attempt after its sweep: the claim verify, the task volume (read, created),
- * the Job POST (suspended), the Secret POST, the claim verify, the Job's resume, the status poll, the pod list and the log; then
- * the close-time claude-code turn read — one aux Job, posted, polled, its pod listed, logged and
- * reaped. The group's Secret is not reaped here, nor is the checkout claim released: the group's
+ * the Job POST (suspended), the Secret POST, the claim verify, the Job's resume, the status poll, the pod list and the log.
+ * The close-time claude-code turn read is a supervised step: no call of its own. The group's Secret is not reaped here, nor is the checkout claim released: the group's
  * end (`finish`) does both, once confirmed (issue #821). The fence tests spell out everything before it.
  */
-const RUN_FROM_SECRET = [
-    ...['GET', 'GET', 'POST', 'POST', 'POST', 'GET', 'PATCH', 'GET', 'GET', 'GET'],
-    ...['POST', 'GET', 'GET', 'GET', 'DELETE'],
-];
+const RUN_FROM_SECRET = ['GET', 'GET', 'POST', 'POST', 'POST', 'GET', 'PATCH', 'GET', 'GET', 'GET'];
 
 /** The teardown's writer-pod list (`writerPodsPath`): every pod of one (job, lease) pair. */
 const isWriterPodList = (path: string): boolean =>
@@ -1226,12 +1229,9 @@ describe('the worktree sync', () => {
             'review',
             'finish',
         ]);
-        // The session readout Jobs of the close are split to issue #882 and are the only exception.
-        const readouts = new Set([opencodeReadoutJobName(reviewing), claudeTurnsJobName(reviewing)]);
         const created = api.calls
             .filter((call) => call.method === 'POST')
-            .map((call) => ({ path: call.path, name: (call.body as { metadata: { name: string } }).metadata.name }))
-            .filter((call) => !readouts.has(call.name));
+            .map((call) => ({ path: call.path, name: (call.body as { metadata: { name: string } }).metadata.name }));
         // The claim is taken by the sync and again by the group's creation: one name, one object.
         const objects = [...new Map(created.map((call) => [`${call.path} ${call.name}`, call])).values()];
         expect(objects).toHaveLength(4);
@@ -2323,7 +2323,6 @@ describe('the kubernetes runner', () => {
             'GET /api/v1/namespaces/factory/pods',
             `GET /api/v1/namespaces/factory/pods/${podName}/log`,
             // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
-            ...cturnsCalls(job),
             // The group does not go here: its Job and Secret
             // serve the steps after the run until the loop's `finish` — which is also what hands
             // the checkout claim back, once the group's end is confirmed (issue #821).
@@ -2964,7 +2963,6 @@ describe('the kubernetes runner', () => {
             // The close-time claude-code turn read: one aux Job, polled, logged, reaped. It
             // rides THIS attempt, so its name hashes the token this run holds. The claim stays: the
             // group's end hands it back (issue #821).
-            ...cturnsCalls(newerJob),
         ]);
     });
 
@@ -4146,8 +4144,8 @@ describe('the kubernetes runner', () => {
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
-        // The runner's poll plus the claude turn read's own pod list.
-        expect(lists).toBe(4);
+        // The runner's poll: the claude turn read is a step, with no pod list of its own.
+        expect(lists).toBe(3);
     });
 
     // A log read that fails outright — connection reset, pod gone — must not fail the report: the
@@ -5373,97 +5371,51 @@ describe('the runner pod of a resumed attempt', () => {
     );
 });
 
-describe('the opencode session readout job', () => {
-    const config = loadDriverConfig({
-        EXECUTOR: 'kubernetes',
-        K8S_NAMESPACE: namespace,
-        RUNNER_SERVICES: '0',
-    });
-
+describe('the opencode session readout step', () => {
     it('runs the readout script by content, with the database path as an env value', () => {
-        const spec = opencodeReadoutJobSpec(config, job, START);
-        const container = spec.spec.template.spec.containers[0]!;
-        expect(spec.metadata.name).toBe(opencodeReadoutJobName(job));
-        expect(spec.metadata.name).toMatch(/^factory-ocread-/);
-        expect(container.command).toEqual(['node', '-e', expect.stringContaining('node:sqlite')]);
-        expect(container.env).toEqual([
-            {
-                name: 'OPENCODE_DB',
-                value: `${TASK_MOUNT}/.factory/opencode/${opencodeJob.id}/opencode/opencode.db`,
-            },
-            {
-                // The scope: only the session that ran in this job's working directory — the
-                // member root here, since the fixture names no repo. The session database is per
-                // member, and without the scope two concurrent tasks scrape each other's runs.
-                name: 'OPENCODE_DIR',
-                value: TASK_MOUNT,
-            },
-            { name: 'RUN_STARTED_MS', value: String(Date.parse(START)) },
-            { name: 'EXPORT_LIMIT_BYTES', value: String(OPENCODE_EXPORT_LIMIT) },
-        ]);
-    });
-
-    it('scopes the readout to the task worktree when the job names a repo', () => {
-        const spec = opencodeReadoutJobSpec(config, { ...job, repo: 'Bellows-AI/factory' }, START);
-        expect(spec.spec.template.spec.containers[0]!.env).toContainEqual({
-            name: 'OPENCODE_DIR',
-            value: `${TASK_MOUNT}/factory`,
+        const step = opencodeReadoutStep(job, START);
+        expect(step.argv).toEqual(['node', '-e', expect.stringContaining('node:sqlite')]);
+        expect(step.env).toEqual({
+            OPENCODE_DB: `${TASK_MOUNT}/.factory/opencode/${opencodeJob.id}/opencode/opencode.db`,
+            // The scope: only the session that ran in this job's working directory — the
+            // member root here, since the fixture names no repo.
+            OPENCODE_DIR: TASK_MOUNT,
+            RUN_STARTED_MS: String(Date.parse(START)),
+            EXPORT_LIMIT_BYTES: String(OPENCODE_EXPORT_LIMIT),
         });
     });
 
-    it('mounts the task volume READ-WRITE: a WAL needing recovery has to write it', () => {
-        const spec = opencodeReadoutJobSpec(config, job, START);
-        expect(spec.spec.template.spec.containers[0]!.volumeMounts).toEqual([
-            { name: TASK_VOLUME, mountPath: TASK_MOUNT },
-        ]);
-        expect(spec.spec.template.spec.containers[0]!.volumeMounts[0]!.readOnly).toBeUndefined();
+    it('scopes the readout to the task worktree when the job names a repo', () => {
+        expect(opencodeReadoutStep({ ...job, repo: 'Bellows-AI/factory' }, START).env.OPENCODE_DIR).toBe(
+            `${TASK_MOUNT}/factory`
+        );
     });
 
     it('refuses a job whose workspace path it cannot assert', () => {
-        expect(() => opencodeReadoutJobSpec(config, { ...job, workspacePath: null }, START)).toThrow(/workspace path/);
+        expect(() => opencodeReadoutStep({ ...job, workspacePath: null }, START)).toThrow(/workspace path/);
     });
 });
 
 describe('the close-time claude-code turn read under kubernetes', () => {
     /**
      * The twin of docker's close-time read (executor parity): the same script, the same env
-     * VALUES, one aux Job over the PVC instead of one throwaway container. The failure path —
-     * the Job refused, deadlined, or answering nothing parseable — is exercised by every
+     * VALUES, one supervised step of the task pod instead of one throwaway container. The failure
+     * path — the step refused, deadlined, or answering nothing parseable — is exercised by every
      * runner test above, whose scripted logs parse as null: unmeasured, never zero.
      */
-    const spec = claudeTurnsJobSpec(
-        loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
-        job,
-        SESSION,
-        START
-    );
-
-    it('runs the static script as one aux Job, its inputs by env', () => {
-        const container = spec.spec.template.spec.containers[0]!;
-        expect(spec.metadata.name).toBe(claudeTurnsJobName(job));
-        expect(spec.metadata.name).toMatch(/^factory-cturns-/);
-        expect(container.command).toEqual(['node', '-e', claudeTurnsScript]);
-        expect(container.env).toEqual([
-            {
-                name: 'CLAUDE_TRANSCRIPT_DIR',
-                value: `${TASK_MOUNT}/.factory/transcripts/${job.id}`,
-            },
-            { name: 'CLAUDE_SESSION_ID', value: SESSION },
+    it('runs the static script as one step, its inputs by env', () => {
+        const step = claudeTurnsStep(job, SESSION, START);
+        expect(step.argv).toEqual(['node', '-e', claudeTurnsScript]);
+        expect(step.env).toEqual({
+            CLAUDE_TRANSCRIPT_DIR: `${TASK_MOUNT}/.factory/transcripts/${job.id}`,
+            CLAUDE_SESSION_ID: SESSION,
             // The per-run delta bound: the transcript carries earlier runs' turns too.
-            { name: 'RUN_STARTED_AT', value: START },
-        ]);
-        expect(container.volumeMounts).toEqual([{ name: TASK_VOLUME, mountPath: TASK_MOUNT }]);
+            RUN_STARTED_AT: START,
+        });
     });
 
     it('refuses a session id that is not a uuid', () => {
-        expect(() =>
-            claudeTurnsJobSpec(
-                loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
-                job,
-                'not-a-uuid',
-                START
-            )
-        ).toThrow(/not a session id/);
+        expect(() => claudeTurnsStep(job, 'not-a-uuid', START)).toThrow(/not a session id/);
     });
 });
 
@@ -5506,31 +5458,30 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
         ]);
     });
 
-    it('opencode: exports through the readout Job, not a Job of its own', () => {
-        const spec = opencodeReadoutJobSpec(config, job, START);
-        const container = spec.spec.template.spec.containers[0]!;
-        expect(container.env).toContainEqual({ name: 'EXPORT_LIMIT_BYTES', value: String(OPENCODE_EXPORT_LIMIT) });
-        expect(container.env).toContainEqual({
-            name: 'OPENCODE_DB',
-            value: `${TASK_MOUNT}/.factory/opencode/${job.id}/opencode/opencode.db`,
-        });
+    it('opencode: exports through the readout step, not a container of its own', () => {
+        const { env } = opencodeReadoutStep(job, START);
+        expect(env.EXPORT_LIMIT_BYTES).toBe(String(OPENCODE_EXPORT_LIMIT));
+        expect(env.OPENCODE_DB).toBe(`${TASK_MOUNT}/.factory/opencode/${job.id}/opencode/opencode.db`);
     });
 });
 
 describe('the kubernetes runner under opencode', () => {
-    const ocreadName = opencodeReadoutJobName(job);
-    const ocreadPod = `${ocreadName}-pod`;
     const ns = `/api/v1/namespaces/${namespace}`;
 
     const ok = (body: unknown) => Promise.resolve({ status: 200, body: JSON.stringify(body) });
 
     /**
      * A router scripted for one opencode run: the runner Job goes terminal succeeded, the
-     * close-time readout Job runs and answers `readoutLog`. Every claim and teardown route
+     * close-time readout is a supervised `probe` step answered with `readoutLog`. Every claim and teardown route
      * answers the boring way. The calls list is the audit.
      */
-    const opencodeFake = (readout: { status?: 'failed'; log?: string; truncated?: true } = {}) => {
+    const opencodeFake = (readout: { exitCode?: number; log?: string; reject?: Error } = {}) => {
         const calls: Call[] = [];
+        const steps = fakeSteps(async (step) => {
+            if (step.kind !== 'probe') return defaultStepAnswer(step);
+            if (readout.reject) throw readout.reject;
+            return { exitCode: readout.exitCode ?? 0, stdout: readout.log ?? '', stderr: '', timedOut: false };
+        });
         const request: K8sRequest = (method, path, body) => {
             calls.push({ method, path, body });
             if (path === configmapsPath && method === 'POST') return Promise.resolve({ status: 201, body: '{}' });
@@ -5558,9 +5509,6 @@ describe('the kubernetes runner under opencode', () => {
             }
             // The resume of the runner Job, created suspended.
             if (method === 'PATCH' && path === jobPath(namespace, runnerJobName(job))) return ok({});
-            if (path === jobPath(namespace, ocreadName)) {
-                return ok(readout.status === 'failed' ? { status: { failed: 1 } } : { status: { succeeded: 1 } });
-            }
             if (path.startsWith(`${ns}/pods?`) && decodeURIComponent(path).includes(`job-name=${runnerJobName(job)}`)) {
                 return ok({
                     items: [
@@ -5571,17 +5519,7 @@ describe('the kubernetes runner under opencode', () => {
                     ],
                 });
             }
-            if (path.startsWith(`${ns}/pods?`) && decodeURIComponent(path).includes(`job-name=${ocreadName}`)) {
-                return ok({ items: [{ metadata: { name: ocreadPod } }] });
-            }
             if (path === `${ns}/pods/${podName}/log`) return Promise.resolve({ status: 200, body: 'did the work\n' });
-            if (path === `${ns}/pods/${ocreadPod}/log`) {
-                return Promise.resolve({
-                    status: 200,
-                    body: readout.log ?? '',
-                    ...(readout.truncated ? { truncated: readout.truncated } : {}),
-                });
-            }
             // The thread's task volume: absent on the first read, created by the POST.
             if (path.startsWith(`${ns}/persistentvolumeclaims`)) {
                 return Promise.resolve(method === 'POST' ? { status: 201, body: '{}' } : { status: 404, body: '{}' });
@@ -5593,10 +5531,10 @@ describe('the kubernetes runner under opencode', () => {
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
-        return { request, calls };
+        return { request, calls, steps };
     };
 
-    const ocRunner = (request: K8sRequest) =>
+    const ocRunner = (request: K8sRequest, steps = fakeSteps()) =>
         supervisedRunner(
             loadDriverConfig({
                 EXECUTOR: 'kubernetes',
@@ -5604,24 +5542,28 @@ describe('the kubernetes runner under opencode', () => {
                 RUNNER_SERVICES: '0',
             }),
             request,
-            async () => {}
+            async () => {},
+            { steps: steps.sink }
         );
 
-    it('flags the transcript a cut readout log lost its head of (#825)', async () => {
+    /** The readout steps of a run: `probe` steps carrying the readout script. */
+    const readoutsOf = (steps: { submitted: StepRequest[] }): StepRequest[] =>
+        steps.submitted.filter((step) => step.kind === 'probe' && step.argv.includes(opencodeReadoutScript));
+
+    it('flags the transcript a cut readout answer lost its head of (#825)', async () => {
         const normalized = JSON.stringify({ stream: 'normalized', event: { n: 2 } });
-        const { request } = opencodeFake({
+        const { request, steps } = opencodeFake({
             log: ['t":{"n":1}}', normalized, JSON.stringify({ id: 'ses_n3w' })].join('\n'),
-            truncated: true,
         });
 
-        const outcome = await ocRunner(request).run(opencodeJob, null);
+        const outcome = await ocRunner(request, steps).run(opencodeJob, null);
 
         expect(outcome.transcript).toBe(normalized);
         expect(outcome.transcriptTruncated).toBe(true);
     });
 
     it('scrapes the session the run minted, and rides it on the outcome', async () => {
-        const { request, calls } = opencodeFake({
+        const { request, steps } = opencodeFake({
             log: JSON.stringify({
                 id: 'ses_n3w',
                 finish: 'stop',
@@ -5631,7 +5573,7 @@ describe('the kubernetes runner under opencode', () => {
                 summary: 'Fixed the flaky test',
             }),
         });
-        const outcome = await ocRunner(request).run(opencodeJob, null);
+        const outcome = await ocRunner(request, steps).run(opencodeJob, null);
 
         expect(outcome.sessionId).toBe('ses_n3w');
         expect(outcome.finishReason).toBe('stop');
@@ -5646,78 +5588,56 @@ describe('the kubernetes runner under opencode', () => {
         expect(outcome.exitCode).toBe(0);
         expect(outcome.started).toBe(true);
 
-        // The readout Job was created, read, and reaped — after the runner Job existed.
-        const created = calls.findIndex(
-            (c) => c.method === 'POST' && (c.body as { metadata?: { name?: string } })?.metadata?.name === ocreadName
-        );
-        const deleted = calls.findIndex(
-            (c) => c.method === 'DELETE' && c.path?.startsWith(jobPath(namespace, ocreadName))
-        );
-        expect(created).toBeGreaterThan(0);
-        expect(deleted).toBeGreaterThan(created);
+        // One step of the task pod, with the database path as env: no second pod ever mounts the volume.
+        const [readout, ...more] = readoutsOf(steps);
+        expect(more).toEqual([]);
+        expect(readout!.env.OPENCODE_DB).toBe(opencodeReadoutStep(opencodeJob, START).env.OPENCODE_DB);
     });
 
-    it('fails no verdict when the scrape cannot run: the error rides readoutError instead', async () => {
-        const { request, calls } = opencodeFake({ status: 'failed' });
-        const outcome = await ocRunner(request).run(opencodeJob, null);
+    it('fails no verdict when the readout step fails: the error rides readoutError instead', async () => {
+        const { request, steps } = opencodeFake({ exitCode: 1, log: 'no such column: role' });
+        const outcome = await ocRunner(request, steps).run(opencodeJob, null);
 
         // The run's own verdict is untouched; only the follow-up-ability was lost, said out loud.
         expect(outcome.exitCode).toBe(0);
         expect(outcome.sessionId).toBeUndefined();
-        expect(outcome.readoutError).toContain('the session readout job failed');
-        // Retried to the end before giving up: three attempts, every one a POST of the readout.
-        const scrapePosts = calls.filter(
-            (c) => c.method === 'POST' && (c.body as { metadata?: { name?: string } })?.metadata?.name === ocreadName
+        expect(outcome.readoutError).toContain('the session readout step failed');
+        // Retried to the end before giving up: three attempts, every one a step.
+        expect(readoutsOf(steps)).toHaveLength(3);
+    });
+
+    // A lost supervisor is infrastructure, never the run's verdict: the step throws and the
+    // readout answers as one more failed read.
+    it('fails no verdict when the readout step is lost: the error rides readoutError instead', async () => {
+        const { request, steps } = opencodeFake({ reject: new Error('the supervisor closed the channel') });
+        const outcome = await ocRunner(request, steps).run(opencodeJob, null);
+
+        expect(outcome.exitCode).toBe(0);
+        expect(outcome.readoutError).toContain('the supervisor closed the channel');
+    });
+
+    it("reads a claude-code run's turns as one step of the task pod, never a pod of its own", async () => {
+        const { request, calls } = opencodeFake();
+        const steps = fakeSteps((step) =>
+            step.kind === 'probe' ? stepOk('{"turns":7,"summary":"done"}\n') : defaultStepAnswer(step)
         );
-        expect(scrapePosts.length).toBe(3);
-    });
+        const outcome = await ocRunner(request, steps).run(job, { id: SESSION, resume: false });
 
-    // The readout poll can now THROW (poll exhaustion is infrastructure, never a verdict) — and
-    // the scrape wraps that throw, because a completed run's verdict must never burn over its
-    // close-time read.
-    it('fails no verdict when the readout poll exhausts: the error rides readoutError instead', async () => {
-        const base = opencodeFake();
-        const request: K8sRequest = (method, path, body) =>
-            path === jobPath(namespace, ocreadName)
-                ? Promise.resolve({ status: 400, body: '400 Bad Request' })
-                : base.request(method, path, body);
-        const outcome = await ocRunner(request).run(opencodeJob, null);
-
-        expect(outcome.exitCode).toBe(0);
-        expect(outcome.sessionId).toBeUndefined();
-        expect(outcome.readoutError).toContain('in a row');
-    });
-
-    // The same guard one level down: a TRANSPORT rejection — the readout Job POST itself failing,
-    // on the kind of connection the issue's 400s live on — is also the read's failure, never the
-    // run's. (The runner Job's own POST rejecting is different: that run never started, and its
-    // throw is what hands the job back to its lease.)
-    it('fails no verdict when the readout Job POST rejects: the error rides readoutError instead', async () => {
-        const base = opencodeFake();
-        const request: K8sRequest = (method, path, body) =>
-            method === 'POST' &&
-            path === jobsPath(namespace) &&
-            (body as { metadata?: { name?: string } })?.metadata?.name === ocreadName
-                ? Promise.reject(new Error('the apiserver closed the connection'))
-                : base.request(method, path, body);
-        const outcome = await ocRunner(request).run(opencodeJob, null);
-
-        expect(outcome.exitCode).toBe(0);
-        expect(outcome.sessionId).toBeUndefined();
-        expect(outcome.readoutError).toContain('the apiserver closed the connection');
+        expect(outcome.agentTurns).toBe(7);
+        expect(outcome.summary).toBe('done');
+        const [read, ...more] = steps.submitted.filter((step) => step.argv.includes(claudeTurnsScript));
+        expect(more).toEqual([]);
+        expect(read!.kind).toBe('probe');
+        expect(read!.env.CLAUDE_SESSION_ID).toBe(SESSION);
+        // Nothing but the runner's own Job was created: a second pod would be Pending on a ReadWriteOncePod volume.
+        const jobPosts = calls.filter((c) => c.method === 'POST' && c.path === jobsPath(namespace));
+        expect(jobPosts).toHaveLength(1);
     });
 
     it('scrapes nothing for a claude-code run, whose session is known at spawn', async () => {
-        const { request, calls } = opencodeFake({ log: 'irrelevant' });
-        await runner(request).run(job, { id: SESSION, resume: false });
-        expect(calls.some((c) => decodeURIComponent(c.path ?? '').includes('ocread'))).toBe(false);
-        expect(
-            calls.some(
-                (c) =>
-                    c.method === 'POST' &&
-                    (c.body as { metadata?: { name?: string } })?.metadata?.name?.startsWith('factory-ocread-')
-            )
-        ).toBe(false);
+        const { request, steps } = opencodeFake({ log: 'irrelevant' });
+        await ocRunner(request, steps).run(job, { id: SESSION, resume: false });
+        expect(readoutsOf(steps)).toEqual([]);
     });
 });
 

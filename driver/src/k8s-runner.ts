@@ -15,7 +15,7 @@ import type { RunOutcome, RunSession, Runner } from './runner.js';
 import { adoptFinishedRunner } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from './close-read.js';
 import { killedOutcome, ledgerOf, RunnerKilled, RunnerVanished, vanishedOutcome } from './k8s-kill.js';
-import { deleteJob, jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
+import { jobPath, jobPodsPath } from './k8s-auxspec.js';
 import { acquireClaim, type ObservedClaim, releaseClaimAfterGroupEnd, revokeClaim } from './k8s-fence.js';
 import {
     ensureGroup,
@@ -26,15 +26,8 @@ import {
     runnerGroupOf,
     takeGroupDown,
 } from './k8s-group.js';
-import { claudeTurnsJobSpec, jobsPath, opencodeReadoutJobSpec, runnerName } from './k8s-podspec.js';
-import {
-    auxVerdict,
-    pollJobToTerminal,
-    pollRunnerJobUntilTerminal,
-    readJobStatus,
-    readRunnerVerdict,
-    readVerdict,
-} from './k8s-poll.js';
+import { claudeTurnsStep, opencodeReadoutStep, runnerName } from './k8s-podspec.js';
+import { pollRunnerJobUntilTerminal, readJobStatus, readRunnerVerdict } from './k8s-poll.js';
 import {
     deadServices,
     forgetServices,
@@ -45,7 +38,6 @@ import {
 import { groupServices } from './services.js';
 import { resizeGateSidecar, resizeReviewerSidecar, runGateInGroup, runReviewInGroup } from './k8s-gate.js';
 import {
-    answerPreview,
     expectOk,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
@@ -54,7 +46,6 @@ import {
     parse,
     parsePodMetrics,
     POLL_MS,
-    refusal,
     wait,
 } from './k8s-transport.js';
 import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
@@ -65,8 +56,11 @@ import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import { type KillRecord, settleEnd } from './termination.js';
 import {
     controlTokenOf,
+    detailOf,
     orderGo,
+    READOUT_STEP_TIMEOUT_MS,
     releaseSteps,
+    runReadoutStep,
     runSyncStep,
     stepHostOf,
     supervisedStepMembers,
@@ -84,64 +78,49 @@ import { KILL_WINDDOWN_MS, type SupervisorReport } from './supervisor-contract.j
  */
 
 /**
- * The close-time opencode session scrape, as a Job: the same read the docker runner performs with
- * a throwaway container after the run's close, against the database the run persisted on the
- * PVC. NEVER throws — the scrape is the run's follow-up-ability, finish reason and context vitals,
- * and a failed read is not a failed run.
+ * Whether a step answer lost its head to the supervisor's output cap: every line the readout prints
+ * is a JSON object, so a first line that is not one was cut mid-line. A cut that fell on a line
+ * boundary is undetectable here.
  */
-async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: string): Promise<OpencodeRunOutcome> {
-    const fail = opencodeReadFailed;
-    let spec: ReturnType<typeof opencodeReadoutJobSpec>;
+function headCut(stdout: string): boolean {
+    const first = stdout.split('\n', 1)[0]!.trim();
+    if (!first) return false;
     try {
-        spec = opencodeReadoutJobSpec(deps.config, job, startedAt);
-    } catch (e) {
-        return fail((e as Error).message);
-    }
-    const jobName = spec.metadata.name;
-    try {
-        const created = await deps.request('POST', jobsPath(deps.config.k8sNamespace), spec);
-        const refused = refusal(created, 'creating the session readout');
-        if (refused) return fail(refused);
-        // pollJobToTerminal re-throws a read whose patience ran out (issue #308) — infrastructure,
-        // never the run's verdict. EVERY failure this block can raise — a transport rejection on
-        // the Job POST included — lands in the catch below: the scrape is the run's
-        // follow-up-ability, and a completed run's verdict must never burn over its close-time
-        // read.
-        const pollFailure = await pollJobToTerminal(deps, jobName, {
-            what: 'the session readout',
-            notFound: (n) => `the session readout ${n} no longer exists`,
-            errorStatus: (s, b) => `reading the session readout ${answerPreview(s, b)}`,
-            failed: 'the session readout job failed — its own deadline is its bound',
-        });
-        if (pollFailure !== null) return fail(pollFailure);
-        const pods = await readVerdict(
-            deps,
-            jobPodsPath(deps.config.k8sNamespace, jobName),
-            'listing the session readout pods'
-        );
-        if (pods.status >= HTTP_ERROR_STATUS)
-            return fail(`listing the session readout pods ${answerPreview(pods.status, pods.body)}`);
-        const pod = livePod(pods.body);
-        if (!pod?.metadata?.name) return fail('the session readout left no pod to read its output from');
-        const log = await readVerdict(
-            deps,
-            podLogPath(deps.config.k8sNamespace, pod.metadata.name, null),
-            'reading the session readout log'
-        );
-        if (log.status >= HTTP_ERROR_STATUS)
-            return fail(`reading the session readout's log ${answerPreview(log.status, log.body)}`);
-        return parseOpencodeRunOutcome(log.body, log.truncated === true);
-    } catch (e) {
-        return fail((e as Error).message);
-    } finally {
-        void deleteJob(deps, jobName);
+        JSON.parse(first);
+        return false;
+    } catch {
+        return true;
     }
 }
 
 /**
- * The close-time claude-code read: one aux Job over the PVC, its one answer parsed to the turn
- * count and the run's last words, or nulls. Every failure on the way answers nulls: unmeasured,
- * never zero, exactly the contract the docker twin's failed exec keeps.
+ * The close-time opencode session scrape, as a supervised step of the task group: the same read the
+ * docker runner performs with a throwaway container after the run's close, against the database
+ * the run persisted on the task volume. NEVER throws — the scrape is the run's follow-up-ability,
+ * finish reason and context vitals, and a failed read is not a failed run.
+ */
+async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: string): Promise<OpencodeRunOutcome> {
+    try {
+        const answered = await runReadoutStep(stepHostOf(deps), job, {
+            name: 'opencode-readout',
+            ...opencodeReadoutStep(job, startedAt),
+        });
+        if (answered.timedOut) return opencodeReadFailed('the session readout exceeded its deadline');
+        if (answered.exitCode !== 0) {
+            return opencodeReadFailed(
+                `the session readout step failed: ${detailOf(answered, READOUT_STEP_TIMEOUT_MS)}`
+            );
+        }
+        return parseOpencodeRunOutcome(answered.stdout, headCut(answered.stdout));
+    } catch (e) {
+        return opencodeReadFailed((e as Error).message);
+    }
+}
+
+/**
+ * The close-time claude-code read: one supervised step, its one answer parsed to the turn count and
+ * the run's last words, or nulls. Every failure on the way answers nulls: unmeasured, never zero,
+ * exactly the contract the docker twin's failed exec keeps.
  */
 async function scrapeClaudeCloseRead(
     deps: K8sDeps,
@@ -149,22 +128,14 @@ async function scrapeClaudeCloseRead(
     sessionId: string,
     startedAt: string
 ): Promise<ClaudeCloseRead> {
-    let spec: ReturnType<typeof claudeTurnsJobSpec>;
     try {
-        spec = claudeTurnsJobSpec(deps.config, job, sessionId, startedAt);
+        const answered = await runReadoutStep(stepHostOf(deps), job, {
+            name: 'claude-turns',
+            ...claudeTurnsStep(job, sessionId, startedAt),
+        });
+        return answered.exitCode === 0 && !answered.timedOut ? parseClaudeCloseRead(answered.stdout) : CLAUDE_READ_NONE;
     } catch {
         return CLAUDE_READ_NONE;
-    }
-    const jobName = spec.metadata.name;
-    try {
-        const created = await deps.request('POST', jobsPath(deps.config.k8sNamespace), spec);
-        if (created.status >= HTTP_ERROR_STATUS) return CLAUDE_READ_NONE;
-        const verdict = await auxVerdict(deps, jobName);
-        return parseClaudeCloseRead(verdict.output);
-    } catch {
-        return CLAUDE_READ_NONE;
-    } finally {
-        void deleteJob(deps, jobName);
     }
 }
 

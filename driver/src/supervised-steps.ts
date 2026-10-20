@@ -281,6 +281,32 @@ export async function runSyncStep(host: StepHost, job: BoardJob, githubToken?: s
 
 const ERROR_PREVIEW_CHARS = 200;
 
+/** How long a close-time readout step may run: the scripts read one database or one transcript. */
+export const READOUT_STEP_TIMEOUT_MS = 120_000;
+
+/**
+ * A close-time readout (opencode session, claude turns) as one `probe` step of the task group: the
+ * supervisor mounts the task volume, so no second pod ever does (a ReadWriteOncePod volume admits
+ * one). Each call is a fresh read, never answered from the ledger. A refused step or a lost
+ * supervisor propagates; the caller's null contract turns it into "unmeasured".
+ */
+export async function runReadoutStep(
+    host: StepHost,
+    job: BoardJob,
+    readout: { name: string; argv: string[]; env: Record<string, string> }
+): Promise<StepResult> {
+    return submitStep(
+        host,
+        job,
+        stepRequest(job, 'probe', {
+            id: `${readout.name}-${randomUUID().slice(0, ID_HASH_CHARS)}`,
+            argv: readout.argv,
+            env: readout.env,
+            timeoutMs: READOUT_STEP_TIMEOUT_MS,
+        })
+    );
+}
+
 /**
  * One block-helper step (issue #207): an allowlisted, board-owned script, run in the task worktree
  * with its bounded input as a literal. Only a github-writing helper gets the claim env, with the
