@@ -5192,6 +5192,45 @@ describe('a stop cancels the gates', () => {
         expect(runner.servicesReleased).toEqual([gatedJob(1).id]);
     });
 
+    // Codex review: every park waits out the output pump — a write still in flight when a stop lands
+    // during the gates would be refused once the row is parked, and its tail lost.
+    it('parks a turn stopped during the gates only after the progress write in flight lands', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([gatedJob(1)], options);
+        const events: string[] = [];
+        const rawProgress = board.board.progress.bind(board.board);
+        board.board.progress = async (claimed, output, runtime) => {
+            if (output === 'the last tail') await new Promise((resolve) => setTimeout(resolve, 150));
+            events.push(`landed ${output}`);
+            return rawProgress(claimed, output, runtime);
+        };
+        const rawSuspend = board.board.suspend.bind(board.board);
+        board.board.suspend = async (claimed) => {
+            events.push('parked');
+            return rawSuspend(claimed);
+        };
+        const stack = stubGateStack();
+        stack.gates.manager.runGate = (_key, _name, _command, { signal } = {}) =>
+            new Promise((resolve) => {
+                // The stop lands once the pump has the last tail's write in flight.
+                setTimeout(() => {
+                    options.cancelRequested = true;
+                }, 30);
+                signal?.addEventListener('abort', () => resolve({ exitCode: 137, output: 'killed' }));
+            });
+        const runner = stubRunner(async (_job, _session, onOutput) => {
+            onOutput?.('the last tail');
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return ok();
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.suspended).toEqual([gatedJob(1).id]);
+        expect(events.indexOf('landed the last tail')).toBeGreaterThanOrEqual(0);
+        expect(events.indexOf('landed the last tail')).toBeLessThan(events.indexOf('parked'));
+    });
+
     it('settles a removed thread without a verdict when the remove lands during the gates', async () => {
         const options: { removedOnBeat?: boolean } = {};
         const board = stubBoard([gatedJob(1)], options);

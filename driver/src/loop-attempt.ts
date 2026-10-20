@@ -38,6 +38,11 @@ const HEARTBEAT_PERIOD_DIVISOR = 3;
 const MS_PER_SECOND = 1_000;
 
 export interface JobState {
+    /**
+     * Stops the output pump's periodic writes and waits out the one in flight (issue #773): a park
+     * lands the row terminal, and a write it overtook would be refused and its tail lost.
+     */
+    drainOutput: () => Promise<void>;
     finished: boolean;
     lost: boolean;
     /**
@@ -135,6 +140,7 @@ export function newJobState(): JobState {
     });
     const controller = new AbortController();
     return {
+        drainOutput: async () => {},
         finished: false,
         lost: false,
         stopped: false,
@@ -479,6 +485,8 @@ interface OutputPump {
     dead: Map<string, DeadService>;
     /** The progress write in flight, or the last one settled: every write chains on it, so none overtakes another. */
     writing: Promise<unknown>;
+    /** True once drained for a park: no periodic write starts after it. */
+    drained: boolean;
 }
 
 /** One progress write, after any still in flight: a later tail never lands before an older one. */
@@ -601,6 +609,11 @@ export function watchOutput(
         dead: new Map(),
         complained: false,
         writing: Promise.resolve(),
+        drained: false,
+    };
+    state.drainOutput = async () => {
+        pump.drained = true;
+        await pump.writing;
     };
     void (async () => {
         while (!state.finished && !state.lost) {
@@ -609,7 +622,7 @@ export function watchOutput(
             // The pump starts with the attempt now, but the runner does not exist until
             // launch — sampling before that is a daemon lookup per period that can answer
             // nothing (issue #126 moved the start earlier to cover the setup phase).
-            if (!state.launched) continue;
+            if (!state.launched || pump.drained) continue;
             kickSample(rt, job, state, pump);
             const verdict = await serialFlush(rt, job, pump);
             // The board no longer recognises this attempt. Killing the container is the
