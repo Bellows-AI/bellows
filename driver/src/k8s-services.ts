@@ -18,6 +18,7 @@ import {
 import { type Bound, pollFor } from './poll.js';
 import { awaitServicesRunning, ServicesNotRunning, stoodDown } from './service-restart.js';
 import { groupServices, type ServiceSpec } from './services.js';
+import { stepLost } from './step-control.js';
 import { runServiceGenerationStep, type StepHost, stepHostOf } from './supervised-steps.js';
 import { SERVICE_NOT_ACKED_EXIT, serviceContainerOf } from './supervisor-contract.js';
 
@@ -218,8 +219,8 @@ export async function deadServices(deps: K8sDeps, job: BoardJob): Promise<DeadSe
 /**
  * Bumps every service's generation once each has acknowledged its current one (R2-4), waiting out
  * the bump's refusal meanwhile for up to SERVICE_RESTART_TIMEOUT_MS, and answers the sidecars as
- * they stood at the bump. A pod that cannot be read is read again; one unread at the bound throws
- * `Inconclusive`.
+ * they stood at the bump. A pod that cannot be read is read again; one unread, or a bump unanswered, at the
+ * bound throws `Inconclusive`.
  */
 async function bumpWhenAcked(
     deps: K8sDeps,
@@ -229,18 +230,27 @@ async function bumpWhenAcked(
 ): Promise<SidecarStatus[]> {
     const host = stepHostOf(deps);
     let readError: Error | null = null;
+    let bumpError: Error | null = null;
     let unackedNames: string[] = [];
     const live = withSignal(deps, signal);
     const counts = await pollFor<SidecarStatus[]>(
         { ...waitOf(live, SERVICE_RESTART_TIMEOUT_MS), everyMs: SERVICE_READY_POLL_MS, abandoned: stoodDown },
         async (deadline) => {
             readError = null;
+            bumpError = null;
             const counts = await readSidecars(boundedBy(live, deadline), job).catch((e: Error) => {
                 readError = e;
                 return null;
             });
             const bumped = counts
-                ? await runServiceGenerationStep(host, job, { mode: 'bump', names }, { deadline, signal })
+                ? await runServiceGenerationStep(host, job, { mode: 'bump', names }, { deadline, signal }).catch(
+                      (e: Error) => {
+                          // A lost supervisor or a stand-down is thrown; a bump the deadline cut off proves nothing.
+                          if (stepLost(e) || signal.aborted) throw e;
+                          bumpError = e;
+                          return null;
+                      }
+                  )
                 : null;
             if (counts && bumped?.exitCode === 0) return counts;
             if (bumped && bumped.exitCode !== SERVICE_NOT_ACKED_EXIT) {
@@ -253,6 +263,9 @@ async function bumpWhenAcked(
     );
     if (counts) return counts;
     if (readError) throw readError;
+    if (bumpError) {
+        throw new Inconclusive(`the services' generations were not answered: ${(bumpError as Error).message}`);
+    }
     throw new ServicesNotRunning(
         `service ${unackedNames.map((name) => `"${name}"`).join(', ')} never acknowledged its generation ` +
             `${SERVICE_RESTART_TIMEOUT_S}s on`

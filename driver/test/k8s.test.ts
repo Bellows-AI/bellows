@@ -5574,6 +5574,30 @@ describe('the kubernetes services flow (issue #773)', () => {
         expect((thrown as Error).message).toBe('service "cache" never acknowledged its generation 300s on');
     });
 
+    // #869: a bump nobody answered by the restart deadline proves nothing about the services.
+    it('is inconclusive, not a services failure, when the bump goes unanswered until the restart deadline', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+            const api = podFake({ cache: running() });
+            const steps = restartSteps();
+            const sink: StepSink = {
+                ...steps.sink,
+                submit: async (token, step, signal) => {
+                    if (step.kind === 'restart' && step.argv[4] === 'bump') {
+                        vi.setSystemTime(Date.now() + 301_000);
+                        throw new Error('the step was cancelled');
+                    }
+                    return steps.sink.submit(token, step, signal);
+                },
+            };
+            const k8s = runner(api.request, servicesOn, undefined, sink);
+            await k8s.syncCheckout(job, undefined, SESSION_RUN);
+            await expect(k8s.restartServices(job, live)).rejects.toBeInstanceOf(Inconclusive);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('gives the pod read of a bump the time its budget has left, however slow the steps before it', async () => {
         vi.useFakeTimers({ toFake: ['Date'] });
         try {
