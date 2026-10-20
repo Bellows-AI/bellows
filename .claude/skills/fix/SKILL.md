@@ -35,6 +35,32 @@ cover every command this skill names below.
   this skill — done, or any STOP — and before Phase 1 when an earlier run of the issue may have left
   something behind.
 
+## Context budget
+
+Every turn re-reads the whole context, so context size × turns is what a run costs: one agent at
+600K tokens for 250 turns outspends the rest of the run. These rules bind this conversation and
+every agent it spawns — copy them into each brief.
+
+- **Read narrowly.** Locate with `git grep -n` first, then read only the range you need — at most
+  ~150 lines (`sed -n <a>,<b>p`, or Read with offset/limit). Never `cat` a whole source file or doc
+  to look for something, and never re-read a range already in context unless it changed since.
+- **Suite output stays on disk.** Run every suite to a log (`> <scratchpad>/<what>.log 2>&1`) and
+  read only the verdict and the failures (`tail -n 30`, `grep -n -E 'FAIL|Error'`). A green run
+  needs nothing beyond its exit code.
+- **Wait in one call.** A background command or `Monitor` wakes the run once, when it ends — never
+  a loop of sleeps or repeated status checks.
+- **One implementer per commit, in sequence.** Implementation stays in this conversation by
+  default. When the plan spans several commits and you delegate them, spawn one agent per commit:
+  one Agent call per message, never a second launch while one runs, never two agents on the same
+  commit or tree. The brief points at files (the plan, the issue JSON) instead of pasting them; the
+  agent returns under 200 words plus the commit sha.
+- **Implementers are fresh agents, never forks.** A fork starts with this whole conversation.
+  Each review round's fixes go to a new agent briefed with the round's findings file — never
+  `SendMessage` into an agent that already ran a round.
+- **Cap every agent at 250K tokens of context.** At the cap it stops and writes
+  `<scratchpad>/handoff-<N>.md` — done, remaining, files touched, next command — and a fresh agent
+  resumes from that note, never from the old context.
+
 ## Phase 0 — Fetch the issue
 
 - If no issue URL/number was given, ask for one and stop.
@@ -125,7 +151,8 @@ For each round, up to 3:
 1. Produce the complete diff: `git diff $(git merge-base HEAD <default-branch>)...HEAD` (plus
    uncommitted changes staged first into a temp view if needed — the reviewer must see everything
    you changed).
-2. Spawn the `reviewer` subagent (task tool) with: the diff, the issue title and body, and a
+2. Write the diff to `<scratchpad>/diff-<N>-r<round>.patch` — never into this conversation — and
+   spawn the `reviewer` subagent (task tool) with: that path, the issue title and body, and a
    one-paragraph summary of the approach.
 3. Triage its findings:
    - Blockers (bugs, broken error handling, missing coverage for the change, security issues):
@@ -198,8 +225,10 @@ This repo has no CI — its PR checks are the automated reviewers themselves (Co
 and their completion is what posts the comments. Loop until no unaddressed comments remain; one
 round = one wait, one fetch, one address cycle:
 
-1. Wait for the review to land: poll `gh pr checks <PR_NUMBER>` until nothing is pending (exit 8
-   means still pending; the bots can take a few minutes). Then fetch everything with full detail —
+1. Wait for the review to land in one call: `gh pr checks <PR_NUMBER> --watch > <log> 2>&1` with
+   `run_in_background`, then wait for its exit notification — never poll. "no checks reported" means
+   the bots have not registered yet: wait once with `Monitor`, then watch again. Then fetch
+   everything with full detail —
    review summaries and PR-level comments:
    `gh pr view <PR_NUMBER> --repo <owner/repo> --comments --json comments,reviews`, plus the
    line-level comments: `gh api repos/<owner>/<repo>/pulls/<PR_NUMBER>/comments`. Read the review

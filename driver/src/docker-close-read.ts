@@ -31,7 +31,8 @@ import {
     type Spawn,
     readUtf8,
 } from './docker-runner-support.js';
-import { supervisorLossOf, supervisorName, waitSupervisorExit } from './docker-group.js';
+import { supervisorLossOf, waitSupervisorExit } from './docker-group.js';
+import { supervisorName } from './docker-mailbox.js';
 import { readDockerKills } from './docker-teardown.js';
 import { adoptedVerdictOf, infraLossOf, killEndsGroup, reportFinalized, reportVerdictOf } from './termination.js';
 import { type FinalReport, finalReportOf, SUPERVISOR_EXIT, SUPERVISOR_WINDDOWN_MS } from './supervisor-contract.js';

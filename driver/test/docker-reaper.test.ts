@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { containerName } from '../src/docker.js';
-import { networkName, serviceContainerName } from '../src/services.js';
+import { serviceContainerName } from '../src/services.js';
 import type { BoardJob } from '../src/board.js';
 import { createDockerReaper, parseDockerCreatedAt } from '../src/docker-reaper.js';
 import type { ExecDocker } from '../src/docker-runner-support.js';
@@ -126,7 +126,6 @@ describe('the docker reaper arm: scan', () => {
         // job+lease volumes, neither of which this daemon holds.
         expect(calls).toEqual([
             PS_ARGS,
-            ['ps', '-a', '--filter', 'label=factory.gates', '--format', '{{json .}}'],
             ['ps', '-a', '--filter', 'label=factory.role', '--format', '{{json .}}'],
             [
                 'volume',
@@ -165,105 +164,67 @@ describe('the docker reaper arm: scan', () => {
     });
 });
 
-describe('the docker reaper arm: gate environments (issue #667)', () => {
+describe('the docker reaper arm: a group’s gate container (issue #773)', () => {
     const OLD = '2026-09-01 00:00:00 +0000 UTC';
-    const gateLine = (id: string, name: string, jobId: string, lease: string) =>
+    const gateLine = (id: string, lease: string) =>
         JSON.stringify({
             ID: id,
-            Names: name,
-            Labels: `factory.gates=k,factory.job=${jobId},factory.lease=${lease}`,
+            Names: `factory-gate-${JOB}-${lease}`,
+            Labels: `factory.role=gate,factory.job=${JOB},factory.lease=${lease}`,
+            State: 'running',
             CreatedAt: OLD,
         });
 
-    /** A sweep over one gate list, answering the board's lease for JOB and JOB2. */
-    const sweep = async (lines: string[], leases: { id: string; leaseToken: string | null }[], held: string[]) => {
+    /** A sweep over the role scope's list, the board answering `leases`; every `ps` filter is kept. */
+    const sweep = async (lines: string[], leases: { id: string; leaseToken: string }[]) => {
         const removed: string[] = [];
+        const filters: string[] = [];
         const execDocker: ExecDocker = async (args) => {
-            if (args[0] === 'ps') return { stdout: args.includes('label=factory.gates') ? lines.join('\n') : '' };
+            if (args[0] === 'ps') {
+                filters.push(args[3]!);
+                return { stdout: args.includes('label=factory.role') ? lines.join('\n') : '' };
+            }
             if (args[0] === 'rm') removed.push(args[2]!);
             return { stdout: '' };
         };
         const reaper = createReaper({
-            board: { leases: async () => leases.map((l) => ({ ...l, status: 'running' as const })) },
-            arm: createDockerReaper(execDocker, (name) => held.includes(name)),
+            board: { leases: async () => leases.map((lease) => ({ ...lease, status: 'running' as const })) },
+            arm: createDockerReaper(execDocker),
             intervalMs: 0,
             graceMs: 0,
             log: () => undefined,
             now: () => Date.now(),
         });
         await reaper.sweep();
-        return removed;
+        return { removed, filters };
     };
 
-    it('removes an environment whose creating attempt is dead and no live manager holds', async () => {
-        const removed = await sweep(
-            [gateLine(hexId('orphan'), 'factory-env-a', JOB, LEASE)],
-            [{ id: JOB, leaseToken: LEASE2 }],
-            []
-        );
+    it('removes the gate container of a job the board no longer knows, with its group', async () => {
+        const { removed } = await sweep([gateLine(hexId('orphan'), LEASE)], []);
         expect(removed).toEqual([hexId('orphan')]);
     });
 
-    it('keeps an environment whose creating lease is still the live one', async () => {
-        const removed = await sweep(
-            [gateLine(hexId('live'), 'factory-env-a', JOB, LEASE)],
-            [{ id: JOB, leaseToken: LEASE }],
-            []
-        );
+    it('keeps the gate container of the live lease', async () => {
+        const { removed } = await sweep([gateLine(hexId('live'), LEASE)], [{ id: JOB, leaseToken: LEASE }]);
         expect(removed).toEqual([]);
     });
 
-    it('keeps an environment this driver still holds in its cooldown, whatever its labels say', async () => {
-        const removed = await sweep(
-            [gateLine(hexId('warm'), 'factory-env-a', JOB, LEASE)],
-            [{ id: JOB, leaseToken: LEASE2 }],
-            ['factory-env-a']
-        );
-        expect(removed).toEqual([]);
+    it('lists no gate-environment scope: a gate container lives and ends with its group', async () => {
+        const { filters } = await sweep([], []);
+        expect(filters).not.toContain('label=factory.gates');
     });
 });
 
 describe('the docker reaper arm: reap', () => {
-    it('removes each container by id, detaches the network, and removes the derived network', async () => {
-        const { execDocker, calls } = router([
-            // The network inspect: one attached endpoint the teardown must disconnect first.
-            ['network', 'gate-env'],
-        ]);
+    // Issue #773: a group shares its supervisor's network namespace, so no network is an attempt's.
+    it('removes each container by id, and no network', async () => {
+        const { execDocker, calls } = router([]);
         const arm = createDockerReaper(execDocker);
 
         const removed = await arm.reap(group(), 'gone');
 
-        expect(removed).toEqual([
-            `network factory-job-${JOB}-${LEASE}-services`,
-            `container ${JOB}-${LEASE}-svc-postgres`,
-        ]);
-        expect(calls).toEqual([
-            ['network', 'inspect', '--format', '{{range .Containers}}{{println .Name}}{{end}}', networkName(job)],
-            ['network', 'disconnect', '-f', networkName(job), 'gate-env'],
-            ['network', 'rm', networkName(job)],
-            ['rm', '-f', `${JOB}-${LEASE}-svc-postgres`],
-        ]);
-    });
-
-    it('attempts the network teardown before removing containers — a failed network rm leaves them retryable', async () => {
-        const calls: string[][] = [];
-        const failing: ExecDocker = async (args) => {
-            calls.push([...args]);
-            if (args[0] === 'network' && args[1] === 'rm') {
-                throw new Error(
-                    'Error response from daemon: error while removing network: network has active endpoints'
-                );
-            }
-            return { stdout: '' };
-        };
-        const arm = createDockerReaper(failing);
-
-        await expect(arm.reap(group(), 'gone')).rejects.toThrow('active endpoints');
-        // The containers were never touched: scan lists them, so the next sweep can retry both.
-        expect(calls).toEqual([
-            ['network', 'inspect', '--format', '{{range .Containers}}{{println .Name}}{{end}}', networkName(job)],
-            ['network', 'rm', networkName(job)],
-        ]);
+        expect(removed).toEqual([`container ${JOB}-${LEASE}-svc-postgres`]);
+        expect(calls).toEqual([['rm', '-f', `${JOB}-${LEASE}-svc-postgres`]]);
     });
 
     it('tolerates a container vanishing between the list and its removal', async () => {
@@ -275,18 +236,8 @@ describe('the docker reaper arm: reap', () => {
         };
         const arm = createDockerReaper(failing);
 
-        // The vanished container is not this round's removal; the network teardown continues.
-        expect(await arm.reap(group(), 'gone')).toEqual([`network factory-job-${JOB}-${LEASE}-services`]);
-    });
-
-    it("keeps the derived network scoped to the group's own attempt", async () => {
-        const { execDocker, calls } = router([]);
-        const arm = createDockerReaper(execDocker);
-
-        await arm.reap(group({ jobId: JOB2, leaseToken: LEASE2 }), 'superseded');
-
-        // The network name carries THIS group's lease token — never the live attempt's.
-        expect(calls).toContainEqual(['network', 'rm', networkName({ id: JOB2, leaseToken: LEASE2 } as BoardJob)]);
+        // The vanished container is not this round's removal.
+        expect(await arm.reap(group(), 'gone')).toEqual([]);
     });
 
     it('names the service container the way the fleet builder does', () => {
@@ -406,7 +357,6 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
 
     it.each([
         ['the service list', (args: string[]) => args[0] === 'ps' && args.includes('label=factory.service')],
-        ['the gate list', (args: string[]) => args[0] === 'ps' && args.includes('label=factory.gates')],
         ['the role list', (args: string[]) => args[0] === 'ps' && args.includes('label=factory.role')],
         ['the volume list', (args: string[]) => args[0] === 'volume' && args[1] === 'ls'],
         ['the volume inspect', (args: string[]) => args[0] === 'volume' && args[1] === 'inspect'],

@@ -27,7 +27,16 @@ import type { ControlEntry, QuestionRelay, QuestionResolution } from '../../src/
 import { cancelPendingQuestions, hasPendingQuestion, newControl, resolveQuestion } from '../../src/question-control.js';
 import type { ReviewRelay } from '../../src/review-control.js';
 import type { SnapshotResult } from '../../src/review-snapshot.js';
-import type { AdoptedRun, DeadService, RunOutcome, RunSession, Runner, RuntimeSample } from '../../src/runner.js';
+import type {
+    AdoptedRun,
+    DeadService,
+    GateSizing,
+    RunOutcome,
+    RunSession,
+    Runner,
+    RuntimeSample,
+} from '../../src/runner.js';
+import type { StepResult } from '../../src/supervisor-contract.js';
 import type { SyncQueue } from '../../src/sync-queue.js';
 
 export const USER = '44444444-4444-4444-8444-444444444444';
@@ -307,6 +316,8 @@ export function stubRunner(
     startedServices: string[];
     /** The runtime budget pause/resume requests, by job id and paused state. */
     paused: { id: string; paused: boolean }[];
+    /** Every gate resize the loop asked for (issue #773), in order. */
+    resized: GateSizing[];
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
@@ -403,6 +414,15 @@ export function stubRunner(
         },
         async runHelper(): Promise<HelperResult> {
             throw new Error('no helper scripted');
+        },
+        // The gate stack is stubbed whole in this suite; the runner's own gate step never runs here.
+        async runGate(): Promise<StepResult> {
+            throw new Error('no gate step scripted');
+        },
+        resized: [] as GateSizing[],
+        async resizeGate(_job: BoardJob, phase: GateSizing) {
+            runner.resized.push(phase);
+            return true;
         },
         ...(options.reapOrphanedClaim
             ? {

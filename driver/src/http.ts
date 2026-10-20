@@ -23,6 +23,8 @@ export const CONCLUSION_CONFLICT_CODE = 'CONCLUSION_CONFLICT';
 
 /** What the kubernetes API requires of a PATCH body that is a JSON merge patch. */
 export const MERGE_PATCH_CONTENT_TYPE = 'application/merge-patch+json';
+/** Kubernetes' strategic merge patch: list entries merged by their key (a container by its name). */
+export const STRATEGIC_MERGE_PATCH_CONTENT_TYPE = 'application/strategic-merge-patch+json';
 
 /** Writes one JSON answer. */
 export const respondJson = (reply: ServerResponse, status: number, body: unknown): void => {

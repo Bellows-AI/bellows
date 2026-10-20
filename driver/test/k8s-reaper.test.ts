@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { JOB_LABEL, LEASE_LABEL } from '../src/labels.js';
-import { configmapsPath, podsPath, secretsPath, servicesPath } from '../src/k8s-auxspec.js';
-import { gateEnvSecretName, jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
+import { configmapsPath, podsPath, secretsPath } from '../src/k8s-auxspec.js';
+import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { createReaper, type OrphanGroup } from '../src/reaper.js';
@@ -46,11 +46,12 @@ const router = (
     };
 };
 
-const pod = (name: string, jobId: string, lease: string, created: string) => ({
+/** A leftover aux Job of one attempt (a readout), as the job+lease selector lists it. */
+const auxJob = (name: string, jobId: string, lease: string, created: string) => ({
     metadata: {
         name,
         uid: `uid-${name}`,
-        labels: { [JOB_LABEL]: jobId, [LEASE_LABEL]: lease, 'factory.service': 'postgres' },
+        labels: { [JOB_LABEL]: jobId, [LEASE_LABEL]: lease },
         creationTimestamp: created,
     },
 });
@@ -58,149 +59,107 @@ const pod = (name: string, jobId: string, lease: string, created: string) => ({
 const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: NAMESPACE });
 
 const LIST_JOBS = `${jobsPath(NAMESPACE)}?labelSelector=${encodeURIComponent('factory.job,factory.lease')}`;
-const LIST_PODS = `${podsPath(NAMESPACE)}?labelSelector=${encodeURIComponent('factory.job,factory.service')}`;
-const LIST_SERVICES = `${servicesPath(NAMESPACE)}?labelSelector=${encodeURIComponent('factory.job,factory.service')}`;
 
 const deleteCalls = (calls: readonly Recorded[]) =>
     calls.filter((call) => call.method === 'DELETE').map((call) => call.path);
 
+const AUX = 'factory-ocread-0123456789abcdef';
 const group = (overrides: Partial<OrphanGroup> = {}): OrphanGroup => ({
     jobId: JOB,
     leaseToken: LEASE,
     createdAtMs: 0,
-    objects: [
-        { kind: 'pod', name: `${JOB}-${LEASE}-svc-postgres` },
-        { kind: 'service', name: `factory-svc-abc` },
-    ],
+    objects: [{ kind: 'job', name: AUX }],
     ...overrides,
 });
+const AUX_DELETE = `${jobsPath(NAMESPACE)}/${AUX}?propagationPolicy=Foreground`;
 
 describe('the kubernetes reaper arm: scan', () => {
-    it('lists service resources and attempt Jobs', async () => {
-        const body = JSON.stringify({ items: [] });
-        const { request, calls } = router([
-            ['GET', LIST_PODS, { status: 200, body }],
-            ['GET', LIST_SERVICES, { status: 200, body }],
-        ]);
+    // A declared service is a sidecar of its attempt's pod (issue #773): it goes with its Job, so
+    // the arm lists Jobs alone — no service pod, no headless Service.
+    it('lists the attempt Jobs, and nothing else', async () => {
+        const { request, calls } = router([]);
         const arm = createKubernetesReaper({ config, request });
 
         await arm.scan();
 
-        expect(calls).toEqual([
-            { method: 'GET', path: LIST_PODS },
-            { method: 'GET', path: LIST_SERVICES },
-            { method: 'GET', path: LIST_JOBS },
-        ]);
+        expect(calls).toEqual([{ method: 'GET', path: LIST_JOBS }]);
     });
 
     it('scopes the selector to this release when one is configured', async () => {
         const scoped = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: NAMESPACE, K8S_RELEASE: 'factory' });
-        const expected = `${podsPath(NAMESPACE)}?labelSelector=${encodeURIComponent(
-            'factory.job,factory.service,app.kubernetes.io/instance=factory'
-        )}`;
-        const body = JSON.stringify({ items: [] });
-        const { request, calls } = router([
-            ['GET', expected, { status: 200, body }],
-            [
-                'GET',
-                `${servicesPath(NAMESPACE)}?labelSelector=${encodeURIComponent(
-                    'factory.job,factory.service,app.kubernetes.io/instance=factory'
-                )}`,
-                { status: 200, body },
-            ],
-        ]);
-        const arm = createKubernetesReaper({ config: scoped, request });
-
-        await arm.scan();
-
+        const { request, calls } = router([]);
+        await createKubernetesReaper({ config: scoped, request }).scan();
         // The release term is load-bearing: two releases sharing a namespace against different
-        // boards must never reap each other's fleets as "unknown jobs".
-        expect(calls[0]?.path).toBe(expected);
-        expect(calls[2]?.path).toBe(
+        // boards must never reap each other's Jobs as "unknown jobs".
+        expect(calls.map((call) => call.path)).toEqual([
             `${jobsPath(NAMESPACE)}?labelSelector=${encodeURIComponent(
                 'factory.job,factory.lease,app.kubernetes.io/instance=factory'
-            )}`
-        );
+            )}`,
+        ]);
     });
 
     it('groups by job and lease, keeping the oldest creationTimestamp of the group', async () => {
-        const pods = JSON.stringify({
+        const jobs = JSON.stringify({
             items: [
-                pod('old-pod', JOB, LEASE, '2026-09-01T00:00:00Z'),
-                pod('new-pod', JOB, LEASE, '2026-09-02T00:00:00Z'),
+                auxJob('factory-ocread-new', JOB, LEASE, '2026-09-02T00:00:00Z'),
+                auxJob('factory-cturns-old', JOB, LEASE, '2026-09-01T00:00:00Z'),
             ],
         });
-        const services = JSON.stringify({ items: [] });
-        const { request } = router([
-            ['GET', LIST_PODS, { status: 200, body: pods }],
-            ['GET', LIST_SERVICES, { status: 200, body: services }],
-        ]);
-        const arm = createKubernetesReaper({ config, request });
+        const { request } = router([['GET', LIST_JOBS, { status: 200, body: jobs }]]);
 
-        const groups = await arm.scan();
-
-        expect(groups).toEqual([
+        expect(await createKubernetesReaper({ config, request }).scan()).toEqual([
             {
                 jobId: JOB,
                 leaseToken: LEASE,
                 // The OLDEST creationTimestamp — the grace window is measured from the moment
-                // the fleet began to exist, not from the youngest pod in it.
+                // the attempt's objects began to exist, not from the youngest of them.
                 createdAtMs: Date.parse('2026-09-01T00:00:00Z'),
                 objects: [
-                    { kind: 'pod', name: 'old-pod', uid: 'uid-old-pod' },
-                    { kind: 'pod', name: 'new-pod', uid: 'uid-new-pod' },
+                    { kind: 'job', name: 'factory-ocread-new', uid: 'uid-factory-ocread-new' },
+                    { kind: 'job', name: 'factory-cturns-old', uid: 'uid-factory-cturns-old' },
                 ],
             },
         ]);
     });
 
     it('dates a row by an RFC3339 timestamp with a fraction and an offset', async () => {
-        const items = [pod('p', JOB, LEASE, '2026-09-01T02:00:00.5+02:00')];
-        const { request } = router([
-            ['GET', LIST_PODS, { status: 200, body: JSON.stringify({ items }) }],
-            ['GET', LIST_SERVICES, { status: 200, body: JSON.stringify({ items: [] }) }],
-        ]);
+        const items = [auxJob('p', JOB, LEASE, '2026-09-01T02:00:00.5+02:00')];
+        const { request } = router([['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items }) }]]);
         const groups = await createKubernetesReaper({ config, request }).scan();
         expect(groups.map((g) => g.createdAtMs)).toEqual([Date.parse('2026-09-01T00:00:00.500Z')]);
     });
 
     it('skips rows missing either label', async () => {
-        const pods = JSON.stringify({
+        const jobs = JSON.stringify({
             items: [
-                pod('good', JOB, LEASE, '2026-09-01T00:00:00Z'),
+                auxJob('good', JOB, LEASE, '2026-09-01T00:00:00Z'),
                 // Unlabelled junk never becomes somebody's orphan.
                 { metadata: { name: 'junk', uid: 'uid-junk' } },
                 { metadata: { name: 'half', uid: 'uid-half', labels: { [JOB_LABEL]: JOB } } },
             ],
         });
-        const { request } = router([
-            ['GET', LIST_PODS, { status: 200, body: pods }],
-            ['GET', LIST_SERVICES, { status: 200, body: JSON.stringify({ items: [] }) }],
-        ]);
-        const arm = createKubernetesReaper({ config, request });
+        const { request } = router([['GET', LIST_JOBS, { status: 200, body: jobs }]]);
 
-        const groups = await arm.scan();
-
-        expect(groups).toEqual([
+        expect(await createKubernetesReaper({ config, request }).scan()).toEqual([
             {
                 jobId: JOB,
                 leaseToken: LEASE,
                 createdAtMs: Date.parse('2026-09-01T00:00:00Z'),
-                objects: [{ kind: 'pod', name: 'good', uid: 'uid-good' }],
+                objects: [{ kind: 'job', name: 'good', uid: 'uid-good' }],
             },
         ]);
     });
 
     it.each([
         [
-            'an in-scope pod with no creationTimestamp',
+            'an in-scope Job with no creationTimestamp',
             { metadata: { name: 'x', labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE } } },
         ],
-        ['an in-scope pod with an unparsable creationTimestamp', pod('x', JOB, LEASE, 'not-a-date')],
-        ['an in-scope pod dated "0"', pod('x', JOB, LEASE, '0')],
-        ['an in-scope pod dated on a day the calendar lacks', pod('x', JOB, LEASE, '2026-02-31T00:00:00Z')],
-        ['an in-scope pod dated with no time', pod('x', JOB, LEASE, '2026-09-01')],
-        ['an in-scope pod dated in docker’s spelling', pod('x', JOB, LEASE, '2026-09-01 00:00:00 +0000 UTC')],
+        ['an in-scope Job with an unparsable creationTimestamp', auxJob('x', JOB, LEASE, 'not-a-date')],
+        ['an in-scope Job dated "0"', auxJob('x', JOB, LEASE, '0')],
+        ['an in-scope Job dated on a day the calendar lacks', auxJob('x', JOB, LEASE, '2026-02-31T00:00:00Z')],
+        ['an in-scope Job dated with no time', auxJob('x', JOB, LEASE, '2026-09-01')],
+        ['an in-scope Job dated in docker’s spelling', auxJob('x', JOB, LEASE, '2026-09-01 00:00:00 +0000 UTC')],
         ['an item no one named', { metadata: { labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE } } }],
         ['an empty item', {}],
         ['an item named by a number', { metadata: { name: 5 } }],
@@ -226,11 +185,11 @@ describe('the kubernetes reaper arm: scan', () => {
             },
         ],
         // #869 round 2: a job, lease or holder label that is present but no uuid would become the attempt identity.
-        ['an in-scope pod whose lease label is no lease', pod('x', JOB, 'corrupt', '2026-09-01T00:00:00Z')],
-        ['an in-scope pod whose lease label is empty', pod('x', JOB, '', '2026-09-01T00:00:00Z')],
-        ['an in-scope pod whose job label is no job id', pod('x', 'corrupt', LEASE, '2026-09-01T00:00:00Z')],
+        ['an in-scope Job whose lease label is no lease', auxJob('x', JOB, 'corrupt', '2026-09-01T00:00:00Z')],
+        ['an in-scope Job whose lease label is empty', auxJob('x', JOB, '', '2026-09-01T00:00:00Z')],
+        ['an in-scope Job whose job label is no job id', auxJob('x', 'corrupt', LEASE, '2026-09-01T00:00:00Z')],
         [
-            'a pod whose holder label is no lease',
+            'a Job whose holder label is no lease',
             {
                 metadata: {
                     name: 'x',
@@ -243,11 +202,8 @@ describe('the kubernetes reaper arm: scan', () => {
     ])('answers nothing when a listed row is malformed — %s', async (_name, row) => {
         // A row that cannot be dated or named proves nothing about the rest: a group dated from the
         // other rows could read as out of its grace (#869).
-        const items = [pod('good', JOB, LEASE, '2026-09-01T00:00:00Z'), row];
-        const { request } = router([
-            ['GET', LIST_PODS, { status: 200, body: JSON.stringify({ items }) }],
-            ['GET', LIST_SERVICES, { status: 200, body: JSON.stringify({ items: [] }) }],
-        ]);
+        const items = [auxJob('good', JOB, LEASE, '2026-09-01T00:00:00Z'), row];
+        const { request } = router([['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items }) }]]);
         await expect(createKubernetesReaper({ config, request }).scan()).resolves.toEqual([]);
     });
 
@@ -258,7 +214,6 @@ describe('the kubernetes reaper arm: scan', () => {
         ['a container with no name', { template: { spec: { containers: [{}] } } }],
         ['a suspend that is no boolean', { suspend: 'yes', template: { spec: { containers: [{ name: 'agent' }] } } }],
     ])('answers nothing when a listed runner Job has %s', async (_name, spec) => {
-        const empty = { status: 200, body: JSON.stringify({ items: [] }) };
         const runnerJob = {
             metadata: {
                 name: runnerJobName({ id: JOB, leaseToken: LEASE } as BoardJob),
@@ -269,114 +224,58 @@ describe('the kubernetes reaper arm: scan', () => {
             ...(spec === undefined ? {} : { spec }),
             status: { succeeded: 1 },
         };
-        const { request } = router([
-            ['GET', LIST_PODS, empty],
-            ['GET', LIST_SERVICES, empty],
-            ['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: [runnerJob] }) }],
-        ]);
+        const { request } = router([['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: [runnerJob] }) }]]);
         await expect(createKubernetesReaper({ config, request }).scan()).resolves.toEqual([]);
     });
 
-    it('defers the entire scan when Jobs cannot be listed', async () => {
-        const empty = { status: 200, body: JSON.stringify({ items: [] }) };
-        const { request } = router([
-            ['GET', LIST_PODS, empty],
-            ['GET', LIST_SERVICES, empty],
-            ['GET', LIST_JOBS, { status: 403, body: '{}' }],
-        ]);
-        await expect(createKubernetesReaper({ config, request }).scan()).resolves.toEqual([]);
-    });
-
-    it('answers nothing when either list cannot be read — inconclusive reaps nothing', async () => {
-        const failing = router([['GET', LIST_SERVICES, { status: 200, body: JSON.stringify({ items: [] }) }]], 500);
-        const arm = createKubernetesReaper({ config, request: failing.request });
-        await expect(arm.scan()).resolves.toEqual([]);
+    it('answers nothing when the Jobs cannot be read — inconclusive reaps nothing', async () => {
+        const refused = router([['GET', LIST_JOBS, { status: 403, body: '{}' }]]);
+        await expect(createKubernetesReaper({ config, request: refused.request }).scan()).resolves.toEqual([]);
 
         const throwing: K8sRequest = async () => {
             throw new Error('connection reset');
         };
-        const arm2 = createKubernetesReaper({ config, request: throwing });
-        await expect(arm2.scan()).resolves.toEqual([]);
+        await expect(createKubernetesReaper({ config, request: throwing }).scan()).resolves.toEqual([]);
     });
 });
 
 describe('the kubernetes reaper arm: reap', () => {
-    const emptyLists: readonly (readonly [K8sMethod, string, K8sResponse])[] = [
-        ['GET', LIST_PODS, { status: 200, body: JSON.stringify({ items: [] }) }],
-        ['GET', LIST_SERVICES, { status: 200, body: JSON.stringify({ items: [] }) }],
-    ];
+    it('deletes each listed Job by name with Foreground propagation', async () => {
+        const { request, calls } = router([['DELETE', AUX_DELETE, { status: 200, body: '' }]]);
+        const removed = await createKubernetesReaper({ config, request }).reap(group(), 'gone');
 
-    it('deletes each pod and Service by name with Foreground propagation, tolerating 404/409', async () => {
-        const { request, calls } = router([
-            ...emptyLists,
-            [
-                'DELETE',
-                `${podsPath(NAMESPACE)}/${JOB}-${LEASE}-svc-postgres?propagationPolicy=Foreground`,
-                { status: 200, body: '' },
-            ],
-            [
-                'DELETE',
-                `${servicesPath(NAMESPACE)}/factory-svc-abc?propagationPolicy=Foreground`,
-                { status: 200, body: '' },
-            ],
-        ]);
-        const arm = createKubernetesReaper({ config, request });
-
-        const removed = await arm.reap(group(), 'gone');
-
-        expect(removed).toEqual([`pod ${JOB}-${LEASE}-svc-postgres`, 'service factory-svc-abc']);
-        const fleet = deleteCalls(calls).filter((path) => !path.startsWith(secretsPath(NAMESPACE)));
-        expect(fleet).toEqual([
-            `${podsPath(NAMESPACE)}/${JOB}-${LEASE}-svc-postgres?propagationPolicy=Foreground`,
-            `${servicesPath(NAMESPACE)}/factory-svc-abc?propagationPolicy=Foreground`,
-            // The checkout claim is pinned in full below — here the read answers nothing (this
-            // router models a claim that was already released), so nothing is deleted on a maybe.
-        ]);
+        expect(removed).toEqual([`job ${AUX}`]);
+        // The checkout claim is pinned in full below — here the read answers nothing (this router
+        // models a claim that was already released), so nothing is deleted on a maybe.
+        expect(deleteCalls(calls).filter((path) => !path.startsWith(secretsPath(NAMESPACE)))).toEqual([AUX_DELETE]);
     });
 
     it('reads 404 and 409 as the object already going away, and keeps the answer honest', async () => {
-        const { request } = router([
-            ...emptyLists,
-            ['DELETE', `${podsPath(NAMESPACE)}/svc-postgres?propagationPolicy=Foreground`, { status: 404, body: '' }],
-            [
-                'DELETE',
-                `${servicesPath(NAMESPACE)}/factory-svc-abc?propagationPolicy=Foreground`,
-                { status: 409, body: '' },
-            ],
-        ]);
-        const arm = createKubernetesReaper({ config, request });
-
-        expect(await arm.reap(group(), 'gone')).toEqual([]);
+        for (const status of [404, 409]) {
+            const { request } = router([['DELETE', AUX_DELETE, { status, body: '' }]]);
+            expect(await createKubernetesReaper({ config, request }).reap(group(), 'gone'), String(status)).toEqual([]);
+        }
     });
 
-    it('deletes the attempt-scoped env Secrets by their derived names, and answers them to the log', async () => {
+    it('deletes the attempt-scoped env Secret by its derived name, and answers it to the log', async () => {
         const runnerSecret = `${secretsPath(NAMESPACE)}/${secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob)}`;
         const { request, calls } = router([
-            ...emptyLists,
-            [
-                'DELETE',
-                `${podsPath(NAMESPACE)}/${JOB}-${LEASE}-svc-postgres?propagationPolicy=Foreground`,
-                { status: 200, body: '' },
-            ],
+            ['DELETE', AUX_DELETE, { status: 200, body: '' }],
             ['DELETE', runnerSecret, { status: 200, body: '' }],
         ]);
-        const arm = createKubernetesReaper({ config, request });
 
-        const removed = await arm.reap(group(), 'gone');
+        const removed = await createKubernetesReaper({ config, request }).reap(group(), 'gone');
 
         const secrets = deleteCalls(calls).filter((path) => path.startsWith(secretsPath(NAMESPACE)));
-        expect(secrets).toEqual([
-            runnerSecret,
-            `${secretsPath(NAMESPACE)}/${gateEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob)}`,
-        ]);
-        // A 2xx Secret delete is a removal like any other; the gate Secret’s 404 is not.
+        // The attempt's one Secret (issue #773: the gates hold none of their own).
+        expect(secrets).toEqual([runnerSecret]);
+        // A 2xx Secret delete is a removal like any other.
         expect(removed).toContain(`secret ${runnerSecret.split('/').pop()}`);
     });
 
     it('deletes the checkout claim only when the job is gone, by uid precondition, never while a replacement lives', async () => {
         const claimPath = `${configmapsPath(NAMESPACE)}/factory-job-${JOB}-claim`;
         const { request, calls } = router([
-            ...emptyLists,
             // The read the precondition is built from — the fence's own release shape, holder and all.
             [
                 'GET',
@@ -385,9 +284,8 @@ describe('the kubernetes reaper arm: reap', () => {
             ],
             ['DELETE', claimPath, { status: 200, body: '' }],
         ]);
-        const arm = createKubernetesReaper({ config, request });
 
-        await arm.reap(group(), 'gone');
+        await createKubernetesReaper({ config, request }).reap(group(), 'gone');
         // The one way a claim goes (issue #821): its holder's groups confirmed ended, then the delete.
         expect(deleteCalls(calls)).toContainEqual(claimPath);
         // The delete can only ever reach the exact incarnation this call read.
@@ -398,9 +296,8 @@ describe('the kubernetes reaper arm: reap', () => {
             preconditions: { uid: 'claim-uid-1' },
         });
 
-        const superseded = router([...emptyLists], 404);
-        const arm2 = createKubernetesReaper({ config, request: superseded.request });
-        await arm2.reap(group(), 'superseded');
+        const superseded = router([], 404);
+        await createKubernetesReaper({ config, request: superseded.request }).reap(group(), 'superseded');
         // A live replacement attempt holds the claim; the reaper must never touch it.
         expect(deleteCalls(superseded.calls).some((path) => path.startsWith(configmapsPath(NAMESPACE)))).toBe(false);
     });
@@ -408,60 +305,41 @@ describe('the kubernetes reaper arm: reap', () => {
     it('defers the claim when the read cannot identify an incarnation — never a delete on a maybe', async () => {
         const claimPath = `${configmapsPath(NAMESPACE)}/factory-job-${JOB}-claim`;
         const { request, calls } = router([
-            ...emptyLists,
             // 2xx but no uid: garbage is never proof of anything, and an UNCONDITIONED delete
             // could reach a newer claim. Nothing is deleted; the next round reads again.
             ['GET', claimPath, { status: 200, body: JSON.stringify({ metadata: {} }) }],
         ]);
-        const arm = createKubernetesReaper({ config, request });
 
-        await arm.reap(group(), 'gone');
+        await createKubernetesReaper({ config, request }).reap(group(), 'gone');
 
         expect(deleteCalls(calls).some((path) => path.startsWith(configmapsPath(NAMESPACE)))).toBe(false);
     });
 
-    it('deletes the derived Secrets BEFORE the Pod and Service, and stops the round when one fails', async () => {
-        // Once the listed Pod and Service are gone, no next scan can rediscover the (job, lease)
-        // pair to re-derive these names — a Secret has no ownerReferences. So a failed Secret
-        // delete must hold back the fleet: here the FIRST Secret answers 500, and nothing but
-        // that one Secret may be deleted all round.
-        const names = [
-            secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
-            gateEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
-        ].map((name) => `${secretsPath(NAMESPACE)}/${name}`);
-        const { request, calls } = router([['DELETE', names[0]!, { status: 500, body: '' }]]);
-        const arm = createKubernetesReaper({ config, request });
+    it('deletes the derived Secret BEFORE the Job, and stops the round when it fails', async () => {
+        // Once the listed Job is gone, no next scan can rediscover the (job, lease) pair to
+        // re-derive this name — a Secret the Job never owned has nothing to collect it. So a failed
+        // Secret delete must hold the Job back: here the Secret answers 500, and nothing but it
+        // may be deleted all round.
+        const secret = `${secretsPath(NAMESPACE)}/${secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob)}`;
+        const { request, calls } = router([['DELETE', secret, { status: 500, body: '' }]]);
 
-        const removed = await arm.reap(group(), 'gone');
-
-        expect(removed).toEqual([]);
-        expect(deleteCalls(calls)).toEqual([names[0]]);
+        expect(await createKubernetesReaper({ config, request }).reap(group(), 'gone')).toEqual([]);
+        expect(deleteCalls(calls)).toEqual([secret]);
     });
 
-    it('deletes Secrets ahead of the fleet, and 404 Secrets do not block teardown', async () => {
-        const names = [
-            secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
-            gateEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
-        ].map((name) => `${secretsPath(NAMESPACE)}/${name}`);
+    it('deletes the Secret ahead of the Job, and a 404 Secret does not block the teardown', async () => {
+        const secret = `${secretsPath(NAMESPACE)}/${secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob)}`;
         const { request, calls } = router([
-            ...names.map((path): readonly [K8sMethod, string, K8sResponse] => [
-                'DELETE',
-                path,
-                { status: 404, body: '' },
-            ]),
-            ...[
-                `${podsPath(NAMESPACE)}/${JOB}-${LEASE}-svc-postgres?propagationPolicy=Foreground`,
-                `${servicesPath(NAMESPACE)}/factory-svc-abc?propagationPolicy=Foreground`,
-            ].map((path): readonly [K8sMethod, string, K8sResponse] => ['DELETE', path, { status: 200, body: '' }]),
+            ['DELETE', secret, { status: 404, body: '' }],
+            ['DELETE', AUX_DELETE, { status: 200, body: '' }],
         ]);
-        const arm = createKubernetesReaper({ config, request });
 
-        const removed = await arm.reap(group(), 'gone');
+        const removed = await createKubernetesReaper({ config, request }).reap(group(), 'gone');
 
-        // Ordering is the point: the two Secret deletes are the FIRST two calls, before any
-        // fleet object — and already-gone Secrets never hold the round back.
-        expect(deleteCalls(calls).slice(0, names.length)).toEqual(names);
-        expect(removed).toEqual([`pod ${JOB}-${LEASE}-svc-postgres`, 'service factory-svc-abc']);
+        // Ordering is the point: the Secret delete is the FIRST call, before the Job — and an
+        // already-gone Secret never holds the round back.
+        expect(deleteCalls(calls)[0]).toBe(secret);
+        expect(removed).toEqual([`job ${AUX}`]);
     });
 
     it('answers what it removed without throwing on any single delete failure', async () => {
@@ -469,9 +347,7 @@ describe('the kubernetes reaper arm: reap', () => {
             if (method === 'DELETE') throw new Error('connection reset');
             return { status: 200, body: JSON.stringify({ items: [] }) };
         };
-        const arm = createKubernetesReaper({ config, request: failing });
-
-        expect(await arm.reap(group(), 'gone')).toEqual([]);
+        expect(await createKubernetesReaper({ config, request: failing }).reap(group(), 'gone')).toEqual([]);
     });
 });
 
@@ -492,8 +368,6 @@ describe('the kubernetes reaper arm: an unread finished runner', () => {
     };
     const lists = (jobs: unknown[]): readonly (readonly [K8sMethod, string, K8sResponse])[] => [
         ['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: jobs }) }],
-        ['GET', LIST_PODS, { status: 200, body: JSON.stringify({ items: [] }) }],
-        ['GET', LIST_SERVICES, { status: 200, body: JSON.stringify({ items: [] }) }],
     ];
 
     it('marks a finished runner Job unread on the scan, and a running one not', async () => {
@@ -558,13 +432,11 @@ describe('paused runner recovery after a driver restart', () => {
         spec: { activeDeadlineSeconds: null },
     };
     const lists: readonly (readonly [K8sMethod, string, K8sResponse])[] = [
-        ['GET', LIST_PODS, { status: 200, body: JSON.stringify({ items: [] }) }],
-        ['GET', LIST_SERVICES, { status: 200, body: JSON.stringify({ items: [] }) }],
         ['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: [pausedJob] }) }],
     ];
 
     it.each(['gone', 'superseded', 'unclaimed', 'live', 'unreachable'] as const)(
-        'reaps a service-free paused Job only when the board condemns its lease: %s',
+        'reaps a paused Job only when the board condemns its lease: %s',
         async (state) => {
             const { request, calls } = router([...lists, ['DELETE', jobPath, { status: 200, body: '' }]]);
             const reaper = createReaper({
@@ -646,15 +518,13 @@ describe('the kubernetes reaper arm: suspended runners and confirmed claims (#82
     };
     const lists = (jobs: unknown[]): readonly (readonly [K8sMethod, string, K8sResponse])[] => [
         ['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: jobs }) }],
-        ['GET', LIST_PODS, { status: 200, body: JSON.stringify({ items: [] }) }],
-        ['GET', LIST_SERVICES, { status: 200, body: JSON.stringify({ items: [] }) }],
     ];
     const claimRead: readonly [K8sMethod, string, K8sResponse] = [
         'GET',
         claimPath,
         { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-1' }, data: { holder: LEASE } }) },
     ];
-    const secrets = [secretName(pair), gateEnvSecretName(pair)].map((name) => `${secretsPath(NAMESPACE)}/${name}`);
+    const secrets = [secretName(pair)].map((name) => `${secretsPath(NAMESPACE)}/${name}`);
     const sweep = (request: K8sRequest) =>
         createReaper({
             // The job is terminal: a live job's runner Job is its next claim's fence's (issue #821).
@@ -670,7 +540,7 @@ describe('the kubernetes reaper arm: suspended runners and confirmed claims (#82
         expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, uid: 'uid-1', runner: true }]);
     });
 
-    it('reaps a suspended runner of a terminal job Secrets first, the gate Secret, then the Job', async () => {
+    it('reaps a suspended runner of a terminal job Secret first, then the Job', async () => {
         const { request, calls } = router([
             ...lists([suspendedRunner]),
             ...secrets.map((path) => ['DELETE', path, { status: 200, body: '' }] as const),
@@ -682,11 +552,10 @@ describe('the kubernetes reaper arm: suspended runners and confirmed claims (#82
         ]);
     });
 
-    it('stops the round at a refused gate Secret delete, the suspended Job still listed', async () => {
+    it('stops the round at a refused Secret delete, the suspended Job still listed', async () => {
         const { request, calls } = router([
             ...lists([suspendedRunner]),
-            ['DELETE', secrets[0]!, { status: 200, body: '' }],
-            ['DELETE', secrets[1]!, { status: 500, body: '' }],
+            ['DELETE', secrets[0]!, { status: 500, body: '' }],
         ]);
         await sweep(request);
         expect(deleteCalls(calls)).toEqual(secrets);
@@ -725,7 +594,7 @@ describe('the kubernetes reaper arm: suspended runners and confirmed claims (#82
     });
 
     it('keeps the claim while a writer pod of the holder is still listed', async () => {
-        const writers = `${podsPath(NAMESPACE)}?labelSelector=${encodeURIComponent(`${JOB_LABEL}=${JOB},${LEASE_LABEL}=${LEASE},!factory.service`)}`;
+        const writers = `${podsPath(NAMESPACE)}?labelSelector=${encodeURIComponent(`${JOB_LABEL}=${JOB},${LEASE_LABEL}=${LEASE}`)}`;
         expect(
             await reapGone([
                 ['GET', writers, { status: 200, body: JSON.stringify({ items: [{ metadata: { name: 'gate' } }] }) }],
@@ -760,9 +629,7 @@ describe('the kubernetes reaper arm: only the condemned attempt’s claim (#821)
         const deletes = await reapWithHolder(OTHER);
         const other = { id: JOB, leaseToken: OTHER } as BoardJob;
         expect(deletes.some((path) => path.includes(OTHER) || path.includes(runnerJobName(other)))).toBe(false);
-        expect(
-            deletes.some((path) => path.includes(secretName(other)) || path.includes(gateEnvSecretName(other)))
-        ).toBe(false);
+        expect(deletes.some((path) => path.includes(secretName(other)))).toBe(false);
         expect(deletes.some((path) => path.startsWith(claimPath))).toBe(false);
     });
 
@@ -785,8 +652,6 @@ describe('the kubernetes reaper arm: a live job’s runner Job is the fence’s 
     };
     const lists: readonly (readonly [K8sMethod, string, K8sResponse])[] = [
         ['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: [running] }) }],
-        ['GET', LIST_PODS, { status: 200, body: JSON.stringify({ items: [] }) }],
-        ['GET', LIST_SERVICES, { status: 200, body: JSON.stringify({ items: [] }) }],
     ];
     const sweep = async (lease: { leaseToken: string | null; status: string }) => {
         const { request, calls } = router(lists);

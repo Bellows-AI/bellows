@@ -11,6 +11,8 @@ import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
 import type { PublishOptions, PublishResult, SyncResult, ReclaimResult } from './publish.js';
 import type { SnapshotResult } from './review-snapshot.js';
 import type { StartupCause } from './startup-cause.js';
+import type { GateStepRequest } from './supervised-steps.js';
+import type { StepResult } from './supervisor-contract.js';
 import type { KillRecord } from './termination.js';
 
 /** What the board is told afterwards. `timedOut` is reported as a failure, with a reason. */
@@ -200,7 +202,7 @@ export function serviceHint(logTail: string): string | null {
     if (!CAPABILITY_DROP_SIGNATURE.test(logTail)) return null;
     return (
         'the service starts with every capability dropped, so its entrypoint cannot chown or switch user — ' +
-        'declare `user: "uid:gid"` (a non-root user the image runs as) or `unhardened: true` on it in .bellows.yaml'
+        'declare `user: "uid:gid"` (a non-root user the image runs as) on it in .bellows.yaml'
     );
 }
 
@@ -423,7 +425,25 @@ export interface Runner {
      * lost supervisor rejects (`stepLost`) rather than answering a helper failure.
      */
     runHelper(job: BoardJob, plan: HelperPlan, call?: HelperCall): Promise<HelperResult>;
+    /**
+     * Runs one declared gate (or the setup) in the attempt's task group (issue #773): a supervised
+     * step the supervisor hands the group's gate container — the declared image, over the task
+     * worktree. A group is made on demand for an attempt whose sync made none (an adopted run, an
+     * agent-less node), as for every other step. An abort of `signal` cancels it through the step
+     * channel. A lost supervisor rejects (`stepLost`): no verdict on the gate, the attempt's loss.
+     */
+    runGate(job: BoardJob, gate: GateStepRequest, signal?: AbortSignal): Promise<StepResult>;
+    /**
+     * Asks the platform to resize the gate container's requests in place (issue #773): low (`idle`)
+     * while the agent runs, the configured gate requests (`verify`) for the setup and the declared
+     * gates. Best-effort: false when the request was not made or refused — never awaited for the
+     * kubelet to apply it, never a verdict. Docker has nothing to resize and answers false.
+     */
+    resizeGate(job: BoardJob, phase: GateSizing): Promise<boolean>;
 }
+
+/** The two sizes a gate container is resized between: low while the agent runs, the gate requests for verify. */
+export type GateSizing = 'idle' | 'verify';
 
 /**
  * The most of a runner's output this process will hold in memory — the board truncates too; this

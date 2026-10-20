@@ -4,8 +4,7 @@ import { createBoard } from './board.js';
 import { gateAdvertiseUrlFor, loadDriverConfig } from './config.js';
 import { createDockerReaper } from './docker-reaper.js';
 import { createDockerRunner } from './docker-runner.js';
-import { createGateManager, createGateServer } from './gates.js';
-import { createKubernetesGateManager } from './k8s-gates.js';
+import { createGateServer, createSupervisedGateManager } from './gates.js';
 import { createKubernetesReaper } from './k8s-reaper.js';
 import { createKubernetesRunner } from './k8s-runner.js';
 import { inClusterRequest } from './k8s-transport.js';
@@ -61,32 +60,17 @@ const runner =
         ? createKubernetesRunner(config, request!, undefined, { leases: (ids) => board.leases(ids), steps, endpoint })
         : createDockerRunner(config, undefined, undefined, { steps, endpoint });
 
-// The gate machinery exists under both executors: docker keeps a warm environment container per
-// checkout and execs into it, kubernetes runs each gate as a Job in the declared image — the
-// runner decides, the loop does not. The endpoint is NOT opened here — the server listens
-// lazily on the first launched attempt (it also carries the run-control channel, issue #442).
-let holdsGateContainer = (_name: string): boolean => false;
-const gates: GateStack = (() => {
-    if (config.executor === 'kubernetes') {
-        const manager = createKubernetesGateManager({ config, request: request! });
-        return {
-            manager,
-            server: createGateServer({ host: config.gateListenHost, manager, steps }),
-            advertiseUrl: (port) => gateAdvertiseUrlFor(config.gateAdvertiseUrl, port),
-        };
-    }
-    const manager = createGateManager({
-        config,
-        cooldownMs: config.gateCooldownMs,
-        gateTimeoutMs: config.gateTimeoutMs,
-    });
-    holdsGateContainer = manager.holds;
-    return {
-        manager,
-        server: createGateServer({ host: config.gateListenHost, manager, steps }),
-        advertiseUrl: (port) => gateAdvertiseUrlFor(config.gateAdvertiseUrl, port),
-    };
-})();
+// The gate machinery is one on both executors (issue #773): every gate and the setup run in the
+// attempt's own task group, the declared image as a gate container beside the supervisor, as one
+// supervised step each — the runner makes the group, the loop does not. The endpoint is NOT opened
+// here — the server listens lazily on the first launched attempt (it also carries the run-control
+// channel, issue #442).
+const manager = createSupervisedGateManager({ config, runner });
+const gates: GateStack = {
+    manager,
+    server: createGateServer({ host: config.gateListenHost, manager, steps }),
+    advertiseUrl: (port) => gateAdvertiseUrlFor(config.gateAdvertiseUrl, port),
+};
 
 const loop = createLoop({
     board,
@@ -106,10 +90,7 @@ const reaper = createReaper({
     arm:
         config.executor === 'kubernetes'
             ? createKubernetesReaper({ config, request: request! })
-            : createDockerReaper(
-                  (args, options) => run('docker', args, { ...options, encoding: 'utf8' }),
-                  holdsGateContainer
-              ),
+            : createDockerReaper((args, options) => run('docker', args, { ...options, encoding: 'utf8' })),
     intervalMs: config.reapIntervalMs,
     graceMs: config.reapGraceMs,
     log: (m) => console.log(`[driver] ${m}`),
@@ -140,10 +121,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 await loop.start();
-// The drain above lets in-flight jobs finish — including their gates — and only then does the
-// docker environment go. Tearing down on the signal instead would kill the containers every
-// draining gated job is about to exec into. (The kubernetes manager's stop only reaps the
-// attempts' leftover gate-env Secrets — its gate runs leave no containers.)
+// The drain above lets in-flight jobs finish — including their gates, which end with their groups.
 await gates.manager.stop();
 // The ad-hoc socket holds the event loop open; without this the process never exits after a
 // graceful drain once any gated job has run.

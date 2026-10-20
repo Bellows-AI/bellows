@@ -3,10 +3,10 @@ import type { DriverConfig } from './config.js';
 import { awaitSupervisor } from './docker-group.js';
 import { killMarkName } from './docker-mailbox.js';
 import type { ExecDocker } from './docker-runner-support.js';
-import { idLines, nameLines, noSuchObject, readDocker } from './docker-runner-support.js';
+import { idLines, noSuchObject, readDocker } from './docker-runner-support.js';
 import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
 import { Inconclusive } from './runner.js';
-import { forgetDeclaredServices, networkName } from './services.js';
+import { forgetDeclaredServices } from './services.js';
 import type { StepSink } from './step-control.js';
 import { releaseSteps } from './supervised-steps.js';
 import { AGENT_CONTAINER, KILL_WINDDOWN_MS } from './supervisor-contract.js';
@@ -16,7 +16,7 @@ import { KILL_REASONS, type KillRecord, killMarkOf, killRecordsOf } from './term
 const RECORD_KILL_TIMEOUT_MS = 5_000;
 
 /**
- * The docker runner's teardowns: this attempt's services and network, the hard kill of its whole
+ * The docker runner's teardowns: this attempt's services, the hard kill of its whole
  * container group (agent, supervisor, exporter), and the supervised stop that tries the
  * supervisor's own wind-down first. Split from `docker-runner.ts`, which hands them its deps.
  */
@@ -107,9 +107,9 @@ export async function dockerKillFor(deps: TeardownDeps, job: BoardJob, kill: Kil
 }
 
 /**
- * Tears down THIS attempt's services and network — and, by construction, nothing else. The `ps`
- * filters carry this attempt's lease token beside the job id, and the network it removes is named
- * after the token too, so every call here resolves only to resources this attempt created. That
+ * Tears down THIS attempt's services — and, by construction, nothing else. The `ps` filters carry
+ * this attempt's lease token beside the job id, so every call here resolves only to containers
+ * this attempt created; they share their group supervisor's namespace, so no network is theirs. That
  * is what makes it safe to run UNCONDITIONALLY, from every closing path: a close that lands late,
  * a kill that lands after a replacement claim stood its own fleet up, a spawn error racing a newer
  * attempt's setup — none of them can NAME anything but this attempt's own fleet, so none of them
@@ -143,21 +143,6 @@ export async function dockerServiceTeardown(deps: TeardownDeps, job: BoardJob): 
     for (const id of found.kind === 'value' ? found.value : []) {
         await deps.execDocker(['rm', '-f', id]).catch(() => undefined);
     }
-    // The gate environment joins this network to reach the fleet, and outlives the attempt on
-    // its cooldown; docker refuses to remove a network with an endpoint still attached, so
-    // whatever is left on it is detached first.
-    // An unreadable inspect detaches nothing; the removal below stays, and the daemon refuses it
-    // while an endpoint remains.
-    const attached = await readDocker(
-        deps.execDocker,
-        ['network', 'inspect', '--format', '{{range .Containers}}{{println .Name}}{{end}}', networkName(job)],
-        'inspecting the attempt network',
-        { parse: nameLines, absentOn: ['network'] }
-    );
-    for (const name of attached.kind === 'value' ? attached.value : []) {
-        await deps.execDocker(['network', 'disconnect', '-f', networkName(job), name]).catch(() => undefined);
-    }
-    await deps.execDocker(['network', 'rm', networkName(job)]).catch(() => undefined);
 }
 
 export async function dockerKill(deps: TeardownDeps, job: BoardJob): Promise<void> {

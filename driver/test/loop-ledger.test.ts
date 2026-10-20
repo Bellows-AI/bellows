@@ -77,11 +77,11 @@ describe('a dead service note (issue #487)', () => {
         'error: failed switching to "mongodb": operation not permitted',
         'chown: changing ownership of /data/db: Operation not permitted',
         'gosu: error: operation not permitted',
-    ])('points the capability-drop signature %j at user / unhardened', (logTail) => {
+    ])('points the capability-drop signature %j at user: "uid:gid", the only way out', (logTail) => {
         const note = noteOf({ logTail });
         expect(note).toContain('hint:');
         expect(note).toContain('user: "uid:gid"');
-        expect(note).toContain('unhardened: true');
+        expect(note).not.toContain('unhardened');
     });
 
     it('adds no hint to any other ending', () => {

@@ -7,7 +7,6 @@ import { acquireClaim, readClaim, releaseClaimAfterGroupEnd, sweepClaimedFleets 
 import {
     agentRunJob,
     finishedAgentRun,
-    gateEnvSecretName,
     type ListedRunnerJob,
     runnerJobName,
     runnerName,
@@ -443,8 +442,6 @@ async function sweepAfterAdoption(deps: K8sDeps, job: BoardJob, prior: BoardJob,
         // not abandoned for a fresh one, the attempt stands down to its lease.
         throw new AdoptionBlocked(`the run was read, but ${(e as Error).message}`);
     }
-    for (const name of [secretName(prior), gateEnvSecretName(prior)]) {
-        if (signal?.aborted) throw adoptionAbandoned();
-        await deleteSecretAcked(deps, name);
-    }
+    if (signal?.aborted) throw adoptionAbandoned();
+    await deleteSecretAcked(deps, secretName(prior));
 }

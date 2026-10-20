@@ -21,8 +21,7 @@ import { jobPath } from '../src/k8s-auxspec.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
 import { createReaper } from '../src/reaper.js';
-import { forgetDeclaredServices, recordDeclaredServices } from '../src/services.js';
-import { AGENT_CONTAINER, SUPERVISOR_CONTAINER } from '../src/supervisor-contract.js';
+import { AGENT_CONTAINER, SUPERVISOR_CONTAINER, serviceContainerOf } from '../src/supervisor-contract.js';
 import { k8sApiserver, type Special } from './fixtures/k8s-apiserver.js';
 import {
     type Alias,
@@ -54,7 +53,6 @@ const list = (items: unknown[]): K8sResponse => ({ status: 200, body: JSON.strin
 const isGet = (method: string, path: string, prefix: string): boolean => method === 'GET' && path.startsWith(prefix);
 const selector = (path: string): string => decodeURIComponent(path);
 const PODS = `/api/v1/namespaces/${NS}/pods`;
-const SERVICES = `/api/v1/namespaces/${NS}/services`;
 const CONFIGMAPS = `/api/v1/namespaces/${NS}/configmaps`;
 
 /** Names `pair`'s job, its lease and every name hashed from the two by `label`'s role. */
@@ -147,7 +145,7 @@ const teardownHeld: Build<K8sRequest> = async (tap, alias) => {
     aliasPair(alias, job, 'lease');
     const writer = podOf(`${runnerJobName(job)}-xxxxx`, 'Running', {});
     const { request } = serverFor(job, (method, path) =>
-        isGet(method, path, `${PODS}?`) && selector(path).includes(`factory.lease=${job.leaseToken},!factory.service`)
+        isGet(method, path, `${PODS}?`) && selector(path).endsWith(`factory.lease=${job.leaseToken}`)
             ? list([writer])
             : undefined
     );
@@ -173,18 +171,15 @@ const reaperOver = (request: K8sRequest, leases: Parameters<typeof createReaper>
         log: () => {},
     });
 
-/** K-R1: a live job's superseded lease left a service pod, its Service and an unread finished runner. */
+/** K-R1: a live job's superseded lease left an unread finished runner (its sidecars end with it, issue #773). */
 const reaperSuperseded: Build<K8sRequest> = async (tap, alias) => {
     const job = freshJob();
     const old = randomUUID();
     aliasPair(alias, { ...job, leaseToken: old }, 'old');
-    const labels = { 'factory.job': job.id, 'factory.lease': old, 'factory.service': 'db' };
     const runnerJob = earlierRunner(job, old, { succeeded: 1 });
-    const { request } = serverFor(job, (method, path) => {
-        if (isGet(method, path, `${jobsPath(NS)}?`)) return list([runnerJob]);
-        if (isGet(method, path, `${PODS}?`)) return list([podOf('svc-db-old', 'Running', labels)]);
-        if (isGet(method, path, `${SERVICES}?`)) return list([{ metadata: { ...podOf('svc', '', labels).metadata } }]);
-    });
+    const { request } = serverFor(job, (method, path) =>
+        isGet(method, path, `${jobsPath(NS)}?`) ? list([runnerJob]) : undefined
+    );
     const reaper = reaperOver(tap(request), async () => [{ id: job.id, status: 'running', leaseToken: randomUUID() }]);
     return async () => {
         await reaper.sweep();
@@ -196,15 +191,13 @@ const reaperSuperseded: Build<K8sRequest> = async (tap, alias) => {
 const reaperGone: Build<K8sRequest> = async (tap, alias) => {
     const job = freshJob();
     aliasPair(alias, job, 'lease');
-    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken, 'factory.service': 'db' };
     const reclaim = podOf('reclaim-pod', 'Running', {});
+    const runnerJob = earlierRunner(job, job.leaseToken, { succeeded: 1 });
     const server = serverFor(job, (method, path) => {
         if (isGet(method, path, `${PODS}?`) && selector(path).includes(`factory.holder=${job.leaseToken}`)) {
             return list([reclaim]);
         }
-        if (isGet(method, path, `${PODS}?`) && selector(path).includes('factory.service')) {
-            return list([podOf('svc-db', 'Running', labels)]);
-        }
+        if (isGet(method, path, `${jobsPath(NS)}?`)) return list([runnerJob]);
     });
     const posted = await server.request('POST', CONFIGMAPS, {
         metadata: { name: `factory-job-${job.id}-claim` },
@@ -296,27 +289,26 @@ const runVerdict: Build<K8sRequest> = async (tap, alias) => {
     return async () => runVerdicts(await runner.run(job, session));
 };
 
-/** K-D1: the attempt's one declared service runs. */
+/** K-D1: the attempt's one declared service runs, a sidecar of its task pod (issue #773). */
 const deadService: Build<K8sRequest> = async (tap, alias) => {
-    const job = freshJob();
+    const job = { ...freshJob(), services: [{ name: 'db', image: 'postgres:17', environment: [] }] };
     aliasPair(alias, job, 'lease');
-    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken, 'factory.service': 'db' };
-    const { request } = serverFor(job, (method, path) => {
-        if (isGet(method, path, `${PODS}?`) && selector(path).includes(`factory.lease=${job.leaseToken}`)) {
-            return list([podOf('svc-db', 'Running', labels, [{ state: { running: {} } }])]);
-        }
-        // A vanished service pod's events: none written.
-        if (isGet(method, path, `/api/v1/namespaces/${NS}/events?`)) return list([]);
-    });
-    const runner = runnerOf(tap(request));
-    recordDeclaredServices(job, [{ name: 'db', image: 'postgres:17', environment: [] }]);
-    return async () => {
-        try {
-            return (await runner.deadServices(job)).map((service) => `dead ${service.name}`);
-        } finally {
-            forgetDeclaredServices(job);
-        }
+    const base = podOf(`${runnerJobName(job)}-xxxxx`, 'Running', {});
+    const pod = {
+        ...base,
+        status: {
+            ...base.status,
+            initContainerStatuses: [
+                { name: serviceContainerOf('db'), image: 'postgres:17', state: { running: {} }, restartCount: 0 },
+            ],
+        },
     };
+    const { request } = serverFor(job, (method, path) =>
+        isGet(method, path, `${PODS}?`) && selector(path).includes('job-name=') ? list([pod]) : undefined
+    );
+    const runner = runnerOf(tap(request));
+    await runner.syncCheckout(job, undefined, { id: randomUUID(), resume: false });
+    return async () => (await runner.deadServices(job)).map((service) => `dead ${service.name}`);
 };
 
 const API = `/api/v1/namespaces/${NS}`;
@@ -324,10 +316,7 @@ const BATCH = `/apis/batch/v1/namespaces/${NS}`;
 const CLAIM = `${API}/configmaps/factory-job-<job>-claim`;
 const OLD_JOBS = `GET ${BATCH}/jobs?labelSelector=factory.job=<job>,factory.lease!=<lease>`;
 const OLD_PODS = `GET ${API}/pods?labelSelector=factory.job=<job>,factory.lease!=<lease>`;
-const secretsOf = (label: string): string[] => [
-    `DELETE ${API}/secrets/factory-job-<job>-<${label}>-env`,
-    `DELETE ${API}/secrets/factory-gate-<${label}-hash>-env`,
-];
+const secretsOf = (label: string): string[] => [`DELETE ${API}/secrets/factory-job-<job>-<${label}>-env`];
 const ADOPTED_WRITES = [
     `POST ${API}/configmaps`,
     `POST ${BATCH}/jobs`,
@@ -398,12 +387,19 @@ scenario('the sync fence on a claim a live lease holds (K-FH)', fenceHeld, { wri
 
 scenario('the group end while a writer pod still runs (K-T1)', teardownHeld, { writes: secretsOf('lease') }, {});
 
-scenario('the reaper on a superseded lease with an unread runner (K-R1)', reaperSuperseded, { writes: [] }, {});
+scenario(
+    'the reaper on a superseded lease with an unread runner (K-R1)',
+    reaperSuperseded,
+    { writes: [] },
+    // The Job list is the arm's only read (a service is a sidecar of its Job, issue #773): a list
+    // read as no runner Job names no group, so the superseded one is simply not reaped.
+    {}
+);
 
 scenario(
     'the reaper on a gone job whose claim holder still runs a reclaim pod (K-R2)',
     reaperGone,
-    { writes: [...secretsOf('lease'), `DELETE ${API}/pods/svc-db`] },
+    { writes: [...secretsOf('lease'), `DELETE ${BATCH}/jobs/factory-runner-<lease-hash>`] },
     {}
 );
 
@@ -460,17 +456,16 @@ scenario(
     }
 );
 
-/** The dead-service probe's lease-scoped service pod list. */
-const SERVICE_PODS = `GET ${API}/pods?labelSelector=factory.lease=<lease>,factory.service`;
+/** The dead-service probe's read of the task pod, whose sidecars the declared services are. */
+const SERVICE_PODS = `GET ${API}/pods?labelSelector=job-name=factory-runner-<lease-hash>`;
 
 scenario(
     'the dead-service probe of a running service (K-D1)',
     deadService,
     { writes: [] },
     {
-        // No list read as every declared service missing (`k8s-transport.ts:581` → `k8s-services.ts:92`).
-        ...pinsFor(GARBAGE, (fault) => [`VERDICT after ${fault} at ${SERVICE_PODS}: dead db`]),
-        // `list.items` of null (`k8s-transport.ts:581`).
+        // A pod list that names no task pod is `Inconclusive` (`k8s-services.ts` `taskPod`): dead is
+        // never inferred from it. Only a body of `null` crashes the list read itself.
         null: [pin(`CRASH after null at ${SERVICE_PODS}: ${NULL_READ('items')}`)],
     }
 );

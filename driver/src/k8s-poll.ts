@@ -37,7 +37,8 @@ import {
     refusal,
 } from './k8s-transport.js';
 import type { K8sDeps, K8sJobStatus, K8sPod, K8sPodList, K8sResponse } from './k8s-transport.js';
-import { startupCauseOf, StartupRefused } from './startup-cause.js';
+import { heldWords, startupCauseOf, StartupRefused } from './startup-cause.js';
+import { type HeldImage, heldOf, heldUnpullable, unpullableImage } from './k8s-held.js';
 import {
     AGENT_CONTAINER,
     SUPERVISOR_CONTAINER,
@@ -246,14 +247,6 @@ export function timedOutOf(status: K8sJobStatus): boolean {
 }
 
 /**
- * The one unpullable-image message shape every poll shares; the role word is the only variation —
- * the gate names its own declared image ("gate"), the runner and aux Jobs name the executor's.
- */
-export function unpullableImage(role: 'gate' | 'executor', image: string, blocked: string): string {
-    return `the ${role} image "${image}" cannot be pulled: ${blocked}`;
-}
-
-/**
  * The one reading of "can this Job's image be pulled at all?", shared by every Job poll (issue
  * #302; the gate's `checkGateImagePullable`, generalized): a container blocked on its image names
  * the kubelet's reason and message, so the poll can fail right away instead of burning the
@@ -275,9 +268,16 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
     const list = pods.status === HTTP_OK_STATUS ? parse<K8sPodList>(pods.body) : null;
     const items = Array.isArray(list?.items) ? list.items : null;
     // Every container of the pod, not the first: the runner pod holds the agent, the supervisor and
-    // the exporter, and any one of them blocked on its image holds the whole run.
-    const containers = livePod(pods.body)?.status?.containerStatuses ?? [];
-    const waiting = containers.map((c) => c.state?.waiting).find((w) => STUCK_REASONS.has(w?.reason ?? ''));
+    // the exporter, and any one of them blocked on its image holds the whole run. The init list is
+    // read first (#773 D10): a sidecar held on its image keeps every main container initializing.
+    const pod = livePod(pods.body);
+    const status = pod?.status;
+    const containers = status?.containerStatuses ?? [];
+    const holder = [...(status?.initContainerStatuses ?? []), ...containers].find((c) =>
+        STUCK_REASONS.has(c.state?.waiting?.reason ?? '')
+    );
+    const waiting = holder?.state?.waiting;
+    const held = heldOf(holder, pod);
     const startedAny = containers.some((c) => c.state?.terminated !== undefined || c.state?.running !== undefined);
     const agentStarted = containers.some(
         (c) => c.name === AGENT_CONTAINER && (c.state?.terminated !== undefined || c.state?.running !== undefined)
@@ -286,12 +286,12 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
         items === null ? 'unread' : !livePodOfItems(items) ? 'none' : startedAny ? 'started' : 'starting';
     const stuck = waiting?.reason ? { reason: waiting.reason, message: waiting.message ?? '' } : null;
     if (stuck && PULL_REASONS.has(stuck.reason)) {
-        return { blocked: pullDetail(stuck), containerSeen: true, waiting: stuck, podState, agentStarted };
+        return { blocked: pullDetail(stuck), containerSeen: true, waiting: stuck, held, podState, agentStarted };
     }
     const containerSeen =
         containers.length > 0 &&
         containers.every((c) => c.state?.terminated !== undefined || c.state?.running !== undefined);
-    return { blocked: null, containerSeen, waiting: stuck, podState, agentStarted };
+    return { blocked: null, containerSeen, waiting: stuck, held, podState, agentStarted };
 }
 
 export type PodStartState = 'unread' | 'none' | 'starting' | 'started';
@@ -300,6 +300,8 @@ export interface ImagePullStatus {
     blocked: string | null;
     containerSeen: boolean;
     waiting: { reason: string; message: string } | null;
+    /** The container `waiting` holds, with the image its status names (#773 D10); null when none is held. */
+    held: HeldImage | null;
     podState: PodStartState;
     /** The agent container is running or ended: once released, the run has happened. */
     agentStarted: boolean;
@@ -320,12 +322,13 @@ const pullDetail = (waiting: { reason: string; message: string }): string =>
 export function startRefusalOf(image: string, pull: ImagePullStatus, waitOutBackOff: boolean): Error | null {
     const { waiting } = pull;
     if (!waiting) return null;
+    const held = pull.held ?? { role: 'executor' };
     const message =
         waiting.reason === 'CreateContainerConfigError'
-            ? `the executor container cannot start: ${pullDetail(waiting)}`
-            : unpullableImage('executor', image, pullDetail(waiting));
+            ? `the ${heldWords(held)} container cannot start: ${pullDetail(waiting)}`
+            : heldUnpullable(image, pull, pullDetail(waiting));
     const cause = startupCauseOf({ waitingReason: waiting.reason, message: waiting.message });
-    if (cause) return new StartupRefused(message, cause);
+    if (cause) return new StartupRefused(message, cause, held);
     if (waitOutBackOff && waiting.reason === 'ImagePullBackOff') return null;
     return new Error(message);
 }
@@ -378,7 +381,7 @@ async function executorImageWatch(
     seen: { container: boolean }
 ): Promise<string | null> {
     const pull = await readImagePullStatus(deps, jobName);
-    if (pull.blocked) return unpullableImage('executor', image, pull.blocked);
+    if (pull.blocked) return unpullableImage({ role: 'executor' }, image, pull.blocked);
     seen.container = pull.containerSeen;
     return null;
 }

@@ -2,10 +2,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
-import { supervisorEnvFileBody, workspacePath } from './claim.js';
-import { claudeExportScript, supervisorScript } from './container-scripts.js';
-import { containerHardeningArgs, workspacesMountArgs } from './docker.js';
-import { ctlVolumeName, idsOf, mailboxMountArgs } from './docker-mailbox.js';
+import { GATE_GID, GATE_UID, gateEnv, supervisorEnvFileBody, workspacePath } from './claim.js';
+import { claudeExportScript, gateLoopArgv, supervisorScript } from './container-scripts.js';
+import { containerHardeningArgs, resourceArgs, workspacesMountArgs } from './docker.js';
+import { ctlVolumeName, groupNetworkArgs, idsOf, mailboxMountArgs, supervisorName } from './docker-mailbox.js';
 import {
     type ClosedState,
     type ExecDocker,
@@ -18,6 +18,7 @@ import { JOB_LABEL, LEASE_LABEL, RECLAIM_LABEL, ROLE_LABEL } from './labels.js';
 import { Inconclusive, type RunSession } from './runner.js';
 import {
     EXPORTER_CONTAINER,
+    GATE_CONTAINER,
     MAILBOXES,
     SUPERVISOR_CONTAINER,
     SUPERVISOR_ENV,
@@ -26,21 +27,23 @@ import {
     SUPERVISOR_WINDDOWN_MS,
     type SupervisorReport,
 } from './supervisor-contract.js';
-import { supervisorLiterals } from './supervisor-plan.js';
+import { gateImageOf, supervisorLiterals } from './supervisor-plan.js';
+import { groupServices, SERVICE_ADDRESS } from './services.js';
 import { exportEnv, exportsTranscript } from './transcript-export.js';
 
 /**
  * The docker half of a run's container group: the task supervisor and, for a run that exports its
- * transcript, the exporter, created and started beside the agent, with the four mailboxes as
- * named volumes (`supervisor-contract.ts`) mounted exactly as the pod mounts them — the agent gets
- * `in` read-only and `out`, the exporter the workspace and `export`, the supervisor all four, and no
- * container but the supervisor and the exporter holds the control pair. The agent's end does not end
+ * transcript, the exporter, and for a checkout that declares gates or setup the gate container,
+ * created and started beside the agent, with the mailboxes as named volumes
+ * (`supervisor-contract.ts`) mounted exactly as the pod mounts them — the agent gets `in` read-only
+ * and `out`, the exporter the workspace and `export`, the gate the workspace and `gate`, the
+ * supervisor all of them, and no container but the supervisor and the exporter holds the control pair. The agent's end does not end
  * the group: the supervisor drains the exporter and finalizes first, and the runner waits for it
  * (`awaitSupervisor`). The group is the pod's twin, and `k8s-podspec.ts` its other half.
  */
 
-export const supervisorName = (job: BoardJob): string => `factory-supervisor-${idsOf(job)}`;
 export const exporterName = (job: BoardJob): string => `factory-export-${idsOf(job)}`;
+export const gateName = (job: BoardJob): string => `factory-gate-${idsOf(job)}`;
 
 /** The reclaim group's mark (`RECLAIM_LABEL`), on each of its objects; nothing on an attempt's. */
 const reclaimLabelArgs = (reclaim: boolean): string[] => (reclaim ? ['--label', `${RECLAIM_LABEL}=true`] : []);
@@ -75,14 +78,20 @@ const reachDriverArgs = (config: DriverConfig): string[] => [
     ...(config.network ? ['--network', config.network] : []),
 ];
 
+/** Each declared service's name on the group's loopback (issue #773): the supervisor's hosts file, which the group shares. */
+const serviceHostArgs = (config: DriverConfig, job: BoardJob): string[] =>
+    groupServices(config, job).flatMap(({ name }) => ['--add-host', `${name}:${SERVICE_ADDRESS}`]);
+
 /**
- * The supervisor's `docker create` argv — pure and exported, the part worth pinning. All four
- * mailboxes, no workspace and no claim env; the control pair rides an env file, never argv.
+ * The supervisor's `docker create` argv — pure and exported, the part worth pinning. All the
+ * mailboxes, the member's workspace and no claim env; the control pair rides an env file, never
+ * argv. It holds the group's network namespace (issue #773): the agent, the gate and the services
+ * join it (`groupNetworkArgs`), and its hosts file names each declared service on loopback.
  */
 export function supervisorCreateArgs(
     config: DriverConfig,
     job: BoardJob,
-    group: { exporting: boolean; agentless: boolean; reclaim?: boolean },
+    group: { exporting: boolean; agentless: boolean; gated?: boolean; reclaim?: boolean },
     envFile: string | null
 ): string[] {
     return [
@@ -92,6 +101,7 @@ export function supervisorCreateArgs(
         supervisorName(job),
         ...labelArgs(job, SUPERVISOR_CONTAINER, group.reclaim === true),
         ...reachDriverArgs(config),
+        ...serviceHostArgs(config, job),
         ...(envFile ? ['--env-file', envFile] : []),
         ...supervisorLiterals(config, job, group).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
         // The member's workspace subtree: the steps the supervisor runs (the sync, the probe, the
@@ -129,6 +139,37 @@ export function exporterCreateArgs(config: DriverConfig, job: BoardJob, startedA
     ];
 }
 
+/**
+ * The gate container's `docker create` argv (issue #773) — the declared image, running the gate loop
+ * over the gate mailbox (`scripts/gate-loop.sh`), the pod's gate sidecar's twin. It writes the
+ * shared task worktree as the uid:gid every other writer on that tree uses, with a HOME that uid can
+ * write; its working directory is the image's own, since each request names its worktree. No `-w`
+ * into the mailbox: on an image without that directory the daemon would create it in the volume as
+ * root before the supervisor's image could give the volume its owner. No claim env
+ * and no credential: those ride each request. Sized by GATE_* (issue #507), in its supervisor's
+ * network namespace — the registry a setup installs from, and the declared services on loopback.
+ */
+export function gateCreateArgs(config: DriverConfig, job: BoardJob, image: string): string[] {
+    return [
+        'create',
+        ...containerHardeningArgs(),
+        '--name',
+        gateName(job),
+        ...labelArgs(job, GATE_CONTAINER, false),
+        '--user',
+        `${GATE_UID}:${GATE_GID}`,
+        ...gateEnv(config, job).flatMap((pair) => ['-e', pair.join('=')]),
+        ...workspacesMountArgs(config, workspacePath(job)),
+        ...mailboxMountArgs(job, MAILBOXES.gate, 'rw'),
+        ...groupNetworkArgs(job),
+        ...resourceArgs(config.gateResources),
+        '--entrypoint',
+        'sh',
+        image,
+        ...gateLoopArgv().slice(1),
+    ];
+}
+
 const controlEnvFilePath = (job: BoardJob, role: string): string =>
     join(tmpdir(), `factory-${role}-env-${idsOf(job)}.env`);
 
@@ -162,9 +203,12 @@ async function createWithEnvFile(
  * and no agent at all for a node that launches none (issue #503) — whose group still serves the
  * sync, the probe and the publish.
  */
-export function groupShape(job: BoardJob, session: RunSession | null): { exporting: boolean; agentless: boolean } {
+export function groupShape(
+    job: BoardJob,
+    session: RunSession | null
+): { exporting: boolean; agentless: boolean; gated: boolean } {
     const agentless = job.agent === false;
-    return { exporting: !agentless && exportsTranscript(job, session), agentless };
+    return { exporting: !agentless && exportsTranscript(job, session), agentless, gated: gateImageOf(job) !== null };
 }
 
 /**
@@ -206,18 +250,38 @@ export async function createGroup(
         // Typed when the daemon's words prove a cause, for the loop's one startup decision (#824 D11).
         throw startupRefusalOf(e);
     }
+    await createGate(deps, job);
+}
+
+/** The gate container, created after the supervisor, whose image owns the mailbox mount points. */
+async function createGate(deps: GroupDeps, job: BoardJob): Promise<void> {
+    const image = gateImageOf(job);
+    if (!image) return;
+    try {
+        await deps.execDocker(gateCreateArgs(deps.config, job, image));
+    } catch (e) {
+        await removeGroup(deps.execDocker, job);
+        throw startupRefusalOf(e, { role: 'gate', image });
+    }
 }
 
 /**
- * Starts the supervisor and the exporter, detached; the agent is started by the caller, attached,
+ * Starts the supervisor, the exporter and the gate, detached; the agent is started by the caller, attached,
  * after them. A refusal is typed by the cause the daemon's words prove, as a refused create is.
  */
 export async function startGroup(execDocker: ExecDocker, job: BoardJob, session: RunSession | null): Promise<void> {
+    const shape = groupShape(job, session);
     try {
         await execDocker(['start', supervisorName(job)]);
-        if (groupShape(job, session).exporting) await execDocker(['start', exporterName(job)]);
+        if (shape.exporting) await execDocker(['start', exporterName(job)]);
     } catch (e) {
         throw startupRefusalOf(e);
+    }
+    const image = gateImageOf(job);
+    try {
+        if (image) await execDocker(['start', gateName(job)]);
+    } catch (e) {
+        throw startupRefusalOf(e, image ? { role: 'gate', image } : undefined);
     }
 }
 
@@ -306,9 +370,9 @@ export function supervisorLossOf(exit: number | null, timedOut: boolean): string
         : `the task supervisor ended before it finalized the run (exit ${exit})`;
 }
 
-/** Removes the supervisor, the exporter and the mailboxes of the attempt; tolerant of any of them being gone already. */
+/** Removes the supervisor, the exporter, the gate and the mailboxes of the attempt; tolerant of any of them being gone already. */
 export async function removeGroup(execDocker: ExecDocker, job: BoardJob): Promise<void> {
-    for (const name of [exporterName(job), supervisorName(job)]) {
+    for (const name of [gateName(job), exporterName(job), supervisorName(job)]) {
         await execDocker(['rm', '-f', name]).catch(() => undefined);
     }
     for (const box of Object.values(MAILBOXES)) {

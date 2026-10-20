@@ -15,6 +15,7 @@ import {
     probeDeadServices,
     releaseGateSession,
     runDeclaredGates,
+    sizeGateForVerify,
 } from './loop-gates.js';
 import { drainTranscriptExport } from './loop-export.js';
 import { heartbeat, newJobState, raceStep, stopIfDraining, watchOutput } from './loop-attempt.js';
@@ -26,6 +27,7 @@ import {
     concludeUnreported,
     handBackFence,
     handOverConflict,
+    interruptAttempt,
     releaseAbandonedSync,
     standDown,
     syncThrewHalt,
@@ -40,7 +42,15 @@ import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
 import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
 import { awaitSyncTurn } from './sync-queue.js';
-import { releaseStartedServices, releasingOnThrow, restartDeadServices, startServicesStep } from './loop-services.js';
+import { stepLost } from './step-control.js';
+import {
+    releaseStartedServices,
+    releasingOnThrow,
+    restartDeadServices,
+    servicesLost,
+    startServicesStep,
+} from './loop-services.js';
+import { servicePlanRefusal } from './services.js';
 
 function pickSession(job: BoardJob, executorType: BoardJob['executorType']): RunSession | null {
     // opencode mints its own session ids (`ses_…`) and cannot adopt one, so a fresh run gets
@@ -215,6 +225,8 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
         const gateOut = await raceStep(state.signal, beginGates(rt, job, state));
         return gateOut === null ? STOOD_DOWN : gateOut.value;
     } catch (e) {
+        // The setup's supervisor was lost (issue #773): the attempt's loss, never a config verdict.
+        if (stepLost(e)) return { halt: 'interrupt', reason: gateLossReason(e) };
         return {
             halt: 'fault',
             log: `gate environment failed, failing with a reason: ${(e as Error).message}`,
@@ -227,6 +239,10 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
         };
     }
 }
+
+/** Why a gate or setup whose supervisor was lost interrupts its attempt (issue #773). */
+const gateLossReason = (e: unknown): string =>
+    `infrastructure loss: the task supervisor running the gates was lost (${(e as Error).message})`;
 
 /** One setup step: `null` to continue, or the conclusion that ends the attempt here. */
 type SetupStep = (ctx: AttemptCtx) => Promise<SetupConclusion | null>;
@@ -318,7 +334,8 @@ interface RunInputs {
     session: RunSession | null;
     gateSession: GateSession | null;
     executorType: BoardJob['executorType'];
-    onOutput: (tail: string) => void;
+    /** The output pump: `push` streams the live tail, `flush` the run's final one ahead of a park with no verdict. */
+    pump: ReturnType<typeof watchOutput>;
 }
 
 /** What an agent run leaves behind: its scraped session and its artifacts. An agent-less node leaves neither. */
@@ -381,8 +398,8 @@ async function launchRun(
 async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseDone | RunPhaseResult> {
     const { rt, job, state } = ctx;
     const { log } = rt;
-    const { session, gateSession, executorType, onOutput } = inputs;
-    const outcome = await launchRun(ctx, session, onOutput);
+    const { session, gateSession, executorType, pump } = inputs;
+    const outcome = await launchRun(ctx, session, pump.push);
     if (outcome === null) return { done: true };
     // The run's end, stamped HERE — not at verdict time: the gates, helpers and session scrape
     // below can run minutes after a kill, and the timeout note's active/idle verdict must
@@ -393,7 +410,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // was asked to, so no gates, helpers, publish or `complete` follow (issue #442). A stop after
     // the run still reports the session and uploads the artifacts BEFORE the park.
     stopIfDraining(state);
-    const lastWords = () => reportRunTail(ctx, executorType, outcome);
+    const lastWords = () => pump.flush(outcome.output).then(() => reportRunTail(ctx, executorType, outcome));
     if (await standDown(ctx, 'its run', lastWords)) return { done: true };
 
     /*
@@ -401,7 +418,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
      * stamps `started: false` for it. Saying nothing here would rerun the job until attempts
      * run out and retire it dead, blaming the command for infrastructure.
      */
-    if (await concludeUnreported(ctx, outcome)) return { done: true };
+    if (await concludeRunEnd(ctx, outcome)) return { done: true };
 
     // The artifacts upload HERE, before the gates, so a gate suite that runs minutes cannot push
     // the upload past the run's end. The board authorizes it by claim sequence, so even a reclaim
@@ -430,9 +447,8 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // not: it is the revision the evidence is bound to.
     const treeAfter = gating || evidencePolicyActive(job) ? await probeTreeNow(ctx) : null;
     if (await standDown(ctx, 'its gates')) return { done: true };
-    const gated = gating
-        ? await runGatesPhase(ctx, gating, outcome)
-        : { failure: null, deadServices: [], gatesSkipped: null, recoveredServices: [] };
+    const gated = await gatesOrLoss(ctx, gating, outcome);
+    if (gated === STOOD_DOWN) return { done: true };
     // A cancelled gate answers no failure, so a stand-down during the gates lands here too.
     const treeChanged =
         gated.failure && ctx.treeBefore !== null && treeAfter !== null ? treeAfter !== ctx.treeBefore : null;
@@ -460,6 +476,38 @@ interface GatesPhase {
     recoveredServices: DeadService[];
 }
 
+/**
+ * The run's end with no verdict of its own, answering whether the attempt was concluded here: an
+ * ad-hoc gate that found the supervisor lost while the agent ran (issue #773) interrupts it, and a
+ * run the platform refused or took away is concluded by `concludeUnreported`.
+ */
+async function concludeRunEnd(ctx: AttemptCtx, outcome: RunOutcome): Promise<boolean> {
+    if (ctx.state.gateLoss === null) return concludeUnreported(ctx, outcome);
+    await interruptAttempt(ctx, `infrastructure loss: ${ctx.state.gateLoss}`, outcome.exitCode);
+    return true;
+}
+
+/**
+ * The gates phase — none without a session to run — or `STOOD_DOWN` once a gate, setup or service
+ * restart whose supervisor was lost, or whose pod could not be read (issue #773), interrupted the
+ * attempt here: no gate verdict lands for it.
+ */
+async function gatesOrLoss(
+    ctx: AttemptCtx,
+    gateSession: GateSession | null,
+    outcome: RunOutcome
+): Promise<GatesPhase | typeof STOOD_DOWN> {
+    if (!gateSession) return { failure: null, deadServices: [], gatesSkipped: null, recoveredServices: [] };
+    try {
+        return await runGatesPhase(ctx, gateSession, outcome);
+    } catch (e) {
+        if (!servicesLost(e)) throw e;
+        const reason = stepLost(e) ? gateLossReason(e) : `infrastructure loss: ${(e as Error).message}`;
+        await interruptAttempt(ctx, reason, null);
+        return STOOD_DOWN;
+    }
+}
+
 /** The declared gates, unless the run did not finish cleanly or a declared service is dead. */
 async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome: RunOutcome): Promise<GatesPhase> {
     const { rt, job, state } = ctx;
@@ -480,6 +528,7 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
     // failed gate is what the workflow's gate-fix edge spends a round on (issue #423). The
     // services are stateless fixtures, so a dead one is restarted first; only a restart that
     // cannot bring the fleet back is the run's fault (issue #560).
+    await sizeGateForVerify(rt, job);
     const deadBefore = await probeDeadServices(rt, job);
     let recoveredServices: DeadService[] = [];
     if (deadBefore.length > 0) {
@@ -593,7 +642,7 @@ async function failOnClaimRefusal(rt: LoopRuntime, job: BoardJob): Promise<boole
         ? ([executorRefusal, 'config', 'executor selection'] as const)
         : job.skillRefusal
           ? ([job.skillRefusal, 'config', 'selected skills'] as const)
-          : ([job.planRefusal, 'config', 'execution plan'] as const);
+          : ([job.planRefusal ?? servicePlanRefusal(rt.config, job), 'config', 'execution plan'] as const);
     if (!reason) return false;
     rt.log(`job ${job.id}: ${what} is not runnable, failing`);
     await report(rt, job, { status: 'failed', exitCode: null, output: reason, failureKind }).catch((e: Error) =>
@@ -638,7 +687,6 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     // Armed before the run so the runner can hand over tails from its first chunk; the pump's
     // snapshot is the liveness read the timeout note is built from (issue #339).
     const outputPump = watchOutput(rt, job, state);
-    const onOutput = outputPump.push;
     const session = pickSession(job, executorType);
 
     // Once per attempt, however many conclusions ask (issue #820): a second call awaits the first.
@@ -670,7 +718,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
             });
 
         try {
-            const outcome = await runAttempt(ctx, { session, gateSession, executorType, onOutput });
+            const outcome = await runAttempt(ctx, { session, gateSession, executorType, pump: outputPump });
             if (outcome.done) return;
             const closing = await runPostHelpersAndPublish(ctx, outcome);
             if (closing === null) return;

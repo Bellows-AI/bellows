@@ -10,11 +10,16 @@
 //   <root>/out     the agent writes, the supervisor reads: `questions/<id>.json`, `agent.alive`, `agent.exit`
 //   <root>/export  supervisor <-> exporter: `drain.json`, `status.json`, `supervisor.alive`
 //   <root>/supervisor  the supervisor's own state: `state.json`, `report.json`, the step ledger; no other container mounts it
+//   <root>/gate    supervisor <-> gate container: `requests/`, `running/`, `done/`, `alive` (`GATE_FILES` below)
 //
 // The group lives for the whole attempt, not just the agent's run. The driver submits STEPS to it —
 // the startup sync, the tree probe, the review snapshot, the publish steps, the allowlisted helpers
 // and the terminal reclaim — and the supervisor pulls them (`GET /step`, a long poll), runs each as
 // a child process of its own container over the task volume it mounts, and answers (`POST /step/:id`).
+// A `gate` step (the declared gates and setup) is not a child of this container: it is handed to the
+// gate container through the gate mailbox, served beside the other steps rather than before them — a
+// ten-minute suite never holds a publish behind it — one at a time, bounded by its own deadline, and
+// cancelled by the driver through the control poll, never the step queue.
 // Two steps are the group's own orders: `go` releases the agent (the supervisor writes `in/go`, the
 // agent's entrypoint waits on it) and `finish` ends the group. A step's id is its effect and its
 // `invocation` one call of it, both kept in a ledger under the supervisor's own directory: an effect
@@ -49,6 +54,9 @@
 //   SUPERVISOR_ORPHAN_MS      — how long an unanswering driver is served before finalizing (default 90000).
 //   SUPERVISOR_STEP_WAIT_MS   — one `GET /step` long poll (default 15000).
 //   SUPERVISOR_REPORT_MS      — how long a departure's report is redelivered before finalizing (default 60000).
+//   SUPERVISOR_GATE           — `1` when a gate container serves the gate mailbox; absent, a gate step is refused.
+//   SUPERVISOR_GATE_LOST_MS   — a gate loop heartbeat older than this is a lost gate container (default 30000).
+//   SUPERVISOR_GATE_CANCEL_MS — how long a cancelled gate may take to answer (default 10000).
 //
 // Exit status: 0 finalized, 124 finalized after the run budget ended the agent, 70 the supervisor
 // itself failed, 75 the driver was lost before the agent was released (nothing ran to adopt). The
@@ -97,7 +105,27 @@ const FILES = {
     report: 'report.json',
 };
 /** The supervised steps, by kind; the two last are the group's own orders (`STEP_KINDS` of supervisor-contract.ts). */
-const STEP_KINDS = ['sync', 'reclaim', 'probe', 'snapshot', 'publish', 'helper', 'go', 'finish'];
+const STEP_KINDS = ['sync', 'reclaim', 'probe', 'snapshot', 'publish', 'helper', 'gate', 'restart', 'go', 'finish'];
+/** The gate mailbox's layout (`GATE_FILES` of supervisor-contract.ts; scripts/gate-loop.sh spells the same). */
+const GATE_FILES = {
+    staging: 'staging',
+    requests: 'requests',
+    running: 'running',
+    done: 'done',
+    alive: 'alive',
+    command: 'command',
+    cwd: 'cwd',
+    env: 'env',
+    output: 'output',
+    exit: 'exit',
+    cancel: 'cancel',
+};
+/** A name `sh` can export: the gate loop applies the env with `export "$line"`. */
+const GATE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** How much of a refused env name its refusal quotes. */
+const ENV_NAME_PREVIEW = 64;
+/** What a gate the driver cancelled answers — discarded by the driver that cancelled it. */
+const GATE_CANCELLED_EXIT = 130;
 const STEP_ID = /^[A-Za-z0-9_.:-]{1,160}$/;
 const STEP_OUTPUT_LIMIT = 1_048_576;
 /** The exit a step the supervisor refused (or could not start) answers with: `sh`'s "cannot execute". */
@@ -129,6 +157,7 @@ const HTTP_MULTIPLE_CHOICES = 300;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
+const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_SERVER_ERROR = 500;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -144,6 +173,8 @@ const DEFAULT_AGENT_START_MS = 600_000;
 const DEFAULT_ORPHAN_MS = 90_000;
 const DEFAULT_STEP_WAIT_MS = 15_000;
 const DEFAULT_REPORT_MS = 60_000;
+const DEFAULT_GATE_LOST_MS = 30_000;
+const DEFAULT_GATE_CANCEL_MS = 10_000;
 
 /** The lifecycle machine: legal transitions only, and a record of what really ran. */
 function createMachine(initial = 'prepare') {
@@ -216,6 +247,7 @@ function settingsOf(env) {
             out: path.join(root, 'out'),
             export: path.join(root, 'export'),
             own: path.join(root, 'supervisor'),
+            gate: path.join(root, 'gate'),
         },
         url: env.SUPERVISOR_CONTROL_URL || null,
         token: env.SUPERVISOR_CONTROL_TOKEN || null,
@@ -230,6 +262,9 @@ function settingsOf(env) {
         orphanMs: positive(env, 'SUPERVISOR_ORPHAN_MS', DEFAULT_ORPHAN_MS),
         stepWaitMs: positive(env, 'SUPERVISOR_STEP_WAIT_MS', DEFAULT_STEP_WAIT_MS),
         reportMs: positive(env, 'SUPERVISOR_REPORT_MS', DEFAULT_REPORT_MS),
+        gate: env.SUPERVISOR_GATE === '1',
+        gateLostMs: positive(env, 'SUPERVISOR_GATE_LOST_MS', DEFAULT_GATE_LOST_MS),
+        gateCancelMs: positive(env, 'SUPERVISOR_GATE_CANCEL_MS', DEFAULT_GATE_CANCEL_MS),
         // A step's children get the image's environment and the step's own: never the supervisor's credential.
         childEnv: Object.fromEntries(
             Object.entries({ ...process.env, ...env }).filter(([name]) => !name.startsWith('SUPERVISOR_'))
@@ -257,6 +292,7 @@ function filesOf({ dirs }) {
         go: path.join(agentIn, FILES.go),
         ledger: path.join(dirs.own, FILES.steps),
         report: path.join(dirs.own, FILES.report),
+        gate: Object.fromEntries(Object.entries(GATE_FILES).map(([key, name]) => [key, path.join(dirs.gate, name)])),
     };
 }
 
@@ -321,6 +357,15 @@ function newRun(settings, now, log) {
         // Aborted when the group stops taking steps; `inflight` interrupts the one still running.
         pulling: new AbortController(),
         inflight: null,
+        // The gate steps: one at a time (`gateTurn`), each call joined by a redelivery of it while it
+        // runs (`gateCalls`), the ones the driver cancelled (`gateCancels`, read off the control poll),
+        // their answers still being delivered (`gateAnswers`), and the order to stop them all.
+        gateTurn: Promise.resolve(),
+        gateCalls: new Map(),
+        gateCancels: new Set(),
+        gateAnswers: new Set(),
+        gatesInFlight: 0,
+        gatesStopped: false,
         // The report once minted, the `serving` the driver acknowledged it with, and its redelivery.
         report: null,
         reportAcked: null,
@@ -345,7 +390,25 @@ const orphaned = (run) => Boolean(run.settings.url) && run.now() - run.contacted
 
 const ledgerFile = (run, id) => path.join(run.file.ledger, `${encodeURIComponent(id)}.json`);
 
-const stepResult = (exitCode, stdout = '', stderr = '', timedOut = false) => ({ exitCode, stdout, stderr, timedOut });
+/**
+ * The tail of a stream whose JSON form fits the step output cap. Escaping can turn one byte into six
+ * (a NUL is `\u0000`), and the driver bounds the answer body, not the bytes a command printed.
+ */
+function fitTail(text) {
+    let tail = text;
+    for (let size = Buffer.byteLength(JSON.stringify(tail)); size > STEP_OUTPUT_LIMIT; ) {
+        tail = tail.slice(Math.ceil((tail.length * (size - STEP_OUTPUT_LIMIT)) / size) + 1);
+        size = Buffer.byteLength(JSON.stringify(tail));
+    }
+    return tail;
+}
+
+const stepResult = (exitCode, stdout = '', stderr = '', timedOut = false) => ({
+    exitCode,
+    stdout: fitTail(stdout),
+    stderr: fitTail(stderr),
+    timedOut,
+});
 
 /** Keeps the tail of a stream at the step output cap, byte-true enough: the cap is a bound, not a format. */
 const keepTail = (text) => (text.length <= STEP_OUTPUT_LIMIT ? text : text.slice(text.length - STEP_OUTPUT_LIMIT));
@@ -414,6 +477,191 @@ function spawnStep(run, step) {
     });
 }
 
+/** Why a gate step cannot be handed to the gate container, or null: what the loop could not run as asked. */
+function gateRefusal(run, step) {
+    if (!run.settings.gate) return 'this group has no gate container: its checkout declares no gates';
+    if (step.argv.length !== 1 || typeof step.argv[0] !== 'string' || step.argv[0] === '') {
+        return 'a gate step carries exactly one command';
+    }
+    if (typeof step.cwd !== 'string' || !path.isAbsolute(step.cwd) || /[\n\0]/.test(step.cwd)) {
+        return 'a gate step needs the absolute path of its worktree';
+    }
+    for (const [name, value] of Object.entries(step.env ?? {})) {
+        if (!GATE_ENV_NAME.test(name)) {
+            return `the gate env name "${name.slice(0, ENV_NAME_PREVIEW)}" cannot be exported by sh`;
+        }
+        if (typeof value !== 'string' || /[\n\0]/.test(value)) return `the gate env value of ${name} holds a newline`;
+    }
+    return null;
+}
+
+/** The last `STEP_OUTPUT_LIMIT` bytes of a file: what a suite printed, its tail kept. */
+function readTail(file) {
+    let fd;
+    try {
+        fd = fs.openSync(file, 'r');
+        const size = fs.fstatSync(fd).size;
+        const length = Math.min(size, STEP_OUTPUT_LIMIT);
+        const buffer = Buffer.alloc(length);
+        fs.readSync(fd, buffer, 0, length, size - length);
+        return buffer.toString('utf8');
+    } catch {
+        return '';
+    } finally {
+        if (fd !== undefined) fs.closeSync(fd);
+    }
+}
+
+/** The answer of a finished request (`done/<id>`), read and removed; null while it is not done. */
+function takeGateAnswer(run, name) {
+    const done = path.join(run.file.gate.done, name);
+    if (!fs.existsSync(done)) return null;
+    let code = Number.NaN;
+    try {
+        code = Number.parseInt(fs.readFileSync(path.join(done, GATE_FILES.exit), 'utf8').trim(), 10);
+    } catch {
+        // No exit: the loop restarted while it held the request, and its answer is gone.
+    }
+    const answer = {
+        exitCode: Number.isFinite(code) ? code : null,
+        output: readTail(path.join(done, GATE_FILES.output)),
+    };
+    fs.rmSync(done, { recursive: true, force: true });
+    return answer;
+}
+
+/** How long the gate loop has been silent: since its last heartbeat, or since the request when it never beat. */
+function gateSilentMs(run, since) {
+    let beat = since;
+    try {
+        beat = Math.max(since, fs.statSync(run.file.gate.alive).mtimeMs);
+    } catch {
+        // No heartbeat yet: silent since the request.
+    }
+    return run.now() - beat;
+}
+
+/**
+ * Orders the gate stopped: a request the loop has not taken is withdrawn (true — it never ran), a
+ * taken one gets `cancel`, which the loop answers by killing it.
+ */
+function cancelGate(run, name) {
+    const withdrawn = path.join(run.file.gate.staging, `${name}.withdrawn`);
+    try {
+        fs.renameSync(path.join(run.file.gate.requests, name), withdrawn);
+        fs.rmSync(withdrawn, { recursive: true, force: true });
+        return true;
+    } catch {
+        try {
+            fs.writeFileSync(path.join(run.file.gate.running, name, GATE_FILES.cancel), 'cancel\n');
+        } catch {
+            // Already answered: the answer is read on the next tick.
+        }
+        return false;
+    }
+}
+
+/** The gate mailbox's directories this supervisor makes, when a gate container serves it. */
+const gateDirs = (run) => {
+    const { staging, requests, running, done } = run.file.gate;
+    return run.settings.gate ? [staging, requests, running, done] : [];
+};
+
+/** Stages the request whole and renames it into `requests/`: the loop never sees half of one. */
+function postGateRequest(run, step, name) {
+    const staged = path.join(run.file.gate.staging, name);
+    fs.rmSync(staged, { recursive: true, force: true });
+    fs.mkdirSync(staged, { recursive: true });
+    fs.writeFileSync(path.join(staged, GATE_FILES.command), step.argv[0]);
+    fs.writeFileSync(path.join(staged, GATE_FILES.cwd), step.cwd);
+    const env = Object.entries(step.env ?? {}).map(([n, v]) => `${n}=${v}\n`);
+    fs.writeFileSync(path.join(staged, GATE_FILES.env), env.join(''), { mode: 0o600 });
+    fs.renameSync(staged, path.join(run.file.gate.requests, name));
+}
+
+/** Why the supervisor stops a gate it handed over, or null: the driver's cancel, the group's end, the deadline. */
+function gateStopReason(run, step, startedAt) {
+    if (run.gateCancels.has(step.id)) return 'cancelled';
+    if (run.gatesStopped) return 'interrupted';
+    return run.now() - startedAt >= step.timeoutMs ? 'deadline' : null;
+}
+
+/** What a stopped gate answers: the deadline is a verdict (124), a cancel is discarded, an interruption is unknown. */
+function stoppedGateResult(why, step, output) {
+    if (why === 'deadline') {
+        return {
+            result: stepResult(EXIT_DEADLINE, output, `the gate exceeded its ${step.timeoutMs}ms deadline`, true),
+            interrupted: false,
+        };
+    }
+    if (why === 'cancelled')
+        return { result: stepResult(GATE_CANCELLED_EXIT, output, 'the gate was cancelled'), interrupted: false };
+    return {
+        result: stepResult(null, output, 'the gate was interrupted: the group stopped serving'),
+        interrupted: true,
+    };
+}
+
+/** The loop's answer to a request: a stopped gate's (its own output kept), or the gate's own exit. */
+function answeredGateResult(why, step, answer) {
+    if (why) return stoppedGateResult(why, step, answer.output);
+    const lost = answer.exitCode === null ? 'the gate container lost the request mid-run: it answered no exit' : '';
+    return { result: stepResult(answer.exitCode, answer.output, lost), interrupted: false };
+}
+
+/** A gate loop gone silent: no exit — never a verdict — whether it never took the request or went quiet on it. */
+function lostGateResult(run, name) {
+    const lost = cancelGate(run, name)
+        ? 'the gate container never took the request: its loop is not running'
+        : 'the gate container was lost mid-run: its loop stopped answering';
+    return { result: stepResult(null, '', lost), interrupted: false };
+}
+
+/**
+ * One tick of a gate in flight (`flight`: when it was posted, why it is being stopped and since
+ * when): its answer, a stopped gate's past the cancel grace, a lost loop's, or null to wait on.
+ */
+function gateTick(run, step, flight) {
+    const answer = takeGateAnswer(run, step.id);
+    if (answer) return answeredGateResult(flight.why, step, answer);
+    if (!flight.why) {
+        flight.why = gateStopReason(run, step, flight.startedAt);
+        flight.stoppedAt = run.now();
+        // Withdrawn before the loop took it: it never ran, and answers at once.
+        if (flight.why && cancelGate(run, step.id)) return stoppedGateResult(flight.why, step, '');
+    }
+    if (flight.why && run.now() - flight.stoppedAt >= run.settings.gateCancelMs) {
+        return stoppedGateResult(flight.why, step, '');
+    }
+    return gateSilentMs(run, flight.startedAt) > run.settings.gateLostMs ? lostGateResult(run, step.id) : null;
+}
+
+/**
+ * One gate, through the gate mailbox: the request posted, then read every tick until the loop
+ * answers. A stop (the driver's cancel, the group's end, the deadline) cancels it and waits at most
+ * `gateCancelMs` for the loop's answer. A loop silent past `gateLostMs` is a lost gate container.
+ */
+async function execGate(run, step) {
+    postGateRequest(run, step, step.id);
+    const flight = { startedAt: run.now(), why: null, stoppedAt: 0 };
+    for (;;) {
+        const settled = gateTick(run, step, flight);
+        if (settled) return settled;
+        await sleep(run.settings.tickMs);
+    }
+}
+
+/** A gate in its turn: one gate at a time in the group, whatever the driver sends. */
+function runGate(run, step) {
+    const turn = run.gateTurn.then(() => execGate(run, step));
+    run.gateTurn = turn.catch(() => undefined);
+    run.gatesInFlight += 1;
+    return turn.finally(() => {
+        run.gatesInFlight -= 1;
+        run.gateCancels.delete(step.id);
+    });
+}
+
 /** The `go` order: releases the agent once, unless the attempt is already being ended. */
 function orderGo(run, step) {
     if (run.goAt !== null) return stepResult(0);
@@ -445,6 +693,14 @@ function recordCall(run, entry, invocation, call) {
 const unknownResult = (id) =>
     stepResult(null, '', `step ${id} was interrupted before it answered: whether its effect landed is unknown`);
 
+/** What the ledger answers a call with — an effect that landed, a call already taken — or null: it runs. */
+function replayOf(entry, step) {
+    if (entry.effect) return { ...entry.effect, replayed: true };
+    const prior = entry.invocations[step.invocation];
+    if (prior?.state === 'done') return { ...prior.result, replayed: true };
+    return prior ? unknownResult(step.id) : null;
+}
+
 /** What one step answers with; a refused step never starts. */
 async function performStep(run, step) {
     const kind = STEP_KINDS.includes(step?.kind) ? step.kind : null;
@@ -458,22 +714,27 @@ async function performStep(run, step) {
         run.finishRequested = true;
         return stepResult(0);
     }
+    const gateRefused = kind === 'gate' && gateRefusal(run, step);
+    if (gateRefused) return stepResult(STEP_REFUSED_EXIT, '', gateRefused);
     // An effect that landed is never run again, whoever asks: that is the harm the ledger prevents. A
     // call already taken is answered as it ended — a failure or a timeout too, which may have half
     // landed — and one taken but never answered is unknown; either way it never runs twice. Only a
     // new call — the caller reconciled against the remote, or a refusal worth retrying was fixed — runs.
     const entry = ledgerOf(run, step);
-    if (entry.effect) return { ...entry.effect, replayed: true };
-    const prior = entry.invocations[step.invocation];
-    if (prior?.state === 'done') return { ...prior.result, replayed: true };
-    if (prior) return unknownResult(step.id);
+    const replayed = replayOf(entry, step);
+    if (replayed) return replayed;
     // An attempt that ended any way but completed publishes nothing: the machine already went to finalize.
     if (kind === 'publish' && run.machine.outcome !== null && run.machine.outcome !== 'completed') {
         return stepResult(STEP_REFUSED_EXIT, '', `refusing to publish: the attempt ended ${run.machine.outcome}`);
     }
     if (step.argv.length === 0) return stepResult(STEP_REFUSED_EXIT, '', 'a command step needs a command');
+    return runCall(run, entry, step);
+}
+
+/** Runs a new call — a child of this container, or a gate the gate container runs — its ledger kept as it goes. */
+async function runCall(run, entry, step) {
     recordCall(run, entry, step.invocation, { state: 'running' });
-    const { result, interrupted } = await spawnStep(run, step);
+    const { result, interrupted } = step.kind === 'gate' ? await runGate(run, step) : await spawnStep(run, step);
     if (interrupted) {
         recordCall(run, entry, step.invocation, { state: 'interrupted', result });
         return result;
@@ -485,15 +746,50 @@ async function performStep(run, step) {
 
 /** Posts a call's answer until the driver acknowledges it (or says the attempt is over). */
 async function postStepResult(run, step, result) {
-    const body = { invocation: step.invocation, ...result };
+    let body = { invocation: step.invocation, ...result };
     for (let attempt = 1; attempt <= STEP_RESULT_ATTEMPTS && !run.abort.signal.aborted; attempt += 1) {
         const answer = await ask(run, 'POST', `${STEP_PATH}/${encodeURIComponent(step.id)}`, { body });
+        if (answer?.status === HTTP_PAYLOAD_TOO_LARGE) {
+            // Refused, not taken: the verdict still goes back, without the streams the driver would not hold.
+            body = { ...body, stdout: '', stderr: 'the step output was too large to deliver' };
+            continue;
+        }
         if (answer && answer.status < HTTP_SERVER_ERROR) {
             if (answer.status === HTTP_UNAUTHORIZED) run.closed = true;
             return;
         }
         await sleep(run.settings.tickMs * attempt);
     }
+}
+
+/**
+ * Answers one step. A gate is answered beside the steps that follow it, never before them: it runs
+ * for as long as a suite does, and a step queued behind it would outlive its own deadline. A
+ * delivery of a gate call still running joins it rather than running it twice.
+ */
+async function answerStep(run, step) {
+    if (step.kind !== 'gate') {
+        await postStepResult(run, step, await performStep(run, step));
+        return;
+    }
+    const call = `${step.id}\n${step.invocation}`;
+    const running = run.gateCalls.get(call);
+    const answering = (running ?? performStep(run, step)).then((result) => postStepResult(run, step, result));
+    if (!running) {
+        const performing = answering.finally(() => run.gateCalls.delete(call));
+        run.gateCalls.set(
+            call,
+            performing.then(() => readLedgerResult(run, step))
+        );
+    }
+    run.gateAnswers.add(answering);
+    void answering.finally(() => run.gateAnswers.delete(answering));
+}
+
+/** The result a call's ledger entry recorded: what a joined delivery of a gate answers. */
+function readLedgerResult(run, step) {
+    const recorded = ledgerOf(run, step).invocations[step.invocation];
+    return recorded?.result ?? unknownResult(step.id);
 }
 
 /** Pulls steps from the driver, one at a time, until the group stops taking them. */
@@ -516,7 +812,7 @@ async function serveSteps(run) {
         }
         const step = answer.json?.step;
         if (!step) continue;
-        await postStepResult(run, step, await performStep(run, step));
+        await answerStep(run, step);
     }
 }
 
@@ -648,7 +944,9 @@ async function serveQuestions(run) {
 
 async function pollControl(run) {
     const { settings } = run;
-    if (!settings.url || run.now() - run.lastControlAt < settings.controlMs) return;
+    // A gate in flight is polled at the mailbox pace: its cancel is the driver's, and it must not wait.
+    const pace = run.gatesInFlight > 0 ? settings.tickMs : settings.controlMs;
+    if (!settings.url || run.now() - run.lastControlAt < pace) return;
     run.lastControlAt = run.now();
     const answer = await ask(run, 'GET', '/control');
     if (!answer) return;
@@ -657,6 +955,9 @@ async function pollControl(run) {
         return;
     }
     if (answer.json?.stop === true) raiseStop(run);
+    for (const id of Array.isArray(answer.json?.cancel) ? answer.json.cancel : []) {
+        if (typeof id === 'string') run.gateCancels.add(id);
+    }
     if (answer.json?.kill === true) {
         intend(run, 'cancelled', CAUSE.killed);
         raiseKill(run, CAUSE.killed);
@@ -899,7 +1200,7 @@ async function supervise(env = process.env, log = (line) => process.stdout.write
     // Set, not created with: a mode on mkdir passes through the umask, and an adopted group's
     // directory already exists.
     for (const dir of [run.file.agentIn, run.file.agentOut]) fs.chmodSync(dir, AGENT_DIR_MODE);
-    for (const dir of [run.file.answers, run.file.questions]) fs.mkdirSync(dir, { recursive: true });
+    for (const dir of [run.file.answers, run.file.questions, ...gateDirs(run)]) fs.mkdirSync(dir, { recursive: true });
     beat(run);
     run.machine.enter('setup'); // delegated: the gate environment's setup is the driver's
     persist(run);
@@ -932,9 +1233,11 @@ async function supervise(env = process.env, log = (line) => process.stdout.write
     // its ledger says its effect may have landed.
     run.pulling.abort();
     run.inflight?.interrupt();
+    run.gatesStopped = true;
     if (run.machine.stage === 'publish') run.machine.enter('finalize');
     run.abort.abort();
     await stepping;
+    await Promise.all([...run.gateAnswers]);
     run.machine.enter('report');
     persist(run);
     const { machine, agentEnd } = run;
@@ -967,6 +1270,9 @@ module.exports = {
     REPORT_PREFIX,
     REPORT_MS: DEFAULT_REPORT_MS,
     STEP_KINDS,
+    GATE_FILES,
+    GATE_LOST_MS: DEFAULT_GATE_LOST_MS,
+    GATE_CANCEL_MS: DEFAULT_GATE_CANCEL_MS,
     createMachine,
     supervise,
 };

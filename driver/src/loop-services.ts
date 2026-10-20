@@ -2,8 +2,9 @@ import type { BoardJob } from './board.js';
 import { raceStep } from './loop-attempt.js';
 import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
-import type { DeadService, RunOutcome } from './runner.js';
+import { type DeadService, Inconclusive, type RunOutcome } from './runner.js';
 import { ServicesNotRunning } from './service-restart.js';
+import { stepLost } from './step-control.js';
 
 /** Tears the attempt's services down, saying so when it cannot. */
 const release = (rt: LoopRuntime, job: BoardJob): Promise<void> =>
@@ -75,9 +76,17 @@ export async function releasingOnThrow<T>(ctx: AttemptCtx, phases: (ctx: Attempt
 }
 
 /**
+ * A failure of the services' machinery rather than of the services (issue #773, R2-1): a lost
+ * supervisor (`stepLost`) or a pod or daemon that could not be read (`Inconclusive`). The attempt is
+ * interrupted for it, never failed `services`.
+ */
+export const servicesLost = (e: unknown): boolean => stepLost(e) || e instanceof Inconclusive;
+
+/**
  * Restarts the fleet `dead` was found in; null when it is back, else why it is not. Raced against
  * the attempt's stand-down, which also aborts the restart itself: a Stop or lost lease must not
- * wait out its budget, nor see services recreated after the kill took them.
+ * wait out its budget, nor see services recreated after the kill took them. A failure of the
+ * machinery (`servicesLost`) is thrown, never answered as the services' own.
  */
 export async function restartDeadServices(
     rt: LoopRuntime,
@@ -92,6 +101,7 @@ export async function restartDeadServices(
         return (await raceStep(signal, rt.runner.restartServices(job, signal))) === null ? STOOD_DOWN : null;
     } catch (e) {
         rt.log(`job ${job.id}: the service restart failed: ${(e as Error).message}`);
+        if (servicesLost(e)) throw e;
         return (e as Error).message;
     }
 }

@@ -9,13 +9,7 @@ export interface ServiceSpec {
     name: string;
     image: string;
     environment: { key: string; value: string }[];
-    /**
-     * The declared hardening opt-out: present only when the file asked for it. Restores the image's
-     * default capability set and nothing else (the escalation bit stays off, seccomp stays on).
-     * Absent rather than `false` when unasked, so the field's presence IS the declaration.
-     */
-    unhardened?: true;
-    /** The declared `user: "uid:gid"` the container runs as — the hardened alternative to `unhardened`. */
+    /** The declared `user: "uid:gid"` the container runs as; every service runs hardened. */
     user?: { uid: number; gid: number };
     /**
      * The TCP ports the service listens on, from `ports: [5432]`. Declared because services share
@@ -269,8 +263,6 @@ interface BellowsItem {
     name: string;
     image: string;
     environment: { key: string; value: string }[];
-    /** The declared `unhardened: true` (issue #382). Never set from any other spelling. */
-    unhardened: boolean;
     user: { uid: number; gid: number } | null;
     ports: number[];
     inEnvironment: boolean;
@@ -281,7 +273,7 @@ interface BellowsItem {
 /** Validates and files the just-finished item, when there is one. A no-op on a null item. */
 function finishItem(item: BellowsItem | null, specs: ServiceSpec[]): void {
     if (!item) return;
-    const { name, image, environment, unhardened, user, ports } = item;
+    const { name, image, environment, user, ports } = item;
     if (!name) throw new Error('.bellows.yaml: a service is missing "name"');
     if (!image) throw new Error('.bellows.yaml: a service is missing "image"');
     if (!SERVICE_NAME.test(name)) {
@@ -300,7 +292,6 @@ function finishItem(item: BellowsItem | null, specs: ServiceSpec[]): void {
         name,
         image,
         environment,
-        ...(unhardened ? { unhardened: true as const } : {}),
         ...(user ? { user } : {}),
         ...(ports.length > 0 ? { ports } : {}),
     });
@@ -341,16 +332,11 @@ function applyServiceField(item: BellowsItem, key: string, value: string): void 
         return;
     }
     if (key === 'unhardened') {
-        // The one key in this grammar that LOOSENS a security control (issue #382), so it is
-        // spelled exactly one way. `yes`, `on` and `1` are each a reasonable author guess and each
-        // would have to be read as truthy somewhere; refusing them keeps "did this service opt
-        // out?" a question with one answer rather than a parser trivia question — and makes the
-        // typo that would have silently left a service hardened an error the author reads.
-        if (value !== 'true') {
-            throw new Error('.bellows.yaml: "unhardened" must be `true` — the only value that opts out');
-        }
-        item.unhardened = true;
-        return;
+        // Every service is a hardened sidecar in the task pod; there is no opt-out to name.
+        throw new Error(
+            '.bellows.yaml: "unhardened" is not supported — every service runs hardened; ' +
+                'declare user: "uid:gid" (a non-root user the image runs as) instead'
+        );
     }
     if (key === 'user') {
         const m = value.match(SERVICE_USER);
@@ -362,9 +348,7 @@ function applyServiceField(item: BellowsItem, key: string, value: string): void 
         item.ports = readPorts(value);
         return;
     }
-    throw new Error(
-        `.bellows.yaml: unknown service key "${key}" — supported: name, image, ports, environment, unhardened, user`
-    );
+    throw new Error(`.bellows.yaml: unknown service key "${key}" — supported: name, image, ports, environment, user`);
 }
 
 function applyField(item: BellowsItem, chunk: string): void {
@@ -498,7 +482,6 @@ export function parseServices(text: string): ServiceSpec[] {
                 name: '',
                 image: '',
                 environment: [],
-                unhardened: false,
                 user: null,
                 ports: [],
                 inEnvironment: false,

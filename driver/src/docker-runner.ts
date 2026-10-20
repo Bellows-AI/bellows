@@ -1,5 +1,6 @@
 import { JOB_LABEL } from './labels.js';
 import { awaitSupervisor, closeEndOf, createGroup, removeGroup, startGroup, supervisorLossOf } from './docker-group.js';
+import { type DockerGateDeps, runDockerGate } from './docker-gate.js';
 import {
     dockerKill,
     dockerKillFor,
@@ -23,11 +24,12 @@ import {
     releaseSteps,
     runReclaimStep,
     runSyncStep,
+    type StepHost,
     stepHostOf,
     supervisedStepMembers,
 } from './supervised-steps.js';
 import { RELEASE_DEADLINE_MS, repoPath, worktreeDir, type ReclaimResult, type SyncResult } from './publish.js';
-import { missingDeclaredServices, serviceContainerName } from './services.js';
+import { groupServices, missingDeclaredServices, serviceContainerName } from './services.js';
 import {
     containerName,
     envFilePath,
@@ -62,7 +64,6 @@ import {
     LEASE_FORMAT,
     listOtherAttemptsOrThrow,
     type ClosedState,
-    servicesNetworkOf,
     removeEachTolerantly,
     run,
     restartJobServices,
@@ -136,12 +137,11 @@ interface RunnerDeps {
 /*
  * The re-claim fence — the only JOB-scoped sweep this runner performs, and the one component
  * allowed to be job-scoped: whatever it finds under ANOTHER lease is treated as a previous
- * attempt's leftover, and this attempt's own objects — the services the loop started before run(),
- * a gate environment this attempt created — are spared by the lease label. A warm gate environment
- * an EARLIER attempt created carries that attempt's lease, so it is still swept here. Names are attempt-scoped now, so no name can
- * find a previous attempt's leftovers — the `factory.job` label is the one identifier every
- * attempt of the job shares, and the sweep is by label: every leftover container (runners and
- * services alike), then every leftover network. This claim exists only because those attempts'
+ * attempt's leftover, and this attempt's own objects — its group, the services the loop started
+ * before run() — are spared by the lease label. Names are attempt-scoped, so no name can find a
+ * previous attempt's leftovers — the `factory.job` label is the one identifier every attempt of
+ * the job shares, and the sweep is by label: every leftover container (runners, groups and
+ * services alike), then every leftover volume. This claim exists only because those attempts'
  * leases are gone, so removing them delivers the same verdict their heartbeats would have, had
  * the driver survived to receive it — and the alternative to leaving a live leftover runner
  * running is two writers on one checkout, which is the thing actually worth preventing.
@@ -175,19 +175,6 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal?: Abor
         containerIds,
         (id) => ['rm', '-f', id],
         (id) => `the re-claim fence could not remove the leftover container ${id} of job ${job.id}`
-    );
-
-    const staleNetworks = await listOtherAttemptsOrThrow(
-        execDocker,
-        ['network', 'ls', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', LEASE_FORMAT('Name')],
-        `the re-claim fence could not list the leftover networks of job ${job.id}`,
-        { ...kept, grammar: DOCKER_NAME }
-    );
-    await removeEachTolerantly(
-        execDocker,
-        staleNetworks,
-        (name) => ['network', 'rm', name],
-        (name) => `the re-claim fence could not remove the leftover network ${name} of job ${job.id}`
     );
 
     // The supervisor's mailboxes of those attempts, after their containers: transient control —
@@ -292,9 +279,12 @@ async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<R
         };
     }
     const opened = await deps.endpoint.open();
+    // A supervisor alone (#773 D11): no agent, and no gate or service its checkout would bring.
     const group: BoardJob = {
         ...job,
         agent: false,
+        gates: null,
+        services: [],
         leaseToken: randomUUID(),
         supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: opened.url, [SUPERVISOR_ENV.controlToken]: opened.token },
     };
@@ -317,6 +307,35 @@ async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<R
         await dockerKill(deps, group);
         await removeGroup(deps.execDocker, group);
     }
+}
+
+/**
+ * The step host of an attempt whose first step is not its sync — an adopted run, whose agent
+ * already ended under an earlier claim: a group is created for it on demand, a supervisor and no
+ * agent, because the probe, the helpers and the publish are still its steps. A group the sync
+ * already created is simply answered.
+ */
+async function stepHostFor(deps: RunnerDeps, job: BoardJob): Promise<StepHost> {
+    if (!deps.groups.has(job.leaseToken)) await ensureGroup(deps, { ...job, agent: false }, null);
+    return stepHostOf(deps);
+}
+
+/** The attempt's group as a gate run reaches it (`docker-gate.ts`). */
+const gateDeps = (deps: RunnerDeps, job: BoardJob): DockerGateDeps => ({ host: () => stepHostFor(deps, job) });
+
+/**
+ * The declared services, in the network namespace of the attempt's group supervisor (issue #773):
+ * the sync's group, or one made now for an attempt that synced none, before any service starts.
+ */
+async function dockerStartServices(deps: RunnerDeps, job: BoardJob, signal?: AbortSignal): Promise<RunOutcome | null> {
+    if (groupServices(deps.config, job).length === 0) return null;
+    await stepHostFor(deps, job);
+    return startJobServices(
+        job,
+        deps.config,
+        { ...deps, serviceTeardown: (j) => dockerServiceTeardown(deps, j) },
+        signal
+    );
 }
 
 // The container is named by this attempt's lease token, so a sample can only ever resolve
@@ -393,12 +412,12 @@ async function dockerRun(
 
     /*
      * Auxiliary services (issue #6) were started by the loop (`startServices`) before the gate
-     * environment and its setup; the fence above spares them as this attempt's own, and the
-     * runner joins their network. A kill that lands while an await below is pending must stop
-     * the attempt: the check runs after the claim-env file write and after the create/copy — the
-     * last awaits before the spawn — so the gap between that final check and spawnFn is synchronous.
+     * environment and its setup, in the group supervisor's network namespace the runner joins too
+     * (issue #773); the fence above spares them as this attempt's own. A kill that lands while an
+     * await below is pending must stop the attempt: the check runs after the claim-env file write
+     * and after the create/copy — the last awaits before the spawn — so the gap between that final
+     * check and spawnFn is synchronous.
      */
-    const servicesNetwork = servicesNetworkOf(job);
 
     // The runner container is the last resource this attempt creates, and the spawn is
     // what a killed setup must never reach — see assertJobNotKilled for why a throw is
@@ -424,10 +443,7 @@ async function dockerRun(
     // The run's start instant (the group's, which the exporter and both close-time turn reads key
     // on): a follow-up resumes its session's conversation, so the delta each read reports is
     // bounded to what THIS run wrote.
-    const refused = await createRunnerContainer(deps, job, session, {
-        servicesNetwork,
-        ...(file ? { envFile: file } : {}),
-    });
+    const refused = await createRunnerContainer(deps, job, session, file ? { envFile: file } : {});
     if (refused) {
         if (file) await files.rm(file).catch(() => undefined);
         await finishGroup(deps, job);
@@ -660,11 +676,12 @@ export function createDockerRunner(
             // A group the daemon refuses fails the helper in the daemon's own words, bounded.
             errorDetail: (e) => dockerErrorDetail(e).slice(0, ERROR_DETAIL_MAX_CHARS),
         }),
+        runGate: (job, gate, signal) => runDockerGate(gateDeps(deps, job), job, gate, signal),
+        resizeGate: async () => false, // no in-place resize: the gate container keeps its GATE_* sizing
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
         restartServices: (job, signal) => restartJobServices(job, execDocker, signal),
-        startServices: (job, signal) =>
-            startJobServices(job, config, { ...deps, serviceTeardown: (j) => dockerServiceTeardown(deps, j) }, signal),
+        startServices: (job, signal) => dockerStartServices(deps, job, signal),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
         adopt: (job, signal) =>
             dockerAdopt({ ...deps, fence: (fenced) => dockerReclaimFence(deps, fenced, signal) }, job, signal),

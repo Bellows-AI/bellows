@@ -100,6 +100,7 @@ describe('the docker runner kill timer', () => {
         contacted: () => true,
         release: () => undefined,
         attach: () => undefined,
+        cancel: () => undefined,
     };
 
     it('pauses until the answer and resumes its remaining budget', async () => {

@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { networkName, plannedServices, serviceContainerName, serviceRunArgs } from '../src/services.js';
-import { awaitServicesRunning } from '../src/service-restart.js';
+import { plannedServices, serviceContainerName, servicePlanRefusal, serviceRunArgs } from '../src/services.js';
+import { supervisorName } from '../src/docker-mailbox.js';
+import { awaitServicesRunning, ServicesNotRunning } from '../src/service-restart.js';
+import { Inconclusive } from '../src/runner.js';
+import { StepChannelClosed } from '../src/step-control.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -45,7 +48,9 @@ describe('the planned services (issue #769)', () => {
 
     it('leave the container argv untouched by a declared port', () => {
         const bare = { name: 'db', image: 'postgres:16', environment: [] };
-        expect(serviceRunArgs(job, { ...bare, ports: [5432] })).toEqual(serviceRunArgs(job, bare));
+        expect(serviceRunArgs(job, { ...bare, ports: [5432] }, supervisorName(job))).toEqual(
+            serviceRunArgs(job, bare, supervisorName(job))
+        );
     });
 });
 
@@ -56,28 +61,27 @@ describe('the service container arguments', () => {
      * attempt can compute the names it used, but those names can only ever resolve to the
      * resources its own attempt created — structurally, no ownership gate needed.
      */
-    it('names the network after the job and the attempt', () => {
-        expect(networkName(job)).toBe(
-            'factory-job-11111111-1111-4111-8111-111111111111-22222222-2222-4222-8222-222222222222-services'
-        );
-    });
-
     it('names the service container after the job, the attempt, and the service', () => {
         expect(serviceContainerName(job, 'cache')).toBe(
             'factory-job-11111111-1111-4111-8111-111111111111-22222222-2222-4222-8222-222222222222-svc-cache'
         );
     });
 
-    it('starts a detached container on the job network, aliased by service name', () => {
-        // The alias is the whole point: inside the job's network, `cache` resolves to this
-        // container, which is what makes `redis://cache:6379` work in the author's tests. The
-        // lease label beside the job label is what scopes every teardown and kill to this
-        // attempt's fleet — the job label alone is shared by every attempt of the job.
-        const line = serviceRunArgs(job, {
-            name: 'cache',
-            image: 'redis',
-            environment: [{ key: 'ALLOW_EMPTY', value: 'yes' }],
-        });
+    // Issue #773: the group's supervisor holds the network namespace, its hosts file maps every
+    // declared name to 127.0.0.1, and a service joins that namespace — so `redis://cache:6379`
+    // from the agent or the gate reaches this container on loopback, the task pod's twin. The
+    // lease label beside the job label is what scopes every teardown and kill to this attempt's
+    // fleet — the job label alone is shared by every attempt of the job.
+    it('starts a detached container in its group supervisor’s network namespace, under no alias', () => {
+        const line = serviceRunArgs(
+            job,
+            {
+                name: 'cache',
+                image: 'redis',
+                environment: [{ key: 'ALLOW_EMPTY', value: 'yes' }],
+            },
+            supervisorName(job)
+        );
         expect(line).toEqual([
             'run',
             '-d',
@@ -95,9 +99,7 @@ describe('the service container arguments', () => {
             '--label',
             'factory.service=cache',
             '--network',
-            networkName(job),
-            '--network-alias',
-            'cache',
+            `container:factory-supervisor-${job.id}-${job.leaseToken}`,
             '-e',
             'ALLOW_EMPTY=yes',
             'redis',
@@ -108,7 +110,7 @@ describe('the service container arguments', () => {
         // Parse refuses the `ports:` key; this pins that the argv side has no way to publish one
         // either. The daemon running this argv is root on the host — a published port is the one
         // step from "a service for my tests" to "a listener on somebody's machine".
-        const line = serviceRunArgs(job, { name: 'db', image: 'postgres', environment: [] });
+        const line = serviceRunArgs(job, { name: 'db', image: 'postgres', environment: [] }, supervisorName(job));
         expect(line).not.toContain('-p');
         expect(line).not.toContain('--publish');
     });
@@ -116,15 +118,19 @@ describe('the service container arguments', () => {
     it('re-asserts the name, image and env keys before they reach argv', () => {
         // parseBellows enforces all three; this is the same assertion the runner makes about a
         // session id it is about to interpolate — the argv builder does not trust its caller.
-        expect(() => serviceRunArgs(job, { name: 'bad name', image: 'redis', environment: [] })).toThrow(
-            /not a safe service name/
-        );
         expect(() =>
-            serviceRunArgs(job, { name: 'db', image: 'redis', environment: [{ key: 'A B', value: '1' }] })
+            serviceRunArgs(job, { name: 'bad name', image: 'redis', environment: [] }, supervisorName(job))
+        ).toThrow(/not a safe service name/);
+        expect(() =>
+            serviceRunArgs(
+                job,
+                { name: 'db', image: 'redis', environment: [{ key: 'A B', value: '1' }] },
+                supervisorName(job)
+            )
         ).toThrow(/not a valid environment variable name/);
-        expect(() => serviceRunArgs(job, { name: 'db', image: '--privileged', environment: [] })).toThrow(
-            /not a safe image reference/
-        );
+        expect(() =>
+            serviceRunArgs(job, { name: 'db', image: '--privileged', environment: [] }, supervisorName(job))
+        ).toThrow(/not a safe image reference/);
     });
 });
 
@@ -197,12 +203,37 @@ describe('awaitServicesRunning (issue #560)', () => {
         expect(lists).toBe(10);
     });
 
-    it('names a listing that keeps failing instead of calling the service not running', async () => {
+    // R2-1: a listing that never answered proves nothing about the services — the attempt's
+    // infrastructure, never their verdict.
+    it('types a listing that keeps failing as inconclusive instead of calling the service not running', async () => {
         const failing = async () => {
             throw new Error('the API server is away');
         };
-        await expect(awaitServicesRunning(specs, failing, noWait)).rejects.toThrow(
+        const thrown = await awaitServicesRunning(specs, failing, noWait).catch((e: unknown) => e);
+        expect(thrown).toBeInstanceOf(Inconclusive);
+        expect(thrown).not.toBeInstanceOf(ServicesNotRunning);
+        expect((thrown as Error).message).toBe(
             'the services could not be listed 300s after the restart: the API server is away'
+        );
+    });
+
+    it('throws a lost supervisor at once, never waiting it out as a failed read', async () => {
+        let lists = 0;
+        const lost = async () => {
+            lists += 1;
+            throw new StepChannelClosed('the task group went away');
+        };
+        await expect(awaitServicesRunning(specs, lost, noWait)).rejects.toBeInstanceOf(StepChannelClosed);
+        expect(lists).toBe(1);
+    });
+
+    it('names the platform’s words for a dead service when the listing has them', async () => {
+        const list = async () => [
+            { ...status('db', 'exited'), reason: 'CrashLoopBackOff' },
+            status('cache', 'running'),
+        ];
+        await expect(awaitServicesRunning(specs, list, noWait)).rejects.toThrow(
+            'service "db" exited after the restart (CrashLoopBackOff)'
         );
     });
 
@@ -232,5 +263,24 @@ describe('awaitServicesRunning (issue #560)', () => {
             awaitServicesRunning(specs, async () => [status('db', 'running')], sleep, options)
         ).rejects.toThrow('service "cache" not running 300s after the restart');
         expect(slept).toBe(budget);
+    });
+});
+
+// R3-1, as Codex round 1 narrowed it: only hosts this driver hands a container are guarded — its own
+// endpoints and the env it forwards from its environment. The claim's env is the repo's, and a repo
+// pointing a URL at its own service is the point of declaring one.
+describe('servicePlanRefusal: the hosts a declared name may not shadow', () => {
+    const config = { ...loadDriverConfig({ RUNNER_ENV: 'MODEL_BASE_URL' }), servicesEnabled: true };
+    const declaring = (name: string, env: Record<string, string> = {}): BoardJob =>
+        ({ id: 'job-1', env, services: [{ name, image: 'redis', environment: [] }] }) as unknown as BoardJob;
+
+    it('refuses a name shadowing a URL this driver forwards from its own environment', () => {
+        expect(servicePlanRefusal(config, declaring('models'), { MODEL_BASE_URL: 'https://models:8443/v1' })).toContain(
+            'service "models" would shadow the host of MODEL_BASE_URL'
+        );
+    });
+
+    it("never refuses a name the claim's own env points at", () => {
+        expect(servicePlanRefusal(config, declaring('db', { DATABASE_URL: 'postgres://db:5432/test' }), {})).toBeNull();
     });
 });

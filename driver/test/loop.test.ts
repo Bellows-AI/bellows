@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Board, BoardJob, BoardLease, HeartbeatVerdict, Reclaim, ReclaimRenewal } from '../src/board.js';
 import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board-retry.js';
 import type { DeadService, RunOutcome, RunSession, Runner } from '../src/runner.js';
-import { AdoptionBlocked } from '../src/runner.js';
-import type { GateRun } from '../src/gates.js';
+import { AdoptionBlocked, Inconclusive } from '../src/runner.js';
+import type { GateClaim, GateRun } from '../src/gates.js';
 import { setupTimeoutMs } from '../src/claim.js';
 import { ServicesNotRunning } from '../src/service-restart.js';
 import { readQuestion, recordQuestion } from '../src/question-control.js';
@@ -1179,6 +1179,60 @@ describe('the poll loop', () => {
     // learned only at close (the scrape) — so it must be reported BEFORE the park lands, while
     // the row still runs under this lease. After it, the row is terminal, the report is refused,
     // and the stopped task settles sessionless: nothing to follow up (issue #152).
+    // The board's output for a parked run is the last tail it was streamed. A line the agent printed
+    // between the runner's last poll and its end (the stop's own acknowledgement) is in the outcome
+    // only, so the stand-down streams it before it parks (issue #773).
+    it('streams the output a stopped run ended with before parking it', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const events: string[] = [];
+        const rawSuspend = board.board.suspend.bind(board.board);
+        board.board.suspend = async (claimed) => {
+            events.push(`parked after ${board.board.progressed.map((p) => p.output).join('|')}`);
+            return rawSuspend(claimed);
+        };
+        const runner = stubRunner(async (_job, _session, onOutput) => {
+            onOutput?.('waiting');
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return ok({ output: 'waiting\nstopped in the pod' });
+        });
+
+        await drive({ ...board, runner });
+
+        expect(events).toEqual(['parked after waiting|waiting\nstopped in the pod']);
+        expect(board.board.suspended).toEqual([job(1).id]);
+    });
+
+    // Codex review: the pump's periodic write may still be in flight when the run ends. The final
+    // tail must land after it — never be overwritten by the older one — and the park must wait.
+    it('lands the final output of a stopped run after a progress write still in flight, then parks', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const events: string[] = [];
+        const rawProgress = board.board.progress.bind(board.board);
+        board.board.progress = async (claimed, output, runtime) => {
+            if (output === 'waiting') await new Promise((resolve) => setTimeout(resolve, 150));
+            return rawProgress(claimed, output, runtime);
+        };
+        const rawSuspend = board.board.suspend.bind(board.board);
+        board.board.suspend = async (claimed) => {
+            events.push(`parked after ${board.board.progressed.map((p) => p.output).join('|')}`);
+            return rawSuspend(claimed);
+        };
+        const runner = stubRunner(async (_job, _session, onOutput) => {
+            onOutput?.('waiting');
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return ok({ output: 'waiting\nstopped in the pod' });
+        });
+
+        await drive({ ...board, runner });
+
+        expect(events).toEqual(['parked after waiting|waiting\nstopped in the pod']);
+        expect(board.board.suspended).toEqual([job(1).id]);
+    });
+
     it('reports the scraped session before parking a stopped opencode run', async () => {
         const options: { cancelRequested?: boolean } = {};
         const board = stubBoard([{ ...job(1), executorType: 'opencode' }], options);
@@ -2166,6 +2220,48 @@ describe('the poll loop', () => {
         return { events };
     };
 
+    // R3-1: a declared name lands in the pod's hosts file, so one spelled like a host the pod dials
+    // would capture that traffic. The board cannot know the driver's endpoints: the driver refuses.
+    it.each([
+        ['docker', 'driver', { GATE_ADVERTISE_URL: 'http://driver:7000' }, "the driver's control endpoint"],
+        ['kubernetes', 'driver', { GATE_ADVERTISE_URL: 'http://Driver' }, "the driver's control endpoint"],
+        ['docker', 'collector', {}, 'the telemetry collector'],
+        ['kubernetes', 'collector', { RUNNER_OTEL_ENDPOINT: 'http://COLLECTOR:4318' }, 'the telemetry collector'],
+    ])(
+        'refuses on %s a service named %s, shadowing a host the pod dials, launching nothing',
+        async (executor, name, env, what) => {
+            const declared = { ...job(1), services: [{ name, image: 'redis', environment: [] }] };
+            const board = stubBoard([declared]);
+            const runner = stubRunner(async () => {
+                throw new Error('the runner must never be reached');
+            });
+
+            await drive({ ...board, runner }, { EXECUTOR: executor, ...env });
+
+            expect(runner.synced).toHaveLength(0);
+            expect(runner.startedServices).toEqual([]);
+            const complete = board.board.completed[0]!;
+            expect(complete).toMatchObject({ status: 'failed', failureKind: 'config' });
+            expect(complete.output).toContain(`service "${name}" would shadow ${what}`);
+            expect(complete.output).toContain('rename it');
+        }
+    );
+
+    it("runs a service the claim's own env points at: a repo reaching its database by name shadows nothing", async () => {
+        const declared = {
+            ...job(1),
+            env: { DATABASE_URL: 'postgres://db:5432/test' },
+            services: [{ name: 'db', image: 'postgres', environment: [] }],
+        };
+        const board = stubBoard([declared]);
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]?.failureKind).not.toBe('config');
+        expect(runner.startedServices).toEqual([job(1).id]);
+    });
+
     it('fails a job with a plan refusal before the checkout fence is ever taken', async () => {
         const board = stubBoard([{ ...job(1), planRefusal: '.bellows.yaml line 3: unknown key "ports"' }]);
         const runner = stubRunner(async () => {
@@ -2895,7 +2991,7 @@ describe('the poll loop', () => {
                 exitCode: 1,
                 reason: 'Error',
                 logTail: mongo.logTail,
-                hint: expect.stringContaining('unhardened: true'),
+                hint: expect.stringContaining('user: "uid:gid"'),
             },
             { name: 'test-redis', image: 'redis:6.2.6', state: 'running' },
         ]);
@@ -3377,6 +3473,24 @@ describe('environment.setup before the agent starts', () => {
         ).toBe(true);
     });
 
+    // R2-1: readiness whose listing never answered proves nothing about the services.
+    it('interrupts an attempt whose service readiness could never be read, never failing it', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { stack, gates } = stubGateStack({}, { setup: { exitCode: 0, output: '' } });
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must not spawn');
+        });
+        runner.startServices = async () => {
+            throw new Inconclusive('the services could not be listed 300s after the start: the API server is away');
+        };
+
+        await drive({ ...board, runner, gates });
+
+        expect(stack.setups).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.interrupted[0]?.reason).toContain('the services could not be listed 300s after the start');
+    });
+
     it('reports a refused service start on the last attempt, once the interruption budget is spent', async () => {
         const board = stubBoard([{ ...setupJob(1), lastAttempt: true }], { interruptVerdict: 'exhausted' });
         const { gates } = stubGateStack();
@@ -3648,11 +3762,10 @@ describe('verification gates', () => {
         expect(board.board.completed[0]?.output).toContain('No such container');
     });
 
-    // The gate cooldown can tear the environment down mid-run — the agent's last ad-hoc gate
-    // call armed it, and a run that keeps working past GATE_COOLDOWN_MS watches the timer fire
-    // before the gates pass. The close-of-run gates re-acquire, exactly as the ad-hoc endpoint
-    // does, so a cooldown teardown can never fail a finished run at the finish line.
-    it('re-acquires the gate environment before each gate, so a cooldown teardown mid-run cannot fail the close-of-run gates', async () => {
+    // The close-of-run gates re-acquire before each gate, exactly as the ad-hoc endpoint does: each
+    // gate run files the attempt again with an env (a GitHub token) of its own, so an environment
+    // forgotten mid-run can never fail a finished run at the finish line.
+    it('re-acquires the gate environment before each gate, so an environment forgotten mid-run cannot fail the close-of-run gates', async () => {
         const board = stubBoard([gatedJob(1)]);
         const stack = stubGateStack();
         let up = true;
@@ -3668,7 +3781,7 @@ describe('verification gates', () => {
             return { exitCode: 0, output: `${name} ok` };
         };
         const key = `bellows/${USER}/.worktrees/${gatedJob(1).id}`;
-        // The cooldown fired while the agent kept working past its last ad-hoc gate call.
+        // The environment was forgotten while the agent kept working.
         const runner = stubRunner(async () => {
             up = false;
             return ok({ output: 'agent did the work' });
@@ -4671,6 +4784,31 @@ describe('a dead declared service (issue #423)', () => {
         expect(runner.published).toEqual([]);
     });
 
+    // R2-1: a restart whose supervisor was lost, or whose pod could not be read, is the attempt's
+    // infrastructure loss — interrupted for the next claim, never a `services` verdict.
+    it.each([
+        ['lost its supervisor', () => new StepChannelClosed('the service restart')],
+        ['could not read the task pod', () => new Inconclusive('the task pod could not be listed (HTTP 503)')],
+    ])('interrupts an attempt whose pre-gate restart %s, running no gates', async (_label, lost) => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok({ output: 'agent did the work' }), {
+            deadServices: async () => [mongo],
+            restartServices: async () => {
+                throw lost();
+            },
+            publish: draftPr,
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(stack.stack.ran.names).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        expect(runner.published).toEqual([]);
+        expect(board.board.interrupted).toHaveLength(1);
+        expect(board.board.interrupted[0]?.reason).toContain(lost().message);
+    });
+
     it('drafts nothing when the services failed under a gates-required policy, or the board reserves publication', async () => {
         const board = stubBoard([
             { ...gatedJob(1), policy: { gates: true } },
@@ -5052,6 +5190,69 @@ describe('a stop cancels the gates', () => {
         expect(board.board.gatesReported.flatMap((r) => r.results).some((g) => g.status === 'failed')).toBe(false);
         expect(stack.stack.unregistered).toBe(1);
         expect(runner.servicesReleased).toEqual([gatedJob(1).id]);
+    });
+
+    // Codex review: every park waits out the output pump — a write still in flight when a stop lands
+    // during the gates would be refused once the row is parked, and its tail lost.
+    it('parks a turn stopped during the gates only after the progress write in flight lands', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([gatedJob(1)], options);
+        const events: string[] = [];
+        const rawProgress = board.board.progress.bind(board.board);
+        board.board.progress = async (claimed, output, runtime) => {
+            if (output === 'the last tail') await new Promise((resolve) => setTimeout(resolve, 150));
+            events.push(`landed ${output}`);
+            return rawProgress(claimed, output, runtime);
+        };
+        const rawSuspend = board.board.suspend.bind(board.board);
+        board.board.suspend = async (claimed) => {
+            events.push('parked');
+            return rawSuspend(claimed);
+        };
+        const stack = stubGateStack();
+        stack.gates.manager.runGate = (_key, _name, _command, { signal } = {}) =>
+            new Promise((resolve) => {
+                // The stop lands once the pump has the last tail's write in flight.
+                setTimeout(() => {
+                    options.cancelRequested = true;
+                }, 30);
+                signal?.addEventListener('abort', () => resolve({ exitCode: 137, output: 'killed' }));
+            });
+        const runner = stubRunner(async (_job, _session, onOutput) => {
+            onOutput?.('the last tail');
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return ok();
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.suspended).toEqual([gatedJob(1).id]);
+        expect(events.indexOf('landed the last tail')).toBeGreaterThanOrEqual(0);
+        expect(events.indexOf('landed the last tail')).toBeLessThan(events.indexOf('parked'));
+    });
+
+    // Codex review: the drain is bounded — a progress write that never answers costs its tail, never the park.
+    it('parks a stopped turn although the progress write in flight never answers', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([gatedJob(1)], options);
+        board.board.progress = () => new Promise(() => {});
+        const stack = stubGateStack();
+        stack.gates.manager.runGate = (_key, _name, _command, { signal } = {}) =>
+            new Promise((resolve) => {
+                setTimeout(() => {
+                    options.cancelRequested = true;
+                }, 30);
+                signal?.addEventListener('abort', () => resolve({ exitCode: 137, output: 'killed' }));
+            });
+        const runner = stubRunner(async (_job, _session, onOutput) => {
+            onOutput?.('a tail the board never takes');
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return ok();
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.suspended).toEqual([gatedJob(1).id]);
     });
 
     it('settles a removed thread without a verdict when the remove lands during the gates', async () => {
@@ -6473,5 +6674,129 @@ describe('final envelope (issue #821 D1)', () => {
 
         expect(order).toEqual(['stage', 'finish']);
         expect(board.board.completed).toEqual([]);
+    });
+});
+
+// Issue #773 (R1-2): a gate or setup whose supervisor was lost is the attempt's loss — handed back as
+// an interruption on every path that runs one, never a failed gate or a failed setup.
+describe('a lost supervisor under the gates and the setup', () => {
+    const lost = () => new StepChannelClosed('its step was answered: the task group ended or was taken away');
+    const setupJob = (n: number): BoardJob => ({ ...gatedJob(n), gates: { ...gatedJob(n).gates!, setup: 'npm ci' } });
+    const interruptedOnly = (board: ReturnType<typeof stubBoard>) => {
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.interrupted).toEqual([
+            { id: job(1).id, reason: expect.stringContaining('infrastructure loss'), release: true },
+        ]);
+    };
+
+    it('interrupts an attempt whose setup before the agent lost its supervisor, and launches nothing', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { stack, gates } = stubGateStack();
+        stack.manager.runSetup = async () => {
+            throw lost();
+        };
+        let launched = false;
+        const runner = stubRunner(async () => {
+            launched = true;
+            return ok();
+        });
+        await drive({ ...board, runner, gates });
+        expect(launched).toBe(false);
+        interruptedOnly(board);
+    });
+
+    it('interrupts an agent-less attempt whose setup lost its supervisor', async () => {
+        const board = stubBoard([{ ...setupJob(1), agent: false }]);
+        const { stack, gates } = stubGateStack();
+        stack.manager.runSetup = async () => {
+            throw lost();
+        };
+        await drive({ ...board, runner: stubRunner(async () => ok()), gates });
+        interruptedOnly(board);
+    });
+
+    it('interrupts an attempt whose end-of-run setup retry lost its supervisor', async () => {
+        const board = stubBoard([{ ...setupJob(1), gates: { image: 'node:24', setup: 'npm ci', gates: [] } }]);
+        const { stack, gates } = stubGateStack();
+        let setups = 0;
+        stack.manager.runSetup = async () => {
+            setups += 1;
+            if (setups === 1) return { exitCode: 1, output: 'registry down' };
+            throw lost();
+        };
+        await drive({ ...board, runner: stubRunner(async () => ok()), gates });
+        expect(setups).toBe(2);
+        interruptedOnly(board);
+    });
+
+    it('interrupts an attempt whose declared gate lost its supervisor, with no gate-failed verdict', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const { stack, gates } = stubGateStack();
+        stack.manager.runGate = async () => {
+            throw lost();
+        };
+        await drive({ ...board, runner: stubRunner(async () => ok()), gates });
+        interruptedOnly(board);
+    });
+
+    it('interrupts an attempt once its run is over when an ad-hoc gate found the supervisor lost', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const { stack, gates } = stubGateStack();
+        let claim: GateClaim | undefined;
+        stack.server.register = (_token, registered) => {
+            claim = registered;
+        };
+        const runner = stubRunner(async () => {
+            claim?.onInfraLoss?.('the task supervisor running the gate was lost');
+            return ok();
+        });
+        await drive({ ...board, runner, gates });
+        expect(stack.ran.names).toEqual([]);
+        interruptedOnly(board);
+    });
+});
+
+// Issue #773 (D6): the gate container is sized for verify before the setup and the declared gates;
+// a resize is best-effort and never what decides whether they run.
+describe('the gate container resize around the setup and the gates', () => {
+    it('asks for the verify size before the setup and again before the declared gates', async () => {
+        const board = stubBoard([{ ...gatedJob(1), gates: { ...gatedJob(1).gates!, setup: 'npm ci' } }]);
+        const { stack, gates } = stubGateStack({}, { setup: { exitCode: 0, output: '' } });
+        const order: string[] = [];
+        const runner = stubRunner(async () => {
+            order.push('run');
+            return ok();
+        });
+        const resize = runner.resizeGate.bind(runner);
+        runner.resizeGate = async (resizedJob, phase) => {
+            order.push(`resize ${phase}`);
+            return resize(resizedJob, phase);
+        };
+        const runSetup = stack.manager.runSetup.bind(stack.manager);
+        stack.manager.runSetup = async (key, setupOptions) => {
+            order.push('setup');
+            return runSetup(key, setupOptions);
+        };
+        const runGate = stack.manager.runGate.bind(stack.manager);
+        stack.manager.runGate = async (key, name, command, gateOptions) => {
+            order.push(`gate ${name}`);
+            return runGate(key, name, command, gateOptions);
+        };
+        await drive({ ...board, runner, gates });
+        expect(order).toEqual(['resize verify', 'setup', 'run', 'resize verify', 'gate test', 'gate lint']);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    it.each([
+        ['refused', async () => false],
+        ['rejected', async () => Promise.reject(new Error('the API server is unreachable'))],
+    ])('runs the gates whatever a %s resize answered', async (_how, answer) => {
+        const board = stubBoard([gatedJob(1)]);
+        const { stack, gates } = stubGateStack();
+        const runner = stubRunner(async () => ok());
+        runner.resizeGate = answer;
+        await drive({ ...board, runner, gates });
+        expect(stack.ran.names).toEqual(['test', 'lint']);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
     });
 });

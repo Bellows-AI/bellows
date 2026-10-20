@@ -57,8 +57,8 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 - GitHub is the App's alone: no member token and no PAT, so an org without an installation has no
   GitHub credential at all. A revoked or suspended installation surfaces as the route's `502`.
 - A gate run's GitHub token is asked at its start and never renewed during it: one gate running past
-  its hour runs on an expired token. It rides the env file each `docker exec` reads, or the gate env
-  Secret replaced for the run (`driver/src/k8s-gates.ts`).
+  its hour runs on an expired token. It rides that run's gate step, whose env the gate container
+  exports for the run alone (`driver/src/gates.ts`, `driver/src/scripts/gate-loop.sh`).
 - A runner whose driver was lost keeps its old pair: once the lease expires or a reclaim rotates it,
   the helper is refused for the rest of that run, and the next claim's runner gets its own.
 - The helper answers `https://github.com` only: an Enterprise `GITHUB_API_URL` deployment's agent

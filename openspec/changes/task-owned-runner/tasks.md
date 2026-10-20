@@ -54,10 +54,10 @@ halves in the same change. Unchecked items are not implemented. `→` names hard
   Deletes sync/reclaim/publish/helper aux Jobs and their `factory-(sync|publish|helper)-…-env`
   admission names (also retires the nonce helper-secret reaper gap). A thread with no attempt
   reclaims in a supervisor-only group (design.md, "supervised steps"); #775 removes the need.
-- [ ] 9. (#772) Gates and setup as predeclared containers → 7. Uses the 0.1 bootstrap; same environment
+- [x] 9. (#772) Gates and setup as predeclared containers → 7. Uses the 0.1 bootstrap; same environment
   for setup and every gate; revision-bound evidence unchanged. Deletes `gateJobSpec` and
   `factory-gate-…-env`.
-- [ ] 10. (#773) Services as in-pod containers → 7. localhost with `hostAliases` for service names,
+- [x] 10. (#773) Services as in-pod containers → 7. localhost with `hostAliases` for service names,
   readiness and restart in the supervisor. Deletes service Pods, headless Services, the
   `factory.unhardened` exemption, pod/service/event RBAC and the service pod-to-pod netpol rule.
 - [ ] 11. (#774) Internal reviewer in the pod → 8. Separate container, credentials and budget on the
