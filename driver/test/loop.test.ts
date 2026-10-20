@@ -1179,6 +1179,31 @@ describe('the poll loop', () => {
     // learned only at close (the scrape) — so it must be reported BEFORE the park lands, while
     // the row still runs under this lease. After it, the row is terminal, the report is refused,
     // and the stopped task settles sessionless: nothing to follow up (issue #152).
+    // The board's output for a parked run is the last tail it was streamed. A line the agent printed
+    // between the runner's last poll and its end (the stop's own acknowledgement) is in the outcome
+    // only, so the stand-down streams it before it parks (issue #773).
+    it('streams the output a stopped run ended with before parking it', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const events: string[] = [];
+        const rawSuspend = board.board.suspend.bind(board.board);
+        board.board.suspend = async (claimed) => {
+            events.push(`parked after ${board.board.progressed.map((p) => p.output).join('|')}`);
+            return rawSuspend(claimed);
+        };
+        const runner = stubRunner(async (_job, _session, onOutput) => {
+            onOutput?.('waiting');
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return ok({ output: 'waiting\nstopped in the pod' });
+        });
+
+        await drive({ ...board, runner });
+
+        expect(events).toEqual(['parked after waiting|waiting\nstopped in the pod']);
+        expect(board.board.suspended).toEqual([job(1).id]);
+    });
+
     it('reports the scraped session before parking a stopped opencode run', async () => {
         const options: { cancelRequested?: boolean } = {};
         const board = stubBoard([{ ...job(1), executorType: 'opencode' }], options);

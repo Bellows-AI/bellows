@@ -580,7 +580,7 @@ export function watchOutput(
     rt: LoopRuntime,
     job: BoardJob,
     state: JobState
-): { push: (tail: string) => void; snapshot: () => TimeoutActivity } {
+): { push: (tail: string) => void; snapshot: () => TimeoutActivity; flush: (tail: string) => Promise<void> } {
     const { sleep } = rt;
     const pump: OutputPump = {
         latest: null,
@@ -613,5 +613,11 @@ export function watchOutput(
             pump.latest = tail;
         },
         snapshot: () => ({ lastOutputAt: pump.lastOutputAt, activity: currentActivity(pump.latest) }),
+        // The run's own last word, streamed now: what a verdict-less end (a park) leaves the board.
+        flush: async (tail) => {
+            if (tail === '') return;
+            pump.latest = tail;
+            await flushIfChanged(rt, job, pump);
+        },
     };
 }

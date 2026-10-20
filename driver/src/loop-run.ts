@@ -334,7 +334,8 @@ interface RunInputs {
     session: RunSession | null;
     gateSession: GateSession | null;
     executorType: BoardJob['executorType'];
-    onOutput: (tail: string) => void;
+    /** The output pump: `push` streams the live tail, `flush` the run's final one ahead of a park with no verdict. */
+    pump: ReturnType<typeof watchOutput>;
 }
 
 /** What an agent run leaves behind: its scraped session and its artifacts. An agent-less node leaves neither. */
@@ -397,8 +398,8 @@ async function launchRun(
 async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseDone | RunPhaseResult> {
     const { rt, job, state } = ctx;
     const { log } = rt;
-    const { session, gateSession, executorType, onOutput } = inputs;
-    const outcome = await launchRun(ctx, session, onOutput);
+    const { session, gateSession, executorType, pump } = inputs;
+    const outcome = await launchRun(ctx, session, pump.push);
     if (outcome === null) return { done: true };
     // The run's end, stamped HERE — not at verdict time: the gates, helpers and session scrape
     // below can run minutes after a kill, and the timeout note's active/idle verdict must
@@ -409,7 +410,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // was asked to, so no gates, helpers, publish or `complete` follow (issue #442). A stop after
     // the run still reports the session and uploads the artifacts BEFORE the park.
     stopIfDraining(state);
-    const lastWords = () => reportRunTail(ctx, executorType, outcome);
+    const lastWords = () => pump.flush(outcome.output).then(() => reportRunTail(ctx, executorType, outcome));
     if (await standDown(ctx, 'its run', lastWords)) return { done: true };
 
     /*
@@ -686,7 +687,6 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     // Armed before the run so the runner can hand over tails from its first chunk; the pump's
     // snapshot is the liveness read the timeout note is built from (issue #339).
     const outputPump = watchOutput(rt, job, state);
-    const onOutput = outputPump.push;
     const session = pickSession(job, executorType);
 
     // Once per attempt, however many conclusions ask (issue #820): a second call awaits the first.
@@ -718,7 +718,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
             });
 
         try {
-            const outcome = await runAttempt(ctx, { session, gateSession, executorType, onOutput });
+            const outcome = await runAttempt(ctx, { session, gateSession, executorType, pump: outputPump });
             if (outcome.done) return;
             const closing = await runPostHelpersAndPublish(ctx, outcome);
             if (closing === null) return;
