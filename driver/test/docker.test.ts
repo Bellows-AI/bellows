@@ -1700,6 +1700,23 @@ describe('the docker runner', () => {
         );
     });
 
+    // The exited runner container is the evidence a replacement claim adopts a finished run from
+    // (`exitedRunners`): the close reads its verdict and leaves it; only the attempt's end removes it.
+    it('leaves the exited runner container for the attempt end, not the verdict read (#828)', async () => {
+        const calls: string[][] = [];
+        const exec = (args: string[]) => {
+            calls.push(args);
+            return noContainer(args);
+        };
+        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('done\n', '', 0) });
+
+        expect(await runner.run(job, { id: SESSION, resume: false })).toMatchObject({ exitCode: 0, started: true });
+        expect(calls).not.toContainEqual(['rm', '-f', containerName(job)]);
+
+        await runner.finish(job);
+        expect(calls).toContainEqual(['rm', '-f', containerName(job)]);
+    });
+
     // The daemon refusing the create (a name conflict, a missing image) or the copy is what a
     // refused `docker run` was: a container that never started, nothing spawned, the leftover
     // removed, and the daemon's own words in the output.
@@ -5852,6 +5869,7 @@ describe('how a started run ends, on docker (the conformance table)', () => {
         return pending;
     };
 
+    const LOST_AGENT = { ...FINALIZED, outcome: 'lost', cause: 'lost', agentExit: null, agentEnd: 'lost' };
     const ends: Record<TerminationRow, End> = {
         'an agent that exits 0 under a finalizing supervisor': { code: 0, supervisorExit: '0', report: FINALIZED },
         'an agent its run budget ended': {
@@ -5879,6 +5897,18 @@ describe('how a started run ends, on docker (the conformance table)', () => {
             code: 0,
             supervisorExit: '70',
             report: { ...FINALIZED, agentEnd: 'unlaunched' },
+        },
+        // A lost agent is no finalized run either: the runner went, the work did not end.
+        'a supervisor that reported its agent lost, then crashed': {
+            code: 0,
+            supervisorExit: '70',
+            report: LOST_AGENT,
+        },
+        'a runner the platform took away after the supervisor reported its agent lost': {
+            code: 137,
+            supervisorExit: '137',
+            removed: true,
+            report: LOST_AGENT,
         },
     };
 

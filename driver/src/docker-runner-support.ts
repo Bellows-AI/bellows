@@ -344,8 +344,8 @@ export async function closedStateOf(
  * accepted, and nothing ran. Any other failing code is the container's unless it is still `created`.
  *
  * Cleanup is explicit (`--rm` is not on the spawn argv, precisely so the inspect above can see
- * the container): the fence on the next claim would catch it anyway, but leaving one daemon
- * round-trip of litter behind is not tidiness worth keeping. The services are NOT torn down
+ * the container): a container that never ran is removed here; one that ran stays for the attempt's
+ * end to remove, so a driver lost before the verdict is staged leaves it for adoption. The services are NOT torn down
  * here: they outlive the runner so the loop's declared gates can test against them, and the
  * loop's releaseServices takes them down after — scoped to this attempt's lease, so a release
  * that lands arbitrarily late can only ever name and remove what THIS attempt created.
@@ -375,7 +375,9 @@ export async function dockerRunVerdict(
         code !== null && code !== 0
             ? (ctx.closed ?? (await closedStateOf(code, ctx)))
             : { started: true, neverRan: false, infraLoss: null };
-    await ctx.execDocker(['rm', '-f', containerName(ctx.job)]).catch(() => undefined);
+    // A container that never ran is litter to remove now; one that ran is the evidence a replacement
+    // claim adopts the run from, so it stays until the attempt's end (`finishGroup`).
+    if (!started) await ctx.execDocker(['rm', '-f', containerName(ctx.job)]).catch(() => undefined);
     // A startup cause only on proof the container never ran — the refused create's own stderr, or the
     // daemon's answer — when what printed is the daemon's, never the agent's own words (#824 D11).
     const startupCause = started

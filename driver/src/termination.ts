@@ -61,10 +61,11 @@ export function infraLossOf(e: TerminationEvidence): string | null {
 
 /**
  * Whether a supervisor's logged final report says it finalized a run. A group whose driver was lost
- * before the agent was released reports too (`unlaunched`), and exits 75: nothing ran to finalize.
+ * before the agent was released reports too (`unlaunched`), and exits 75: nothing ran to finalize. An
+ * agent the supervisor lost (`lost`, no exit code) is no finished run either: infrastructure took it.
  */
 export const reportFinalized = (report: FinalReport | null): boolean =>
-    report !== null && report.agentEnd !== 'unlaunched';
+    report !== null && report.agentEnd !== 'unlaunched' && report.agentEnd !== 'lost';
 
 /** The outcome fields a supervisor's final report stands for: the budget, or a full spool it raised itself. */
 export function reportVerdictOf(

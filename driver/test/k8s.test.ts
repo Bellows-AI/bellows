@@ -7427,6 +7427,20 @@ describe('how a started run ends, on kubernetes (the conformance table)', () => 
         return runner(fakeRequest({ job: GONE }).request, {}, undefined, steps.sink).run(job, session);
     };
 
+    const vanishedAfterLost = () => {
+        const steps = fakeSteps();
+        steps.report({
+            id: 'report-1',
+            outcome: 'lost',
+            cause: 'lost',
+            agentExit: null,
+            agentEnd: 'lost',
+            drained: true,
+            serving: true,
+        });
+        return runner(fakeRequest({ job: GONE }).request, {}, undefined, steps.sink).run(job, session);
+    };
+
     const ends: Record<TerminationRow, () => Promise<RunOutcome>> = {
         'an agent that exits 0 under a finalizing supervisor': () => runner(fakeRequest().request).run(job, session),
         'an agent its run budget ended': () =>
@@ -7449,6 +7463,9 @@ describe('how a started run ends, on kubernetes (the conformance table)', () => 
         'a supervisor that reported, then crashed before the verdict read': () => reportedThenCrashed(),
         // A report that finalized nothing is no finalization (`reportFinalized`), attached or adopted.
         'a supervisor that reported an unlaunched group, then crashed': () => reportedThenCrashed('unlaunched'),
+        // A lost agent is no finalized run either, attached or vanished under the poll.
+        'a supervisor that reported its agent lost, then crashed': () => reportedThenCrashed('lost'),
+        'a runner the platform took away after the supervisor reported its agent lost': () => vanishedAfterLost(),
     };
 
     it.each(TERMINATION_ROWS)('%s: %s', async (row, expected) => {

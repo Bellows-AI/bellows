@@ -104,6 +104,9 @@ describe('the final report a supervisor logs (#824)', () => {
         expect(reportFinalized({ ...COMPLETED, outcome: 'lost', cause: 'driver_lost', agentEnd: 'unlaunched' })).toBe(
             false
         );
+        expect(
+            reportFinalized({ ...COMPLETED, outcome: 'lost', cause: 'lost', agentExit: null, agentEnd: 'lost' })
+        ).toBe(false);
     });
 
     it('turns a budget and a full spool the supervisor raised itself into their outcome fields', () => {
@@ -145,6 +148,12 @@ describe('settleEnd', () => {
         const unlaunched = { ...REPORT, agentEnd: 'unlaunched' };
         expect(settleEnd({ ...END, report: unlaunched, unfinalized: UNFINALIZED }).infraLoss).toBe(UNFINALIZED);
         expect(settleEnd({ ...END, unfinalized: UNFINALIZED }).infraLoss).toBe(UNFINALIZED);
+    });
+
+    it('takes a report of a lost agent as none: the loss stands, attached, vanished or adopted alike', () => {
+        const lost = { ...REPORT, outcome: 'lost', agentExit: null, agentEnd: 'lost' };
+        expect(settleEnd({ ...END, report: lost, unfinalized: UNFINALIZED }).infraLoss).toBe(UNFINALIZED);
+        expect(settleEnd({ ...END, report: lost, vanished: VANISHED }).infraLoss).toBe(VANISHED);
     });
 
     it('gates a vanished runner by the report finalizing', () => {

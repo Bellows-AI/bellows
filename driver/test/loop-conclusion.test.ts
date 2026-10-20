@@ -216,7 +216,8 @@ describe("end leaves a launched attempt's runner to the next claim (I6)", () => 
         await end(ctx, { kind: 'leave', log: 'could not run: the daemon refused' });
 
         expect(calls).not.toContain('finish');
-        expect(down(calls)).toEqual(['quiesce', 'control.close', 'gate.unregister', 'gate.release', 'services']);
+        // The services belong to the runner it left: the next claim's fence reclaims them, not this teardown.
+        expect(down(calls)).toEqual(['quiesce', 'control.close', 'gate.unregister', 'gate.release']);
     });
 
     it('finishes a leave before the launch: no agent ran, nothing to adopt', async () => {
@@ -234,6 +235,7 @@ describe("end leaves a launched attempt's runner to the next claim (I6)", () => 
         await end(ctx, { kind: 'none', log: 'handed over' });
 
         expect(calls).not.toContain('finish');
+        expect(calls).not.toContain('services');
         expect(calls).toContain('control.close');
     });
 });
@@ -247,6 +249,7 @@ describe('end retains the runner a board call did not reach', () => {
         expect(calls.filter((call) => call === 'suspend')).toHaveLength(BOARD_CALL_ATTEMPTS);
         expect(lines.join('\n')).toContain('the board did not take the stop, left to the lease');
         expect(calls).not.toContain('finish');
+        expect(calls).not.toContain('services');
         expect(calls).toContain('control.close');
     });
 
@@ -256,6 +259,7 @@ describe('end retains the runner a board call did not reach', () => {
         await end(ctx, { kind: 'requeue', log: 'the checkout lock is held' });
 
         expect(calls).not.toContain('finish');
+        expect(calls).not.toContain('services');
         // The claim stays with the runner too: the next claim adopts or sweeps both.
         expect(calls).not.toContain('fence');
     });
@@ -266,6 +270,7 @@ describe('end retains the runner a board call did not reach', () => {
         await end(ctx, { kind: 'interrupt', reason: 'the pod was evicted', exitCode: null });
 
         expect(calls).not.toContain('finish');
+        expect(calls).not.toContain('services');
         expect(lines.join('\n')).toContain('leaving it to the lease');
     });
 
@@ -285,6 +290,7 @@ describe('end retains the runner a board call did not reach', () => {
         await end(ctx, VERDICT);
 
         expect(calls).not.toContain('finish');
+        expect(calls).not.toContain('services');
         expect(calls).not.toContain('fence');
     });
 

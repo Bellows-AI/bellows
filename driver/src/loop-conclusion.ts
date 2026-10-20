@@ -121,11 +121,13 @@ async function teardown(ctx: AttemptCtx): Promise<void> {
     // supervisor serves the probe, the helpers and the publish. It ends while the control channel its
     // order travels is still open — and never for an attempt handed over by a drain, nor one whose
     // outcome the board never took (`keepGroup`): either runner is left for the next claim to adopt.
-    if (state.ending?.kind !== 'handover' && !state.keepGroup) await rt.runner.finish(job).catch(() => undefined);
+    // The same retention governs the services it uses: they are reclaimed by that claim's fence.
+    const retained = state.ending?.kind === 'handover' || state.keepGroup;
+    if (!retained) await rt.runner.finish(job).catch(() => undefined);
     closeRunControl(rt, state);
     if (ctx.gateSession) releaseGateSession(rt, ctx.gateSession, job);
-    // The services outlived run() for the declared gates' sake; they go now, on every exit path.
-    if (ctx.servicesStarted || ctx.setupDone) {
+    // The services outlived run() for the declared gates' sake; they go now, unless the runner is retained.
+    if (!retained && (ctx.servicesStarted || ctx.setupDone)) {
         await rt.runner
             .releaseServices(job)
             .catch((e: Error) => rt.log(`job ${job.id}: could not tear down the services: ${e.message}`));

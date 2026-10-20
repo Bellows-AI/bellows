@@ -231,6 +231,8 @@ async function finishGroup(deps: RunnerDeps, job: BoardJob): Promise<void> {
             await dockerKill(deps, job);
         }
     }
+    // The exited runner container a run left, read for its verdict but kept as the adoption evidence.
+    await deps.execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
     await removeGroup(deps.execDocker, job);
 }
 

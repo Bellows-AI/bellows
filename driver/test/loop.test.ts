@@ -4133,7 +4133,7 @@ describe('verification gates', () => {
         expect(runner.servicesReleased).toEqual([gatedJob(1).id]);
     });
 
-    it('releases the services on every way a run can end', async () => {
+    it('releases the services on every way a run can end that does not retain its runner', async () => {
         const plain = stubRunner(async () => ok());
         await drive({ ...stubBoard([job(1)]), runner: plain });
         expect(plain.servicesReleased).toEqual([job(1).id]);
@@ -4146,7 +4146,8 @@ describe('verification gates', () => {
             throw new Error('the daemon refused');
         });
         await drive({ ...stubBoard([job(3)]), runner: thrown });
-        expect(thrown.servicesReleased).toEqual([job(3).id]);
+        // A run that threw past its launch is left to the next claim to adopt, and its services with it.
+        expect(thrown.servicesReleased).toEqual([]);
     });
 
     it('runs no gates for a never-started or a lost run', async () => {

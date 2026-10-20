@@ -18,6 +18,8 @@ export const TERMINATION_TABLE = {
     'a supervisor that ended without finalizing, nothing initiating it': 'interruption',
     'a supervisor that reported, then crashed before the verdict read': 'succeeded',
     'a supervisor that reported an unlaunched group, then crashed': 'interruption',
+    'a supervisor that reported its agent lost, then crashed': 'interruption',
+    'a runner the platform took away after the supervisor reported its agent lost': 'interruption',
 } as const;
 
 export type TerminationRow = keyof typeof TERMINATION_TABLE;
