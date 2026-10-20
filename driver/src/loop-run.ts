@@ -108,7 +108,14 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     if (turn === STOOD_DOWN || 'halt' in turn) return turn;
     // A starting claim's fetch reaches GitHub; a restore, a reviewer's tree and a repo-less job do not.
     const fetches = Boolean(job.repo) && !job.reviewRun && !claimRestoresTree(job);
-    const githubToken = fetches ? await askGithubToken(rt, job, 'the checkout sync') : null;
+    let githubToken: string | null = null;
+    try {
+        if (fetches) githubToken = await askGithubToken(rt, job, 'the checkout sync');
+    } catch (e) {
+        // The turn was granted and no sync will hold it: hand it on before the throw ends the attempt.
+        turn.release(Promise.resolve());
+        throw e;
+    }
     const syncing = runner.syncCheckout(job, state.signal, ctx.session, githubToken ?? undefined);
     // The turn is held until the sync's writes are over (`settled`), however the sync answered.
     turn.release(syncing.then((synced) => synced.settled).catch(() => {}));

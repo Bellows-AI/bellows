@@ -222,3 +222,23 @@ describe('how a run ends', () => {
         expect(r.board.completed).toEqual([]);
     });
 });
+
+describe('the sync turn, held across the token ask', () => {
+    it('releases the turn it was granted when the board cannot issue the checkout token', async () => {
+        const board = stubBoard([]).board;
+        board.githubCredential = async () => {
+            throw new Error('board unreachable');
+        };
+        let released = 0;
+        const syncs = { acquire: async () => ({ release: () => void released++ }) };
+        const rt = stubRuntime(
+            board,
+            stubRunner(async () => ok()),
+            { syncs }
+        );
+
+        await runJob(rt, { ...job(1), repo: 'Example-Org/example' }).catch(() => {});
+
+        expect(released).toBe(1);
+    });
+});
