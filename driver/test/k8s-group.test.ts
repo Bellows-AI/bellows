@@ -369,6 +369,20 @@ describe('the task group of one attempt', () => {
         expect(api.created.deletedJobs).toEqual([runnerJobName(job)]);
     });
 
+    it('creates no group for a lease its driver killed, for the sync or any later step', async () => {
+        const api = cluster({ ended: true });
+        const s = steps();
+        const k8s = runner(api.request, s.sink);
+        await k8s.kill(job);
+
+        await expect(k8s.syncCheckout(job, undefined, SESSION)).rejects.toThrow(/was killed/);
+        await expect(k8s.probeTree(job)).rejects.toThrow(/was killed/);
+
+        expect(api.created.jobs).toEqual([]);
+        expect(api.created.secrets).toEqual([]);
+        expect(s.submitted).toEqual([]);
+    });
+
     // Issue #773 D10: a sidecar held on its image names its own role and image, never the executor's.
     const heldSidecar = (name: string, image: string, reason: string, message: string) => ({
         initContainerStatuses: [{ name, image, state: { waiting: { reason, message } } }],

@@ -225,9 +225,9 @@ async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession 
         }
         return known;
     }
-    // A kill recorded before this group was made is an earlier group's: forgotten, so only a kill
-    // landing from here on ends this group's wait (as kubernetes' ensureGroup does).
-    deps.ledger.forget(job);
+    // A lease the ledger says was stopped gets no group: its kill is this attempt's, not an earlier
+    // group's, and a step that awaited (a credential) must not revive the attempt it lost.
+    assertJobNotKilled(deps.ledger, job);
     await dockerReclaimFence(deps, job);
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);

@@ -5097,7 +5097,7 @@ describe('a group whose supervisor is gone releases its step channel', () => {
         expect(supervised.released).toEqual([CONTROL_TOKEN]);
     });
 
-    it('fails a step in flight at once when a kill takes the group away, and serves a group made again', async () => {
+    it('fails a step in flight at once when a kill takes the group away', async () => {
         const broker = createStepBroker();
         broker.open(CONTROL_TOKEN);
         // The supervisor is stood in by this test's own pulls, repeated as a real one's are: a pull
@@ -5116,12 +5116,6 @@ describe('a group whose supervisor is gone releases its step channel', () => {
         expect(await pull()).toMatchObject({ kind: 'probe' });
         await runner.kill(repoJob);
         expect(await probing).toBeNull();
-        // A later step makes the group again under the same token, and that group's supervisor serves it.
-        const again = runner.probeTree(repoJob);
-        const pulled = await pull();
-        expect(pulled).toMatchObject({ kind: 'probe' });
-        if (pulled && pulled !== 'closed') broker.settle(CONTROL_TOKEN, pulled.id, pulled.invocation, ok('{}'));
-        await again;
     });
 
     it('ends the first-contact wait at once when a kill lands while the group is being made', async () => {
@@ -5154,23 +5148,18 @@ describe('a group whose supervisor is gone releases its step channel', () => {
         expect(sleeps - sleptBeforeRelease).toBeLessThanOrEqual(2);
     });
 
-    it('ends the wait of a group made again at once when it is killed again', async () => {
-        let sleeps = 0;
-        const runner = dockerRunner(emptyDaemon, {
-            steps: createStepBroker(),
-            sleep: async () => {
-                sleeps += 1;
-                await new Promise((resolve) => setTimeout(resolve, 5));
-            },
-        });
+    it('creates no group for a lease its driver killed, for the sync or any later step', async () => {
+        const calls: string[][] = [];
+        const exec = async (args: string[]) => {
+            calls.push(args);
+            return { stdout: '' };
+        };
+        const runner = dockerRunner(exec as never, { steps: createStepBroker() });
         await runner.kill(repoJob);
-        const again = runner.probeTree(repoJob);
-        // The first kill must not mask the second: the wait of the recreated group ends on it.
-        while (sleeps < 1) await new Promise((resolve) => setTimeout(resolve, 1));
-        const sleptBefore = sleeps;
-        await runner.kill(repoJob);
-        await expect(again).rejects.toThrow(/killed while its task group came up/);
-        expect(sleeps - sleptBefore).toBeLessThanOrEqual(2);
+        const killedAt = calls.length;
+        await expect(runner.probeTree(repoJob)).rejects.toThrow(/killed while setting up services/);
+        await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/killed while setting up services/);
+        expect(calls.slice(killedAt).filter((args) => ['create', 'run', 'start'].includes(args[0] ?? ''))).toEqual([]);
     });
 });
 
