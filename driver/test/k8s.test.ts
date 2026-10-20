@@ -83,6 +83,9 @@ import {
 } from '../src/publish.js';
 import type { ServiceSpec } from '../src/services.js';
 
+const MISMATCH_ROW = 'a run specced for another session than its group' as const;
+const OTHER_SESSION = '44444444-4444-4444-8444-444444444444';
+
 const USER = '44444444-4444-4444-8444-444444444444';
 /** The Job's backstop beyond the agent's budget: the drain and the report, then the hours the group serves steps. */
 const WINDDOWN_S = (SUPERVISOR_WINDDOWN_MS + SUPERVISOR_STEPS_MS) / 1000;
@@ -9426,7 +9429,7 @@ describe('how a refused group start ends, on kubernetes (the startup conformance
         },
     });
     /** The kubelet's own reason and words for each refusal, on the group pod's supervisor container. */
-    const refusals: Record<StartupRow, ReturnType<typeof waitingPod>> = {
+    const refusals: Record<Exclude<StartupRow, typeof MISMATCH_ROW>, ReturnType<typeof waitingPod>> = {
         'the platform never brought the group up': waitingPod('ContainerCreating'),
         'a registry that timed out': waitingPod(
             'ErrImagePull',
@@ -9497,8 +9500,24 @@ describe('how a refused group start ends, on kubernetes (the startup conformance
             );
     };
 
+    const startups: Record<StartupRow, () => Promise<unknown>> = {
+        ...(Object.fromEntries(
+            Object.entries(refusals).map(([row, pod]) => [row, () => refusedSync(podsInTurn([pod]).request)])
+        ) as Record<Exclude<StartupRow, typeof MISMATCH_ROW>, () => Promise<unknown>>),
+        [MISMATCH_ROW]: async () => {
+            const r = runner(fakeRequest().request, {}, undefined, fakeSteps().sink);
+            await r.syncCheckout(repoJob, undefined, SESSION_OF);
+            return r.run(repoJob, { id: OTHER_SESSION, resume: false }).then(
+                () => null,
+                (e: unknown) => e
+            );
+        },
+    };
+
     it.each(STARTUP_ROWS)('%s: %s', async (row, expected) => {
-        expect(startupDecisionOf(await refusedSync(podsInTurn([refusals[row]]).request))).toBe(expected);
+        const thrown = await startups[row]();
+        expect(thrown).not.toBeNull();
+        expect(startupDecisionOf(thrown)).toBe(expected);
     });
 
     // A back-off names no cause of its own: the wait reads on until the pull's own failure says one.

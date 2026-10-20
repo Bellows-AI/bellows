@@ -202,7 +202,12 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal?: Abor
  */
 async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession | null): Promise<GroupState> {
     const known = deps.groups.get(job.leaseToken);
-    if (known) return known;
+    if (known) {
+        if (known.session?.id !== session?.id || known.session?.resume !== session?.resume) {
+            throw new Error(`the task group of job ${job.id} was specced for another session than the run's`);
+        }
+        return known;
+    }
     await dockerReclaimFence(deps, job);
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);

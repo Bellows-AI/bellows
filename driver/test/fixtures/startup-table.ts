@@ -19,6 +19,7 @@ export const STARTUP_TABLE = {
     'an untrusted registry certificate': 'config',
     'a container configuration the platform refuses': 'config',
     'a refusal whose words prove no cause': 'unclassified',
+    'a run specced for another session than its group': 'unclassified',
 } as const;
 
 export type StartupRow = keyof typeof STARTUP_TABLE;

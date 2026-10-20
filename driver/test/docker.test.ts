@@ -101,6 +101,9 @@ import {
     worktreeRelDir,
 } from '../src/publish.js';
 
+const MISMATCH_ROW = 'a run specced for another session than its group' as const;
+const OTHER_SESSION = '44444444-4444-4444-8444-444444444444';
+
 const USER = '44444444-4444-4444-8444-444444444444';
 const CONTROL_TOKEN = 'supervisor-control-token';
 
@@ -2529,7 +2532,8 @@ const baseJob = job;
  */
 describe('auxiliary services (RUNNER_SERVICES)', () => {
     const STUB: ServiceSpec = { name: 'stub', image: 'stub-svc:1', environment: [] };
-    const job: BoardJob = { ...baseJob, services: [STUB] };
+    // A repo, as every claim that carries services has: the loop's sync creates the group first.
+    const job: BoardJob = { ...baseJob, repo: 'Bellows-AI/factory', services: [STUB] };
     // The declared fleet is process-wide and the suite runs isolate: false — a failed test must not leak it.
     afterEach(() => forgetDeclaredServices(job));
     /** A restart's stand-down signal that never fires. */
@@ -2581,6 +2585,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     const asLoop = (runner: ReturnType<typeof createDockerRunner>): ReturnType<typeof createDockerRunner> => ({
         ...runner,
         run: async (j, session, onOutput) => {
+            await runner.syncCheckout(j, undefined, session);
             startingServices += 1;
             let refused: Awaited<ReturnType<typeof runner.startServices>>;
             try {
@@ -2695,7 +2700,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
     it('starts every service the claim carries, a declared port changing no argv', async () => {
         const planned: BoardJob = {
-            ...baseJob,
+            ...job,
             services: [
                 { name: 'postgres', image: 'postgres:1', environment: [], ports: [5432] },
                 { name: 'redis', image: 'redis:1', environment: [], user: { uid: 999, gid: 999 } },
@@ -2821,6 +2826,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     it('run() starts no services after the loop started them, and the runner joins their namespace', async () => {
         const exec = daemon();
         const runner = bareServicesRunner(exec, spawnRecording('', 0).fn);
+        await runner.syncCheckout(job, undefined, { id: SESSION, resume: false });
         await expect(runner.startServices(job)).resolves.toBeNull();
         const startedAt = exec.mock.calls.length;
         await runner.run(job, { id: SESSION, resume: false });
@@ -5967,7 +5973,7 @@ describe('how a started run ends, on docker (the conformance table)', () => {
 describe('how a refused group start ends, on docker (the startup conformance table, #824 D11)', () => {
     const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
     /** The daemon's own words for each refusal, as the CLI prints them on its stderr. */
-    const refusals: Record<StartupRow, string> = {
+    const refusals: Record<Exclude<StartupRow, typeof MISMATCH_ROW>, string> = {
         'the platform never brought the group up':
             'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?',
         'a registry that timed out':
@@ -6000,8 +6006,40 @@ describe('how a refused group start ends, on docker (the startup conformance tab
             );
     };
 
+    /** The sync under session `SESSION`, then a run specced as `run` says: what the run threw, and the daemon. */
+    const mismatchedRun = async (run: { id: string; resume: boolean }) => {
+        const d = labelDaemon();
+        const runner = dockerRunner(d.exec, { steps: syncSteps().sink });
+        await runner.syncCheckout(repoJob, undefined, { id: SESSION, resume: false });
+        const thrown = await runner.run(repoJob, run).then(
+            () => null,
+            (e: unknown) => e
+        );
+        return { thrown, d };
+    };
+    const startups: Record<StartupRow, () => Promise<unknown>> = {
+        ...(Object.fromEntries(
+            Object.entries(refusals).map(([row, stderr]) => [row, () => refusedSync(stderr)])
+        ) as Record<Exclude<StartupRow, typeof MISMATCH_ROW>, () => Promise<unknown>>),
+        [MISMATCH_ROW]: async () => (await mismatchedRun({ id: OTHER_SESSION, resume: false })).thrown,
+    };
+
     it.each(STARTUP_ROWS)('%s: %s', async (row, expected) => {
-        expect(startupDecisionOf(await refusedSync(refusals[row]))).toBe(expected);
+        const thrown = await startups[row]();
+        expect(thrown).not.toBeNull();
+        expect(startupDecisionOf(thrown)).toBe(expected);
+    });
+
+    it('refuses a run specced for another session than its group', async () => {
+        const message = `the task group of job ${repoJob.id} was specced for another session than the run's`;
+        for (const run of [
+            { id: OTHER_SESSION, resume: false },
+            { id: SESSION, resume: true },
+        ]) {
+            const { thrown, d } = await mismatchedRun(run);
+            expect((thrown as Error).message).toBe(message);
+            expect(d.calls.some((a) => a[0] === 'create' && a.includes(containerName(repoJob)))).toBe(false);
+        }
     });
 
     // A local failure — the env file the create reads, refused by the host — is no platform refusal,
