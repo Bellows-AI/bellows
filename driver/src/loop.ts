@@ -130,7 +130,7 @@ function handOver(state: JobState, reason: string): void {
  * The drain's handover (issue #792): the attempts in flight — registered on `rt.live`, where each
  * `runJob` reports its own — and the latch `start()` stops waiting at.
  */
-function handoverOf(rt: LoopRuntime) {
+export function handoverOf(rt: LoopRuntime) {
     const live = new Map<string, LiveAttempt>();
     rt.live = live;
     let landed: () => void = () => {};
@@ -140,9 +140,11 @@ function handoverOf(rt: LoopRuntime) {
     return {
         done,
         async run(reason: string): Promise<void> {
-            // A concluding attempt's verdict is in flight: its own teardown follows it (issue #821).
+            // An attempt whose `end` started — a verdict in flight (issue #821) or any other decision — is
+            // not handed over: its own ending and teardown decide it.
             const handing = [...live.values()].filter(
-                ({ state }) => state.phase !== 'ended' && state.phase !== 'concluding' && !down(state)
+                ({ state }) =>
+                    state.phase !== 'ended' && state.phase !== 'concluding' && !state.endStarted && !down(state)
             );
             for (const { state } of handing) handOver(state, reason);
             // `start()` stops waiting only once every handed-over attempt's end has settled.

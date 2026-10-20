@@ -59,6 +59,8 @@ export interface JobState {
      * staged conclusion is the attempt's outcome, and the board commits it.
      */
     phase: AttemptPhase;
+    /** Set the moment `end` starts concluding: a drain's handover leaves such an attempt to its own ending. */
+    endStarted: boolean;
     /**
      * How the attempt ended where it stands, recorded once through `recordEnding`: a Stop (the
      * container is killed and the run settled on the board — the turn ends, and the session it kept
@@ -153,6 +155,7 @@ export function newJobState(): JobState {
     return {
         drainOutput: async () => {},
         phase: 'setup',
+        endStarted: false,
         ending: null,
         trace: () => {},
         keepGroup: false,

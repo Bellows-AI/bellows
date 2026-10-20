@@ -134,6 +134,31 @@ describe('adoptEarlierRun', () => {
     });
 
     describe('a run that is gone', () => {
+        it('keeps the adoption error when the rollback itself rejects', async () => {
+            const { p } = fake([earlier(2)], {
+                confirmOwnership: async () => {
+                    throw new AdoptionBlocked('the claim moved');
+                },
+                rollback: async () => {
+                    throw new Error('rollback refused');
+                },
+            });
+            await expect(adoptEarlierRun(p, new Map(), job)).rejects.toThrow('the claim moved');
+        });
+
+        it('rolls back once when a give-back rollback rejects', async () => {
+            let rollbacks = 0;
+            const { p } = fake([earlier(2)], {
+                awaitEnd: async () => null,
+                rollback: async () => {
+                    rollbacks += 1;
+                    throw new Error('rollback refused');
+                },
+            });
+            await expect(adoptEarlierRun(p, new Map(), job)).rejects.toThrow('rollback refused');
+            expect(rollbacks).toBe(1);
+        });
+
         it('rolls back and answers null when awaitEnd finds nothing', async () => {
             const adopted = new Map<string, string>();
             const { steps, p } = fake([earlier(2)], { awaitEnd: async () => null });

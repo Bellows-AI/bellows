@@ -128,15 +128,22 @@ export async function adoptEarlierRun<F extends EarlierRun>(
 ): Promise<AdoptedRun | null> {
     const first = await newestEarlier(p, job, signal);
     if (!first) return null;
+    let rolledBack = false;
     try {
         // A takeover of a stale claim deletes it: never once the attempt stood down.
         if (signal?.aborted) throw adoptionAbandoned();
         await p.begin(job);
         const found = await p.awaitEnd(first, job, signal);
-        if (!found) return await giveBack(p, job);
+        if (!found) {
+            rolledBack = true;
+            return await giveBack(p, job);
+        }
         const { end, body } = await p.read(found, job);
         const { timedOut, infraLoss, fields } = settleEnd(end);
-        if (infraLoss) return await giveBack(p, job);
+        if (infraLoss) {
+            rolledBack = true;
+            return await giveBack(p, job);
+        }
         const { startedAt, ...read } = await body();
         const outcome: RunOutcome = { ...read, timedOut, started: true, ...fields };
         await p.closeReadout(outcome, found, job, startedAt);
@@ -149,7 +156,8 @@ export async function adoptEarlierRun<F extends EarlierRun>(
         return { outcome, claimSeq: found.claimSeq };
     } catch (e) {
         adopted.delete(job.leaseToken);
-        await p.rollback(job);
+        // A rollback that fails must not replace the error being classified, nor run twice.
+        if (!rolledBack) await p.rollback(job).catch(() => undefined);
         if (signal?.aborted || e instanceof AdoptionBlocked) throw e;
         throw blockedUnless(e, 'the earlier run could not be adopted');
     }

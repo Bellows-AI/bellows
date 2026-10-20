@@ -631,3 +631,19 @@ describe('an attempt faulted at each phase boundary (#828)', () => {
         }
     });
 });
+
+describe('a drain never hands over an attempt whose end already started (#828)', () => {
+    it('records no handover on it and leaves it to its own ending', async () => {
+        const { handoverOf } = await import('../src/loop.js');
+        const { newJobState } = await import('../src/loop-attempt.js');
+        const rt = {} as never;
+        const handoff = handoverOf(rt);
+        const state = newJobState();
+        state.endStarted = true;
+        // Its end never settles here: the drain must neither touch it nor wait for it.
+        const over = new Promise<void>(() => {});
+        (rt as { live: Map<string, unknown> }).live.set('job-1', { job: { id: 'job-1' }, state, over });
+        await handoff.run('drain');
+        expect(state.ending).toBeNull();
+    });
+});

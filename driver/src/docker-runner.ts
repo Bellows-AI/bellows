@@ -562,10 +562,10 @@ async function dockerRun(
             reject(error);
         });
         child.on('close', (code) => {
-            // The error handler owns this failure and its rejection is already deferred
-            // behind the service teardown; a close here carries only the null code of a
-            // process that never ran, and settling verdict(null) over the pending
-            // rejection would turn infrastructure into a terminal verdict.
+            // The error handler owns this failure and rejects immediately; a close
+            // here carries only the null code of a process that never ran, and settling
+            // verdict(null) over the pending rejection would turn infrastructure into a
+            // terminal verdict.
             if (spawnFailed) return;
             done();
             // Every close-time read this runner performs — opencode's session scrape,

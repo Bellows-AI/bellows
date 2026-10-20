@@ -2550,8 +2550,39 @@ describe('the poll loop', () => {
     });
 
     // Issue #828: a lease lost while the agent runs kills it from the heartbeat; the board is told
-    // nothing, and the one ending finishes the runner.
-    it('tells the board nothing when the heartbeat reports the lease lost mid-run, and finishes the runner once', async () => {
+    // nothing, and the runner is retained for the new holder, never finished.
+    it('tells the board nothing when the heartbeat reports the lease lost mid-run, and retains the runner', async () => {
+        const board = stubBoard([job(1)]);
+        let launched = false;
+        const heldBeat = board.board.heartbeat.bind(board.board);
+        board.board.heartbeat = async (...args) => (launched ? 'lost' : heldBeat(...args));
+        let finish = () => {};
+        const runner = stubRunner(
+            () =>
+                new Promise<RunOutcome>((resolve) => {
+                    launched = true;
+                    finish = () => resolve(ok());
+                })
+        );
+        const started = drive({ ...board, runner });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(launched).toBe(true);
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.interrupted).toEqual([]);
+        expect(board.board.suspended).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        finish();
+        await started;
+
+        expect(board.board.interrupted).toEqual([]);
+        expect(board.board.suspended).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        expect(runner.finished).toEqual([]);
+    });
+
+    // Issue #828: a lease already lost before the agent launches kills the runner and finishes it
+    // from the one ending; the board is told nothing.
+    it('tells the board nothing when the lease is lost before the agent launches, and finishes the runner once', async () => {
         const board = stubBoard([job(1)], { lease: 'lost' });
         let finish = () => {};
         const runner = stubRunner(

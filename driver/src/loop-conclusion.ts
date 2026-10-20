@@ -71,6 +71,7 @@ export function abandonOnHandover<T>(state: JobState, run: Promise<T>): Promise<
 }
 
 async function conclude(ctx: AttemptCtx, decision: EndDecision): Promise<LeaseState | null> {
+    ctx.state.endStarted = true;
     let tornDown: () => void = () => {};
     const after = new Promise<void>((resolve) => {
         tornDown = resolve;
