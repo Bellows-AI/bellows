@@ -2853,6 +2853,22 @@ describe('the poll loop', () => {
             expect(transientRun.board.interrupted).toHaveLength(1);
         });
 
+        // The runner only throws or returns the fact (both executors' `run()` finish nothing, #828):
+        // the loop's `end()` is what gives the refused group back, on every refusal it decides.
+        it.each([
+            ['a run that throws a transient refusal', () => Promise.reject(transient())],
+            ['a run that throws a permanent refusal', () => Promise.reject(permanent())],
+            [
+                'a container that never started',
+                () => Promise.resolve(ok({ exitCode: 125, output: 'x', started: false, startupCause: 'image' })),
+            ],
+        ])('finishes the group of %s through end()', async (_name, run) => {
+            const board = stubBoard([job(1)]);
+            const runner = stubRunner(run);
+            await drive({ ...board, runner });
+            expect(runner.finished).toEqual([job(1).id]);
+        });
+
         it('fails a container that never started for a permanent cause, and hands a transient one back', async () => {
             const refused = stubBoard([job(1)]);
             const pull = 'docker: Error response from daemon: manifest unknown';

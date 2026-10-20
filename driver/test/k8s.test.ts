@@ -3098,7 +3098,9 @@ describe('the kubernetes runner', () => {
             },
         });
         let polls = 0;
+        const deletes: string[] = [];
         const request: K8sRequest = async (method, path, body) => {
+            if (method === 'DELETE') deletes.push(path);
             if (method === 'GET' && path === jobPath(namespace, runnerJobName(job))) {
                 polls += 1;
                 return polls === 1
@@ -3120,6 +3122,9 @@ describe('the kubernetes runner', () => {
         await expect(running).rejects.toMatchObject({ name: 'StartupRefused', startupCause: 'auth' });
         // Named on the first poll — the image question never waits out the deadline.
         expect(polls).toBe(1);
+        // A thrown fact: run() deletes the group's Job itself no more than docker's removes its
+        // containers (#828) — the loop's end() finishes it.
+        expect(deletes.filter((path) => path === jobPath(namespace, runnerJobName(job)))).toEqual([]);
     });
 
     // A container config the kubelet refuses holds the pod as surely as an image: named at once,

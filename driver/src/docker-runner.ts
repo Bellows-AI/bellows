@@ -447,7 +447,6 @@ async function dockerRun(
     const refused = await createRunnerContainer(deps, job, session, file ? { envFile: file } : {});
     if (refused) {
         if (file) await files.rm(file).catch(() => undefined);
-        await finishGroup(deps, job);
         return refused;
     }
     // The create and the copy are awaits too: a lease lost behind them must not reach the start.
@@ -556,18 +555,9 @@ async function dockerRun(
         child.on('error', (error) => {
             spawnFailed = true;
             done();
-            // The spawn itself failed (docker missing, exec blew up). Whatever services
-            // were started before it are torn down BEFORE the rejection lands — teardown
-            // tolerates absence, so either way a rejection means cleanup is as done as
-            // it gets, and the rejection waits for the teardown's verdict. The teardown
-            // is attempt-scoped, so no supersession check is needed: even if a
-            // replacement claim landed while this attempt was failing, the filters carry
-            // this attempt's lease and the network is named after it — the teardown
-            // cannot reach the replacement's fleet.
-            Promise.all([dockerServiceTeardown(deps, job), removeGroup(execDocker, job)]).then(
-                () => reject(error),
-                () => reject(error)
-            );
+            // The spawn itself failed (docker missing, exec blew up): a fact, not a teardown. The
+            // services and the group are the loop's end() to release or retain.
+            reject(error);
         });
         child.on('close', (code) => {
             // The error handler owns this failure and its rejection is already deferred
@@ -617,10 +607,7 @@ async function dockerRun(
     // long since read it; the daemon has the values in the container's config.
     try {
         return await outcome;
-    } catch (e) {
-        // The run threw: nothing more will be asked of the group, and no loop step is owed it.
-        await finishGroup(deps, job);
-        throw e;
+        // A throw is a fact: the loop's end() finishes the group or retains it for the next claim.
     } finally {
         if (file) await files.rm(file).catch(() => undefined);
         // A run that resolved leaves the group up — the gates, the helpers and the publish are its

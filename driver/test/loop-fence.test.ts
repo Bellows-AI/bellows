@@ -268,6 +268,43 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         expect(owners).toEqual(['loop-fence.ts']);
     });
 
+    // #828: the lifecycle has one owner. Teardown is `end()`'s (loop-conclusion.ts); the claim's
+    // release is the fence's (loop-fence.ts); the attempt's phase and ending are written by
+    // loop-phase.ts alone. A runner's `run()` and every other step only report facts.
+    const driverSources = (): readonly (readonly [string, string])[] => {
+        const dir = fileURLToPath(new URL('../src/', import.meta.url));
+        return readdirSync(dir)
+            .filter((file) => /\.ts$/.test(file))
+            .map((file) => [file, readFileSync(`${dir}/${file}`, 'utf8')] as const);
+    };
+    const filesMatching = (pattern: RegExp): string[] =>
+        driverSources()
+            .filter(([file, source]) => !/^(docker|k8s)/.test(file) && pattern.test(source))
+            .map(([file]) => file);
+
+    it('calls the group finish and the run-control close from loop-conclusion alone', () => {
+        expect(filesMatching(/\brunner\.finish\(|(?<!function )\bcloseRunControl\(/)).toEqual(['loop-conclusion.ts']);
+    });
+
+    it('releases the services from end() and from the start step that outlived its attempt, nowhere else', () => {
+        // loop-services.ts tears down a start the attempt stopped waiting on; the runner interface
+        // only declares the method (runner.ts).
+        expect(filesMatching(/\.releaseServices\(/)).toEqual(['loop-conclusion.ts', 'loop-services.ts']);
+    });
+
+    it('writes the phase and the ending through loop-phase alone', () => {
+        expect(filesMatching(/\bstate\.(phase|ending)\s*=[^=]/)).toEqual(['loop-phase.ts']);
+    });
+
+    it('tells the board of an interruption, a suspension or a requeue from end() alone, but for the adoption record', () => {
+        // The adoption record (loop-adopt.ts) is the earlier claim's interruption, written by
+        // runPhases under this claim's lease with no ending of this attempt.
+        expect(filesMatching(/\bboard\s*\.(interrupt|suspend|requeue)\(/)).toEqual([
+            'loop-adopt.ts',
+            'loop-conclusion.ts',
+        ]);
+    });
+
     it('defines both fences once, and no other loop file does', () => {
         const definers = loopSources()
             .filter(([, source]) => /export (async )?function (standDown|setupDecision)\(/.test(source))
