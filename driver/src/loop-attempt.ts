@@ -12,6 +12,13 @@ import type { TimeoutActivity } from './timeout-note.js';
 
 /** How often freshly arrived output is flushed to the board — the pace the dashboard polls at. */
 const PROGRESS_MS = 2_000;
+/**
+ * The longest a park waits out a progress write in flight, by the wall clock: a board that never
+ * answers it costs that tail, never the park (issue #773).
+ */
+const OUTPUT_DRAIN_MS = 5_000;
+/** How often the drain looks again while a write is in flight. */
+const OUTPUT_DRAIN_TICK_MS = 50;
 
 /**
  * How often the heartbeat polls while the attempt is still SETTING UP — before the runner exists.
@@ -613,7 +620,12 @@ export function watchOutput(
     };
     state.drainOutput = async () => {
         pump.drained = true;
-        await pump.writing;
+        let settled = false;
+        void pump.writing.then(() => {
+            settled = true;
+        });
+        const deadline = Date.now() + OUTPUT_DRAIN_MS;
+        while (!settled && Date.now() < deadline) await sleep(OUTPUT_DRAIN_TICK_MS);
     };
     void (async () => {
         while (!state.finished && !state.lost) {

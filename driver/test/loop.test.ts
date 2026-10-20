@@ -5231,6 +5231,30 @@ describe('a stop cancels the gates', () => {
         expect(events.indexOf('landed the last tail')).toBeLessThan(events.indexOf('parked'));
     });
 
+    // Codex review: the drain is bounded — a progress write that never answers costs its tail, never the park.
+    it('parks a stopped turn although the progress write in flight never answers', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([gatedJob(1)], options);
+        board.board.progress = () => new Promise(() => {});
+        const stack = stubGateStack();
+        stack.gates.manager.runGate = (_key, _name, _command, { signal } = {}) =>
+            new Promise((resolve) => {
+                setTimeout(() => {
+                    options.cancelRequested = true;
+                }, 30);
+                signal?.addEventListener('abort', () => resolve({ exitCode: 137, output: 'killed' }));
+            });
+        const runner = stubRunner(async (_job, _session, onOutput) => {
+            onOutput?.('a tail the board never takes');
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return ok();
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.suspended).toEqual([gatedJob(1).id]);
+    });
+
     it('settles a removed thread without a verdict when the remove lands during the gates', async () => {
         const options: { removedOnBeat?: boolean } = {};
         const board = stubBoard([gatedJob(1)], options);
