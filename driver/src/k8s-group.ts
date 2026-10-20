@@ -255,11 +255,12 @@ export async function ensureGroup(deps: K8sDeps, job: BoardJob, session: RunSess
     // A lease the ledger says was stopped gets no group: a step that awaited (a credential) must not
     // revive the attempt a kill already ended, before the fence, a Secret or the Job.
     if (ledgerOf(deps).was(job).stopped) throw new RunnerKilled(runnerName(job));
-    await prepare(deps, job, ledgerOf(deps).signal(job));
+    const kill = ledgerOf(deps).signal(job);
+    await prepare(deps, job, kill);
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);
     const startedAt = new Date().toISOString();
-    const uids = await launch(deps, job, runnerJobSpec(deps.config, job, session, startedAt));
+    const uids = await launch(deps, job, runnerJobSpec(deps.config, job, session, startedAt), kill);
     const group: TaskGroup = { startedAt, session, agent: job.agent !== false, uids };
     groupsOf(deps).set(job.leaseToken, group);
     await awaitSupervisor(deps, job, runnerName(job));

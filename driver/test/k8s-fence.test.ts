@@ -458,11 +458,49 @@ describe('prepare and launch around the Job POST', () => {
         });
         await prepare(deps, job, new AbortController().signal);
 
-        await expect(launch(deps, job, spec())).rejects.toThrow(/could not be confirmed after creating the runner job/);
+        await expect(launch(deps, job, spec(), new AbortController().signal)).rejects.toThrow(
+            /could not be confirmed after creating the runner job/
+        );
 
         expect(deletes(calls).some((call) => call.path.startsWith(jobPath(NS, runnerName(job))))).toBe(true);
         expect(
             calls.some((call) => call.method === 'PATCH' && call.path.startsWith(jobPath(NS, runnerName(job))))
         ).toBe(false);
+    });
+
+    // The claim bracket is a wait of the attempt (#869): a kill ends its reads at once, not after the patience.
+    it('reads the claim no more once the attempt is killed before the POST, creating no Job', async () => {
+        const kill = new AbortController();
+        let reads = 0;
+        const { deps, calls } = world((method, path) => {
+            if (!isClaimGet(method, path)) return;
+            reads += 1;
+            kill.abort();
+            return answer(503);
+        });
+
+        await expect(prepare(deps, job, kill.signal)).rejects.toThrow(/could not be confirmed before creating/);
+
+        expect(reads).toBe(1);
+        expect(posts(calls, jobsPath(NS))).toEqual([]);
+    });
+
+    it('reads the claim no more once the attempt is killed after the POST, and still ends the Job it created', async () => {
+        const kill = new AbortController();
+        let created = false;
+        let reads = 0;
+        const { deps, calls } = world((method, path) => {
+            if (method === 'POST' && path === jobsPath(NS)) created = true;
+            if (!created || !isClaimGet(method, path)) return;
+            reads += 1;
+            kill.abort();
+            return answer(503);
+        });
+        await prepare(deps, job, new AbortController().signal);
+
+        await expect(launch(deps, job, spec(), kill.signal)).rejects.toThrow(/could not be confirmed after creating/);
+
+        expect(reads).toBe(1);
+        expect(deletes(calls).some((call) => call.path.startsWith(jobPath(NS, runnerName(job))))).toBe(true);
     });
 });

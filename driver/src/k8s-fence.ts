@@ -583,7 +583,7 @@ export async function prepare(deps: K8sDeps, job: BoardJob, signal: AbortSignal)
 
     // Step three: the claim must STILL be ours immediately before the Job POST — the first half
     // of the bracket that fences the POST from both sides.
-    const pre = claimVerdict(await readClaimObject(deps, job), job);
+    const pre = claimVerdict(await readClaimObject(withSignal(deps, signal), job), job);
     if (pre === 'taken') {
         throw new Error(
             `job ${job.id} stands down: the checkout claim was taken over before the runner job was created`
@@ -663,7 +663,12 @@ export async function resumeJob(
 }
 
 // Step four: this attempt's Job, under its own attempt-scoped name, suspended, then its Secret.
-export async function launch(deps: K8sDeps, job: BoardJob, spec: RunnerJobSpec): Promise<IncarnationUids> {
+export async function launch(
+    deps: K8sDeps,
+    job: BoardJob,
+    spec: RunnerJobSpec,
+    signal: AbortSignal
+): Promise<IncarnationUids> {
     // The runner's name hashes this claim's own lease token, which no other claim is ever handed:
     // no other invocation can create it again, so its teardown may fall back to the name.
     const identity: TeardownIdentity = { pair: job, jobName: runnerName(job) };
@@ -681,7 +686,7 @@ export async function launch(deps: K8sDeps, job: BoardJob, spec: RunnerJobSpec):
 
     // Step five: the claim must STILL be ours once the Job exists — the second half of the
     // bracket the pre-create verify opened. See docs/kubernetes.md for the full race analysis.
-    const held = claimVerdict(await readClaimObject(deps, job), job);
+    const held = claimVerdict(await readClaimObject(withSignal(deps, signal), job), job);
     if (held === 'taken') {
         await standDown();
         throw new Error(`job ${job.id} stands down: the checkout claim was taken over before the runner could start`);

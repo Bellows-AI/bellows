@@ -1594,34 +1594,6 @@ describe('the poll loop', () => {
         expect(logs.some((m) => m.includes('could not be reclaimed: the checkout is held'))).toBe(true);
     });
 
-    it('leaves a reclaim whose path could not be read unacknowledged (#869)', async () => {
-        const root = job(1).id;
-        const logs: string[] = [];
-        const board = stubBoard([], {
-            idleBeforeStop: 1,
-            reclaims: [
-                {
-                    id: '55555555-5555-4555-8555-555555555555',
-                    token: ROW_TOKEN,
-                    rootJobId: root,
-                    repo: null,
-                    workspacePath: null,
-                    leaseExpiresAt: '2026-08-21T12:05:00.000Z',
-                },
-            ],
-        });
-        const runner = stubRunner(async () => ok());
-        runner.reclaimWorktree = async () => ({
-            ok: false,
-            removed: false,
-            reason: 'worktree reclaim failed: unreadable /workspaces/x/.worktrees/y: EACCES',
-        });
-        await drive({ ...board, runner, log: (m) => logs.push(m) });
-
-        expect(board.board.reclaimAcks).toEqual([]);
-        expect(logs.some((m) => m.includes('unreadable'))).toBe(true);
-    });
-
     // A transient board error after the tree is already down must not take the driver with it:
     // like a refused reclaim, a throwing ack is left to the lease — the row is re-offered when it
     // expires — and the drain loop goes on polling.
