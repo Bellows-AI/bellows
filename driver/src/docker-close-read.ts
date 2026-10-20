@@ -22,15 +22,8 @@ import {
 import { type DriverConfig, executorImage } from './config.js';
 import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts.js';
 import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
-import {
-    type ExecDocker,
-    noSuchObject,
-    readDocker,
-    tabRows,
-    type Sleep,
-    type Spawn,
-    readUtf8,
-} from './docker-runner-support.js';
+import { type ExecDocker, noSuchObject, readDocker, tabRows, type Spawn, readUtf8 } from './docker-runner-support.js';
+import type { Sleep } from './poll.js';
 import { supervisorLossOf, waitSupervisorExit } from './docker-group.js';
 import { supervisorName } from './docker-mailbox.js';
 import { readDockerKills } from './docker-teardown.js';

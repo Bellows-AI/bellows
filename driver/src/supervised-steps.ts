@@ -15,6 +15,7 @@ import {
     parseHelperOutput,
 } from './helpers.js';
 import { parseLastJsonLine } from './json-parse.js';
+import { pollFor } from './poll.js';
 import {
     baseBranchOf,
     CREDENTIAL_HELPER,
@@ -128,8 +129,7 @@ export async function awaitFirstContact(
     const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
     if (!token) return true;
     const killed = (): Error => new Error(`job ${job.id}: killed while its task group came up`);
-    const started = Date.now();
-    for (let polls = 0; Math.max(polls * GROUP_UP_POLL_MS, Date.now() - started) < GROUP_UP_WAIT_MS; polls += 1) {
+    const found = await pollFor({ ms: GROUP_UP_WAIT_MS, everyMs: GROUP_UP_POLL_MS, sleep: opts.sleep }, async () => {
         if (opts.stopped()) throw killed();
         if (host.sink.contacted(token)) return true;
         try {
@@ -139,10 +139,9 @@ export async function awaitFirstContact(
             throw e;
         }
         if (opts.stopped()) throw killed();
-        await opts.sleep(GROUP_UP_POLL_MS);
-    }
+    });
     if (opts.stopped()) throw killed();
-    return false;
+    return found ?? false;
 }
 
 /**

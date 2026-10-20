@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
+import { abortableSleep, type Sleep } from './poll.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import {
     attachSteps,
@@ -76,8 +77,6 @@ import {
     servicePsArgs,
     startJobServices,
     type RunnerFiles,
-    abortableSleep,
-    type Sleep,
     untilStandDown,
     type Spawn,
     type ExecDocker,
