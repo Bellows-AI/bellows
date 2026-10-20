@@ -48,14 +48,11 @@ function pickSession(job: BoardJob, executorType: BoardJob['executorType']): Run
     return job.resumeSessionId ? { id: job.resumeSessionId, resume: true } : { id: randomUUID(), resume: false };
 }
 
-/** The refusal reason for an executor selection this loop cannot run, or null when it can. */
-function executorRefusalReason(_rt: LoopRuntime, job: BoardJob): string | null {
-    if (job.executorRefusal) return job.executorRefusal;
-    if (job.executorType === null) {
-        return 'The selected executor no longer exists. Choose a configured executor and start a new task.';
-    }
-    return null;
-}
+/** How the attempt's log line names the session it runs under. */
+const sessionNote = (session: RunSession | null): string =>
+    session
+        ? `${session.resume ? 'resuming' : 'starting as'} session ${session.id}`
+        : 'starting (headless opencode run: no session id)';
 
 /**
  * Reported while the lease is still live, BEFORE the park or the verdict — a follow-up can only
@@ -630,18 +627,36 @@ function gateHistory(rt: LoopRuntime, gateSession: GateSession | null): readonly
  * service, no gate environment, no agent.
  */
 async function failOnClaimRefusal(rt: LoopRuntime, job: BoardJob): Promise<boolean> {
-    const executorRefusal = executorRefusalReason(rt, job);
-    const [reason, failureKind, what] = executorRefusal
-        ? ([executorRefusal, 'config', 'executor selection'] as const)
-        : job.skillRefusal
-          ? ([job.skillRefusal, 'config', 'selected skills'] as const)
-          : ([job.planRefusal ?? servicePlanRefusal(rt.config, job), 'config', 'execution plan'] as const);
-    if (!reason) return false;
+    const refusal = claimRefusalOf(rt, job);
+    if (!refusal) return false;
+    const [reason, failureKind, what] = refusal;
     logRefusal(rt.log, job, `job ${job.id}: ${what} is not runnable, failing`);
     await report(rt, job, { status: 'failed', exitCode: null, output: reason, failureKind }).catch((e: Error) =>
         rt.log(`job ${job.id}: could not report the ${what} failure: ${e.message}`)
     );
     return true;
+}
+
+/**
+ * The first refusal the claim carries, in order: the executor selection, the selected skills, the
+ * plan, then the master prompt. The board always renders a master prompt for every agent claim
+ * (server/src/db/master-prompt.ts); a missing, oversized or malformed one is a contract violation,
+ * never a reason to run the agent with no Factory execution context. Checked before any setup —
+ * including a helper-only node's pre-helper, which might otherwise conclude the job without ever
+ * spawning an agent. The plan and the prompt are only read when nothing before them refused.
+ */
+function claimRefusalOf(rt: LoopRuntime, job: BoardJob): readonly [string, 'config' | 'runner_error', string] | null {
+    const executorRefusal =
+        job.executorRefusal ||
+        (job.executorType === null
+            ? 'The selected executor no longer exists. Choose a configured executor and start a new task.'
+            : null);
+    if (executorRefusal) return [executorRefusal, 'config', 'executor selection'];
+    if (job.skillRefusal) return [job.skillRefusal, 'config', 'selected skills'];
+    const planRefusal = job.planRefusal ?? servicePlanRefusal(rt.config, job);
+    if (planRefusal) return [planRefusal, 'config', 'execution plan'];
+    const promptRefusal = masterPromptRefusalReason(job);
+    return promptRefusal ? [promptRefusal, 'runner_error', 'master prompt'] : null;
 }
 
 /**
@@ -655,23 +670,6 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     const { log } = rt;
     const executorType = job.executorType;
     if (await failOnClaimRefusal(rt, job)) return;
-
-    // The board always renders a master prompt for every agent claim (server/src/db/master-prompt.ts);
-    // a missing, oversized or malformed one is a contract violation, never a reason to run the
-    // agent with no Factory execution context. Checked before any setup — including a helper-only
-    // node's pre-helper, which might otherwise conclude the job without ever spawning an agent —
-    // because the board cannot know ahead of a run whether a pre-helper will conclude it.
-    const promptRefusal = masterPromptRefusalReason(job);
-    if (promptRefusal) {
-        logRefusal(log, job, `job ${job.id}: master prompt is not runnable, failing`);
-        await report(rt, job, {
-            status: 'failed',
-            exitCode: null,
-            output: promptRefusal,
-            failureKind: 'runner_error',
-        }).catch((e: Error) => log(`job ${job.id}: could not report the master-prompt failure: ${e.message}`));
-        return;
-    }
 
     const state = newJobState();
     state.trace = (t) => log(transitionLine(job, t));
@@ -693,12 +691,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     const quiesce = attemptQuiesce(rt, job, state, beating);
     const ctx: AttemptCtx = { rt, job, state, quiesce, fenced: false, treeBefore: null, session };
     try {
-        log(
-            `job ${job.id}: attempt ${job.attempts} ` +
-                (session
-                    ? `${session.resume ? 'resuming' : 'starting as'} session ${session.id}`
-                    : 'starting (headless opencode run: no session id)')
-        );
+        log(`job ${job.id}: attempt ${job.attempts} ${sessionNote(session)}`);
 
         const gateSession = await runPhases(ctx);
         if (gateSession === STOOD_DOWN) return;
