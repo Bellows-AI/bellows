@@ -15,6 +15,7 @@ import { heartbeat, newJobState, raceStep, registerLive, stopIfDraining, watchOu
 import { attemptQuiesce, abandonOnHandover, end, endIfDown } from './loop-conclusion.js';
 import type { GateRunNote } from './timeout-note.js';
 import {
+    faultHalt,
     handBackFence,
     handOverConflict,
     interruptDecision,
@@ -150,16 +151,11 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     }
     // A kind the script named is a refusal no retry fixes: a person acts on it, so it is config.
     const deterministic = synced.kind !== undefined && SYNC_FAILURE_KINDS.includes(synced.kind);
-    return {
-        halt: 'fault',
-        log: `checkout sync failed: ${synced.reason}`,
-        verdict: {
-            status: 'failed',
-            exitCode: null,
-            output: `The checkout could not be synced with the remote before the run: ${synced.reason}`,
-            failureKind: deterministic ? 'config' : 'runner_error',
-        },
-    };
+    return faultHalt(
+        `checkout sync failed: ${synced.reason}`,
+        `The checkout could not be synced with the remote before the run: ${synced.reason}`,
+        deterministic ? 'config' : 'runner_error'
+    );
 }
 
 /**
@@ -172,30 +168,20 @@ async function checkPlanStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
     // The declaration may name a package cache the driver will not set (issue #734).
     const cacheProblem = repoCacheProblem(job);
     if (cacheProblem) {
-        return {
-            halt: 'fault',
-            log: 'its declared package cache is refused, failing',
-            verdict: {
-                status: 'failed',
-                exitCode: null,
-                output: `This job's .bellows.yaml declares a gate environment this driver will not run: ${cacheProblem}`,
-                failureKind: 'config',
-            },
-        };
+        return faultHalt(
+            'its declared package cache is refused, failing',
+            `This job's .bellows.yaml declares a gate environment this driver will not run: ${cacheProblem}`,
+            'config'
+        );
     }
 
     if (job.gates?.gates?.length && !rt.gates) {
         const why = 'this driver was started with no gate environment configured';
-        return {
-            halt: 'fault',
-            log: 'declares gates this driver cannot run, failing',
-            verdict: {
-                status: 'failed',
-                exitCode: null,
-                output: `This job declares verification gates in .bellows.yaml, and ${why}. Re-queue it against a driver built with the GATE_* configuration set.`,
-                failureKind: 'runner_error',
-            },
-        };
+        return faultHalt(
+            'declares gates this driver cannot run, failing',
+            `This job declares verification gates in .bellows.yaml, and ${why}. Re-queue it against a driver built with the GATE_* configuration set.`,
+            'runner_error'
+        );
     }
     return null;
 }
@@ -213,16 +199,11 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
     } catch (e) {
         // The setup's supervisor was lost (issue #773): the attempt's loss, never a config verdict.
         if (stepLost(e)) return { halt: 'interrupt', reason: gateLossReason(e) };
-        return {
-            halt: 'fault',
-            log: `gate environment failed, failing with a reason: ${(e as Error).message}`,
-            verdict: {
-                status: 'failed',
-                exitCode: null,
-                output: `The gate environment declared in .bellows.yaml could not be started: ${(e as Error).message}`,
-                failureKind: 'runner_error',
-            },
-        };
+        return faultHalt(
+            `gate environment failed, failing with a reason: ${(e as Error).message}`,
+            `The gate environment declared in .bellows.yaml could not be started: ${(e as Error).message}`,
+            'runner_error'
+        );
     }
 }
 

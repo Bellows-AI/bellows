@@ -1,5 +1,6 @@
 import type { BoardJob } from './board.js';
 import { raceStep } from './loop-attempt.js';
+import { faultHalt } from './loop-fence.js';
 import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import { type DeadService, Inconclusive, type RunOutcome } from './runner.js';
@@ -25,16 +26,11 @@ export async function startServicesStep(ctx: AttemptCtx): Promise<SetupConclusio
         // the run fails `services` before any setup or agent, and the fleet is released.
         if (e instanceof ServicesNotRunning) {
             ctx.servicesStarted = true;
-            return {
-                halt: 'fault',
-                log: `its services never ran, failing: ${e.message}`,
-                verdict: {
-                    status: 'failed',
-                    exitCode: null,
-                    output: `[driver] the declared services did not come up before the run: ${e.message}`,
-                    failureKind: 'services',
-                },
-            };
+            return faultHalt(
+                `its services never ran, failing: ${e.message}`,
+                `[driver] the declared services did not come up before the run: ${e.message}`,
+                'services'
+            );
         }
         // An infrastructure refusal: the start tore its partial fleet down itself.
         return { halt: 'interrupt', reason: `could not start the services: ${(e as Error).message}` };
@@ -50,11 +46,7 @@ export async function startServicesStep(ctx: AttemptCtx): Promise<SetupConclusio
     ctx.servicesStarted = true;
     const refused = raced.value;
     if (!refused) return null;
-    return {
-        halt: 'fault',
-        log: 'its services could not be started, failing',
-        verdict: { status: 'failed', exitCode: refused.exitCode, output: refused.output, failureKind: 'runner_error' },
-    };
+    return faultHalt('its services could not be started, failing', refused.output, 'runner_error', refused.exitCode);
 }
 
 /**
