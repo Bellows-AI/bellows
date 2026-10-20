@@ -17,6 +17,7 @@ export const TERMINATION_TABLE = {
     'a runner the platform took away after the budget ended its agent': 'timeout',
     'a supervisor that ended without finalizing, nothing initiating it': 'interruption',
     'a supervisor that reported, then crashed before the verdict read': 'succeeded',
+    'a supervisor that reported an unlaunched group, then crashed': 'interruption',
 } as const;
 
 export type TerminationRow = keyof typeof TERMINATION_TABLE;

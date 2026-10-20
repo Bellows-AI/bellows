@@ -7392,14 +7392,14 @@ describe('how a started run ends, on kubernetes (the conformance table)', () => 
         return r.run(job, session);
     };
 
-    const reportedThenCrashed = () => {
+    const reportedThenCrashed = (agentEnd = 'exited') => {
         const steps = fakeSteps();
         steps.report({
             id: 'report-1',
             outcome: null,
             cause: null,
             agentExit: 0,
-            agentEnd: 'exited',
+            agentEnd,
             drained: true,
             serving: true,
         });
@@ -7441,7 +7441,9 @@ describe('how a started run ends, on kubernetes (the conformance table)', () => 
                     }
                 ).request
             ).run(job, session),
-        'a supervisor that reported, then crashed before the verdict read': reportedThenCrashed,
+        'a supervisor that reported, then crashed before the verdict read': () => reportedThenCrashed(),
+        // A report that finalized nothing is no finalization (`reportFinalized`), attached or adopted.
+        'a supervisor that reported an unlaunched group, then crashed': () => reportedThenCrashed('unlaunched'),
     };
 
     it.each(TERMINATION_ROWS)('%s: %s', async (row, expected) => {

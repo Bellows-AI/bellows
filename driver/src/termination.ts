@@ -91,3 +91,47 @@ export function adoptedVerdictOf(
     }
     return fields;
 }
+
+/** Everything a started run's end is classified from: the executor's reads and the driver's own record. */
+export interface EndEvidence {
+    /** The reasons the driver recorded before it ended the run itself (adopted runs; empty when attached). */
+    kills: readonly KillRecord[];
+    /** This driver hard-killed the group (the kill ledger's `hard`). */
+    driverKilledHard: boolean;
+    /** The supervisor's final report, null when none was taken. */
+    report: FinalReport | null;
+    /** The budget ended the agent by a read the report and the kill records do not carry: the exit 124, the kubelet deadline. */
+    budgetEnded: boolean;
+    /** The runner was taken away under the run (`TerminationEvidence.vanished`). */
+    vanished: string | null;
+    /** The supervisor ended any way but finalizing (`supervisorLossOf`). */
+    unfinalized: string | null;
+}
+
+/** How a started run ended: the budget's verdict, the infrastructure loss it amounts to, and the verdict fields recorded for it. */
+export interface SettledEnd {
+    timedOut: boolean;
+    infraLoss: string | null;
+    fields: Partial<Pick<RunOutcome, 'timedOut' | 'cacheLost' | 'artifactSpoolFull'>>;
+}
+
+/**
+ * The one close-time classification, over all five ends of a started run (attached and adopted, on
+ * both executors, and a vanished runner): a supervisor that finalized the run (`reportFinalized`)
+ * leaves nothing for a vanished runner to explain, and counts as reported.
+ */
+export function settleEnd(e: EndEvidence): SettledEnd {
+    const timedOut = e.budgetEnded || e.report?.outcome === 'timed_out' || e.kills.some((k) => k.reason === 'timeout');
+    const finalized = reportFinalized(e.report);
+    return {
+        timedOut,
+        infraLoss: infraLossOf({
+            killedByDriver: e.driverKilledHard || e.kills.some((k) => killEndsGroup(k.reason)),
+            timedOut,
+            reported: finalized,
+            vanished: finalized ? null : e.vanished,
+            unfinalized: e.unfinalized,
+        }),
+        fields: { ...reportVerdictOf(e.report), ...adoptedVerdictOf(e.kills) },
+    };
+}

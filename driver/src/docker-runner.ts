@@ -81,7 +81,7 @@ import {
 } from './docker-runner-support.js';
 import { OPENCODE } from './executors.js';
 import { createDeadlineRegistry, type DeadlineRegistry } from './run-deadline.js';
-import { infraLossOf } from './termination.js';
+import { settleEnd } from './termination.js';
 
 /**
  * The docker executor's stateful `RunnerDeps` methods and `createDockerRunner` itself — the
@@ -585,7 +585,7 @@ async function dockerRun(
             // reports — the budget it enforced says `timed_out` — and then serves the attempt's
             // steps. A supervisor that exited instead of reporting says how: 124 is the budget it
             // enforced, the driver's own hard kill explains its exit, and anything else is a
-            // supervisor lost, an infrastructure loss (`infraLossOf`).
+            // supervisor lost, an infrastructure loss (`settleEnd`).
             void closeEndOf(execDocker, job, { code, output, reported })
                 .then((ended) => {
                     proven = ended.proven;
@@ -594,18 +594,20 @@ async function dockerRun(
                     return ended;
                 })
                 .then(async ({ report, supervisorExit }) => {
+                    // The verdict read below reports the budget, so it is settled first.
                     if (report?.outcome === 'timed_out' || supervisorExit === SUPERVISOR_EXIT.deadline) {
                         timedOut = true;
                     }
                     const { infraLoss: vanished = null, ...settled } = await verdict(code);
-                    const infraLoss = infraLossOf({
-                        killedByDriver: deps.ledger.was(job).hard,
-                        timedOut,
-                        reported: report !== null,
+                    const end = settleEnd({
+                        kills: [],
+                        driverKilledHard: deps.ledger.was(job).hard,
+                        report,
+                        budgetEnded: timedOut,
                         vanished,
-                        unfinalized: supervisorLossOf(supervisorExit, timedOut),
+                        unfinalized: supervisorLossOf(supervisorExit, false),
                     });
-                    return infraLoss ? { ...settled, infraLoss } : settled;
+                    return end.infraLoss ? { ...settled, infraLoss: end.infraLoss } : settled;
                 })
                 .then((outcome) => applyCloseTimeReadout(outcome, { execDocker, config, job, startedAt }, session))
                 .then(resolve, reject);

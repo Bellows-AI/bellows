@@ -46,15 +46,7 @@ import {
     SUPERVISOR_CONTAINER,
     SUPERVISOR_WINDDOWN_MS,
 } from './supervisor-contract.js';
-import {
-    adoptedVerdictOf,
-    infraLossOf,
-    type KillRecord,
-    killEndsGroup,
-    killRecordsOf,
-    reportFinalized,
-    reportVerdictOf,
-} from './termination.js';
+import { type KillRecord, killRecordsOf, settleEnd } from './termination.js';
 
 /** One runner Job of an earlier claim, as the label listing answers it. */
 interface ListedRunner extends ListedRunnerJob {
@@ -318,16 +310,16 @@ async function readEarlierRun(deps: K8sDeps, job: BoardJob, found: EarlierRunner
     const verdict = await confirmed(
         readRunnerVerdict(deps, prior, (status.succeeded ?? 0) >= 1, { report, strict: true })
     );
-    const timedOut = timedOutOf(status) || verdict.supervisorDeadline || kills.some((k) => k.reason === 'timeout');
-    const loss = infraLossOf({
-        killedByDriver: kills.some((kill) => killEndsGroup(kill.reason)),
-        timedOut,
-        reported: reportFinalized(report),
-        // A supervisor that reported finalized the run: the pod's deletion after it is no loss.
-        vanished: reportFinalized(report) ? null : verdict.vanished,
+    // A supervisor that reported finalized the run: the pod's deletion after it is no loss.
+    const { timedOut, infraLoss, fields } = settleEnd({
+        kills,
+        driverKilledHard: false,
+        report,
+        budgetEnded: timedOutOf(status) || verdict.supervisorDeadline,
+        vanished: verdict.vanished,
         unfinalized: verdict.unfinalized ?? neverRan,
     });
-    if (loss) return null;
+    if (infraLoss) return null;
     const { exitCode, output, fullLog, logTruncated } = verdict;
     const outcome: RunOutcome = {
         exitCode,
@@ -336,8 +328,7 @@ async function readEarlierRun(deps: K8sDeps, job: BoardJob, found: EarlierRunner
         started: true,
         fullLog,
         logTruncated,
-        ...reportVerdictOf(report),
-        ...adoptedVerdictOf(kills),
+        ...fields,
     };
     const startedAt = status.startTime ?? new Date(0).toISOString();
     if (job.executorType === OPENCODE) await reads.attachOpencodeOutcome(deps, prior, startedAt, outcome);

@@ -69,7 +69,7 @@ import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
 import { repoPath, worktreeDir } from './publish.js';
 import type { ReclaimResult, SyncResult } from './publish.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
-import { infraLossOf, type KillRecord } from './termination.js';
+import { type KillRecord, settleEnd } from './termination.js';
 import {
     controlTokenOf,
     orderGo,
@@ -381,10 +381,11 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     // kubelet's deadline only a supervisor that stopped doing so: either is the timeout's verdict.
     // A deadline kill deletes the pod too: that is the timeout's verdict, never a loss.
     const timedOut = polled.timedOut || supervisorDeadline;
-    const infraLoss = infraLossOf({
-        killedByDriver: ledgerOf(deps).was(job).hard,
-        timedOut,
-        reported: watch.report !== null,
+    const { infraLoss } = settleEnd({
+        kills: [],
+        driverKilledHard: ledgerOf(deps).was(job).hard,
+        report: watch.report,
+        budgetEnded: timedOut,
         vanished,
         unfinalized,
     });

@@ -6,6 +6,8 @@ import {
     killRecordsOf,
     reportFinalized,
     reportVerdictOf,
+    type EndEvidence,
+    settleEnd,
     type TerminationEvidence,
 } from '../src/termination.js';
 import { finalReportOf, SUPERVISOR_REPORT_PREFIX } from '../src/supervisor-contract.js';
@@ -110,6 +112,81 @@ describe('the final report a supervisor logs (#824)', () => {
         expect(reportVerdictOf({ ...COMPLETED, outcome: 'timed_out', cause: 'timeout' })).toEqual({ timedOut: true });
         expect(reportVerdictOf({ ...COMPLETED, outcome: 'failed', cause: 'artifact_spool_full' })).toEqual({
             artifactSpoolFull: 'the supervisor reported the spool full',
+        });
+    });
+});
+
+describe('settleEnd', () => {
+    const REPORT = {
+        outcome: null,
+        cause: null,
+        agentExit: 0,
+        agentEnd: 'exited',
+        drained: true,
+    };
+    const END: EndEvidence = {
+        kills: [],
+        driverKilledHard: false,
+        budgetEnded: false,
+        report: null,
+        vanished: null,
+        unfinalized: null,
+    };
+
+    it('is no loss for a run that ended clean, and carries no verdict fields', () => {
+        expect(settleEnd(END)).toEqual({ timedOut: false, infraLoss: null, fields: {} });
+    });
+
+    it('takes a finalized report as the supervisor finalizing, whatever its exit after', () => {
+        expect(settleEnd({ ...END, report: REPORT, unfinalized: UNFINALIZED }).infraLoss).toBeNull();
+    });
+
+    it('takes a report that finalized nothing as none: the supervisor lost is a loss, attached or adopted alike', () => {
+        const unlaunched = { ...REPORT, agentEnd: 'unlaunched' };
+        expect(settleEnd({ ...END, report: unlaunched, unfinalized: UNFINALIZED }).infraLoss).toBe(UNFINALIZED);
+        expect(settleEnd({ ...END, unfinalized: UNFINALIZED }).infraLoss).toBe(UNFINALIZED);
+    });
+
+    it('gates a vanished runner by the report finalizing', () => {
+        expect(settleEnd({ ...END, vanished: VANISHED }).infraLoss).toBe(VANISHED);
+        expect(settleEnd({ ...END, report: REPORT, vanished: VANISHED }).infraLoss).toBeNull();
+        expect(settleEnd({ ...END, report: { ...REPORT, agentEnd: 'unlaunched' }, vanished: VANISHED }).infraLoss).toBe(
+            VANISHED
+        );
+    });
+
+    it('reads the budget off the report, a timeout record or the executor, and it is never a loss', () => {
+        const timedOut = { ...REPORT, outcome: 'timed_out' };
+        expect(settleEnd({ ...END, report: timedOut, vanished: VANISHED })).toMatchObject({
+            timedOut: true,
+            infraLoss: null,
+            fields: { timedOut: true },
+        });
+        const kills = [{ reason: 'timeout' as const, detail: '' }];
+        expect(settleEnd({ ...END, kills, unfinalized: UNFINALIZED })).toMatchObject({
+            timedOut: true,
+            infraLoss: null,
+        });
+        expect(settleEnd({ ...END, budgetEnded: true, unfinalized: UNFINALIZED })).toMatchObject({
+            timedOut: true,
+            infraLoss: null,
+        });
+    });
+
+    it('never calls a run the driver killed a loss: its own hard kill, or a recorded reason that ends the group', () => {
+        expect(settleEnd({ ...END, driverKilledHard: true, vanished: VANISHED }).infraLoss).toBeNull();
+        const cache = [{ reason: 'cache_lost' as const, detail: 'cold' }];
+        expect(settleEnd({ ...END, kills: cache, unfinalized: UNFINALIZED })).toMatchObject({
+            infraLoss: null,
+            fields: { cacheLost: 'cold' },
+        });
+    });
+
+    it('lets a full spool ride a supervised stop: the supervisor still decides how the run ended', () => {
+        const spool = [{ reason: 'artifact_spool_full' as const, detail: '' }];
+        expect(settleEnd({ ...END, kills: spool, unfinalized: UNFINALIZED })).toMatchObject({
+            infraLoss: UNFINALIZED,
+            fields: { artifactSpoolFull: 'the spool cap was reached' },
         });
     });
 });

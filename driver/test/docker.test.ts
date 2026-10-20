@@ -1892,7 +1892,12 @@ describe('the docker runner', () => {
                       })
                   )
                 : Promise.resolve({ stdout: '' });
-        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('', '', 137) });
+        // The supervisor never finalized: a finalizing report would leave nothing for the removal to explain.
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild('', '', 137),
+            steps: fakeSteps(undefined, new Promise<never>(() => undefined)).sink,
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({
             exitCode: 137,
@@ -5889,6 +5894,13 @@ describe('how a started run ends, on docker (the conformance table)', () => {
             code: 0,
             supervisorExit: '70',
             report: FINALIZED,
+        },
+        // A report that finalized nothing (the driver was lost before the agent was released) is no
+        // finalization: the attached run takes it as `reportFinalized` does, an interruption.
+        'a supervisor that reported an unlaunched group, then crashed': {
+            code: 0,
+            supervisorExit: '70',
+            report: { ...FINALIZED, agentEnd: 'unlaunched' },
         },
     };
 

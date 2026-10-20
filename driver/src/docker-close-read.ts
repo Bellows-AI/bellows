@@ -34,7 +34,7 @@ import {
 import { supervisorLossOf, waitSupervisorExit } from './docker-group.js';
 import { supervisorName } from './docker-mailbox.js';
 import { readDockerKills } from './docker-teardown.js';
-import { adoptedVerdictOf, infraLossOf, killEndsGroup, reportFinalized, reportVerdictOf } from './termination.js';
+import { settleEnd } from './termination.js';
 import { type FinalReport, finalReportOf, SUPERVISOR_EXIT, SUPERVISOR_WINDDOWN_MS } from './supervisor-contract.js';
 import {
     containerName,
@@ -407,18 +407,15 @@ async function adoptExited(
     if (signal?.aborted) throw adoptionAbandoned();
     const kills = await readDockerKills(execDocker, prior);
     const report = await readSupervisorReport(execDocker, prior);
-    const timedOut =
-        supervisorExit === SUPERVISOR_EXIT.deadline ||
-        report?.outcome === 'timed_out' ||
-        kills.some((kill) => kill.reason === 'timeout');
-    const loss = infraLossOf({
-        killedByDriver: kills.some((kill) => killEndsGroup(kill.reason)),
-        timedOut,
-        reported: reportFinalized(report),
+    const { timedOut, infraLoss, fields } = settleEnd({
+        kills,
+        driverKilledHard: false,
+        report,
+        budgetEnded: supervisorExit === SUPERVISOR_EXIT.deadline,
         vanished: null,
         unfinalized: supervisorLossOf(supervisorExit, false),
     });
-    if (loss) return null;
+    if (infraLoss) return null;
     const name = containerName(prior);
     const state = runnerStateOf((await execDocker(['inspect', '--format', '{{json .State}}', name])).stdout);
     const full = await readRunnerLog(deps.spawnFn, name);
@@ -430,8 +427,7 @@ async function adoptExited(
         started: true,
         fullLog: full.content,
         logTruncated: full.truncated,
-        ...reportVerdictOf(report),
-        ...adoptedVerdictOf(kills),
+        ...fields,
     };
     const startedAt = state.StartedAt ?? new Date(0).toISOString();
     await applyCloseTimeReadout(
