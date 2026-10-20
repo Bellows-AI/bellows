@@ -308,6 +308,43 @@ describe.runIf(enabled)('named reviewer invocation on the job store', () => {
         expect(await store.readReview(reclaimed!.id, reclaimed!.leaseToken, 'sec-1')).not.toHaveProperty('claim');
     });
 
+    it('hands no claim for a review its old lease finished between the caller’s read and the re-lease', async () => {
+        const store = storeWith({ reviewers: [SECURITY] });
+        const caller = await claimed(store);
+        const first = await ask(caller);
+        if (!('claim' in first) || !first.claim) throw new Error('no review claim');
+        await sql`update job set lease_expires_at = now() - interval '1 minute' where org_id = ${ORG} and id = ${caller.id}`;
+        const reclaimed = await store.claim('driver-2', LEASE_SECONDS);
+        expect(reclaimed?.id).toBe(caller.id);
+
+        let release = () => {};
+        let locked = () => {};
+        const holder = new Promise<void>((resolve) => (release = resolve));
+        const held = new Promise<void>((resolve) => (locked = resolve));
+        const finisher = sql.begin(async (tx) => {
+            await tx`select 1 from job where org_id = ${ORG} and id = ${first.review.id} for update`;
+            locked();
+            await holder;
+            await tx`update job set status = 'failed', failure_kind = 'run' where org_id = ${ORG} and id = ${first.review.id}`;
+        });
+        await held;
+        const reads = [store.readReview(reclaimed!.id, reclaimed!.leaseToken, 'sec-1'), ask(reclaimed!)];
+        // Release the old lease's finish only once both readers wait on the review row.
+        for (let waiting = 0; waiting < 2; ) {
+            const [row] = await sql<{ n: number }[]>`
+                select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`;
+            waiting = row?.n ?? 0;
+            if (waiting < 2) await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        release();
+        await finisher;
+        const [read, request] = await Promise.all(reads);
+        expect(read).toMatchObject({ result: 'ok', review: { status: 'failed' } });
+        expect(read).not.toHaveProperty('claim');
+        expect(request).toMatchObject({ result: 'existing', review: { status: 'failed' } });
+        expect(request).not.toHaveProperty('claim');
+    });
+
     it('answers a finished review from its row, with no claim', async () => {
         const store = storeWith({ reviewers: [SECURITY] });
         const caller = await claimed(store);

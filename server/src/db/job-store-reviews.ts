@@ -152,9 +152,8 @@ async function storedAnswer(
     found: { stored: ReviewRow; evidence: ReviewEvidence }
 ): Promise<RequestReviewResult> {
     const { stored, evidence } = found;
-    const review = viewOf(stored, evidence);
-    if (stored.status !== 'running') return { result: 'existing', review };
-    return { result: 'existing', review, claim: await leaseRunning(ctx, tx, caller, stored.id) };
+    if (stored.status !== 'running') return { result: 'existing', review: viewOf(stored, evidence) };
+    return { result: 'existing', ...(await leasedView(ctx, tx, caller, { row: stored, evidence })) };
 }
 
 async function runningReview(tx: TransactionSql, orgId: string, callerId: string): Promise<ReviewRow | undefined> {
@@ -220,8 +219,13 @@ async function leaseRunning(
     tx: TransactionSql,
     caller: CallerRow,
     reviewId: string
-): Promise<Claim> {
+): Promise<Claim | undefined> {
     const { orgId, wallTick } = ctx;
+    // The old lease may have finished the review since the caller read it `running`: lock the row
+    // and hand out a claim only for a review that still is.
+    const [live] =
+        await tx`select 1 from job where org_id = ${orgId} and id = ${reviewId} and status = 'running' for update`;
+    if (!live) return undefined;
     const expiry = tx.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString() });
     await tx`
         update job set
@@ -238,6 +242,20 @@ async function leaseRunning(
           and review_caller_seq is distinct from ${caller.claim_seq}
     `;
     return reviewClaim(ctx, tx, reviewId);
+}
+
+/** A review read `running`, leased; when it finished meanwhile, its current row answers with no claim. */
+async function leasedView(
+    ctx: JobStoreContext,
+    tx: TransactionSql,
+    caller: CallerRow,
+    read: { row: ReviewRow; evidence: ReviewEvidence }
+): Promise<{ review: ReviewView; claim?: Claim }> {
+    const { row, evidence } = read;
+    const claim = await leaseRunning(ctx, tx, caller, row.id);
+    if (claim) return { review: viewOf(row, evidence), claim };
+    const fresh = (await reviewByKey(tx, ctx.orgId, caller.id, row.review_key))!;
+    return { review: viewOf(fresh, evidence) };
 }
 
 interface ReviewClaimRow {
@@ -330,9 +348,8 @@ export async function readReviewFor(
         const evidence = await readReviewEvidence(tx, { orgId, rootJobId: caller.root_job_id }, null);
         // A running review is the caller claim's to supervise: a re-claimed caller that reads it
         // (a different key's request answers `running`) takes the lease over here.
-        if (row.status === 'running') {
-            return { result: 'ok', review: viewOf(row, evidence), claim: await leaseRunning(ctx, tx, caller, row.id) };
-        }
+        if (row.status === 'running')
+            return { result: 'ok', ...(await leasedView(ctx, tx, caller, { row, evidence })) };
         return { result: 'ok', review: viewOf(row, evidence) };
     });
 }
