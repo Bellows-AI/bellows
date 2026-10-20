@@ -31,7 +31,7 @@ import {
     type Spawn,
     readUtf8,
 } from './docker-runner-support.js';
-import { abortableSleep, anyOf, type Sleep, timeLeft } from './poll.js';
+import { abortableSleep, anyOf, type Bound, type Sleep, timeLeft } from './poll.js';
 import { supervisorLossOf, waitSupervisorExit } from './docker-group.js';
 import { supervisorName } from './docker-mailbox.js';
 import { readDockerKills } from './docker-teardown.js';
@@ -281,12 +281,14 @@ interface DockerEarlier extends EarlierRun {
  * never buffered whole through an exec, whose output cap would fail the adoption of a long run
  * (issue #825). Rejects when `docker logs` does not exit 0.
  */
-function readRunnerLog(spawnFn: Spawn, name: string, signal: AbortSignal | undefined): Promise<KeptLog> {
+function readRunnerLog(spawnFn: Spawn, name: string, { deadline, signal }: Bound): Promise<KeptLog> {
     return new Promise((resolve, reject) => {
-        // The stream ends on the attempt's kill: spawn terminates the child on abort.
+        // The stream ends at the operation's deadline and on the attempt's kill: spawn terminates the child on abort.
+        const late = new AbortController();
+        const timer = setTimeout(() => late.abort(), timeLeft(deadline));
         const child = spawnFn('docker', ['logs', name], {
             stdio: ['ignore', 'pipe', 'pipe'],
-            ...(signal ? { signal } : {}),
+            signal: anyOf(signal, late.signal),
         });
         let kept: KeptLog = { content: '', truncated: false };
         const collect = (text: string) => {
@@ -294,10 +296,15 @@ function readRunnerLog(spawnFn: Spawn, name: string, signal: AbortSignal | undef
         };
         readUtf8(child.stdout, collect);
         readUtf8(child.stderr, collect);
-        child.on('error', reject);
-        child.on('close', (code) =>
-            code === 0 ? resolve(kept) : reject(new Error(`docker logs ${name} exited ${code ?? 'on a signal'}`))
-        );
+        child.on('error', (e) => {
+            clearTimeout(timer);
+            reject(e);
+        });
+        child.on('close', (code) => {
+            clearTimeout(timer);
+            if (code === 0) resolve(kept);
+            else reject(new Error(`docker logs ${name} exited ${code ?? 'on a signal'}`));
+        });
     });
 }
 
@@ -391,7 +398,9 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
         // hard kill explains the supervisor's exit, and every reason is the verdict it was live; so does
         // the final report the supervisor logged, which a crash after it does not unsay (#824).
         read: async ({ prior, supervisorExit }, _job, signal) => {
-            const bounded = boundedExec(execDocker, { deadline: Infinity, signal });
+            // One absolute deadline for the evidence and the body read after it, ended by the kill.
+            const bound: Bound = { deadline: Date.now() + CLOSE_READ_DEADLINE_MS, signal };
+            const bounded = boundedExec(execDocker, bound);
             const kills = await readDockerKills(bounded, prior);
             const report = await readSupervisorReport(bounded, prior);
             return {
@@ -409,7 +418,7 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
                     const state = runnerStateOf(
                         (await bounded(['inspect', '--format', '{{json .State}}', name])).stdout
                     );
-                    const full = await readRunnerLog(deps.spawnFn, name, signal);
+                    const full = await readRunnerLog(deps.spawnFn, name, bound);
                     return {
                         exitCode: state.ExitCode,
                         output: reportTail(full.content),

@@ -17,7 +17,7 @@ import type { DriverConfig } from './config.js';
 import { containerName, dockerArgs, parseDockerServicePs } from './docker.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import { telemetryConfig, telemetryConfigTar, telemetryCopyTarget } from './telemetry-config.js';
-import type { Read, RunOutcome, RunSession } from './runner.js';
+import { type Read, type RunOutcome, type RunSession, SERVICE_RESTART_TIMEOUT_MS } from './runner.js';
 import {
     declaredServiceSpecs,
     groupServices,
@@ -564,20 +564,27 @@ export async function restartJobServices(
     sleep: Sleep = abortableSleep
 ): Promise<void> {
     const specs = declaredServiceSpecs(job);
-    const remove = (name: string) => execDocker(['rm', '-f', serviceContainerName(job, name)]).catch(() => undefined);
+    const remove = (exec: ExecDocker, name: string) =>
+        exec(['rm', '-f', serviceContainerName(job, name)]).catch(() => undefined);
+    // One absolute deadline for the removals, the runs and the readiness wait; the stand-down's own removals stay off it.
+    const deadline = Date.now() + SERVICE_RESTART_TIMEOUT_MS;
+    const bounded = boundedExec(execDocker, { deadline, signal });
     try {
         for (const spec of specs) {
             throwIfStoodDown(signal);
-            await remove(spec.name);
+            await remove(bounded, spec.name);
             try {
-                await execDocker(serviceRunArgs(job, spec, supervisorName(job)));
+                await bounded(serviceRunArgs(job, spec, supervisorName(job)));
             } catch (e) {
                 throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
             }
         }
-        await awaitServicesRunning(specs, listJobServices(job, execDocker, signal), sleep, { signal });
+        await awaitServicesRunning(specs, listJobServices(job, execDocker, signal), sleep, {
+            signal,
+            timeoutMs: timeLeft(deadline),
+        });
     } catch (e) {
-        if (signal.aborted) for (const spec of specs) await remove(spec.name);
+        if (signal.aborted) for (const spec of specs) await remove(execDocker, spec.name);
         throw e;
     }
 }

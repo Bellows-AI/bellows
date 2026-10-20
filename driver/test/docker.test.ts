@@ -49,10 +49,12 @@ import {
 } from '../src/close-read.js';
 import {
     ARTIFACT_LIMIT,
+    CLOSE_READ_DEADLINE_MS,
     commandMark,
     Inconclusive,
     OPENCODE_EXPORT_LIMIT,
     SERVICE_LOG_TAIL_LINES,
+    SERVICE_RESTART_TIMEOUT_MS,
 } from '../src/runner.js';
 import { claudeTurnsScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { createDockerRunner } from '../src/docker-runner.js';
@@ -152,6 +154,12 @@ const ok = (stdout = ''): StepResult => ({ exitCode: 0, stdout, stderr: '', time
 const hangsUntilAborted = (options?: { signal?: AbortSignal }): Promise<never> =>
     new Promise((_resolve, reject) => {
         options?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+    });
+
+/** A daemon call that never answers: it fails only at its own `timeout`, as execFile kills a stalled child (#869). */
+const hangsUntilTimeout = (options?: { timeout?: number }): Promise<never> =>
+    new Promise((_resolve, reject) => {
+        if (options?.timeout !== undefined) setTimeout(() => reject(new Error('timed out')), options.timeout);
     });
 
 /** Whether `pending` ended within a moment: a wait that ignores the kill signal stays pending. */
@@ -3812,6 +3820,36 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await runner.releaseServices(job);
     });
 
+    it.each(['rm', 'run'])('restartServices ends a stalled %s by the restart’s deadline (#869)', async (stalled) => {
+        const base = daemon();
+        let stall = false;
+        const exec = vitest.fn(async (args: string[], options?: { timeout?: number }) =>
+            stall && args[0] === stalled && (stalled === 'rm' || isServiceRun(args))
+                ? hangsUntilTimeout(options)
+                : base(args)
+        ) as unknown as ReturnType<typeof daemon>;
+        const runner = servicesRunner(exec, spawnRecording('', 0).fn);
+        await runner.run(job, { id: SESSION, resume: false });
+        stall = true;
+        vitest.useFakeTimers();
+        try {
+            let ended = false;
+            const restarting = runner.restartServices(job, new AbortController().signal);
+            restarting.then(
+                () => (ended = true),
+                () => (ended = true)
+            );
+
+            await vitest.advanceTimersByTimeAsync(SERVICE_RESTART_TIMEOUT_MS + 1_000);
+
+            expect(ended).toBe(true);
+        } finally {
+            vitest.useRealTimers();
+        }
+        stall = false;
+        await runner.releaseServices(job);
+    });
+
     it('restartServices throws when the daemon refuses the service again (issue #560)', async () => {
         const base = daemon();
         let refuse = false;
@@ -5545,6 +5583,58 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         await vitest.waitFor(() => expect(hung).toBe(true));
         stop.abort();
         expect(await endsSoon(adopting)).toBe(true);
+    });
+
+    // #869: every read of the adoption ends by ONE absolute deadline; a stalled daemon holds none of them.
+    it.each([
+        ['the kill-record read', (args: string[]) => args[0] === 'volume' && args[1] === 'inspect'],
+        ['the supervisor report read', (args: string[]) => args[0] === 'logs' && args.includes(supervisorName(job))],
+        ['the exited runner inspect', (args: string[]) => args[0] === 'inspect'],
+    ])('ends %s by the adoption’s deadline', async (_name, hang) => {
+        vitest.useFakeTimers();
+        try {
+            const { exec: base, logs } = daemon(listing());
+            const exec = (args: string[], options?: { timeout?: number }) =>
+                hang(args) ? hangsUntilTimeout(options) : base(args);
+            let ended = false;
+            const adopting = dockerRunner(exec, { spawn: logs }).adopt(adopter);
+            adopting.then(
+                () => (ended = true),
+                () => (ended = true)
+            );
+
+            await vitest.advanceTimersByTimeAsync(CLOSE_READ_DEADLINE_MS + 1_000);
+
+            expect(ended).toBe(true);
+        } finally {
+            vitest.useRealTimers();
+        }
+    });
+
+    it('kills the runner log stream at the adoption’s deadline', async () => {
+        vitest.useFakeTimers();
+        try {
+            const { exec } = daemon(listing());
+            const logs = ((_command: string, _args: string[], options?: { signal?: AbortSignal }) => {
+                const child = new EventEmitter() as ChildProcess;
+                child.stdout = new EventEmitter() as Readable;
+                child.stderr = new EventEmitter() as Readable;
+                options?.signal?.addEventListener('abort', () => child.emit('error', new Error('aborted')));
+                return child;
+            }) as unknown as typeof spawn;
+            let ended = false;
+            const adopting = dockerRunner(exec, { spawn: logs }).adopt(adopter);
+            adopting.then(
+                () => (ended = true),
+                () => (ended = true)
+            );
+
+            await vitest.advanceTimersByTimeAsync(CLOSE_READ_DEADLINE_MS + 1_000);
+
+            expect(ended).toBe(true);
+        } finally {
+            vitest.useRealTimers();
+        }
     });
 
     it('ends the runner log stream on the supplied signal', async () => {
