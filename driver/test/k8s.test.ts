@@ -76,7 +76,14 @@ import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
 import { throughTransport } from './fixtures/k8s-transport-bridge.js';
 import { type Call, k8sApiserver } from './fixtures/k8s-apiserver.js';
-import { decisionOf, TERMINATION_ROWS, type TerminationRow } from './fixtures/termination-table.js';
+import {
+    carriedPastLoss,
+    decisionOf,
+    LOSS_ROWS,
+    TERMINATION_ROWS,
+    type TerminationRow,
+} from './fixtures/termination-table.js';
+import { RETENTION_ROWS } from './fixtures/retention-table.js';
 import { STARTUP_ROWS, type StartupRow, startupDecisionOf } from './fixtures/startup-table.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import type { RunOutcome } from '../src/runner.js';
@@ -91,6 +98,10 @@ import {
     TRANSIENT_SYNC_REASON,
 } from '../src/publish.js';
 import type { ServiceSpec } from '../src/services.js';
+
+const MISMATCH_ROW = 'a run specced for another session than its group' as const;
+const SILENT_ROW = 'a supervisor that started and never answered' as const;
+const OTHER_SESSION = '44444444-4444-4444-8444-444444444444';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 /** The Job's backstop beyond the agent's budget: the drain and the report, then the hours the group serves steps. */
@@ -7753,6 +7764,53 @@ describe('how a started run ends, on kubernetes (the conformance table)', () => 
     it.each(TERMINATION_ROWS)('%s: %s', async (row, expected) => {
         expect(decisionOf(await ends[row]())).toBe(expected);
     });
+
+    it.each(LOSS_ROWS)('%s: carries nothing past the loss', async (row) => {
+        const outcome = await ends[row]();
+        expect(outcome.infraLoss).toBeDefined();
+        expect(carriedPastLoss(outcome)).toEqual([]);
+    });
+});
+
+describe('what a closed run leaves for the next claim, on kubernetes (the retention conformance table, #828)', () => {
+    const adopter: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
+    const priorName = runnerJobName(job);
+    const prior = {
+        metadata: {
+            name: priorName,
+            uid: `uid-${priorName}`,
+            labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken },
+            annotations: {
+                'factory.claim-seq': '1',
+                'factory.session': SESSION,
+                'factory.command': commandMark(job.command),
+            },
+        },
+        spec: { template: { spec: { containers: [{ name: SUPERVISOR_CONTAINER }, { name: AGENT_CONTAINER }] } } },
+        status: { startTime: START, succeeded: 1 },
+    };
+
+    it.each(RETENTION_ROWS)('%s: %s', async (_row, expected) => {
+        // One cluster for both claims: the runner Job is listed once the run closed, until it is deleted.
+        let closed = false;
+        let deleted = false;
+        const { request } = routed((method, path) => {
+            // The runner Job is tracked from before the run starts: closing the run must never delete it.
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/${priorName}`)) deleted = true;
+            if (closed && method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return { status: 200, body: JSON.stringify({ items: deleted ? [] : [prior] }) };
+            }
+        });
+
+        const first = runner(request);
+        await first.run(job, { id: SESSION, resume: false });
+        closed = true;
+        expect(deleted).toBe(false);
+
+        const adopted = await runner(request).adopt(adopter);
+        expect(adopted ? 'adoptable' : 'gone').toBe(expected);
+        if (adopted) expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0, started: true } });
+    });
 });
 
 /*
@@ -9696,7 +9754,10 @@ describe('how a refused group start ends, on kubernetes (the startup conformance
         },
     });
     /** The kubelet's own reason and words for each refusal, on the group pod's supervisor container. */
-    const refusals: Record<StartupRow, ReturnType<typeof waitingPod>> = {
+    const refusals: Record<
+        Exclude<StartupRow, typeof MISMATCH_ROW | typeof SILENT_ROW>,
+        ReturnType<typeof waitingPod>
+    > = {
         'the platform never brought the group up': waitingPod('ContainerCreating'),
         'a registry that timed out': waitingPod(
             'ErrImagePull',
@@ -9755,6 +9816,10 @@ describe('how a refused group start ends, on kubernetes (the startup conformance
         };
         return { request, reads: () => reads };
     };
+    const runningPod = {
+        metadata: { name: podName },
+        status: { phase: 'Running', containerStatuses: [{ name: 'supervisor', state: { running: {} } }] },
+    };
     /** The sync of a group whose supervisor never answers: what it threw, or null. */
     const refusedSync = (request: K8sRequest): Promise<unknown> => {
         const steps = fakeSteps();
@@ -9767,8 +9832,25 @@ describe('how a refused group start ends, on kubernetes (the startup conformance
             );
     };
 
+    const startups: Record<StartupRow, () => Promise<unknown>> = {
+        ...(Object.fromEntries(
+            Object.entries(refusals).map(([row, pod]) => [row, () => refusedSync(podsInTurn([pod]).request)])
+        ) as Record<Exclude<StartupRow, typeof MISMATCH_ROW | typeof SILENT_ROW>, () => Promise<unknown>>),
+        [SILENT_ROW]: () => refusedSync(podsInTurn([runningPod]).request),
+        [MISMATCH_ROW]: async () => {
+            const r = runner(fakeRequest().request, {}, undefined, fakeSteps().sink);
+            await r.syncCheckout(repoJob, undefined, SESSION_OF);
+            return r.run(repoJob, { id: OTHER_SESSION, resume: false }).then(
+                () => null,
+                (e: unknown) => e
+            );
+        },
+    };
+
     it.each(STARTUP_ROWS)('%s: %s', async (row, expected) => {
-        expect(startupDecisionOf(await refusedSync(podsInTurn([refusals[row]]).request))).toBe(expected);
+        const thrown = await startups[row]();
+        expect(thrown).not.toBeNull();
+        expect(startupDecisionOf(thrown)).toBe(expected);
     });
 
     // A back-off names no cause of its own: the wait reads on until the pull's own failure says one.
@@ -9787,14 +9869,52 @@ describe('how a refused group start ends, on kubernetes (the startup conformance
     // A supervisor that runs and never answers is no evidence the platform is still bringing the
     // group up: it is no transient refusal, and the sync is left to the lease as before.
     it('reads no transient cause from a supervisor that runs and never answers', async () => {
-        const running = {
-            metadata: { name: podName },
-            status: { phase: 'Running', containerStatuses: [{ name: 'supervisor', state: { running: {} } }] },
-        };
-        const thrown = await refusedSync(podsInTurn([running]).request);
+        const thrown = await refusedSync(podsInTurn([runningPod]).request);
         expect(thrown).toBeInstanceOf(Error);
         expect(startupDecisionOf(thrown)).toBe('unclassified');
         expect((thrown as Error).message).toMatch(/never came up/);
+    });
+
+    // A driver kill ends the wait at once (#828 D4): a killed attempt's group is no longer worth waiting for.
+    it('stops waiting for a supervisor once the job was killed during the first pod read', async () => {
+        const pods = podsInTurn([waitingPod('ContainerCreating')]);
+        const steps = fakeSteps();
+        steps.sink.contacted = () => false;
+        let killed = false;
+        let r: ReturnType<typeof runner> | undefined;
+        const request: K8sRequest = async (method, path, body) => {
+            const answer = await pods.request(method, path, body);
+            if (!killed && method === 'GET' && decodeURIComponent(path).includes('job-name=')) {
+                killed = true;
+                await r!.kill(repoJob);
+            }
+            return answer;
+        };
+        r = runner(request, {}, undefined, steps.sink);
+        const thrown = await r.syncCheckout(repoJob, undefined, SESSION_OF).then(
+            () => null,
+            (e: unknown) => e
+        );
+        expect((thrown as Error).message).toMatch(/killed while its task group came up/);
+        expect(pods.reads()).toBeLessThan(5);
+    });
+
+    it('reports the kill, not the refusal, when the kill lands while the pod read is pending', async () => {
+        const pods = podsInTurn([refusals['a container configuration the platform refuses']]);
+        const steps = fakeSteps();
+        steps.sink.contacted = () => false;
+        let r: ReturnType<typeof runner> | undefined;
+        const request: K8sRequest = async (method, path, body) => {
+            if (method === 'GET' && decodeURIComponent(path).includes('job-name=')) await r!.kill(repoJob);
+            return pods.request(method, path, body);
+        };
+        r = runner(request, {}, undefined, steps.sink);
+        const thrown = await r.syncCheckout(repoJob, undefined, SESSION_OF).then(
+            () => null,
+            (e: unknown) => e
+        );
+        expect(thrown).not.toBeInstanceOf(StartupRefused);
+        expect((thrown as Error).message).toMatch(/killed while its task group came up/);
     });
 
     // A pod list that cannot be read proves nothing either way: no transient cause from silence.

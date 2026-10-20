@@ -8,6 +8,7 @@ import {
     dockerStopAgent,
     recordDockerKill,
 } from './docker-teardown.js';
+import { supervisorName } from './docker-mailbox.js';
 import { createKillLedger, type KillLedger } from './kill-ledger.js';
 import { SUPERVISOR_ENV, SUPERVISOR_EXIT } from './supervisor-contract.js';
 import { agentBackstopMs } from './supervisor-plan.js';
@@ -19,7 +20,9 @@ import type { DriverConfig } from './config.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import {
     attachSteps,
+    awaitFirstContact,
     controlTokenOf,
+    GROUP_UP_WAIT_MS,
     orderFinish,
     orderGo,
     releaseSteps,
@@ -195,15 +198,37 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal?: Abor
     );
 }
 
+/** Waits for the supervisor of a started group to pull; a plain error at the bound, no proof of why. */
+async function awaitGroupUp(deps: RunnerDeps, job: BoardJob): Promise<void> {
+    const up = await awaitFirstContact(stepHostOf(deps), job, {
+        sleep: deps.sleep,
+        stopped: () => deps.ledger.was(job).stopped,
+    });
+    if (!up) {
+        throw new Error(`the task supervisor ${supervisorName(job)} never came up within ${GROUP_UP_WAIT_MS}ms`);
+    }
+}
+
 /**
  * Creates the attempt's container group once, under the re-claim fence: the supervisor, the
  * exporter and the mailboxes, started beside each other — the agent is created and started by
  * `run`, attached, after the supervisor releases it. The group is the attempt's, from its first
- * step (the sync) to its last, not the agent's: a second call (the run after the sync) finds it.
+ * step (the sync) to its last, not the agent's: a second call (the run after the sync) finds it,
+ * and refuses a run specced for another session than the group's. The group is not up until its
+ * supervisor has pulled from the driver: a kill ends that wait at once, and a supervisor that
+ * started and never answered is a plain error at the bound, left to the lease.
  */
 async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession | null): Promise<GroupState> {
     const known = deps.groups.get(job.leaseToken);
-    if (known) return known;
+    if (known) {
+        if (known.session?.id !== session?.id || known.session?.resume !== session?.resume) {
+            throw new Error(`the task group of job ${job.id} was specced for another session than the run's`);
+        }
+        return known;
+    }
+    // A lease the ledger says was stopped gets no group: its kill is this attempt's, not an earlier
+    // group's, and a step that awaited (a credential) must not revive the attempt it lost.
+    assertJobNotKilled(deps.ledger, job);
     await dockerReclaimFence(deps, job);
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);
@@ -211,6 +236,7 @@ async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession 
     await createGroup(deps, job, session, { startedAt });
     try {
         await startGroup(deps.execDocker, job, session);
+        await awaitGroupUp(deps, job);
     } catch (e) {
         await removeGroup(deps.execDocker, job);
         throw e;
@@ -298,6 +324,7 @@ async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<R
         if (release) await deps.execDocker(release, { timeout: RELEASE_DEADLINE_MS }).catch(() => undefined);
         await createGroup(deps, group, null, { startedAt: new Date().toISOString(), reclaim: true });
         await startGroup(deps.execDocker, group, null);
+        await awaitGroupUp(deps, group);
         return await runReclaimStep(stepHostOf(deps), group);
     } catch (e) {
         return {
@@ -412,6 +439,8 @@ async function dockerRun(
      * created here when no sync preceded the run. A group the daemon refuses is infrastructure,
      * thrown like a refused exporter was: never a run that silently loses its record.
      */
+    // A group made fresh forgets the kill an earlier group of this attempt recorded, so a killed job is refused first.
+    assertJobNotKilled(ledger, job);
     const { startedAt } = await ensureGroup(deps, job, session);
 
     /*
@@ -599,9 +628,13 @@ async function dockerRun(
                         vanished,
                         unfinalized: supervisorLossOf(supervisorExit, false),
                     });
-                    return end.infraLoss ? { ...settled, infraLoss: end.infraLoss } : settled;
+                    // A run the platform took away has nothing left to read: the loss, as kubernetes ends it.
+                    if (end.infraLoss) {
+                        const { exitCode, output, timedOut: lostTimedOut, started } = settled;
+                        return { exitCode, output, timedOut: lostTimedOut, started, infraLoss: end.infraLoss };
+                    }
+                    return applyCloseTimeReadout(settled, { execDocker, config, job, startedAt }, session);
                 })
-                .then((outcome) => applyCloseTimeReadout(outcome, { execDocker, config, job, startedAt }, session))
                 .then(resolve, reject);
         });
     });

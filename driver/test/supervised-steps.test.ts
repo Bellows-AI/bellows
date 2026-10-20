@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { runTimeoutMs } from '../src/claim.js';
@@ -10,6 +10,9 @@ import { CREDENTIAL_HELPER, worktreeBranch, type PublishStep } from '../src/publ
 import { pushWithLease } from '../src/publish-stale.js';
 import { createStepBroker, StepChannelClosed, StepTimedOut, type StepSink } from '../src/step-control.js';
 import {
+    awaitFirstContact,
+    GROUP_UP_POLL_MS,
+    GROUP_UP_WAIT_MS,
     orderFinish,
     orderGo,
     runGateStep,
@@ -597,5 +600,129 @@ describe('the agent environment holds no publish token', () => {
         expect(reclaim.spec.template.spec.containers.map((c) => c.name)).toEqual([SUPERVISOR_CONTAINER]);
         expect(reclaim.metadata.name).not.toBe(group.metadata.name);
         expect(holds(reclaim)).not.toContain(CLAIM_TOKEN);
+    });
+});
+
+describe('awaitFirstContact', () => {
+    const withToken: BoardJob = { ...job, supervisorEnv: { [SUPERVISOR_ENV.controlToken]: CONTROL_TOKEN } };
+    /** A host whose sink answers `contacts` in turn, then the last one for ever. */
+    const hostOf = (contacts: boolean[]) => {
+        let calls = 0;
+        const base = sink().host;
+        return {
+            host: {
+                ...base,
+                sink: { ...base.sink, contacted: () => contacts[Math.min(calls++, contacts.length - 1)]! },
+            },
+            calls: () => calls,
+        };
+    };
+    const noSleep = () => {
+        const slept: number[] = [];
+        return { slept, sleep: async (ms: number) => void slept.push(ms) };
+    };
+
+    it('answers true at once for a supervisor that already pulled, without sleeping', async () => {
+        const { slept, sleep } = noSleep();
+        expect(await awaitFirstContact(hostOf([true]).host, withToken, { sleep, stopped: () => false })).toBe(true);
+        expect(slept).toEqual([]);
+    });
+
+    it('answers true for a job with no control token: there is no supervisor to wait for', async () => {
+        const { slept, sleep } = noSleep();
+        const never = hostOf([false]);
+        expect(
+            await awaitFirstContact(never.host, { ...job, supervisorEnv: {} }, { sleep, stopped: () => false })
+        ).toBe(true);
+        expect(never.calls()).toBe(0);
+        expect(slept).toEqual([]);
+    });
+
+    it('polls until the first contact, probing between polls', async () => {
+        const { slept, sleep } = noSleep();
+        const probe = vi.fn(async () => undefined);
+        const h = hostOf([false, false, true]);
+        expect(await awaitFirstContact(h.host, withToken, { sleep, stopped: () => false, probe })).toBe(true);
+        expect(slept).toEqual([GROUP_UP_POLL_MS, GROUP_UP_POLL_MS]);
+        expect(probe).toHaveBeenCalledTimes(2);
+    });
+
+    it('ends on elapsed time, probe time included, not on a count of polls', async () => {
+        const { slept, sleep } = noSleep();
+        let now = 0;
+        const spy = vi.spyOn(Date, 'now').mockImplementation(() => {
+            now += 120_000;
+            return now;
+        });
+        try {
+            expect(await awaitFirstContact(hostOf([false]).host, withToken, { sleep, stopped: () => false })).toBe(
+                false
+            );
+        } finally {
+            spy.mockRestore();
+        }
+        expect(slept.length).toBeLessThan(20);
+        expect(GROUP_UP_WAIT_MS / GROUP_UP_POLL_MS).toBeGreaterThan(slept.length);
+    });
+
+    it('throws the killed error at once for a stopped job, before any contact is read', async () => {
+        const { slept, sleep } = noSleep();
+        const h = hostOf([true]);
+        await expect(awaitFirstContact(h.host, withToken, { sleep, stopped: () => true })).rejects.toThrow(
+            /killed while its task group came up/
+        );
+        expect(h.calls()).toBe(0);
+        expect(slept).toEqual([]);
+    });
+
+    it('throws killed, not true, when the supervisor answered but the job was killed', async () => {
+        await expect(
+            awaitFirstContact(hostOf([true]).host, withToken, { sleep: async () => undefined, stopped: () => true })
+        ).rejects.toThrow(/killed while its task group came up/);
+    });
+
+    it('throws killed, not false, when the kill lands in the last sleep before the bound', async () => {
+        let now = 0;
+        let killed = false;
+        const spy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+        try {
+            await expect(
+                awaitFirstContact(hostOf([false]).host, withToken, {
+                    sleep: async () => {
+                        now += GROUP_UP_WAIT_MS;
+                        killed = true;
+                    },
+                    stopped: () => killed,
+                })
+            ).rejects.toThrow(/killed while its task group came up/);
+        } finally {
+            spy.mockRestore();
+        }
+    });
+
+    it('lets the killed error win over what the probe threw after the kill', async () => {
+        let killed = false;
+        await expect(
+            awaitFirstContact(hostOf([false]).host, withToken, {
+                sleep: async () => undefined,
+                stopped: () => killed,
+                probe: async () => {
+                    killed = true;
+                    throw new Error('the container is held: CreateContainerConfigError');
+                },
+            })
+        ).rejects.toThrow(/killed while its task group came up/);
+    });
+
+    it('propagates what the probe threw when the job was not killed', async () => {
+        await expect(
+            awaitFirstContact(hostOf([false]).host, withToken, {
+                sleep: async () => undefined,
+                stopped: () => false,
+                probe: async () => {
+                    throw new Error('held');
+                },
+            })
+        ).rejects.toThrow('held');
     });
 });

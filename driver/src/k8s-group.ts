@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import { jobPath } from './k8s-auxspec.js';
-import { ledgerOf } from './k8s-kill.js';
+import { ledgerOf, RunnerKilled } from './k8s-kill.js';
 import {
     createSuspendedWithSecret,
     launch,
@@ -57,6 +57,8 @@ import type { RunSession } from './runner.js';
 import { StartupRefused } from './startup-cause.js';
 import {
     attachSteps,
+    awaitFirstContact,
+    GROUP_UP_WAIT_MS,
     orderFinish,
     releaseSteps,
     runReclaimStep,
@@ -84,9 +86,6 @@ export interface TaskGroup {
     /** The incarnation this runner created: its teardown deletes that one only. */
     uids: IncarnationUids;
 }
-
-/** How long a created group may take to show its supervisor — an image pull, a node scaling up. */
-const GROUP_UP_WAIT_MS = 600_000;
 
 /**
  * The group of a thread with no attempt, which a terminal reclaim has to run in: a supervisor and
@@ -212,31 +211,29 @@ export const groupsOf = (deps: K8sDeps): Map<string, TaskGroup> => {
 /**
  * Waits until the group's supervisor has pulled from the driver at least once, failing at once on a
  * held container whose words prove why (issue #302; typed by #824 D11) and past `GROUP_UP_WAIT_MS` —
- * elapsed time, not a count of polls — on anything else. At the bound, a pod the platform was still
+ * elapsed time, not a count of polls (`awaitFirstContact`) — on anything else; a driver kill ends the wait at once. At the bound, a pod the platform was still
  * bringing up (none yet, or none of its containers started) is a transient refusal; a back-off that
  * never named its cause, a supervisor that runs without answering, or lists that never answered prove
  * nothing, and are left to the lease.
  */
 async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): Promise<void> {
-    const sink = stepHostOf(deps).sink;
-    const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
-    if (!token) return;
     const image = executorImage(deps.config, job.executorType);
-    const started = Date.now();
-    let last: PodStartState = 'unread';
-    let unproven: string | null = null;
-    for (let polls = 0; Math.max(polls * POLL_MS, Date.now() - started) < GROUP_UP_WAIT_MS; polls += 1) {
-        if (sink.contacted(token)) return;
-        const pull = await readImagePullStatus(deps, jobName);
-        const refused = startRefusalOf(image, pull, true);
-        if (refused) throw refused;
-        if (pull.blocked) unproven = heldUnpullable(image, pull, pull.blocked);
-        if (pull.podState !== 'unread') last = pull.podState;
-        await deps.sleep(POLL_MS);
-    }
-    if (unproven) throw new Error(unproven);
+    const seen: { last: PodStartState; unproven: string | null } = { last: 'unread', unproven: null };
+    const contacted = await awaitFirstContact(stepHostOf(deps), job, {
+        sleep: deps.sleep,
+        stopped: () => ledgerOf(deps).was(job).stopped,
+        probe: async () => {
+            const pull = await readImagePullStatus(deps, jobName);
+            const refused = startRefusalOf(image, pull, true);
+            if (refused) throw refused;
+            if (pull.blocked) seen.unproven = heldUnpullable(image, pull, pull.blocked);
+            if (pull.podState !== 'unread') seen.last = pull.podState;
+        },
+    });
+    if (contacted) return;
+    if (seen.unproven) throw new Error(seen.unproven);
     const why = `the task supervisor of ${jobName} never came up within ${GROUP_UP_WAIT_MS}ms`;
-    if (last === 'none' || last === 'starting') throw new StartupRefused(why, 'transient');
+    if (seen.last === 'none' || seen.last === 'starting') throw new StartupRefused(why, 'transient');
     throw new Error(why);
 }
 
@@ -254,7 +251,9 @@ export async function ensureGroup(deps: K8sDeps, job: BoardJob, session: RunSess
         }
         return known;
     }
-    ledgerOf(deps).forget(job);
+    // A lease the ledger says was stopped gets no group: a step that awaited (a credential) must not
+    // revive the attempt a kill already ended, before the fence, a Secret or the Job.
+    if (ledgerOf(deps).was(job).stopped) throw new RunnerKilled(runnerName(job));
     await prepare(deps, job);
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);

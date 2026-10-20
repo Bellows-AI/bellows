@@ -2,7 +2,7 @@ import { startupHaltOf } from '../../src/loop-fence.js';
 import { StartupRefused } from '../../src/startup-cause.js';
 
 /**
- * How a group start the platform refused ends, one row per cause, with the decision the loop takes —
+ * How a group start that did not come up ends, one row per cause, with the decision the loop takes —
  * the conformance table both executors run (`docker.test.ts`, `k8s.test.ts`), each row through its own
  * harness and its own platform's words for the refusal. Typed as a `Record`, so neither suite can
  * leave a row out. `unclassified` is a refusal whose words prove no cause: the path keeps the
@@ -19,6 +19,8 @@ export const STARTUP_TABLE = {
     'an untrusted registry certificate': 'config',
     'a container configuration the platform refuses': 'config',
     'a refusal whose words prove no cause': 'unclassified',
+    'a run specced for another session than its group': 'unclassified',
+    'a supervisor that started and never answered': 'unclassified',
 } as const;
 
 export type StartupRow = keyof typeof STARTUP_TABLE;

@@ -110,6 +110,42 @@ export function attachSteps(host: Pick<StepHost, 'sink'>, job: BoardJob): void {
     if (token) host.sink.attach(token);
 }
 
+/** How long a created group may take to show its supervisor — an image pull, a node scaling up. */
+export const GROUP_UP_WAIT_MS = 600_000;
+/** How often the wait for a group's first contact looks again. */
+export const GROUP_UP_POLL_MS = 2_000;
+
+/**
+ * Waits until the attempt's supervisor has pulled from the driver at least once, on either executor.
+ * Bounded by elapsed time, probe time included, not a count of polls; false at the bound, which is
+ * the caller's to classify. A driver kill (`stopped`) ends the wait at once and wins over everything
+ * else: over a contact, over the bound, and over whatever the `probe` threw.
+ */
+export async function awaitFirstContact(
+    host: Pick<StepHost, 'sink'>,
+    job: BoardJob,
+    opts: { sleep: (ms: number) => Promise<void>; stopped: () => boolean; probe?: () => Promise<void> }
+): Promise<boolean> {
+    const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
+    if (!token) return true;
+    const killed = (): Error => new Error(`job ${job.id}: killed while its task group came up`);
+    const started = Date.now();
+    for (let polls = 0; Math.max(polls * GROUP_UP_POLL_MS, Date.now() - started) < GROUP_UP_WAIT_MS; polls += 1) {
+        if (opts.stopped()) throw killed();
+        if (host.sink.contacted(token)) return true;
+        try {
+            await opts.probe?.();
+        } catch (e) {
+            if (opts.stopped()) throw killed();
+            throw e;
+        }
+        if (opts.stopped()) throw killed();
+        await opts.sleep(GROUP_UP_POLL_MS);
+    }
+    if (opts.stopped()) throw killed();
+    return false;
+}
+
 /**
  * Submits one step — one call — and answers its result. An unanswered call — its answer lost, the
  * supervisor slow — is delivered again as the SAME call (same id, same invocation): the supervisor

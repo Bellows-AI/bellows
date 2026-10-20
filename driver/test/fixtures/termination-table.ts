@@ -33,4 +33,16 @@ export function decisionOf(outcome: RunOutcome): string {
     return kindOf(agentFaults(outcome)) ?? 'succeeded';
 }
 
+/** The rows whose run was lost to the platform: the outcome is the loss and what was known of it, no more. */
+export const LOSS_ROWS = [
+    'a runner the platform took away mid-run',
+    'a runner the platform took away after the supervisor reported its agent lost',
+] as const satisfies readonly TerminationRow[];
+
+/** What an infrastructure loss carries past the loss itself: the keys a lost run must not have. */
+export function carriedPastLoss(outcome: RunOutcome): string[] {
+    const loss = ['exitCode', 'output', 'timedOut', 'started', 'infraLoss'];
+    return Object.keys(outcome).filter((key) => !loss.includes(key));
+}
+
 export const TERMINATION_ROWS = Object.entries(TERMINATION_TABLE) as [TerminationRow, string][];
