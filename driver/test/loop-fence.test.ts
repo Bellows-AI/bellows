@@ -286,10 +286,10 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         expect(filesMatching(/\brunner\.finish\(|(?<!function )\bcloseRunControl\(/)).toEqual(['loop-conclusion.ts']);
     });
 
-    it('releases the services from end() and from the start step that outlived its attempt, nowhere else', () => {
-        // loop-services.ts tears down a start the attempt stopped waiting on; the runner interface
-        // only declares the method (runner.ts).
-        expect(filesMatching(/\.releaseServices\(/)).toEqual(['loop-conclusion.ts', 'loop-services.ts']);
+    it('releases the services from end() alone, a start the attempt stopped waiting on included', () => {
+        // loop-services.ts only hands the late start to end() (`abandonedServices`); the runner
+        // interface only declares the method (runner.ts).
+        expect(filesMatching(/\.releaseServices\(/)).toEqual(['loop-conclusion.ts']);
     });
 
     it('writes the phase and the ending through loop-phase alone', () => {

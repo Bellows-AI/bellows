@@ -92,6 +92,8 @@ export interface AttemptCtx {
     session: RunSession | null;
     /** Set once the services step started the attempt's declared services (`loop-services.ts`). */
     servicesStarted?: true;
+    /** A services start the stand-down abandoned, settling late: `end` releases what it started unless the runner is retained. */
+    abandonedServices?: Promise<void>;
     /**
      * The finished runner of an earlier claim this attempt adopted (issue #792): its outcome is the
      * run, so no sync, pre-helper or launch follows — the tree is the one that run left.

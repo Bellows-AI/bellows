@@ -76,6 +76,9 @@ type Conclusion = 'verdict' | 'suspend' | 'interrupt:release' | 'requeue' | 'non
 /** The boundaries whose verdict is already decided: a later stop, loss or handover acts on nothing. */
 const CONCLUDING: readonly Boundary[] = ['conclusion', 'settle'];
 
+/** The boundaries at or after the agent's launch, where the runner is the next claim's to adopt. */
+const LAUNCHED: readonly Boundary[] = ['run', 'run tail', 'probe', 'gates', 'post-helpers', 'publish'];
+
 interface Expected {
     conclusion: Conclusion;
     finishes: 0 | 1;
@@ -510,6 +513,8 @@ async function attempt(script: Script): Promise<Observed & { seams: Set<string> 
 function expectedOf(boundary: Boundary, fault: Fault): Expected {
     if (CONCLUDING.includes(boundary)) return { conclusion: 'verdict', finishes: 1 };
     if (fault === 'stop') return { conclusion: 'suspend', finishes: 1 };
+    // A lost lease past the launch leaves the runner to the new holder's adoption (#828); a removal finishes it.
+    if (fault === 'lost' && LAUNCHED.includes(boundary)) return { conclusion: 'none', finishes: 0, retain: true };
     if (fault === 'lost' || fault === 'removed') return { conclusion: 'none', finishes: 1 };
     if (fault === 'handover') return { conclusion: 'interrupt:release', finishes: 0 };
     switch (boundary) {

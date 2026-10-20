@@ -6,12 +6,6 @@ import { type DeadService, Inconclusive, type RunOutcome } from './runner.js';
 import { ServicesNotRunning } from './service-restart.js';
 import { stepLost } from './step-control.js';
 
-/** Tears the attempt's services down, saying so when it cannot. */
-const release = (rt: LoopRuntime, job: BoardJob): Promise<void> =>
-    rt.runner
-        .releaseServices(job)
-        .catch((e: Error) => rt.log(`job ${job.id}: could not tear down the services: ${e.message}`));
-
 /**
  * The setup step that starts the attempt's `.bellows.yaml` services, on both executors, before the
  * gate environment and its `environment.setup` (which may migrate or seed one), and so before the
@@ -46,7 +40,11 @@ export async function startServicesStep(ctx: AttemptCtx): Promise<SetupConclusio
         return { halt: 'interrupt', reason: `could not start the services: ${(e as Error).message}` };
     }
     if (raced === null) {
-        void starting.catch(() => null).then(() => release(rt, job));
+        // The late fleet is the lifecycle owner's to release, under its retention (`loop-conclusion.ts`).
+        ctx.abandonedServices = starting.then(
+            () => undefined,
+            () => undefined
+        );
         return STOOD_DOWN;
     }
     ctx.servicesStarted = true;

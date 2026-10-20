@@ -156,6 +156,13 @@ describe('settleEnd', () => {
         expect(settleEnd({ ...END, report: lost, vanished: VANISHED }).infraLoss).toBe(VANISHED);
     });
 
+    it('takes a report of a lost agent as a loss on its own: the supervisor may log it and exit 0', () => {
+        const lost = { ...REPORT, outcome: 'lost', agentExit: null, agentEnd: 'lost' };
+        expect(settleEnd({ ...END, report: lost }).infraLoss).toMatch(/lost the agent/);
+        expect(settleEnd({ ...END, report: lost, driverKilledHard: true }).infraLoss).toBeNull();
+        expect(settleEnd({ ...END, report: lost, budgetEnded: true }).infraLoss).toBeNull();
+    });
+
     it('gates a vanished runner by the report finalizing', () => {
         expect(settleEnd({ ...END, vanished: VANISHED }).infraLoss).toBe(VANISHED);
         expect(settleEnd({ ...END, report: REPORT, vanished: VANISHED }).infraLoss).toBeNull();

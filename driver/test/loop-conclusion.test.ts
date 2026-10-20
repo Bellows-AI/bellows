@@ -240,6 +240,91 @@ describe("end leaves a launched attempt's runner to the next claim (I6)", () => 
     });
 });
 
+describe('end retains the runner of an attempt whose ownership was lost (issue #828)', () => {
+    const RETAINED = (calls: readonly string[]) => {
+        expect(calls).not.toContain('finish');
+        expect(calls).not.toContain('services');
+        expect(calls).not.toContain('fence');
+        expect(calls).toContain('control.close');
+    };
+
+    it.each([
+        ['a stage answered lost', { stage: 'lost' }, VERDICT],
+        ['a verdict answered lost', { complete: 'lost' }, VERDICT],
+        ['a park answered lost', { suspend: 'lost' }, { kind: 'park', phase: 'setup' }],
+        [
+            'an interruption answered lost',
+            { interrupt: 'lost' },
+            { kind: 'interrupt', reason: 'the pod was evicted', exitCode: null },
+        ],
+    ] satisfies readonly (readonly [string, Answers, EndDecision])[])(
+        'leaves the runner, services and claim to the new holder after %s',
+        async (_what, answers, decision) => {
+            const { ctx, calls } = attempt(answers, { fenced: true, launched: true });
+
+            await end(ctx, decision);
+
+            RETAINED(calls);
+        }
+    );
+
+    it('leaves them after the lease was lost mid-attempt (the none decision)', async () => {
+        // Past the launch the runner owns the checkout claim, so no fence is held here (`handBackFence`).
+        const { ctx, calls } = attempt({}, { launched: true });
+        recordEnding(ctx.state, 'lost');
+
+        await end(ctx, { kind: 'none', log: 'the lease was lost' });
+
+        RETAINED(calls);
+    });
+
+    it('still finishes everything for a task removed under the attempt', async () => {
+        const { ctx, calls } = attempt({}, { fenced: true, launched: true });
+        recordEnding(ctx.state, 'removed');
+
+        await end(ctx, { kind: 'none', log: 'removed' });
+
+        expect(down(calls)).toEqual([...TEARDOWN, 'fence']);
+    });
+});
+
+describe('end owns the release of services an abandoned start finishes late (issue #828)', () => {
+    const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+    it('releases them once the start settles when the runner is not retained', async () => {
+        const { ctx, calls } = attempt({}, { launched: false });
+        ctx.setupDone = false as never;
+        let started: () => void = () => {};
+        ctx.abandonedServices = new Promise<void>((resolve) => {
+            started = resolve;
+        });
+        recordEnding(ctx.state, 'stop');
+
+        await end(ctx, { kind: 'park', phase: 'services' });
+        expect(calls).not.toContain('services');
+        started();
+        await settle();
+
+        expect(calls).toContain('services');
+    });
+
+    it('never releases them when a handover retained the runner before the start settled', async () => {
+        const { ctx, calls } = attempt({}, { launched: false });
+        ctx.setupDone = false as never;
+        let started: () => void = () => {};
+        ctx.abandonedServices = new Promise<void>((resolve) => {
+            started = resolve;
+        });
+        recordEnding(ctx.state, 'handover');
+
+        await end(ctx, { kind: 'none', log: 'handed over' });
+        started();
+        await settle();
+
+        expect(calls).not.toContain('services');
+    });
+});
+
 describe('end retains the runner a board call did not reach', () => {
     it('keeps it when the park never lands, after retrying the call', async () => {
         const { ctx, calls, lines } = attempt({ suspend: unavailable });

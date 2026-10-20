@@ -337,6 +337,25 @@ async function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, co
  */
 const beyondVerdicts = (state: JobState): boolean => state.ending?.kind === 'handover' || state.phase === 'concluding';
 
+/** Delivers the answers a heartbeat carries to the questions still pending, and settles the paused budget. */
+async function deliverVerdictAnswers(
+    rt: LoopRuntime,
+    job: BoardJob,
+    state: JobState,
+    verdict: HeartbeatVerdict
+): Promise<void> {
+    if (
+        typeof verdict === 'object' &&
+        !verdict.cancelRequested &&
+        !state.draining &&
+        (state.pendingQuestions.size > 0 || state.questionPausedAt !== null || verdict.answeredQuestions?.length)
+    ) {
+        await deliverAnswers(rt, job, state, verdict.answeredQuestions ?? []).catch((error: Error) => {
+            rt.log(`job ${job.id}: could not update the question runtime budget: ${error.message}`);
+        });
+    }
+}
+
 /** Folds one heartbeat verdict into the attempt's state, and kills the runner when it stands down. */
 export async function applyHeartbeatVerdict(
     rt: LoopRuntime,
@@ -346,16 +365,9 @@ export async function applyHeartbeatVerdict(
 ) {
     const { runner, log } = rt;
     if (beyondVerdicts(state)) return;
-    if (
-        typeof verdict === 'object' &&
-        !verdict.cancelRequested &&
-        !state.draining &&
-        (state.pendingQuestions.size > 0 || state.questionPausedAt !== null || verdict.answeredQuestions?.length)
-    ) {
-        await deliverAnswers(rt, job, state, verdict.answeredQuestions ?? []).catch((error: Error) => {
-            log(`job ${job.id}: could not update the question runtime budget: ${error.message}`);
-        });
-    }
+    await deliverVerdictAnswers(rt, job, state, verdict);
+    // The answer delivery above awaited: a handover that landed meanwhile retained the runner.
+    if (beyondVerdicts(state)) return;
     if (verdict === 'lost') {
         recordEnding(state, 'lost');
         log(`job ${job.id}: lease lost, killing the runner`);

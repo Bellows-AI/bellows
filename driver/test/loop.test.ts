@@ -6817,7 +6817,8 @@ describe('final envelope (issue #821 D1)', () => {
 
         await drive({ ...board, runner });
 
-        expect(order).toEqual(['stage', 'finish']);
+        // The lease is the new holder's: its adoption owns the finished runner, so this end finishes nothing (#828).
+        expect(order).toEqual(['stage']);
         expect(board.board.completed).toEqual([]);
     });
 });

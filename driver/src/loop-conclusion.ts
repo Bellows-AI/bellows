@@ -79,6 +79,7 @@ async function conclude(ctx: AttemptCtx, decision: EndDecision): Promise<LeaseSt
         return await land(ctx, decision, after);
     } finally {
         try {
+            if (ctx.state.ending?.kind === 'lost') retainForNewHolder(ctx.state);
             await ctx.quiesce();
             await teardown(ctx);
         } finally {
@@ -114,6 +115,17 @@ async function land(ctx: AttemptCtx, decision: EndDecision, after: Promise<void>
     }
 }
 
+/** A lease the board answered as lost: past the launch the runner is the new holder's to fence or adopt, never to finish. */
+function retainForNewHolder(state: JobState): void {
+    if (state.launched) state.keepGroup = true;
+}
+
+/** Tears the attempt's services down, saying so when it cannot. */
+const releaseServices = ({ rt, job }: AttemptCtx): Promise<void> =>
+    rt.runner
+        .releaseServices(job)
+        .catch((e: Error) => rt.log(`job ${job.id}: could not tear down the services: ${e.message}`));
+
 /** The destructive half, once the board knows: the group, then the control channel it is served on, then the rest. */
 async function teardown(ctx: AttemptCtx): Promise<void> {
     const { rt, job, state } = ctx;
@@ -127,11 +139,9 @@ async function teardown(ctx: AttemptCtx): Promise<void> {
     closeRunControl(rt, state);
     if (ctx.gateSession) releaseGateSession(rt, ctx.gateSession, job);
     // The services outlived run() for the declared gates' sake; they go now, unless the runner is retained.
-    if (!retained && (ctx.servicesStarted || ctx.setupDone)) {
-        await rt.runner
-            .releaseServices(job)
-            .catch((e: Error) => rt.log(`job ${job.id}: could not tear down the services: ${e.message}`));
-    }
+    if (!retained && (ctx.servicesStarted || ctx.setupDone)) await releaseServices(ctx);
+    // A start the stand-down abandoned settles on its own time and is not waited for: its fleet goes then.
+    if (!retained && ctx.abandonedServices) void ctx.abandonedServices.then(() => releaseServices(ctx));
     if (!state.keepGroup) await handBackFence(ctx);
 }
 
@@ -163,6 +173,7 @@ async function stageAndReport(ctx: AttemptCtx, verdict: VerdictBody, after: Prom
         return null;
     });
     state.keepGroup = staged !== 'held' && answer === null;
+    if (answer === 'lost') retainForNewHolder(state);
     if (state.keepGroup) {
         rt.log(
             `job ${job.id}: neither the stage nor the verdict was accepted; the group and checkout claim are left for the next claim to adopt`
@@ -174,8 +185,11 @@ async function stageAndReport(ctx: AttemptCtx, verdict: VerdictBody, after: Prom
 /** A stage the board refused: the lease, the thread or the conclusion is no longer this verdict's. */
 function unstaged(ctx: AttemptCtx, answer: 'lost' | 'conflict' | 'removed'): LeaseState | null {
     const { rt, job } = ctx;
+    if (answer === 'lost') {
+        retainForNewHolder(ctx.state);
+        return 'lost';
+    }
     ctx.state.keepGroup = false;
-    if (answer === 'lost') return 'lost';
     rt.log(
         answer === 'removed'
             ? `job ${job.id}: removed before its verdict was staged; the queue owns the tree`
@@ -208,6 +222,7 @@ async function park(ctx: AttemptCtx, decision: Extract<EndDecision, { kind: 'par
         state.keepGroup = true;
         return;
     }
+    if (verdict === 'lost') retainForNewHolder(state);
     rt.log(
         verdict === 'lost'
             ? `job ${job.id}: stopped during ${decision.phase}, but the board had already reclaimed it`
@@ -241,6 +256,7 @@ async function interrupt(
     }
     if (answer === 'lost') {
         rt.log(`job ${job.id}: ${reason}, and the lease was already lost`);
+        retainForNewHolder(state);
         return null;
     }
     if (state.ending?.kind === 'handover') {

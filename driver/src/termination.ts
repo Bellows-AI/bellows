@@ -116,6 +116,9 @@ export interface SettledEnd {
     fields: Partial<Pick<RunOutcome, 'timedOut' | 'cacheLost' | 'artifactSpoolFull'>>;
 }
 
+/** A report of a lost agent is a loss by itself: the supervisor may log it and still exit 0. */
+const LOST_AGENT = 'the supervisor lost the agent before it exited';
+
 /**
  * The one close-time classification, over all five ends of a started run (attached and adopted, on
  * both executors, and a vanished runner): a supervisor that finalized the run (`reportFinalized`)
@@ -131,7 +134,7 @@ export function settleEnd(e: EndEvidence): SettledEnd {
             timedOut,
             reported: finalized,
             vanished: finalized ? null : e.vanished,
-            unfinalized: e.unfinalized,
+            unfinalized: e.unfinalized ?? (e.report?.agentEnd === 'lost' ? LOST_AGENT : null),
         }),
         fields: { ...reportVerdictOf(e.report), ...adoptedVerdictOf(e.kills) },
     };

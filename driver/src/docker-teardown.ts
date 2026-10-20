@@ -173,12 +173,8 @@ export async function dockerKill(deps: TeardownDeps, job: BoardJob): Promise<voi
     for (const id of found.kind === 'value' ? found.value : []) {
         await deps.execDocker(['kill', id]).catch(() => undefined);
     }
-    // The declared services go with the runner: a killed job's database has no reason to
-    // outlive the job, and the close handler's teardown would catch them anyway — this is so
-    // a kill while nothing is reading the outcome (lost lease, shutdown) still reclaims them.
-    // Attempt-scoped, like every teardown: whatever a replacement attempt is running is
-    // invisible to these filters.
-    await dockerServiceTeardown(deps, job);
+    // The declared services stay: the kill is the immediate safety stop, and reclamation is
+    // `end()`'s `releaseServices`, once the board holds the outcome and unless the runner is retained.
 }
 
 /**
@@ -223,5 +219,4 @@ export async function dockerStopAgent(deps: TeardownDeps, job: BoardJob): Promis
             .catch(() => deps.execDocker(['rm', '-f', id]))
             .catch(() => undefined);
     }
-    await dockerServiceTeardown(deps, job);
 }

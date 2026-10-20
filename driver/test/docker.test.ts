@@ -2847,7 +2847,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(calls.some((a) => a[0] === 'network')).toBe(false);
     });
 
-    it('kill() takes the services down with the runner', async () => {
+    it('kill() stops the runner at once and leaves the services to end(): releaseServices reclaims them', async () => {
         const exec = daemon();
         await servicesRunner(exec, spawnRecording('', 0).fn).kill(job);
         const calls = exec.mock.calls.map((call) => call[0]);
@@ -2863,8 +2863,12 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             `label=factory.lease=${job.leaseToken}`,
         ]);
         expect(calls).toContainEqual(['kill', 'c0ffee000001']);
-        expect(calls).toContainEqual(['rm', '-f', 'c0ffee000001']);
-        expect(calls.some((a) => a[0] === 'network')).toBe(false);
+        // The recovery evidence outlives the safety kill: the services go with end()'s retention-gated release.
+        expect(calls).not.toContainEqual(['rm', '-f', 'c0ffee000001']);
+        const runner = servicesRunner(exec, spawnRecording('', 0).fn);
+        await runner.releaseServices(job);
+        expect(exec.mock.calls.map((call) => call[0])).toContainEqual(['rm', '-f', 'c0ffee000001']);
+        expect(exec.mock.calls.map((call) => call[0]).some((a) => a[0] === 'network')).toBe(false);
     });
 
     // A lost lease fires kill() while the setup may still be awaiting the daemon. Throwing is the
@@ -3121,7 +3125,12 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // name — and the teardown behind it is A-scoped too. Nothing names B.
         expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
         expect(late).toContainEqual(['kill', idFor(ATTEMPT_A)]);
-        expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        // The safety kill leaves the services to end(); its release is scoped to A's lease the same way.
+        expect(late).not.toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        await runner.releaseServices(attemptA);
+        const released = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
+        expect(released).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        expect(released.every((a) => !touchesB(a))).toBe(true);
         expect(late.some((a) => a[0] === 'network')).toBe(false);
         expect(late.every((a) => !touchesB(a))).toBe(true);
 
@@ -3399,8 +3408,14 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await pending;
 
         const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
-        expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
-        expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        expect(late.some((a) => a[0] === 'ps')).toBe(false); // the kill's own lookup came before B stood up
+        // The safety kill leaves the services to end(); its release is scoped to A's lease the same way.
+        expect(late).not.toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        await runner.releaseServices(attemptA);
+        const released = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
+        expect(released).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        expect(released.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
+        expect(released.every((a) => !touchesB(a))).toBe(true);
         expect(late.some((a) => a[0] === 'network')).toBe(false);
         expect(late.every((a) => !touchesB(a))).toBe(true);
 
