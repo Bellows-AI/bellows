@@ -164,7 +164,7 @@ interface RunnerDeps {
  * The one tolerated shape is docker's already-gone answer on a removal: a container exiting
  * between the ps and its rm is the fence succeeding, not failing.
  */
-async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal?: AbortSignal): Promise<void> {
+async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal: AbortSignal): Promise<void> {
     // An adoption's fence stops at its attempt's stand-down: no call of it is made after (#824).
     const execDocker = untilStandDown(deps.execDocker, signal);
     // The run this attempt adopted is kept, as kubernetes keeps its Job, for a later claim (issue #821).
@@ -229,7 +229,7 @@ async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession 
     // A lease the ledger says was stopped gets no group: its kill is this attempt's, not an earlier
     // group's, and a step that awaited (a credential) must not revive the attempt it lost.
     assertJobNotKilled(deps.ledger, job);
-    await dockerReclaimFence(deps, job);
+    await dockerReclaimFence(deps, job, deps.ledger.signal(job));
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);
     const startedAt = new Date().toISOString();
@@ -715,7 +715,11 @@ export function createDockerRunner(
         startServices: (job, signal) => dockerStartServices(deps, job, signal),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
         adopt: (job, signal) =>
-            dockerAdopt({ ...deps, fence: (fenced) => dockerReclaimFence(deps, fenced, signal) }, job, signal),
+            dockerAdopt(
+                { ...deps, fence: (fenced) => dockerReclaimFence(deps, fenced, signal ?? ledger.signal(fenced)) },
+                job,
+                signal
+            ),
         stopAgent: (job) => dockerStopAgent(deps, job),
         recordKill: (job, kill) => ledger.record(job, kill),
     };

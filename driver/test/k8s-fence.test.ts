@@ -5,7 +5,7 @@
  * before the Job, the uid on every delete, the resume by uid) is not repeated here. Assertions are on
  * requests and on what is thrown or answered, never on how many times a read was retried.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob, BoardLease } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { claimBody, claimPath, configmapsPath, jobPath } from '../src/k8s-auxspec.js';
@@ -19,7 +19,13 @@ import {
     sweepClaimedFleets,
 } from '../src/k8s-fence.js';
 import { jobsPath, runnerJobName, runnerName, type RunnerJobSpec, secretName } from '../src/k8s-podspec.js';
-import { CLAIM_ROUNDS, type K8sDeps, type K8sResponse } from '../src/k8s-transport.js';
+import {
+    CLAIM_ROUNDS,
+    REPLACE_WAIT_MS,
+    type K8sDeps,
+    type K8sRequestOptions,
+    type K8sResponse,
+} from '../src/k8s-transport.js';
 import { REVOKED_MARK } from '../src/labels.js';
 import { AGENT_CONTAINER, SUPERVISOR_CONTAINER } from '../src/supervisor-contract.js';
 import { k8sApiserver, type Special } from './fixtures/k8s-apiserver.js';
@@ -361,6 +367,67 @@ describe('sweepClaimedFleets', () => {
         );
         expect(gone.some((path) => path!.includes(adoptedJob.metadata.name))).toBe(false);
         expect(gone.some((path) => path!.endsWith(`/${secretName(earlier)}`))).toBe(false);
+    });
+
+    /** A clock that only the requests move: each call takes `ms` of wall-clock time. */
+    function slowWorld(ms: number, special: Special) {
+        let now = 5_000_000;
+        const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+        const { deps, calls } = world(special);
+        const inner = deps.request;
+        const timeouts: { path: string; timeoutMs: number | undefined }[] = [];
+        deps.request = async (method, path, body, options?: K8sRequestOptions) => {
+            timeouts.push({ path, timeoutMs: options?.timeoutMs });
+            now += ms;
+            return inner(method, path, body, options);
+        };
+        return { deps, calls, timeouts, restore: () => clock.mockRestore() };
+    }
+
+    it('makes no delete once its attempt is killed between the Secret and the Job delete', async () => {
+        const stale = leftoverOf(OLD, 'uid-stale');
+        const kill = new AbortController();
+        const { deps, calls } = world((method, path) => {
+            if (method === 'GET' && path.startsWith(JOBS)) return answer(200, { items: [stale] });
+            if (method === 'DELETE' && path.includes('/secrets/')) {
+                kill.abort();
+                return answer(200);
+            }
+        });
+        await deps.request('POST', CONFIGMAPS, claimBody(job));
+
+        await expect(sweepClaimedFleets(deps, job, kill.signal)).rejects.toThrow();
+
+        expect(deletes(calls, jobsPath(NS))).toEqual([]);
+    });
+
+    it('stops polling by elapsed time when its reads are slow, not by a count of polls', async () => {
+        const slow = slowWorld(20_000, (method, path) =>
+            method === 'GET' && path.startsWith(JOBS) ? answer(503) : undefined
+        );
+        try {
+            await expect(sweepClaimedFleets(slow.deps, job)).rejects.toThrow(/could not confirm the checkout empty/);
+        } finally {
+            slow.restore();
+        }
+
+        expect(slow.calls.length).toBeLessThan(REPLACE_WAIT_MS / 20_000 + 5);
+    });
+
+    it('ends a slow multi-request round at the bound: each read gets the time left and none runs past it', async () => {
+        const stale = leftoverOf(OLD, 'uid-stale');
+        const slow = slowWorld(REPLACE_WAIT_MS / 2, (method, path) =>
+            method === 'GET' && path.startsWith(JOBS) ? answer(200, { items: [stale] }) : undefined
+        );
+        try {
+            await expect(sweepClaimedFleets(slow.deps, job)).rejects.toThrow();
+        } finally {
+            slow.restore();
+        }
+
+        expect(slow.timeouts.every((t) => t.timeoutMs !== undefined && t.timeoutMs <= REPLACE_WAIT_MS)).toBe(true);
+        expect(slow.calls.some((call) => call.path === CLAIM)).toBe(false);
+        expect(deletes(slow.calls)).toEqual([]);
     });
 });
 

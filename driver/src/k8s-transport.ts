@@ -13,6 +13,7 @@ import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import type { TaskGroup } from './k8s-group.js';
 import type { TeardownIdentity } from './k8s-teardown.js';
 import { parseJsonObject } from './json-parse.js';
+import { timeLeft } from './poll.js';
 
 /**
  * The kubernetes executor's shared low-level vocabulary: the wire types (`K8sResponse`,
@@ -53,6 +54,9 @@ export const POLL_MAX_CONSECUTIVE_FAILURES = 15;
  * checkout.
  */
 export const REPLACE_MAX_POLLS = 150;
+
+/** The same patience as a wall-clock bound: the sweep ends by elapsed time, slow reads included. */
+export const REPLACE_WAIT_MS = REPLACE_MAX_POLLS * POLL_MS;
 
 /**
  * One API-server request, in milliseconds. The docker runner's child process answers the same
@@ -257,6 +261,21 @@ export function withSignal(deps: K8sDeps, signal?: AbortSignal): K8sDeps {
                 ...options,
                 signal: options?.signal ? AbortSignal.any([signal, options.signal]) : signal,
             });
+        },
+    };
+}
+
+/**
+ * `deps` whose every request ends by the absolute `deadline` (epoch ms) and is refused once it is
+ * past: a multi-request round cannot outlive the bound its poll was given.
+ */
+export function boundedBy(deps: K8sDeps, deadline: number): K8sDeps {
+    return {
+        ...deps,
+        request: async (method, path, body, options) => {
+            const timeoutMs = timeLeft(deadline);
+            if (timeoutMs === 0) throw new Error('the call was refused: its wait is out of time');
+            return deps.request(method, path, body, { ...options, timeoutMs });
         },
     };
 }

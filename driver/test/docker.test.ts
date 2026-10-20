@@ -2955,6 +2955,24 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(seen).toHaveLength(0);
     });
 
+    it('removes nothing when the job is killed while the fence is still listing the leftovers', async () => {
+        const handle: { kill: ((j: BoardJob) => Promise<void>) | null } = { kill: null };
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'ps' && args.includes('-a')) {
+                await handle.kill!(job);
+                return { stdout: psListing(args, 'c0ffee000001') };
+            }
+            return { stdout: '' };
+        });
+        const { fn } = spawnRecording('ran\n', 0);
+        const runner = servicesRunner(exec, fn);
+        handle.kill = runner.kill;
+
+        await expect(runner.run(job, { id: SESSION, resume: false })).rejects.toThrow();
+
+        expect(exec.mock.calls.map((call) => call[0]).filter((a) => a.includes('c0ffee000001'))).toEqual([]);
+    });
+
     // The two-attempt race: A loses its lease mid-setup and B claims the same job id before A
     // aborts — the loop dedups by nothing. A kill names ATTEMPT A; B carries a fresh lease
     // token that was never killed, so B must proceed, and A must stay aborted. Keyed by job

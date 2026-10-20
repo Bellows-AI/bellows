@@ -365,7 +365,7 @@ function k8sAdoption(deps: K8sDeps, reads: CloseReads): AdoptPrimitives<EarlierR
  */
 async function sweepAfterAdoption(deps: K8sDeps, job: BoardJob, prior: BoardJob, signal?: AbortSignal): Promise<void> {
     try {
-        await sweepClaimedFleets(deps, job, 0, signal);
+        await sweepClaimedFleets(deps, job, signal);
     } catch (e) {
         if (signal?.aborted) throw adoptionAbandoned();
         // A leftover the sweep could not confirm gone may still write the tree: the read run is

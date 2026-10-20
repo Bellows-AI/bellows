@@ -9793,8 +9793,9 @@ describe('how a refused group start ends, on kubernetes (the startup conformance
     it('ends the wait for the supervisor on elapsed time', async () => {
         const pods = podsInTurn([refusals['the platform never brought the group up']]);
         let now = 1_000_000;
+        // The clock runs once the supervisor wait begins: the fence before it has its own bound.
         const clock = vi.spyOn(Date, 'now').mockImplementation(() => {
-            now += 120_000;
+            if (pods.reads() > 0) now += 120_000;
             return now;
         });
         try {
