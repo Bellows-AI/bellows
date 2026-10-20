@@ -326,14 +326,7 @@ export function dockerArgs(
         // of the supervisor and exporter beside it, tells them apart by it.
         ...agentRoleArgs(),
         '-e',
-        // The AUTHOR's checkouts sit one directory down. A command-only job names no repo, so the
-        // agent starts at the root of that person's workspace and can see everything they selected
-        // — and nothing anybody else selected.
-        //
-        // This used to be `<mount>/<orgId>`, one tree shared by every member. Neither `<mount>` nor
-        // `<mount>/<orgId>` is a safe fallback now: both are the PARENT of every member's tree, and
-        // handing that to a container that may be running --dangerously-skip-permissions is a
-        // cross-tenant read. So a job with no workspace fails instead — see loop.ts.
+        // The thread's checkout on its own task volume: nothing of any other thread is mounted.
         `WORKDIR=${runWorkingDir(job)}`,
         // The thread's own task volume, mounted at TASK_MOUNT: the checkout WORKDIR names lives in
         // it, and no other thread's or member's tree is on the container's filesystem. Enforced by

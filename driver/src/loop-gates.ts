@@ -72,9 +72,9 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
         rt.log(`job ${job.id}: environment.setup skipped — this driver has no gate environment configured`);
         return null;
     }
-    // The gates run in the task worktree (issue #35) — the tree the run edits — so the
-    // environment is keyed by the worktree path, `<org>/<uuid>/.worktrees/<root id>`. A job
-    // that names no repository has no worktree and no gates either.
+    // The gates run in the task checkout (issue #35) — the tree the run edits — so the
+    // environment is keyed by `checkoutKey`, `<root id>/<repo segment>`. A job that names no
+    // repository has no checkout and no gates either.
     const key = checkoutKey(job);
     if (!key) return null;
     // The environment starts with the claim's own env — resolved for THIS author and repo — and a

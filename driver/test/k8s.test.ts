@@ -4329,7 +4329,7 @@ describe('the gate sidecar', () => {
         expect(gateOf(gated).workingDir).toBe(MAILBOXES.gate.path);
     });
 
-    it('mounts the member’s own subtree and the gate mailbox, and no other mailbox', () => {
+    it('mounts the task volume and the gate mailbox, and no other mailbox', () => {
         expect(gateOf(gated).volumeMounts).toEqual([
             { name: TASK_VOLUME, mountPath: TASK_MOUNT },
             { name: MAILBOXES.gate.name, mountPath: MAILBOXES.gate.path },
@@ -5444,7 +5444,7 @@ describe('the close-time claude-code turn read under kubernetes', () => {
 
 describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
     /**
-     * The twins of the two readout Jobs above (executor parity): the same aux-Job shape, the
+     * Executor parity for the transcript artifact Jobs: the same aux-Job shape, the
      * same env-VALUES rule, exporting the run's transcript instead of counting it. Names are
      * distinct from the turns Jobs' — the hash key is the same (job, lease) pair, and one
      * attempt's transcript Job and its turn Job must not collide.

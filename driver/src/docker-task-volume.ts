@@ -68,14 +68,21 @@ export async function ensureTaskVolume(
     } else if (read.value[TASK_ROOT_LABEL] !== taskRootOf(job)) {
         throw new Error(`the volume ${name} exists but is not labelled as the task volume of job ${job.id}`);
     }
-    // A fresh named volume's root is root:root 0755, which the task user cannot create a thread
-    // directory in: kubernetes hands it to GATE_GID through fsGroup, the daemon has no such thing.
+    // The task group cannot write a fresh named volume's root: kubernetes hands it to GATE_GID
+    // through fsGroup, the daemon has no such thing. The daemon copies the image's /task (uid 1000)
+    // into the empty volume, so root does not own what it hands over: chmod needs FOWNER, and
+    // keeping the setgid bit while root is outside the group needs FSETID.
+    const opts = signal ? { timeout: INIT_DEADLINE_MS, signal } : { timeout: INIT_DEADLINE_MS };
     await deps.execDocker(
         [
             'run',
             ...containerHardeningArgs(),
             '--cap-add',
             'CHOWN',
+            '--cap-add',
+            'FOWNER',
+            '--cap-add',
+            'FSETID',
             '--rm',
             '--user',
             '0:0',
@@ -89,7 +96,7 @@ export async function ensureTaskVolume(
             TASK_MOUNT,
             String(GATE_GID),
         ],
-        { timeout: INIT_DEADLINE_MS }
+        opts
     );
     if ((job.reviewerProfiles?.length ?? 0) === 0) return;
     await deps.execDocker(
@@ -108,6 +115,6 @@ export async function ensureTaskVolume(
             'init',
             REVIEWER_TREE_PATH,
         ],
-        { timeout: INIT_DEADLINE_MS }
+        opts
     );
 }

@@ -33,8 +33,10 @@ const NAME = `factory-task-${ROOT}-1`;
  */
 const daemon = (volume: Record<string, string> | null | 'absent' | string | Error) => {
     const calls: string[][] = [];
-    const execDocker = async (args: string[]) => {
+    const signals: (AbortSignal | undefined)[] = [];
+    const execDocker = async (args: string[], options?: { signal?: AbortSignal }) => {
         calls.push(args);
+        signals.push(options?.signal);
         if (args[0] === 'volume' && args[1] === 'inspect') {
             if (volume instanceof Error) throw volume;
             if (volume === 'absent') throw new Error('Error response from daemon: get x: no such volume');
@@ -42,7 +44,7 @@ const daemon = (volume: Record<string, string> | null | 'absent' | string | Erro
         }
         return { stdout: '' };
     };
-    return { calls, deps: { config, execDocker } };
+    return { calls, signals, deps: { config, execDocker } };
 };
 const OURS = { [TASK_ROOT_LABEL]: ROOT };
 const creates = (calls: string[][]) => calls.filter((a) => a[0] === 'volume' && a[1] === 'create');
@@ -131,6 +133,10 @@ describe("the thread's docker task volume (issue #775)", () => {
             expect(runs).toHaveLength(1);
             const [run] = runs;
             expect(run).toEqual(expect.arrayContaining(['--user', '0:0', '--cap-drop', 'ALL', '--cap-add', 'CHOWN']));
+            // The image's own /task (uid 1000) is copied up into the empty volume, so root does not
+            // own the directory it hands over: chmod needs FOWNER, and keeping the setgid bit while
+            // root is outside the group needs FSETID (a real daemon answers EPERM / drops 2000 otherwise).
+            expect(run).toEqual(expect.arrayContaining(['--cap-add', 'FOWNER', '--cap-add', 'FSETID']));
             expect(run).toEqual(expect.arrayContaining(['--rm', ...taskMountArgs(job)]));
             expect(run).toEqual(expect.arrayContaining(['-c', taskInitScript, 'init', TASK_MOUNT, String(GATE_GID)]));
             // Last: after the inspect and any create, so the init mounts a labelled volume and never makes one.
@@ -147,6 +153,14 @@ describe("the thread's docker task volume (issue #775)", () => {
         expect(run).toEqual(expect.arrayContaining(['--cap-drop', 'ALL', '--rm', ...taskMountArgs(job)]));
         expect(run).toEqual(expect.arrayContaining(['--user', `${GATE_UID}:${GATE_GID}`]));
         expect(run).toEqual(expect.arrayContaining(['-c', taskInitScript, 'init', REVIEWER_TREE_PATH]));
+    });
+
+    it("hands the attempt's signal to both init containers, so a stood-down attempt stops waiting on them", async () => {
+        const d = daemon(OURS);
+        const signal = new AbortController().signal;
+        await ensureTaskVolume(d.deps, { ...job, reviewerProfiles: ['security'] }, signal);
+        const runs = d.calls.flatMap((a, i) => (a[0] === 'run' ? [d.signals[i]] : []));
+        expect(runs).toEqual([signal, signal]);
     });
 });
 

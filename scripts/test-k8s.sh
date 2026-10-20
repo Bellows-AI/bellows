@@ -1623,7 +1623,7 @@ EOF
 kubectl expose pod "$RELEASE-origin" -n "$NAMESPACE" --port=9418 >/dev/null 2>&1
 # The runner policy blocks the pod network (10.0.0.0/8 on kind), where this origin lives, so a task
 # pod could not reach it: the lane alone admits this release's runner pods to the origin's git port.
-kubectl apply -n "$NAMESPACE" -f - >/dev/null 2>&1 <<EOF
+origin_policy="$(kubectl apply -n "$NAMESPACE" -f - 2>&1 <<EOF
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -1643,6 +1643,7 @@ spec:
           ports:
               - {protocol: TCP, port: 9418}
 EOF
+)" || bad 'the lane admits runner pods to the smoke origin' "$origin_policy"
 kubectl wait --for=condition=Ready --timeout=180s "pod/$RELEASE-origin" -n "$NAMESPACE" >/dev/null 2>&1
 repo_seeded="$(kubectl exec "$RELEASE-origin" -n "$NAMESPACE" -- git ls-remote "git://127.0.0.1:9418/$SMOKE_REPO.git" 2>&1 || true)"
 case "$repo_seeded" in
