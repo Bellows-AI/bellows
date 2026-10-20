@@ -369,8 +369,7 @@ async function launchRun(
 
 /** The run itself: spawn, and resolve to what to report (or nothing). */
 async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseDone | RunPhaseResult> {
-    const { rt, job, state } = ctx;
-    const { log } = rt;
+    const { state } = ctx;
     const { session, gateSession, executorType, pump } = inputs;
     const outcome = await launchRun(ctx, session, pump.push);
     if (outcome === null) return { done: true };
@@ -398,15 +397,39 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // would not refuse it. Best-effort throughout; a failed upload leaves the stream without a
     // complete manifest, never a failed run.
     await reportRunTail(ctx, executorType, outcome);
-    // The session minted and reported before the spawn never ran — no transcript exists under it,
-    // so a follow-up resuming it would find no conversation. A resumed session is the parent's
-    // and stays.
-    if (outcome.refused && session && !session.resume && !ctx.adopted) {
-        await rt.board
-            .session(job, null)
-            .catch((e: Error) => log(`job ${job.id}: could not clear the unused session: ${e.message}`));
-    }
+    await clearUnusedSession(ctx, session, outcome);
 
+    const verified = await verifyRun(ctx, gateSession, outcome);
+    if (verified === STOOD_DOWN) return { done: true };
+    return { done: false, outcome, ...verified, endedAt };
+}
+
+/**
+ * The session minted and reported before the spawn never ran — no transcript exists under it, so a
+ * follow-up resuming it would find no conversation. A resumed session is the parent's and stays.
+ */
+async function clearUnusedSession(ctx: AttemptCtx, session: RunSession | null, outcome: RunOutcome): Promise<void> {
+    const { rt, job } = ctx;
+    if (!outcome.refused || !session || session.resume || ctx.adopted) return;
+    await rt.board
+        .session(job, null)
+        .catch((e: Error) => rt.log(`job ${job.id}: could not clear the unused session: ${e.message}`));
+}
+
+/** What verifying a run found beyond the gates phase itself. */
+type VerifiedRun = GatesPhase & Pick<RunPhaseResult, 'treeChanged' | 'evidence'>;
+
+/**
+/**
+ * Runs the declared gates over a finished run and gathers what the verdict is built from, answering
+ * STOOD_DOWN when a stand-down landed at any of the three points between.
+ */
+async function verifyRun(
+    ctx: AttemptCtx,
+    gateSession: GateSession | null,
+    outcome: RunOutcome
+): Promise<VerifiedRun | typeof STOOD_DOWN> {
+    const { job, state } = ctx;
     /*
      * The gates run HERE: after the agent has finished talking and before the verdict, with the
      * heartbeat still beating — settle() has deliberately NOT been called yet, because a test
@@ -419,20 +442,35 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // report) must not read as the agent's progress. Under an evidence policy it is read gated or
     // not: it is the revision the evidence is bound to.
     const treeAfter = gating || evidencePolicyActive(job) ? await probeTreeNow(ctx) : null;
-    if (await endIfDown(ctx, 'its gates')) return { done: true };
+    if (await endIfDown(ctx, 'its gates')) return STOOD_DOWN;
     const gated = await gatesOrLoss(ctx, gating, outcome);
-    if (gated === STOOD_DOWN) return { done: true };
-    // A cancelled gate answers no failure, so a stand-down during the gates lands here too.
-    const treeChanged =
-        gated.failure && ctx.treeBefore !== null && treeAfter !== null ? treeAfter !== ctx.treeBefore : null;
-    if (await endIfDown(ctx, 'its gates')) return { done: true };
-
-    const evidence = evidencePolicyActive(job)
-        ? { treeBefore: ctx.treeBefore, treeAfter, gates: gatesOutcomeOf(Boolean(gating?.declared.length), gated) }
-        : null;
-    return { done: false, outcome, ...gated, endedAt, treeChanged, evidence };
+    if (gated === STOOD_DOWN) return STOOD_DOWN;
+    if (await endIfDown(ctx, 'its gates')) return STOOD_DOWN;
+    return {
+        ...gated,
+        treeChanged: treeChangedOf(ctx, gated, treeAfter),
+        evidence: evidenceOf(ctx, gating, gated, treeAfter),
+    };
 }
 
+/**
+ * Whether the failed gate's tree differs from the synced one; null when unmeasured. A cancelled
+ * gate answers no failure, so a stand-down during the gates lands here too.
+ */
+function treeChangedOf(ctx: AttemptCtx, gated: GatesPhase, treeAfter: string | null): boolean | null {
+    return gated.failure && ctx.treeBefore !== null && treeAfter !== null ? treeAfter !== ctx.treeBefore : null;
+}
+
+/** The revision-bound evidence record of a verified run; null when no policy is configured. */
+function evidenceOf(
+    ctx: AttemptCtx,
+    gating: GateSession | null,
+    gated: GatesPhase,
+    treeAfter: string | null
+): VerdictEvidence | null {
+    if (!evidencePolicyActive(ctx.job)) return null;
+    return { treeBefore: ctx.treeBefore, treeAfter, gates: gatesOutcomeOf(Boolean(gating?.declared.length), gated) };
+}
 /** How the declared gates ended for the evidence record: `none` when none were declared to run. */
 function gatesOutcomeOf(declared: boolean, gated: GatesPhase): GatesOutcome {
     if (!declared) return 'none';
