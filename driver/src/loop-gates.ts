@@ -314,6 +314,22 @@ async function runOneGate(ctx: GatesRunCtx, gate: DeclaredGate): Promise<GateRun
         .catch(refusedToRun);
 }
 
+/** A finished gate's report entry, and the text a failure carries to the board. */
+function settledGate(gate: DeclaredGate, outcome: GateRun, perGate: number): { entry: GateReport; text: string } {
+    // A failed setup is not this gate's verdict: the output names it so the board's `gates`
+    // and the job's `output` tell the two apart.
+    const text = outcome.setupFailed ? `${SETUP_FAILED_PREFIX}${outcome.output}` : outcome.output;
+    return {
+        entry: {
+            name: gate.name,
+            status: outcome.exitCode !== 0 ? 'failed' : 'passed',
+            exitCode: outcome.exitCode,
+            output: tailBytes(text, perGate),
+        },
+        text,
+    };
+}
+
 /**
  * Runs every declared gate in order, reporting each state change to the board as it happens.
  * The report REPLACES the stored list — every report carries the whole list so the task view
@@ -375,20 +391,12 @@ export async function runDeclaredGates(
         // A null is the stand-down abandonment above; a stand-down DURING the gate cancelled it,
         // and a cancelled gate is never reported failed — `gate-failed` must not read it.
         if (!outcome || down(state)) return null;
-        const failed = outcome.exitCode !== 0;
-        // A failed setup is not this gate's verdict: the output names it so the board's `gates`
-        // and the job's `output` tell the two apart.
-        const text = outcome.setupFailed ? `${SETUP_FAILED_PREFIX}${outcome.output}` : outcome.output;
+        const { entry, text } = settledGate(gate, outcome, perGate);
         // Replace the gate's own entry — one entry per declared gate, always, so the list the
         // board stores IS the declared list at its current state.
-        results[results.length - 1] = {
-            name: gate.name,
-            status: failed ? 'failed' : 'passed',
-            exitCode: outcome.exitCode,
-            output: tailBytes(text, perGate),
-        };
+        results[results.length - 1] = entry;
         await report();
-        if (failed) {
+        if (entry.status === 'failed') {
             return { name: gate.name, exitCode: outcome.exitCode ?? REFUSED_TO_RUN_EXIT_CODE, output: text };
         }
     }
