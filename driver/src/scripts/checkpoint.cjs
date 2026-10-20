@@ -6,8 +6,8 @@
 // the clone is partial, so nothing else is safe to walk with no credential), and snapshots the
 // OpenCode session database. It never moves the real index, HEAD, a branch or the working tree: the
 // only ref it makes, `refs/factory/checkpoint`, a bundle needs to name its tip, and it removes it.
-// One execFileSync per git call: no value can become a command; every call runs with
-// GIT_NO_LAZY_FETCH=1, so an object the partial clone never fetched fails fast. One JSON verdict on the last line
+// One execFileSync per git call: no value can become a command; every call runs offline
+// (OFFLINE_ENV), so an object the partial clone never fetched fails fast. One JSON verdict on the last line
 // of stdout:
 //   {ok:true, state:'none'}                                    no checkout: nothing to carry;
 //   {ok:true, state:'complete'|'truncated', cause, header, parts}
@@ -28,6 +28,8 @@ const path = require('node:path');
 
 const DEFAULT_CAP_BYTES = 268_435_456; // 256 MiB
 const MAX_BUFFER = 1_048_576;
+// No lazy fetch, and — for a git that predates GIT_NO_LAZY_FETCH — no transport and no prompt either.
+const OFFLINE_ENV = { GIT_NO_LAZY_FETCH: '1', GIT_ALLOW_PROTOCOL: '', GIT_TERMINAL_PROMPT: '0' };
 const ADD_ERR = 'add.err';
 const REASON_MAX_LENGTH = 300;
 const TIP_REF = 'refs/factory/checkpoint';
@@ -50,7 +52,7 @@ const git = (args, env = {}) =>
     execFileSync('git', args, {
         cwd: checkout,
         encoding: 'utf8',
-        env: { ...process.env, GIT_NO_LAZY_FETCH: '1', ...env },
+        env: { ...process.env, ...OFFLINE_ENV, ...env },
         maxBuffer: MAX_BUFFER,
         stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
@@ -85,7 +87,7 @@ const addAll = (env) => {
     try {
         execFileSync('git', ['add', '-A'], {
             cwd: checkout,
-            env: { ...process.env, GIT_NO_LAZY_FETCH: '1', ...env },
+            env: { ...process.env, ...OFFLINE_ENV, ...env },
             stdio: ['ignore', 'ignore', fd],
         });
     } catch (e) {
