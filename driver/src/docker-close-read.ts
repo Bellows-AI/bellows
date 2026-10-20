@@ -38,6 +38,7 @@ import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from './adopt-
 import type { KillLedger } from './kill-ledger.js';
 import { type FinalReport, finalReportOf, SUPERVISOR_EXIT, SUPERVISOR_WINDDOWN_MS } from './supervisor-contract.js';
 import { containerName, opencodeSessionReadoutArgs, containerHardeningArgs, CLOSE_READ_DEADLINE_MS } from './docker.js';
+import { taskVolumeIsOurs } from './docker-task-volume.js';
 import { taskMountArgs } from './task-volume.js';
 import {
     AdoptionBlocked,
@@ -56,7 +57,7 @@ import { CLAIM_SEQ_MARK, COMMAND_MARK, isCommandMark, isSeq, JOB_LABEL, LEASE_LA
 /**
  * The full `docker run` argv that counts the agent turns a finished claude-code run banked —
  * pure, and exported, because it is the part worth pinning. The same throwaway shape the
- * opencode readout runs: a container over the workspaces volume, entrypoint swapped for node,
+ * opencode readout runs: a container over the task volume, entrypoint swapped for node,
  * reading the transcript the CLI wrote onto the volume under FACTORY_TRANSCRIPT_DIR (its
  * CLAUDE_CONFIG_DIR). It runs AFTER the job container exits; the volume outlives the container,
  * so there is no teardown to race and a killed run's transcript is still readable.
@@ -91,7 +92,7 @@ export function claudeTurnsArgs(config: DriverConfig, job: BoardJob, sessionId: 
 
 /**
  * The full `docker run` argv that reads the cache health of a LIVE run — pure, and exported,
- * because it is the part worth pinning: one throwaway container over the workspaces volume,
+ * because it is the part worth pinning: one throwaway container over the task volume,
  * entrypoint swapped for node, read-only query for the newest root session's newest completed
  * assistant turns. Runs every CACHE_WATCH_POLL_MS of the run's life; the same
  * concurrent-reader-with-a-live-writer property the close-time readout relies on, and the same
@@ -119,6 +120,12 @@ export function opencodeCacheProbeArgs(config: DriverConfig, job: BoardJob): str
     ];
 }
 
+/**
+ * Why a readout does not run: it mounts the task volume by name, and `--mount type=volume` would
+ * create a missing one unlabeled, where the reaper never sees it.
+ */
+const NO_TASK_VOLUME = 'the thread task volume is absent or not labelled as ours, so no readout container mounts it';
+
 /** What every close-time read needs: how to reach the daemon, and which run it is reading. */
 export interface CloseReadContext {
     execDocker: ExecDocker;
@@ -136,17 +143,19 @@ export interface CloseReadContext {
  * normalized stream) rides the same read, so it is one consistent snapshot with the figures.
  */
 async function applyOpencodeCloseRead(outcome: RunOutcome, ctx: CloseReadContext): Promise<void> {
-    const readOnce = () =>
-        ctx.execDocker(opencodeSessionReadoutArgs(ctx.config, ctx.job, ctx.startedAt)).then(
-            (read) => parseOpencodeRunOutcome(read.stdout),
-            (err: Error) => opencodeReadFailed(`the readout container failed: ${err.message}`)
-        );
+    const readOnce = async () =>
+        (await taskVolumeIsOurs(ctx.execDocker, ctx.job))
+            ? ctx.execDocker(opencodeSessionReadoutArgs(ctx.config, ctx.job, ctx.startedAt)).then(
+                  (read) => parseOpencodeRunOutcome(read.stdout),
+                  (err: Error) => opencodeReadFailed(`the readout container failed: ${err.message}`)
+              )
+            : opencodeReadFailed(NO_TASK_VOLUME);
     const { scraped, reason } = await readOpencodeWithRetries(readOnce, (ms) => new Promise((r) => setTimeout(r, ms)));
     mergeOpencodeOutcome(outcome, scraped, reason);
 }
 
 /**
- * The claude-code turn count: one throwaway container over the workspaces volume, reading the
+ * The claude-code turn count: one throwaway container over the task volume, reading the
  * transcript the CLI wrote onto it while it lived. Best-effort like every close-time read — a
  * failed read costs the task its agent-turn figure, never its verdict, and a missing transcript
  * answers null rather than zero.
@@ -157,6 +166,7 @@ async function applyClaudeCloseRead(
     session: RunSession | null
 ): Promise<void> {
     if (!readsAgentTurns(ctx.job, session)) return;
+    if (!(await taskVolumeIsOurs(ctx.execDocker, ctx.job))) return mergeClaudeCloseRead(outcome, CLAUDE_READ_NONE);
     const read = await ctx
         .execDocker(claudeTurnsArgs(ctx.config, ctx.job, (session as RunSession).id, ctx.startedAt), {
             timeout: CLOSE_READ_DEADLINE_MS,
@@ -196,6 +206,7 @@ export async function tickCacheWatch(
     ctx: { execDocker: ExecDocker; config: DriverConfig; job: BoardJob; kill: (job: BoardJob) => Promise<void> },
     state: { cacheLost: string | null }
 ): Promise<void> {
+    if (!(await taskVolumeIsOurs(ctx.execDocker, ctx.job))) return;
     const probe = await ctx
         .execDocker(opencodeCacheProbeArgs(ctx.config, ctx.job))
         .then((read) => parseOpencodeCacheProbe(read.stdout))

@@ -27,6 +27,7 @@ import {
 } from '../src/docker.js';
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
 import { TASK_MOUNT, taskMountArgs, taskVolumeName } from '../src/task-volume.js';
+import { withTaskVolume } from './fixtures/task-volume-daemon.js';
 import {
     AdoptionBlocked,
     currentActivity,
@@ -1588,7 +1589,7 @@ function dockerRunner(
         sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
     } = {}
 ): ReturnType<typeof createDockerRunner> {
-    return createDockerRunner(loadDriverConfig(env), spawnFn, exec, {
+    return createDockerRunner(loadDriverConfig(env), spawnFn, exec ? withTaskVolume(exec) : exec, {
         ...(files ? { files } : {}),
         steps,
         ...(endpoint ? { endpoint } : {}),
@@ -3565,7 +3566,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const outcome = await createDockerRunner(
             cfg,
             fn,
-            exec as unknown as (args: string[]) => Promise<{ stdout: string }>,
+            withTaskVolume(exec as unknown as (args: string[]) => Promise<{ stdout: string }>),
             { steps: fakeSteps().sink }
         ).run(job, { id: SESSION, resume: false });
 
@@ -3777,7 +3778,8 @@ describe('publishing the produced work', () => {
         expect(remoteUrl(loadDriverConfig({ REPO_CLONE_BASE: 'file:///origins' }), ISSUE_JOB)).toBe(
             'file:///origins/Bellows-AI/factory.git'
         );
-        for (const repo of ['just-a-name', 'o/..', 'o/.']) {
+        // A dot-segment is the traversal; a dot-prefixed name is the task volume's own (`.factory`, `.<name>.sync`).
+        for (const repo of ['just-a-name', 'o/..', 'o/.', 'o/.factory', 'o/.hidden']) {
             expect(checkoutDir({ ...ISSUE_JOB, repo }), repo).toBeNull();
             expect(remoteUrl(loadDriverConfig({}), { ...ISSUE_JOB, repo }), repo).toBeNull();
         }
@@ -3842,6 +3844,22 @@ describe('publishing the produced work', () => {
         expect(taskCheckoutScript).not.toContain('execSync(');
         // A rebase that fails without a conflict aborts itself: the checkout never sits mid-rebase.
         expect(taskCheckoutScript).toContain("inw('rebase', '--abort')");
+    });
+
+    it('creates no task volume for an attempt that was aborted before its group', async () => {
+        const calls: string[][] = [];
+        const exec = async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'volume' && args[1] === 'inspect') throw new Error('Error: No such volume: x');
+            return { stdout: '' };
+        };
+        const aborted = new AbortController();
+        aborted.abort();
+        const runner = createDockerRunner(loadDriverConfig({}), spawnChild('', '', 0), exec, {
+            steps: fakeSteps().sink,
+        });
+        await expect(runner.syncCheckout(repoJob, aborted.signal)).rejects.toThrow();
+        expect(calls.some((args) => args[0] === 'volume' && args[1] === 'create')).toBe(false);
     });
 
     it('hands the sync the checkout, the remote and the branch, by env', async () => {

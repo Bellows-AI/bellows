@@ -94,7 +94,7 @@ const unwrittenResumeEnv = (job: BoardJob, session: RunSession): [string, string
  * refusal — the loop refuses the state first, and this is the runner asserting it too.
  *
  * The session database has to outlive the container or there is nothing to resume into: a fresh
- * one starts empty. XDG_DATA_HOME points at the task's own directory on the workspaces volume,
+ * one starts empty. XDG_DATA_HOME points at the task's own directory on the task volume,
  * persisting it per task (thread root) inside the member's tree — a dot-directory the workspace
  * reconcile never mistakes for a checkout.
  */

@@ -102,7 +102,7 @@ export interface RunOutcome {
     /**
      * The run's agent turns — one assistant response cycle in the run's ROOT conversation,
      * counted from the session's own records at close (opencode: the session database the
-     * readout walks; claude-code: the transcript on the workspaces volume). Null when the read
+     * readout walks; claude-code: the transcript on the task volume). Null when the read
      * ran and could not measure — the transcript was gone, or the container died first; absent
      * when no read was attempted. The board stores what arrives: absent
      * and null both land as null — unmeasured, never zero.

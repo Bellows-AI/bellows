@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { REVIEWER_TREE_PATH } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
-import { ensureTaskVolume } from '../src/docker-task-volume.js';
+import { applyCloseTimeReadout, tickCacheWatch } from '../src/docker-close-read.js';
+import { ensureTaskVolume, taskVolumeIsOurs } from '../src/docker-task-volume.js';
+import { OPENCODE } from '../src/executors.js';
+import type { RunOutcome } from '../src/runner.js';
 import {
     TASK_GENERATION_LABEL,
     TASK_ROOT_LABEL,
@@ -22,19 +25,25 @@ const job = {
 const config = loadDriverConfig({});
 const NAME = `factory-task-${ROOT}-1`;
 
-/** A daemon that answers `volume ls` with `listing` (or throws it) and records every call. */
-const daemon = (listing: string | Error) => {
+/**
+ * A daemon whose `volume inspect <name>` answers `volume`: a label map (the volume exists with
+ * those labels), `null` (it exists unlabeled), 'absent' (docker's own `no such volume`), raw text,
+ * or an Error. Every call is recorded.
+ */
+const daemon = (volume: Record<string, string> | null | 'absent' | string | Error) => {
     const calls: string[][] = [];
     const execDocker = async (args: string[]) => {
         calls.push(args);
-        if (args[0] === 'volume' && args[1] === 'ls') {
-            if (listing instanceof Error) throw listing;
-            return { stdout: listing };
+        if (args[0] === 'volume' && args[1] === 'inspect') {
+            if (volume instanceof Error) throw volume;
+            if (volume === 'absent') throw new Error('Error response from daemon: get x: no such volume');
+            return { stdout: typeof volume === 'string' ? volume : `${JSON.stringify(volume)}\n` };
         }
         return { stdout: '' };
     };
     return { calls, deps: { config, execDocker } };
 };
+const OURS = { [TASK_ROOT_LABEL]: ROOT };
 const creates = (calls: string[][]) => calls.filter((a) => a[0] === 'volume' && a[1] === 'create');
 
 describe("the thread's docker task volume (issue #775)", () => {
@@ -43,17 +52,10 @@ describe("the thread's docker task volume (issue #775)", () => {
         expect(taskVolumeName({ ...job, id: ROOT, rootJobId: null })).toBe(NAME);
     });
 
-    it('is listed by its root label, then created with its labels when the thread has none', async () => {
-        const d = daemon('');
+    it('is inspected by name, then created with its labels when the thread has none', async () => {
+        const d = daemon('absent');
         await ensureTaskVolume(d.deps, job);
-        expect(d.calls[0]).toEqual([
-            'volume',
-            'ls',
-            '--filter',
-            `label=${TASK_ROOT_LABEL}=${ROOT}`,
-            '--format',
-            '{{.Name}}',
-        ]);
+        expect(d.calls[0]).toEqual(['volume', 'inspect', '--format', '{{json .Labels}}', NAME]);
         expect(creates(d.calls)).toHaveLength(1);
         const [create] = creates(d.calls);
         expect(create).toEqual(expect.arrayContaining(['--label', `${TASK_ROOT_LABEL}=${ROOT}`]));
@@ -62,40 +64,66 @@ describe("the thread's docker task volume (issue #775)", () => {
     });
 
     it('is adopted, not created again, when the thread already has it', async () => {
-        const d = daemon(`${NAME}\n`);
+        const d = daemon(OURS);
         await ensureTaskVolume(d.deps, job);
         expect(creates(d.calls)).toEqual([]);
-        // Nothing but the listing: no reviewer, so no init container either.
+        // Nothing but the inspect: no reviewer, so no init container either.
         expect(d.calls).toHaveLength(1);
     });
 
-    it('is never created on a failed listing: the refusal throws and nothing else is asked', async () => {
+    it.each([[null], [{ [TASK_ROOT_LABEL]: '99999999-9999-4999-8999-999999999999' }], [{ other: 'x' }]])(
+        'is refused, never mounted or recreated, when a volume of its name carries labels %j',
+        async (labels) => {
+            const d = daemon(labels);
+            await expect(ensureTaskVolume(d.deps, { ...job, reviewerProfiles: ['security'] })).rejects.toThrow(
+                /not labelled as the task volume/
+            );
+            expect(creates(d.calls)).toEqual([]);
+            expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
+        }
+    );
+
+    it('is never created on a failed inspect: the refusal throws and nothing else is asked', async () => {
         const d = daemon(new Error('Cannot connect to the Docker daemon'));
         await expect(ensureTaskVolume(d.deps, job)).rejects.toThrow(/Cannot connect to the Docker daemon/);
         expect(d.calls).toHaveLength(1);
-        expect(creates(d.calls)).toEqual([]);
     });
 
-    it('is never created on a listing that is not a list of names', async () => {
+    it('is never created on an inspect that is not a label map', async () => {
         const d = daemon('<html>proxy error</html>\n');
         await expect(ensureTaskVolume(d.deps, job)).rejects.toThrow(/not the listing/);
         expect(creates(d.calls)).toEqual([]);
     });
 
+    it('is never asked for by an aborted attempt: the daemon sees no create', async () => {
+        const d = daemon('absent');
+        const controller = new AbortController();
+        controller.abort();
+        await expect(ensureTaskVolume(d.deps, job, controller.signal)).rejects.toThrow();
+        expect(creates(d.calls)).toEqual([]);
+    });
+
+    it('is judged by whether a mount may use it: taskVolumeIsOurs answers false for absent and unlabeled', async () => {
+        expect(await taskVolumeIsOurs(daemon(OURS).deps.execDocker, job)).toBe(true);
+        expect(await taskVolumeIsOurs(daemon('absent').deps.execDocker, job)).toBe(false);
+        expect(await taskVolumeIsOurs(daemon(null).deps.execDocker, job)).toBe(false);
+        expect(await taskVolumeIsOurs(daemon(new Error('boom')).deps.execDocker, job)).toBe(false);
+    });
+
     it('is not named for a thread root that is no uuid: the daemon is never asked', async () => {
-        const d = daemon('');
+        const d = daemon('absent');
         await expect(ensureTaskVolume(d.deps, { ...job, rootJobId: '../../etc' })).rejects.toThrow(/not a uuid/);
         expect(d.calls).toEqual([]);
     });
 
     it('never deletes a volume', async () => {
-        const d = daemon(`${NAME}\n`);
+        const d = daemon(OURS);
         await ensureTaskVolume(d.deps, { ...job, reviewerProfiles: ['security'] });
         expect(d.calls.some((a) => a.includes('rm') || a.includes('prune'))).toBe(false);
     });
 
     it('makes the reviewer home with one hardened throwaway container when the thread reviews', async () => {
-        const d = daemon(`${NAME}\n`);
+        const d = daemon(OURS);
         await ensureTaskVolume(d.deps, { ...job, reviewerProfiles: ['security'] });
         const runs = d.calls.filter((a) => a[0] === 'run');
         expect(runs).toHaveLength(1);
@@ -105,8 +133,48 @@ describe("the thread's docker task volume (issue #775)", () => {
     });
 
     it.each([[undefined], [[]]])('starts no init container for reviewerProfiles %j', async (reviewerProfiles) => {
-        const d = daemon('');
+        const d = daemon('absent');
         await ensureTaskVolume(d.deps, { ...job, reviewerProfiles } as BoardJob);
         expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
+    });
+});
+
+describe('the close-time readouts and the task volume (issue #775)', () => {
+    const noVolume = () => {
+        const calls: string[][] = [];
+        const execDocker = async (args: string[]) => {
+            calls.push(args);
+            if (args[1] === 'inspect') throw new Error('Error response from daemon: no such volume');
+            return { stdout: '{"id":"ses_1"}\n' };
+        };
+        return { calls, ctx: { execDocker, config, job, startedAt: new Date().toISOString() } };
+    };
+    const readouts = (calls: string[][]) => calls.filter((a) => a[0] === 'run');
+
+    it('run no opencode readout container where the thread has no labelled volume', async () => {
+        const d = noVolume();
+        const outcome = await applyCloseTimeReadout(
+            { exitCode: 0 } as RunOutcome,
+            { ...d.ctx, job: { ...job, executorType: OPENCODE } as BoardJob },
+            null
+        );
+        expect(readouts(d.calls)).toEqual([]);
+        expect(outcome.readoutError).toMatch(/task volume/);
+    });
+
+    it('run no claude turn readout where the thread has no labelled volume', async () => {
+        const d = noVolume();
+        await applyCloseTimeReadout(
+            { exitCode: 0 } as RunOutcome,
+            { ...d.ctx, job: { ...job, executorType: 'claude-code' } as BoardJob },
+            { id: '44444444-4444-4444-8444-444444444444', resume: false }
+        );
+        expect(readouts(d.calls)).toEqual([]);
+    });
+
+    it('run no cache probe where the thread has no labelled volume', async () => {
+        const d = noVolume();
+        await tickCacheWatch({ ...d.ctx, kill: async () => undefined }, { cacheLost: null });
+        expect(readouts(d.calls)).toEqual([]);
     });
 });

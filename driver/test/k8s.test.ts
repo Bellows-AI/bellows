@@ -5214,6 +5214,15 @@ describe("the thread's task volume claim (issue #775)", () => {
         expect((posts(calls)[0]!.body as Claim).metadata.name).toBe(taskVolumeName(job));
     });
 
+    it('is never created for an attempt that was aborted: the sync stands down with no create', async () => {
+        const { request, calls } = routed(() => undefined);
+        const aborted = new AbortController();
+        aborted.abort();
+        const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+        await expect(runner(request).syncCheckout(repoJob, aborted.signal, SESSION_OF)).rejects.toThrow();
+        expect(posts(calls)).toEqual([]);
+    });
+
     it('is adopted when the create answers 409: the claim is read again and nothing else is created', async () => {
         const stored = JSON.stringify(specOf());
         let reads = 0;

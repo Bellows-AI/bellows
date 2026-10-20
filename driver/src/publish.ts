@@ -196,9 +196,7 @@ export interface SyncResult {
 }
 
 /**
- * The startup sync's own bound, on both executors: the kubernetes sync Job's
- * `activeDeadlineSeconds` and the docker sync container's timeout. The script's stale-lock bound
- * (scripts/task-checkout.cjs, `DEFAULT_SYNC_LOCK_STALE_MS`) is this same 600s.
+ * The startup sync's own bound, on both executors: the timeout of the supervised sync step.
  */
 export const SYNC_DEADLINE_MS = 600_000;
 
@@ -301,10 +299,14 @@ export const GATE_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 /** Same shape the board's `.bellows.yaml` parser enforces; re-asserted here, before argv. */
 export const GATE_IMAGE = /^[A-Za-z0-9_][A-Za-z0-9_./:-]*$/;
 
-/** The repo segment of the job's `owner/name`, asserted: '.' and '..' are valid by character but are the traversal itself. */
+/**
+ * The repo segment of the job's `owner/name`, asserted: a segment starting with '.' is refused —
+ * '.' and '..' are the traversal itself, and any other dot-name is the task volume's own (`.factory`,
+ * the `.<name>.sync` the checkout is built in).
+ */
 const repoSegmentOf = (job: Pick<BoardJob, 'repo'>): string | null => {
     const segment = job.repo?.split('/')[1];
-    return segment && segment !== '.' && segment !== '..' && /^[A-Za-z0-9._-]+$/.test(segment) ? segment : null;
+    return segment && /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(segment) ? segment : null;
 };
 
 /**

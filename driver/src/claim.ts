@@ -107,7 +107,7 @@ export function runWorkingDir(job: BoardJob): string {
 
 /**
  * The transcript store a headless claude-code run is pointed at: one directory per THREAD ROOT on
- * the workspaces volume, passed to the runner as `FACTORY_TRANSCRIPT_DIR`. The entrypoint makes it
+ * the task volume, passed to the runner as `FACTORY_TRANSCRIPT_DIR`. The entrypoint makes it
  * `CLAUDE_CONFIG_DIR` (guarded, headless only), so the CLI writes its transcripts onto the volume
  * the moment it writes them — no post-run copy, nothing dies with the container — and a follow-up's
  * `--resume` finds the thread's earlier sessions in the same directory it runs in. The root is the

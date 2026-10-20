@@ -391,7 +391,7 @@ async function syncCheckout(
     deps: K8sDeps,
     job: BoardJob,
     session: RunSession | null = null,
-    githubToken?: string
+    { githubToken, signal }: { githubToken?: string | undefined; signal?: AbortSignal | undefined } = {}
 ): Promise<SyncResult> {
     if (!checkoutDir(job)) return { ok: true, reason: null }; // nothing synced, nothing to fail either
 
@@ -401,7 +401,7 @@ async function syncCheckout(
     // back only once nothing of this group can still write the worktree (`takeGroupDown`).
     const failed = (): Promise<void> => takeGroupDown(deps, job);
     try {
-        await ensureGroup(deps, job, session);
+        await ensureGroup(deps, job, session, signal);
     } catch (e) {
         await failed();
         throw e;
@@ -474,8 +474,8 @@ export function createKubernetesRunner(
         resizeReviewer: (job, phase) => resizeReviewerSidecar(deps, job, phase),
         runReview: (caller, review, session, control) =>
             runReviewInGroup(deps, reviewRunOf(caller, review, session, control), control?.signal),
-        syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
-            syncCheckout(deps, job, session ?? null, githubToken),
+        syncCheckout: (job: BoardJob, signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
+            syncCheckout(deps, job, session ?? null, { githubToken, signal }),
         finish: (job: BoardJob) => finishGroup(deps, job),
         reclaimWorktree,
         // The loop's hand-back of the checkout claim (`loop-fence.ts`) for an attempt that ends

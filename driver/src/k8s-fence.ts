@@ -567,8 +567,11 @@ async function taskVolumePresent(deps: K8sDeps, job: BoardJob): Promise<boolean>
  * that answers 409 lost a race to another creation of the same name: the volume is read and adopted.
  * Nothing here ever deletes one.
  */
-export async function ensureTaskVolume(deps: K8sDeps, job: BoardJob): Promise<void> {
+export async function ensureTaskVolume(deps: K8sDeps, job: BoardJob, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     if (await taskVolumePresent(deps, job)) return;
+    // An attempt aborted while the presence read was out creates nothing.
+    signal?.throwIfAborted();
     const created = await deps.request(
         'POST',
         taskVolumesPath(deps.config.k8sNamespace),
@@ -585,7 +588,7 @@ export async function ensureTaskVolume(deps: K8sDeps, job: BoardJob): Promise<vo
  * only then resumes the Job. A Secret therefore never exists without a Job the fence and the reaper
  * can derive its name from (issue #821), and no pod starts before the claim is verified.
  */
-export async function prepare(deps: K8sDeps, job: BoardJob): Promise<void> {
+export async function prepare(deps: K8sDeps, job: BoardJob, signal?: AbortSignal): Promise<void> {
     // Step one: TAKE THE CHECKOUT.
     await acquireClaim(deps, job);
 
@@ -608,7 +611,7 @@ export async function prepare(deps: K8sDeps, job: BoardJob): Promise<void> {
     }
 
     // The thread's task volume, adopted or created: the pod mounts it by name.
-    await ensureTaskVolume(deps, job);
+    await ensureTaskVolume(deps, job, signal);
 }
 
 /**

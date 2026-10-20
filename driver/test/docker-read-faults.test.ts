@@ -24,6 +24,7 @@ import { createDockerRunner } from '../src/docker-runner.js';
 import { createReaper } from '../src/reaper.js';
 import { commandMark } from '../src/runner.js';
 import { forgetDeclaredServices, recordDeclaredServices } from '../src/services.js';
+import { TASK_ROOT_LABEL } from '../src/task-volume.js';
 import { type DockerSpecial, routedDocker } from './fixtures/docker-daemon.js';
 import {
     type Alias,
@@ -173,6 +174,10 @@ const adoptExited: Build<ExecDocker> = async (tap, alias) => {
             if (is(args, 'wait')) return ok('0\n');
             if (is(args, 'ps')) return ok(has(args, 'status=exited') ? listing : fencePs);
             if (is(args, 'volume', 'ls')) return ok(fenceVolumes);
+            // The thread's task volume the close-time read mounts is there, labelled for its root.
+            if (is(args, 'volume', 'inspect') && args.at(-1)?.startsWith('factory-task-')) {
+                return ok(`${JSON.stringify({ [TASK_ROOT_LABEL]: prior.id })}\n`);
+            }
             // No kill marker recorded: the daemon's own refusal for a volume that does not exist.
             if (is(args, 'volume', 'inspect')) {
                 return Object.assign(new Error('docker volume inspect exited 1'), {

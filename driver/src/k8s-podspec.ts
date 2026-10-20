@@ -231,7 +231,7 @@ function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
 
 /**
  * The task supervisor's container: the trusted half of the pod. It runs `scripts/supervisor.cjs` by
- * content in the executor image and mounts all four mailboxes and the member's workspace subtree —
+ * content in the executor image and mounts all four mailboxes and the thread's task volume —
  * the steps it runs for the driver (the sync, the probe, the publish, the helpers, the reclaim) work
  * on the task worktree — and nothing else of the member's: no telemetry config and no claim env. A
  * step's credentials arrive with the step over its authenticated channel (`supervised-steps.ts`),
@@ -369,7 +369,7 @@ function gateSidecar(config: DriverConfig, job: BoardJob, image: string): Runner
  * them mount (`scripts/review-loop.sh`). It runs as REVIEWER_UID — not the CLI's, the tool's or the
  * gate's — so none of them can signal a review, and it holds nothing a publication needs: no
  * publish token, no credential helper, no claim env and no Secret reference but the model credentials Secret the agent also reads. Each request carries the
- * review's own environment and is gone before the review starts. Its tree is the member's subtree,
+ * review's own environment and is gone before the review starts. Its tree is the task volume,
  * read-only (the shared clone and the review's worktree are in it), but for its HOME, a fixed
  * directory of that tree it mounts read-write (`REVIEWER_TREE_DIR`). Sized idle (`reviewerResourcesField`) and resized in place for a review.
  */
@@ -442,7 +442,7 @@ function exporterContainer(config: DriverConfig, job: BoardJob, startedAt: strin
 }
 
 /**
- * The agent's container and the volumes it needs: the member's workspace subtree and telemetry
+ * The agent's container and the volumes it needs: the thread's task volume and telemetry
  * config, and of the supervisor's mailboxes only the two the agent may touch.
  *
  * WORKDIR is the one literal value: a path, not a credential. Every forwarded credential is a

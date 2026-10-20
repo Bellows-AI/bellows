@@ -216,7 +216,12 @@ async function awaitGroupUp(deps: RunnerDeps, job: BoardJob): Promise<void> {
  * supervisor has pulled from the driver: a kill ends that wait at once, and a supervisor that
  * started and never answered is a plain error at the bound, left to the lease.
  */
-async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession | null): Promise<GroupState> {
+async function ensureGroup(
+    deps: RunnerDeps,
+    job: BoardJob,
+    session: RunSession | null,
+    signal?: AbortSignal
+): Promise<GroupState> {
     const known = deps.groups.get(job.leaseToken);
     if (known) {
         if (known.session?.id !== session?.id || known.session?.resume !== session?.resume) {
@@ -228,7 +233,7 @@ async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession 
     // group's, and a step that awaited (a credential) must not revive the attempt it lost.
     assertJobNotKilled(deps.ledger, job);
     await dockerReclaimFence(deps, job);
-    await ensureTaskVolume(deps, job);
+    await ensureTaskVolume(deps, job, signal);
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);
     const startedAt = new Date().toISOString();
@@ -275,11 +280,11 @@ async function dockerSyncCheckout(
     deps: RunnerDeps,
     job: BoardJob,
     session: RunSession | null = null,
-    githubToken?: string
+    { githubToken, signal }: { githubToken?: string | undefined; signal?: AbortSignal | undefined } = {}
 ): Promise<SyncResult> {
     if (!checkoutDir(job)) return { ok: true, reason: null }; // nothing synced
     try {
-        await ensureGroup(deps, job, session);
+        await ensureGroup(deps, job, session, signal);
         return await runSyncStep(stepHostOf(deps), job, githubToken);
     } catch (e) {
         // A group that cannot exist, or a channel that closed under the sync, leaves nothing behind
@@ -651,8 +656,8 @@ export function createDockerRunner(
         kill: (job) => dockerKill(deps, job),
         pauseDeadline: async (job, paused) => deadlines.pause(job.leaseToken, paused),
         releaseServices: (job) => dockerServiceTeardown(deps, job),
-        syncCheckout: (job, _signal, session, githubToken) =>
-            dockerSyncCheckout(deps, job, session ?? null, githubToken),
+        syncCheckout: (job, signal, session, githubToken) =>
+            dockerSyncCheckout(deps, job, session ?? null, { githubToken, signal }),
         finish: (job) => finishGroup(deps, job),
         reclaimWorktree: dockerReclaimWorktree,
         ...supervisedStepMembers({

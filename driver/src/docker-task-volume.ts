@@ -2,7 +2,7 @@ import { containerHardeningArgs } from './docker.js';
 import type { BoardJob } from './board.js';
 import { type DriverConfig, executorImage } from './config.js';
 import { GATE_GID, GATE_UID, REVIEWER_TREE_PATH } from './claim.js';
-import { type ExecDocker, nameLines, readDocker } from './docker-runner-support.js';
+import { type ExecDocker, readDocker } from './docker-runner-support.js';
 import {
     TASK_ROOT_LABEL,
     taskInitScript,
@@ -14,31 +14,58 @@ import {
 
 const INIT_DEADLINE_MS = 60_000;
 
+/** A volume's labels from `{{json .Labels}}`: `null` (unlabeled) reads as none; anything but an object is no answer. */
+const labelMap = (stdout: string): Record<string, unknown> | null => {
+    try {
+        const parsed: unknown = JSON.parse(stdout);
+        if (parsed === null) return {};
+        return typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+    } catch {
+        return null;
+    }
+};
+
+const readTaskVolume = (execDocker: ExecDocker, job: BoardJob, signal?: AbortSignal) =>
+    readDocker(
+        (args) => execDocker(args, signal ? { signal } : undefined),
+        ['volume', 'inspect', '--format', '{{json .Labels}}', taskVolumeName(job)],
+        `the task volume of job ${job.id}`,
+        { parse: labelMap, absentOn: ['volume'] }
+    );
+
+/**
+ * Whether the thread's task volume exists and carries its root label: the only volume a readout
+ * may mount, because `--mount type=volume` creates a missing one unlabeled, where the reaper
+ * never sees it. A refused or unreadable inspect is false.
+ */
+export async function taskVolumeIsOurs(execDocker: ExecDocker, job: BoardJob): Promise<boolean> {
+    const read = await readTaskVolume(execDocker, job);
+    return read.kind === 'value' && read.value[TASK_ROOT_LABEL] === taskRootOf(job);
+}
+
 /**
  * The task volume of the job's thread, created on the thread's first attempt and adopted by every
- * later one (issue #775). The listing is the only evidence of absence: a failed or malformed
- * listing throws, and nothing is created or mounted on it. A thread with a reviewer also gets the
- * reviewer's home made before the reviewer's container mounts it.
+ * later one (issue #775). Presence is judged by inspecting the volume by name, as the kubernetes
+ * executor GETs its claim: a refused or malformed inspect throws, and nothing is created or mounted
+ * on it; a volume of the name without the thread's root label is refused, never adopted. An aborted
+ * attempt creates nothing. A thread with a reviewer also gets the reviewer's home made before the
+ * reviewer's container mounts it.
  */
 export async function ensureTaskVolume(
     deps: { config: DriverConfig; execDocker: ExecDocker },
-    job: BoardJob
+    job: BoardJob,
+    signal?: AbortSignal
 ): Promise<void> {
     const name = taskVolumeName(job);
-    const listed = await readDocker(
-        deps.execDocker,
-        ['volume', 'ls', '--filter', `label=${TASK_ROOT_LABEL}=${taskRootOf(job)}`, '--format', '{{.Name}}'],
-        `the task volume of job ${job.id}`,
-        { parse: nameLines }
-    );
-    if (listed.kind !== 'value') {
-        throw new Error(
-            listed.kind === 'inconclusive' ? listed.reason : `the task volume of job ${job.id} could not be listed`
-        );
-    }
-    if (!listed.value.includes(name)) {
+    signal?.throwIfAborted();
+    const read = await readTaskVolume(deps.execDocker, job, signal);
+    if (read.kind === 'inconclusive') throw new Error(read.reason);
+    if (read.kind === 'absent') {
+        signal?.throwIfAborted();
         const labels = Object.entries(taskVolumeLabels(job)).flatMap(([key, value]) => ['--label', `${key}=${value}`]);
-        await deps.execDocker(['volume', 'create', ...labels, name]);
+        await deps.execDocker(['volume', 'create', ...labels, name], signal ? { signal } : undefined);
+    } else if (read.value[TASK_ROOT_LABEL] !== taskRootOf(job)) {
+        throw new Error(`the volume ${name} exists but is not labelled as the task volume of job ${job.id}`);
     }
     if ((job.reviewerProfiles?.length ?? 0) === 0) return;
     await deps.execDocker(

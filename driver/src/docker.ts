@@ -172,7 +172,7 @@ export const containerName = (job: BoardJob): string => `factory-job-${job.id}-$
 /**
  * The full `docker run` argv that reads what a finished opencode run left behind — pure, and
  * exported, because it is the part worth pinning: the readout is a throwaway container over the
- * workspaces volume, entrypoint swapped for node, whose only work is one read-only query pair for
+ * task volume, entrypoint swapped for node, whose only work is one read-only query pair for
  * the newest root session and the finish reason of its last assistant message.
  *
  * It runs AFTER the job container exits (docker exec cannot), and against the volume rather than
@@ -335,10 +335,9 @@ export function dockerArgs(
         // handing that to a container that may be running --dangerously-skip-permissions is a
         // cross-tenant read. So a job with no workspace fails instead — see loop.ts.
         `WORKDIR=${runWorkingDir(job)}`,
-        // Scoped to the job's own `<orgId>/<userId>` subtree, mounted AT the path WORKDIR names:
-        // every consumer path below it resolves, and the rest of the volume — every other
-        // member's and org's tree — is absent from the container's filesystem. Enforced by the
-        // mount itself; an agent running arbitrary code inside cannot cross it.
+        // The thread's own task volume, mounted at TASK_MOUNT: the checkout WORKDIR names lives in
+        // it, and no other thread's or member's tree is on the container's filesystem. Enforced by
+        // the mount itself; an agent running arbitrary code inside cannot cross it.
         ...taskMountArgs(job),
         // The agent's side of the task supervisor's mailbox: `in` read-only (a Stop, an answer, a
         // kill order — it cannot forge them) and `out` (its questions and heartbeat). Nothing of the

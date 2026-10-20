@@ -5,7 +5,7 @@
 // reports nothing.
 //
 // Environment (set by the driver; a path and a constant, never credentials):
-//   OPENCODE_DB       — the session database: <workspaces>/<org>/<uuid>/.opencode/opencode/opencode.db;
+//   OPENCODE_DB       — the session database: <task volume>/.factory/opencode/<root>/opencode/opencode.db;
 //   CACHE_WATCH_TURNS — how many completed turns the verdict inspects (the driver's
 //                       CACHE_WATCH_TURNS constant, so the trigger cannot drift between here
 //                       and the code that judges the turns).

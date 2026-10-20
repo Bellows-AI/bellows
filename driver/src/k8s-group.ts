@@ -152,7 +152,12 @@ async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): P
  * after the sync — finds it and answers it; a run specced for another session is refused, because
  * a pod's containers cannot change after it exists.
  */
-export async function ensureGroup(deps: K8sDeps, job: BoardJob, session: RunSession | null): Promise<TaskGroup> {
+export async function ensureGroup(
+    deps: K8sDeps,
+    job: BoardJob,
+    session: RunSession | null,
+    signal?: AbortSignal
+): Promise<TaskGroup> {
     const known = groupsOf(deps).get(job.leaseToken);
     if (known) {
         if (known.session?.id !== session?.id || known.session?.resume !== session?.resume) {
@@ -163,7 +168,7 @@ export async function ensureGroup(deps: K8sDeps, job: BoardJob, session: RunSess
     // A lease the ledger says was stopped gets no group: a step that awaited (a credential) must not
     // revive the attempt a kill already ended, before the fence, a Secret or the Job.
     if (ledgerOf(deps).was(job).stopped) throw new RunnerKilled(runnerName(job));
-    await prepare(deps, job);
+    await prepare(deps, job, signal);
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);
     const startedAt = new Date().toISOString();

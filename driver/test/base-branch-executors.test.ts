@@ -4,6 +4,7 @@ import { RESERVED_ENV_NAMES } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
 import { dockerArgs } from '../src/docker.js';
 import { createDockerRunner } from '../src/docker-runner.js';
+import { withTaskVolume } from './fixtures/task-volume-daemon.js';
 import type { StepSink } from '../src/step-control.js';
 import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 import { runnerJobSpec } from '../src/k8s-podspec.js';
@@ -65,7 +66,9 @@ const dockerSync = async (job: BoardJob): Promise<Record<string, string>> => {
         supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: 'tok' },
     };
     const exec = async () => ({ stdout: '' });
-    await createDockerRunner(loadDriverConfig({}), undefined, exec, { steps: sink }).syncCheckout(supervised);
+    await createDockerRunner(loadDriverConfig({}), undefined, withTaskVolume(exec), { steps: sink }).syncCheckout(
+        supervised
+    );
     return steps[0]!.env;
 };
 /** The env of the sync step the kubernetes runner submits to the attempt's supervisor for `job`. */

@@ -160,7 +160,7 @@ export interface DriverConfig {
     gateTimeoutMs: number;
     /**
      * Honors `.bellows.yaml` in the author's checkouts: before a run, the driver reads the file
-     * (through a throwaway container over the workspaces volume — it has no host path), starts
+     * (through a throwaway container over the task volume — it has no host path), starts
      * each declared service as a sibling container on a per-job network, and joins the runner to
      * it, so `redis://cache:6379` resolves for the duration of one job. On by default;
      * `RUNNER_SERVICES=0` is the opt-out — see docs/jobs.md.
@@ -178,7 +178,7 @@ export interface DriverConfig {
     cacheWatch: boolean;
     /**
      * How often the cache watch polls the session database. Each poll is one throwaway container
-     * over the workspaces volume, so the period keeps the same order as the poll interval —
+     * over the task volume, so the period keeps the same order as the poll interval —
      * frequent enough to catch a collapse minutes into the turns that reveal it, rare enough
      * that the daemon never notices.
      */
@@ -229,7 +229,7 @@ export interface DriverConfig {
      * (RUNNER_NODE_SELECTOR, a JSON object). The chart's own pods get theirs from the top-level
      * `nodeSelector` value; these are the runner node group's — the tainted, IMDS-hardened nodes
      * agent-written code is meant to land on and nothing else (issue #361). Null (unset) places
-     * pods wherever the workspaces claim can attach, as before. Docker has no twin: the daemon
+     * pods wherever the task volume claim can attach, as before. Docker has no twin: the daemon
      * decides placement, there is nothing to forward.
      */
     runnerNodeSelector: Record<string, string> | null;
