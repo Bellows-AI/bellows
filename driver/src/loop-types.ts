@@ -49,7 +49,14 @@ export interface LoopRuntime {
         options?: { after?: Promise<void> }
     ) => Promise<LeaseState>;
     /** The attempts in flight, by job id — what a drain hands over (`Loop.handover`, issue #792). */
-    live?: Map<string, { job: BoardJob; state: JobState }>;
+    live?: Map<string, LiveAttempt>;
+}
+
+/** An attempt in flight: `over` settles when its `runJob` has ended and torn it down. */
+export interface LiveAttempt {
+    job: BoardJob;
+    state: JobState;
+    over: Promise<void>;
 }
 
 /**

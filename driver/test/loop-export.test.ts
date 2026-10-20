@@ -105,13 +105,15 @@ describe('the export relay', () => {
     });
 
     it('keeps the exporter vitals and ends the agent once, under its supervisor, when the spool is full', async () => {
-        const { relay, run, kill, stopAgent, raiseKill } = setup();
+        const { relay, run, kill, stopAgent, raiseKill, ctx } = setup();
         relay.report({ pendingBytes: 10, oldestUnackedMs: 5, spoolFull: false, done: false });
         expect(run.vitals).toEqual({ pendingBytes: 10, oldestUnackedMs: 5 });
         expect(stopAgent).not.toHaveBeenCalled();
         relay.report({ pendingBytes: 2_000_000_000, oldestUnackedMs: 9, spoolFull: true, done: false });
         relay.report({ pendingBytes: 2_000_000_001, oldestUnackedMs: 10, spoolFull: true, done: false });
         expect(run.spoolFull).toBe(true);
+        // Failure evidence, not an ending (issue #828): the attempt still concludes with its verdict.
+        expect(ctx.state.ending).toBeNull();
         await vi.waitFor(() => expect(stopAgent).toHaveBeenCalledTimes(1));
         // The kill order for the supervisor, then the bounded wait for the pod to wind down: the
         // exporter drains what the agent wrote before anything is deleted.

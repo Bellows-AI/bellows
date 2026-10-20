@@ -61,6 +61,15 @@ export async function endIfDown(ctx: AttemptCtx, phase: string, beforePark?: () 
     return true;
 }
 
+/**
+ * The run's outcome, or null once a drain's handover abandoned it: the run is contained and its
+ * outcome ignored, its runner being the next claim's.
+ */
+export function abandonOnHandover<T>(state: JobState, run: Promise<T>): Promise<T | null> {
+    run.catch(() => undefined);
+    return Promise.race([run, state.handedOver.then(() => null)]);
+}
+
 async function conclude(ctx: AttemptCtx, decision: EndDecision): Promise<LeaseState | null> {
     let tornDown: () => void = () => {};
     const after = new Promise<void>((resolve) => {
@@ -230,6 +239,12 @@ async function interrupt(
     }
     if (answer === 'lost') {
         rt.log(`job ${job.id}: ${reason}, and the lease was already lost`);
+        return null;
+    }
+    if (state.ending?.kind === 'handover') {
+        // A drain's handover that was not taken is left to the lease, whatever the budget says.
+        rt.log(`job ${job.id}: not handed over (${answer ?? 'unanswered'}); left to the lease`);
+        state.keepGroup = true;
         return null;
     }
     if (answer === null) state.keepGroup = true;

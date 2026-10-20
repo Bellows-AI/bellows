@@ -133,6 +133,11 @@ export interface JobState {
      */
     signal: AbortSignal;
     abortNow: () => void;
+    /** Why the drain handed the attempt over; set with the `handover` ending, null otherwise. */
+    handoverReason: string | null;
+    /** Resolves when a `handover` ending wins (`handOver`, `loop.ts`): the run in flight is abandoned there. */
+    handedOver: Promise<void>;
+    signalHandover: () => void;
 }
 
 export function newJobState(): JobState {
@@ -141,6 +146,10 @@ export function newJobState(): JobState {
         wake = resolve;
     });
     const controller = new AbortController();
+    let signalHandover = () => {};
+    const handedOver = new Promise<void>((resolve) => {
+        signalHandover = resolve;
+    });
     return {
         drainOutput: async () => {},
         phase: 'setup',
@@ -164,7 +173,23 @@ export function newJobState(): JobState {
         wake,
         signal: controller.signal,
         abortNow: () => controller.abort(),
+        handoverReason: null,
+        handedOver,
+        signalHandover,
     };
+}
+
+/** Registers the attempt as in flight for a drain's handover; answers what to call once `runJob` is over. */
+export function registerLive(rt: LoopRuntime, job: BoardJob, state: JobState): () => void {
+    let over: () => void = () => {};
+    rt.live?.set(job.id, {
+        job,
+        state,
+        over: new Promise<void>((resolve) => {
+            over = resolve;
+        }),
+    });
+    return over;
 }
 
 /**

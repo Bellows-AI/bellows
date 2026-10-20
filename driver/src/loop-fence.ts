@@ -120,6 +120,10 @@ export function releaseAbandonedAdoption(rt: LoopRuntime, job: BoardJob, adoptin
 export function standDown(ctx: AttemptCtx, phase: string, beforePark?: () => Promise<void>): EndDecision | null {
     const { job, state } = ctx;
     if (!down(state)) return null;
+    // A drain's handover is an interruption: released to the next claim, whose runner is never finished.
+    if (state.ending?.kind === 'handover') {
+        return { kind: 'interrupt', reason: state.handoverReason ?? 'the driver was drained', exitCode: null };
+    }
     if (lostOf(state)) {
         return {
             kind: 'none',

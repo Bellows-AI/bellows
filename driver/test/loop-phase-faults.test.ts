@@ -289,9 +289,13 @@ async function attempt(script: Script): Promise<Observed & { seams: Set<string> 
             return answer;
         };
 
+        // Not awaited here: the handover settles only once the attempt has ended, and this runs
+        // inside a step the attempt is still waiting on. The ending is recorded before it returns.
+        const handed: Promise<void>[] = [];
         const handover = async () => {
             loop?.stop();
-            await loop?.handover('injected');
+            const handing = loop?.handover('injected');
+            if (handing) handed.push(handing);
             delivered.done = true;
         };
 
@@ -482,6 +486,7 @@ async function attempt(script: Script): Promise<Observed & { seams: Set<string> 
             observed.setup.push('the loop never stopped');
         }
 
+        await Promise.all(handed);
         // After a handover `start()` resolves before the attempt ends: wait until nothing moves.
         let quiet = 0;
         let seen = timeline.length;

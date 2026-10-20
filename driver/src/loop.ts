@@ -3,7 +3,7 @@ import type { DriverConfig } from './config.js';
 import { repoCacheProblem, workspacePathOf } from './claim.js';
 import type { Runner } from './runner.js';
 import { worktreeRelDir } from './publish.js';
-import type { GateStack, LoopRuntime } from './loop-types.js';
+import type { GateStack, LiveAttempt, LoopRuntime } from './loop-types.js';
 import { runJob } from './loop-run.js';
 import { processReclaim, processVerdictReclaim } from './loop-reclaim.js';
 import { CLAUDE_CODE } from './executors.js';
@@ -114,19 +114,16 @@ function completeWithRetry(
     });
 }
 
-/** One attempt handed over: stood down as lost, then its lease handed back as an interruption. */
-async function handOver(rt: LoopRuntime, job: BoardJob, state: JobState, reason: string): Promise<void> {
-    recordEnding(state, 'handover');
+/**
+ * One attempt handed over: the intent is recorded and the attempt told to stop; its own chain ends
+ * it as an interruption (`end`, `loop-conclusion.ts`), the runner left for the next claim.
+ */
+function handOver(state: JobState, reason: string): void {
+    if (!recordEnding(state, 'handover')) return;
+    state.handoverReason = reason;
     state.abortNow();
     state.wake();
-    const answer = await withBoardRetry(rt, `job ${job.id}: the handover was not accepted`, () =>
-        rt.board.interrupt(job, { reason, release: true })
-    ).catch((e: Error) => {
-        rt.log(`job ${job.id}: could not hand over: ${e.message}`);
-        return null;
-    });
-    if (answer === 'held') rt.log(`job ${job.id}: handed over (${reason}); its runner is left for the next claim`);
-    else rt.log(`job ${job.id}: not handed over (${answer ?? 'unanswered'}); left to the lease`);
+    state.signalHandover();
 }
 
 /**
@@ -134,7 +131,7 @@ async function handOver(rt: LoopRuntime, job: BoardJob, state: JobState, reason:
  * `runJob` reports its own — and the latch `start()` stops waiting at.
  */
 function handoverOf(rt: LoopRuntime) {
-    const live = new Map<string, { job: BoardJob; state: JobState }>();
+    const live = new Map<string, LiveAttempt>();
     rt.live = live;
     let landed: () => void = () => {};
     const done = new Promise<void>((resolve) => {
@@ -147,7 +144,9 @@ function handoverOf(rt: LoopRuntime) {
             const handing = [...live.values()].filter(
                 ({ state }) => state.phase !== 'ended' && state.phase !== 'concluding' && !down(state)
             );
-            await Promise.all(handing.map(({ job, state }) => handOver(rt, job, state, reason)));
+            for (const { state } of handing) handOver(state, reason);
+            // `start()` stops waiting only once every handed-over attempt's end has settled.
+            await Promise.all(handing.map(({ over }) => over));
             landed();
         },
     };

@@ -11,8 +11,8 @@ import type { GateFailure, GateSession } from './loop-gates.js';
 import { beginGates, openRunControl, probeDeadServices, runDeclaredGates, sizeGateForVerify } from './loop-gates.js';
 import { drainTranscriptExport } from './loop-export.js';
 import { lostOf, transition } from './loop-phase.js';
-import { heartbeat, newJobState, raceStep, stopIfDraining, watchOutput } from './loop-attempt.js';
-import { attemptQuiesce, end, endIfDown } from './loop-conclusion.js';
+import { heartbeat, newJobState, raceStep, registerLive, stopIfDraining, watchOutput } from './loop-attempt.js';
+import { attemptQuiesce, abandonOnHandover, end, endIfDown } from './loop-conclusion.js';
 import type { GateRunNote } from './timeout-note.js';
 import {
     handBackFence,
@@ -381,9 +381,12 @@ async function launchRun(
     ctx.fenced = false;
 
     state.running = true;
-    return rt.runner.run(job, session, onOutput).finally(() => {
+    const run = rt.runner.run(job, session, onOutput).finally(() => {
         state.running = false;
     });
+    const outcome = await abandonOnHandover(state, run);
+    if (outcome === null) await endIfDown(ctx, 'its run');
+    return outcome;
 }
 
 /** The run itself: spawn, and resolve to what to report (or nothing). */
@@ -693,7 +696,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     state.trace = (t) =>
         log(JSON.stringify({ event: 'attempt-transition', job: job.id, claimSeq: job.claimSeq, ...t }));
     // In flight for a drain's handover (`loop.ts`) until it settles.
-    rt.live?.set(job.id, { job, state });
+    const over = registerLive(rt, job, state);
     const beating = heartbeat(rt, job, state);
     // Armed before the run so the runner can hand over tails from its first chunk; the pump's
     // snapshot is the liveness read the timeout note is built from (issue #339).
@@ -763,5 +766,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         stopIfDraining(state);
         if (await endIfDown(ctx, 'its run')) return;
         await end(ctx, thrownRunDecision(job, e));
+    } finally {
+        over();
     }
 }

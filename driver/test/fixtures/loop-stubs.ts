@@ -298,6 +298,7 @@ export function stubRunner(
     } = {}
 ): Runner & {
     killed: string[];
+    finished: string[];
     samples: number;
     published: BoardJob[];
     githubTokens: (string | undefined)[];
@@ -340,6 +341,7 @@ export function stubRunner(
             await options.restartServices?.(signal);
         },
         killed: [] as string[],
+        finished: [] as string[],
         paused: [] as { id: string; paused: boolean }[],
         async pauseDeadline(pausedJob: BoardJob, paused: boolean) {
             runner.paused.push({ id: pausedJob.id, paused });
@@ -408,7 +410,9 @@ export function stubRunner(
         // A runner with no supervisor to stop through: the stop is the hard kill.
         stopAgent: (stoppedJob: BoardJob) => runner.kill(stoppedJob),
         async recordKill() {},
-        async finish() {},
+        async finish(finishedJob: BoardJob) {
+            runner.finished.push(finishedJob.id);
+        },
         async snapshotTree(): Promise<SnapshotResult> {
             return { ok: false, reason: 'no snapshot scripted' };
         },
