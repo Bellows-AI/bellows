@@ -1,0 +1,157 @@
+/**
+ * `adoptStep` and `recordAdopted` driven directly: what the step answers for each way
+ * `Runner.adopt` can come back, which flags it leaves on the attempt, and what it hands back to the
+ * fence when the attempt stood down while the adoption was still reading. The adoption through the
+ * claim loop is `loop.test.ts`.
+ */
+import { describe, expect, it } from 'vitest';
+import type { BoardJob } from '../src/board.js';
+import { newJobState } from '../src/loop-attempt.js';
+import { adoptStep, recordAdopted } from '../src/loop-adopt.js';
+import { type AttemptCtx, STOOD_DOWN } from '../src/loop-types.js';
+import { type AdoptedRun, AdoptionBlocked } from '../src/runner.js';
+import { job, ok, stubBoard, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
+
+const adopted: AdoptedRun = { outcome: ok(), claimSeq: 4 };
+
+function setup(claimed: BoardJob, adopt: (j: BoardJob, signal?: AbortSignal) => Promise<AdoptedRun | null>) {
+    const board = stubBoard([]).board;
+    const runner = stubRunner(async () => ok(), { adopt });
+    const released: string[] = [];
+    (runner as { releaseFence?: (j: BoardJob) => Promise<void> }).releaseFence = async (j) => {
+        released.push(j.id);
+    };
+    const logs: string[] = [];
+    const rt = stubRuntime(board, runner, { log: (m) => logs.push(m) });
+    const state = newJobState();
+    const ctx: AttemptCtx = {
+        rt,
+        job: claimed,
+        state,
+        quiesce: async () => {},
+        fenced: false,
+        treeBefore: null,
+        session: null,
+    };
+    return { ctx, board, released, logs, state };
+}
+
+const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+describe('adoptStep', () => {
+    it('adopts nothing for an agent-less node, and never asks the runner', async () => {
+        let asked = 0;
+        const s = setup({ ...job(1), agent: false }, async () => {
+            asked += 1;
+            return adopted;
+        });
+
+        expect(await adoptStep(s.ctx)).toBeNull();
+        expect(asked).toBe(0);
+    });
+
+    it('answers null, leaving the attempt unmarked, when there is no earlier run', async () => {
+        const s = setup(job(1), async () => null);
+
+        expect(await adoptStep(s.ctx)).toBeNull();
+        expect(s.ctx.adopted).toBeUndefined();
+        expect(s.ctx.fenced).toBe(false);
+    });
+
+    it('answers an interruption record and marks the attempt adopted and fenced, calling no board', async () => {
+        const s = setup(job(1), async () => adopted);
+
+        const answer = await adoptStep(s.ctx);
+
+        expect(answer).toMatchObject({ record: 'interruption', claimSeq: 4 });
+        expect(s.ctx.adopted).toBe(adopted);
+        expect(s.ctx.fenced).toBe(true);
+        expect(s.board.interrupted).toEqual([]);
+        expect(s.board.completed).toEqual([]);
+    });
+
+    it('leaves the job to its lease when the run was read but could not be secured', async () => {
+        const s = setup(job(1), async () => {
+            throw new AdoptionBlocked('the claim moved');
+        });
+
+        const answer = await adoptStep(s.ctx);
+
+        expect(answer).toMatchObject({ halt: 'leave' });
+        expect(s.ctx.adopted).toBeUndefined();
+    });
+
+    it('answers a stand-down when the attempt stood down mid-adoption', async () => {
+        const s = setup(job(1), () => new Promise(() => {}));
+
+        const pending = adoptStep(s.ctx);
+        s.state.abortNow();
+
+        expect(await pending).toBe(STOOD_DOWN);
+    });
+
+    it('hands the fence back exactly once when an abandoned adoption lands a run', async () => {
+        let land: (run: AdoptedRun | null) => void = () => {};
+        const s = setup(job(1), () => new Promise((resolve) => (land = resolve)));
+
+        const pending = adoptStep(s.ctx);
+        s.state.abortNow();
+        await pending;
+        land(adopted);
+        await tick();
+
+        expect(s.released).toEqual([job(1).id]);
+    });
+
+    it('releases nothing when an abandoned adoption lands no run', async () => {
+        let land: (run: AdoptedRun | null) => void = () => {};
+        const s = setup(job(1), () => new Promise((resolve) => (land = resolve)));
+
+        const pending = adoptStep(s.ctx);
+        s.state.abortNow();
+        await pending;
+        land(null);
+        await tick();
+
+        expect(s.released).toEqual([]);
+    });
+
+    it('swallows the rejection of an abandoned adoption', async () => {
+        let fail: (e: Error) => void = () => {};
+        const s = setup(job(1), () => new Promise((_, reject) => (fail = reject)));
+
+        const pending = adoptStep(s.ctx);
+        s.state.abortNow();
+        await pending;
+        fail(new Error('late'));
+        await tick();
+
+        expect(s.released).toEqual([]);
+    });
+});
+
+describe('recordAdopted', () => {
+    it('reports the earlier claim as an interruption under this lease, releasing nothing', async () => {
+        const s = setup(job(1), async () => null);
+
+        await recordAdopted(s.ctx, { record: 'interruption', reason: 'adopted claim 4', claimSeq: 4 });
+
+        expect(s.board.interrupted).toEqual([
+            { id: job(1).id, reason: 'adopted claim 4', release: false, claimSeq: 4 },
+        ]);
+    });
+
+    it('logs a board that throws and still resolves', async () => {
+        const s = setup(job(1), async () => null);
+        s.board.interrupt = async () => {
+            throw new Error('board unreachable');
+        };
+
+        await expect(
+            recordAdopted(s.ctx, { record: 'interruption', reason: 'adopted claim 4', claimSeq: 4 })
+        ).resolves.toBeUndefined();
+        expect(s.logs.some((m) => m.includes('could not record the adopted interruption: board unreachable'))).toBe(
+            true
+        );
+    });
+});

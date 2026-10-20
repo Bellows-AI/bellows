@@ -20,7 +20,7 @@ import type { ExportRelay } from '../../src/export-control.js';
 import type { GateManager, GateRun, GateRunOptions, GateServer } from '../../src/gates.js';
 import type { HelperResult } from '../../src/helpers.js';
 import { createLoop, type Loop } from '../../src/loop.js';
-import type { GateStack } from '../../src/loop-types.js';
+import type { GateStack, LoopRuntime } from '../../src/loop-types.js';
 import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../../src/publish.js';
 import type { PublishRelay } from '../../src/publish-control.js';
 import type { ControlEntry, QuestionRelay, QuestionResolution } from '../../src/question-control.js';
@@ -37,7 +37,7 @@ import type {
     RuntimeSample,
 } from '../../src/runner.js';
 import type { StepResult } from '../../src/supervisor-contract.js';
-import type { SyncQueue } from '../../src/sync-queue.js';
+import { type SyncQueue, syncQueue } from '../../src/sync-queue.js';
 
 export const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -448,6 +448,24 @@ export const ok = (over: Partial<RunOutcome> = {}): RunOutcome => ({
     started: true,
     ...over,
 });
+
+/**
+ * The runtime `runJob` and `adoptStep` take, without a claim loop around them: a verdict lands on
+ * the board's `complete`, the sync queue is real, nothing reclaims.
+ */
+export function stubRuntime(board: BoardStub, runner: Runner, extra: Partial<LoopRuntime> = {}): LoopRuntime {
+    return {
+        board,
+        runner,
+        config: config(),
+        log: () => {},
+        sleep,
+        reclaims: new Map(),
+        syncs: syncQueue(),
+        report: async (reported, result) => (await board.complete(reported, result)).state,
+        ...extra,
+    };
+}
 
 export const config = (env: NodeJS.ProcessEnv = {}): DriverConfig => loadDriverConfig(env);
 
