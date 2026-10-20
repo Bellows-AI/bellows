@@ -1604,6 +1604,20 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
         expect(old.reports).toHaveLength(0);
     });
 
+    it('does not log the accepted binding as ignored on later polls', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        old.autoFinish = false;
+        const { supervised, name, rebound } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        name(next, 2);
+        await until('the rebind', rebound);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        const after = supervised.logs.slice(supervised.logs.indexOf('supervisor: rebound to claim 2') + 1);
+        expect(after).not.toContain('supervisor: ignored a binding that names no newer holder');
+    });
+
     it('refuses a holder that is not newer: an equal claim under another token, and an older one', async () => {
         const [old, other] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
         const { supervised, name } = bound(old);

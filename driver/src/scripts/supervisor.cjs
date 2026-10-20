@@ -476,6 +476,8 @@ function followBinding(run) {
     run.bindingAbort = new AbortController();
     run.bindingGen += 1;
     run.binding = next;
+    // The file still names this holder: on the next read it is known, not ignored.
+    run.refusedBinding = text;
     run.contactedAt = run.now();
     run.reportAcked = null;
     run.reportRefused = false;
