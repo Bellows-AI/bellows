@@ -238,6 +238,13 @@ export class AdoptionBlocked extends Error {}
  */
 export class Inconclusive extends Error {}
 
+/**
+ * A typed read's answer (#869): the value, the object's confirmed absence, or a read that proves
+ * nothing — never an empty value invented from an answer that was not one. Whoever decides a delete
+ * or a negative verdict on it branches on all three.
+ */
+export type Read<T> = { kind: 'value'; value: T } | { kind: 'absent' } | { kind: 'inconclusive'; reason: string };
+
 /** Thrown by `Runner.adopt` once the attempt stood down mid-adoption: nothing more of it is its to delete. */
 export const adoptionAbandoned = (): Error => new Error('the adoption was abandoned: the attempt stood down');
 

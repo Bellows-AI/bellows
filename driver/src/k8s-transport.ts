@@ -3,6 +3,7 @@ import type { IncomingMessage } from 'node:http';
 import { Agent, request as httpsRequest } from 'node:https';
 import type { DriverConfig } from './config.js';
 import { ARTIFACT_LIMIT } from './runner.js';
+import type { Read } from './runner.js';
 import type { RuntimeSample } from './runner.js';
 import { UUID } from './publish.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, MERGE_PATCH_CONTENT_TYPE } from './http.js';
@@ -472,6 +473,37 @@ export function containerFailure(pod: K8sPod | undefined, container?: string): s
     const waiting = state?.waiting;
     if (waiting?.reason) return waiting.message ? `${waiting.reason}: ${waiting.message}` : waiting.reason;
     return null;
+}
+
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * One GET's answer as a typed read (#869): the value `shape` makes of the body, `absent` on a 404,
+ * or `inconclusive` — a non-2xx answer, a body that is not JSON, a `Status` object (the apiserver's
+ * refusal wearing a 2xx) or a body that is not the shape asked for. Never `{}` or `null` invented.
+ */
+export function readAnswer<T>(response: K8sResponse, what: string, shape: (value: unknown) => T | null): Read<T> {
+    if (response.status === HTTP_NOT_FOUND) return { kind: 'absent' };
+    if (!is2xx(response.status)) {
+        return {
+            kind: 'inconclusive',
+            reason: refusal(response, what) ?? `${what} answered ${response.status}`,
+        };
+    }
+    let body: unknown;
+    try {
+        body = JSON.parse(response.body);
+    } catch {
+        return { kind: 'inconclusive', reason: `${what} answered a body that is not JSON` };
+    }
+    if (isRecord(body) && body.kind === 'Status') {
+        return { kind: 'inconclusive', reason: `${what} answered a Status object` };
+    }
+    const value = shape(body);
+    return value === null
+        ? { kind: 'inconclusive', reason: `${what} answered an unexpected shape` }
+        : { kind: 'value', value };
 }
 
 /** Parses what the API server answers; a body that is not JSON reads as an empty object. */

@@ -10,8 +10,12 @@ import {
     inClusterRequest,
     is2xx,
     isMalformedRequest400,
+    isRecord,
+    readAnswer,
     refusalDiagnosis,
 } from '../src/k8s-transport.js';
+import { asJob, asNamed, readTypedList } from '../src/k8s-poll.js';
+import type { K8sDeps } from '../src/k8s-transport.js';
 
 const METRICS_PATH = '/apis/metrics.k8s.io/v1beta1/namespaces/factory/pods/runner-1';
 const LOG_PATH = '/api/v1/namespaces/factory/pods/runner-1/log?tailLines=1000';
@@ -21,6 +25,113 @@ const CREATING = status('container "runner" in pod "runner-1" is waiting to star
 describe('is2xx', () => {
     it('holds for 200 through 299 and nothing else', () => {
         expect([199, 200, 204, 299, 300, 404].map(is2xx)).toEqual([false, true, true, true, false, false]);
+    });
+});
+
+const itemsShape = (body: unknown): unknown[] | null =>
+    isRecord(body) && Array.isArray(body.items) ? body.items : null;
+
+describe('readAnswer', () => {
+    const answer = (status: number, body: string) => readAnswer({ status, body }, 'listing the pods', itemsShape);
+
+    it('reads a 404 as the confirmed absence', () => {
+        expect(answer(404, '{"kind":"Status","reason":"NotFound"}')).toEqual({ kind: 'absent' });
+    });
+
+    it('reads any other non-2xx answer as inconclusive, with the apiserver’s words', () => {
+        expect(answer(503, 'unavailable')).toEqual({
+            kind: 'inconclusive',
+            reason: expect.stringMatching(/listing the pods answered 503/),
+        });
+        expect(answer(301, '')).toMatchObject({ kind: 'inconclusive', reason: expect.stringMatching(/301/) });
+    });
+
+    it.each([
+        ['an object that is no list', '{}'],
+        ['null', 'null'],
+        [
+            'a Status object under a 200',
+            JSON.stringify({ kind: 'Status', status: 'Failure', message: 'etcd leader changed' }),
+        ],
+        ['a body cut short', '{"items":[{"metadata":{"na'],
+        ['text', '<html>502</html>'],
+        ['an array', '[]'],
+    ])('reads %s as inconclusive, never as an empty list', (_name, body) => {
+        expect(answer(200, body).kind).toBe('inconclusive');
+    });
+
+    it('reads a list of the shape asked for as its value', () => {
+        expect(answer(200, '{"items":[]}')).toEqual({ kind: 'value', value: [] });
+        expect(answer(200, '{"items":[{"a":1}]}')).toEqual({ kind: 'value', value: [{ a: 1 }] });
+    });
+
+    it('reads a Job with a uid and a status as a value, and one without either as inconclusive', () => {
+        const job = (body: string) => readAnswer({ status: 200, body }, 'reading the Job', asJob);
+        const uid = '"metadata":{"uid":"job-uid-1"}';
+        expect(job(`{${uid},"status":{"succeeded":1}}`)).toEqual({
+            kind: 'value',
+            value: { metadata: { uid: 'job-uid-1' }, status: { succeeded: 1 } },
+        });
+        expect(job(`{${uid},"status":{}}`).kind).toBe('value');
+        expect(job(`{${uid}}`).kind).toBe('inconclusive');
+        expect(job(`{${uid},"status":"done"}`).kind).toBe('inconclusive');
+        // A Job that cannot say which incarnation it is proves nothing about one (#869).
+        expect(job('{"status":{"succeeded":1}}').kind).toBe('inconclusive');
+        expect(job('{"metadata":{},"status":{}}').kind).toBe('inconclusive');
+    });
+
+    it.each([
+        ['a string', '"1"'],
+        ['a negative number', '-1'],
+        ['a fraction', '1.5'],
+        ['null', 'null'],
+    ])('reads a Job whose count is %s as inconclusive, never as pending', (_name, count) => {
+        for (const field of ['succeeded', 'failed', 'active']) {
+            const read = readAnswer(
+                { status: 200, body: `{"metadata":{"uid":"job-uid-1"},"status":{"${field}":${count}}}` },
+                'reading the Job',
+                asJob
+            );
+            expect(read.kind).toBe('inconclusive');
+        }
+    });
+});
+
+describe('the typed list reader', () => {
+    const deps = (body: string, status = 200): K8sDeps =>
+        ({ request: async () => ({ status, body }), sleep: async () => undefined }) as unknown as K8sDeps;
+    const read = (body: string) =>
+        readTypedList(deps(body), '/pods', 'listing the pods', { entry: asNamed, once: true });
+
+    it('reads a list of named entries as their value', async () => {
+        const entry = { metadata: { name: 'a', uid: 'u', labels: { k: 'v' } }, status: { phase: 'Running' } };
+        expect(await read(JSON.stringify({ items: [entry] }))).toEqual({ kind: 'value', value: [entry] });
+    });
+
+    it.each([
+        ['an empty entry', '{"items":[{}]}'],
+        ['a null entry', '{"items":[null]}'],
+        ['an entry named by a number', '{"items":[{"metadata":{"name":5}}]}'],
+        ['an entry with an empty name', '{"items":[{"metadata":{"name":""}}]}'],
+        ['an entry whose labels are not strings', '{"items":[{"metadata":{"name":"a","labels":{"k":1}}}]}'],
+        ['an entry whose uid is a number', '{"items":[{"metadata":{"name":"a","uid":7}}]}'],
+        ['an entry whose status is no object', '{"items":[{"metadata":{"name":"a"},"status":"up"}]}'],
+        ['an entry with a corrupt Job count', '{"items":[{"metadata":{"name":"a"},"status":{"succeeded":"x"}}]}'],
+        ['a good entry beside a bad one', '{"items":[{"metadata":{"name":"a"}},{"metadata":{}}]}'],
+    ])('makes the whole read inconclusive for %s', async (_name, body) => {
+        expect((await read(body)).kind).toBe('inconclusive');
+    });
+
+    it('reads a transport failure past its retries as inconclusive, naming what failed', async () => {
+        const failing = {
+            request: async () => Promise.reject(new Error('connection reset')),
+            sleep: async () => undefined,
+        };
+        const result = await readTypedList(failing as unknown as K8sDeps, '/pods', 'listing the pods', {
+            entry: asNamed,
+            once: true,
+        });
+        expect(result).toEqual({ kind: 'inconclusive', reason: 'listing the pods: connection reset' });
     });
 });
 

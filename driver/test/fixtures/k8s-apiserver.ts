@@ -31,10 +31,12 @@ export function k8sApiserver({ namespace, podName }: { namespace: string; podNam
         // only so an unexpected collection DELETE still gets an answer instead of a route miss.
         fenceDelete: { status: 200, body: '{}' },
         fenceList: { status: 200, body: '{"items":[]}' },
-        job: { status: 200, body: JSON.stringify({ status: { succeeded: 1 } }) },
+        // A read Job, as the apiserver answers it: the uid the create above handed out.
+        job: { status: 200, body: JSON.stringify({ metadata: { uid: 'job-uid-1' }, status: { succeeded: 1 } }) },
         failed: {
             status: 200,
             body: JSON.stringify({
+                metadata: { uid: 'job-uid-1' },
                 status: { failed: 1, conditions: [{ type: 'Failed', reason: 'DeadlineExceeded' }] },
             }),
         },
@@ -45,7 +47,10 @@ export function k8sApiserver({ namespace, podName }: { namespace: string; podNam
                     {
                         metadata: { name: podName },
                         // Ran to its end: an adoption takes no pod still running for a group over (#824).
-                        status: { phase: 'Succeeded', containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
+                        status: {
+                            phase: 'Succeeded',
+                            containerStatuses: [{ name: 'agent', state: { terminated: { exitCode: 0 } } }],
+                        },
                     },
                 ],
             }),
@@ -201,7 +206,7 @@ export function k8sApiserver({ namespace, podName }: { namespace: string; podNam
     const claimServer = () => {
         const claims = new Map<
             string,
-            { uid: string; holder: string; claimSeq: string; created: string; annotations: Record<string, string> }
+            { uid: string; data: Record<string, string>; created: string; annotations: Record<string, string> }
         >();
         let uids = 0;
         return (method: K8sMethod, path: string, body: unknown): K8sResponse | undefined => {
@@ -211,8 +216,8 @@ export function k8sApiserver({ namespace, podName }: { namespace: string; podNam
                 if (claims.has(name)) return { status: 409, body: '{"reason":"AlreadyExists"}' };
                 claims.set(name, {
                     uid: `claim-uid-${++uids}`,
-                    holder: b.data?.holder ?? '',
-                    claimSeq: b.data?.claimSeq ?? '',
+                    // The apiserver stores `data` as written: a key the writer left out is absent.
+                    data: { ...b.data },
                     // The apiserver stamps this on every object; the orphaned-claim readout (issue
                     // #344) reports the claim's age from it.
                     created: new Date().toISOString(),
@@ -233,7 +238,7 @@ export function k8sApiserver({ namespace, podName }: { namespace: string; podNam
                                       creationTimestamp: claim.created,
                                       annotations: claim.annotations,
                                   },
-                                  data: { holder: claim.holder, claimSeq: claim.claimSeq },
+                                  data: claim.data,
                               }),
                           }
                         : { status: 404, body: '{"kind":"Status"}' };

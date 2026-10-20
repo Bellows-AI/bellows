@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
-import { reclaimGroupName } from '../src/k8s-group.js';
+import { holderGroupsOf, reclaimGroupName } from '../src/k8s-group.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { StartupRefused } from '../src/startup-cause.js';
@@ -75,6 +75,8 @@ function cluster(
         imagePull?: string;
         agentExit?: number;
         vanished?: boolean;
+        /** What the attempt's group Job reads answer, when it answers at all (else the Job as it is). */
+        groupJob?: () => K8sResponse | undefined;
         podStatus?: unknown;
         podSpec?: unknown;
     } = {}
@@ -135,7 +137,12 @@ function cluster(
             // A reclaim group's derived name never created reads 404, as the apiserver answers it.
             const neverMade = name.startsWith('factory-reclaim-') && !created.jobs.some((made) => made.name === name);
             if (gone.has(name) || neverMade || (isGroup && options.vanished)) return { status: 404, body: '{}' };
-            return json({ status: !isGroup || options.ended ? { succeeded: 1 } : {} });
+            const scripted = isGroup ? options.groupJob?.() : undefined;
+            if (scripted) return scripted;
+            return json({
+                metadata: { name, uid: `uid-${name}` },
+                status: !isGroup || options.ended ? { succeeded: 1 } : {},
+            });
         }
         if (path.endsWith('/log')) return { status: 200, body: '' };
         // The sweep's selector lists, and the pod discovery by `job-name`.
@@ -177,7 +184,7 @@ function cluster(
         }
         return { status: 404, body: '{}' };
     };
-    return { request, created };
+    return { request, created, claims };
 }
 
 /** The supervised-step channel: records every step, answers each by kind, and reports on demand. */
@@ -517,6 +524,129 @@ describe('the task group of one attempt', () => {
         await runner(api.request, s.sink).finish(job);
         expect(s.submitted).toEqual([]);
         expect(api.created.deletedJobs).toEqual([]);
+    });
+});
+
+/** The uid the fake apiserver gave the attempt's group Job when it was created (`uid-<name>`). */
+const GROUP_JOB_UID = `uid-${runnerJobName(job)}`;
+
+// Issue #869: the end of a finished run reads its Job before anything is deleted, and a read that
+// proves nothing is no word that it ended or that it did not.
+describe('the end of a group whose Job cannot be read', () => {
+    const TERMINAL = json({ metadata: { uid: GROUP_JOB_UID }, status: { succeeded: 1 } });
+    const started = async (groupJob: () => K8sResponse | undefined) => {
+        const api = cluster({ groupJob });
+        const s = steps((step) => (step.kind === 'sync' ? ok('{"ok":true,"reason":null}') : ok()));
+        const k8s = runner(api.request, s.sink);
+        await k8s.syncCheckout(job, undefined, SESSION);
+        return { api, k8s };
+    };
+
+    it('keeps a finished run whose Job first reads as null, and gives the claim back once it reads terminal', async () => {
+        let armed = false;
+        let reads = 0;
+        const { api, k8s } = await started(() => {
+            if (!armed) return;
+            reads += 1;
+            return reads === 1 ? { status: 200, body: 'null' } : TERMINAL;
+        });
+        armed = true;
+
+        await k8s.finish(job);
+
+        expect(api.created.deletedJobs).toEqual([]);
+        expect(api.claims.size).toBe(0);
+    });
+
+    it.each([
+        ['an empty object', { status: 200, body: '{}' }],
+        ['null', { status: 200, body: 'null' }],
+        ['a Status body', json({ kind: 'Status', status: 'Failure', message: 'etcd leader changed' })],
+        ['a truncated body', { status: 200, body: '{"status":{"succ' }],
+        ['a count that is no number', json({ metadata: { uid: GROUP_JOB_UID }, status: { succeeded: 'corrupt' } })],
+        ['a negative count', json({ metadata: { uid: GROUP_JOB_UID }, status: { failed: -1 } })],
+        ['a 503', { status: 503, body: 'unavailable' }],
+    ])('deletes no Job and keeps the claim when every read of it answers %s', async (_name, answer) => {
+        let armed = false;
+        const { api, k8s } = await started(() => (armed ? answer : undefined));
+        armed = true;
+
+        await k8s.finish(job);
+
+        expect(api.created.deletedJobs).toEqual([]);
+        expect(api.claims.size).toBe(1);
+    });
+
+    it('holds an unread group across finishes, deleting nothing more, and ends it kept once its Job reads terminal', async () => {
+        let armed = false;
+        let readable = false;
+        const { api, k8s } = await started(() => {
+            if (!armed) return;
+            return readable ? TERMINAL : { status: 200, body: '{}' };
+        });
+        armed = true;
+
+        await k8s.finish(job);
+        const secretsAfterFirst = api.created.deletedSecrets.length;
+        await k8s.finish(job);
+
+        // The retry reads the Job first: unreadable, it is left held — no Job and no Secret deleted.
+        expect(api.created.deletedJobs).toEqual([]);
+        expect(api.created.deletedSecrets).toHaveLength(secretsAfterFirst);
+        expect(api.claims.size).toBe(1);
+
+        readable = true;
+        await k8s.finish(job);
+
+        // Ended kept: its run is adoptable, so the Job stays, and the checkout goes back.
+        expect(api.created.deletedJobs).toEqual([]);
+        expect(api.claims.size).toBe(0);
+    });
+
+    it('ends a held group destructively when its Job reads as still pending', async () => {
+        let armed = false;
+        let unreadable = true;
+        const { api, k8s } = await started(() => {
+            if (!armed) return;
+            return unreadable
+                ? { status: 503, body: 'unavailable' }
+                : json({ metadata: { uid: GROUP_JOB_UID }, status: { active: 1 } });
+        });
+        armed = true;
+        await k8s.finish(job);
+        unreadable = false;
+
+        await k8s.finish(job);
+
+        // It did not end the first time: Secrets, then the Job, as before.
+        expect(api.created.deletedJobs).toEqual([runnerJobName(job)]);
+    });
+});
+
+// Issue #869: a listing that is no list of named objects licenses no delete, and no verdict of "none".
+describe('the lists that decide a delete', () => {
+    const MALFORMED = [
+        ['an empty entry', {}],
+        ['an entry named by a number', { metadata: { name: 5 } }],
+        ['an entry with no uid', { metadata: { name: 'x' } }],
+        ['an entry with an empty uid', { metadata: { name: 'x', uid: '' } }],
+    ] as const;
+
+    it.each([
+        ...MALFORMED,
+        ['an entry with no uid', { metadata: { name: 'x', labels: { 'factory.lease': job.leaseToken } } }],
+    ] as const)('names no holder groups from a listing that carries %s', async (_name, entry) => {
+        const request: K8sRequest = async () => json({ items: [entry] });
+        expect(await holderGroupsOf({ config, request, sleep: FAST }, job, job.leaseToken)).toBeNull();
+    });
+
+    it.each([
+        ['a Status', json({ kind: 'Status', status: 'Failure' })],
+        ['null', { status: 200, body: 'null' }],
+        ['a 404', { status: 404, body: '{}' }],
+    ])('names no holder groups from %s', async (_name, answer) => {
+        const request: K8sRequest = async () => answer;
+        expect(await holderGroupsOf({ config, request, sleep: FAST }, job, job.leaseToken)).toBeNull();
     });
 });
 

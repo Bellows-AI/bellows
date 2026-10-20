@@ -23,8 +23,15 @@ import {
     vanishedOutcome,
     wasKilled,
 } from './k8s-kill.js';
-import { claimName, claimPath, deleteJob, jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
-import { acquireClaim, type ObservedClaim, readClaim, releaseClaimAfterGroupEnd, revokeClaim } from './k8s-fence.js';
+import { claimName, deleteJob, jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
+import {
+    acquireClaim,
+    type ObservedClaim,
+    readClaim,
+    readClaimObject,
+    releaseClaimAfterGroupEnd,
+    revokeClaim,
+} from './k8s-fence.js';
 import {
     ensureGroup,
     finishGroup,
@@ -58,7 +65,6 @@ import {
     expectOk,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
-    is2xx,
     livePod,
     MS_PER_SECOND,
     parse,
@@ -67,7 +73,7 @@ import {
     refusal,
     wait,
 } from './k8s-transport.js';
-import type { K8sClaim, K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
+import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
 import { repoPath, worktreeDir } from './publish.js';
 import type { ReclaimResult, SyncResult } from './publish.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
@@ -82,6 +88,7 @@ import {
 } from './supervised-steps.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
 import { KILL_WINDDOWN_MS, type SupervisorReport } from './supervisor-contract.js';
+import { parseRfc3339 } from './timestamps.js';
 
 /**
  * The kubernetes `Runner`: assembles the fence (`k8s-fence.ts`), the pollers (`k8s-poll.ts`) and
@@ -474,23 +481,18 @@ async function syncCheckout(
  * acquire threw already names what it knows, and this read only adds to it.
  */
 async function heldClaim(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult['heldClaim']> {
-    let get: K8sResponse;
-    try {
-        get = await deps.request('GET', claimPath(deps.config.k8sNamespace, job));
-    } catch {
-        return undefined;
-    }
-    if (!is2xx(get.status)) return undefined;
-    const claim = parse<K8sClaim>(get.body);
+    const read = await readClaimObject(deps, job, true);
+    if (read.kind !== 'value') return undefined;
+    const claim = read.value;
     const uid = claim.metadata?.uid;
     const holder = claim.data?.holder;
     // A claim that cannot name its incarnation and holder is nothing a recovery may act on.
     if (!uid || !holder) return undefined;
-    const created = claim.metadata?.creationTimestamp ? Date.parse(claim.metadata.creationTimestamp) : NaN;
+    const createdAt = claim.metadata?.creationTimestamp;
     return {
         name: claimName(job),
         claimSeq: claim.data?.claimSeq ?? null,
-        createdMs: Number.isFinite(created) ? created : null,
+        createdMs: createdAt === undefined ? null : parseRfc3339(createdAt),
         uid,
         holder,
     };

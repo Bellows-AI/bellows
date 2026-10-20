@@ -15,6 +15,12 @@ export const CLAIM_SEQ_MARK = 'factory.claim-seq';
 export const SESSION_MARK = 'factory.session';
 /** The run's command, hashed (`commandMark`): a queued task's command edited since is not adopted. */
 export const COMMAND_MARK = 'factory.command';
+/** A claim sequence as a mark spells it: digits that survive `Number` (an empty one is 0, a long run Infinity). */
+export const isSeq = (value: unknown): value is string =>
+    typeof value === 'string' && /^\d+$/.test(value) && Number.isSafeInteger(Number(value));
+/** A `commandMark`: sixteen lowercase hex digits. */
+export const isCommandMark = (value: unknown): value is string =>
+    typeof value === 'string' && /^[0-9a-f]{16}$/.test(value);
 /**
  * Kubernetes only: the checkout claim's holder a reclaim group serves, on its Job and its pod
  * template. The group's own lease token is random per invocation, so its names are never reused;

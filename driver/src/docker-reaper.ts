@@ -1,8 +1,10 @@
-import type { BoardJob } from './board.js';
+import { type BoardJob, UUID_SHAPE } from './board.js';
 import { containerName } from './docker.js';
 import { JOB_LABEL, LEASE_LABEL, RECLAIM_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
-import { alreadyGone, linesOf, type ExecDocker } from './docker-runner-support.js';
+import { alreadyGone, CONTAINER_ID, DOCKER_NAME, type ExecDocker, readDocker } from './docker-runner-support.js';
+import { Inconclusive } from './runner.js';
 import type { OrphanGroup, OrphanObject, ReaperArm } from './reaper.js';
+import { parseDockerTimestamp, parseRfc3339 } from './timestamps.js';
 
 /**
  * The docker half of the orphan reaper (issue #301): label-filtered `docker ps` and `volume ls`,
@@ -17,19 +19,11 @@ import type { OrphanGroup, OrphanObject, ReaperArm } from './reaper.js';
 
 /**
  * Docker's `CreatedAt` spelling — `2026-09-14 10:00:00 +0000 UTC` — into epoch millis. Not a
- * RFC3339 string, so `Date.parse` alone would be gambling on the engine. Unparsable answers 0:
- * the board state has already decided the reap, and age only ever defers it — a format drift
- * would skip a grace window, nothing worse.
+ * RFC3339 string, so `Date.parse` alone would be gambling on the engine. Unparsable answers null,
+ * never the epoch: a date that cannot be read must not put a group out of its grace window and
+ * license a reap (#869) — the scan that met it is inconclusive.
  */
-export function parseDockerCreatedAt(raw: string): number {
-    const match = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) ([+-])(\d{2})(\d{2}) (?:[A-Z]+)$/.exec(raw.trim());
-    if (!match) return 0;
-    const [date, time, sign, oh, om] = match.slice(1) as [string, string, string, string, string];
-    const offsetMinutes = Number(oh) * 60 + Number(om);
-    const iso = `${date}T${time}${sign}${String(Math.floor(offsetMinutes / 60)).padStart(2, '0')}:${om}`;
-    const parsed = Date.parse(iso);
-    return Number.isNaN(parsed) ? 0 : parsed;
-}
+export const parseDockerCreatedAt = parseDockerTimestamp;
 
 /** One listed row the reaper can use — a container or a volume — or null for junk. */
 interface PsRow {
@@ -47,34 +41,54 @@ const labelOf = (labels: string, name: string): string | undefined => {
     return pair?.slice(prefix.length);
 };
 
-/** One row's JSON fields, or null for a line that does not parse. */
+/** One row's JSON fields, or null for a line that is not a JSON record. */
 const fieldsOf = (
     line: string
 ): { ID?: unknown; Name?: unknown; Names?: unknown; Labels?: unknown; CreatedAt?: unknown; State?: unknown } | null => {
     try {
-        return JSON.parse(line) as Record<string, unknown>;
+        const parsed: unknown = JSON.parse(line);
+        return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>)
+            : null;
     } catch {
         return null;
     }
 };
 
-/** The job and lease pair a row's labels carry, or null for a row out of the reaper's scope. */
-const pairOf = (labels: string, scopeLabel: string): { jobId: string; leaseToken: string } | null => {
-    const jobId = labelOf(labels, JOB_LABEL);
-    const leaseToken = labelOf(labels, LEASE_LABEL);
+/**
+ * The job and lease pair a row's labels carry; `'out-of-scope'` for a row the reaper leaves alone;
+ * null for a row whose job or lease label is present but no uuid (#869) — it would become the attempt
+ * identity the grouping files the row under, so the whole listing is inconclusive.
+ */
+const pairOf = (labels: string, scopeLabel: string): { jobId: string; leaseToken: string } | 'out-of-scope' | null => {
     // The scope label is checked here as well as in the argv filter, because the argv is the
     // daemon's instruction and this is the row's proof; a reclaim group is never in scope.
-    if (!jobId || !leaseToken || !labelOf(labels, scopeLabel) || labelOf(labels, RECLAIM_LABEL)) return null;
-    return { jobId, leaseToken };
+    if (!labelOf(labels, scopeLabel) || labelOf(labels, RECLAIM_LABEL)) return 'out-of-scope';
+    const jobId = labelOf(labels, JOB_LABEL);
+    const leaseToken = labelOf(labels, LEASE_LABEL);
+    if ([jobId, leaseToken].some((label) => label !== undefined && !UUID_SHAPE.test(label))) return null;
+    return jobId === undefined || leaseToken === undefined ? 'out-of-scope' : { jobId, leaseToken };
 };
 
-const parsePsRow = (line: string, scopeLabel: string): PsRow | null => {
+/**
+ * One `ps` row: null for a row that is structurally invalid — not a JSON record, no container id,
+ * a name or labels that are no strings, or an in-scope row whose creation time cannot be read —
+ * which makes the whole listing inconclusive; `'out-of-scope'` for a well-formed row whose labels
+ * put it outside the reaper's scope.
+ */
+const parsePsRow = (line: string, scopeLabel: string): PsRow | 'out-of-scope' | null => {
     const fields = fieldsOf(line);
-    if (!fields || typeof fields.ID !== 'string' || !fields.ID) return null;
-    const pair = pairOf(typeof fields.Labels === 'string' ? fields.Labels : '', scopeLabel);
-    if (!pair) return null;
-    const createdAtMs = typeof fields.CreatedAt === 'string' ? parseDockerCreatedAt(fields.CreatedAt) : 0;
-    const name = typeof fields.Names === 'string' ? fields.Names : '';
+    if (!fields || typeof fields.ID !== 'string' || !CONTAINER_ID.test(fields.ID)) return null;
+    // A name that is no name is none the removal argv could address.
+    if (typeof fields.Names !== 'string' || !DOCKER_NAME.test(fields.Names) || typeof fields.Labels !== 'string') {
+        return null;
+    }
+    if (scopeLabel === ROLE_LABEL && typeof fields.State !== 'string') return null;
+    const pair = pairOf(fields.Labels, scopeLabel);
+    if (pair === null || pair === 'out-of-scope') return pair;
+    const createdAtMs = typeof fields.CreatedAt === 'string' ? parseDockerCreatedAt(fields.CreatedAt) : null;
+    if (createdAtMs === null) return null;
+    const name = fields.Names;
     // The objects are named by ID, not by container name: the id is what the removal argv uses,
     // and a name could address whatever owns it at removal time. An exited runner is the next
     // claim's to adopt (issue #792): never reaped unread.
@@ -90,6 +104,18 @@ const parsePsRow = (line: string, scopeLabel: string): PsRow | null => {
         ...(scopeLabel === ROLE_LABEL ? { runner: true as const } : {}),
     };
     return { object, name, ...pair, createdAtMs };
+};
+
+/** A listing's in-scope rows, or null when any row is structurally invalid. */
+const psRowsOf = (stdout: string, scopeLabel: string): PsRow[] | null => {
+    const rows: PsRow[] = [];
+    for (const line of stdout.split('\n')) {
+        if (!line.trim()) continue;
+        const row = parsePsRow(line.trim(), scopeLabel);
+        if (row === null) return null;
+        if (row !== 'out-of-scope') rows.push(row);
+    }
+    return rows;
 };
 
 type Groups = Map<string, OrphanGroup>;
@@ -112,58 +138,78 @@ const addRow = (groups: Groups, row: PsRow): void => {
 };
 
 /**
- * One scope's container rows, grouped by (job, lease). Rejects when the daemon refused the list: the
- * daemon answering nothing is not the daemon answering "nothing is orphaned".
+ * One scope's container rows, grouped by (job, lease). Throws `Inconclusive` when the daemon
+ * refused the list or a row of it is unreadable: neither is the daemon answering "nothing is
+ * orphaned".
  */
 const scanScope = async (execDocker: ExecDocker, scopeLabel: string, groups: Groups): Promise<void> => {
-    const { stdout } = await execDocker(['ps', '-a', '--filter', `label=${scopeLabel}`, '--format', '{{json .}}']);
+    const read = await readDocker(
+        execDocker,
+        ['ps', '-a', '--filter', `label=${scopeLabel}`, '--format', '{{json .}}'],
+        `listing the ${scopeLabel} containers`,
+        { parse: (stdout) => psRowsOf(stdout, scopeLabel) }
+    );
+    if (read.kind !== 'value') throw new Inconclusive(read.kind === 'inconclusive' ? read.reason : 'absent');
+    for (const row of read.value) addRow(groups, row);
+};
+
+/** A listing's in-scope volumes, or null when any row is structurally invalid. */
+const volumeRowsOf = (stdout: string): { name: string; pair: { jobId: string; leaseToken: string } }[] | null => {
+    const found: { name: string; pair: { jobId: string; leaseToken: string } }[] = [];
     for (const line of stdout.split('\n')) {
-        const row = parsePsRow(line.trim(), scopeLabel);
-        if (row) addRow(groups, row);
+        if (!line.trim()) continue;
+        const fields = fieldsOf(line.trim());
+        if (!fields || typeof fields.Name !== 'string' || !DOCKER_NAME.test(fields.Name)) return null;
+        if (typeof fields.Labels !== 'string') return null;
+        const pair = pairOf(fields.Labels, LEASE_LABEL);
+        if (pair === null) return null;
+        if (pair !== 'out-of-scope') found.push({ name: fields.Name, pair });
     }
+    return found;
 };
 
 /**
  * The attempts' volumes — the mailboxes and the kill markers, both labelled with the job and the
  * lease — each dated by its own `volume inspect`, since `volume ls` carries no creation time. A
- * volume gone before its inspect is skipped; rejects when any other call was refused.
+ * volume gone before its inspect is skipped; throws `Inconclusive` when any other call was refused
+ * or answered what is not a row or a date.
  */
 const scanVolumes = async (execDocker: ExecDocker, groups: Groups): Promise<void> => {
-    const listed = await execDocker([
-        'volume',
-        'ls',
-        '--filter',
-        `label=${JOB_LABEL}`,
-        '--filter',
-        `label=${LEASE_LABEL}`,
-        '--format',
-        '{{json .}}',
-    ]);
-    const found: { name: string; pair: { jobId: string; leaseToken: string } }[] = [];
-    for (const line of linesOf(listed.stdout)) {
-        const fields = fieldsOf(line);
-        if (!fields || typeof fields.Name !== 'string' || !fields.Name) continue;
-        const pair = pairOf(typeof fields.Labels === 'string' ? fields.Labels : '', LEASE_LABEL);
-        if (pair) found.push({ name: fields.Name, pair });
-    }
-    for (const { name, pair } of found) {
+    const listed = await readDocker(
+        execDocker,
+        [
+            'volume',
+            'ls',
+            '--filter',
+            `label=${JOB_LABEL}`,
+            '--filter',
+            `label=${LEASE_LABEL}`,
+            '--format',
+            '{{json .}}',
+        ],
+        'listing the attempt volumes',
+        { parse: volumeRowsOf }
+    );
+    if (listed.kind !== 'value') throw new Inconclusive(listed.kind === 'inconclusive' ? listed.reason : 'absent');
+    for (const { name, pair } of listed.value) {
         const createdAtMs = await volumeCreatedAt(execDocker, name);
         if (createdAtMs !== null) addRow(groups, { object: { kind: 'volume', name }, name, ...pair, createdAtMs });
     }
 };
 
-/** One volume's creation time, 0 when unparsable, or null when it was removed since the list. */
+/** One volume's creation time, or null when it was removed since the list; `Inconclusive` for any other answer. */
 const volumeCreatedAt = async (execDocker: ExecDocker, name: string): Promise<number | null> => {
-    let at: string;
-    try {
-        at = (await execDocker(['volume', 'inspect', '--format', '{{.CreatedAt}}', name])).stdout.trim();
-    } catch (e) {
-        // Removed since the list: nothing left to reap. Any other refusal rejects the round.
-        if (alreadyGone(e)) return null;
-        throw e;
-    }
-    const parsed = Date.parse(at);
-    return Number.isNaN(parsed) ? 0 : parsed;
+    const read = await readDocker(
+        execDocker,
+        ['volume', 'inspect', '--format', '{{.CreatedAt}}', name],
+        `inspecting the volume ${name}`,
+        {
+            parse: parseRfc3339,
+            absentOn: ['volume'],
+        }
+    );
+    if (read.kind === 'inconclusive') throw new Inconclusive(read.reason);
+    return read.kind === 'absent' ? null : read.value;
 };
 
 const scan = async (execDocker: ExecDocker): Promise<OrphanGroup[]> => {
