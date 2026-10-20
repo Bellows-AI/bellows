@@ -15,6 +15,7 @@ import {
     TERMINATION_ROWS,
     type TerminationRow,
 } from './fixtures/termination-table.js';
+import { RETENTION_ROWS } from './fixtures/retention-table.js';
 import { STARTUP_ROWS, type StartupRow, startupDecisionOf } from './fixtures/startup-table.js';
 import {
     containerName,
@@ -5979,6 +5980,55 @@ describe('how a started run ends, on docker (the conformance table)', () => {
         const outcome = await endOnDocker(ends[row]);
         expect(outcome.infraLoss).toBeDefined();
         expect(carriedPastLoss(outcome)).toEqual([]);
+    });
+});
+
+describe('what a closed run leaves for the next claim, on docker (the retention conformance table, #828)', () => {
+    const adopter: BoardJob = { ...job, leaseToken: '99999999-9999-4999-8999-999999999999', claimSeq: 2 };
+    const listed = `${containerName(job)}\t${job.leaseToken}\t1\t${SESSION}\t${commandMark(job.command)}\n`;
+
+    it.each(RETENTION_ROWS)('%s: %s', async (_row, expected) => {
+        // One daemon for both claims: the runner container is listed as exited until something removes it.
+        let removed = false;
+        const exec = (async (args: string[]) => {
+            if (args[0] === 'rm') removed = true;
+            if (args[0] === 'wait') return { stdout: '0\n' };
+            if (args[0] === 'ps' && args.includes('status=exited')) return { stdout: removed ? '' : listed };
+            if (args[0] === 'ps' && args.some((a) => a.startsWith('label=factory.lease')))
+                return { stdout: 'a0a0a0a0a001\n' };
+            if (args[0] === 'volume' && args[1] === 'inspect') {
+                throw Object.assign(new Error('docker volume inspect exited 1'), {
+                    stderr: 'Error response from daemon: get factory-kill: no such volume',
+                });
+            }
+            if (args[0] === 'inspect') {
+                return { stdout: '{"Status":"exited","ExitCode":0,"StartedAt":"2026-10-01T00:00:00Z"}\n' };
+            }
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const attached = new EventEmitter() as ChildProcess;
+        attached.stdout = new EventEmitter() as Readable;
+        attached.stderr = new EventEmitter() as Readable;
+        let spawned!: () => void;
+        const started = new Promise<void>((resolve) => {
+            spawned = resolve;
+        });
+        const spawnFor = ((_command: string, args: string[]) => {
+            if (args[0] === 'logs') return fakeChild('did the work\n', '', 0);
+            spawned();
+            return attached;
+        }) as unknown as typeof spawn;
+
+        const first = dockerRunner(exec, { spawn: spawnFor, steps: fakeSteps(undefined, FINALIZED).sink });
+        const pending = first.run(job, { id: SESSION, resume: false });
+        await started;
+        process.nextTick(() => attached.emit('close', 0));
+        await pending;
+
+        const adopted = await dockerRunner(exec, { spawn: spawnFor }).adopt(adopter);
+        const found = adopted ? 'adoptable' : 'gone';
+        expect(found).toBe(expected);
+        if (adopted) expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0, started: true } });
     });
 });
 

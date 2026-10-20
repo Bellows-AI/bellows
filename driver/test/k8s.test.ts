@@ -68,6 +68,7 @@ import {
     TERMINATION_ROWS,
     type TerminationRow,
 } from './fixtures/termination-table.js';
+import { RETENTION_ROWS } from './fixtures/retention-table.js';
 import { STARTUP_ROWS, type StartupRow, startupDecisionOf } from './fixtures/startup-table.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import type { RunOutcome } from '../src/runner.js';
@@ -7486,6 +7487,45 @@ describe('how a started run ends, on kubernetes (the conformance table)', () => 
         const outcome = await ends[row]();
         expect(outcome.infraLoss).toBeDefined();
         expect(carriedPastLoss(outcome)).toEqual([]);
+    });
+});
+
+describe('what a closed run leaves for the next claim, on kubernetes (the retention conformance table, #828)', () => {
+    const adopter: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
+    const priorName = runnerJobName(job);
+    const prior = {
+        metadata: {
+            name: priorName,
+            uid: `uid-${priorName}`,
+            labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken },
+            annotations: {
+                'factory.claim-seq': '1',
+                'factory.session': SESSION,
+                'factory.command': commandMark(job.command),
+            },
+        },
+        spec: { template: { spec: { containers: [{ name: SUPERVISOR_CONTAINER }, { name: AGENT_CONTAINER }] } } },
+        status: { startTime: START, succeeded: 1 },
+    };
+
+    it.each(RETENTION_ROWS)('%s: %s', async (_row, expected) => {
+        // One cluster for both claims: the runner Job is listed once the run closed, until it is deleted.
+        let closed = false;
+        let deleted = false;
+        const { request } = routed((method, path) => {
+            if (closed && method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) deleted = true;
+            if (closed && method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return { status: 200, body: JSON.stringify({ items: deleted ? [] : [prior] }) };
+            }
+        });
+
+        const first = runner(request);
+        await first.run(job, { id: SESSION, resume: false });
+        closed = true;
+
+        const adopted = await runner(request).adopt(adopter);
+        expect(adopted ? 'adoptable' : 'gone').toBe(expected);
+        if (adopted) expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0, started: true } });
     });
 });
 
