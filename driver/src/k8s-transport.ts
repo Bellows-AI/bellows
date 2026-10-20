@@ -8,6 +8,7 @@ import type { RuntimeSample } from './runner.js';
 import { UUID } from './publish.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, MERGE_PATCH_CONTENT_TYPE } from './http.js';
 import type { BoardLease } from './board.js';
+import type { KillLedger } from './kill-ledger.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import type { TaskGroup } from './k8s-group.js';
 import type { TeardownIdentity } from './k8s-teardown.js';
@@ -268,6 +269,8 @@ export interface K8sDeps {
     superseded?: Set<string>;
     /** Each attempt's service sidecars' restart counts once last seen ready (`k8s-services.ts`), by lease token. */
     serviceBaselines?: Map<string, Map<string, number>>;
+    /** What this runner did to each attempt (`k8s-kill.ts`); created on first use. */
+    ledger?: KillLedger;
 }
 
 /** The ServiceAccount volume every pod gets, holding the token and the cluster CA. */

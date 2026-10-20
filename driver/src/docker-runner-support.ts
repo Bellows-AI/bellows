@@ -7,6 +7,7 @@
 
 import { setTimeout as delay } from 'node:timers/promises';
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
+import type { KillLedger } from './kill-ledger.js';
 import { execFile, type spawn } from 'node:child_process';
 import type { writeFile, rm } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
@@ -273,7 +274,7 @@ export async function setupJobServices(
     config: DriverConfig,
     deps: {
         execDocker: ExecDocker;
-        killed: Set<BoardJob['leaseToken']>;
+        ledger: Pick<KillLedger, 'was'>;
         serviceTeardown: (job: BoardJob) => Promise<void>;
     }
 ): Promise<boolean> {
@@ -283,7 +284,7 @@ export async function setupJobServices(
     // by the same attempt-scoped code that enforces it at teardown. The sync's fence has swept the
     // job's other attempts by then; their leftovers are never this teardown's business.
     await deps.serviceTeardown(job);
-    assertJobNotKilled(deps.killed, job);
+    assertJobNotKilled(deps.ledger, job);
     for (const spec of specs) {
         try {
             await deps.execDocker(serviceRunArgs(job, spec, supervisorName(job)));
@@ -291,7 +292,7 @@ export async function setupJobServices(
             await deps.serviceTeardown(job);
             throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
         }
-        assertJobNotKilled(deps.killed, job);
+        assertJobNotKilled(deps.ledger, job);
     }
     recordDeclaredServices(job, specs);
     return true;
@@ -399,8 +400,8 @@ export async function dockerRunVerdict(
  * step so a dying attempt stops CREATING resources over a lease it no longer holds — see
  * setupJobServices for why the abort is deliberately teardown-free.
  */
-export function assertJobNotKilled(killed: Set<BoardJob['leaseToken']>, job: BoardJob): void {
-    if (!killed.has(job.leaseToken)) return;
+export function assertJobNotKilled(ledger: Pick<KillLedger, 'was'>, job: BoardJob): void {
+    if (!ledger.was(job).stopped) return;
     throw new Error(`job ${job.id}: killed while setting up services`);
 }
 
@@ -410,11 +411,11 @@ export function assertJobNotKilled(killed: Set<BoardJob['leaseToken']>, job: Boa
  * hand — the run's own cleanup only wraps a settled outcome, and this throw precedes it.
  */
 export async function assertNotKilledAfterEnvWrite(
-    ctx: { killed: Set<BoardJob['leaseToken']>; job: BoardJob; files: RunnerFiles },
+    ctx: { ledger: Pick<KillLedger, 'was'>; job: BoardJob; files: RunnerFiles },
     file: string | null
 ): Promise<void> {
     try {
-        assertJobNotKilled(ctx.killed, ctx.job);
+        assertJobNotKilled(ctx.ledger, ctx.job);
     } catch (abort) {
         if (file) await ctx.files.rm(file).catch(() => undefined);
         throw abort;
@@ -490,7 +491,7 @@ export async function startJobServices(
     config: DriverConfig,
     deps: {
         execDocker: ExecDocker;
-        killed: Set<BoardJob['leaseToken']>;
+        ledger: Pick<KillLedger, 'was'>;
         serviceTeardown: (job: BoardJob) => Promise<void>;
         sleep?: (ms: number) => Promise<void>;
     },

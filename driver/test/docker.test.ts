@@ -2746,7 +2746,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     const startWith = (exec: ReturnType<typeof readinessDaemon>['exec']) =>
         startJobServices(job, loadDriverConfig({ RUNNER_SERVICES: '1' }), {
             execDocker: exec as unknown as (args: string[]) => Promise<{ stdout: string; stderr: string }>,
-            killed: new Set(),
+            ledger: { was: () => ({ stopped: false, hard: false }) },
             serviceTeardown: async () => {},
             sleep: async () => {},
         });

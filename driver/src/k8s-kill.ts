@@ -1,15 +1,16 @@
 import type { BoardJob } from './board.js';
 import { jobPath } from './k8s-auxspec.js';
+import { createKillLedger, type KillLedger } from './kill-ledger.js';
 import { runnerName } from './k8s-podspec.js';
 import { expectOk, HTTP_NOT_FOUND, type K8sDeps } from './k8s-transport.js';
 import type { RunOutcome } from './runner.js';
 import type { SupervisorReport } from './supervisor-contract.js';
-import { infraLossOf, type KillRecord, killMarkOf } from './termination.js';
+import { infraLossOf, type KillRecord, killMarkOf, killRecordsOf } from './termination.js';
 
 /**
  * What a Stop (`kill`) leaves for the polls it interrupts. Deleting a Job makes the very next
  * status read answer 404 — indistinguishable from a Job fenced away by hand unless the driver
- * remembers it did the deleting. That is an in-process fact of one driver, so it lives in module state.
+ * remembers it did the deleting. That is an in-process fact of one runner, so it lives in its kill ledger.
  * Why the driver ended a run is not: it is recorded on the runner Job (`recordRunnerKill`).
  */
 
@@ -57,26 +58,27 @@ export function vanishedOutcome(e: RunnerVanished, report: SupervisorReport | nu
     };
 }
 
-const killedRunners = new Set<string>();
-
 /** The error for a runner Job that read 404: this driver's own kill, or one taken away under the run. */
-export function vanishedRunner(name: string): Error {
-    return killedRunners.has(name) ? new RunnerKilled(name) : new RunnerVanished(name);
+export function vanishedRunner(deps: K8sDeps, job: BoardJob): Error {
+    const name = runnerName(job);
+    return ledgerOf(deps).was(job).hard ? new RunnerKilled(name) : new RunnerVanished(name);
 }
 
-/** Records that `kill` deleted the runner Job `name`; the poll's 404 that follows is its own doing. */
-export function markKilled(name: string): void {
-    killedRunners.add(name);
-}
+/** This runner's kill ledger: the durable half is the runner Job's annotation; created on first use. */
+export const ledgerOf = (deps: K8sDeps): KillLedger =>
+    (deps.ledger ??= createKillLedger({
+        write: (job, kill) => recordRunnerKill(deps, job, kill),
+        read: (job) => readRunnerKills(deps, job),
+    }));
 
-/** True once this driver's `kill` deleted the runner Job `name`. */
-export function wasKilled(name: string): boolean {
-    return killedRunners.has(name);
-}
-
-/** Forgets a kill on the runner Job `name` — a fresh run of the same job starts with a clean slate. */
-export function clearKilled(name: string): void {
-    killedRunners.delete(name);
+/** The reasons recorded on the attempt's runner Job; a Job already gone has none, any other refusal throws. */
+async function readRunnerKills(deps: K8sDeps, job: BoardJob): Promise<KillRecord[]> {
+    const got = await deps.request('GET', jobPath(deps.config.k8sNamespace, runnerName(job)));
+    if (got.status === HTTP_NOT_FOUND) return [];
+    expectOk(got, 'reading why the runner job was ended');
+    const annotations = (JSON.parse(got.body) as { metadata?: { annotations?: Record<string, string> } }).metadata
+        ?.annotations;
+    return killRecordsOf(annotations);
 }
 
 /**

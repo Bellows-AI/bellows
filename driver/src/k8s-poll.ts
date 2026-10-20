@@ -12,7 +12,7 @@ import {
     validContainerStatuses,
     validPodConditions,
 } from './k8s-shapes.js';
-import { RunnerKilled, vanishedRunner, wasKilled } from './k8s-kill.js';
+import { ledgerOf, RunnerKilled, vanishedRunner } from './k8s-kill.js';
 import { runnerName } from './k8s-podspec.js';
 import {
     containerFailure,
@@ -613,7 +613,7 @@ async function tailRunnerOutput(
  * Job suspended, listed and reporting nothing.
  */
 function readUnlessKilled(deps: K8sDeps, job: BoardJob): Promise<JobStatusResult> {
-    if (wasKilled(runnerName(job))) return Promise.reject(new RunnerKilled(runnerName(job)));
+    if (ledgerOf(deps).was(job).hard) return Promise.reject(new RunnerKilled(runnerName(job)));
     return readJobStatus(deps, runnerName(job), 'reading the runner job');
 }
 
@@ -656,7 +656,7 @@ export async function pollRunnerJobUntilTerminal(
         if (result.kind === 'notFound') {
             // Gone without this driver deleting it — fenced away or removed by hand. Its verdict can
             // never arrive, so waiting longer is holding a slot for nothing.
-            throw vanishedRunner(runnerName(job));
+            throw vanishedRunner(deps, job);
         }
         if (result.kind === 'error') throw new Error(refusal(result, 'reading the runner job')!);
         if (result.kind === 'terminal') {
