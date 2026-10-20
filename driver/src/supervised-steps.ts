@@ -15,7 +15,7 @@ import {
     parseHelperOutput,
 } from './helpers.js';
 import { parseLastJsonLine } from './json-parse.js';
-import { pollFor } from './poll.js';
+import { pollFor, type Sleep } from './poll.js';
 import {
     baseBranchOf,
     CREDENTIAL_HELPER,
@@ -118,29 +118,33 @@ export const GROUP_UP_POLL_MS = 2_000;
 /**
  * Waits until the attempt's supervisor has pulled from the driver at least once, on either executor.
  * Bounded by elapsed time, probe time included, not a count of polls; false at the bound, which is
- * the caller's to classify. A driver kill (`stopped`) ends the wait at once and wins over everything
+ * the caller's to classify. A driver kill (an aborted `signal`) ends the wait at once and wins over everything
  * else: over a contact, over the bound, and over whatever the `probe` threw.
  */
 export async function awaitFirstContact(
     host: Pick<StepHost, 'sink'>,
     job: BoardJob,
-    opts: { sleep: (ms: number) => Promise<void>; stopped: () => boolean; probe?: () => Promise<void> }
+    opts: { sleep: Sleep; signal: AbortSignal; probe?: () => Promise<void> }
 ): Promise<boolean> {
     const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
     if (!token) return true;
     const killed = (): Error => new Error(`job ${job.id}: killed while its task group came up`);
-    const found = await pollFor({ ms: GROUP_UP_WAIT_MS, everyMs: GROUP_UP_POLL_MS, sleep: opts.sleep }, async () => {
-        if (opts.stopped()) throw killed();
-        if (host.sink.contacted(token)) return true;
-        try {
-            await opts.probe?.();
-        } catch (e) {
-            if (opts.stopped()) throw killed();
-            throw e;
+    const { signal } = opts;
+    const found = await pollFor(
+        { ms: GROUP_UP_WAIT_MS, everyMs: GROUP_UP_POLL_MS, sleep: opts.sleep, signal, abandoned: killed },
+        async () => {
+            if (signal.aborted) throw killed();
+            if (host.sink.contacted(token)) return true;
+            try {
+                await opts.probe?.();
+            } catch (e) {
+                if (signal.aborted) throw killed();
+                throw e;
+            }
+            if (signal.aborted) throw killed();
         }
-        if (opts.stopped()) throw killed();
-    });
-    if (opts.stopped()) throw killed();
+    );
+    if (signal.aborted) throw killed();
     return found ?? false;
 }
 

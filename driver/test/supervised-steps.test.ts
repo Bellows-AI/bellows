@@ -628,7 +628,9 @@ describe('awaitFirstContact', () => {
 
     it('answers true at once for a supervisor that already pulled, without sleeping', async () => {
         const { slept, sleep } = noSleep();
-        expect(await awaitFirstContact(hostOf([true]).host, withToken, { sleep, stopped: () => false })).toBe(true);
+        expect(
+            await awaitFirstContact(hostOf([true]).host, withToken, { sleep, signal: new AbortController().signal })
+        ).toBe(true);
         expect(slept).toEqual([]);
     });
 
@@ -636,7 +638,11 @@ describe('awaitFirstContact', () => {
         const { slept, sleep } = noSleep();
         const never = hostOf([false]);
         expect(
-            await awaitFirstContact(never.host, { ...job, supervisorEnv: {} }, { sleep, stopped: () => false })
+            await awaitFirstContact(
+                never.host,
+                { ...job, supervisorEnv: {} },
+                { sleep, signal: new AbortController().signal }
+            )
         ).toBe(true);
         expect(never.calls()).toBe(0);
         expect(slept).toEqual([]);
@@ -646,7 +652,9 @@ describe('awaitFirstContact', () => {
         const { slept, sleep } = noSleep();
         const probe = vi.fn(async () => undefined);
         const h = hostOf([false, false, true]);
-        expect(await awaitFirstContact(h.host, withToken, { sleep, stopped: () => false, probe })).toBe(true);
+        expect(await awaitFirstContact(h.host, withToken, { sleep, signal: new AbortController().signal, probe })).toBe(
+            true
+        );
         expect(slept).toEqual([GROUP_UP_POLL_MS, GROUP_UP_POLL_MS]);
         expect(probe).toHaveBeenCalledTimes(2);
     });
@@ -659,9 +667,12 @@ describe('awaitFirstContact', () => {
             return now;
         });
         try {
-            expect(await awaitFirstContact(hostOf([false]).host, withToken, { sleep, stopped: () => false })).toBe(
-                false
-            );
+            expect(
+                await awaitFirstContact(hostOf([false]).host, withToken, {
+                    sleep,
+                    signal: new AbortController().signal,
+                })
+            ).toBe(false);
         } finally {
             spy.mockRestore();
         }
@@ -672,7 +683,7 @@ describe('awaitFirstContact', () => {
     it('throws the killed error at once for a stopped job, before any contact is read', async () => {
         const { slept, sleep } = noSleep();
         const h = hostOf([true]);
-        await expect(awaitFirstContact(h.host, withToken, { sleep, stopped: () => true })).rejects.toThrow(
+        await expect(awaitFirstContact(h.host, withToken, { sleep, signal: AbortSignal.abort() })).rejects.toThrow(
             /killed while its task group came up/
         );
         expect(h.calls()).toBe(0);
@@ -681,22 +692,25 @@ describe('awaitFirstContact', () => {
 
     it('throws killed, not true, when the supervisor answered but the job was killed', async () => {
         await expect(
-            awaitFirstContact(hostOf([true]).host, withToken, { sleep: async () => undefined, stopped: () => true })
+            awaitFirstContact(hostOf([true]).host, withToken, {
+                sleep: async () => undefined,
+                signal: AbortSignal.abort(),
+            })
         ).rejects.toThrow(/killed while its task group came up/);
     });
 
     it('throws killed, not false, when the kill lands in the last sleep before the bound', async () => {
         let now = 0;
-        let killed = false;
+        const killed = new AbortController();
         const spy = vi.spyOn(Date, 'now').mockImplementation(() => now);
         try {
             await expect(
                 awaitFirstContact(hostOf([false]).host, withToken, {
                     sleep: async () => {
                         now += GROUP_UP_WAIT_MS;
-                        killed = true;
+                        killed.abort();
                     },
-                    stopped: () => killed,
+                    signal: killed.signal,
                 })
             ).rejects.toThrow(/killed while its task group came up/);
         } finally {
@@ -705,13 +719,13 @@ describe('awaitFirstContact', () => {
     });
 
     it('lets the killed error win over what the probe threw after the kill', async () => {
-        let killed = false;
+        const killed = new AbortController();
         await expect(
             awaitFirstContact(hostOf([false]).host, withToken, {
                 sleep: async () => undefined,
-                stopped: () => killed,
+                signal: killed.signal,
                 probe: async () => {
-                    killed = true;
+                    killed.abort();
                     throw new Error('the container is held: CreateContainerConfigError');
                 },
             })
@@ -722,7 +736,7 @@ describe('awaitFirstContact', () => {
         await expect(
             awaitFirstContact(hostOf([false]).host, withToken, {
                 sleep: async () => undefined,
-                stopped: () => false,
+                signal: new AbortController().signal,
                 probe: async () => {
                     throw new Error('held');
                 },

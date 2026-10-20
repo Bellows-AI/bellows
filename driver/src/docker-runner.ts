@@ -202,7 +202,7 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal?: Abor
 async function awaitGroupUp(deps: RunnerDeps, job: BoardJob): Promise<void> {
     const up = await awaitFirstContact(stepHostOf(deps), job, {
         sleep: deps.sleep,
-        stopped: () => deps.ledger.was(job).stopped,
+        signal: deps.ledger.signal(job),
     });
     if (!up) {
         throw new Error(`the task supervisor ${supervisorName(job)} never came up within ${GROUP_UP_WAIT_MS}ms`);

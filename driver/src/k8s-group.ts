@@ -221,7 +221,7 @@ async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): P
     const seen: { last: PodStartState; unproven: string | null } = { last: 'unread', unproven: null };
     const contacted = await awaitFirstContact(stepHostOf(deps), job, {
         sleep: deps.sleep,
-        stopped: () => ledgerOf(deps).was(job).stopped,
+        signal: ledgerOf(deps).signal(job),
         probe: async () => {
             const pull = await readImagePullStatus(deps, jobName);
             const refused = startRefusalOf(image, pull, true);
