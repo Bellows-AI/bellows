@@ -1,12 +1,4 @@
-import {
-    CLAIM_SEQ_MARK,
-    COMMAND_MARK,
-    GATE_LABEL,
-    JOB_LABEL,
-    LEASE_LABEL,
-    SERVICE_LABEL,
-    SESSION_MARK,
-} from './labels.js';
+import { CLAIM_SEQ_MARK, COMMAND_MARK, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL, SESSION_MARK } from './labels.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -19,26 +11,23 @@ import {
 import type { BoardJob } from './board.js';
 import {
     UUID,
-    GATE_UID,
     GATE_GID,
     TOOL_UID,
     AGENT_LAUNCH_CAPS,
     GITHUB_CACHE_DIR,
     GITHUB_CACHE_SIZE,
-    type CacheJob,
-    gateEnv,
     opencodeDbPath,
     workspacePath,
     runWorkingDir,
     runnerClaimEnv,
 } from './claim.js';
-import { gateShellArgv, opencodeReadoutScript } from './container-scripts.js';
+import { opencodeReadoutScript } from './container-scripts.js';
 import { parseLastJsonLine } from './json-parse.js';
 import type { ServiceStatus } from './board.js';
 import { BYTES_PER_KIB, commandMark, OPENCODE_EXPORT_LIMIT, type RuntimeSample, type RunSession } from './runner.js';
-import { GATE_IMAGE, GATE_KEY, toolTreeReleaseScript, worktreeDir } from './publish.js';
+import { toolTreeReleaseScript, worktreeDir } from './publish.js';
 import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
-import { agentMailboxArgs, agentRoleArgs } from './docker-mailbox.js';
+import { agentMailboxArgs, agentRoleArgs, groupNetworkArgs } from './docker-mailbox.js';
 
 /**
  * The close-time claude-code turn read's whole budget, matching the kubernetes twin's
@@ -211,117 +200,6 @@ export function parseDockerServiceExit(stdout: string): { exitCode: number | nul
  */
 export const containerName = (job: BoardJob): string => `factory-job-${job.id}-${job.leaseToken}`;
 /**
- * The gate environment container's identity: `<checkout key>` under a label, `factory-env-…` as a
- * name. The KEY is the checkout the gates share with the coding agent — the task worktree
- * `<org>/<uuid>/.worktrees/<root id>` (issue #35), the tree the run actually edits — and it is
- * asserted before it is interpolated into argv or a container name, exactly like
- * `workspacePathOf` above: it arrives from the board's claim plus a repo label, and a `..` in it
- * would work the parent of every member's tree into a container that runs arbitrary commands.
- *
- * The segments mirror what the system legally produces: org ≤ 39 (the org-id shape
- * server/src/auth/github.ts documents) and both ids
- * uuids (36) — a validator narrower than the input domain would fail every job on a
- * legally-named checkout. GATE_KEY and GATE_IMAGE live in publish.ts, shared with the kubernetes
- * gate manager.
- */
-
-/**
- * A container name this process will `docker exec` into: one token, no shell metacharacters. The
- * ceiling is above the longest name `gateEnvContainerName` can emit (12-char prefix + the 124
- * characters GATE_KEY allows ≈ 136) — a cap BELOW that would create containers every gate then
- * refuses to exec into, a checkout that can never pass.
- */
-const GATE_CONTAINER = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}$/;
-
-export function gateEnvContainerName(key: string): string {
-    if (!GATE_KEY.test(key)) {
-        throw new Error(`refusing to name a gate environment container from "${key}"`);
-    }
-    return `factory-env-${key.replaceAll('/', '-')}`;
-}
-
-/**
- * The full `docker run` argv for one gate environment container. Pure, and exported for the same
- * pinning as dockerArgs.
- *
- * `-d` + `--entrypoint sleep <image> infinity`: the container's only job is to BE an environment.
- * Gates enter it by `docker exec` (gateExecArgs), which is what keeps `npm install`'s state and
- * any warm cache alive across gates — and across coding-task turns, for as long as the cooldown
- * keeps the container up.
- *
- * The claim env rides the same way it rides into a runner: a 0600 `--env-file`, never `-e
- * NAME=value` — the values are member-scoped secrets and argv is world-readable. No env file, no
- * `--env-file`: the container then starts with the image's own environment.
- */
-export function gateEnvArgs(
-    config: DriverConfig,
-    key: string,
-    image: string,
-    { envFile, job }: { envFile?: string | undefined; job?: (CacheJob & Pick<BoardJob, 'leaseToken'>) | undefined } = {}
-): string[] {
-    if (!GATE_KEY.test(key)) {
-        throw new Error(
-            `refusing to run a gate environment from a checkout key that is not <org>/<uuid>/.worktrees/<uuid>: ${key}`
-        );
-    }
-    if (!GATE_IMAGE.test(image)) {
-        throw new Error(
-            `refusing to run a gate environment from an image that is not a plain docker reference: "${image}"`
-        );
-    }
-    const args = [
-        'run',
-        ...containerHardeningArgs(),
-        '-d',
-        '--name',
-        gateEnvContainerName(key),
-        '--label',
-        `${GATE_LABEL}=${key}`,
-        // The creating attempt, so the orphan reaper can ask the board whether it is still alive.
-        ...(job?.leaseToken
-            ? ['--label', `${JOB_LABEL}=${job.id}`, '--label', `${LEASE_LABEL}=${job.leaseToken}`]
-            : []),
-        // The gate env is a WRITER on the shared task worktree, so it writes as the same
-        // uid:gid every other writer on that tree uses — the executor images' `USER node`
-        // (uid 1000), which the runner, the sync and the reclaim containers all run as.
-        // The declared image's own default (usually root) would leave gate-written files
-        // root-owned, and the uid-1000 reclaim would then die with EACCES trying to remove
-        // them — the tree stuck for every later turn of the thread (observed 2026-09-13: a
-        // gate-built core/dist left the worktree unremovable and its thread unresumable).
-        // HOME moves to /tmp with the user: the image's own HOME (/root) is unwritable for
-        // a non-root uid, and a gate that npm-installs needs a writable cache directory.
-        '--user',
-        `${GATE_UID}:${GATE_GID}`,
-        ...gateEnv(config, job).flatMap((pair) => ['-e', pair.join('=')]),
-        // Scoped to the checkout key's own `<orgId>/<userId>` half — the same subtree the
-        // runner mounts, asserted by GATE_KEY above before the split.
-        ...workspacesMountArgs(config, key.split('/').slice(0, 2).join('/')),
-        // The checkout the coding agent works in is the checkout the gates run in.
-        '-w',
-        `${config.workspaceMount}/${key}`,
-    ];
-    if (envFile) args.push('--env-file', envFile);
-    if (config.network) args.push('--network', config.network);
-    // Sized like the kubernetes gate Job (issue #507): GATE_*, each unset slot the runner's.
-    args.push(...resourceArgs(config.gateResources));
-    args.push('--entrypoint', 'sleep', image, 'infinity');
-    return args;
-}
-
-/**
- * One gate, inside the environment container. Pure and exported for the pinning; the command is
- * authored by the repository that declared it — the same trust level as the job command itself —
- * but it still travels as ONE argv element after the gate shell, never through an interpolating shell.
- */
-export function gateExecArgs(name: string, command: string, envFile?: string): string[] {
-    if (!GATE_CONTAINER.test(name)) {
-        throw new Error(`refusing to exec into a container named "${name}"`);
-    }
-    // The env file carries the run's own GitHub token: the container's was its creation's.
-    return ['exec', ...(envFile ? ['--env-file', envFile] : []), name, ...gateShellArgv(command)];
-}
-
-/**
  * The tool uid's release of a task tree before its terminal reclaim (issue #814): one throwaway
  * container over the member's subtree, as the uid the agent's tools ran as, giving what a tool
  * closed with an explicit mode group rwx so the uid-1000 reclaim can empty it. Hardened, no
@@ -465,9 +343,9 @@ export function dockerArgs(
     config: DriverConfig,
     job: BoardJob,
     session: RunSession | null,
-    options: { servicesNetwork?: string | null; envFile?: string } = {}
+    options: { envFile?: string } = {}
 ): string[] {
-    const { servicesNetwork = null, envFile } = options;
+    const { envFile } = options;
     /*
      * The run happens in the job's task worktree (issue #35) — one per task thread, branched off
      * the remote default — when the job names a repository, and at the member root when it does
@@ -529,28 +407,17 @@ export function dockerArgs(
         `${GITHUB_CACHE_DIR}:rw,noexec,nosuid,size=${GITHUB_CACHE_SIZE.docker},mode=0700,uid=${TOOL_UID}`,
     ];
 
-    // A gated job's runner reaches the driver's gate endpoint by the default
-    // `http://host.docker.internal:<port>`, which resolves only if the daemon is told what that
-    // name means — automatic on Docker Desktop, not on Linux. Mapped iff the job has gates, so
-    // an ungated runner's argv stays exactly what it always was.
-    if (job.gates?.gates?.length) {
-        args.push('--add-host', 'host.docker.internal:host-gateway');
-    }
-
     // Issue #360 on this side too: the configured requests/limits as resource flags, before the
     // credentials. Nothing configured renders nothing — the argv is exactly what it always was.
     args.push(...resourceArgs(config.runnerResources));
 
     pushRunnerCredentialArgs(args, config, job, envFile);
 
-    if (config.network) args.push('--network', config.network);
-
-    // The per-job services network, when the job declared services and the driver honors them.
-    // Repeated --network flags need Docker 25.0 (API 1.44), where multi-network create landed;
-    // on older daemons the flag is single-valued and the LAST one silently wins — which here
-    // would drop the runner's telemetry network without an error. The two networks do different
-    // jobs: config.network carries telemetry out, this one carries the job's DNS names in.
-    if (servicesNetwork) args.push('--network', servicesNetwork);
+    // The group supervisor's network namespace (issue #773), as a pod's containers share one: its
+    // RUNNER_NETWORK carries telemetry and the driver's gate endpoint out, and its hosts file maps
+    // `host.docker.internal` (automatic on Docker Desktop, not on Linux) and every declared service,
+    // on loopback. docker refuses --add-host and a second --network beside it.
+    args.push(...groupNetworkArgs(job));
     // Where the runner's telemetry is pointed. The executor image bakes a default endpoint
     // (http://collector:4318), but RUNNER_OTEL_ENDPOINT overrides it for a collector the compose
     // network cannot name — the same override the kubernetes runner applies in the pod spec. A

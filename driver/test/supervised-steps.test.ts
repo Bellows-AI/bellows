@@ -12,13 +12,16 @@ import { createStepBroker, StepChannelClosed, StepTimedOut, type StepSink } from
 import {
     orderFinish,
     orderGo,
+    runGateStep,
     runHelperStep,
     runReclaimStep,
+    runServiceGenerationStep,
     runSyncStep,
     type SupervisedGroups,
     supervisedStepMembers,
     supervisedStepRunner,
 } from '../src/supervised-steps.js';
+import { serviceRestartArgv } from '../src/container-scripts.js';
 import {
     AGENT_CONTAINER,
     SUPERVISOR_CONTAINER,
@@ -89,8 +92,10 @@ function sink(answer: (step: StepRequest, call: number) => StepResult | Error = 
         contacted: () => true,
         release: () => undefined,
         attach: () => undefined,
+        cancel: (token, id) => cancels.push([token, id]),
     };
-    return { host: { config, sink: impl }, submitted, tokens };
+    const cancels: [string, string][] = [];
+    return { host: { config, sink: impl }, submitted, tokens, cancels };
 }
 
 const publishStep = (over: Partial<PublishStep> = {}): PublishStep => ({
@@ -378,6 +383,60 @@ describe('the sync, the reclaim and the helpers over the supervisor', () => {
     });
 });
 
+describe('the declared gates over the supervisor (issue #773)', () => {
+    const gate = { command: 'npm test', cwd: WORKTREE, env: { CI: 'true' }, timeoutMs: 600_000 };
+
+    it('hands the gate container the command, the worktree and the env, as a step of its own', async () => {
+        const s = sink(() => ok('passed'));
+        expect(await runGateStep(s.host, job, gate)).toEqual(ok('passed'));
+        expect(s.submitted).toEqual([
+            expect.objectContaining({
+                kind: 'gate',
+                argv: ['npm test'],
+                cwd: WORKTREE,
+                env: { CI: 'true' },
+                timeoutMs: 600_000,
+            }),
+        ]);
+        expect(s.tokens).toEqual([CONTROL_TOKEN]);
+    });
+
+    it('gives every execution its own step, the same named gate run twice included', async () => {
+        const s = sink();
+        await runGateStep(s.host, job, gate);
+        await runGateStep(s.host, job, gate);
+        const [first, second] = s.submitted;
+        expect(first?.id).not.toBe(second?.id);
+        expect(first?.id.startsWith('gate-')).toBe(true);
+        // The attempt scopes it, as every step id: another lease never names this one's.
+        const other = sink();
+        await runGateStep(other.host, { ...job, leaseToken: '99999999-9999-4999-8999-999999999999' }, gate);
+        expect(other.submitted[0]?.id.split('-')[1]).not.toBe(first?.id.split('-')[1]);
+    });
+
+    it('cancels its step through the channel when the signal aborts, and rejects', async () => {
+        const controller = new AbortController();
+        let release = (): void => undefined;
+        const s = sink();
+        s.host.sink.submit = (_token, step, signal) =>
+            new Promise((_resolve, reject) => {
+                s.submitted.push(step);
+                release = () => reject(new Error(`step ${step.id} was cancelled`));
+                signal?.addEventListener('abort', release, { once: true });
+            });
+        const running = runGateStep(s.host, job, gate, controller.signal);
+        controller.abort();
+        await expect(running).rejects.toThrow(/cancelled/);
+        expect(s.cancels).toEqual([[CONTROL_TOKEN, s.submitted[0]?.id]]);
+    });
+
+    it('submits nothing for a signal already aborted', async () => {
+        const s = sink();
+        await expect(runGateStep(s.host, job, gate, AbortSignal.abort())).rejects.toThrow(/cancelled/);
+        expect(s.submitted).toEqual([]);
+    });
+});
+
 describe('the supervised-step members both executors share', () => {
     const NOOP: HelperPlan = { phase: 'pre', helperId: 'noop', input: {}, githubWriting: false };
 
@@ -447,6 +506,21 @@ describe('the supervised-step members both executors share', () => {
         await expect(members.probeTree(job)).rejects.toBe(refusal);
         await expect(members.snapshotTree(job, 'review-1')).rejects.toBe(refusal);
         expect(s.submitted).toEqual([]);
+    });
+});
+
+describe('the services’ generations over the supervisor (issue #773 D9)', () => {
+    it('reads or bumps the generations as a `restart` step of its own, a fresh one every call', async () => {
+        const s = sink();
+        expect(await runServiceGenerationStep(s.host, job, 'acked', ['db', 'cache'])).toEqual(ok());
+        await runServiceGenerationStep(s.host, job, 'bump', ['db', 'cache']);
+        const [read, bump] = s.submitted;
+        expect(read).toMatchObject({ kind: 'restart', argv: serviceRestartArgv('acked', ['db', 'cache']), env: {} });
+        expect(bump).toMatchObject({ kind: 'restart', argv: serviceRestartArgv('bump', ['db', 'cache']) });
+        expect(read?.id).not.toBe(bump?.id);
+        // A few files: well inside the broker's grace, never holding a step behind it for long.
+        expect(read?.timeoutMs).toBeLessThanOrEqual(30_000);
+        expect(s.tokens).toEqual([CONTROL_TOKEN, CONTROL_TOKEN]);
     });
 });
 

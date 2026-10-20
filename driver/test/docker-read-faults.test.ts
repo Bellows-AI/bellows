@@ -16,7 +16,7 @@ import { describe, expect } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { containerName } from '../src/docker.js';
-import { supervisorName } from '../src/docker-group.js';
+import { supervisorName } from '../src/docker-mailbox.js';
 import { createDockerReaper } from '../src/docker-reaper.js';
 import type { ExecDocker } from '../src/docker-runner-support.js';
 import { createDockerRunner } from '../src/docker-runner.js';
@@ -67,13 +67,7 @@ const has = (args: readonly string[], word: string): boolean => args.includes(wo
 const ok = (stdout = '') => ({ stdout });
 /** Every removal, kill and disconnect a world allows: the daemon takes them. */
 const writes: DockerSpecial = (args) =>
-    is(args, 'rm') ||
-    is(args, 'kill') ||
-    is(args, 'network', 'rm') ||
-    is(args, 'network', 'disconnect') ||
-    is(args, 'volume', 'rm')
-        ? ok()
-        : undefined;
+    is(args, 'rm') || is(args, 'kill') || is(args, 'volume', 'rm') ? ok() : undefined;
 const either =
     (...specials: DockerSpecial[]): DockerSpecial =>
     (args) => {
@@ -92,9 +86,8 @@ function groupOf(alias: Alias): { agent: string; supervisor: string; exporter: s
     return { agent, supervisor, exporter, listing: `${agent}\n${supervisor}\n${exporter}\n` };
 }
 
-/** The service teardown's reads of an attempt with no service left and nothing on its network. */
-const noFleet: DockerSpecial = (args) =>
-    (is(args, 'ps') && has(args, 'label=factory.service')) || is(args, 'network', 'inspect') ? ok() : undefined;
+/** The service teardown's read of an attempt with no service container left. */
+const noFleet: DockerSpecial = (args) => (is(args, 'ps') && has(args, 'label=factory.service') ? ok() : undefined);
 
 /** D-K: the hard kill of a running attempt's group of three. */
 const hardKill: Build<ExecDocker> = async (tap, alias) => {
@@ -112,30 +105,19 @@ const hardKill: Build<ExecDocker> = async (tap, alias) => {
 };
 
 /**
- * D-ST: the service teardown of one service container, a gate environment still on the network.
- * The network holds what is attached to it, and refuses its removal while anything is, as the
- * daemon does (`docker-teardown.ts:141-143`).
+ * D-ST: the service teardown of one service container. A service shares its group supervisor's
+ * network namespace (issue #773), so no network of its own is listed, detached or removed.
  */
 const serviceTeardown: Build<ExecDocker> = async (tap, alias) => {
     const job = freshJob();
     aliasPair(alias, job, 'lease');
-    const [service, gate] = [randomUUID(), `factory-env-${randomUUID()}`];
+    const service = randomUUID();
     alias(service, 'service');
-    alias(gate, 'gate-env');
-    const attached = new Set([service, gate]);
-    const { exec } = routedDocker((args) => {
-        if (is(args, 'ps') && has(args, 'label=factory.service'))
-            return ok(attached.has(service) ? `${service}\n` : '');
-        if (is(args, 'rm', '-f')) attached.delete(args[2]!);
-        if (is(args, 'network', 'inspect')) return ok([...attached].map((name) => `${name}\n`).join(''));
-        if (is(args, 'network', 'disconnect')) attached.delete(args[4]!);
-        if (is(args, 'network', 'rm') && attached.size > 0) {
-            return Object.assign(new Error('docker network rm exited 1'), {
-                stderr: `Error response from daemon: error while removing network: network ${args[2]} has active endpoints`,
-            });
-        }
-        return writes(args);
-    });
+    const { exec } = routedDocker(
+        either(writes, (args) =>
+            is(args, 'ps') && has(args, 'label=factory.service') ? ok(`${service}\n`) : undefined
+        )
+    );
     const runner = runnerOf(tap(exec));
     return async () => {
         await runner.releaseServices(job);
@@ -187,7 +169,6 @@ const adoptExited: Build<ExecDocker> = async (tap, alias) => {
             if (is(args, 'wait')) return ok('0\n');
             if (is(args, 'ps')) return ok(has(args, 'status=exited') ? listing : fencePs);
             if (is(args, 'volume', 'ls')) return ok(fenceVolumes);
-            if (is(args, 'network', 'ls')) return ok();
             // No kill marker recorded: the daemon's own refusal for a volume that does not exist.
             if (is(args, 'volume', 'inspect')) {
                 return Object.assign(new Error('docker volume inspect exited 1'), {
@@ -231,7 +212,6 @@ function reaperDaemon(pair: BoardJob, alias: Alias, created: { ps: string; volum
                     `${psRow(pair, service, { label: 'factory.service=db', state: 'running', created: created.ps })}\n`
                 );
             }
-            if (is(args, 'ps') && has(args, 'label=factory.gates')) return ok();
             if (is(args, 'ps') && has(args, 'label=factory.role')) {
                 return ok(
                     `${role(agent, containerName(pair), 'agent')}\n${role(supervisor, supervisorName(pair), 'supervisor')}\n`
@@ -243,7 +223,6 @@ function reaperDaemon(pair: BoardJob, alias: Alias, created: { ps: string; volum
                 );
             }
             if (is(args, 'volume', 'inspect')) return ok(`${created.volume}\n`);
-            if (is(args, 'network', 'inspect')) return ok();
         })
     );
     return exec;
@@ -304,10 +283,8 @@ const deadService: Build<ExecDocker> = async (tap, alias) => {
     };
 };
 
-const NET = 'factory-job-<job>-<lease>-services';
 const GROUP_PS = 'ps -aq --filter label=factory.job=<job> --filter label=factory.lease=<lease>';
 const SERVICE_PS = `${GROUP_PS} --filter label=factory.service`;
-const NET_INSPECT = `network inspect --format {{range .Containers}}{{println .Name}}{{end}} ${NET}`;
 const AGENT_PS =
     'ps -q --filter label=factory.job=<job> --filter label=factory.lease=<lease> --filter label=factory.role=agent';
 const HTML = '<html><body>502 Bad Gateway</body></html>';
@@ -321,10 +298,7 @@ const pinsFor = (faults: readonly DockerFault[], lines: (fault: DockerFault) => 
  * The service teardown (`dockerServiceTeardown`) every kill and stop ends in: a listing that is no
  * list of ids becomes the ids it removes (`docker-teardown.ts:139`, :154).
  */
-const teardownGarbage = [
-    `DELETE after garbage at ${SERVICE_PS}: rm -f ${HTML}`,
-    `DELETE after garbage at ${NET_INSPECT}: network disconnect -f ${NET} ${HTML}`,
-];
+const teardownGarbage = [`DELETE after garbage at ${SERVICE_PS}: rm -f ${HTML}`];
 
 /** One scenario: its world, the writes its clean run makes, and — for the stop — the escalation it may make. */
 interface World {
@@ -346,40 +320,24 @@ function scenario(name: string, { build, writes, escalation, allowed }: World, p
 
 scenario(
     'the hard kill of a group of three (D-K)',
-    { build: hardKill, writes: ['kill <agent>', 'kill <supervisor>', 'kill <exporter>', `network rm ${NET}`] },
+    { build: hardKill, writes: ['kill <agent>', 'kill <supervisor>', 'kill <exporter>'] },
     {
-        // A refused group listing reads as no group (`docker-teardown.ts:186`): nothing is killed, and
-        // the service teardown's own reads (:132-156) authorize the network's removal — a write of the
-        // clean sequence. Garbage becomes a kill target (`docker-teardown.ts:190`).
+        // A refused group listing reads as no group (`docker-teardown.ts`): nothing is killed.
+        // Garbage becomes a kill target.
         garbage: [`DELETE after garbage at ${GROUP_PS}: kill ${HTML}`, ...teardownGarbage].map(pin),
     }
 );
 
 scenario(
-    'the service teardown of a service and an attached gate environment (D-ST)',
-    {
-        build: serviceTeardown,
-        writes: ['rm -f <service>', `network disconnect -f ${NET} <gate-env>`, `network rm ${NET}`],
-        allowed: [
-            {
-                write: `network disconnect -f ${NET} <service>`,
-                at: [SERVICE_PS],
-                faults: ['exit', 'timeout', 'no-such'],
-                why:
-                    'a service left by a refused listing is still attached, and the teardown detaches what a ' +
-                    'successful network inspect lists (`docker-teardown.ts:145-155`)',
-            },
-        ],
-    },
-    // A refused service listing or network inspect leaves the network removal to the daemon's own
-    // refusal while endpoints remain (`docker-teardown.ts:141-157`, modelled in the world). Garbage
-    // becomes a removal or detach target (`docker-teardown.ts:139`, :154).
+    'the service teardown of a service (D-ST)',
+    { build: serviceTeardown, writes: ['rm -f <service>'] },
+    // Garbage becomes a removal target (`docker-teardown.ts`).
     { garbage: teardownGarbage.map(pin) }
 );
 
 scenario(
     'the supervised stop of a finalized group (D-SA)',
-    { build: stopAgent, writes: [`network rm ${NET}`], escalation: STOP_ESCALATION },
+    { build: stopAgent, writes: [], escalation: STOP_ESCALATION },
     {
         // The stopAgent exception covers the escalation's kills of the real members only: a garbage
         // agent listing is a literal kill target (`docker-teardown.ts:234`).
@@ -408,7 +366,6 @@ scenario(
             `VERDICT after garbage at ps -a --filter label=factory.job=<job> --filter status=exited --format {{.Names}}\t{{.Label "factory.lease"}}\t{{.Label "factory.claim-seq"}}\t{{.Label "factory.session"}}\t{{.Label "factory.command"}}: no-earlier-run`,
             // A line with no lease field reads as another attempt's leftover (`docker-runner-support.ts:182-183`).
             `DELETE after garbage at ${fenceList('ps -a', 'ID')}: rm -f ${HTML}`,
-            `DELETE after garbage at ${fenceList('network ls', 'Name')}: network rm ${HTML}`,
             `DELETE after garbage at ${fenceList('volume ls', 'Name')}: volume rm -f ${HTML}`,
         ].map(pin),
     }
@@ -417,13 +374,11 @@ scenario(
 scenario(
     'the reaper on a superseded lease with an unread runner (D-RP1)',
     { build: reaperSuperseded, writes: [] },
-    // A role listing of no rows (`docker-reaper.ts:129`) loses the group its runner spare
-    // (`reaper.ts:136`): reaped, network first.
+    // A role listing of no rows (`docker-reaper.ts`) loses the group its runner spare
+    // (`reaper.ts`): reaped, its service first.
     {
         garbage: [
-            pin(
-                `DELETE after garbage at ps -a --filter label=factory.role --format {{json .}}: network rm factory-job-<job>-<old>-services`
-            ),
+            pin(`DELETE after garbage at ps -a --filter label=factory.role --format {{json .}}: rm -f <service>`),
         ],
     }
 );
@@ -431,10 +386,10 @@ scenario(
 scenario(
     'the reaper on a gone job inside its grace (D-RP2)',
     { build: reaperGone, writes: [] },
-    // An unparsable creation time dates the volume to the epoch (`docker-reaper.ts:173-174`): the
+    // An unparsable creation time dates the volume to the epoch (`docker-reaper.ts`): the
     // group reads as out of its grace and is reaped.
     pinsFor(['empty', 'garbage'], (fault) => [
-        `DELETE after ${fault} at volume inspect --format {{.CreatedAt}} factory-ctl-<job>-<lease>: network rm ${NET}`,
+        `DELETE after ${fault} at volume inspect --format {{.CreatedAt}} factory-ctl-<job>-<lease>: rm -f <service>`,
     ])
 );
 

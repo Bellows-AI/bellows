@@ -25,7 +25,7 @@ import {
 import { containerHardeningField } from './k8s-podfields.js';
 import { GATE_GID, TOOL_UID, workspacePath } from './claim.js';
 import { RELEASE_DEADLINE_MS, toolTreeReleaseBoundedScript, toolTreeReleaseScript, worktreeDir } from './publish.js';
-import { type PodStartState, readImagePullStatus, readJobStatus, startRefusalOf, unpullableImage } from './k8s-poll.js';
+import { heldUnpullable, type PodStartState, readImagePullStatus, readJobStatus, startRefusalOf } from './k8s-poll.js';
 import {
     endRunnerJob,
     GROUP_END_WAIT_MS,
@@ -43,7 +43,14 @@ import type { K8sDeps } from './k8s-transport.js';
 import type { ReclaimResult } from './publish.js';
 import type { RunSession } from './runner.js';
 import { StartupRefused } from './startup-cause.js';
-import { attachSteps, orderFinish, releaseSteps, runReclaimStep, stepHostOf } from './supervised-steps.js';
+import {
+    attachSteps,
+    orderFinish,
+    releaseSteps,
+    runReclaimStep,
+    type StepHost,
+    stepHostOf,
+} from './supervised-steps.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
 
 /**
@@ -127,7 +134,8 @@ export async function holderGroupsOf(deps: K8sDeps, job: BoardJob, holder: strin
 const RECLAIM_GROUP_SECONDS = 1200;
 
 export function reclaimGroupSpec(config: DriverConfig, job: BoardJob, holder: string): RunnerJobSpec {
-    const spec = runnerJobSpec(config, { ...job, agent: false }, null);
+    // A supervisor alone (#773 D11): no agent, and no gate or service sidecar its checkout would bring.
+    const spec = runnerJobSpec(config, { ...job, agent: false, gates: null, services: [] }, null);
     const worktree = worktreeDir(config, job);
     const pod = spec.spec.template.spec;
     // The checkout holder it serves, on the Job and its pods: how what it left is found again.
@@ -204,11 +212,11 @@ async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): P
         const pull = await readImagePullStatus(deps, jobName);
         const refused = startRefusalOf(image, pull, true);
         if (refused) throw refused;
-        if (pull.blocked) unproven = pull.blocked;
+        if (pull.blocked) unproven = heldUnpullable(image, pull, pull.blocked);
         if (pull.podState !== 'unread') last = pull.podState;
         await deps.sleep(POLL_MS);
     }
-    if (unproven) throw new Error(unpullableImage('executor', image, unproven));
+    if (unproven) throw new Error(unproven);
     const why = `the task supervisor of ${jobName} never came up within ${GROUP_UP_WAIT_MS}ms`;
     if (last === 'none' || last === 'starting') throw new StartupRefused(why, 'transient');
     throw new Error(why);
@@ -238,6 +246,17 @@ export async function ensureGroup(deps: K8sDeps, job: BoardJob, session: RunSess
     groupsOf(deps).set(job.leaseToken, group);
     await awaitSupervisor(deps, job, runnerName(job));
     return group;
+}
+
+/**
+ * The step host of an attempt whose first step is not its sync — an adopted run, or a gate or
+ * service step before any sync: a group is created for it on demand, a supervisor and no agent.
+ * A group the sync already created is simply answered. The claim the group took is the group's end's to
+ * give back (`finishGroup`), never this call's.
+ */
+export async function stepHostFor(deps: K8sDeps, job: BoardJob): Promise<StepHost> {
+    if (!groupsOf(deps).has(job.leaseToken)) await ensureGroup(deps, { ...job, agent: false }, null);
+    return stepHostOf(deps);
 }
 
 /** Ends the attempt's group now, acknowledged, and hands the checkout back only once its end is confirmed. */

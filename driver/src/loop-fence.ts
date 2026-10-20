@@ -149,7 +149,9 @@ export async function standDown(ctx: AttemptCtx, phase: string, beforePark?: () 
  * every other claim (issue #820).
  */
 async function park(ctx: AttemptCtx, phase: string): Promise<void> {
-    const { rt, job } = ctx;
+    const { rt, job, state } = ctx;
+    // Every park waits out the output pump: a write the park overtook would be refused, its tail lost.
+    await state.drainOutput();
     const verdict = await withBoardRetry(rt, `job ${job.id}: the stop was not accepted`, () =>
         rt.board.suspend(job)
     ).catch((e: Error) => {

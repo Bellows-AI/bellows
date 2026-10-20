@@ -69,7 +69,16 @@ interface Created {
 }
 
 /** A fake apiserver that keeps the checkout claim honest and records every Job and Secret the driver creates. */
-function cluster(options: { ended?: boolean; imagePull?: string; agentExit?: number; vanished?: boolean } = {}) {
+function cluster(
+    options: {
+        ended?: boolean;
+        imagePull?: string;
+        agentExit?: number;
+        vanished?: boolean;
+        podStatus?: unknown;
+        podSpec?: unknown;
+    } = {}
+) {
     const created: Created = { jobs: [], secrets: [], deletedJobs: [], deletedSecrets: [] };
     const claims = new Map<string, { uid: string; holder: string; claimSeq: string }>();
     const gone = new Set<string>();
@@ -132,6 +141,10 @@ function cluster(options: { ended?: boolean; imagePull?: string; agentExit?: num
         // The sweep's selector lists, and the pod discovery by `job-name`.
         if (path.includes('labelSelector')) {
             if (!decodeURIComponent(path).includes('job-name=')) return json({ items: [] });
+            if (options.podStatus) {
+                const spec = options.podSpec ? { spec: options.podSpec } : {};
+                return json({ items: [{ metadata: { name: 'pod-1' }, ...spec, status: options.podStatus }] });
+            }
             if (options.imagePull) {
                 return json({
                     items: [
@@ -188,6 +201,7 @@ function steps(answer: (step: StepRequest) => StepResult = () => ok(), contacted
             released.push(token);
         },
         attach: () => undefined,
+        cancel: () => undefined,
     };
     return { sink, submitted, tokens, report, released };
 }
@@ -340,11 +354,94 @@ describe('the task group of one attempt', () => {
         await expect(refused).rejects.toBeInstanceOf(StartupRefused);
         await expect(refused).rejects.toMatchObject({
             startupCause: 'image',
+            role: 'executor',
             message: expect.stringContaining('cannot be pulled'),
         });
         // No step was submitted to a supervisor that never came up, and the group is gone.
         expect(s.submitted).toEqual([]);
         expect(api.created.deletedJobs).toEqual([runnerJobName(job)]);
+    });
+
+    // Issue #773 D10: a sidecar held on its image names its own role and image, never the executor's.
+    const heldSidecar = (name: string, image: string, reason: string, message: string) => ({
+        initContainerStatuses: [{ name, image, state: { waiting: { reason, message } } }],
+        containerStatuses: [
+            { name: 'supervisor', state: { waiting: { reason: 'PodInitializing' } } },
+            { name: AGENT_CONTAINER, state: { waiting: { reason: 'PodInitializing' } } },
+        ],
+    });
+
+    it.each([
+        { name: 'svc-db', image: 'registry.example/db:17', role: 'service', service: 'db', words: 'service "db"' },
+        { name: 'gate', image: 'registry.example/gate:1', role: 'gate', service: undefined, words: 'gate' },
+    ])(
+        'refuses a group whose $name sidecar image cannot be pulled, naming that sidecar',
+        async ({ name, image, role, service, words }) => {
+            const api = cluster({ podStatus: heldSidecar(name, image, 'ErrImagePull', 'manifest unknown') });
+            const s = steps(() => ok('{"ok":true,"reason":null}'), false);
+            const k8s = runner(api.request, s.sink);
+
+            const refused = k8s.syncCheckout(job, undefined, SESSION);
+
+            await expect(refused).rejects.toBeInstanceOf(StartupRefused);
+            await expect(refused).rejects.toMatchObject({
+                startupCause: 'image',
+                role,
+                service,
+                message: `the ${words} image "${image}" cannot be pulled: ErrImagePull — manifest unknown`,
+            });
+            expect(s.submitted).toEqual([]);
+        }
+    );
+
+    it('names a held sidecar’s image from the pod spec when its status names none, never the executor’s', async () => {
+        const status = heldSidecar('gate', '', 'ErrImagePull', 'manifest unknown');
+        const { image: _none, ...imageless } = status.initContainerStatuses[0]!;
+        const api = cluster({
+            podStatus: { ...status, initContainerStatuses: [imageless] },
+            podSpec: { initContainers: [{ name: 'gate', image: 'registry.example/gate:2' }] },
+        });
+        const k8s = runner(api.request, steps(() => ok(), false).sink);
+
+        await expect(k8s.syncCheckout(job, undefined, SESSION)).rejects.toMatchObject({
+            startupCause: 'image',
+            role: 'gate',
+            message: 'the gate image "registry.example/gate:2" cannot be pulled: ErrImagePull — manifest unknown',
+        });
+    });
+
+    it('names the sidecar a back-off of no proven cause held to the bound, never the executor', async () => {
+        const api = cluster({
+            podStatus: heldSidecar('svc-db', 'registry.example/db:17', 'ImagePullBackOff', 'Back-off pulling image'),
+        });
+        const k8s = runner(api.request, steps(() => ok(), false).sink);
+
+        const refused = k8s.syncCheckout(job, undefined, SESSION);
+
+        await expect(refused).rejects.not.toBeInstanceOf(StartupRefused);
+        await expect(refused).rejects.toThrow(
+            'the service "db" image "registry.example/db:17" cannot be pulled: ImagePullBackOff — Back-off pulling image'
+        );
+    });
+
+    it('refuses a sidecar whose container config the kubelet rejects as that sidecar’s', async () => {
+        const api = cluster({
+            podStatus: heldSidecar(
+                'svc-db',
+                'registry.example/db:17',
+                'CreateContainerConfigError',
+                'secret "x" not found'
+            ),
+        });
+        const k8s = runner(api.request, steps(() => ok(), false).sink);
+
+        await expect(k8s.syncCheckout(job, undefined, SESSION)).rejects.toMatchObject({
+            name: 'StartupRefused',
+            startupCause: 'config',
+            role: 'service',
+            service: 'db',
+            message: 'the service "db" container cannot start: CreateContainerConfigError — secret "x" not found',
+        });
     });
 
     it('creates a supervisor-only group for an adopted attempt, which has no agent to start', async () => {
@@ -453,12 +550,10 @@ describe('the reclaim of a thread with no attempt', () => {
         // Its Secret is not the attempt's, and it is deleted with the group.
         expect(api.created.secrets).toHaveLength(1);
         expect(api.created.secrets[0]).not.toBe(secretName(job));
-        // Its own Secret, by the uid its create answered, then its gate environment's name — both
-        // acknowledged before the Job (issue #821); a lease of its own, random per invocation.
+        // Its own Secret, by the uid its create answered, acknowledged before the Job (issue #821) —
+        // the only one: the gates hold none (issue #773); a lease of its own, random per invocation.
         const [own] = api.created.secrets;
-        expect(api.created.deletedSecrets[0]).toBe(own);
-        expect(api.created.deletedSecrets).toHaveLength(2);
-        expect(api.created.deletedSecrets[1]).toMatch(/^factory-gate-[0-9a-f]{16}-env$/);
+        expect(api.created.deletedSecrets).toEqual([own]);
     });
 
     it('refuses without an endpoint to serve the group from, never by running the reclaim some other way', async () => {

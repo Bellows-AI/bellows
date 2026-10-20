@@ -99,12 +99,6 @@ export interface DriverConfig {
      */
     k8sRelease: string | null;
     /**
-     * The cluster's DNS domain (`cluster.local` unless the kubelet was told otherwise). The
-     * runner and gate pods resolve a declared service's bare name through a search domain under
-     * it — `<attempt subdomain>.<namespace>.svc.<domain>` — and a search domain is absolute.
-     */
-    k8sClusterDomain: string;
-    /**
      * The name of a Secret holding the runner credentials under the kubernetes executor — one key
      * per RUNNER_ENV name. The k8s form of `-e NAME`: the names travel, the values live in a Secret
      * the cluster already holds, and nothing readable lands in the pod spec. Null forwards nothing.
@@ -138,13 +132,6 @@ export interface DriverConfig {
      * off.
      */
     runnerDoNotDisrupt: boolean;
-    /**
-     * How long a gate environment container outlives the task that started it. The issue's
-     * cooldown: a container that stays up across a coding task's turns saves each turn the
-     * environment's startup, and ten minutes is the default because that is what the issue
-     * names. Zero tears the container down as soon as the task ends.
-     */
-    gateCooldownMs: number;
     /**
      * Where the ad-hoc gate server binds. Loopback by default — this endpoint runs shell
      * commands, and the bind address is the access control, exactly as it is for the dashboard.
@@ -222,7 +209,7 @@ export interface DriverConfig {
     /**
      * Resource requests and limits (RUNNER_CPU_REQUEST / RUNNER_MEMORY_REQUEST /
      * RUNNER_CPU_LIMIT / RUNNER_MEMORY_LIMIT, kubernetes quantity strings) rendered onto every
-     * pod this driver specs — the runner, every aux Job, every declared service pod — so a
+     * pod this driver specs — the runner and its service sidecars, every aux Job — so a
      * runner fleet is Burstable rather than BestEffort and the autoscaler can size for it.
      * Requests and limits are independent: limits stay off by default, because a memory limit on
      * an agent run turns a big build into an OOM kill mid-work, while a request only reserves.
@@ -297,8 +284,6 @@ const MAX_CONCURRENCY = 32;
 const MIN_POLL_MS = 250;
 /** The upper bound on DRIVER_POLL_MS. */
 const MAX_POLL_MS = 300_000;
-/** The default GATE_COOLDOWN_MS: ten minutes, per the issue this cooldown implements. */
-const DEFAULT_GATE_COOLDOWN_MS = 600_000;
 /** The default GATE_TIMEOUT_MS. */
 const DEFAULT_GATE_TIMEOUT_MS = 600_000;
 /** The lower bound on GATE_TIMEOUT_MS. */
@@ -403,44 +388,6 @@ function assertCacheWatchSupported(cacheWatch: boolean, executor: (typeof EXECUT
             'RUNNER_CACHE_WATCH is not supported under EXECUTOR=kubernetes: each watch tick is one ' +
                 'throwaway container on the docker daemon, and a Job per tick would put the cluster ' +
                 'under pod-admission load no watch is worth. Run the cache watch on EXECUTOR=docker.'
-        );
-    }
-}
-
-const DOCKER_DEFAULT_NETWORKS = ['bridge', 'host', 'none'];
-
-// The docker executor attaches a runner to RUNNER_NETWORK and to the per-attempt services
-// network; docker refuses to combine a default network with a user-defined one, per task.
-function assertNetworkAllowsServices(
-    network: string | null,
-    servicesEnabled: boolean,
-    executor: (typeof EXECUTORS)[number]
-): void {
-    if (servicesEnabled && executor === 'docker' && network && DOCKER_DEFAULT_NETWORKS.includes(network)) {
-        throw new Error(
-            `RUNNER_NETWORK=${network} cannot be combined with RUNNER_SERVICES: docker refuses to attach ` +
-                `a default network (${DOCKER_DEFAULT_NETWORKS.join(', ')}) next to the services network. ` +
-                'Name a user-defined network in RUNNER_NETWORK, or set RUNNER_SERVICES=0.'
-        );
-    }
-}
-
-// The cluster domain ends up in `dnsConfig.searches` as `<attempt subdomain>.<namespace>.svc.
-// <domain>` (fleetDnsField), and kubernetes rejects any search entry that is not a lowercase DNS
-// subdomain of at most 253 bytes — on every runner and gate Job, never at boot. So the complete
-// entry is measured here. The attempt subdomain is `factory-svc-` plus a 16-hex hash
-// (serviceSubdomain); it is not imported, since k8s-podspec already imports this module.
-const DNS_SUBDOMAIN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
-const DNS_SUBDOMAIN_MAX_LENGTH = 253;
-const SERVICE_HASH_HEX_LENGTH = 16;
-const SERVICE_SUBDOMAIN_LENGTH = 'factory-svc-'.length + SERVICE_HASH_HEX_LENGTH;
-
-function assertServiceSearchDomain(namespace: string, clusterDomain: string): void {
-    const entry = `${'x'.repeat(SERVICE_SUBDOMAIN_LENGTH)}.${namespace}.svc.${clusterDomain}`;
-    if (!DNS_SUBDOMAIN.test(clusterDomain) || entry.length > DNS_SUBDOMAIN_MAX_LENGTH) {
-        throw new Error(
-            'K8S_CLUSTER_DOMAIN must be a lowercase DNS subdomain whose service search entry ' +
-                `(<attempt>.${namespace}.svc.<domain>) fits ${DNS_SUBDOMAIN_MAX_LENGTH} bytes, got "${clusterDomain}"`
         );
     }
 }
@@ -672,8 +619,8 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
 
     const executor = resolveExecutor(env);
 
-    // Auxiliary services run under both executors: docker networks and sibling containers
-    // there, service pods with headless DNS Services here. The RUNNER_SERVICES flag decides
+    // Auxiliary services run under both executors: containers in the supervisor's network
+    // namespace there, sidecars of the task pod here. The RUNNER_SERVICES flag decides
     // whether they run at all, on either platform — ON by default: a checkout that declares no
     // `.bellows.yaml` services gets exactly the runner it always had (an empty readout names no
     // service), and `RUNNER_SERVICES=0` is the opt-out for an operator who wants the old
@@ -681,8 +628,6 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
 
     const servicesEnabled = flag(env.RUNNER_SERVICES, true);
     const k8sNamespace = text(env.K8S_NAMESPACE, 'K8S_NAMESPACE', 'default');
-    const k8sClusterDomain = text(env.K8S_CLUSTER_DOMAIN, 'K8S_CLUSTER_DOMAIN', 'cluster.local');
-    if (servicesEnabled) assertServiceSearchDomain(k8sNamespace, k8sClusterDomain);
 
     const pullPolicyRaw = resolvePullPolicy(env);
 
@@ -690,7 +635,6 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
     assertCacheWatchSupported(cacheWatch, executor);
 
     const network = (env.RUNNER_NETWORK ?? '').trim() || null;
-    assertNetworkAllowsServices(network, servicesEnabled, executor);
 
     return {
         boardUrl,
@@ -723,15 +667,10 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         // (`make stop`, `kubectl delete jobs -l ...instance=<name>`) cannot sweep another
         // release's runners sharing the namespace.
         k8sRelease: (env.K8S_RELEASE ?? '').trim() || null,
-        k8sClusterDomain,
         credentialsSecret: (env.RUNNER_CREDENTIALS_SECRET ?? '').trim() || null,
         imagePullPolicy: pullPolicyRaw,
         imagePullSecrets: nameList(env.RUNNER_IMAGE_PULL_SECRETS),
         runnerDoNotDisrupt: flag(env.RUNNER_DO_NOT_DISRUPT),
-        gateCooldownMs: int(env.GATE_COOLDOWN_MS, 'GATE_COOLDOWN_MS', DEFAULT_GATE_COOLDOWN_MS, {
-            min: 0,
-            max: 24 * MS_PER_HOUR,
-        }),
         gateListenHost: text(env.GATE_LISTEN_HOST, 'GATE_LISTEN_HOST', '127.0.0.1'),
         gateAdvertiseUrl: (env.GATE_ADVERTISE_URL ?? '').trim() || null,
         heartbeatFile: optionalText(env.DRIVER_HEARTBEAT_FILE),

@@ -129,7 +129,7 @@ namespace. Harness: `experiments/task-runner/spike-761/` on the POC branch.
 
 | Concern | Decision | Observed |
 | --- | --- | --- |
-| Gate control | Declared gate image runs as a native sidecar whose entrypoint is a POSIX loop delivered by ConfigMap; requests and exit codes pass through an emptyDir that only the supervisor and the gate mount | Exit codes propagate; no-op round trip 355–455 ms; the image needs only `sh`, which gates already require |
+| Gate control | Declared gate image runs as a native sidecar whose entrypoint is a POSIX loop passed by content (`driver/src/scripts/gate-loop.sh`), no ConfigMap; requests and exit codes pass through an emptyDir that only the supervisor and the gate mount; a cancel reaches the supervisor through its control poll | Exit codes propagate; no-op round trip 355–455 ms; the image needs only `sh`, which gates already require |
 | Gate isolation | The loop sends `kill -KILL -1` after every request and on cancel | A background process left by one gate could not forge the next result; cancel answered in 50–205 ms and the loop survived |
 | Agent boundary | Agent mounts the workspace and a read-only control directory, nothing else | Agent saw no control directory, no publish secret, no token and only its own processes; could reach the service port |
 | Services | Native sidecars; `hostAliases` maps declared names to 127.0.0.1; restart = supervisor bumps a generation file, liveness probe fails, kubelet restarts the container with a fresh writable layer | Gate reached `db:5432` by name; restart went down in 0.5–0.7 s and was ready again in 5.6–8.8 s |

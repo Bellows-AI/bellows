@@ -33,7 +33,7 @@ describe('kind lane argument validation', () => {
             timeout: 5000,
         });
         expect(result.status).toBe(0);
-        expect(result.stdout).toContain('|recovery|control]');
+        expect(result.stdout).toContain('|recovery|services|control]');
     });
 });
 

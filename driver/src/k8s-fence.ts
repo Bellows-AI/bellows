@@ -12,12 +12,9 @@ import {
     podsPath,
     podsSelectorPath,
     secretsPath,
-    servicesPath,
-    servicesSelectorPath,
 } from './k8s-auxspec.js';
 import {
     finishedAgentRun,
-    gateEnvSecretName,
     type JobOwner,
     jobsPath,
     type ListedRunnerJob,
@@ -282,7 +279,7 @@ function claimReadIsTakenOver(read: K8sResponse, job: BoardJob): boolean {
     );
 }
 
-/** One kind's leftover objects — a job, a pod or a service — the sweep found by label, with the leases they carry. */
+/** One kind's leftover objects — a job or a pod — the sweep found by label, with the leases they carry. */
 interface SweepFleet {
     kind: string;
     basePath: string;
@@ -373,7 +370,7 @@ async function probeOneFleetKind(
 }
 
 /**
- * One pass over the three label selectors a leftover attempt can answer on. `conclusive` is false
+ * One pass over the two label selectors a leftover attempt can answer on. `conclusive` is false
  * the instant any kind could not be read at all — a transport failure or 429/5xx says nothing
  * about whether the objects are gone, so the caller must not read an empty `fleets` as a free
  * checkout on an inconclusive pass.
@@ -389,7 +386,6 @@ async function probeLeftoverFleets(
     for (const kind of [
         ['job', jobsSelectorPath(deps.config.k8sNamespace, job), jobsPath(deps.config.k8sNamespace)],
         ['pod', podsSelectorPath(deps.config.k8sNamespace, job), podsPath(deps.config.k8sNamespace)],
-        ['service', servicesSelectorPath(deps.config.k8sNamespace, job), servicesPath(deps.config.k8sNamespace)],
     ] as const) {
         const { fleet, inconclusive } = await probeOneFleetKind(deps, job, kind, keptJobs);
         if (fleet) fleets.push(fleet);
@@ -439,10 +435,8 @@ async function deleteLeftoverSecrets(
         // The adopted run's lease keeps its Job listed: its Secrets stay derivable from it, and
         // their cleanup is never what holds a recovered run back (issue #821).
         if (adopted !== undefined && runnerName(pair) === adopted) continue;
-        for (const name of [secretName(pair), gateEnvSecretName(pair)]) {
-            sweepAbandoned(signal);
-            if ((await deleteSecretAcked(deps, name)) === 'failed') return false;
-        }
+        sweepAbandoned(signal);
+        if ((await deleteSecretAcked(deps, secretName(pair))) === 'failed') return false;
     }
     return true;
 }
@@ -472,10 +466,9 @@ async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[], signal?: A
  * `factory.job=<id>,factory.lease!=<token>` selector answers is a leftover of the attempts this
  * claim was taken FROM: deleted BY NAME, per object, with Foreground propagation, until the
  * selector answers nothing and no leftover runner remains to write the checkout once this
- * attempt's Job starts. It runs at the runner's launch, AFTER the loop already started this
- * attempt's services and ran its setup Job, so those briefly share the namespace with a dead
- * attempt's leftovers; a service of this attempt they disturbed is put back by the pre-gate
- * restart (issue #560). No timestamps, no cutoffs, no clocks: an age filter
+ * attempt's Job starts. It runs when the attempt's task group is made — at the sync, its first
+ * step — before this attempt's pod and its gate and service sidecars exist. No timestamps, no
+ * cutoffs, no clocks: an age filter
  * was unsound in both directions, so the sweep classifies nothing. The claim is re-read before
  * every deleting round: a stale attempt whose claim was taken over mid-sweep STANDS DOWN having
  * deleted nothing.
@@ -526,7 +519,7 @@ async function standDownOwnJob(deps: K8sDeps, identity: TeardownIdentity): Promi
 
 /**
  * The runner's arrival: `prepare` takes the checkout claim, sweeps the leftovers of the job's
- * OTHER attempts (the loop already started this attempt's services) and runs the pre-create claim
+ * OTHER attempts and runs the pre-create claim
  * verify; `launch` creates the Job suspended, then its env Secret, runs the post-create verify and
  * only then resumes the Job. A Secret therefore never exists without a Job the fence and the reaper
  * can derive its name from (issue #821), and no pod starts before the claim is verified.

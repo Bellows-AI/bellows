@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
 import { claimEnv, claimRestoresTree, runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
+import { serviceRestartArgv } from './container-scripts.js';
 import { withHelperReceipt } from './helper-receipts.js';
 import {
     HELPER_TIMEOUT_MS,
@@ -348,6 +349,71 @@ async function submitHelper(
         return { ok: false, reason: 'runner_error', message: (e as Error).message };
     }
 }
+
+/** One declared gate (or the setup) as the gate container runs it: the command, in the worktree, with its env. */
+export interface GateStepRequest {
+    command: string;
+    cwd: string;
+    env: Record<string, string>;
+    timeoutMs: number;
+}
+
+/**
+ * One gate execution as a supervised step (issue #773): the supervisor hands it to the group's gate
+ * container through the gate mailbox. Every execution is a step of its own — a gate run again is run
+ * again — while a redelivery of this one call keeps its id and invocation (`submitStep`), so the
+ * supervisor's ledger only ever answers the same request. An abort of `signal` cancels it through the
+ * channel (`StepSink.cancel`), never as a step queued behind the one it cancels. A lost supervisor
+ * rejects (`stepLost`): no verdict on the gate.
+ */
+export async function runGateStep(
+    host: Pick<StepHost, 'sink'>,
+    job: BoardJob,
+    gate: GateStepRequest,
+    signal?: AbortSignal
+): Promise<StepResult> {
+    if (signal?.aborted) throw new Error('the gate was cancelled before it was submitted');
+    const token = controlTokenOf(job);
+    const step = request(job, 'gate', {
+        id: randomUUID(),
+        argv: [gate.command],
+        cwd: gate.cwd,
+        env: gate.env,
+        timeoutMs: gate.timeoutMs,
+    });
+    const cancel = (): void => host.sink.cancel(token, step.id);
+    signal?.addEventListener('abort', cancel, { once: true });
+    try {
+        return await submitStep(host, job, step, signal);
+    } finally {
+        signal?.removeEventListener('abort', cancel);
+    }
+}
+
+/** How long the supervisor may take over one read or bump of the services' generations: a few files. */
+const SERVICE_STEP_TIMEOUT_MS = 30_000;
+
+/**
+ * One `restart` step (issue #773 D9): the supervisor reads which of `names` have not acknowledged
+ * their generation (`acked`), or bumps every one's (`bump`, refused unless all have) — instant
+ * either way, so it never holds the steps behind it. A fresh id each time: a read must read now, and
+ * a bump the caller asks again is a new one. A lost supervisor rejects (`stepLost`).
+ */
+export const runServiceGenerationStep = (
+    host: Pick<StepHost, 'sink'>,
+    job: BoardJob,
+    mode: 'acked' | 'bump',
+    names: readonly string[]
+): Promise<StepResult> =>
+    submitStep(
+        host,
+        job,
+        request(job, 'restart', {
+            id: randomUUID(),
+            argv: serviceRestartArgv(mode, names),
+            timeoutMs: SERVICE_STEP_TIMEOUT_MS,
+        })
+    );
 
 /**
  * `go`: releases the attempt's agent, whose entrypoint waits for it, and hands the supervisor the

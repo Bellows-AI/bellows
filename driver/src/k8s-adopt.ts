@@ -4,14 +4,7 @@ import { mergeClaudeCloseRead } from './close-read.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
 import { jobPath, jobPodsPath, jobsSelectorPath, podLogPath } from './k8s-auxspec.js';
 import { acquireClaim, readClaim, releaseClaimAfterGroupEnd, sweepClaimedFleets } from './k8s-fence.js';
-import {
-    agentRunJob,
-    finishedAgentRun,
-    gateEnvSecretName,
-    type ListedRunnerJob,
-    runnerName,
-    secretName,
-} from './k8s-podspec.js';
+import { agentRunJob, finishedAgentRun, type ListedRunnerJob, runnerName, secretName } from './k8s-podspec.js';
 import { deleteSecretAcked } from './k8s-teardown.js';
 import {
     ABSENT,
@@ -438,8 +431,6 @@ async function sweepAfterAdoption(deps: K8sDeps, job: BoardJob, prior: BoardJob,
         // not abandoned for a fresh one, the attempt stands down to its lease.
         throw new AdoptionBlocked(`the run was read, but ${(e as Error).message}`);
     }
-    for (const name of [secretName(prior), gateEnvSecretName(prior)]) {
-        if (signal?.aborted) throw adoptionAbandoned();
-        await deleteSecretAcked(deps, name);
-    }
+    if (signal?.aborted) throw adoptionAbandoned();
+    await deleteSecretAcked(deps, secretName(prior));
 }

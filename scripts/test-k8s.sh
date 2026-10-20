@@ -37,10 +37,10 @@ while [ "$#" -gt 0 ]; do
         phase_requested=1
         shift
         PHASE="${1:-}"
-        case "$PHASE" in all|smoke|admission|workspace|recovery|control) ;; *) echo 'invalid --phase'; exit 2 ;; esac
+        case "$PHASE" in all|smoke|admission|workspace|recovery|services|control) ;; *) echo 'invalid --phase'; exit 2 ;; esac
         ;;
     --help)
-        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|control] | --netpol]'
+        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services|control] | --netpol]'
         echo 'All cluster phases run smoke prerequisites. The default cluster phase is all.'
         echo 'TIMINGS_FILE overrides artifacts/k8s/<release>.tsv (includes cleanup).'
         exit 0
@@ -298,7 +298,7 @@ done
 # status, delete it, list its pods, read one pod's log. Nothing watches; the jobs rule carries no
 # watch, which the exact-verbs assertion pins.
 rbac="$(awk '/^# Source: factory\/templates\/driver-rbac.yaml/,/^---/' "$work/rendered.yaml")"
-# `list` on jobs and services is the re-claim fence: its sweep is a collection GET, and a
+# `list` on jobs and pods is the re-claim fence: its sweep is a collection GET, and a
 # collection GET needs the list verb — a rule without it makes every fence round a 403.
 expect_contains     'the driver role grants the runner calls' "$rbac" \
     "resources: ['jobs']
@@ -315,19 +315,20 @@ expect_contains     'the driver role manages the per-job env Secret' "$rbac" \
 expect_contains     'the driver role manages the checkout claim' "$rbac" \
     "resources: ['configmaps']
       verbs: ['create', 'get', 'delete', 'patch']"
-expect_contains     'the driver role lists pods, only to find them' "$rbac" "verbs: ['create', 'delete', 'list']"
-# Gate runs ride the jobs rule (a gate run IS a Job), but a declared SERVICE is a long-running
-# neighbor pod, and its DNS name is a Service object: create before the runner starts, delete
-# with the attempt, list for the fence sweep and the attempt teardown.
-expect_contains     'the driver role names the service DNS objects' "$rbac" \
-    "resources: ['services']
-      verbs: ['create', 'delete', 'list']"
-# A vanished service pod's events name why it went: list only, by field selector.
-expect_contains     'the driver role reads why a service pod vanished' "$rbac" \
-    "resources: ['events']
-      verbs: ['list']"
-# Arbitrary exec into a running pod is the one escalation the design never needed: gates run as
-# Jobs this driver specs itself, never as exec calls into somebody else's container.
+# Issue #773: the gate and the declared services are sidecars of the runner Job's pod, so the
+# driver creates no pod, no Service and reads no event. Pods are listed to find a Job's pod and
+# deleted by the re-claim fence's sweep, nothing more.
+expect_contains     'the driver role lists and deletes pods, never creates one' "$rbac" \
+    "resources: ['pods']
+      verbs: ['delete', 'list']"
+expect_not_contains 'the driver role creates no Service'    "$rbac" "resources: ['services']"
+expect_not_contains 'the driver role reads no event'        "$rbac" "resources: ['events']"
+# The gate sidecar's in-place resize (issue #773): patch on the resize subresource and no more.
+expect_contains     'the driver role resizes the gate sidecar' "$rbac" \
+    "resources: ['pods/resize']
+      verbs: ['patch']"
+# Arbitrary exec into a running pod is the one escalation the design never needed: gates run in
+# the gate sidecar this driver specs itself, never as exec calls into somebody else's container.
 expect_not_contains 'the driver role never execs into pods' "$rbac" 'pods/exec'
 expect_not_contains 'the driver role never watches'         "$rbac" 'watch'
 # The runner vitals: a read-only get against the metrics API, which the metrics-server serves
@@ -779,8 +780,12 @@ admission="$(awk '/^# Source: factory\/templates\/driver-admission.yaml/,/^---/'
 expect_contains 'the admission policy binds the driver identity' "$admission" \
     "system:serviceaccount:$NAMESPACE:$RELEASE-factory-driver"
 expect_contains 'the admission policy names the per-attempt Secret pattern' "$admission" \
-    '^factory-(job|gate)-[a-z0-9-]+-env$'
+    '^factory-job-[a-z0-9-]+-env$'
 expect_contains 'the admission policy fences deletes by label' "$admission" "'factory.job' in variables.target.metadata.labels"
+# The gate sidecar's resize (issue #773) changes the `gate` container alone.
+expect_contains 'the admission policy matches the gate resize' "$admission" "operations: ['UPDATE']
+              resources: ['pods/resize']"
+expect_contains 'the admission policy lets a resize change only the gate' "$admission" "c.name == 'gate'"
 # The Role's namespace-wide configmaps `patch` (issue #821) reaches only a checkout claim, and only
 # to revoke it: labels and data kept, no annotation but factory.revoked changed.
 expect_contains 'the admission policy matches configmap updates' "$admission" "operations: ['UPDATE']
@@ -813,6 +818,11 @@ expect_contains 'the runner policy sends DNS to kube-dns in kube-system' "$netpo
     $'- namespaceSelector:\n                    matchLabels:\n                        kubernetes.io/metadata.name: kube-system\n                podSelector:\n                    matchLabels:\n                        k8s-app: kube-dns'
 expect_contains 'the runner policy sends DNS to the NodeLocal DNSCache address' "$netpol" 'cidr: 169.254.20.10/32'
 expect_not_contains 'the runner policy never allows port 53 to any destination' "$netpol" '        - ports:'
+# Issue #773: a run's services are on its own pod's loopback, so no runner pod takes a connection
+# from anything and none dials another runner pod.
+expect_contains 'the runner policy admits no ingress' "$netpol" 'ingress: []'
+expect_not_contains 'the runner policy opens no runner-to-runner rule' "$netpol" \
+    $'        - to:\n              - podSelector:\n                    matchLabels:\n                        app.kubernetes.io/instance:'
 
 # Issue #382. The hardening the driver sets on every pod is also REQUIRED by admission, which is a
 # different control: a driver that silently stopped setting the fields satisfies every "may not be
@@ -831,8 +841,19 @@ expect_contains 'the admission policy refuses a container-level seccomp override
     '!has(c.securityContext.seccompProfile)'
 expect_contains 'the admission policy requires every capability dropped' "$admission" \
     "'ALL' in c.securityContext.capabilities.drop"
-expect_contains 'the admission policy exempts only a labelled declared service' "$admission" \
-    "variables.podLabels['factory.unhardened'] == 'true'"
+expect_not_contains 'the admission policy exempts no container from the capability drop' "$admission" \
+    'factory.unhardened'
+# Issue #773: the driver creates pods only through Jobs, no Service at all; a service is a `svc-`
+# sidecar of the task pod, named on its loopback by hostAliases.
+expect_not_contains 'the admission policy matches no bare pod create' "$admission" "operations: ['CREATE']
+              resources: ['pods']"
+expect_not_contains 'the admission policy admits no Service' "$admission" 'headless Services'
+expect_contains 'the admission policy maps hostAliases only to loopback' "$admission" \
+    "variables.spec.hostAliases.all(h, h.ip == '127.0.0.1')"
+expect_contains 'the admission policy keeps svc- containers out of the main containers' "$admission" \
+    "variables.spec.containers.all(c, !c.name.startsWith('svc-'))"
+expect_contains 'the admission policy restarts only the gate and svc- sidecars' "$admission" \
+    "(c.name == 'gate' || c.name.startsWith('svc-'))"
 # Issue #814: the one capability add admitted, the agent's launch pair, on a runner Job's agent alone.
 expect_contains 'the admission policy admits the launch pair on a runner Job agent alone' "$admission" \
     "request.kind.kind == 'Job' && c.name == 'agent' &&"
@@ -1103,7 +1124,7 @@ EOF
     # than once.
     #
     # Each target is `<name>|<host>|<port>`, and each is a REAL listener on this cluster:
-    #   - the unrelated pod on both its ports (an unrelated workload),
+    #   - the unrelated pod on both its ports (an unrelated workload), and another attempt's runner pod,
     #   - the kubernetes API's ClusterIP (the service network, inside blockedCidrs 10/8),
     #   - the kubelet on the node's own address (inside blockedCidrs 172.16/12 on kind),
     #   - a hostNetwork pod bound to a high port on that same node address — the node itself,
@@ -1114,7 +1135,8 @@ another port on an unrelated pod|$IP_UNRELATED|9999
 the kubernetes API|$API_IP|443
 the kubelet on its node|$NODE_IP|10250
 the node itself|$NODE_IP|31999
-another port on the dashboard|$IP_DASH|9999"
+another port on the dashboard|$IP_DASH|9999
+another attempt's runner pod|$IP_B|8080"
 
     # Ready means ANSWERING, not Running: the kubelet calls a pod Ready as soon as its process
     # starts, which is before the listener inside it has bound. Polled rather than slept, because
@@ -1122,8 +1144,6 @@ another port on the dashboard|$IP_DASH|9999"
     # that has nothing to do with the policy) or wasted on every run. EVERY probe target is
     # polled, not just the first: `node-listener` is a separate pod with its own image pull and is
     # the likeliest laggard, and a target that is merely slow would otherwise fail its own
-    # control. `attempt-b` is in the list too — it is not a DENIALS entry (its reachability is the
-    # #257 residual, asserted at the end) but it is a listener this lane waits on all the same.
     #
     # The first target that never comes up abandons the whole wait rather than letting each
     # remaining one burn its own budget: the lane is already going to fail its honest-probe
@@ -1144,7 +1164,6 @@ another port on the dashboard|$IP_DASH|9999"
         [ "$ready" = '1' ] || poll_ready=0
     done <<EOF
 $DENIALS
-the cross-attempt residual target|$IP_B|8080
 EOF
 
     while IFS='|' read -r what host port; do
@@ -1191,14 +1210,6 @@ EOF
     # does not work, and an isolation change that breaks them has not hardened anything.
     dns="$(kn exec attempt-a -n "$NETPOL_NS" -- sh -c 'nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1 && echo resolves || echo broken' 2>/dev/null)"
     expect_contains 'a runner still resolves cluster DNS' "$dns" 'resolves'
-
-    # The STATED RESIDUAL, asserted rather than assumed. One attempt can still reach another
-    # attempt's pods: the policy's runner-to-runner rule is what makes a declared service
-    # reachable from its own runner, and it does not distinguish attempts. #257 owns narrowing it.
-    # Pinned as `reachable` on purpose — when #257 lands, THIS line is what tells its author the
-    # behaviour changed, instead of the change being invisible.
-    expect_contains 'cross-attempt traffic is still allowed — the #257 residual, measured not assumed' \
-        "$(reaches attempt-a "$IP_B" 8080)" 'reachable'
 
     netpol_cleanup
     trap cleanup EXIT
@@ -1807,55 +1818,41 @@ expect_contains 'the runner pod carries no GitHub token in its env'  "$gh_result
 
 # --- The orphan reaper (issue #301), against the real apiserver ---------------------------------
 #
-# A service fleet the way a crashed attempt would have left it: a pod and its headless Service,
-# labelled with the job id of the job that just succeeded — the board answers `succeeded`, the
-# reaper's table says gone. The driver was installed with a 3s cadence, so one round must do it.
-# The release label rides both objects, because that is the selector the arm scans by; the pod's
-# image is the stub already loaded onto the node, and whether the container ever runs is beside
-# the point — the OBJECT is what the reaper deletes.
+# An attempt's leftover the way a crashed attempt would have left it: a Job (suspended, so nothing
+# runs), labelled with the job id of the job that just succeeded — the board answers `succeeded`,
+# the reaper's table says gone. A declared service is a sidecar of its attempt's pod (issue #773),
+# so the Jobs are all the arm scans. The driver was installed with a 3s cadence, so one round must
+# do it. The release label rides the Job, because that is the selector the arm scans by.
 
 echo
 echo '# orphan reaper'
 
 orphan_lease='33333333-3333-4333-8333-333333333333'
 cat <<EOF | kubectl apply -n "$NAMESPACE" -f - >/dev/null 2>&1
-apiVersion: v1
-kind: Pod
+apiVersion: batch/v1
+kind: Job
 metadata:
     name: factory-orphan-reaper-probe
     labels:
         factory.job: $id
         factory.lease: $orphan_lease
-        factory.service: probe
         app.kubernetes.io/instance: $RELEASE
 spec:
-    restartPolicy: Never
-    automountServiceAccountToken: false
-    containers: [{name: probe, image: $STUB_REF}]
----
-apiVersion: v1
-kind: Service
-metadata:
-    name: factory-orphan-reaper-svc
-    labels:
-        factory.job: $id
-        factory.lease: $orphan_lease
-        factory.service: factory-orphan-reaper-svc
-        app.kubernetes.io/instance: $RELEASE
-spec:
-    clusterIP: None
-    selector: {factory.fleet: factory-orphan-reaper-svc}
+    suspend: true
+    backoffLimit: 0
+    template:
+        spec:
+            restartPolicy: Never
+            automountServiceAccountToken: false
+            containers: [{name: probe, image: $STUB_REF}]
 EOF
-kubectl get pod/factory-orphan-reaper-probe service/factory-orphan-reaper-svc -n "$NAMESPACE" >/dev/null 2>&1 &&
-    ok 'the synthetic orphan fleet is up' ||
-    bad 'the synthetic orphan fleet is up' 'the seed objects were not created'
+kubectl get job/factory-orphan-reaper-probe -n "$NAMESPACE" >/dev/null 2>&1 &&
+    ok "the synthetic orphan attempt's Job is up" ||
+    bad "the synthetic orphan attempt's Job is up" 'the seed Job was not created'
 
-kubectl wait --for=delete pod/factory-orphan-reaper-probe -n "$NAMESPACE" --timeout=60s >/dev/null 2>&1 &&
-    ok 'the reaper removes the orphan pod' ||
-    bad 'the reaper removes the orphan pod' 'the pod survived the reaper'
-kubectl wait --for=delete service/factory-orphan-reaper-svc -n "$NAMESPACE" --timeout=60s >/dev/null 2>&1 &&
-    ok 'the reaper removes the orphan Service' ||
-    bad 'the reaper removes the orphan Service' 'the Service survived the reaper'
+kubectl wait --for=delete job/factory-orphan-reaper-probe -n "$NAMESPACE" --timeout=60s >/dev/null 2>&1 &&
+    ok 'the reaper removes the orphan Job' ||
+    bad 'the reaper removes the orphan Job' 'the Job survived the reaper'
 save_logs "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=driver" "$DRIVER_LOG"
 if [ -n "${runner_log_pid:-}" ]; then
     kill "$runner_log_pid" 2>/dev/null
@@ -1921,18 +1918,23 @@ HARD_C='securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: 
 # unrelated message and none of them tests anything.
 HARD_POD='{seccompProfile: {type: RuntimeDefault}}'
 
+# The driver creates pods only through Jobs (issue #773): the Role grants no pod create and the
+# policy matches Jobs alone, so each probe is a Job whose pod template carries the spec lines.
 probe_pod() { # probe_pod <name> <extra spec lines> [<extra labels>] [<pod securityContext>]
     cat <<EOF
-apiVersion: v1
-kind: Pod
+apiVersion: batch/v1
+kind: Job
 metadata:
     name: admission-probe-$1
-    labels: {factory.job: admission-probe${3:+, $3}}
+    labels: {factory.job: admission-probe}
 spec:
-    automountServiceAccountToken: false
-    restartPolicy: Never
-    securityContext: ${4:-$HARD_POD}
-$2
+    template:
+        metadata: {labels: {factory.job: admission-probe${3:+, $3}}}
+        spec:
+            automountServiceAccountToken: false
+            restartPolicy: Never
+            securityContext: ${4:-$HARD_POD}
+$(printf '%s\n' "$2" | sed 's/^/        /')
 EOF
 }
 as_driver() { kubectl create --as="$DRIVER_SA" -n "$NAMESPACE" --dry-run=server -f - 2>&1; }
@@ -2030,30 +2032,52 @@ launch_more="$(probe_job launchmore agent 'SETUID, NET_RAW' | as_driver)"
 expect_contains 'the policy refuses any other capability on the agent' "$launch_more" 'may not be privileged or add capabilities'
 launch_other="$(probe_job launchother supervisor 'SETUID' | as_driver)"
 expect_contains 'the policy refuses the launch pair on any other container' "$launch_other" 'may not be privileged or add capabilities'
-launch_pod="$(probe_pod launchpod '    containers: [{name: agent, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL], add: [SETUID]}}}]' | as_driver)"
-expect_contains 'the policy refuses the launch pair on a bare Pod' "$launch_pod" 'may not be privileged or add capabilities'
+# A bare Pod is refused before admission: the Role grants no pod create at all (issue #773).
+bare_pod="$(as_driver <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+    name: admission-probe-bare
+    labels: {factory.job: admission-probe}
+spec:
+    automountServiceAccountToken: false
+    restartPolicy: Never
+    securityContext: $HARD_POD
+    containers: [{name: agent, image: alpine, $HARD_C}]
+EOF
+)"
+expect_contains 'the driver may not create a bare Pod' "$bare_pod" 'cannot create resource "pods"'
 
 no_drop="$(probe_pod nodrop \
     '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: []}}}]' |
     as_driver)"
 expect_contains 'the policy refuses a container that drops nothing' "$no_drop" 'must drop ALL capabilities'
-# The declared opt-out, and the fact that it is the LABEL that carries it — not the absence of the
-# field. The same pod without the label is the probe directly above, and it is refused.
+# There is no opt-out (issue #773): the label a declared unhardened service once carried buys a
+# container nothing.
 opted_out="$(probe_pod optout \
     '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false}}]' \
     'factory.unhardened: "true"' | as_driver)"
-expect_contains 'the policy admits a labelled declared unhardened service' "$opted_out" 'created (server dry run)'
-# The opt-out reaches the capability drop and NOTHING else: the label does not buy the escalation
-# bit back, and it does not buy an unconfined seccomp profile.
-opted_escalating="$(probe_pod optesc \
-    '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: true}}]' \
-    'factory.unhardened: "true"' | as_driver)"
-expect_contains 'the opt-out still may not escalate privileges' "$opted_escalating" 'allowPrivilegeEscalation: false'
-opted_unconfined="$(probe_pod optsec \
-    '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false}}]' \
-    'factory.unhardened: "true"' '{seccompProfile: {type: Unconfined}}' | as_driver)"
-expect_contains 'the opt-out still runs under the default seccomp profile' "$opted_unconfined" \
-    'RuntimeDefault seccomp profile'
+expect_contains 'the policy refuses the retired unhardened label its capabilities' "$opted_out" 'must drop ALL capabilities'
+
+# The task pod's shape (issue #773): its declared services are `svc-` sidecars named on its
+# loopback. The driver's own shape is the runner Job's dry run above; these refuse each way out.
+sidecar="$(probe_pod sidecar "    initContainers: [{name: svc-db, image: alpine, restartPolicy: Always, $HARD_C}]
+    containers: [{name: c, image: alpine, $HARD_C}]
+    hostAliases: [{ip: 127.0.0.1, hostnames: [db]}]" | as_driver)"
+expect_contains 'the policy admits a svc- sidecar named on loopback' "$sidecar" 'created (server dry run)'
+aliased="$(probe_pod alias "    containers: [{name: c, image: alpine, $HARD_C}]
+    hostAliases: [{ip: 10.0.0.1, hostnames: [db]}]" | as_driver)"
+expect_contains 'the policy refuses a hostAlias off loopback' "$aliased" 'hostAliases only to 127.0.0.1'
+main_svc="$(probe_pod mainsvc "    containers: [{name: svc-db, image: alpine, $HARD_C}]" | as_driver)"
+expect_contains 'the policy refuses a svc- main container' "$main_svc" 'only as restartable init containers'
+once_svc="$(probe_pod oncesvc "    initContainers: [{name: svc-db, image: alpine, $HARD_C}]
+    containers: [{name: c, image: alpine, $HARD_C}]" | as_driver)"
+expect_contains 'the policy refuses a svc- init container that is not restartable' "$once_svc" \
+    'only as restartable init containers'
+proxy="$(probe_pod proxy "    initContainers: [{name: proxy, image: alpine, restartPolicy: Always, $HARD_C}]
+    containers: [{name: c, image: alpine, $HARD_C}]" | as_driver)"
+expect_contains 'the policy refuses a restartable init container that is neither gate nor svc-' "$proxy" \
+    'only as restartable init containers'
 
 # --- The agent's tool isolation (issue #814), on the real kubelet ----------------------------------
 #
@@ -2498,6 +2522,236 @@ kubectl set env "$DRIVER_DEPLOY" -n "$NAMESPACE" "CLAUDE_EXECUTOR_IMAGE=$image_w
 kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
 
 for job in $hard $drained $evicted $lost $final $unpullable; do
+    kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
+        --ignore-not-found --wait=false >/dev/null 2>&1
+done
+fi
+
+if selected_phase services; then
+begin_phase services
+# --- Declared services and gates in the task pod (issue #773) -----------------------------------
+#
+# The first lane with a `.bellows.yaml` plan. The offline board reads a plan at claim time from a
+# bare mirror under its workspace root (server/src/github/local-origin-plan.ts), so `commit_plan`
+# commits the file — and the lane's gate scripts under lane/ — to the member's origin, which every
+# startup sync fetches, and mirrors that origin to `.origins/<repo>.git`. The services are native
+# sidecars of the task pod, named on its loopback by hostAliases: the agent (the stub's
+# `factory-stub-services`) and the gate container (lane/reach.sh, the stub image as the gate image)
+# reach `postgres:5432` and `s3:9000` there by name.
+
+echo
+echo '# declared services'
+
+# The gate scripts every plan commits beside it. reach.sh: both names on 127.0.0.1, then a TCP
+# connect to each, retried while a service still boots. leave.sh: a background write the gate loop's
+# `kill -KILL -1` must stop before the next gate runs (the `isolated` gate checks it never landed).
+LANE_REACH="$(
+    cat <<'SH'
+#!/bin/sh
+for name in postgres s3; do
+    awk '$1 == "127.0.0.1" { for (i = 2; i <= NF; i++) print $i }' /etc/hosts | grep -qx "$name" || {
+        echo "$name is not on 127.0.0.1"
+        exit 1
+    }
+done
+reach() {
+    node -e '
+const [host, port] = process.argv.slice(1);
+const until = Date.now() + 60000;
+const once = () => {
+    const socket = require("net").connect(Number(port), host);
+    socket.on("connect", () => { console.log(`reached ${host}`); process.exit(0); });
+    socket.on("error", (e) => {
+        if (Date.now() > until) { console.error(`${host}:${port} ${e.message}`); process.exit(1); }
+        setTimeout(once, 1000);
+    });
+};
+once();' "$1" "$2"
+}
+reach postgres 5432 && reach s3 9000
+SH
+)"
+LANE_LEAVE="$(
+    cat <<'SH'
+#!/bin/sh
+dir="$(pwd)"
+(sleep 3; touch "$dir/.lane-forged") >/dev/null 2>&1 &
+exit 0
+SH
+)"
+
+commit_plan() { # commit_plan <label> <.bellows.yaml contents, empty to remove it> -> 0 once committed and mirrored
+    local plan reach leave script out
+    plan="$(printf '%s' "$2" | base64 | tr -d '\n')"
+    reach="$(printf '%s\n' "$LANE_REACH" | base64 | tr -d '\n')"
+    leave="$(printf '%s\n' "$LANE_LEAVE" | base64 | tr -d '\n')"
+    # One line, no double quotes or backslashes: it is interpolated into the JSON override below.
+    script="set -e; rm -rf /tmp/plan; git clone -q /workspaces/$member_path/.smoke-origin.git /tmp/plan;
+echo $plan | base64 -d > /tmp/plan/.bellows.yaml;
+[ -s /tmp/plan/.bellows.yaml ] || rm -f /tmp/plan/.bellows.yaml;
+mkdir -p /tmp/plan/lane; echo $reach | base64 -d > /tmp/plan/lane/reach.sh; echo $leave | base64 -d > /tmp/plan/lane/leave.sh;
+git -C /tmp/plan add -A;
+git -C /tmp/plan -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q --allow-empty -m lane-plan-$1;
+git -C /tmp/plan push -q origin HEAD:main;
+rm -rf /workspaces/.origins/$SMOKE_REPO.git; cp -a /workspaces/$member_path/.smoke-origin.git /workspaces/.origins/$SMOKE_REPO.git;
+echo committed"
+    script="$(printf '%s' "$script" | tr '\n' ' ')"
+    kubectl run "$RELEASE-plan-$1" -n "$NAMESPACE" --image="$STUB_REF" --restart=Never --command \
+        --overrides="$(
+            cat <<EOF
+{"spec":{"automountServiceAccountToken":false,
+"volumes":[{"name":"w","persistentVolumeClaim":{"claimName":"$STATE_RELEASE-workspaces"}}],
+"initContainers":[{"name":"own","image":"alpine:3",
+"command":["sh","-c","mkdir -p /workspaces/.origins/${SMOKE_REPO%%/*} && chown -R 1000:1000 /workspaces/.origins"],
+"volumeMounts":[{"name":"w","mountPath":"/workspaces"}]}],
+"containers":[{"name":"plan","image":"$STUB_REF","imagePullPolicy":"IfNotPresent",
+"command":["sh","-c","$script"],
+"volumeMounts":[{"name":"w","mountPath":"/workspaces"}]}]}}
+EOF
+        )" -- sh >/dev/null 2>&1
+    kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s "pod/$RELEASE-plan-$1" \
+        -n "$NAMESPACE" >/dev/null 2>&1
+    out="$(kubectl logs "$RELEASE-plan-$1" -n "$NAMESPACE" --all-containers 2>&1 || true)"
+    kubectl delete pod "$RELEASE-plan-$1" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
+    case "$out" in
+    *committed*) return 0 ;;
+    *) printf '%s' "$out" >&2; return 1 ;;
+    esac
+}
+
+sidecar_restarts() { # sidecar_restarts <pod> <container> -> its restartCount, empty when unread
+    kubectl get pod "$1" -n "$NAMESPACE" \
+        -o jsonpath="{.status.initContainerStatuses[?(@.name==\"$2\")].restartCount}" 2>/dev/null
+}
+
+LANE_SERVICES="services:
+    - name: postgres
+      image: postgres:17
+      user: \"999:999\"
+      environment:
+          POSTGRES_PASSWORD: lane
+    - name: s3
+      image: rustfs/rustfs:1.0.1
+      user: \"10001:10001\""
+LANE_GATES="environment:
+    image: $STUB_REF
+    gates:
+        - name: reach
+          command: sh lane/reach.sh
+        - name: leave
+          command: sh lane/leave.sh
+        - name: isolated
+          command: \"sleep 6 && test ! -e .lane-forged\""
+
+commit_plan services "$LANE_SERVICES
+$LANE_GATES" && ok 'a plan with declared services and gates is committed and mirrored' ||
+    bad 'a plan with declared services and gates is committed and mirrored' 'the plan pod did not commit'
+
+# a. Both sides by name: the agent sees both names on 127.0.0.1 and reaches each service there,
+#    and the gates (reach, then the isolation pair) pass in the gate sidecar.
+begin_phase services-reach
+reached="$(queue_job 'factory-stub-services')"
+reached_end="$(await_brief "$reached" 'succeeded*' 420)" && ok 'a run with declared services and gates succeeds' ||
+    bad 'a run with declared services and gates succeeds' "status|attempts|count|claimSeq|reason: $reached_end; $(job_output "$reached")"
+reached_out="$(job_output "$reached")"
+expect_contains 'the agent finds both declared names on 127.0.0.1' "$reached_out" 'postgres s3'
+expect_contains 'the agent reaches postgres by name'               "$reached_out" 'reached postgres'
+expect_contains 'the agent reaches s3 by name'                     "$reached_out" 'reached s3'
+runner_job="$(first_runner_job "$reached")"
+pod_spec="$(kubectl get jobs "$runner_job" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec}' 2>/dev/null)"
+expect_contains 'the names are the pod’s hostAliases on 127.0.0.1' "$pod_spec" '"ip":"127.0.0.1"'
+expect_contains 'the services are svc- sidecars of the task pod'   "$pod_spec" '"name":"svc-postgres"'
+expect_not_contains 'no service pod or headless Service is created' \
+    "$(kubectl get pods,services -l "factory.job=$reached" -n "$NAMESPACE" -o name 2>/dev/null)" 'service/'
+
+# b. The pre-gate restart: the harness ends postgres while the agent holds; the kubelet brings it
+#    back with its restart count past the baseline, so the driver finds it dead before the gates and
+#    restarts the fleet by the generation bump — one more kubelet restart — and the gates pass.
+begin_phase services-restart
+svc_release="/workspaces/$member_path/.lane-services"
+restarted="$(queue_job "factory-stub-wait-$svc_release services restart")"
+restart_pod="$(await_runner_pod "$restarted")"
+if [ -z "$restarted" ] || [ -z "$restart_pod" ]; then
+    bad 'the restart runner is running' "job '$restarted': $(job_brief "$restarted")"
+else
+    ok 'the restart runner is running'
+    await_blocked "$restart_pod" "$svc_release" && ok 'the restart agent is blocked at its barrier' || give_up
+    kubectl exec "$restart_pod" -c svc-postgres -n "$NAMESPACE" -- sh -c 'kill 1' >/dev/null 2>&1
+    died=""
+    for _ in $(seq 1 60); do
+        [ "$(sidecar_restarts "$restart_pod" svc-postgres)" -ge 1 ] 2>/dev/null && {
+            died=1
+            break
+        }
+        sleep 1
+    done
+    [ -n "$died" ] && ok 'the kubelet restarts the ended postgres sidecar' ||
+        bad 'the kubelet restarts the ended postgres sidecar' "restartCount $(sidecar_restarts "$restart_pod" svc-postgres)"
+    release_stub "$svc_release"
+    most=0
+    restart_end=""
+    for _ in $(seq 1 300); do
+        count="$(sidecar_restarts "$restart_pod" svc-postgres)"
+        [ -n "$count" ] && [ "$count" -gt "$most" ] 2>/dev/null && most="$count"
+        restart_end="$(job_brief "$restarted")"
+        case "$restart_end" in succeeded* | failed* | stopped* | dead*) break ;; esac
+        sleep 1
+    done
+    case "$restart_end" in
+    succeeded*) ok 'the gates pass after the pre-gate restart' ;;
+    *) bad 'the gates pass after the pre-gate restart' "$restart_end; $(job_output "$restarted")" ;;
+    esac
+    expect_contains 'the verdict notes the restart before the gates' "$(job_output "$restarted")" \
+        'restarted before the declared gates'
+    [ "$most" -ge 2 ] && ok 'the generation bump restarts the sidecar once more' ||
+        bad 'the generation bump restarts the sidecar once more' "restartCount reached $most"
+fi
+
+# c. A service that crashes on every start fails the run `services`, naming it — never a run left
+#    to wait out the lease.
+begin_phase services-crash
+commit_plan crash 'services:
+    - name: crash
+      image: alpine:3' && ok 'a plan with a crashing service is committed' ||
+    bad 'a plan with a crashing service is committed' 'the plan pod did not commit'
+crashed="$(queue_job 'hello from a crashing fleet')"
+crash_end="$(await_brief "$crashed" 'failed*' 900)" && ok 'a crashing service fails the run' ||
+    bad 'a crashing service fails the run' "status|attempts|count|claimSeq|reason: $crash_end"
+expect_contains 'the failure names the crashing service' "$(job_output "$crashed")" 'service "crash"'
+
+# d. An image the registry does not have, for a service and for the gate (#773 D10): the kubelet's
+#    words name the held sidecar, so the group's start is a configuration fault on the first
+#    attempt, the role and the image named — never a lease burnt down to dead.
+begin_phase services-unpullable
+missing_svc="$LANE_REGISTRY/factory-lane-missing-service:$RELEASE"
+commit_plan ghost "services:
+    - name: ghost
+      image: $missing_svc" && ok 'a plan with an unpullable service image is committed' ||
+    bad 'a plan with an unpullable service image is committed' 'the plan pod did not commit'
+ghost="$(queue_job 'hello from a ghost service')"
+ghost_end="$(await_brief "$ghost" 'failed*' 300)"
+[ "$ghost_end" = 'failed|1|0||' ] && ok 'a missing service image fails the job at once, nothing refunded' ||
+    bad 'a missing service image fails the job at once, nothing refunded' "status|attempts|count|claimSeq|reason: $ghost_end"
+expect_contains 'the failure names the service and its image' "$(job_output "$ghost")" \
+    "the service \"ghost\" image \"$missing_svc\" cannot be pulled"
+
+missing_gate="$LANE_REGISTRY/factory-lane-missing-gate:$RELEASE"
+commit_plan ghost-gate "environment:
+    image: $missing_gate
+    gates:
+        - name: test
+          command: \"true\"" && ok 'a plan with an unpullable gate image is committed' ||
+    bad 'a plan with an unpullable gate image is committed' 'the plan pod did not commit'
+ghost_gate="$(queue_job 'hello from a ghost gate')"
+ghost_gate_end="$(await_brief "$ghost_gate" 'failed*' 300)"
+[ "$ghost_gate_end" = 'failed|1|0||' ] && ok 'a missing gate image fails the job at once, nothing refunded' ||
+    bad 'a missing gate image fails the job at once, nothing refunded' "status|attempts|count|claimSeq|reason: $ghost_gate_end"
+expect_contains 'the failure names the gate image' "$(job_output "$ghost_gate")" \
+    "the gate image \"$missing_gate\" cannot be pulled"
+
+# The origin and its mirror carry no plan again: a later phase runs as it always did.
+commit_plan restore '' && ok 'the plan is removed again' || bad 'the plan is removed again' 'the plan pod did not commit'
+for job in $reached $restarted $crashed $ghost $ghost_gate; do
     kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
         --ignore-not-found --wait=false >/dev/null 2>&1
 done

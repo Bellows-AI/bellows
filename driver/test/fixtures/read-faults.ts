@@ -464,6 +464,7 @@ export const quietSteps = (): StepSink => ({
     contacted: () => true,
     release: () => undefined,
     attach: () => undefined,
+    cancel: () => undefined,
 });
 
 /** One documented violation line, matched whole and literally. */

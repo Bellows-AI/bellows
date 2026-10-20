@@ -12,6 +12,13 @@ import type { TimeoutActivity } from './timeout-note.js';
 
 /** How often freshly arrived output is flushed to the board — the pace the dashboard polls at. */
 const PROGRESS_MS = 2_000;
+/**
+ * The longest a park waits out a progress write in flight, by the wall clock: a board that never
+ * answers it costs that tail, never the park (issue #773).
+ */
+const OUTPUT_DRAIN_MS = 5_000;
+/** How often the drain looks again while a write is in flight. */
+const OUTPUT_DRAIN_TICK_MS = 50;
 
 /**
  * How often the heartbeat polls while the attempt is still SETTING UP — before the runner exists.
@@ -38,6 +45,11 @@ const HEARTBEAT_PERIOD_DIVISOR = 3;
 const MS_PER_SECOND = 1_000;
 
 export interface JobState {
+    /**
+     * Stops the output pump's periodic writes and waits out the one in flight (issue #773): a park
+     * lands the row terminal, and a write it overtook would be refused and its tail lost.
+     */
+    drainOutput: () => Promise<void>;
     finished: boolean;
     lost: boolean;
     /**
@@ -78,6 +90,11 @@ export interface JobState {
     launched: boolean;
     /** The attempt's gate-endpoint token once its gate session booted — where the sampler tells the agent a service died. */
     gateToken: string | null;
+    /**
+     * Why an ad-hoc gate found the attempt's supervisor lost while the agent ran (issue #773): the
+     * attempt is interrupted once its run is over, never given a verdict. Null while none did.
+     */
+    gateLoss: string | null;
     /**
      * The attempt's run-control token (`BELLOWS_CONTROL_TOKEN`), set once the control endpoint is
      * open for it; null until then, and for a driver with no endpoint at all.
@@ -130,6 +147,7 @@ export function newJobState(): JobState {
     });
     const controller = new AbortController();
     return {
+        drainOutput: async () => {},
         finished: false,
         lost: false,
         stopped: false,
@@ -139,6 +157,7 @@ export function newJobState(): JobState {
         keepGroup: false,
         launched: false,
         gateToken: null,
+        gateLoss: null,
         control: null,
         transcriptExport: null,
         running: false,
@@ -471,6 +490,17 @@ interface OutputPump {
     complained: boolean;
     /** Each service the sampler saw die and what it read of its ending, by name (issue #487). */
     dead: Map<string, DeadService>;
+    /** The progress write in flight, or the last one settled: every write chains on it, so none overtakes another. */
+    writing: Promise<unknown>;
+    /** True once drained for a park: no periodic write starts after it. */
+    drained: boolean;
+}
+
+/** One progress write, after any still in flight: a later tail never lands before an older one. */
+function serialFlush(rt: LoopRuntime, job: BoardJob, pump: OutputPump): Promise<'held' | 'lost' | 'skip'> {
+    const next = pump.writing.then(() => flushIfChanged(rt, job, pump));
+    pump.writing = next.catch(() => undefined);
+    return next;
 }
 
 /**
@@ -574,7 +604,7 @@ export function watchOutput(
     rt: LoopRuntime,
     job: BoardJob,
     state: JobState
-): { push: (tail: string) => void; snapshot: () => TimeoutActivity } {
+): { push: (tail: string) => void; snapshot: () => TimeoutActivity; flush: (tail: string) => Promise<void> } {
     const { sleep } = rt;
     const pump: OutputPump = {
         latest: null,
@@ -585,6 +615,17 @@ export function watchOutput(
         sampling: false,
         dead: new Map(),
         complained: false,
+        writing: Promise.resolve(),
+        drained: false,
+    };
+    state.drainOutput = async () => {
+        pump.drained = true;
+        let settled = false;
+        void pump.writing.then(() => {
+            settled = true;
+        });
+        const deadline = Date.now() + OUTPUT_DRAIN_MS;
+        while (!settled && Date.now() < deadline) await sleep(OUTPUT_DRAIN_TICK_MS);
     };
     void (async () => {
         while (!state.finished && !state.lost) {
@@ -593,9 +634,9 @@ export function watchOutput(
             // The pump starts with the attempt now, but the runner does not exist until
             // launch — sampling before that is a daemon lookup per period that can answer
             // nothing (issue #126 moved the start earlier to cover the setup phase).
-            if (!state.launched) continue;
+            if (!state.launched || pump.drained) continue;
             kickSample(rt, job, state, pump);
-            const verdict = await flushIfChanged(rt, job, pump);
+            const verdict = await serialFlush(rt, job, pump);
             // The board no longer recognises this attempt. Killing the container is the
             // heartbeat's verdict alone; this pump just stops talking.
             if (verdict === 'lost') return;
@@ -607,5 +648,12 @@ export function watchOutput(
             pump.latest = tail;
         },
         snapshot: () => ({ lastOutputAt: pump.lastOutputAt, activity: currentActivity(pump.latest) }),
+        // The run's own last word, streamed now: what a verdict-less end (a park) leaves the board.
+        // It waits out a write still in flight, so the park follows every tail the board was sent.
+        flush: async (tail) => {
+            if (tail === '') return;
+            pump.latest = tail;
+            await serialFlush(rt, job, pump);
+        },
     };
 }

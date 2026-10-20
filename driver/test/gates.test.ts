@@ -1,7 +1,6 @@
-import { readFileSync, rmSync } from 'node:fs';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-    createGateManager,
+    createSupervisedGateManager,
     declaredTimeoutMs,
     type GateAttempt,
     type GateClaim,
@@ -10,17 +9,16 @@ import {
 } from '../src/gates.js';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { gateEnvContainerName } from '../src/docker.js';
-import { gateEnvFile, refreshGateEnv } from '../src/gate-exec.js';
-import { networkName } from '../src/services.js';
+import { StepChannelClosed } from '../src/step-control.js';
+import type { GateStepRequest } from '../src/supervised-steps.js';
+import type { StepResult } from '../src/supervisor-contract.js';
 
 /**
- * The gate environment registry and its ad-hoc HTTP channel.
+ * The supervised gate manager (issue #773) and the ad-hoc HTTP channel.
  *
- * The docker daemon is stood in by `execDocker`, the way the docker runner's suite does it: the
- * suite never shells out, and every assertion is on the argv this process would run or the
- * verdict it would report. The server tests use a real socket on loopback, because the contract
- * under test is HTTP.
+ * The runner is stood in by `gateRunner`: every gate is one step the attempt's supervisor hands its
+ * gate container, and every assertion is on the request the manager makes or the verdict it reports.
+ * The server tests use a real socket on loopback, because the contract under test is HTTP.
  */
 
 /**
@@ -44,6 +42,8 @@ vi.mock('node:http', async (importOriginal) => {
 });
 
 let createGateServer: typeof import('../src/gates.js')['createGateServer'];
+/** The re-imported module's own error class: the server below tells a lost supervisor by `instanceof`. */
+let LostChannel: typeof StepChannelClosed;
 
 beforeAll(async () => {
     // isolate:false shares the module cache across files in a worker: when another file (loop,
@@ -51,13 +51,13 @@ beforeAll(async () => {
     // wrapper above never sees a server. Reset + re-import binds the source to THIS file's mock.
     vi.resetModules();
     ({ createGateServer } = await import('../src/gates.js'));
+    ({ StepChannelClosed: LostChannel } = await import('../src/step-control.js'));
 });
 
 const KEY = `bellows/44444444-4444-4444-8444-444444444444/.worktrees/55555555-5555-4555-8555-555555555555`;
-const NAME = gateEnvContainerName(KEY);
 const config = loadDriverConfig({});
 
-/** The attempt a gate runs under — its id and lease token name the services network. */
+/** The attempt a gate runs under: its supervisor runs the gate. */
 const JOB: BoardJob = {
     id: '55555555-5555-4555-8555-555555555555',
     command: 'fix the failing build',
@@ -84,28 +84,6 @@ const JOB: BoardJob = {
 /** The same attempt, whose checkout declares `setup: npm ci`. */
 const WITH_SETUP: BoardJob = { ...JOB, gates: { image: 'node:24', setup: 'npm ci', gates: [] } };
 
-/** The execFile-shaped seam: resolves on exit 0, rejects with `.code` otherwise. */
-type ExecResult = { stdout: string; stderr: string };
-type ExecError = Error & { code?: number | string; stdout?: string; stderr?: string };
-type ExecArgs = string[] & { timeout?: number };
-const exec =
-    (script: (args: ExecArgs, options?: { timeout?: number }) => Promise<ExecResult> | ExecResult) =>
-    (args: string[], options?: { timeout?: number }): Promise<ExecResult> =>
-        Promise.resolve().then(() => script(args as ExecArgs, options));
-
-const fails = (code: number, stderr: string) => {
-    const error = new Error(`exit ${code}`) as ExecError;
-    error.code = code;
-    error.stderr = stderr;
-    return Promise.reject(error);
-};
-
-const logs: string[][] = [];
-const recording = exec((args) => {
-    logs.push(args);
-    return { stdout: '', stderr: '' };
-});
-
 /** docker's own "no such container" exit code — the harness state every rejection here reports. */
 const CONTAINER_GONE_CODE = 125;
 const OK_STATUS = 200;
@@ -116,670 +94,272 @@ const BAD_REQUEST_STATUS = 400;
 const CONFLICT_STATUS = 409;
 const PAYLOAD_TOO_LARGE_STATUS = 413;
 const UNPROCESSABLE_STATUS = 422;
+const UNAVAILABLE_STATUS = 503;
 
-/** The margin past a 5ms cooldown that every "did the teardown fire" assertion waits out. */
-const COOLDOWN_SETTLE_MS = 40;
-
-describe('the gate environment manager: lifecycle', () => {
-    it('creates the environment container on first acquire and reuses it after', async () => {
-        logs.length = 0;
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
-        await manager.acquire(KEY, 'node:24', '');
-        await manager.acquire(KEY, 'node:24', '');
-
-        expect(logs.filter((args) => args[0] === 'run')).toHaveLength(1);
-        expect(logs.flat()).toEqual(expect.arrayContaining(['-d', '--name', NAME]));
-        await manager.stop();
-    });
-
-    it('fences before creating, the way every spawn here is fenced', async () => {
-        logs.length = 0;
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
-        await manager.acquire(KEY, 'node:24', '');
-        expect(logs[0]).toEqual(['rm', '-f', NAME]);
-        await manager.stop();
-    });
-
-    it('takes the env body as a file, never as argv values', async () => {
-        logs.length = 0;
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
-        await manager.acquire(KEY, 'node:24', 'MY_TOKEN=board-secret\n');
-        const run = logs.find((args) => args[0] === 'run')!;
-        expect(run).toEqual(expect.arrayContaining(['--env-file', expect.stringContaining('factory-gateenv')]));
-        expect(run.some((arg) => arg.includes('board-secret'))).toBe(false);
-        await manager.stop();
-    });
-
-    // The warm container keeps the env it was created with; a re-acquire's fresher token (asked at
-    // each gate run's start, docs/connections.md) reaches the gate through exec's own env file.
-    it('hands each gate the newest env body by exec env file, without recreating the container', async () => {
-        const seen: { args: string[]; file: string }[] = [];
-        const reading = exec((args) => {
-            if (args[0] === 'exec') {
-                const at = args.indexOf('--env-file');
-                seen.push({ args, file: at > 0 ? readFileSync(args[at + 1]!, 'utf8') : '' });
-            }
-            return { stdout: '', stderr: '' };
-        });
-        logs.length = 0;
-        const manager = createGateManager({
-            config,
-            cooldownMs: 1000,
-            execDocker: exec((args) => {
-                logs.push(args);
-                return reading(args);
-            }),
-        });
-        await manager.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_first\n');
-        await manager.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_second\n');
-        await manager.runGate(KEY, 'test', 'npm test');
-
-        expect(logs.filter((args) => args[0] === 'run')).toHaveLength(1);
-        expect(seen).toHaveLength(1);
-        expect(seen[0]!.file).toBe('GITHUB_TOKEN=ghs_second\n');
-        expect(seen[0]!.args.some((arg) => arg.includes('ghs_'))).toBe(false);
-        await manager.stop();
-    });
-
-    // Two ad-hoc runs re-acquire outside the key's queue: their env files must not share a temp name.
-    it('refreshes the env file under concurrent re-acquires without either failing', async () => {
-        const entry = { name: 'factory-gateenv-concurrent-refresh-test', envBody: 'GITHUB_TOKEN=ghs_0\n' };
-        await Promise.all(
-            Array.from({ length: 8 }, (_, i) => refreshGateEnv({ ...entry }, `GITHUB_TOKEN=ghs_${i + 1}\n`))
-        );
-        expect(readFileSync(gateEnvFile(entry.name), 'utf8')).toMatch(/^GITHUB_TOKEN=ghs_[1-8]\n$/);
-        rmSync(gateEnvFile(entry.name), { force: true });
-    });
-
-    it('tears the container down after the cooldown, and only then', async () => {
-        logs.length = 0;
-        const manager = createGateManager({ config, cooldownMs: 5, execDocker: recording });
-        await manager.acquire(KEY, 'node:24', '');
-        manager.release(KEY, JOB);
-        // The acquire fence above is also an `rm -f`; only counts AFTER release are teardowns.
-        const atRelease = logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME).length;
-        await new Promise((resolve) => setTimeout(resolve, COOLDOWN_SETTLE_MS));
-        const afterCooldown = logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME).length;
-        expect(afterCooldown).toBe(atRelease + 1);
-    });
-
-    it('cancels the teardown when the same environment is acquired again', async () => {
-        logs.length = 0;
-        const manager = createGateManager({ config, cooldownMs: 5, execDocker: recording });
-        await manager.acquire(KEY, 'node:24', '');
-        manager.release(KEY, JOB);
-        const atRelease = logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME).length;
-        await manager.acquire(KEY, 'node:24', '');
-        await new Promise((resolve) => setTimeout(resolve, COOLDOWN_SETTLE_MS));
-        const afterCooldown = logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME).length;
-        expect(afterCooldown).toBe(atRelease);
-        await manager.stop();
-    });
-
-    it('recreates a container whose teardown already ran', async () => {
-        logs.length = 0;
-        const manager = createGateManager({ config, cooldownMs: 5, execDocker: recording });
-        await manager.acquire(KEY, 'node:24', '');
-        manager.release(KEY, JOB);
-        await new Promise((resolve) => setTimeout(resolve, COOLDOWN_SETTLE_MS));
-        await manager.acquire(KEY, 'node:24', '');
-        expect(logs.filter((args) => args[0] === 'run')).toHaveLength(2);
-        await manager.stop();
-    });
+const answered = (exitCode: number | null, stdout = '', extra: Partial<StepResult> = {}): StepResult => ({
+    exitCode,
+    stdout,
+    stderr: '',
+    timedOut: false,
+    ...extra,
 });
 
-describe('the gate environment manager: running gates', () => {
-    it('runs a gate by exec and answers its exit code with a tailed output', async () => {
-        const GATE_FAIL_EXIT_CODE = 3;
-        const gateExec = exec((args) => {
-            if (args[0] === 'exec') {
-                if (args.at(-1) === 'pass') return { stdout: 'all green\n', stderr: '' };
-                return fails(GATE_FAIL_EXIT_CODE, '2 problems\n');
-            }
-            return { stdout: '', stderr: '' };
-        });
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: gateExec });
-        await manager.acquire(KEY, 'node:24', '');
+/** One gate execution the manager asked of the runner: the attempt, the request and its cancel signal. */
+interface GateCall {
+    job: BoardJob;
+    gate: GateStepRequest;
+    signal: AbortSignal | undefined;
+}
 
-        await expect(manager.runGate(KEY, 'test', 'pass')).resolves.toEqual({
-            exitCode: 0,
-            output: 'all green',
-        });
-        await expect(manager.runGate(KEY, 'test', 'fail')).resolves.toEqual({
-            exitCode: GATE_FAIL_EXIT_CODE,
-            output: '2 problems',
-        });
-        await manager.stop();
+/**
+ * The runner half of the supervised gates: what `runGate` would submit to the attempt's supervisor,
+ * answered by `answer` — a step result, a rejection, or a promise the test settles.
+ */
+function gateRunner(
+    answer: (call: GateCall, n: number) => StepResult | Error | Promise<StepResult> = () => answered(0)
+) {
+    const calls: GateCall[] = [];
+    const runner = {
+        runGate: async (job: BoardJob, gate: GateStepRequest, signal?: AbortSignal): Promise<StepResult> => {
+            const call = { job, gate, signal };
+            calls.push(call);
+            const given = await answer(call, calls.length);
+            if (given instanceof Error) throw given;
+            return given;
+        },
+    };
+    return { runner, calls };
+}
+
+const WORKTREE = `${config.workspaceMount}/${KEY}`;
+
+describe('the supervised gate manager: one gate as a step', () => {
+    it('runs a gate in the checkout’s worktree with the attempt’s env, and answers its exit and output', async () => {
+        const { runner, calls } = gateRunner(() => answered(3, '1 failing\n', { stderr: 'npm ERR!\n' }));
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', 'A=1\nB=two words\n', { job: JOB });
+        expect(await manager.runGate(KEY, 'test', 'npm test')).toEqual({ exitCode: 3, output: '1 failing\nnpm ERR!' });
+        expect(calls).toEqual([
+            {
+                job: JOB,
+                gate: {
+                    command: 'npm test',
+                    cwd: WORKTREE,
+                    env: { A: '1', B: 'two words' },
+                    timeoutMs: config.gateTimeoutMs,
+                },
+                signal: undefined,
+            },
+        ]);
     });
 
-    it('runs the declared setup once per environment, before the first gate, and not again', async () => {
-        const scripts: string[] = [];
-        const setupExec = exec((args) => {
-            if (args[0] === 'exec') scripts.push(args.at(-1) ?? '');
-            return { stdout: '', stderr: '' };
-        });
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: setupExec });
-        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+    it('hands each gate the env body of its newest acquire', async () => {
+        const { runner, calls } = gateRunner();
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_one\n', { job: JOB });
         await manager.runGate(KEY, 'test', 'npm test');
-        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
-        await manager.runGate(KEY, 'lint', 'npm run lint');
-
-        expect(scripts).toEqual(['npm ci', 'npm test', 'npm run lint']);
-        await manager.stop();
+        await manager.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_two\n', { job: JOB });
+        await manager.runGate(KEY, 'test', 'npm test');
+        expect(calls.map((call) => call.gate.env)).toEqual([{ GITHUB_TOKEN: 'ghs_one' }, { GITHUB_TOKEN: 'ghs_two' }]);
     });
 
-    it('answers a failed setup as a setup failure, skips the gate, and retries setup next time', async () => {
-        const SETUP_EXIT_CODE = 7;
-        const scripts: string[] = [];
-        let setupFails = true;
-        const setupExec = exec((args) => {
-            if (args[0] !== 'exec') return { stdout: '', stderr: '' };
-            scripts.push(args.at(-1) ?? '');
-            if (args.at(-1) === 'npm ci' && setupFails) return fails(SETUP_EXIT_CODE, 'registry down\n');
-            return { stdout: '', stderr: '' };
-        });
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: setupExec });
-        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
-
-        await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toEqual({
-            exitCode: SETUP_EXIT_CODE,
-            output: 'registry down',
-            setupFailed: true,
-        });
-        setupFails = false;
-        await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toMatchObject({ exitCode: 0 });
-        expect(scripts).toEqual(['npm ci', 'npm ci', 'npm test']);
-        await manager.stop();
-    });
-
-    // Issue #733: the agent needs the install before its first turn, not before the first gate.
-    describe('runSetup: setup before the agent starts', () => {
-        const SETUP_EXIT_CODE = 7;
-        /** Records every exec'd script; `npm ci` fails while `setupFails()` says so. */
-        const scripted = (setupFails: () => boolean = () => false) => {
-            const scripts: string[] = [];
-            const timeouts: (number | undefined)[] = [];
-            const execDocker = exec((args, options) => {
-                if (args[0] !== 'exec') return { stdout: '', stderr: '' };
-                scripts.push(args.at(-1) ?? '');
-                timeouts.push(options?.timeout);
-                if (args.at(-1) === 'npm ci' && setupFails()) return fails(SETUP_EXIT_CODE, 'registry down\n');
-                return { stdout: 'installed\n', stderr: '' };
-            });
-            return { scripts, timeouts, execDocker };
-        };
-
-        it('runs setup now, and the first gate does not repeat it', async () => {
-            const docker = scripted();
-            const manager = createGateManager({ config, cooldownMs: 1000, execDocker: docker.execDocker });
-            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
-
-            await expect(manager.runSetup(KEY)).resolves.toEqual({ exitCode: 0, output: 'installed' });
-            await manager.runGate(KEY, 'test', 'npm test');
-            expect(docker.scripts).toEqual(['npm ci', 'npm test']);
-            await manager.stop();
-        });
-
-        it('answers a failed setup and leaves it pending, so the first gate retries it', async () => {
-            let setupFails = true;
-            const docker = scripted(() => setupFails);
-            const manager = createGateManager({ config, cooldownMs: 1000, execDocker: docker.execDocker });
-            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
-
-            await expect(manager.runSetup(KEY)).resolves.toEqual({
-                exitCode: SETUP_EXIT_CODE,
-                output: 'registry down',
-            });
-            setupFails = false;
-            await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toMatchObject({ exitCode: 0 });
-            expect(docker.scripts).toEqual(['npm ci', 'npm ci', 'npm test']);
-            await manager.stop();
-        });
-
-        it('re-runs setup for a new attempt on a warm environment', async () => {
-            const docker = scripted();
-            const manager = createGateManager({ config, cooldownMs: 1000, execDocker: docker.execDocker });
-            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
-            await manager.runSetup(KEY);
-            const followUp: BoardJob = { ...WITH_SETUP, leaseToken: '33333333-3333-4333-8333-333333333333' };
-            await manager.acquire(KEY, 'node:24', '', { job: followUp });
-            await manager.runSetup(KEY);
-            await manager.runGate(KEY, 'test', 'npm test');
-
-            expect(docker.scripts).toEqual(['npm ci', 'npm ci', 'npm test']);
-            await manager.stop();
-        });
-
-        it('answers null and runs nothing when the checkout declares no setup', async () => {
-            const docker = scripted();
-            const manager = createGateManager({ config, cooldownMs: 1000, execDocker: docker.execDocker });
-            await manager.acquire(KEY, 'node:24', '', { job: JOB });
-
-            await expect(manager.runSetup(KEY)).resolves.toBeNull();
-            expect(docker.scripts).toEqual([]);
-            await manager.stop();
-        });
-
-        it('runs setup under the timeout it is given', async () => {
-            const docker = scripted();
-            const manager = createGateManager({
-                config,
-                cooldownMs: 1000,
-                gateTimeoutMs: 30_000,
-                execDocker: docker.execDocker,
-            });
-            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
-
-            await manager.runSetup(KEY, { timeoutMs: 12_000 });
-            expect(docker.timeouts).toEqual([12_000]);
-            await manager.stop();
-        });
-
-        // Review round 1: the cooldown must not reap the environment out from under the attempt and
-        // make the end-of-run gate pass install a second time.
-        it('runs setup once per attempt, even when the environment is reaped and re-acquired', async () => {
-            vi.useFakeTimers();
-            try {
-                const docker = scripted();
-                const manager = createGateManager({ config, cooldownMs: 1000, execDocker: docker.execDocker });
-                await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
-                await manager.runSetup(KEY);
-                await vi.advanceTimersByTimeAsync(5000);
-                // An ad-hoc gate arms the cooldown too; its reap must not forget the install either.
-                await manager.runGate(KEY, 'test', 'npm test');
-                await vi.advanceTimersByTimeAsync(5000);
-                await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
-                await manager.runGate(KEY, 'test', 'npm test');
-
-                expect(docker.scripts).toEqual(['npm ci', 'npm test', 'npm test']);
-                await manager.stop();
-            } finally {
-                vi.useRealTimers();
-            }
-        });
-
-        it('a new attempt handed a warm environment runs its own setup before its first gate', async () => {
-            const docker = scripted();
-            const manager = createGateManager({ config, cooldownMs: 1000, execDocker: docker.execDocker });
-            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
-            await manager.runSetup(KEY);
-            const followUp: BoardJob = { ...WITH_SETUP, leaseToken: '33333333-3333-4333-8333-333333333333' };
-            await manager.acquire(KEY, 'node:24', '', { job: followUp });
-            await manager.runGate(KEY, 'test', 'npm test');
-
-            expect(docker.scripts).toEqual(['npm ci', 'npm ci', 'npm test']);
-            await manager.stop();
-        });
-
-        // The kubernetes manager's rule: a setup queued for one attempt never clears another's.
-        it("a setup that finishes after the environment passed to a newer attempt leaves that attempt's setup pending", async () => {
-            const scripts: string[] = [];
-            let releaseHang!: () => void;
-            const hanging = exec((args) => {
-                if (args[0] !== 'exec') return { stdout: '', stderr: '' };
-                scripts.push(args.at(-1) ?? '');
-                if (args.at(-1) === 'hang') {
-                    return new Promise<ExecResult>((resolve) => {
-                        releaseHang = () => resolve({ stdout: '', stderr: '' });
-                    });
-                }
-                return { stdout: '', stderr: '' };
-            });
-            const manager = createGateManager({ config, cooldownMs: 1000, execDocker: hanging });
-            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
-            const held = manager.runGate(KEY, 'hold', 'hang');
-            const staleSetup = manager.runSetup(KEY);
-            await new Promise((resolve) => setTimeout(resolve, 5));
-            const followUp: BoardJob = { ...WITH_SETUP, leaseToken: '33333333-3333-4333-8333-333333333333' };
-            await manager.acquire(KEY, 'node:24', '', { job: followUp });
-            releaseHang();
-            await held;
-            await staleSetup;
-            await manager.runGate(KEY, 'test', 'npm test');
-
-            expect(scripts).toEqual(['npm ci', 'hang', 'npm ci', 'npm ci', 'npm test']);
-            await manager.stop();
-        });
-
-        // Review round 2: the per-checkout record of a succeeded setup ends with its attempt's release.
-        it("forgets the attempt's setup at its release", async () => {
-            const docker = scripted();
-            const manager = createGateManager({ config, cooldownMs: 0, execDocker: docker.execDocker });
-            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
-            await manager.runSetup(KEY);
-            manager.release(KEY, WITH_SETUP);
-            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
-            await manager.runGate(KEY, 'test', 'npm test');
-
-            expect(docker.scripts).toEqual(['npm ci', 'npm ci', 'npm test']);
-            await manager.stop();
-        });
-
-        it('tears the environment down when the attempt aborts mid-setup', async () => {
-            const removed: string[] = [];
-            const hanging = exec((args) => {
-                if (args[0] === 'rm') removed.push(args[2] ?? '');
-                if (args[0] === 'exec') return new Promise<ExecResult>(() => {});
-                return { stdout: '', stderr: '' };
-            });
-            const manager = createGateManager({ config, cooldownMs: 1000, execDocker: hanging });
-            await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
-            removed.length = 0;
-            const controller = new AbortController();
-
-            const running = manager.runSetup(KEY, { signal: controller.signal });
-            await new Promise((resolve) => setTimeout(resolve, 5));
-            controller.abort();
-
-            await expect(running).resolves.toMatchObject({ exitCode: 130 });
-            expect(removed).toContain(NAME);
-            await manager.stop();
-        });
-    });
-
-    it('serializes gate runs per checkout, so two turns cannot interleave installs', async () => {
-        let releaseFirst!: () => void;
-        const gate = new Promise<ExecResult>((resolve) => {
-            releaseFirst = () => resolve({ stdout: 'first done\n', stderr: '' });
-        });
-        let execCalls = 0;
-        const slowExec = exec((args) => {
-            if (args[0] === 'exec') {
-                execCalls += 1;
-                return execCalls === 1 ? gate : Promise.resolve({ stdout: 'second\n', stderr: '' });
-            }
-            return { stdout: '', stderr: '' };
-        });
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: slowExec });
-        await manager.acquire(KEY, 'node:24', '');
-
-        const first = manager.runGate(KEY, 'test', 'npm test');
-        const second = manager.runGate(KEY, 'test', 'npm run lint');
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        expect(execCalls).toBe(1); // the second run waits for the first
-
-        releaseFirst();
-        await expect(first).resolves.toMatchObject({ exitCode: 0 });
-        await expect(second).resolves.toMatchObject({ exitCode: 0 });
-        await manager.stop();
-    });
-
-    /*
-     * The declared services live on the attempt's own network, and a gate is where the tests
-     * that need them run — so the environment joins that network before the gate execs, once
-     * per attempt. A job with no services has no network: the connect is refused, and the gate
-     * runs anyway (nothing to reach is not a harness failure).
-     */
-    it('joins the attempt’s services network before running a gate, once per attempt', async () => {
-        const seen: string[][] = [];
-        const servicesExec = exec((args) => {
-            seen.push(args);
-            return { stdout: '', stderr: '' };
-        });
-        const manager = createGateManager({
-            config: loadDriverConfig({ RUNNER_SERVICES: '1' }),
-            cooldownMs: 1000,
-            execDocker: servicesExec,
-        });
+    it('answers a gate killed at its deadline as the 124 of `timeout`, naming the deadline when it said nothing', async () => {
+        const { runner } = gateRunner(() => answered(124, '', { timedOut: true }));
+        const manager = createSupervisedGateManager({ config, runner, gateTimeoutMs: 30_000 });
         await manager.acquire(KEY, 'node:24', '', { job: JOB });
-        await manager.runGate(KEY, 'test', 'npm test');
-        await manager.runGate(KEY, 'lint', 'npm run lint');
-
-        const connect = ['network', 'connect', networkName(JOB), NAME];
-        expect(seen.filter((args) => args.join(' ') === connect.join(' '))).toHaveLength(1);
-        const connectAt = seen.findIndex((args) => args.join(' ') === connect.join(' '));
-        expect(seen.findIndex((args) => args[0] === 'exec')).toBeGreaterThan(connectAt);
-
-        // A later attempt on the same warm environment joins ITS network.
-        const next = { ...JOB, leaseToken: '33333333-3333-4333-8333-333333333333' };
-        await manager.acquire(KEY, 'node:24', '', { job: next });
-        await manager.runGate(KEY, 'test', 'npm test');
-        expect(seen).toContainEqual(['network', 'connect', networkName(next), NAME]);
-        await manager.stop();
-    });
-
-    it('runs the gate anyway when the attempt has no services network to join', async () => {
-        const noNetwork = exec((args) => {
-            if (args[0] === 'network') return fails(1, 'Error: No such network\n');
-            if (args[0] === 'exec') return { stdout: 'green\n', stderr: '' };
-            return { stdout: '', stderr: '' };
-        });
-        const manager = createGateManager({
-            config: loadDriverConfig({ RUNNER_SERVICES: '1' }),
-            cooldownMs: 1000,
-            execDocker: noNetwork,
-        });
-        await manager.acquire(KEY, 'node:24', '', { job: JOB });
-        await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toEqual({ exitCode: 0, output: 'green' });
-        await manager.stop();
-    });
-
-    it('joins no network when services are off', async () => {
-        logs.length = 0;
-        const manager = createGateManager({
-            config: loadDriverConfig({ RUNNER_SERVICES: '0' }),
-            cooldownMs: 1000,
-            execDocker: recording,
-        });
-        await manager.acquire(KEY, 'node:24', '', { job: JOB });
-        await manager.runGate(KEY, 'test', 'npm test');
-        expect(logs.some((args) => args[0] === 'network')).toBe(false);
-        await manager.stop();
-    });
-
-    it('keeps a different checkout in a different container', async () => {
-        logs.length = 0;
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
-        const other = `bellows/44444444-4444-4444-8444-444444444444/.worktrees/66666666-6666-4666-8666-666666666666`;
-        await manager.acquire(KEY, 'node:24', '');
-        await manager.acquire(other, 'python:3', '');
-        expect(logs.filter((args) => args[0] === 'run')).toHaveLength(2);
-        const stoppedAt = logs.length;
-        await manager.stop();
-        // The drain removes exactly the containers the manager still tracks.
-        expect(logs.slice(stoppedAt).filter((args) => args[0] === 'rm' && args[1] === '-f')).toHaveLength(2);
-    });
-});
-
-describe('the gate environment manager: acquire serialization and timeouts', () => {
-    // Two gated claims on one member+repo while neither container exists yet (the concurrency-2
-    // default makes this ordinary): the cold acquires must line up, or they race two `docker run`s
-    // on one name and the loser fails the job outright.
-    it('serializes cold acquires of the same checkout', async () => {
-        let releaseFirstRun!: () => void;
-        const firstRun = new Promise<{ stdout: string; stderr: string }>((resolve) => {
-            releaseFirstRun = () => resolve({ stdout: '', stderr: '' });
-        });
-        let runCalls = 0;
-        const slowExec = exec((args) => {
-            if (args[0] === 'run') {
-                runCalls += 1;
-                return runCalls === 1 ? firstRun : Promise.resolve({ stdout: '', stderr: '' });
-            }
-            return { stdout: '', stderr: '' };
-        });
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: slowExec });
-
-        const first = manager.acquire(KEY, 'node:24', '');
-        const second = manager.acquire(KEY, 'node:24', '');
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        expect(runCalls).toBe(1); // the second acquire waits for the first
-
-        releaseFirstRun();
-        await Promise.all([first, second]);
-        expect(runCalls).toBe(1); // and reuses, rather than creating a second container
-        await manager.stop();
-    });
-
-    // A hung gate (a watch-mode test, a dev server) must fail the gate, not stall the verdict
-    // forever. The kill arrives through the exec's own timeout; 124 is the convention `timeout`
-    // itself uses, and the output says what happened.
-    it('kills a gate that outlives its timeout, and reports it as a failed gate', async () => {
-        const seenOptions: ({ timeout?: number } | undefined)[] = [];
-        const timingOut = exec((args, options) => {
-            if (args[0] !== 'exec') return { stdout: '', stderr: '' };
-            seenOptions.push(options);
-            const error = new Error('killed') as ExecError & { killed?: boolean };
-            error.killed = true;
-            error.stderr = '';
-            return Promise.reject(error);
-        });
-        const manager = createGateManager({
-            config,
-            cooldownMs: 1000,
-            gateTimeoutMs: 30_000,
-            execDocker: timingOut,
-        });
-        await manager.acquire(KEY, 'node:24', '');
-
-        await expect(manager.runGate(KEY, 'test', 'npm run dev')).resolves.toEqual({
+        expect(await manager.runGate(KEY, 'test', 'npm test')).toEqual({
             exitCode: 124,
             output: '[driver] gate killed after 30000ms',
         });
-        // The cap travels as the exec's own timeout, the way `timeout` would wrap it.
-        expect(seenOptions.at(-1)).toMatchObject({ timeout: 30_000 });
-        await manager.stop();
     });
 
-    /** An exec seam that kills every `docker exec` at its timeout, recording each one's options. */
-    const killedAtTimeout = (seenOptions: ({ timeout?: number } | undefined)[]) =>
-        exec((args, options) => {
-            if (args[0] !== 'exec') return { stdout: '', stderr: '' };
-            seenOptions.push(options);
-            const error = new Error('killed') as Error & { killed?: boolean };
-            error.killed = true;
-            return Promise.reject(error);
-        });
-
-    // A gate's own `timeout:` (issue #576): the UI suite outlives GATE_TIMEOUT_MS by design, so
-    // its declared budget, not the driver default, bounds it.
-    it('kills a gate at its own timeout, not the driver default', async () => {
-        const seenOptions: ({ timeout?: number } | undefined)[] = [];
-        const manager = createGateManager({
-            config,
-            cooldownMs: 1000,
-            gateTimeoutMs: 30_000,
-            execDocker: killedAtTimeout(seenOptions),
-        });
-        await manager.acquire(KEY, 'node:24', '');
-
-        await expect(manager.runGate(KEY, 'ui', 'npm run verify:ui', { timeoutMs: 2_700_000 })).resolves.toEqual({
-            exitCode: 124,
-            output: '[driver] gate killed after 2700000ms',
-        });
-        expect(seenOptions.at(-1)).toMatchObject({ timeout: 2_700_000 });
-        await manager.stop();
+    it('bounds a gate by its own timeout, capped at DRIVER_JOB_TIMEOUT_MS, and setup by the default', async () => {
+        const { runner, calls } = gateRunner();
+        const capped = { ...config, jobTimeoutMs: 120_000 };
+        const manager = createSupervisedGateManager({ config: capped, runner, gateTimeoutMs: 30_000 });
+        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+        await manager.runGate(KEY, 'ui', 'npm run verify:ui', { timeoutMs: 600_000 });
+        expect(calls.map((call) => [call.gate.command, call.gate.timeoutMs])).toEqual([
+            ['npm ci', 30_000],
+            ['npm run verify:ui', 120_000],
+        ]);
     });
 
-    // The board is trusted, but a claim carrying no positive number must not become a NaN deadline.
     it.each([Number.NaN, 0, -5, Number.POSITIVE_INFINITY])('reads a timeoutMinutes of %s as none', (timeoutMinutes) => {
         expect(declaredTimeoutMs({ name: 'ui', command: 'x', timeoutMinutes })).toBeUndefined();
     });
 
-    it("caps a gate's own timeout at DRIVER_JOB_TIMEOUT_MS", async () => {
-        const seenOptions: ({ timeout?: number } | undefined)[] = [];
-        const manager = createGateManager({
-            config: loadDriverConfig({ DRIVER_JOB_TIMEOUT_MS: '1800000' }),
-            cooldownMs: 1000,
-            gateTimeoutMs: 30_000,
-            execDocker: killedAtTimeout(seenOptions),
+    it('rejects a gate the supervisor answered with no exit as a harness failure, never a verdict', async () => {
+        const { runner } = gateRunner(() => answered(null, '', { stderr: 'the gate container was lost mid-run' }));
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: JOB });
+        await expect(manager.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({
+            code: CONTAINER_GONE_CODE,
+            message: expect.stringMatching(/lost mid-run/),
         });
-        await manager.acquire(KEY, 'node:24', '');
-
-        await manager.runGate(KEY, 'ui', 'npm run verify:ui', { timeoutMs: 2_700_000 });
-        expect(seenOptions.at(-1)).toMatchObject({ timeout: 1_800_000 });
-        await manager.stop();
     });
 
-    it('runs setup under the driver default when the gate declares its own timeout', async () => {
-        const seenOptions: ({ timeout?: number } | undefined)[] = [];
-        const passing = exec((args, options) => {
-            if (args[0] === 'exec') seenOptions.push(options);
-            return { stdout: '', stderr: '' };
-        });
-        const manager = createGateManager({ config, cooldownMs: 1000, gateTimeoutMs: 30_000, execDocker: passing });
+    it('rethrows a lost supervisor untouched: the attempt’s loss, never a failed gate', async () => {
+        const lost = new StepChannelClosed('its step was answered');
+        const { runner } = gateRunner(() => lost);
+        const manager = createSupervisedGateManager({ config, runner });
         await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+        await expect(manager.runGate(KEY, 'test', 'npm test')).rejects.toBe(lost);
+        await expect(manager.runSetup(KEY)).rejects.toBe(lost);
+    });
 
-        await manager.runGate(KEY, 'ui', 'npm run verify:ui', { timeoutMs: 2_700_000 });
-        expect(seenOptions.map((options) => options?.timeout)).toEqual([30_000, 2_700_000]);
-        await manager.stop();
+    it('hands the gate its cancel signal, and runs nothing for a Stop that landed while it queued', async () => {
+        let finish: (result: StepResult) => void = () => undefined;
+        const { runner, calls } = gateRunner((_call, n) =>
+            n === 1
+                ? new Promise<StepResult>((resolve) => {
+                      finish = resolve;
+                  })
+                : answered(0)
+        );
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: JOB });
+        const first = manager.runGate(KEY, 'test', 'npm test');
+        await until(() => calls.length === 1);
+        const stop = new AbortController();
+        const queued = manager.runGate(KEY, 'lint', 'npm run lint', { signal: stop.signal });
+        stop.abort();
+        // A Stop while queued answers at once, whatever holds the queue; the caller discards it.
+        expect(await queued).toMatchObject({ exitCode: 130 });
+        finish(answered(0));
+        await first;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(calls.map((call) => call.gate.command)).toEqual(['npm test']);
+        const signal = new AbortController().signal;
+        await manager.runGate(KEY, 'test', 'npm test', { signal });
+        expect(calls[1]?.signal).toBe(signal);
+    });
+
+    it('serializes the gates of one checkout, so two suites never share a worktree at once', async () => {
+        const order: string[] = [];
+        const { runner } = gateRunner(async ({ gate }) => {
+            order.push(`start ${gate.command}`);
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            order.push(`end ${gate.command}`);
+            return answered(0);
+        });
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: JOB });
+        await Promise.all([manager.runGate(KEY, 'a', 'a'), manager.runGate(KEY, 'b', 'b')]);
+        expect(order).toEqual(['start a', 'end a', 'start b', 'end b']);
+    });
+
+    it('refuses an acquire with no attempt, a malformed checkout key or image, and a gate with no environment', async () => {
+        const manager = createSupervisedGateManager({ config, runner: gateRunner().runner });
+        await expect(manager.acquire(KEY, 'node:24', '')).rejects.toMatchObject({ code: CONTAINER_GONE_CODE });
+        await expect(manager.acquire('../etc', 'node:24', '', { job: JOB })).rejects.toThrow(/checkout key/);
+        await expect(manager.acquire(KEY, 'node:24; rm -rf /', '', { job: JOB })).rejects.toThrow(/image/);
+        await expect(manager.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: CONTAINER_GONE_CODE });
+    });
+
+    it('forgets the checkout at its own attempt’s release, and never at another’s', async () => {
+        const manager = createSupervisedGateManager({ config, runner: gateRunner().runner });
+        await manager.acquire(KEY, 'node:24', '', { job: JOB });
+        manager.release(KEY, { ...JOB, leaseToken: '99999999-9999-4999-8999-999999999999' });
+        await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toMatchObject({ exitCode: 0 });
+        manager.release(KEY, JOB);
+        await expect(manager.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: CONTAINER_GONE_CODE });
     });
 });
 
-describe('the gate environment manager: failure and edge cases', () => {
-    // Docker failing to exec at all — the container was torn down under the caller — is a
-    // HARNESS state, not a gate verdict: it rejects with the container-gone code, which is what
-    // the ad-hoc endpoint's 409 and the loop's failed-gate path both key on.
-    it('rejects a gate whose container the daemon cannot exec into', async () => {
-        const gone = exec((args) => {
-            if (args[0] === 'exec') {
-                const error = new Error('Error response from daemon: No such container') as Error & {
-                    code?: number;
-                };
-                error.code = CONTAINER_GONE_CODE;
-                return Promise.reject(error);
-            }
-            return { stdout: '', stderr: '' };
-        });
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: gone });
-        await manager.acquire(KEY, 'node:24', '');
-
-        await expect(manager.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
-        await manager.stop();
+describe('the supervised gate manager: setup', () => {
+    it('runs a pending setup before the first gate, once it succeeds never again', async () => {
+        const { runner, calls } = gateRunner();
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+        await manager.runGate(KEY, 'a', 'npm test');
+        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+        await manager.runGate(KEY, 'b', 'npm run lint');
+        expect(calls.map((call) => call.gate.command)).toEqual(['npm ci', 'npm test', 'npm run lint']);
     });
 
-    it('rejects a gate for a checkout that has no environment at all', async () => {
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
-        await expect(manager.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
+    it('answers a failed setup as a setup failure, skips the gate, and retries setup before the next', async () => {
+        const { runner, calls } = gateRunner((_call, n) => (n === 1 ? answered(1, 'registry down') : answered(0)));
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+        expect(await manager.runGate(KEY, 'a', 'npm test')).toEqual({
+            exitCode: 1,
+            output: 'registry down',
+            setupFailed: true,
+        });
+        await manager.runGate(KEY, 'a', 'npm test');
+        expect(calls.map((call) => call.gate.command)).toEqual(['npm ci', 'npm ci', 'npm test']);
     });
 
-    // Cooldown 0 means "tear down when the run's exits are walked" — release-driven, never
-    // between the gates of one run, or a checkout declaring two gates could never pass.
-    it('keeps the environment up across gates at cooldown 0, and tears down on release', async () => {
-        logs.length = 0;
-        const manager = createGateManager({ config, cooldownMs: 0, execDocker: recording });
-        await manager.acquire(KEY, 'node:24', '');
-        await manager.runGate(KEY, 'test', 'npm test');
-        await manager.runGate(KEY, 'lint', 'npm run lint');
-        // Between gates, no `rm` but the acquire fence above.
-        expect(logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME)).toHaveLength(1);
-        manager.release(KEY, JOB);
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        expect(logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME)).toHaveLength(2);
+    it('runs setup now under the timeout it is given, and the first gate does not repeat it', async () => {
+        const { runner, calls } = gateRunner();
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+        expect(await manager.runSetup(KEY, { timeoutMs: 900_000 })).toEqual({ exitCode: 0, output: '' });
+        await manager.runGate(KEY, 'a', 'npm test');
+        expect(calls.map((call) => [call.gate.command, call.gate.timeoutMs])).toEqual([
+            ['npm ci', 900_000],
+            ['npm test', config.gateTimeoutMs],
+        ]);
     });
 
-    // A gate whose exec outlives its environment's teardown (lost lease → release → cooldown
-    // fired, or the drain) must not leave a stale timer behind: one armed on the dead entry
-    // would delete the RE-CREATED environment when it fires, failing an innocent job, and hold
-    // the event loop open past shutdown.
-    it('does not arm a cooldown on an entry that was torn down while a gate ran', async () => {
-        const COOLDOWN_FIRE_WAIT_MS = 20;
-        const REARM_CHECK_WAIT_MS = 30;
-        logs.length = 0;
-        let releaseExec!: () => void;
-        const pendingExec = new Promise<{ stdout: string; stderr: string }>((resolve) => {
-            releaseExec = () => resolve({ stdout: 'late gate\n', stderr: '' });
-        });
-        const slowExec = exec((args) => {
-            logs.push(args);
-            if (args[0] === 'exec') return pendingExec;
-            return { stdout: '', stderr: '' };
-        });
-        const manager = createGateManager({ config, cooldownMs: 5, execDocker: slowExec });
-        await manager.acquire(KEY, 'node:24', '');
+    it('leaves a failed setup pending, so the first gate retries it', async () => {
+        const { runner, calls } = gateRunner((_call, n) => (n === 1 ? answered(2) : answered(0)));
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+        expect(await manager.runSetup(KEY)).toMatchObject({ exitCode: 2 });
+        await manager.runGate(KEY, 'a', 'npm test');
+        expect(calls.map((call) => call.gate.command)).toEqual(['npm ci', 'npm ci', 'npm test']);
+    });
 
-        const gate = manager.runGate(KEY, 'test', 'npm test');
-        // The environment is torn down (and re-created by nobody in this test) while the exec runs.
-        manager.release(KEY, JOB);
-        await new Promise((resolve) => setTimeout(resolve, COOLDOWN_FIRE_WAIT_MS)); // the cooldown timer fires on the dead entry
-        releaseExec();
-        await expect(gate).resolves.toMatchObject({ exitCode: 0 });
+    it('answers null and runs nothing when the checkout declares no setup', async () => {
+        const { runner, calls } = gateRunner();
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: JOB });
+        expect(await manager.runSetup(KEY)).toBeNull();
+        expect(calls).toEqual([]);
+    });
 
-        // The re-armed cooldown on the dead entry never fires: no rm beyond the fence+teardown.
-        await new Promise((resolve) => setTimeout(resolve, REARM_CHECK_WAIT_MS));
-        expect(logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME)).toHaveLength(2);
+    it('runs setup again for a new attempt on the same checkout', async () => {
+        const { runner, calls } = gateRunner();
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+        await manager.runSetup(KEY);
+        const next = { ...WITH_SETUP, leaseToken: '99999999-9999-4999-8999-999999999999' };
+        await manager.acquire(KEY, 'node:24', '', { job: next });
+        await manager.runGate(KEY, 'a', 'npm test');
+        expect(calls.map((call) => [call.gate.command, call.job.leaseToken])).toEqual([
+            ['npm ci', WITH_SETUP.leaseToken],
+            ['npm ci', next.leaseToken],
+            ['npm test', next.leaseToken],
+        ]);
+    });
+
+    it('never lets a setup of one attempt settle the setup of the attempt that took the checkout over', async () => {
+        let finish: (result: StepResult) => void = () => undefined;
+        const { runner, calls } = gateRunner((_call, n) =>
+            n === 1
+                ? new Promise<StepResult>((resolve) => {
+                      finish = resolve;
+                  })
+                : answered(0)
+        );
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+        const setup = manager.runSetup(KEY);
+        await until(() => calls.length === 1);
+        const next = { ...WITH_SETUP, leaseToken: '99999999-9999-4999-8999-999999999999' };
+        await manager.acquire(KEY, 'node:24', '', { job: next });
+        finish(answered(0));
+        await setup;
+        await manager.runGate(KEY, 'a', 'npm test');
+        expect(calls.map((call) => call.gate.command)).toEqual(['npm ci', 'npm ci', 'npm test']);
     });
 });
+
+const until = async (ready: () => boolean): Promise<void> => {
+    for (let i = 0; i < 200 && !ready(); i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+};
 
 /** A manager that acquires and passes every gate — for server tests about anything but the run. */
 const idle = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: '' }) };
@@ -977,22 +557,44 @@ describe('the gate server', () => {
         await server.close();
     });
 
-    // The spawn failure end to end: with docker missing from PATH, the call must not answer 200
-    // carrying a verdict for a gate that never ran — the 409 is the harness-failure answer.
-    it('answers 409, never a verdict, when the exec cannot spawn docker at all', async () => {
-        const noDocker = exec((args) => {
-            if (args[0] === 'exec') {
-                const error = new Error('spawn docker ENOENT') as Error & { code?: string };
-                error.code = 'ENOENT';
-                return Promise.reject(error);
-            }
-            return { stdout: '', stderr: '' };
-        });
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: noDocker });
-        const { server, run } = await serveGates(manager, { token: 'tok-enoent' });
+    // The harness failure end to end: a gate the supervisor answered with no exit must not answer
+    // 200 carrying a verdict for a gate that never ran — the 409 is the harness-failure answer.
+    it('answers 409, never a verdict, when the supervisor answers the gate with no exit', async () => {
+        const { runner } = gateRunner(() =>
+            answered(null, '', { stderr: 'the gate container never took the request' })
+        );
+        const manager = createSupervisedGateManager({ config, runner });
+        const { server, run } = await serveGates(manager, { token: 'tok-lost' });
         const response = await run('test');
         expect(response.status).toBe(CONFLICT_STATUS);
-        await manager.stop();
+        expect(server.lastRuns('tok-lost')).toEqual([]);
+        await server.close();
+    });
+
+    // Issue #773 (R1-2): the gate's supervisor lost is the attempt's loss — the agent's call answers
+    // that it is incomplete, records nothing, and the claim is told, so the attempt is interrupted.
+    it('answers an ad-hoc gate whose supervisor was lost as incomplete, and reports the loss', async () => {
+        const { runner } = gateRunner(() => new LostChannel('its step was answered'));
+        const manager = createSupervisedGateManager({ config, runner });
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        const losses: string[] = [];
+        server.register('tok-gone', {
+            key: KEY,
+            image: 'node:24',
+            job: JOB,
+            gates: [{ name: 'test', command: 'npm test' }],
+            onInfraLoss: (reason) => losses.push(reason),
+        });
+        const port = await server.listen();
+        const response = await fetch(`http://127.0.0.1:${port}/run`, {
+            method: 'POST',
+            headers: { authorization: 'Bearer tok-gone' },
+            body: JSON.stringify({ gate: 'test' }),
+        });
+        expect(response.status).toBe(UNAVAILABLE_STATUS);
+        await expect(response.json()).resolves.toMatchObject({ incomplete: true });
+        expect(server.lastRuns('tok-gone')).toEqual([]);
+        expect(losses).toEqual([expect.stringMatching(/supervisor channel closed/)]);
         await server.close();
     });
 });
@@ -1406,56 +1008,31 @@ describe('the gate server: body size and bind resilience', () => {
 
 /** A Stop or Remove ends a gate where it stands: the docker exec's process dies with its environment. */
 describe('cancelling a gate', () => {
-    it('tears the environment down when the signal aborts mid-exec, and records no cooldown on it', async () => {
-        logs.length = 0;
-        let finishExec: (error: ExecError) => void = () => {};
-        const execDocker = exec((args) => {
-            logs.push(args);
-            if (args[0] === 'exec') {
-                return new Promise<ExecResult>((_resolve, reject) => {
-                    finishExec = reject;
-                });
-            }
-            if (args[0] === 'rm') finishExec(Object.assign(new Error('exit 137'), { code: 137 }));
-            return { stdout: '', stderr: '' };
-        });
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker });
-        await manager.acquire(KEY, 'node:24', '');
+    it('hands the abort to the gate’s step, which the supervisor kills, and answers what it left', async () => {
+        const { runner, calls } = gateRunner(({ signal }) =>
+            signal
+                ? new Promise<StepResult>((resolve) => {
+                      signal.addEventListener('abort', () => resolve(answered(130, 'killed')), { once: true });
+                  })
+                : answered(0)
+        );
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: JOB });
         const cancel = new AbortController();
-
         const gate = manager.runGate(KEY, 'test', 'npm test', { signal: cancel.signal });
-        await new Promise((resolve) => setTimeout(resolve, 5));
+        await until(() => calls.length === 1);
         cancel.abort();
-        await gate;
-
-        // The fence at acquire, then the cancel's teardown — the exec'd process dies with it.
-        expect(logs.filter((args) => args[0] === 'rm' && args[2] === NAME)).toHaveLength(2);
-        // The next acquire recreates the environment instead of reusing a dead entry.
-        await manager.acquire(KEY, 'node:24', '');
-        expect(logs.filter((args) => args[0] === 'run')).toHaveLength(2);
-        await manager.stop();
+        await expect(gate).resolves.toMatchObject({ exitCode: 130 });
+        // The checkout stays the attempt's: the next gate runs in it.
+        await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toBeDefined();
     });
 
     it('runs nothing for a signal already aborted', async () => {
-        logs.length = 0;
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
-        await manager.acquire(KEY, 'node:24', '');
-
+        const { runner, calls } = gateRunner();
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: JOB });
         await manager.runGate(KEY, 'test', 'npm test', { signal: AbortSignal.abort() });
-
-        expect(logs.filter((args) => args[0] === 'exec')).toEqual([]);
-        await manager.stop();
-    });
-
-    it('leaves the environment alone on an ordinary finish', async () => {
-        logs.length = 0;
-        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
-        await manager.acquire(KEY, 'node:24', '');
-
-        await manager.runGate(KEY, 'test', 'npm test', { signal: new AbortController().signal });
-
-        expect(logs.filter((args) => args[0] === 'rm')).toHaveLength(1); // the acquire's fence only
-        await manager.stop();
+        expect(calls).toEqual([]);
     });
 
     // The agent's own ad-hoc runs: the runner kill never reaches them, the token's cancel does.

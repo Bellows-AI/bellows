@@ -18,6 +18,16 @@ export const idsOf = (job: BoardJob): string => {
     return `${job.id}-${job.leaseToken}`;
 };
 
+/** The group's task supervisor container: the holder of the group's network namespace (issue #773). */
+export const supervisorName = (job: BoardJob): string => `factory-supervisor-${idsOf(job)}`;
+
+/**
+ * How every container of the group but its supervisor joins the network (issue #773): the
+ * supervisor's own namespace, as a pod's containers share one — its RUNNER_NETWORK, and its hosts
+ * file, which names the driver and every declared service on loopback.
+ */
+export const groupNetworkArgs = (job: BoardJob): string[] => ['--network', `container:${supervisorName(job)}`];
+
 /** The marker volume one reason the driver ended the attempt for is recorded on (`termination.ts`), attempt-scoped by name. */
 export const killMarkName = (job: BoardJob, reason: string): string => `factory-kill-${reason}-${idsOf(job)}`;
 

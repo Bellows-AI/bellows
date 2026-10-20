@@ -14,6 +14,6 @@ COPY factory-launch.sh /usr/local/bin/factory-launch
 COPY factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs
 COPY tool-bash.sh /usr/local/libexec/factory-tool/bash
 RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash \
-    && mkdir -p /factory/in /factory/out /factory/export /factory/supervisor && chown -R node:node /factory \
+    && mkdir -p /factory/in /factory/out /factory/export /factory/supervisor /factory/gate && chown -R node:node /factory \
     && chmod 0700 /factory/in /factory/out
 USER node

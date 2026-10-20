@@ -92,6 +92,7 @@ function supervisor(config: ReturnType<typeof volume>['config'], remote: { write
         contacted: () => true,
         release: () => undefined,
         attach: () => undefined,
+        cancel: () => undefined,
     };
     const helperSteps = () => submitted.filter((s) => s.env.HELPER_INPUT !== undefined);
     return { host: { config, sink }, submitted, helperSteps };

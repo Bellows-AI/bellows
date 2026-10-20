@@ -7,7 +7,7 @@ Job, read its status, delete it (kill and the re-claim fence), list its pods, re
 with the runner. No `get` on secrets is granted and no wildcard.
 
 What this Role alone does NOT give, stated because it reads as if it did: RBAC cannot scope a verb
-to a name prefix, so `delete` reaches every Secret in the namespace, and `create` on pods and Jobs
+to a name prefix, so `delete` reaches every Secret in the namespace, and `create` on Jobs
 is `read` on every Secret — a pod the driver specs may mount any Secret here, the dashboard's App
 key included. The runners (agent-written code) share this namespace because the workspaces claim
 they mount is namespaced and shared with the dashboard. The fence is driver-admission.yaml: an
@@ -21,11 +21,10 @@ a holder token and a claim sequence, both already known to the driver, and never
 which is exactly why the claim is not a Secret. The grant is namespace-wide on ConfigMaps — RBAC
 cannot scope it to `factory-job-*-claim` names — so a compromised driver can read the namespace's
 configuration, not its credentials: the line this Role has always drawn.
-`pods` create/delete are the gate runs and the auxiliary services: a gate run is a Job (batch,
-already granted), but a service is a long-running neighbor pod, and its headless DNS Service is a
-`services` object — created before the runner starts, deleted with the attempt. No `pods/exec` is
-granted, ever: the driver runs containers it specs itself, and arbitrary exec into a running pod
-is a capability this design has never needed.
+`pods` are only listed (a Job's pod, the fence's sweep) and deleted (the sweep): the gate and the
+declared services are sidecars of the runner Job's pod (issue #773), so the driver creates no pod
+and no Service of its own. No `pods/exec` is granted, ever: the driver runs containers it specs
+itself, and arbitrary exec into a running pod is a capability this design has never needed.
 */}}
 apiVersion: v1
 kind: ServiceAccount
@@ -41,7 +40,7 @@ metadata:
     labels:
         {{- include "factory.labels" . | nindent 8 }}
 rules:
-    # `list` on jobs and services is the re-claim fence: its sweep is a collection GET, and a
+    # `list` on jobs and pods is the re-claim fence: its sweep is a collection GET, and a
     # collection GET needs the list verb — a rule without it makes every fence round a 403.
     # `patch` is the question deadline extension — a merge patch of the runner Job's
     # `activeDeadlineSeconds` — and the reason the driver ended a run, an annotation on that Job.
@@ -56,18 +55,15 @@ rules:
       verbs: ['create', 'get', 'delete', 'patch']
     - apiGroups: ['']
       resources: ['pods']
-      verbs: ['create', 'delete', 'list']
-    - apiGroups: ['']
-      resources: ['services']
-      verbs: ['create', 'delete', 'list']
+      verbs: ['delete', 'list']
     - apiGroups: ['']
       resources: ['pods/log']
       verbs: ['get']
-    # Why a declared service pod vanished mid-run (evicted, its node removed): its events outlive
-    # it, and the verdict quotes the newest. Listed by name, one read per vanished pod.
+    # The gate sidecar's in-place resize (issue #773): low while the agent runs, the gate requests
+    # for verify. The admission policy's `-resize` lets it change the `gate` container alone.
     - apiGroups: ['']
-      resources: ['events']
-      verbs: ['list']
+      resources: ['pods/resize']
+      verbs: ['patch']
     # The runner vitals: `metrics.k8s.io` is served by the metrics-server a cluster may or may
     # not run — absent, the driver's sample read fails and the dashboard renders no vitals
     # (null is "no fresh sample", never an error); present, this grant is what makes the read.

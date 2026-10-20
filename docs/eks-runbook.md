@@ -9,7 +9,7 @@ ingress half held; 1, 6 and 7's job half were not walked.
 
 Reasoning: [docs/kubernetes.md](kubernetes.md), "EKS prerequisites".
 
-- EKS ≥ 1.30, EC2 Linux nodes. **Fargate is out entirely** — no NetworkPolicy, no metrics API.
+- EKS ≥ 1.33, EC2 Linux nodes. **Fargate is out entirely** — no NetworkPolicy, no metrics API.
 - VPC CNI add-on with `enableNetworkPolicy: true`.
 - `httpPutResponseHopLimit: 1` (or IMDS disabled) on the runner node group.
 - The metrics-server add-on, or a running job's vitals degrade to null.
@@ -83,8 +83,8 @@ is a bug in one of them.
 ## 6. Isolation: enforced, not just admitted
 
 Observe from inside a runner pod: no egress to `169.254.169.254`, none to the private ranges, DNS
-only through kube-dns, the dashboard, collector and driver reachable by podSelector, and a
-declared-service pod resolving by its declared name.
+only through kube-dns, the dashboard, collector and driver reachable by podSelector, no other runner
+pod reachable, and a declared service reached by its declared name on `127.0.0.1`.
 
 ## 7. Exposing the dashboard, and a job end to end
 

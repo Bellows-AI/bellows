@@ -20,12 +20,27 @@ export interface Mailbox {
     supervisor: 'rw';
     agent: 'ro' | 'rw' | null;
     exporter: 'rw' | null;
+    gate: 'rw' | null;
 }
 
 /** `in`: supervisor to agent. The agent reads it and cannot write it, so it cannot forge a Stop or an answer. */
-const IN: Mailbox = { name: 'ctl-in', path: `${CTL_ROOT}/in`, supervisor: 'rw', agent: 'ro', exporter: null };
+const IN: Mailbox = {
+    name: 'ctl-in',
+    path: `${CTL_ROOT}/in`,
+    supervisor: 'rw',
+    agent: 'ro',
+    exporter: null,
+    gate: null,
+};
 /** `out`: agent to supervisor — its questions and its heartbeat; the one directory the agent writes. */
-const OUT: Mailbox = { name: 'ctl-out', path: `${CTL_ROOT}/out`, supervisor: 'rw', agent: 'rw', exporter: null };
+const OUT: Mailbox = {
+    name: 'ctl-out',
+    path: `${CTL_ROOT}/out`,
+    supervisor: 'rw',
+    agent: 'rw',
+    exporter: null,
+    gate: null,
+};
 /** `export`: supervisor to exporter. The agent mounts nothing of it. */
 const EXPORT: Mailbox = {
     name: 'ctl-export',
@@ -33,6 +48,7 @@ const EXPORT: Mailbox = {
     supervisor: 'rw',
     agent: null,
     exporter: 'rw',
+    gate: null,
 };
 /** The supervisor's own state: no other container mounts it. */
 const OWN: Mailbox = {
@@ -41,9 +57,65 @@ const OWN: Mailbox = {
     supervisor: 'rw',
     agent: null,
     exporter: null,
+    gate: null,
+};
+/** `gate`: supervisor to gate container — the gate requests and their answers (`GATE_FILES`). The agent mounts nothing of it. */
+const GATE: Mailbox = {
+    name: 'ctl-gate',
+    path: `${CTL_ROOT}/gate`,
+    supervisor: 'rw',
+    agent: null,
+    exporter: null,
+    gate: 'rw',
 };
 
-export const MAILBOXES = { in: IN, out: OUT, export: EXPORT, supervisor: OWN } as const;
+export const MAILBOXES = { in: IN, out: OUT, export: EXPORT, supervisor: OWN, gate: GATE } as const;
+
+/**
+ * The gate mailbox's layout (`GATE_FILES` of supervisor.cjs, the names `scripts/gate-loop.sh` spells):
+ * the supervisor stages a request (`command`, `cwd`, `env`) and renames it into `requests/<step id>`;
+ * the gate loop claims it by renaming it to `running/<id>`, and answers by writing `output` and,
+ * atomically, `exit`, then renaming it to `done/<id>`. `cancel` inside a running request is the
+ * supervisor's order to kill it; `alive` is the loop's heartbeat.
+ */
+export const GATE_FILES = {
+    staging: 'staging',
+    requests: 'requests',
+    running: 'running',
+    done: 'done',
+    alive: 'alive',
+    command: 'command',
+    cwd: 'cwd',
+    env: 'env',
+    output: 'output',
+    exit: 'exit',
+    cancel: 'cancel',
+} as const;
+/** How long a cancelled or timed-out gate may take to answer before the supervisor answers for it. */
+export const GATE_CANCEL_GRACE_MS = 10_000;
+/** A gate loop whose heartbeat is older than this is lost: its request never ran, or its answer is gone. */
+export const GATE_LOST_MS = 30_000;
+
+/**
+ * The kubernetes restart of the declared services (issue #773): a generation file per service under
+ * `path`, the supervisor's to write (`scripts/service-generation-bump.sh`, run as a `restart` step)
+ * and every service sidecar's to read, and one acknowledgement directory per service, which its
+ * sidecar mounts at `ackPath` and the supervisor reads under `ackRoot/<name>`. The sidecar's liveness
+ * probe (`scripts/service-generation-probe.sh`) fails once the generation moves past the one its
+ * writable layer recorded, so the kubelet restarts it; the restarted one acknowledges the new one.
+ */
+export const SERVICE_GENERATIONS = {
+    volume: 'ctl-services',
+    path: `${CTL_ROOT}/services`,
+    ackRoot: `${CTL_ROOT}/service-acks`,
+    ackPath: `${CTL_ROOT}/service-ack`,
+} as const;
+/** A service's acknowledgement volume: its own, so no sidecar can speak for another. */
+export const serviceAckVolume = (name: string): string => `svc-ack-${name}`;
+/** What the bump answers while a service has not acknowledged its current generation: nothing was bumped. */
+export const SERVICE_NOT_ACKED_EXIT = 3;
+/** The sidecar container a declared service runs as in the task pod: the reserved `svc-` prefix and its name. */
+export const serviceContainerOf = (name: string): string => `svc-${name}`;
 
 /** The file names that cross the mailboxes; `FILES` of supervisor.cjs. */
 export const MAILBOX_FILES = {
@@ -100,13 +172,26 @@ export const KILL_WINDDOWN_MS = SUPERVISOR_WINDDOWN_MS;
 /**
  * The supervised steps: the commands the driver has the supervisor run for an attempt — the
  * startup sync, the terminal reclaim, the tree probe, the review snapshot, the publish steps and
- * the allowlisted helpers — and the two orders that govern the group itself. Each is a request the
- * supervisor pulls from the driver's control endpoint (`GET /step`, long-poll) and answers
- * (`POST /step/:id`); the agent container holds neither route. A step is a request, never a
- * container or Job of its own: it runs in the supervisor, in the executor image, over the task
- * volume the supervisor mounts.
+ * the allowlisted helpers — the declared gates and setup, the declared services' generation reads
+ * and bumps (`restart`, kubernetes), and the two orders that govern the group itself. Each is a
+ * request the supervisor pulls from the driver's control endpoint (`GET /step`, long-poll) and
+ * answers (`POST /step/:id`); the agent container holds neither route. A step is a
+ * request, never a container or Job of its own: it runs in the supervisor, in the executor image,
+ * over the task volume the supervisor mounts — but a `gate`, which the supervisor hands to the gate
+ * container through the gate mailbox, and serves beside the other steps rather than before them.
  */
-export const STEP_KINDS = ['sync', 'reclaim', 'probe', 'snapshot', 'publish', 'helper', 'go', 'finish'] as const;
+export const STEP_KINDS = [
+    'sync',
+    'reclaim',
+    'probe',
+    'snapshot',
+    'publish',
+    'helper',
+    'gate',
+    'restart',
+    'go',
+    'finish',
+] as const;
 export type StepKind = (typeof STEP_KINDS)[number];
 
 /**
@@ -120,7 +205,7 @@ export interface StepRequest {
     id: string;
     invocation: string;
     kind: StepKind;
-    /** The executable and its arguments; empty for `go` and `finish`. */
+    /** The executable and its arguments; empty for `go` and `finish`, the declared command alone for `gate`. */
     argv: string[];
     cwd?: string;
     /** The step's own environment: literals, and — only for a step that needs it — the claim env or publish token. */
@@ -236,6 +321,7 @@ export const SUPERVISOR_ENV = {
     orphanMs: 'SUPERVISOR_ORPHAN_MS',
     exports: 'SUPERVISOR_EXPORTS',
     agentless: 'SUPERVISOR_AGENTLESS',
+    gate: 'SUPERVISOR_GATE',
 } as const;
 
 /** The names that carry the supervisor's and the exporter's credentials: the agent container never receives one. */
@@ -249,3 +335,5 @@ export const SUPERVISOR_CREDENTIAL_NAMES: readonly string[] = [
 export const SUPERVISOR_CONTAINER = 'supervisor';
 export const AGENT_CONTAINER = 'agent';
 export const EXPORTER_CONTAINER = 'exporter';
+/** The declared gate image's container, beside the supervisor in a group whose checkout declares gates or setup. */
+export const GATE_CONTAINER = 'gate';

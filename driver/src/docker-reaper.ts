@@ -1,15 +1,14 @@
 import type { BoardJob } from './board.js';
 import { containerName } from './docker.js';
-import { GATE_LABEL, JOB_LABEL, LEASE_LABEL, RECLAIM_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
-import { networkName } from './services.js';
+import { JOB_LABEL, LEASE_LABEL, RECLAIM_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
 import { alreadyGone, linesOf, type ExecDocker } from './docker-runner-support.js';
 import type { OrphanGroup, OrphanObject, ReaperArm } from './reaper.js';
 
 /**
  * The docker half of the orphan reaper (issue #301): label-filtered `docker ps` and `volume ls`,
- * container and volume removal, and the per-attempt services network's teardown — the twin of
- * `dockerServiceTeardown` and the docker fence acting on what an attempt can never tear down
- * itself. Scope: the SERVICE and GATE labels (issue #667) and an attempt's task group (issue
+ * and container and volume removal — the twin of `dockerServiceTeardown` and the docker fence
+ * acting on what an attempt can never tear down itself. No network is an attempt's: its group
+ * shares its supervisor's namespace (issue #773). Scope: the SERVICE and GATE labels (issue #667) and an attempt's task group (issue
  * #821) — every container carrying the ROLE label (agent, supervisor, exporter) and every volume
  * carrying the job and lease labels (its mailboxes and kill markers). An exited runner container
  * is unread: the next claim adopts it. A terminal reclaim's group (`RECLAIM_LABEL`) is never in
@@ -113,21 +112,14 @@ const addRow = (groups: Groups, row: PsRow): void => {
 };
 
 /**
- * One scope's container rows, grouped by (job, lease). `keep` spares a row the reaper must not
- * touch — a gate environment this very driver still holds, whose creation-time labels name an
- * attempt the environment has since passed from. Rejects when the daemon refused the list: the
+ * One scope's container rows, grouped by (job, lease). Rejects when the daemon refused the list: the
  * daemon answering nothing is not the daemon answering "nothing is orphaned".
  */
-const scanScope = async (
-    execDocker: ExecDocker,
-    scopeLabel: string,
-    keep: (row: PsRow) => boolean,
-    groups: Groups
-): Promise<void> => {
+const scanScope = async (execDocker: ExecDocker, scopeLabel: string, groups: Groups): Promise<void> => {
     const { stdout } = await execDocker(['ps', '-a', '--filter', `label=${scopeLabel}`, '--format', '{{json .}}']);
     for (const line of stdout.split('\n')) {
         const row = parsePsRow(line.trim(), scopeLabel);
-        if (row && !keep(row)) addRow(groups, row);
+        if (row) addRow(groups, row);
     }
 };
 
@@ -174,12 +166,11 @@ const volumeCreatedAt = async (execDocker: ExecDocker, name: string): Promise<nu
     return Number.isNaN(parsed) ? 0 : parsed;
 };
 
-const scan = async (execDocker: ExecDocker, holdsGate: (containerName: string) => boolean): Promise<OrphanGroup[]> => {
+const scan = async (execDocker: ExecDocker): Promise<OrphanGroup[]> => {
     const groups: Groups = new Map();
     try {
-        await scanScope(execDocker, SERVICE_LABEL, () => false, groups);
-        await scanScope(execDocker, GATE_LABEL, (row) => holdsGate(row.name), groups);
-        await scanScope(execDocker, ROLE_LABEL, () => false, groups);
+        await scanScope(execDocker, SERVICE_LABEL, groups);
+        await scanScope(execDocker, ROLE_LABEL, groups);
         await scanVolumes(execDocker, groups);
     } catch {
         // Any one list refused: the round reaps nothing rather than a group missing its pieces.
@@ -199,38 +190,8 @@ const removeTolerantly = async (execDocker: ExecDocker, args: string[]): Promise
     }
 };
 
-/**
- * The attempt's services network — attempt-scoped by name, so it can only ever resolve to this
- * dead attempt's own. A gate environment on its cooldown may still be attached, and docker
- * refuses to remove a network with an endpoint, so whatever is left is disconnected first — the
- * exact shape of the teardown this complements.
- */
-const removeNetwork = async (execDocker: ExecDocker, network: string): Promise<boolean> => {
-    try {
-        const attached = await execDocker([
-            'network',
-            'inspect',
-            '--format',
-            '{{range .Containers}}{{println .Name}}{{end}}',
-            network,
-        ]);
-        for (const name of linesOf(attached.stdout)) {
-            await removeTolerantly(execDocker, ['network', 'disconnect', '-f', network, name]);
-        }
-    } catch {
-        // Unreadable network is removed blind below; absence is the goal either way.
-    }
-    return removeTolerantly(execDocker, ['network', 'rm', network]);
-};
-
 const reap = async (execDocker: ExecDocker, group: OrphanGroup): Promise<readonly string[]> => {
     const removed: string[] = [];
-    // The network goes first: scan lists service containers only, so a network that fails to
-    // come down after the containers are gone would be undiscoverable to every later sweep.
-    if (group.leaseToken) {
-        const network = networkName({ id: group.jobId, leaseToken: group.leaseToken } as BoardJob);
-        if (await removeNetwork(execDocker, network)) removed.push(`network ${network}`);
-    }
     // The containers before the volumes they mount: docker refuses to remove a volume in use.
     for (const object of group.objects.filter((candidate) => candidate.kind === 'container')) {
         if (await removeTolerantly(execDocker, ['rm', '-f', object.name])) {
@@ -245,17 +206,10 @@ const reap = async (execDocker: ExecDocker, group: OrphanGroup): Promise<readonl
     return removed;
 };
 
-/**
- * `holdsGate` is the live gate manager's answer for a container name: an environment this
- * process still holds is never an orphan, whatever its creation-time labels say. A dead
- * driver's environment is held by nobody, so it is reaped on the same lease lookup as a fleet.
- */
-export function createDockerReaper(
-    execDocker: ExecDocker,
-    holdsGate: (containerName: string) => boolean = () => false
-): ReaperArm {
+/** The docker arm of the orphan reaper: every group piece it finds by label, reaped on the lease lookup. */
+export function createDockerReaper(execDocker: ExecDocker): ReaperArm {
     return {
-        scan: () => scan(execDocker, holdsGate),
+        scan: () => scan(execDocker),
         reap: (group) => reap(execDocker, group),
     };
 }
