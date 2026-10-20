@@ -1,151 +1,75 @@
 # Batches
 
 A batch is an ordered plan of stages of parallel tasks across one or more repository targets: a
-draft an org member edits whole, validates, then starts. Start freezes the resolved plan; the
-scheduler then runs one stage at a time, its tasks in parallel, as ordinary job threads. A task's
-gate passes on a merged PR (a person's, or the board's in an `automerge` stage) or a person's
-recorded acceptance.
+draft an org member edits whole, validates, then starts; start freezes the resolved plan and the
+scheduler runs one stage at a time as ordinary job threads.
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Plan contract v1: types, bounds, `validateBatchPlan`, `resolveBatchPlan`, `batchExecutionCapability` | `core/src/batch-plan.ts` | `core/test/batch-plan.test.ts` |
-| Error codes (`BAD_BATCH`, `BATCH_STALE`, `BATCH_STARTED`, `BATCH_UNSUPPORTED`, `BATCH_TASK_NOT_ACCEPTABLE`, `BATCH_NO_DEFAULT_BRANCH`, `BATCH_UNKNOWN_BRANCH`, `BATCHES_UNAVAILABLE`) | `core/src/error-codes.ts` | `core/test/error-codes.test.ts` |
-| Schema: `batch`, `batch_target`, `batch_stage`, `batch_task`, `batch_idempotency`, the immutability triggers, `executor_scope` | `server/migrations/059_batches.sql`, `066_batch_executor_scope.sql` | `server/test-db/batch-store.test.ts` |
-| Store bound to `orgId`: create, get, list, replace, start; the read `status` (`lifecycleOf`: the stored `draft`/`started` flag and the stamps, cancelled over expired over completed) | `server/src/db/batch-store.ts`, `batch-store-rows.ts`, `batch-store-types.ts` | `server/test-db/batch-store.test.ts`, `server/test-db/batch-dispatch.test.ts` |
-| Idempotency records for create and start | `server/src/db/batch-store-idempotency.ts` | `server/test-db/batch-store.test.ts` |
-| Runtime tables: `batch_attempt`, `batch_decision`, `cancelled_at`, `completed_at` | `server/migrations/060_batch_runtime.sql` | `server/test-db/batch-dispatch.test.ts` |
-| Pure readiness, capacity, advancement and wait decisions; `awaitsBoardMerge` (an automerge task's open PR the board can still merge or repair is the board's: `next` `wait`, not parked) | `core/src/batch-schedule.ts` | `core/test/batch-schedule.test.ts` |
-| Scheduling transactions: reconcile, retry, cancel, accept, force-close; threads to stop and close | `server/src/db/batch-store-schedule.ts`, `batch-store-close.ts`, `batch-store-threads.ts` | `server/test-db/batch-dispatch.test.ts` |
+| Plan contract v1: types, bounds, validate, resolve, execution capability | `core/src/batch-plan.ts` | `core/test/batch-plan.test.ts` |
+| Error codes (`BATCH_*`, `BATCHES_UNAVAILABLE`) | `core/src/error-codes.ts` | `core/test/error-codes.test.ts` |
+| Schema, immutability triggers, `executor_scope` | `server/migrations/059_batches.sql`, `066_batch_executor_scope.sql` | `server/test-db/batch-store.test.ts` |
+| Store bound to `orgId`; read `status` (`lifecycleOf`); idempotency | `server/src/db/batch-store.ts`, `batch-store-rows.ts`, `batch-store-types.ts`, `batch-store-idempotency.ts` | `server/test-db/batch-store.test.ts` |
+| Runtime tables and attempts | `server/migrations/060_batch_runtime.sql`, `068_batch_task_closed.sql` | `server/test-db/batch-dispatch.test.ts` |
+| Pure readiness, capacity, advancement, human gate (`judgeTaskGate`) | `core/src/batch-schedule.ts` | `core/test/batch-schedule.test.ts` |
+| Scheduling transactions: reconcile, retry, cancel, accept, close | `server/src/db/batch-store-schedule.ts`, `batch-store-close.ts`, `batch-store-threads.ts`, `batch-store-gates.ts`, `server/migrations/061_batch_acceptance.sql` | `server/test-db/batch-dispatch.test.ts` |
 | Periodic and startup reconcile | `server/src/batch-reconciler.ts`, `server/src/orgs.ts` | `server/test/batch-reconciler.test.ts` |
-| Roots created in the scheduler's transaction; remove/reopen refuse a batch thread, done a live batch's (`batchThreadState`); `batch_task.closed_at`/`closed_by`; `job done --force` | `server/src/db/job-store-actions.ts`, `job-store-rows.ts`, `server/migrations/068_batch_task_closed.sql`, `server/src/routes/job-handlers-actions.ts`, `cli/src/run.ts` | `server/test-db/batch-dispatch.test.ts`, `server/test/routes.jobs.test.ts`, `cli/test/commands.test.ts` |
-| Human PR gate: `judgeTaskGate` (pure), `judgeGates` (reads `job_pr` + `pr_merge` per pass, and the observed outcome a person must act on) | `core/src/batch-schedule.ts`, `server/src/db/batch-store-gates.ts` | `core/test/batch-schedule.test.ts`, `server/test-db/batch-dispatch.test.ts` |
-| Gate evidence: `batch_acceptance` | `server/migrations/061_batch_acceptance.sql` | `server/test-db/batch-dispatch.test.ts` |
-| Recovery: classification by `job.failure_cause` under `gate`/`publish`/`helper` (`conflict`/`verification` repair, `transport` infra retry, `environment` — a gate that failed only on vitest worker timeouts with every test passed, showed a stale file handle (`errno -116`), or exited 124/125/137 (timeout, no runner, kill), classified by `driver/src/gate-cause.ts` for both executors — infra retry (parks as `budget` when they run out; the base-is-red rerun is not built), `denied`/`config` attention `configuration`, else `unclassified`; a startup sync refusal the script names — `missing_workspace`, `missing_clone`, `branch_unrestorable`, `missing_base_branch` — reports `config`, an unnamed one `runner_error`; a sync rebase conflict, or a tree a previous attempt left conflicted, is no failure: the sync leaves it in place and the run starts with the paths in its turn context, and a publish over a conflict still unresolved is `publish` cause `conflict`, a repair that spends `repairs` and parks naming the conflict when they run out), backoff, repair command (a run's failed `job.gates` — name, exit code, output tail — bounded by `MAX_EVIDENCE_ITEMS`/`MAX_EVIDENCE_OUTPUT_CHARS`), attention reasons, next action | `core/src/batch-recovery.ts`, `driver/src/loop-ledger.ts`, `driver/src/gate-cause.ts`, `driver/src/scripts/git-worktree.cjs`, `driver/src/publish.ts`, `server/src/db/batch-store-repair.ts` | `core/test/batch-recovery.test.ts`, `driver/test/loop-ledger.test.ts`, `driver/test/gate-cause.test.ts` |
-| Recovery state: budgets, `deadline_at`/`expired_at`, `attention`, `recovery`, `not_before`, attempt kinds | `server/migrations/062_batch_recovery.sql`, `server/src/db/batch-store-repair.ts` | `server/test-db/batch-dispatch.test.ts` |
-| PR observation: assessment, fingerprint, backoff (pure); GitHub read and its typed errors | `core/src/batch-observation.ts`, `server/src/github/pr-read.ts` | `core/test/batch-observation.test.ts`, `server/test/github.pr-read.test.ts` |
-| Observation rows, leases, supersession, hints; observer loop and merge hand-off | `server/migrations/063_batch_pr_observation.sql`, `server/src/db/batch-store-observation.ts`, `server/src/batch-pr-observer.ts` | `server/test-db/batch-pr-observation.test.ts` |
-| Automerge: merge decision, fresh recheck, provider answers, stage verification (pure) | `core/src/batch-merge.ts` | `core/test/batch-merge.test.ts` |
-| Merge intents, the per-target slot, stage verification rows | `server/migrations/064_batch_merge.sql`, `server/src/db/batch-store-merge.ts` | `server/test-db/batch-merge.test.ts` |
-| Merger loop (runs after each observe pass); GitHub merge and branch reads | `server/src/batch-merger.ts`, `server/src/github/pr-merge.ts`, `server/src/github/pr-read.ts` | `server/test-db/batch-merge.test.ts`, `server/test/github.pr-merge.test.ts` |
-| Morning report, built from rows on every read: observation freshness, manual retries, remaining budgets, `unavailable` usage | `server/src/db/batch-store-report.ts` | `server/test-db/batch-dispatch.test.ts` |
-| Routes (wait, retry, cancel, accept, report) | `server/src/routes/batches.ts`, `batch-handlers.ts` | `server/test/routes.batches.test.ts` |
-| Launch checks shared by `validate` and `start` | `server/src/routes/batch-launch.ts` | `server/test/routes.batches.test.ts` |
-| Request envelope, org context, refusals | `server/src/routes/batch-http.ts` | `server/test/routes.batches.test.ts` |
+| Thread guards: remove/reopen refuse, `done --force` | `server/src/db/job-store-actions.ts`, `server/src/routes/job-handlers-actions.ts`, `cli/src/run.ts` | `server/test/routes.jobs.test.ts`, `cli/test/commands.test.ts` |
+| Recovery: classification, backoff, repair command, attention | `core/src/batch-recovery.ts`, `server/src/db/batch-store-repair.ts`, `driver/src/loop-ledger.ts`, `driver/src/gate-cause.ts`, `server/migrations/062_batch_recovery.sql` | `core/test/batch-recovery.test.ts`, `driver/test/loop-ledger.test.ts`, `driver/test/gate-cause.test.ts` |
+| PR observation: assessment, fingerprint, rows, observer loop | `core/src/batch-observation.ts`, `server/src/github/pr-read.ts`, `server/src/db/batch-store-observation.ts`, `batch-store-observed.ts`, `server/src/batch-pr-observer.ts`, `server/migrations/063_batch_pr_observation.sql` | `core/test/batch-observation.test.ts`, `server/test/github.pr-read.test.ts`, `server/test-db/batch-pr-observation.test.ts` |
+| Automerge: decision, intents, slot, stage verification, merger loop | `core/src/batch-merge.ts`, `server/src/db/batch-store-merge.ts`, `server/src/batch-merger.ts`, `server/src/github/pr-merge.ts`, `server/migrations/064_batch_merge.sql` | `core/test/batch-merge.test.ts`, `server/test-db/batch-merge.test.ts`, `server/test/github.pr-merge.test.ts` |
+| Morning report, built from rows on every read | `server/src/db/batch-store-report.ts` | `server/test-db/batch-dispatch.test.ts` |
+| Routes, launch checks, request envelope | `server/src/routes/batches.ts`, `batch-handlers.ts`, `batch-launch.ts`, `batch-http.ts` | `server/test/routes.batches.test.ts` |
 | Auth wall: human credentials only | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts` |
-| CLI client: `bellows batch …`, draft round-trip, `report`, wait exit codes (expired ends as cancelled, a failed stage verification needs attention, a pending one and a task whose report `next` is `wait` keep waiting) | `cli/src/batch.ts`, `batch-commands.ts`, `batch-render.ts` | `cli/test/batch.test.ts` |
-| Local-session skill: plan authoring, launch, watch, act on `next`; its example plan | `.claude/skills/batch-control/` | `core/test/skills.batch-control.test.ts` |
-| Web: list, draft composer, monitor, human-gate and task backlink | `web/src/pages/Batch*Page.tsx`, `web/src/panels/Batch*.tsx`, `web/src/api/useBatches.ts`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts` (stage verification: failed needs a person, pending and passed do not; a task whose report `next` is `wait` needs no one; the verdict reads `status`, `expired` included), `web/test/batch-detail.dom.test.tsx`, `e2e/batches.spec.ts` ([design-system/batches.md](design-system/batches.md)) |
-| In-memory store double for the offline route tests | `server/test/helpers-batch-store.ts` | `server/test/routes.batches.test.ts` |
+| CLI client (`bellows batch …`, wait exit codes) | `cli/src/batch.ts`, `batch-commands.ts`, `batch-render.ts` | `cli/test/batch.test.ts` |
+| Local-session skill | `.claude/skills/batch-control/` | `core/test/skills.batch-control.test.ts` |
+| Web: list, composer, monitor ([design-system/batches.md](design-system/batches.md)) | `web/src/pages/Batch*Page.tsx`, `web/src/panels/Batch*.tsx`, `web/src/api/useBatches.ts`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts`, `web/test/batch-detail.dom.test.tsx`, `e2e/batches.spec.ts` |
+| In-memory store double for offline route tests | `server/test/helpers-batch-store.ts` | `server/test/routes.batches.test.ts` |
 
 ## Invariants
 
-- **Stage order is the only dependency model.** An unknown field (`dependsOn` above all) is
-  refused at every level of the plan, never ignored. `core/test/batch-plan.test.ts`.
-- **Structural validity is independent of execution capability.** A two-repository plan is valid,
-  persists and round-trips; only `start` and `validate` refuse it, with `409 BATCH_UNSUPPORTED` and
-  `reason` `multi_target` or `automerge` (only a board with no GitHub installation).
-  `server/test/routes.batches.test.ts`.
-- **The schema encodes no runtime limit:** no uniqueness on `repo`, no single-target constraint.
-  A task's target is a composite foreign key into its own batch's targets, and `(org_id,
-  root_job_id)` is unique, so one thread backs at most one task and a task's thread is set once.
-  `server/test-db/batch-store.test.ts`.
-- **A draft write and the freeze race on `(org_id, id, version, status = 'draft')`.** Start takes
-  the row lock, so exactly one of a concurrent start and `PUT` wins and the frozen plan is the
-  version that won. `server/test-db/batch-store.test.ts`.
-- **Freeze resolves in place** — an explicit branch per target, a target per task, a policy per
-  stage, the executor and its `executorScope` stamped (every attempt launches in it) — and the
-  triggers refuse later writes to them; the runtime columns (`root_job_id`, `execution`, `pr`,
-  `gate`, `wait_reason`) stay writable. `server/migrations/059_batches.sql`,
-  `066_batch_executor_scope.sql`, `server/test-db/batch-store.test.ts`, `batch-dispatch.test.ts`.
-- **Launch checks run in one order, for `validate` and `start` alike, and write nothing:** structure,
-  installation visibility per target (`checkReposVisible`), default-branch resolution, each used
-  non-default branch on the remote (`409 BATCH_UNKNOWN_BRANCH`; offline unchecked), capability,
-  executors (each exists in its scope, `404 UNKNOWN_EXECUTOR`, and is not suspended). A replayed
-  `start` answers first. `server/src/routes/batch-launch.ts`, `server/test/routes.batches.test.ts`.
-- **Human credentials only.** No batch path is a worker route or on the organization-token
-  allowlist, and the org comes from the credential: a body field naming `org` or `status` is
-  refused. `server/test/auth.enforcement.test.ts`.
-- **Every scheduling write runs under the batch row's `for update` lock, and each decision is
-  unique by `batch_decision.key`** (`launch:<task>:<attempt>`, `advance:<stage>`, `complete`,
-  `cancel`), so competing scheduler processes, a duplicate event and a restart launch and advance
-  once, and the concurrency limit counts queued and running tasks, retries included.
+- **Stage order is the only dependency model**; an unknown field (`dependsOn` above all) is refused at
+  every level of the plan. `core/test/batch-plan.test.ts`.
+- **Structural validity is independent of execution capability**: only `start` and `validate` refuse an
+  unsupported plan, `409 BATCH_UNSUPPORTED`. `server/test/routes.batches.test.ts`.
+- **A draft write and the freeze race on `(org_id, id, version, status = 'draft')`**; exactly one wins.
+  Freeze resolves branch, target, policy and executor scope in place and the triggers refuse later
+  writes to them. `server/migrations/059_batches.sql`, `server/test-db/batch-store.test.ts`.
+- **Launch checks run in one order for `validate` and `start`, and write nothing.**
+  `server/src/routes/batch-launch.ts`, `server/test/routes.batches.test.ts`.
+- **Human credentials only**: no batch path is a worker route or on the organization-token allowlist.
+  `server/test/auth.enforcement.test.ts`.
+- **Every scheduling write runs under the batch row's `for update` lock and each decision is unique by
+  `batch_decision.key`**, so duplicates and restarts launch and advance once.
   `server/test-db/batch-dispatch.test.ts`.
-- **A task is accepted only when its run succeeded AND its gate passed, and a gate passes only
-  with a `batch_acceptance` row:** `pr_merged`, written by the reconcile pass when the task's
-  recorded PR is merged (matched on repo AND number, base branch equal to the task's target, merge
-  observed after the current attempt began), or `accepted`, written by the accept route for an
-  `accepted`-completion task. A run's verdict never satisfies the gate; remove, reopen and a
-  PR-merge close refuse a batch thread, Done a live batch's. Evidence is judged from durable
-  rows on every pass, so a merge before the verdict, a duplicate delivery and a restart converge,
-  and a cancelled or finished batch judges nothing. The next stage starts only after every required task
-  of the active stage is accepted. `core/test/batch-schedule.test.ts`,
+- **A task is accepted only when its run succeeded AND its gate passed**; a gate passes only with a
+  `batch_acceptance` row (`pr_merged` or `accepted`), judged from durable rows on every pass. A run's
+  verdict never satisfies the gate. `core/test/batch-schedule.test.ts`, `server/test-db/batch-dispatch.test.ts`.
+- **Automerge asks, GitHub decides**: the intent is written under the batch lock, bound to the observed
+  head and re-read before the send; one unresolved merge per repository and target
+  (`batch_merge_slot_idx`). `core/test/batch-merge.test.ts`, `server/test-db/batch-merge.test.ts`.
+- **An automerge stage advances only on a passed combined verification.**
+  `server/test-db/batch-merge.test.ts`.
+- **A task runs on its target's branch on both executors** via the claim's `baseBranch`.
+  `server/src/db/job-store-claim.ts`, `driver/test/base-branch-executors.test.ts`.
+- **A task's PR is observed from GitHub, never inferred from `failure_kind`**; webhooks only mark rows
+  stale. `core/test/batch-observation.test.ts`, `server/test/webhook.batch-observation.test.ts`.
+- **Recovery budgets freeze at start and are counted from durable `batch_attempt` rows**; a spent budget
+  or unclassified failure parks that task only. `core/test/batch-recovery.test.ts`.
+- **Questions are never answered by the board**; a pending one shows as `attention`.
+  `server/src/db/batch-store-schedule.ts`.
+- **Cancel and the time limit are fences**: `cancelled_at` / `expired_at` commit first, nothing launches,
+  retries or advances behind them, and merges that land are still recorded.
   `server/test-db/batch-dispatch.test.ts`.
-- **Limits of the human gate:** a merge after which more commits were pushed is not detected;
-  accept needs a human org member, not repository write access. `server/src/db/batch-store-gates.ts`.
-- **Automerge asks, GitHub decides; a `human` stage issues zero merge requests.** The intent
-  (`batch_merge`) is written under the batch lock before the request, bound to the observed head and
-  re-read just before it: a moved head, retarget or lost requirement sends nothing. A refusal parks
-  the task as `attention` and is asked again only for a new observation revision; a requirement is
-  never bypassed. `core/test/batch-merge.test.ts`, `server/test-db/batch-merge.test.ts`.
-- **One unresolved merge per repository and target, across batches** (`batch_merge_slot_idx`). A
-  timeout or a lapsed lease is `uncertain` and read back from the PR (merged: recorded, never
-  repeated; open: `lapsed`, retried after backoff). The cancel/expiry fence, a passed `deadline_at`
-  included, is re-read before the send; an accepted request is still recorded. `server/test-db/batch-merge.test.ts`.
-- **An automerge stage advances only on a passed combined verification:** every merged change is on
-  the target's tip and its required checks pass. Anything unreadable waits, a failure is reported
-  (`verification`) and re-read until it passes, a fenced batch is never verified.
-  `core/test/batch-merge.test.ts`, `server/test-db/batch-merge.test.ts`.
-- **Limits of automerge:** merge queues are not proven (a queue answers 405 and the task parks), the
-  method is `squash`, a repository with no checks never verifies. `core/src/batch-merge.ts`.
-- **A task runs on its target's branch on both executors:** the claim's `baseBranch` (read through
-  the thread root, so retries, follow-ups and repairs inherit it) is `BASE_BRANCH` in the sync and the
-  run, and the PR's base (a reused PR is retargeted). `server/src/db/job-store-claim.ts`, `driver/src/publish.ts`,
-  `server/test-db/batch-dispatch.test.ts`, `driver/test/base-branch-executors.test.ts`.
-- **A task's PR is observed from GitHub, never inferred from `failure_kind`.** A row is bound to
-  (repo, PR number, attempt) and names the head its checks ran on and the target a conflict was
-  judged against; only a confirmed failing required check or conflict is `repairable`, and a new
-  attempt deletes the row. A read commits only while it holds its lease and the binding stands;
-  `revision` bumps only when the `fingerprint` changes, so #581 acts once per fingerprint.
-  `core/test/batch-observation.test.ts`, `server/test-db/batch-pr-observation.test.ts`.
-- **Webhooks hint, the observer decides:** a delivery marks rows `stale` and due, never reads;
-  polling is 60 s, backs off to 15 min, honors Retry-After and spends no execution budget. An
-  observed merge lands in `pr_merge` like a delivered one, even in a cancelled or expired batch,
-  which it never revives. Mocks do not prove merge queues, protection only an admin token reads
-  (unreadable is `unknown`) or an App lacking `Checks: read`. `server/test/webhook.batch-observation.test.ts`.
-- **Recovery is bounded and counted from durable rows.** `infraRetries`, `repairs` and
-  `timeLimitMinutes` freeze at start; a task's budget is the count of its `infra_retry` and `repair`
-  `batch_attempt` rows, so a restart cannot reset it, and a manual retry spends none. An
-  infrastructure failure retries in its own thread after a bounded backoff; a gate, publish or
-  helper failure caused by `verification` or `conflict` is repaired by an ordinary follow-up of the thread head, so the task keeps its session
-  and PR, takes a scheduler slot, and its gate reopens and is judged afresh. A spent budget,
-  `config`/`policy`/`blocked`, an unclassified failure and an unanswered or expired question set
-  `attention` and park that task only; siblings keep running. `core/test/batch-recovery.test.ts`,
-  `server/test-db/batch-dispatch.test.ts`.
-- **Questions are never answered or extended by the board:** a pending one shows as `attention`
-  with its id and the answer route; a run whose last claim (`claim_seq`) dies holding one is not
-  retried automatically. `server/src/db/batch-store-schedule.ts` (`syncQuestion`, `syncTasks`).
-- **The time limit is a fence like cancel:** the pass that finds `deadline_at` passed stamps
-  `expired_at` once, cancels work that never launched, stops moving work, and queues no recovery or
-  advance behind it; manual retry answers `409 BATCH_EXPIRED`, while merges and acceptances that
-  land are still recorded and reported. `server/test-db/batch-dispatch.test.ts`.
-- **A PR red or conflicting after a successful run is repaired once per observation revision**, never
-  behind a fence; launch withdraws it if the row went stale or the PR merged. Closed unmerged parks
-  as `closed`. `server/src/db/batch-store-observed.ts`, `server/test-db/batch-pr-observation.test.ts`.
-- **Cancel is a fence, then a settle.** `cancelled_at` commits first, so nothing launches, retries
-  or advances behind it; moving tasks are stopped through the job store's stop, repeated by every
-  later pass until nothing moves. `server/test-db/batch-dispatch.test.ts`.
-- **A thread that backs a batch task is batch history:** `removeThread` and `reopen` refuse it
-  (`BATCH_TASK_THREAD`); a retry is a new job of the same thread, never a new root. An ended batch
-  closes its threads through Done, at boot too; `done --force` sets `closed_at`, never retried, a
-  required task holding its stage. `server/test-db/batch-dispatch.test.ts`.
-- **A missed callback cannot strand a batch:** `reconcileBatches` runs at boot and every
-  `BATCH_RECONCILE_INTERVAL_MS`, and a held `waitFor` reconciles on every beat.
-  `server/test/batch-reconciler.test.ts`.
-- The attempt record carries the target branch always and the source revision when a `revisionOf`
-  resolver is given to `createBatchStore`; the board wires the installation's branch read
-  (`server/src/orgs.ts`), so a downstream task records a revision that holds the verified merges.
-- **The web is a client of these routes, never a scheduler:** it polls the record and its report
-  and presses the same retry, accept and cancel the CLI does, so a batch created in either is
-  operated in the other. `web/src/batch-model.ts`, `web/test/batch-detail.dom.test.tsx`.
-- The routes are registered always and answer `503 BATCHES_UNAVAILABLE` for an org whose runtime
-  has no batch store, the way the env and workflow routes do (`server/src/orgs.ts`).
+- **A thread that backs a batch task is batch history**: `removeThread` and `reopen` refuse it
+  (`BATCH_TASK_THREAD`). `server/test-db/batch-dispatch.test.ts`.
+- **A missed callback cannot strand a batch**: `reconcileBatches` runs at boot and every
+  `BATCH_RECONCILE_INTERVAL_MS`. `server/test/batch-reconciler.test.ts`.
+- **The web is a client of these routes, never a scheduler.** `web/test/batch-detail.dom.test.tsx`.
+- Routes answer `503 BATCHES_UNAVAILABLE` for an org with no batch store (`server/src/orgs.ts`).
+
+## Stated limits
+
+- A merge followed by more pushed commits is not detected; accept needs an org member, not repo write access.
+- Merge queues are not proven (a 405 parks the task), the method is `squash`, and a repository with no
+  checks never verifies (`core/src/batch-merge.ts`).
