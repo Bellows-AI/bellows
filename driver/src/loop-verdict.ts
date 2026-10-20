@@ -176,6 +176,20 @@ export async function reportFinish(ctx: AttemptCtx, finish: FinishCtx): Promise<
     if (verdict !== null) ctx.rt.log(finishLine(finish, verdict, body.status, body.exitCode));
 }
 
+/** What the run's close-time reads lifted; an unmeasured read stays off the report. */
+function runReadsOf(
+    outcome: RunOutcome
+): Pick<VerdictBody, 'contextTokens' | 'contextCostUsd' | 'agentTurns' | 'summary'> {
+    return {
+        contextTokens: outcome.contextTokens ?? null,
+        contextCostUsd: outcome.costUsd ?? null,
+        // A number only: an unmeasured read stays off the report and the board stores null.
+        ...(typeof outcome.agentTurns === 'number' ? { agentTurns: outcome.agentTurns } : {}),
+        // The run's last words, when the close-time read lifted them; absent stays absent.
+        ...(outcome.summary ? { summary: outcome.summary } : {}),
+    };
+}
+
 /** The verdict body a finished run reports, built from its fault ledger. */
 function verdictOf(rt: LoopRuntime, finish: FinishCtx): VerdictBody {
     const { job, outcome, failure, published } = finish;
@@ -191,13 +205,8 @@ function verdictOf(rt: LoopRuntime, finish: FinishCtx): VerdictBody {
         status,
         exitCode,
         output,
-        contextTokens: outcome.contextTokens ?? null,
-        contextCostUsd: outcome.costUsd ?? null,
-        // A number only: an unmeasured read stays off the report and the board stores null.
-        ...(typeof outcome.agentTurns === 'number' ? { agentTurns: outcome.agentTurns } : {}),
+        ...runReadsOf(outcome),
         ...setupMsOf(job),
-        // The run's last words, when the close-time read lifted them; absent stays absent.
-        ...(outcome.summary ? { summary: outcome.summary } : {}),
         // The structured failure reason (issue #339); a success reports no kind at all.
         ...(failureKind ? { failureKind } : {}),
         ...(failureCause ? { failureCause } : {}),
