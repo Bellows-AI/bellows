@@ -1,6 +1,6 @@
 import { JOB_LABEL } from './labels.js';
 import { awaitSupervisor, closeEndOf, createGroup, removeGroup, startGroup, supervisorLossOf } from './docker-group.js';
-import { type DockerGateDeps, runDockerGate } from './docker-gate.js';
+import { type DockerGateDeps, runDockerGate, runDockerReview } from './docker-gate.js';
 import {
     dockerKill,
     dockerKillFor,
@@ -676,14 +676,9 @@ export function createDockerRunner(
         }),
         runGate: (job, gate, signal) => runDockerGate(gateDeps(deps, job), job, gate, signal),
         resizeGate: async () => false, // no in-place resize: the gate container keeps its GATE_* sizing
-        resizeReviewer: async () => false, // likewise the reviewer container
-        // The docker counterpart of the in-group reviewer is its own change (issue #774): until it lands, a review fails here.
-        runReview: async () => ({
-            exitCode: 1,
-            stdout: '',
-            stderr: 'the docker executor does not run a reviewer in the task group yet',
-            timedOut: false,
-        }),
+        resizeReviewer: async () => false, // likewise the reviewer container: it keeps its RUNNER_* sizing
+        runReview: (caller, review, session, signal) =>
+            runDockerReview(gateDeps(deps, caller), { caller, review, session }, signal),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
         restartServices: (job, signal) => restartJobServices(job, execDocker, signal),

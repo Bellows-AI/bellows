@@ -59,6 +59,20 @@ describe('the reviewer’s review step', () => {
     });
 });
 
+// The reviewer has no control channel: its container mounts neither `in` nor `out` and its step
+// names neither, so claude-bridge.cjs denies a question outright (`claude-bridge.test.ts`, "when
+// FACTORY_CTL_IN is unset") and the opencode executor's ctl-agent never starts. Pinned on both executors.
+describe('the reviewer’s question channel', () => {
+    it.each(['claude-code', 'opencode'] as const)('is absent from a %s review step', (executorType) => {
+        const session = executorType === 'opencode' ? null : { id: 'sess-1', resume: false };
+        const step = reviewStepEnv(host, { ...review, executorType }, session);
+        expect(step).not.toBeNull();
+        for (const name of ['FACTORY_CTL_IN', 'FACTORY_CTL_OUT', 'FACTORY_CTL_GO', 'FACTORY_STOP_MARKER']) {
+            expect(step?.env, name).not.toHaveProperty(name);
+        }
+    });
+});
+
 describe('reviewBudgetMs', () => {
     it('is the profile’s, never past the operator’s ceiling', () => {
         const ceiling = { jobTimeoutMs: 2 * 3_600_000 };

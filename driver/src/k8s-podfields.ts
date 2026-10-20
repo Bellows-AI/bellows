@@ -1,7 +1,7 @@
 import { AGENT_LAUNCH_CAPS } from './claim.js';
 import { cpuQuantityToCores, type DriverConfig, memoryQuantityToBytes } from './config.js';
 import type { ExecutorType } from './executors.js';
-import { type Mailbox, MAILBOXES } from './supervisor-contract.js';
+import { type Mailbox, mailboxesOf } from './supervisor-contract.js';
 import { telemetryConfig, telemetryConfigK8s, type TelemetryConfigVolume } from './telemetry-config.js';
 
 /**
@@ -246,10 +246,6 @@ export type RunnerVolume =
  */
 export const mailboxVolumes = (reviewing: boolean): RunnerVolume[] =>
     mailboxesOf(reviewing).map((box) => ({ name: box.name, emptyDir: {} }));
-
-/** The mailboxes a pod holds: the review mailbox only where a reviewer container is (issue #774). */
-export const mailboxesOf = (reviewing: boolean): Mailbox[] =>
-    Object.values(MAILBOXES).filter((box) => reviewing || box !== MAILBOXES.review);
 
 /** One mailbox as a container mount — read-only where the contract says the container may only read it. */
 export const mailboxMount = (box: Mailbox, access: 'ro' | 'rw'): RunnerMount => ({

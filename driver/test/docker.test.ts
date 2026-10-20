@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
 import type { ChildProcess, spawn } from 'node:child_process';
 import type { Readable } from 'node:stream';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob, ReviewClaim } from '../src/board.js';
 import { executorImage, loadDriverConfig } from '../src/config.js';
 import { ctlVolumeName, killMarkName } from '../src/docker-mailbox.js';
 import { decisionOf, TERMINATION_ROWS, type TerminationRow } from './fixtures/termination-table.js';
@@ -47,6 +47,7 @@ import {
     exporterName,
     gateCreateArgs,
     gateName,
+    reviewerName,
     supervisorCreateArgs,
 } from '../src/docker-group.js';
 import { supervisorName } from '../src/docker-mailbox.js';
@@ -3964,7 +3965,7 @@ describe('publishing the produced work', () => {
         // Issue #821 D16: the group's supervisor and every mailbox carry the reclaim mark, so the
         // orphan reaper never reads its lease of its own as a dead attempt's.
         const volumes = d.calls.filter((a) => a[0] === 'volume' && a[1] === 'create');
-        expect(volumes).toHaveLength(Object.keys(MAILBOXES).length);
+        expect(volumes).toHaveLength(Object.keys(MAILBOXES).length - 1); // no review mailbox without a reviewer
         for (const made of [create, ...volumes]) expect(made).toEqual(expect.arrayContaining(['factory.reclaim=true']));
     });
 
@@ -5957,6 +5958,36 @@ describe('the docker runner and the gates', () => {
         const gateCreate = created.find((args) => args[args.indexOf('--name') + 1] === gateName(gated));
         expect(gateCreate?.[gateCreate.indexOf('--network') + 1]).toBe(`container:${supervisorName(gated)}`);
         expect(daemon.calls.some((args) => args[0] === 'network')).toBe(false);
+    });
+
+    // Issue #774: a review is steps of the CALLER's group — the reviewer's home, its restored
+    // worktree, the executor in the reviewer container — made on demand like a gate's.
+    it('runs a review as steps of the caller’s group, made on demand, with the reviewer container in it', async () => {
+        const daemon = recording();
+        const supervised = fakeSteps(() => ok());
+        const runner = dockerRunner(daemon.exec, { steps: supervised.sink });
+        const caller: BoardJob = { ...job, repo: 'Bellows-AI/factory', reviewerProfiles: ['security'] };
+        const review = {
+            ...caller,
+            id: '66666666-6666-4666-8666-666666666666',
+            rootJobId: caller.id,
+            reviewRun: { profile: 'security', ref: `refs/factory/review/${caller.id}/sec-1`, timeoutMinutes: 5 },
+        } as unknown as ReviewClaim;
+
+        expect(await runner.runReview(caller, review, { id: 'sess-1', resume: false })).toEqual(ok());
+
+        expect(supervised.ofKind('review')).toHaveLength(1);
+        expect(supervised.steps().map((step) => step.kind)).toEqual(['sync', 'sync', 'review']);
+        const created = daemon.calls.filter((args) => args[0] === 'create');
+        expect(created.map((args) => args[args.indexOf('--name') + 1])).toContain(reviewerName(caller));
+        expect(supervised.submitted.every((entry) => entry.token === supervised.submitted[0]!.token)).toBe(true);
+    });
+
+    it('resizes nothing: the reviewer container keeps its RUNNER_* sizing, as the gate container its GATE_*', async () => {
+        const daemon = recording();
+        const runner = dockerRunner(daemon.exec, { env: { RUNNER_SERVICES: '0' }, steps: fakeSteps().sink });
+        expect(await runner.resizeReviewer({ ...job, reviewerProfiles: ['security'] }, 'run')).toBe(false);
+        expect(daemon.calls).toEqual([]);
     });
 
     it('resizes nothing: the gate container keeps its GATE_* sizing', async () => {

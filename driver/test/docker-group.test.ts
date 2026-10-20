@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
-import { claimEnv, RESERVED_ENV_NAMES } from '../src/claim.js';
-import { loadDriverConfig } from '../src/config.js';
+import {
+    claimEnv,
+    GATE_GID,
+    RESERVED_ENV_NAMES,
+    REVIEWER_HOME,
+    REVIEWER_TREE_DIR,
+    REVIEWER_UID,
+} from '../src/claim.js';
+import { executorImage, loadDriverConfig } from '../src/config.js';
 import { dockerArgs } from '../src/docker.js';
 import {
     awaitSupervisor,
@@ -12,6 +19,8 @@ import {
     gateCreateArgs,
     gateName,
     removeGroup,
+    reviewerCreateArgs,
+    reviewerName,
     startGroup,
     supervisorCreateArgs,
     supervisorLossOf,
@@ -19,7 +28,7 @@ import {
 import { ctlVolumeName, supervisorName } from '../src/docker-mailbox.js';
 import { type RunnerFiles, startupRefusalOf } from '../src/docker-runner-support.js';
 import { StartupRefused } from '../src/startup-cause.js';
-import { gateLoopArgv } from '../src/container-scripts.js';
+import { gateLoopArgv, reviewLoopArgv } from '../src/container-scripts.js';
 import { MAILBOXES, SUPERVISOR_CREDENTIAL_NAMES, SUPERVISOR_EXIT } from '../src/supervisor-contract.js';
 import { orphanBoundMs } from '../src/supervisor-plan.js';
 
@@ -70,6 +79,8 @@ const gated: BoardJob = {
     repo: 'Bellows-AI/factory',
     gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
 };
+/** The same attempt, whose claim lists a reviewer profile (issue #774): its group holds a reviewer container. */
+const reviewing: BoardJob = { ...job, reviewerProfiles: ['security'] };
 const volumeOf = (box: keyof typeof MAILBOXES): string => `src=${ctlVolumeName(job, MAILBOXES[box])},`;
 
 describe('the supervisor container', () => {
@@ -79,13 +90,28 @@ describe('the supervisor container', () => {
     // of its own container, so it mounts the member's workspace — only the member's own subtree.
     it('mounts every mailbox and the member’s own workspace subtree, nothing broader', () => {
         const mounted = mounts(argv);
-        expect(mounted).toHaveLength(7);
-        for (const box of ['in', 'out', 'export', 'supervisor', 'gate', 'review'] as const) {
+        expect(mounted).toHaveLength(6);
+        for (const box of ['in', 'out', 'export', 'supervisor', 'gate'] as const) {
             expect(mounted.some((mount) => mount.includes(volumeOf(box)))).toBe(true);
         }
+        // The review mailbox is the reviewer container's and the supervisor's alone (issue #774).
+        expect(mounted.some((mount) => mount.includes(volumeOf('review')))).toBe(false);
         const workspace = mounted.filter((mount) => mount.includes('workspaces'));
         expect(workspace).toHaveLength(1);
         expect(workspace[0]).toContain(`volume-subpath=bellows/${USER}`);
+    });
+
+    it('mounts the review mailbox too, and is told of the reviewer, when the claim lists reviewer profiles', () => {
+        const withReviewer = supervisorCreateArgs(
+            config,
+            reviewing,
+            { exporting: true, agentless: false, reviewing: true },
+            '/tmp/supervisor.env'
+        );
+        expect(mounts(withReviewer)).toHaveLength(7);
+        expect(mounts(withReviewer).some((mount) => mount.includes(volumeOf('review')))).toBe(true);
+        expect(withReviewer).toContain('SUPERVISOR_REVIEWER=1');
+        expect(argv).not.toContain('SUPERVISOR_REVIEWER=1');
     });
 
     it('is told the orphan bound the lease allows, as the exporter is its drain give-up', () => {
@@ -135,6 +161,56 @@ describe('the supervisor container', () => {
                 'host.docker.internal:host-gateway',
             ]);
         }
+    });
+});
+
+// Issue #774: the reviewer container is the pod's reviewer sidecar's twin — the executor image
+// running the review loop over the review mailbox, in the supervisor's network namespace, as its own
+// uid, with the member tree read-only but for its home, and the model credentials and nothing else.
+describe('the reviewer container', () => {
+    const argv = reviewerCreateArgs(config, reviewing);
+    const pairs = (flag: string): string[] => argv.filter((_arg, i) => argv[i - 1] === flag);
+
+    it('runs as its own uid in the gate group, in its supervisor’s network namespace', () => {
+        expect(pairs('--user')).toEqual([`${REVIEWER_UID}:${GATE_GID}`]);
+        expect(pairs('--network')).toEqual([`container:${supervisorName(reviewing)}`]);
+        expect(pairs('--name')).toEqual([reviewerName(reviewing)]);
+        expect(reviewerName(reviewing)).toBe(`factory-reviewer-${reviewing.id}-${reviewing.leaseToken}`);
+        expect(argv).toEqual(expect.arrayContaining(['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges']));
+        expect(argv).toEqual(expect.arrayContaining(['--label', 'factory.role=reviewer']));
+        expect(argv).toEqual(expect.arrayContaining(['--label', `factory.lease=${reviewing.leaseToken}`]));
+    });
+
+    it('runs the review loop in the executor image', () => {
+        const [image, ...command] = argv.slice(argv.indexOf('--entrypoint') + 2);
+        expect(argv[argv.indexOf('--entrypoint') + 1]).toBe('sh');
+        expect(image).toBe(executorImage(config, reviewing.executorType));
+        expect(command).toEqual(reviewLoopArgv().slice(1));
+    });
+
+    it('mounts the member tree read-only, its home read-write and the review mailbox, no other mailbox', () => {
+        const mounted = mounts(argv);
+        expect(mounted).toHaveLength(3);
+        const tree = mounted.find((mount) => mount.includes(`target=${config.workspaceMount}/bellows/${USER}`));
+        expect(tree).toContain(`volume-subpath=bellows/${USER},`);
+        expect(tree).toMatch(/,readonly$/);
+        const home = mounted.find((mount) => mount.endsWith(`target=${REVIEWER_HOME}`));
+        expect(home).toContain(`volume-subpath=bellows/${USER}/${REVIEWER_TREE_DIR},`);
+        expect(home).not.toMatch(/readonly/);
+        const review = mounted.find((mount) => mount.includes(volumeOf('review')));
+        expect(review).toBeDefined();
+        expect(review).not.toMatch(/readonly/);
+        for (const box of ['in', 'out', 'export', 'supervisor', 'gate'] as const) {
+            expect(mounted.some((mount) => mount.includes(volumeOf(box)))).toBe(false);
+        }
+    });
+
+    // The model credentials ride as the agent's do — each passEnv name read from the driver's own
+    // environment — and nothing else: no claim env file, no attempt or publish token, no helper.
+    it('carries its home and the model credential names, never a value, a token or an env file', () => {
+        expect(pairs('-e')).toEqual([`HOME=${REVIEWER_HOME}`, ...config.passEnv]);
+        expect(argv).not.toContain('--env-file');
+        expect(argv.join(' ')).not.toMatch(/tok-|CRED_HELPER|BELLOWS_CONTROL|SUPERVISOR_|GITHUB_TOKEN/);
     });
 });
 
@@ -208,7 +284,10 @@ describe('creating and starting the group', () => {
     it('creates the labelled mailbox volumes, then the supervisor, then the exporter', async () => {
         const { calls, deps } = recorder();
         await createGroup(deps, job, SESSION, { startedAt: START });
-        expect(calls.slice(0, Object.keys(MAILBOXES).length)).toEqual(ctlVolumeArgs(job));
+        // Without a reviewer the review mailbox has no volume (issue #774).
+        expect(ctlVolumeArgs(job)).toHaveLength(Object.keys(MAILBOXES).length - 1);
+        expect(calls.slice(0, ctlVolumeArgs(job).length)).toEqual(ctlVolumeArgs(job));
+        expect(calls.some((argv) => argv.includes(ctlVolumeName(job, MAILBOXES.review)))).toBe(false);
         const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
         expect(created).toEqual([supervisorName(job), exporterName(job)]);
     });
@@ -285,6 +364,51 @@ describe('creating and starting the group', () => {
         await expect(createGroup(deps, gated, SESSION, { startedAt: START })).rejects.toThrow('daemon said no');
         expect(calls).toContainEqual(['rm', '-f', gateName(gated)]);
         expect(calls).toContainEqual(['rm', '-f', supervisorName(gated)]);
+    });
+
+    // Issue #774: the reviewer joins the supervisor's namespace, so it is created after the supervisor
+    // and started after it, and only a claim that lists reviewer profiles has one.
+    it('creates and starts the reviewer container, with its mailbox volume, only for a claim that lists reviewer profiles', async () => {
+        const { calls, deps } = recorder();
+        await createGroup(deps, reviewing, SESSION, { startedAt: START });
+        const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
+        expect(created).toEqual([supervisorName(reviewing), exporterName(reviewing), reviewerName(reviewing)]);
+        expect(calls.slice(0, Object.keys(MAILBOXES).length)).toEqual(ctlVolumeArgs(reviewing, { reviewing: true }));
+        expect(calls.some((argv) => argv.includes(ctlVolumeName(reviewing, MAILBOXES.review)))).toBe(true);
+        const supervisor = calls.find((argv) => argv.includes(supervisorName(reviewing)))!;
+        expect(supervisor).toContain('SUPERVISOR_REVIEWER=1');
+        const startCalls: string[][] = [];
+        await startGroup(
+            async (argv) => {
+                startCalls.push(argv);
+                return { stdout: '' };
+            },
+            reviewing,
+            SESSION
+        );
+        expect(startCalls).toEqual([
+            ['start', supervisorName(reviewing)],
+            ['start', exporterName(reviewing)],
+            ['start', reviewerName(reviewing)],
+        ]);
+
+        const plain = recorder();
+        await createGroup(plain.deps, job, SESSION, { startedAt: START });
+        expect(plain.calls.some((argv) => argv.includes(reviewerName(job)))).toBe(false);
+        expect(plain.calls.find((argv) => argv.includes(supervisorName(job)))).not.toContain('SUPERVISOR_REVIEWER=1');
+    });
+
+    it('removes the whole group, the reviewer container included, when the daemon refuses the reviewer', async () => {
+        const { calls, deps } = recorder((argv) => argv[0] === 'create' && argv.includes(reviewerName(reviewing)));
+        await expect(createGroup(deps, reviewing, SESSION, { startedAt: START })).rejects.toThrow('daemon said no');
+        expect(calls).toContainEqual(['rm', '-f', reviewerName(reviewing)]);
+        expect(calls).toContainEqual(['rm', '-f', supervisorName(reviewing)]);
+    });
+
+    it('removeGroup removes the reviewer container with the rest', async () => {
+        const { calls, deps } = recorder();
+        await removeGroup(deps.execDocker, reviewing);
+        expect(calls).toContainEqual(['rm', '-f', reviewerName(reviewing)]);
     });
 
     it('removeGroup tolerates anything already gone', async () => {

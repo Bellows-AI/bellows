@@ -360,3 +360,7 @@ export const EXPORTER_CONTAINER = 'exporter';
 export const GATE_CONTAINER = 'gate';
 /** The reviewer container, beside the supervisor in a group whose claim lists reviewer profiles (issue #774). */
 export const REVIEWER_CONTAINER = 'reviewer';
+
+/** The mailboxes a group holds: the review mailbox only where a reviewer container is (issue #774), on both executors. */
+export const mailboxesOf = (reviewing: boolean): Mailbox[] =>
+    Object.values(MAILBOXES).filter((box) => reviewing || box !== MAILBOXES.review);

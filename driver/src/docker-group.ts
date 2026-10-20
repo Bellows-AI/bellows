@@ -2,8 +2,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
-import { GATE_GID, GATE_UID, gateEnv, supervisorEnvFileBody, workspacePath } from './claim.js';
-import { claudeExportScript, gateLoopArgv, supervisorScript } from './container-scripts.js';
+import {
+    GATE_GID,
+    GATE_UID,
+    gateEnv,
+    REVIEWER_HOME,
+    REVIEWER_TREE_DIR,
+    REVIEWER_UID,
+    supervisorEnvFileBody,
+    workspacePath,
+} from './claim.js';
+import { claudeExportScript, gateLoopArgv, reviewLoopArgv, supervisorScript } from './container-scripts.js';
 import { containerHardeningArgs, resourceArgs, workspacesMountArgs } from './docker.js';
 import { ctlVolumeName, groupNetworkArgs, idsOf, mailboxMountArgs, supervisorName } from './docker-mailbox.js';
 import {
@@ -20,6 +29,8 @@ import {
     EXPORTER_CONTAINER,
     GATE_CONTAINER,
     MAILBOXES,
+    mailboxesOf,
+    REVIEWER_CONTAINER,
     SUPERVISOR_CONTAINER,
     SUPERVISOR_ENV,
     DRIVER_LOST_LOSS,
@@ -37,13 +48,15 @@ import { exportEnv, exportsTranscript } from './transcript-export.js';
  * created and started beside the agent, with the mailboxes as named volumes
  * (`supervisor-contract.ts`) mounted exactly as the pod mounts them — the agent gets `in` read-only
  * and `out`, the exporter the workspace and `export`, the gate the workspace and `gate`, the
- * supervisor all of them, and no container but the supervisor and the exporter holds the control pair. The agent's end does not end
+ * supervisor all of them, and no container but the supervisor and the exporter holds the control pair. A claim that
+ * lists reviewer profiles adds the reviewer container and its review mailbox (issue #774). The agent's end does not end
  * the group: the supervisor drains the exporter and finalizes first, and the runner waits for it
  * (`awaitSupervisor`). The group is the pod's twin, and `k8s-podspec.ts` its other half.
  */
 
 export const exporterName = (job: BoardJob): string => `factory-export-${idsOf(job)}`;
 export const gateName = (job: BoardJob): string => `factory-gate-${idsOf(job)}`;
+export const reviewerName = (job: BoardJob): string => `factory-reviewer-${idsOf(job)}`;
 
 /** The reclaim group's mark (`RECLAIM_LABEL`), on each of its objects; nothing on an attempt's. */
 const reclaimLabelArgs = (reclaim: boolean): string[] => (reclaim ? ['--label', `${RECLAIM_LABEL}=true`] : []);
@@ -59,8 +72,11 @@ const labelArgs = (job: BoardJob, role: string, reclaim: boolean): string[] => [
 ];
 
 /** The `docker volume create` argv of each mailbox: labelled with the job and lease, so a fence can find them. */
-export const ctlVolumeArgs = (job: BoardJob, reclaim = false): string[][] =>
-    Object.values(MAILBOXES).map((box) => [
+export const ctlVolumeArgs = (
+    job: BoardJob,
+    { reclaim = false, reviewing = false }: { reclaim?: boolean; reviewing?: boolean } = {}
+): string[][] =>
+    mailboxesOf(reviewing).map((box) => [
         'volume',
         'create',
         '--label',
@@ -91,7 +107,7 @@ const serviceHostArgs = (config: DriverConfig, job: BoardJob): string[] =>
 export function supervisorCreateArgs(
     config: DriverConfig,
     job: BoardJob,
-    group: { exporting: boolean; agentless: boolean; gated?: boolean; reclaim?: boolean },
+    group: { exporting: boolean; agentless: boolean; gated?: boolean; reviewing?: boolean; reclaim?: boolean },
     envFile: string | null
 ): string[] {
     return [
@@ -107,7 +123,7 @@ export function supervisorCreateArgs(
         // The member's workspace subtree: the steps the supervisor runs (the sync, the probe, the
         // publish, the helpers, the reclaim) work on the task worktree.
         ...workspacesMountArgs(config, workspacePath(job)),
-        ...Object.values(MAILBOXES).flatMap((box) => mailboxMountArgs(job, box, 'rw')),
+        ...mailboxesOf(group.reviewing === true).flatMap((box) => mailboxMountArgs(job, box, 'rw')),
         '--entrypoint',
         'node',
         executorImage(config, job.executorType),
@@ -170,6 +186,41 @@ export function gateCreateArgs(config: DriverConfig, job: BoardJob, image: strin
     ];
 }
 
+/**
+ * The reviewer container's `docker create` argv (issue #774) — the executor image running the review
+ * loop over the review mailbox (`scripts/review-loop.sh`), the pod's reviewer sidecar's twin. Its own
+ * uid in the gate's group, in its supervisor's network namespace. The member tree is read-only (the
+ * shared clone and the review's worktree are in it) but for its HOME, a fixed directory of that tree
+ * the server provisions group-writable (`server/src/workspace/provision.ts`). Only the review
+ * mailbox of the group's; no claim env file, attempt or publish token, credential helper — the model
+ * credentials ride as the agent's do, each `passEnv` name read from the driver's environment — and
+ * each review's own environment rides its request. Docker has no in-place resize: it keeps the RUNNER_* sizing.
+ */
+export function reviewerCreateArgs(config: DriverConfig, job: BoardJob): string[] {
+    return [
+        'create',
+        ...containerHardeningArgs(),
+        '--name',
+        reviewerName(job),
+        ...labelArgs(job, REVIEWER_CONTAINER, false),
+        '--user',
+        `${REVIEWER_UID}:${GATE_GID}`,
+        '-e',
+        `HOME=${REVIEWER_HOME}`,
+        ...config.passEnv.flatMap((name) => ['-e', name]),
+        ...workspacesMountArgs(config, workspacePath(job), true),
+        '--mount',
+        `type=volume,src=${config.workspaceVolume},volume-subpath=${workspacePath(job)}/${REVIEWER_TREE_DIR},target=${REVIEWER_HOME}`,
+        ...mailboxMountArgs(job, MAILBOXES.review, 'rw'),
+        ...groupNetworkArgs(job),
+        ...resourceArgs(config.runnerResources),
+        '--entrypoint',
+        'sh',
+        executorImage(config, job.executorType),
+        ...reviewLoopArgv().slice(1),
+    ];
+}
+
 const controlEnvFilePath = (job: BoardJob, role: string): string =>
     join(tmpdir(), `factory-${role}-env-${idsOf(job)}.env`);
 
@@ -206,9 +257,14 @@ async function createWithEnvFile(
 export function groupShape(
     job: BoardJob,
     session: RunSession | null
-): { exporting: boolean; agentless: boolean; gated: boolean } {
+): { exporting: boolean; agentless: boolean; gated: boolean; reviewing: boolean } {
     const agentless = job.agent === false;
-    return { exporting: !agentless && exportsTranscript(job, session), agentless, gated: gateImageOf(job) !== null };
+    return {
+        exporting: !agentless && exportsTranscript(job, session),
+        agentless,
+        gated: gateImageOf(job) !== null,
+        reviewing: (job.reviewerProfiles?.length ?? 0) > 0,
+    };
 }
 
 /**
@@ -226,7 +282,7 @@ export async function createGroup(
     const shape = { ...groupShape(job, session), reclaim };
     const { exporting } = shape;
     try {
-        for (const args of ctlVolumeArgs(job, reclaim)) await deps.execDocker(args);
+        for (const args of ctlVolumeArgs(job, shape)) await deps.execDocker(args);
         const supervisorPair = [SUPERVISOR_ENV.controlUrl, SUPERVISOR_ENV.controlToken].map((name) => ({
             name,
             source: name,
@@ -251,6 +307,7 @@ export async function createGroup(
         throw startupRefusalOf(e);
     }
     await createGate(deps, job);
+    await createReviewer(deps, job);
 }
 
 /** The gate container, created after the supervisor, whose image owns the mailbox mount points. */
@@ -265,8 +322,19 @@ async function createGate(deps: GroupDeps, job: BoardJob): Promise<void> {
     }
 }
 
+/** The reviewer container, created after the supervisor whose network namespace it joins (issue #774); none without profiles. */
+async function createReviewer(deps: GroupDeps, job: BoardJob): Promise<void> {
+    if (!groupShape(job, null).reviewing) return;
+    try {
+        await deps.execDocker(reviewerCreateArgs(deps.config, job));
+    } catch (e) {
+        await removeGroup(deps.execDocker, job);
+        throw startupRefusalOf(e);
+    }
+}
+
 /**
- * Starts the supervisor, the exporter and the gate, detached; the agent is started by the caller, attached,
+ * Starts the supervisor, the exporter, the gate and the reviewer, detached; the agent is started by the caller, attached,
  * after them. A refusal is typed by the cause the daemon's words prove, as a refused create is.
  */
 export async function startGroup(execDocker: ExecDocker, job: BoardJob, session: RunSession | null): Promise<void> {
@@ -282,6 +350,11 @@ export async function startGroup(execDocker: ExecDocker, job: BoardJob, session:
         if (image) await execDocker(['start', gateName(job)]);
     } catch (e) {
         throw startupRefusalOf(e, image ? { role: 'gate', image } : undefined);
+    }
+    try {
+        if (shape.reviewing) await execDocker(['start', reviewerName(job)]);
+    } catch (e) {
+        throw startupRefusalOf(e);
     }
 }
 
@@ -370,9 +443,9 @@ export function supervisorLossOf(exit: number | null, timedOut: boolean): string
         : `the task supervisor ended before it finalized the run (exit ${exit})`;
 }
 
-/** Removes the supervisor, the exporter, the gate and the mailboxes of the attempt; tolerant of any of them being gone already. */
+/** Removes the supervisor, the exporter, the gate, the reviewer and the mailboxes of the attempt; tolerant of any of them being gone already. */
 export async function removeGroup(execDocker: ExecDocker, job: BoardJob): Promise<void> {
-    for (const name of [gateName(job), exporterName(job), supervisorName(job)]) {
+    for (const name of [reviewerName(job), gateName(job), exporterName(job), supervisorName(job)]) {
         await execDocker(['rm', '-f', name]).catch(() => undefined);
     }
     for (const box of Object.values(MAILBOXES)) {
