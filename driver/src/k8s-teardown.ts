@@ -122,13 +122,13 @@ const anotherIncarnation = (read: Read<ReadJobObject>, uids: IncarnationUids | u
 };
 
 /**
- * The pods of every reclaim group serving checkout `holder` (`HOLDER_LABEL`, stamped on its pod
+ * The pods of every group serving checkout `holder` (`HOLDER_LABEL`, stamped on its pod
  * template): what a recovery that reaps that holder's claim must find none of live.
  */
 export const holderPodsPath = (namespace: string, job: BoardJob, holder: string): string =>
     `${podsPath(namespace)}?labelSelector=${encodeURIComponent(`${JOB_LABEL}=${job.id},${HOLDER_LABEL}=${holder}`)}`;
 
-/** Whether no live pod of a reclaim group serving `holder` is listed; an unreadable list proves nothing (false). */
+/** Whether no live pod of a group serving `holder` is listed; an unreadable list proves nothing (false). */
 export async function holderWritersGone(deps: K8sDeps, job: BoardJob, holder: string): Promise<boolean> {
     return (
         (await noLivePod(deps, holderPodsPath(deps.config.k8sNamespace, job, holder), 'listing the holder pods')) ===

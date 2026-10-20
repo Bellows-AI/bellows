@@ -212,16 +212,6 @@ export interface ReclaimResult {
      */
     removed: boolean;
     reason: string | null;
-    /**
-     * The checkout claim that held the reclaim off, when the refusal was the claim's own — the
-     * kubernetes acquire answered 409 against a holder it could not take over (issue #344).
-     * Executor-neutral home, kubernetes-only population: docker's fence leaves no claim object
-     * behind, so its refusals never carry this. The loop reads it to name the claim — and, when
-     * the board proves the holder job gone or terminal, to have the runner reap it instead of
-     * retrying the same refusal forever. `uid` and `holder` are the incarnation read (issue #821):
-     * the reap acts on that one only, never on a claim that replaced it since.
-     */
-    heldClaim?: { name: string; claimSeq: string | null; createdMs: number | null; uid: string; holder: string };
 }
 
 /** What an unparseable worktree sync verdict means — both executors' fallback for the same shape. */

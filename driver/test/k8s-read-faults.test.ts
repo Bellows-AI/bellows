@@ -317,12 +317,7 @@ const CLAIM = `${API}/configmaps/factory-job-<job>-claim`;
 const OLD_JOBS = `GET ${BATCH}/jobs?labelSelector=factory.job=<job>,factory.lease!=<lease>`;
 const OLD_PODS = `GET ${API}/pods?labelSelector=factory.job=<job>,factory.lease!=<lease>`;
 const secretsOf = (label: string): string[] => [`DELETE ${API}/secrets/factory-job-<job>-<${label}>-env`];
-const ADOPTED_WRITES = [
-    `POST ${API}/configmaps`,
-    `POST ${BATCH}/jobs`,
-    `DELETE ${BATCH}/jobs/factory-cturns-<prior-hash>`,
-    ...secretsOf('prior'),
-];
+const ADOPTED_WRITES = [`POST ${API}/configmaps`, ...secretsOf('prior')];
 const NULL_READ = (field: string) => `Cannot read properties of null (reading '${field}')`;
 
 /** A scenario's pins, by fault: one line per documented violation. */
@@ -446,7 +441,7 @@ const LOST = 'infra-loss: the runner pod was deleted before it exited (evicted, 
 scenario(
     'a run whose agent failed under a live pod (K-V1)',
     runVerdict,
-    { writes: [`POST ${BATCH}/jobs`, `DELETE ${BATCH}/jobs/factory-cturns-<lease-hash>`] },
+    { writes: [] },
     {
         // No list read as no pod (`k8s-poll.ts:371`): the run reads as taken away (`k8s-poll.ts:635`,
         // `k8s-runner.ts:382`).

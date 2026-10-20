@@ -6,7 +6,6 @@ import type {
     ArtifactManifest,
     Board,
     BoardJob,
-    BoardLease,
     HeartbeatVerdict,
     Interruption,
     LeaseState,
@@ -92,7 +91,6 @@ export interface BoardStub extends Board {
     reclaimAckTokens: string[];
     /** Every reclaim renew the loop sent, with the token it rode under (issue #821). */
     reclaimRenewals: { id: string; token: string }[];
-    leaseLookups: string[][];
     /** Every question report the loop sent (issue #226) — ids only, never text. */
     questionsReported: string[];
     /** Every artifact chunk and manifest the loop sent, with the claim sequence each rode under. */
@@ -127,8 +125,6 @@ export function stubBoard(
         /** The board's answer to a reclaim renew; held when absent (issue #821). */
         renewReclaim?: (id: string, token: string, signal?: AbortSignal) => Promise<ReclaimRenewal>;
         githubToken?: string | null;
-        /** The board's answer to `leases` — null models a refused lookup (issue #344). */
-        leaseRows?: BoardLease[] | null | undefined;
         /** The board's answer to a question report (issue #226); held when absent. */
         questionVerdict?: QuestionVerdict;
         /** Every artifact call throws, as a board that is down does. */
@@ -161,7 +157,6 @@ export function stubBoard(
         reclaimAcks: [],
         reclaimAckTokens: [],
         reclaimRenewals: [],
-        leaseLookups: [],
         questionsReported: [],
         artifactChunks: [],
         artifactManifests: [],
@@ -185,10 +180,8 @@ export function stubBoard(
             board.questionsReported.push(questionId);
             return options.questionVerdict ?? 'held';
         },
-        async leases(ids) {
-            board.leaseLookups.push([...ids]);
-            if (options.leaseRows === undefined) return [];
-            return options.leaseRows;
+        async leases() {
+            return [];
         },
         async suspend(claimed) {
             board.suspended.push(claimed.id);
@@ -287,8 +280,6 @@ export function stubRunner(
         reclaim?: { ok: boolean; removed: boolean; reason: string | null } | null | undefined;
         /** Answers popped per reclaimWorktree call, falling back to `reclaim` (issue #344). */
         reclaimSequence?: ReclaimResult[];
-        /** The kubernetes orphan-claim reap; recorded in `reapAttempts` (issue #344). */
-        reapOrphanedClaim?: (job: BoardJob) => Promise<boolean>;
         /** The post-gate tree probe's answer, recorded in `probed`; absent probes as unknown (null). */
         probeTree?: string | null;
         /** The dead-service probe (issue #423); every call is counted in `deadServiceProbes`. */
@@ -318,9 +309,6 @@ export function stubRunner(
     synced: BoardJob[];
     reclaimed: BoardJob[];
     servicesReleased: string[];
-    reapAttempts: BoardJob[];
-    /** The claim incarnation each reap was handed (issue #821). */
-    reapClaims: { uid: string; holder: string }[];
     probed: BoardJob[];
     deadServiceProbes: number;
     startedServices: string[];
@@ -337,8 +325,6 @@ export function stubRunner(
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
     const runner = {
         servicesReleased: [] as string[],
-        reapAttempts: [] as BoardJob[],
-        reapClaims: [] as { uid: string; holder: string }[],
         probed: [] as BoardJob[],
         deadServiceProbes: 0,
         async deadServices() {
@@ -458,15 +444,6 @@ export function stubRunner(
             if (!options.runReview) throw new Error('no review scripted');
             return options.runReview(caller, review, session, control);
         },
-        ...(options.reapOrphanedClaim
-            ? {
-                  reapOrphanedClaim: async (orphanJob: BoardJob, claim: { uid: string; holder: string }) => {
-                      runner.reapAttempts.push(orphanJob);
-                      runner.reapClaims.push(claim);
-                      return options.reapOrphanedClaim?.(orphanJob) ?? false;
-                  },
-              }
-            : {}),
     };
     return runner;
 }

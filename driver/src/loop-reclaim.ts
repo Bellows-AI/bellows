@@ -3,11 +3,8 @@ import { withBoardRetry } from './board-retry.js';
 import type { DriverConfig } from './config.js';
 import type { Runner } from './runner.js';
 import type { ReclaimResult } from './publish.js';
-import { TERMINAL_JOB_STATUSES } from './reaper.js';
 import { CLAUDE_CODE } from './executors.js';
 
-/** Whole minutes are as fine as a claim's age needs to read; the log line rounds up. */
-const MS_PER_MINUTE = 60_000;
 const MS_PER_SECOND = 1_000;
 /** The heartbeat's pace (`loop-attempt.ts`): a third of the lease, never under a second. */
 const MIN_RENEW_PERIOD_MS = 1_000;
@@ -143,19 +140,11 @@ export async function whileReclaimRenewed<T>(
 
 /** Everything one claimed reclaim row needs from the loop. `failureLog` is the loop's own throttle state. */
 export interface ReclaimContext extends RenewContext {
-    board: Pick<Board, 'leases' | 'ackReclaim' | 'renewReclaim'>;
+    board: Pick<Board, 'ackReclaim' | 'renewReclaim'>;
     runner: Runner;
     config: DriverConfig;
     /** The last failure digest logged per thread root — see `loop.ts`'s `reclaimFailureLog`. */
     failureLog: Map<string, string>;
-    /**
-     * Whether the loop has a verdict-time reclaim of this root in flight — the one legitimate
-     * live holder of the root's claim this queue path can race (`report()` holds the claim for
-     * its whole removal, and a second done can queue a row for the same root meanwhile). True
-     * skips the orphan arm: the in-flight reclaim releases the claim itself when it settles,
-     * and the row is simply offered again.
-     */
-    inFlightReclaim: (rootId: string) => boolean;
 }
 
 /** Logs a reclaim failure only when what refused has changed since the last logged line. */
@@ -163,44 +152,6 @@ function logReclaimFailure(ctx: ReclaimContext, reclaim: Reclaim, digest: string
     if (ctx.failureLog.get(reclaim.rootJobId) === digest) return;
     ctx.failureLog.set(reclaim.rootJobId, digest);
     ctx.log(message);
-}
-
-/**
- * The orphaned-claim proof and reap (issue #344). A reclaim refused BY THE CHECKOUT CLAIM is
- * only interesting when the holder can never let go: asks the board about the root job —
- * absent, or terminal, means no attempt of that thread exists or can ever come, so the claim
- * is a leak from a driver that died holding it. Anything else (a live row, a refused lookup)
- * cannot prove the leak, and nothing is reaped — the failure logs, throttled, and a later
- * offer asks again. The reap itself is the runner's uid-preconditioned delete; when it lands,
- * the caller retries the removal once. Answers true only when the claim was reaped AND the
- * removal should be retried.
- */
-async function clearOrphanedClaim(
-    ctx: ReclaimContext,
-    reclaim: Reclaim,
-    removed: BoardJob,
-    heldClaim: NonNullable<ReclaimResult['heldClaim']>
-): Promise<boolean> {
-    const leases = await ctx.board.leases([reclaim.rootJobId]).catch(() => null);
-    if (leases === null) return false;
-    const row = leases.find((lease) => lease.id === reclaim.rootJobId);
-    if (row !== undefined && !TERMINAL_JOB_STATUSES.includes(row.status)) return false;
-    // Only an acquisition that still owns the row may reap (issue #821): a stale one's proof is
-    // somebody else's to act on.
-    if (!(await reclaimStillOwned(ctx, reclaim))) return false;
-    // The incarnation the refusal read, carried through (issue #821): a claim replaced since the
-    // refusal — a reopen's live claimant — is never the one reaped.
-    if (!(await ctx.runner.reapOrphanedClaim?.(removed, heldClaim))) return false;
-    const holder = row === undefined ? 'the board has no row for it' : `its row is ${row.status}`;
-    const age =
-        heldClaim.createdMs === null
-            ? 'age unknown'
-            : `held for ${Math.max(1, Math.round((Date.now() - heldClaim.createdMs) / MS_PER_MINUTE))}m`;
-    ctx.log(
-        `reclaim ${reclaim.id}: orphaned checkout claim ${heldClaim.name} — claim ` +
-            `${heldClaim.claimSeq ?? 'unknown'}, ${age}, ${holder}. The claim was reaped; retrying the removal once.`
-    );
-    return true;
 }
 
 /** What a verdict-time reclaim needs: the renewal's context, the ack and the runner's removal. */
@@ -265,22 +216,19 @@ async function ackSettledReclaim(ctx: ReclaimContext, reclaim: Reclaim): Promise
  * tree is reclaimed with the same runner call a terminal thread's report() uses, fed the job
  * `reclaimJob` synthesises from the row.
  *
- * Each removal runs under the row's renewed lease (`whileReclaimRenewed`), and none starts — nor
- * the orphaned-claim reap — unless a renew just answered that this acquisition still owns the row.
+ * The removal runs under the row's renewed lease (`whileReclaimRenewed`), and does not start unless
+ * a renew just answered that this acquisition still owns the row.
  * A removed thread has no follow-ups — every row was deleted — so there is no reclaim barrier
  * entry to take here: nothing can claim that root again, and this loop's owns each root it is
  * handed once. A refused tree or a throw — in the reclaim or its ack — simply skips the ack,
  * and the row is offered again when its lease expires; a refused tree also stays on the disk,
- * exactly as a refused terminal reclaim leaves it. A refusal the checkout CLAIM answered goes
- * through the orphaned-claim proof first (issue #344), so a claim nothing else can ever
- * release does not turn this row into a log line every five minutes forever.
+ * exactly as a refused terminal reclaim leaves it.
  */
 export async function processReclaim(ctx: ReclaimContext, reclaim: Reclaim): Promise<void> {
     const removed = reclaimJob(reclaim);
-    const remove = () => whileReclaimRenewed(ctx, reclaim, () => ctx.runner.reclaimWorktree(removed));
     let outcome: ReclaimResult;
     try {
-        const renewed = await remove();
+        const renewed = await whileReclaimRenewed(ctx, reclaim, () => ctx.runner.reclaimWorktree(removed));
         if (!renewed.held) return;
         outcome = renewed.value;
     } catch (e) {
@@ -292,33 +240,11 @@ export async function processReclaim(ctx: ReclaimContext, reclaim: Reclaim): Pro
         );
         return;
     }
-    if (
-        !outcome.ok &&
-        outcome.heldClaim &&
-        ctx.runner.reapOrphanedClaim &&
-        !ctx.inFlightReclaim(reclaim.rootJobId) &&
-        (await clearOrphanedClaim(ctx, reclaim, removed, outcome.heldClaim))
-    ) {
-        try {
-            const renewed = await remove();
-            if (!renewed.held) return;
-            outcome = renewed.value;
-        } catch (e) {
-            logReclaimFailure(
-                ctx,
-                reclaim,
-                `retry throw: ${(e as Error).message}`,
-                `reclaim ${reclaim.id}: the retry after the orphaned-claim reap threw, ` +
-                    `leaving it to the lease: ${(e as Error).message}`
-            );
-            return;
-        }
-    }
     if (!outcome.ok) {
         logReclaimFailure(
             ctx,
             reclaim,
-            `${outcome.reason ?? ''}|${outcome.heldClaim?.name ?? ''}`,
+            outcome.reason ?? '',
             `reclaim ${reclaim.id}: the task worktree could not be reclaimed: ${outcome.reason}`
         );
         return;

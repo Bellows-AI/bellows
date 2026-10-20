@@ -22,17 +22,10 @@ export const isSeq = (value: unknown): value is string =>
 export const isCommandMark = (value: unknown): value is string =>
     typeof value === 'string' && /^[0-9a-f]{16}$/.test(value);
 /**
- * Kubernetes only: the checkout claim's holder a reclaim group serves, on its Job and its pod
- * template. The group's own lease token is random per invocation, so its names are never reused;
- * this label is how a retry, an orphaned claim's reap and the reaper find what that holder left.
+ * Kubernetes only: the checkout claim's holder a group serves, on its Job and its pod template.
+ * The reaper finds what a holder left by it.
  */
 export const HOLDER_LABEL = 'factory.holder';
-/**
- * Kubernetes only: the annotation an orphaned-claim reap puts on the checkout claim before it lists
- * the holder's groups (issue #821), its value the reaping acquisition's token. A reclaim refuses to
- * start a group under a revoked claim.
- */
-export const REVOKED_MARK = 'factory.revoked';
 /**
  * Why the driver ended a run itself (`termination.ts`), one mark per reason, its detail the value:
  * on a kubernetes runner Job's annotations, a docker kill marker volume's labels.

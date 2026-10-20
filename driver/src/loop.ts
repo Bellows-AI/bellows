@@ -298,7 +298,6 @@ export function createLoop({
                 log,
                 sleep,
                 failureLog: reclaimFailureLog,
-                inFlightReclaim: (root) => reclaims.has(root),
             },
             reclaim
         );

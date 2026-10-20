@@ -317,13 +317,13 @@ describe('the task group of one attempt', () => {
 
         const outcome = await running;
 
-        expect(kinds(s)).toEqual(['sync', 'go']);
+        // The close-time turn readout is a `probe` step of the task pod, not a Job of its own.
+        expect(kinds(s)).toEqual(['sync', 'go', 'probe']);
         // The supervisor reported and serves on: its channel stays open for the steps after it.
         expect(s.released).toEqual([]);
         expect(outcome).toMatchObject({ exitCode: 0, timedOut: false, started: true });
         // The Job is still the attempt's: nothing deleted it, and nothing else was created.
-        // (The close-time turn readout is a Job of its own until its own issue retires it.)
-        expect(api.created.deletedJobs.filter((name) => !name.startsWith('factory-cturns-'))).toEqual([]);
+        expect(api.created.deletedJobs).toEqual([]);
         expect(api.created.jobs.filter((created) => created.name === runnerJobName(job))).toHaveLength(1);
     });
 

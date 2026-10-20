@@ -16,16 +16,8 @@ import { adoptFinishedRunner } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from './close-read.js';
 import { killedOutcome, ledgerOf, RunnerKilled, RunnerVanished, vanishedOutcome } from './k8s-kill.js';
 import { jobPath, jobPodsPath } from './k8s-auxspec.js';
-import { acquireClaim, type ObservedClaim, releaseClaimAfterGroupEnd, revokeClaim } from './k8s-fence.js';
-import {
-    ensureGroup,
-    finishGroup,
-    forgetGroup,
-    groupsOf,
-    holderGroupsOf,
-    runnerGroupOf,
-    takeGroupDown,
-} from './k8s-group.js';
+import { acquireClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
+import { ensureGroup, finishGroup, forgetGroup, groupsOf, runnerGroupOf, takeGroupDown } from './k8s-group.js';
 import { claudeTurnsStep, opencodeReadoutStep, runnerName } from './k8s-podspec.js';
 import { pollRunnerJobUntilTerminal, readJobStatus, readRunnerVerdict } from './k8s-poll.js';
 import {
@@ -428,26 +420,6 @@ async function syncCheckout(
 }
 
 /**
- * Deletes an orphaned checkout claim (issue #344): a claim whose holder job the board no longer
- * knows as live, left behind by a driver that died holding it — the one leak the fence's
- * release-by-next-claimant cannot heal, because no later claimant of that job ever comes. The
- * claim is the incarnation the refused reclaim observed (issue #821): one replaced since — a
- * reopen's live claimant — is rejected before anything is ended. The claim is revoked first
- * (`revokeClaim`, under the reaping acquisition's token): a reclaim of the holder whose group was
- * not yet created when the groups are listed below then refuses to start it. Both groups its
- * holder can have left (its attempt's and its reclaim's, derived from the claim alone) are ended
- * the acknowledged way, and the uid-preconditioned delete runs only once both are confirmed ended.
- * Answers false otherwise — a refused revoke included: the caller retries on a later offer, and a
- * false negative costs one more throttled log.
- */
-async function reapOrphanedClaim(deps: K8sDeps, job: BoardJob, observed: ObservedClaim): Promise<boolean> {
-    if (!(await revokeClaim(deps, job, observed))) return false;
-    const groups = await holderGroupsOf(deps, job, observed.holder);
-    if (groups === null) return false;
-    return releaseClaimAfterGroupEnd(deps, job, { groups, observed });
-}
-
-/**
  * The terminal reclaim is an acknowledged no-op (issue #775): the thread's tree lives on its own task
  * volume, which only the reaper may delete, so there is no linked worktree to remove.
  */
@@ -512,8 +484,5 @@ export function createKubernetesRunner(
         releaseFence: async (job: BoardJob) => {
             await releaseClaimAfterGroupEnd(deps, job);
         },
-        // The orphaned-claim reap (issue #344): uid-preconditioned, by the claim's derivable
-        // name — the fence's own GET/DELETE grants, nothing new.
-        reapOrphanedClaim: (job: BoardJob, observed: ObservedClaim) => reapOrphanedClaim(deps, job, observed),
     };
 }

@@ -7719,44 +7719,6 @@ describe('claims of an unconfirmed group (#821)', () => {
         expect(claimDeletes(calls)).toHaveLength(1);
     });
 
-    // Step 6 + F3: the orphaned claim's holder can have left a runner group and a reclaim group;
-    // both are derived from the claim alone and confirmed gone before the claim is deleted.
-    it('keeps an orphaned claim while its holder still lists writer pods, and reaps it once both groups are gone', async () => {
-        let podsLeft = true;
-        const { request, calls } = routed((method, path) =>
-            method === 'GET' && podsLeft && decodeURIComponent(path).endsWith(`factory.lease=${NEW_TOKEN}`)
-                ? { status: 200, body: JSON.stringify({ items: [{ metadata: { name: 'still-writing' } }] }) }
-                : undefined
-        );
-        await request('POST', configmapsPath, {
-            metadata: { name: claimName(repoJob) },
-            data: { holder: NEW_TOKEN, claimSeq: '3' },
-        });
-        const read = JSON.parse((await request('GET', claimPathFor(repoJob.id))).body);
-        const observed = { uid: read.metadata.uid as string, holder: NEW_TOKEN };
-        const r = build(request);
-
-        await expect(r.reapOrphanedClaim!(repoJob, observed)).resolves.toBe(false);
-        expect(claimDeletes(calls)).toEqual([]);
-        const deletedJob = (jobName: string) =>
-            calls.some((call) => call.method === 'DELETE' && call.path.startsWith(`${jobPath(namespace, jobName)}?`));
-        expect(deletedJob(runnerJobName({ ...repoJob, leaseToken: NEW_TOKEN }))).toBe(true);
-        // The holder's reclaim groups were looked up by its label: none was listed, so none was ended.
-        expect(
-            calls.some(
-                (call) =>
-                    call.method === 'GET' &&
-                    call.path.startsWith(`${jobsPath(namespace)}?`) &&
-                    decodeURIComponent(call.path).includes(`factory.holder=${NEW_TOKEN}`)
-            )
-        ).toBe(true);
-        expect(calls.some((call) => call.method === 'DELETE' && call.path.includes('factory-reclaim-'))).toBe(false);
-
-        podsLeft = false;
-        await expect(r.reapOrphanedClaim!(repoJob, observed)).resolves.toBe(true);
-        expect(claimDeletes(calls)).toHaveLength(1);
-    });
-
     // Step 7: the fence's sweep deletes a leftover lease's Secrets, acknowledged, before its Job;
     // a refused one deletes nothing that round and leaves the Job listed for the next.
     it("sweeps a leftover lease's Secrets before its Job, and a refused one leaves the Job for the next round", async () => {
@@ -8447,10 +8409,6 @@ describe('teardown ownership in time and incarnation (#821)', () => {
     const SESSION_OF = { id: SESSION, resume: false };
     const secretsBase = `/api/v1/namespaces/${namespace}/secrets`;
     const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
-    const endpoint = {
-        open: async () => ({ url: 'http://driver:8130', token: 'reclaim-token' }),
-        close: () => undefined,
-    };
     const claimDeletes = (calls: Call[]) =>
         calls.filter((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id));
     const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
@@ -8495,154 +8453,6 @@ describe('teardown ownership in time and incarnation (#821)', () => {
         unblock();
         await finishing;
         expect(claimDeletes(calls)).toHaveLength(1);
-    });
-
-    /**
-     * A cluster that names every incarnation by uid, honours delete and patch preconditions, and
-     * lists a live pod for every Job it holds that has not been deleted: the writers its holder
-     * label and its lease select.
-     */
-    const incarnations = () => {
-        const calls: Call[] = [];
-        const serve = claimServer();
-        const jobs = new Map<string, { uid: string; labels: Record<string, string> }>();
-        const secrets = new Map<string, string>();
-        let uids = 0;
-        let loseNextCreate: 'job' | 'secret' | null = null;
-        let failNextCreate: 'job' | 'secret' | null = null;
-        const precondition = (body: unknown) =>
-            (body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid ??
-            (body as { metadata?: { uid?: string } } | undefined)?.metadata?.uid;
-        const livePods = (selector: string) => {
-            const terms = Object.fromEntries(
-                selector
-                    .split(',')
-                    .filter((term) => term.includes('=') && !term.includes('!'))
-                    .map((term) => term.split('=') as [string, string])
-            );
-            return [...jobs.values()]
-                .filter(({ labels }) => Object.entries(terms).every(([key, value]) => labels[key] === value))
-                .map((_, at) => ({ metadata: { name: `pod-${at}` }, status: { phase: 'Running' } }));
-        };
-        const request: K8sRequest = async (method, path, body) => {
-            calls.push({ method, path, body });
-            const claim = serve(method, path, body);
-            if (claim) return claim;
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
-                const selector = decodeURIComponent(path.split('labelSelector=')[1] ?? '');
-                return { status: 200, body: JSON.stringify({ items: livePods(selector) }) };
-            }
-            const name = path.split('?')[0]!.split('/').pop()!;
-            const isJobs = path.startsWith(jobsPath(namespace));
-            const isSecrets = path.startsWith(secretsBase);
-            if (!isJobs && !isSecrets) return { status: 404, body: '{}' };
-            if (method === 'POST') {
-                const kind = isJobs ? 'job' : 'secret';
-                if (failNextCreate === kind) {
-                    failNextCreate = null;
-                    return { status: 500, body: 'unavailable' };
-                }
-                const uid = `uid-${++uids}`;
-                const meta = (body as { metadata: { name: string; labels?: Record<string, string> } }).metadata;
-                if (isJobs) jobs.set(meta.name, { uid, labels: meta.labels ?? {} });
-                else secrets.set(meta.name, uid);
-                if (loseNextCreate === kind) {
-                    loseNextCreate = null;
-                    throw new Error('socket hang up');
-                }
-                return { status: 201, body: JSON.stringify({ metadata: { uid } }) };
-            }
-            if (path.includes('?labelSelector')) {
-                const selector = decodeURIComponent(path.split('labelSelector=')[1] ?? '');
-                return {
-                    status: 200,
-                    body: JSON.stringify({
-                        items: isJobs
-                            ? [...jobs.entries()]
-                                  .filter(([, job]) =>
-                                      selector
-                                          .split(',')
-                                          .filter((term) => term.includes('=') && !term.includes('!'))
-                                          .every((term) => {
-                                              const [key, value] = term.split('=');
-                                              return job.labels[key!] === value;
-                                          })
-                                  )
-                                  .map(([jobName, job]) => ({
-                                      metadata: { name: jobName, uid: job.uid, labels: job.labels },
-                                  }))
-                            : [],
-                    }),
-                };
-            }
-            const current = isJobs ? jobs.get(name)?.uid : secrets.get(name);
-            if (method === 'DELETE' || method === 'PATCH') {
-                if (!current) return { status: 404, body: '{}' };
-                const want = precondition(body);
-                if (want && want !== current) return { status: 409, body: '{"reason":"Conflict"}' };
-                if (method === 'DELETE') (isJobs ? jobs : secrets).delete(name);
-                return { status: 200, body: '{}' };
-            }
-            if (isJobs && method === 'GET') {
-                // Pending: a Job whose end went unconfirmed was suspended, never finished, and its pods still run.
-                return current
-                    ? { status: 200, body: JSON.stringify({ metadata: { uid: current }, status: {} }) }
-                    : { status: 404, body: '{}' };
-            }
-            return { status: 404, body: '{}' };
-        };
-        const reclaimNames = () => [...jobs.keys()].filter((name) => name.startsWith('factory-reclaim-'));
-        return {
-            request,
-            calls,
-            jobs,
-            secrets,
-            reclaimNames,
-            loseCreate: (kind: 'job' | 'secret') => {
-                loseNextCreate = kind;
-            },
-            failCreate: (kind: 'job' | 'secret') => {
-                failNextCreate = kind;
-            },
-        };
-    };
-
-    const reclaimRunner = (request: K8sRequest, steps: ReturnType<typeof fakeSteps>) =>
-        supervisedRunner(config, request, async () => {}, { steps: steps.sink, endpoint });
-    const reclaimed = () =>
-        fakeSteps((step) => stepOk(step.kind === 'reclaim' ? '{"ok":true,"removed":true,"reason":null}\n' : ''));
-
-    const claimOf = async (request: K8sRequest) => {
-        const read = JSON.parse((await request('GET', claimPathFor(repoJob.id))).body);
-        return {
-            observed: { uid: read.metadata.uid as string, holder: repoJob.leaseToken },
-            annotations: (read.metadata.annotations ?? {}) as Record<string, string>,
-        };
-    };
-    const reaper = { ...repoJob, leaseToken: NEW_TOKEN };
-
-    it('reaps nothing when its revoke is refused: the claim was replaced since it was read', async () => {
-        const cluster = incarnations();
-        await cluster.request('POST', configmapsPath, {
-            metadata: { name: claimName(repoJob) },
-            data: { holder: repoJob.leaseToken, claimSeq: '1' },
-        });
-        const { observed } = await claimOf(cluster.request);
-        const before = cluster.calls.length;
-
-        expect(
-            await reclaimRunner(cluster.request, reclaimed()).reapOrphanedClaim!(reaper, {
-                ...observed,
-                uid: 'claim-uid-replaced',
-            })
-        ).toBe(false);
-
-        const reap = cluster.calls.slice(before);
-        expect(reap.filter((call) => call.method === 'DELETE')).toEqual([]);
-        expect(reap.some((call) => call.method === 'GET' && call.path.startsWith(`${jobsPath(namespace)}?`))).toBe(
-            false
-        );
-        expect((await claimOf(cluster.request)).annotations).toEqual({});
     });
 
     it('answers a read adoption whose finished lease left services whose Secrets cannot be deleted', async () => {
@@ -8831,45 +8641,6 @@ describe('one end, one identity (#821)', () => {
                 (call.body as { spec?: { suspend?: boolean } }).spec?.suspend === false
         );
         expect(resume?.body).toEqual({ metadata: { uid: 'job-uid-1' }, spec: { suspend: false } });
-    });
-
-    it('keeps an orphaned claim while a reclaim pod of its holder still runs, its Job already gone', async () => {
-        const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-        let running = true;
-        const { request, calls } = routed((method, path) => {
-            const selector = decodeURIComponent(path);
-            if (
-                method === 'GET' &&
-                running &&
-                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
-                selector.includes(`factory.holder=${NEW_TOKEN}`)
-            ) {
-                return {
-                    status: 200,
-                    body: JSON.stringify({
-                        items: [{ metadata: { name: 'reclaim-pod' }, status: { phase: 'Running' } }],
-                    }),
-                };
-            }
-        });
-        await request('POST', configmapsPath, {
-            metadata: { name: claimName(repoJob) },
-            data: { holder: NEW_TOKEN, claimSeq: '3' },
-        });
-        const read = JSON.parse((await request('GET', claimPathFor(repoJob.id))).body);
-        const observed = { uid: read.metadata.uid as string, holder: NEW_TOKEN };
-        const r = supervisedRunner(
-            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
-            request,
-            async () => {}
-        );
-        const claimDeletes = () =>
-            calls.filter((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id));
-
-        await expect(r.reapOrphanedClaim!(repoJob, observed)).resolves.toBe(false);
-        expect(claimDeletes()).toEqual([]);
-        running = false;
-        await expect(r.reapOrphanedClaim!(repoJob, observed)).resolves.toBe(true);
     });
 });
 
