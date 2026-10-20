@@ -6,16 +6,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { makeOriginClone } from './fixtures/git-worktree-support.js';
+import { makeOrigin } from './fixtures/git-worktree-support.js';
 import { hasGit, hasOpenssl } from './fixtures/scripts-support.js';
 
 const execFile = promisify(execFileCb);
 
 const UNAUTHORIZED_STATUS = 401;
-const FIXTURE_CONFIG = ['-c', 'init.defaultBranch=main'];
-
-const git = (cwd: string, ...args: string[]): string =>
-    execFileSync('git', [...FIXTURE_CONFIG, ...args], { cwd, encoding: 'utf8' }).trim();
 
 /** The marker-writing helper: the same shape as the shipped credential-helper.sh (a `!f(){
  * ... }; f` shell snippet passed as the helper CODE), with a side effect git's auth dance
@@ -25,7 +21,6 @@ const markerHelper = (marker: string): string =>
 
 interface CredentialHelperFixture {
     dir: () => string;
-    clone: () => string;
     bare: () => string;
     // ASYNC on purpose: the 401 server lives on THIS worker's event loop, and a synchronous
     // execFile would block the very loop the fetch needs to answer the credential round-trips —
@@ -40,19 +35,19 @@ interface CredentialHelperFixture {
  */
 function credentialHelperFixture(): CredentialHelperFixture {
     let dir: string;
-    let clone: string;
+    let remote: string;
     let bare: string;
     let server: ReturnType<typeof createHttpsServer>;
 
     const sync = async (env: Record<string, string>): Promise<{ ok: boolean; reason: string | null }> => {
         const { stdout } = await execFile(
             'node',
-            [join(import.meta.dirname, '..', 'src', 'scripts', 'git-worktree.cjs')],
+            [join(import.meta.dirname, '..', 'src', 'scripts', 'task-checkout.cjs')],
             {
                 env: {
                     ...process.env,
-                    REPO: clone,
-                    WORKTREE: join(dir, 'wt'),
+                    CHECKOUT: join(dir, 'task', 'cred'),
+                    REMOTE: remote,
                     BRANCH: 'factory/99999999-9999-4999-8999-999999999999',
                     // Only CRED_HELPER may answer the credential prompt: the host's global/system
                     // helpers would muddy exactly the wiring under test.
@@ -74,8 +69,8 @@ function credentialHelperFixture(): CredentialHelperFixture {
 
     beforeEach(async () => {
         dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-cred-')));
-        clone = join(dir, 'clone');
-        ({ bare } = makeOriginClone(dir, clone, 'cred'));
+        mkdirSync(join(dir, 'task'));
+        ({ bare } = makeOrigin(dir, 'cred'));
         // A throwaway self-signed certificate for the loopback https remote — the transport the
         // token would really leave over.
         const key = join(dir, 'key.pem');
@@ -109,13 +104,7 @@ function credentialHelperFixture(): CredentialHelperFixture {
             }
         );
         await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-        git(
-            clone,
-            'remote',
-            'set-url',
-            'origin',
-            `https://127.0.0.1:${(server.address() as AddressInfo).port}/repo.git`
-        );
+        remote = `https://127.0.0.1:${(server.address() as AddressInfo).port}/repo.git`;
     });
 
     afterEach(async () => {
@@ -125,12 +114,12 @@ function credentialHelperFixture(): CredentialHelperFixture {
         await new Promise((resolve) => server.close(resolve));
     });
 
-    return { dir: () => dir, clone: () => clone, bare: () => bare, sync };
+    return { dir: () => dir, bare: () => bare, sync };
 }
 
 /**
- * The sync fetch's credential wiring, against real git — the same offline shape as
- * worktree.test.ts, except the remote: an HTTPS URL, because the token-leak finding is ABOUT the
+ * The checkout sync's credential wiring, against real git — the same offline shape as
+ * scripts-task-checkout.test.ts, except the remote: an HTTPS URL, because the token-leak finding is ABOUT the
  * transport a credential rides: the helper answers every credential request with the token, so
  * the suite must exercise the scheme the token would actually leave over. GIT_* config is pinned
  * to /dev/null so the host's own helpers (osxkeychain and friends) stay out of the dance
@@ -141,10 +130,10 @@ function credentialHelperFixture(): CredentialHelperFixture {
  * Split into two describe blocks for the line-count cap, sharing the fixture above: whether the
  * helper runs (and over which scheme) here, the argv-shape pins below.
  */
-describe.skipIf(!hasGit() || !hasOpenssl())('the sync fetch credential helper', () => {
+describe.skipIf(!hasGit() || !hasOpenssl())('the checkout sync credential helper', () => {
     const fx = credentialHelperFixture();
 
-    it('invokes the helper for the fetch when CRED_HELPER is set against an https origin', async () => {
+    it('invokes the helper for the clone when CRED_HELPER is set against an https origin', async () => {
         const marker = join(fx.dir(), 'helper-invoked');
         // The remote never authenticates, so the sync answers ok:false — the assertion is the
         // helper having RUN, which the marker proves.
@@ -158,24 +147,22 @@ describe.skipIf(!hasGit() || !hasOpenssl())('the sync fetch credential helper', 
         expect(existsSync(marker)).toBe(false);
     });
 
-    it('refuses the credentialed fetch when origin is not https, and never runs the helper', async () => {
-        // The remote URL is the member tree's state: a prior agent session can re-point origin
-        // at a cleartext or local transport, and the next sync must not hand it the token. The
-        // helper answers every credential request with the token, whatever host or scheme asks.
-        git(fx.clone(), 'remote', 'set-url', 'origin', `file://${fx.bare()}`);
+    it('refuses the credentialed clone when the remote is not https, and never runs the helper', async () => {
+        // The helper answers every credential request with the token, whatever host or scheme asks,
+        // so a cleartext or local remote must never be handed it.
         const marker = join(fx.dir(), 'helper-invoked');
-        const result = await fx.sync({ CRED_HELPER: markerHelper(marker) });
+        const result = await fx.sync({ CRED_HELPER: markerHelper(marker), REMOTE: `file://${fx.bare()}` });
         expect(result.ok).toBe(false);
         expect(result.reason).toContain('https');
         expect(existsSync(marker)).toBe(false);
     });
 });
 
-describe.skipIf(!hasGit() || !hasOpenssl())('the sync fetch credential helper: argv shape', () => {
+describe.skipIf(!hasGit() || !hasOpenssl())('the checkout sync credential helper: argv shape', () => {
     const fx = credentialHelperFixture();
     const EXECUTABLE_MODE = 0o755;
 
-    it('pins the credentialed fetch to same-host redirects (http.followRedirects=initial)', async () => {
+    it('pins the credentialed clone to same-host redirects (http.followRedirects=initial)', async () => {
         // The fetch's exact argv, captured by a recording `git` shim earlier in PATH that logs
         // each invocation and execs the real git — the redirect pin rides the same `-c` chain
         // as the helper, so the assertion is on the argv the script builds.
@@ -190,18 +177,17 @@ describe.skipIf(!hasGit() || !hasOpenssl())('the sync fetch credential helper: a
             PATH: `${shimDir}:${process.env.PATH}`,
         });
         const lines = readFileSync(log, 'utf8').split('\n').filter(Boolean);
-        expect(
-            lines.some((line) => line.includes('http.followRedirects=initial') && line.includes('fetch origin --prune'))
-        ).toBe(true);
+        expect(lines.some((line) => line.includes('http.followRedirects=initial') && line.includes(' clone '))).toBe(
+            true
+        );
     });
 
-    it('leaves the plain uncredentialed fetch ungated: a file:// origin still syncs', async () => {
+    it('leaves the plain uncredentialed fetch ungated: a file:// remote still clones', async () => {
         // The scheme gate exists to keep the TOKEN off non-https transports; with no token in
         // play the gate must not exist either — a public repo on any transport git can read
         // keeps its plain fetch.
-        git(fx.clone(), 'remote', 'set-url', 'origin', `file://${fx.bare()}`);
         const marker = join(fx.dir(), 'helper-invoked');
-        expect((await fx.sync({})).ok).toBe(true);
+        expect((await fx.sync({ REMOTE: `file://${fx.bare()}` })).ok).toBe(true);
         expect(existsSync(marker)).toBe(false);
     });
 });

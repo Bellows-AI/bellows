@@ -356,11 +356,8 @@ export interface Runner {
      * surviving thread branch (issue #58: git operations that touch the remote belong to the
      * task's beginning and end, never its middle). Called before the runner spawns, so a task
      * starts from the code it is meant to continue. Answers { ok: false, reason } rather than
-     * throwing; the loop turns that into the verdict — except a reason carrying the script's
-     * transient marker (TRANSIENT_SYNC_REASON, issue #307: lock contention on the shared
-     * checkout), which is infrastructure: the loop hands the claim back to the board (issue #559)
-     * and no verdict lands. An aborted `signal` (the attempt's stand-down) detaches the docker client only: a sync
-     * writes the worktree, so it is never killed mid-write, and kubernetes does not take the signal
+     * throwing; the loop turns that into the verdict. An aborted `signal` (the attempt's stand-down) detaches the docker client only: a
+     * sync writes the worktree, so it is never killed mid-write, and kubernetes does not take the signal
      * at all — the abandoned sync finishes and `releaseAbandonedSync` hands its claim back.
      * `githubToken` is the board's token minted for the starting claim's fetch; absent, the fetch
      * runs unauthenticated.

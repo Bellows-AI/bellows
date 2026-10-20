@@ -15,22 +15,14 @@ import type { RunOutcome, RunSession, Runner } from './runner.js';
 import { adoptFinishedRunner } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from './close-read.js';
 import { killedOutcome, ledgerOf, RunnerKilled, RunnerVanished, vanishedOutcome } from './k8s-kill.js';
-import { claimName, deleteJob, jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
-import {
-    acquireClaim,
-    type ObservedClaim,
-    readClaim,
-    readClaimObject,
-    releaseClaimAfterGroupEnd,
-    revokeClaim,
-} from './k8s-fence.js';
+import { deleteJob, jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
+import { acquireClaim, type ObservedClaim, releaseClaimAfterGroupEnd, revokeClaim } from './k8s-fence.js';
 import {
     ensureGroup,
     finishGroup,
     forgetGroup,
     groupsOf,
     holderGroupsOf,
-    reclaimInGroup,
     runnerGroupOf,
     takeGroupDown,
 } from './k8s-group.js';
@@ -67,7 +59,7 @@ import {
 } from './k8s-transport.js';
 import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
 import { reviewRunOf } from './review-step.js';
-import { repoPath, worktreeDir } from './publish.js';
+import { checkoutDir } from './publish.js';
 import type { ReclaimResult, SyncResult } from './publish.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import { type KillRecord, settleEnd } from './termination.js';
@@ -81,7 +73,6 @@ import {
 } from './supervised-steps.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
 import { KILL_WINDDOWN_MS, type SupervisorReport } from './supervisor-contract.js';
-import { parseRfc3339 } from './timestamps.js';
 
 /**
  * The kubernetes `Runner`: assembles the fence (`k8s-fence.ts`), the pollers (`k8s-poll.ts`) and
@@ -439,9 +430,7 @@ async function syncCheckout(
     session: RunSession | null = null,
     githubToken?: string
 ): Promise<SyncResult> {
-    const clone = repoPath(deps.config, job);
-    const worktree = worktreeDir(deps.config, job);
-    if (!clone || !worktree) return { ok: true, reason: null }; // nothing synced, nothing to fail either
+    if (!checkoutDir(job)) return { ok: true, reason: null }; // nothing synced, nothing to fail either
 
     await acquireClaim(deps, job);
     // A group that could not come up is thrown, typed when the pod's words prove why (`StartupRefused`,
@@ -468,31 +457,6 @@ async function syncCheckout(
 }
 
 /**
- * The checkout claim that held an acquire off, read for the refusal's report (issue #344): its
- * name, the holder attempt the claim carries, and the apiserver's creation stamp. The loop logs
- * these and — once the board proves the holder job gone — decides the reap. Undefined when the
- * claim cannot be read (gone in between, refused, a transport blink): the refusal message the
- * acquire threw already names what it knows, and this read only adds to it.
- */
-async function heldClaim(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult['heldClaim']> {
-    const read = await readClaimObject(deps, job, true);
-    if (read.kind !== 'value') return undefined;
-    const claim = read.value;
-    const uid = claim.metadata?.uid;
-    const holder = claim.data?.holder;
-    // A claim that cannot name its incarnation and holder is nothing a recovery may act on.
-    if (!uid || !holder) return undefined;
-    const createdAt = claim.metadata?.creationTimestamp;
-    return {
-        name: claimName(job),
-        claimSeq: claim.data?.claimSeq ?? null,
-        createdMs: createdAt === undefined ? null : parseRfc3339(createdAt),
-        uid,
-        holder,
-    };
-}
-
-/**
  * Deletes an orphaned checkout claim (issue #344): a claim whose holder job the board no longer
  * knows as live, left behind by a driver that died holding it — the one leak the fence's
  * release-by-next-claimant cannot heal, because no later claimant of that job ever comes. The
@@ -513,45 +477,11 @@ async function reapOrphanedClaim(deps: K8sDeps, job: BoardJob, observed: Observe
 }
 
 /**
- * The terminal reclaim (issue #47), the kubernetes shape: the remove script as a supervised step
- * (in a supervisor-only group — the thread has no attempt to ask), UNDER the checkout claim — the
- * same `acquireClaim` protocol the sync and the runner use.
- * An acquire that answers 409 means a LIVE attempt holds the checkout, and the reclaim SKIPS:
- * costing the reclaim is fine by contract, costing a live run is not. The refusal carries the
- * claim's identity (`heldClaim`) so the loop can name it, and reap it when the board proves the
- * holder gone (issue #344).
+ * The terminal reclaim is an acknowledged no-op (issue #775): the thread's tree lives on its own task
+ * volume, which only the reaper may delete, so there is no linked worktree to remove.
  */
-async function reclaimWorktree(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult> {
-    const clone = repoPath(deps.config, job);
-    const worktree = worktreeDir(deps.config, job);
-    if (!clone || !worktree) return { ok: true, removed: false, reason: null };
-    try {
-        await acquireClaim(deps, job);
-    } catch (e) {
-        // A 409 the acquire could not resolve by takeover is a live attempt on the checkout
-        // (acquireClaim says which and why in its message).
-        const refused: ReclaimResult = {
-            ok: false,
-            removed: false,
-            reason: `the checkout is held (${worktree}): ${(e as Error).message}`,
-        };
-        const claim = await heldClaim(deps, job);
-        if (claim) refused.heldClaim = claim;
-        return refused;
-    }
-    // The incarnation this reclaim took: its holder token is this acquisition's own (issue #821),
-    // and the uid tells it apart from one an earlier invocation under the same token took.
-    const acquired = await readClaim(deps, job);
-    if (acquired?.holder !== job.leaseToken) {
-        return { ok: false, removed: false, reason: 'the checkout claim this reclaim took could not be read back' };
-    }
-    try {
-        // The group is ended inside, acknowledged — THEN the claim goes, unless that end is
-        // unconfirmed, and only the incarnation this invocation took.
-        return await reclaimInGroup(deps, job, acquired);
-    } finally {
-        await releaseClaimAfterGroupEnd(deps, job, { observed: acquired, holderWriters: true });
-    }
+async function reclaimWorktree(): Promise<ReclaimResult> {
+    return { ok: true, removed: false, reason: null };
 }
 
 /**
@@ -604,7 +534,7 @@ export function createKubernetesRunner(
         syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
             syncCheckout(deps, job, session ?? null, githubToken),
         finish: (job: BoardJob) => finishGroup(deps, job),
-        reclaimWorktree: (job: BoardJob) => reclaimWorktree(deps, job),
+        reclaimWorktree,
         // The loop's hand-back of the checkout claim (`loop-fence.ts`) for an attempt that ends
         // without a group's end to give it back: a group still live keeps it for its `finish`
         // (issue #821), one whose end is unconfirmed keeps it for good.

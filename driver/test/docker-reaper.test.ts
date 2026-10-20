@@ -255,7 +255,7 @@ describe('the docker reaper arm: reap', () => {
  * Issue #821 D16: a task group whose attempt can never tear itself down — the supervisor, the
  * exporter, the agent and the four mailbox volumes a dead driver left — is the reaper's, found by
  * the role label and the job+lease volume labels. A scan that could not read every list is no
- * scan at all, a reclaim group is out of scope, and a finished runner nobody read is kept.
+ * scan at all, and a finished runner nobody read is kept.
  */
 describe('the docker reaper arm: task groups (#821 D16)', () => {
     const OLD = '2026-09-01 00:00:00 +0000 UTC';
@@ -268,19 +268,18 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         lease: string;
         role: string;
         state: string;
-        reclaim?: boolean;
     }) =>
         JSON.stringify({
             ID: fields.id,
             Names: fields.name,
-            Labels: `factory.job=${fields.jobId},factory.lease=${fields.lease},factory.role=${fields.role}${fields.reclaim ? ',factory.reclaim=true' : ''}`,
+            Labels: `factory.job=${fields.jobId},factory.lease=${fields.lease},factory.role=${fields.role}`,
             CreatedAt: OLD,
             State: fields.state,
         });
-    const volumeLine = (name: string, jobId: string, lease: string, reclaim = false) =>
+    const volumeLine = (name: string, jobId: string, lease: string) =>
         JSON.stringify({
             Name: name,
-            Labels: `factory.job=${jobId},factory.lease=${lease}${reclaim ? ',factory.reclaim=true' : ''}`,
+            Labels: `factory.job=${jobId},factory.lease=${lease}`,
         });
 
     /** A daemon holding role-labelled containers and job+lease volumes; `refuse` names one verb to refuse. */
@@ -300,7 +299,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         };
         return { execDocker, calls };
     };
-    const group = (lease = LEASE, state = 'running', reclaim = false) => {
+    const group = (lease = LEASE, state = 'running') => {
         const named = pair(JOB, lease);
         return {
             containers: [
@@ -311,7 +310,6 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
                     lease,
                     role: 'supervisor',
                     state: 'exited',
-                    reclaim,
                 }),
                 roleLine({
                     id: hexId(`agent-${lease}`),
@@ -320,12 +318,11 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
                     lease,
                     role: 'agent',
                     state,
-                    reclaim,
                 }),
             ],
             volumes: [
-                volumeLine(`factory-in-${JOB}-${lease}`, JOB, lease, reclaim),
-                volumeLine(`factory-kill-timeout-${JOB}-${lease}`, JOB, lease, reclaim),
+                volumeLine(`factory-in-${JOB}-${lease}`, JOB, lease),
+                volumeLine(`factory-kill-timeout-${JOB}-${lease}`, JOB, lease),
             ],
         };
     };
@@ -491,13 +488,6 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
             { kind: 'container', name: hexId(`agent-${LEASE}`), unread: true, runner: true },
             { kind: 'volume', name: `factory-kill-timeout-${JOB}-${LEASE}` },
         ]);
-    });
-
-    it('leaves a reclaim group out of scope, containers and volumes alike', async () => {
-        const g = group(LEASE, 'exited', true);
-        const { execDocker } = daemon(g.containers, g.volumes);
-
-        await expect(createDockerReaper(execDocker).scan()).resolves.toEqual([]);
     });
 
     it('removes the containers before the volumes they mount', async () => {

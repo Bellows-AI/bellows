@@ -5,19 +5,19 @@ import {
     REVIEWER_HOME,
     reviewerDataName,
     reviewerTranscriptName,
-    reviewerTreeDir,
+    REVIEWER_TREE_PATH,
     runnerClaimEnv,
 } from './claim.js';
 import { claudeExportScript, opencodeReadoutScript } from './container-scripts.js';
 import { CLAUDE_CODE } from './executors.js';
 import { parseLastJsonLine } from './json-parse.js';
 import {
-    gitWorktreeScript,
-    repoPath,
+    taskCheckoutScript,
     reviewWorktreeDir,
     SYNC_DEADLINE_MS,
     type SyncResult,
     worktreeBranch,
+    checkoutDir,
 } from './publish.js';
 import { reviewerPlan } from './runner-plan.js';
 import { OPENCODE_EXPORT_LIMIT, type RunSession } from './runner.js';
@@ -58,13 +58,9 @@ export const reviewBudgetMs = (config: { jobTimeoutMs: number }, review: ReviewC
  * The restore step's env: the script's restore switch and the snapshot ref, the clone and the
  * worktree — and nothing that touches a remote.
  */
-export function reviewRestoreEnv(
-    host: Pick<StepHost, 'config'>,
-    caller: BoardJob,
-    review: ReviewClaim
-): Record<string, string> | null {
-    const clone = repoPath(host.config, review);
-    const worktree = reviewWorktreeDir(host.config, caller, review);
+export function reviewRestoreEnv(review: ReviewClaim): Record<string, string> | null {
+    const clone = checkoutDir(review);
+    const worktree = reviewWorktreeDir(review);
     if (!clone || !worktree) return null;
     return {
         REPO: clone,
@@ -83,12 +79,11 @@ export function reviewRestoreEnv(
  */
 export function reviewStepEnv(
     host: Pick<StepHost, 'config'>,
-    caller: BoardJob,
     review: ReviewClaim,
     session: RunSession | null
 ): { argv: string[]; env: Record<string, string> } | null {
-    const clone = repoPath(host.config, review);
-    const worktree = reviewWorktreeDir(host.config, caller, review);
+    const clone = checkoutDir(review);
+    const worktree = reviewWorktreeDir(review);
     if (!clone || !worktree) return null;
     const plan = reviewerPlan(host.config, review, session);
     return {
@@ -172,7 +167,7 @@ async function exportReview(host: StepHost, toRun: ReviewRun, result: StepResult
                   argv: ['node', '-e', opencodeReadoutScript],
                   env: {
                       OPENCODE_DB: `${REVIEWER_HOME}/${reviewerDataName(review)}/opencode/opencode.db`,
-                      OPENCODE_DIR: reviewWorktreeDir(host.config, caller, review) ?? '',
+                      OPENCODE_DIR: reviewWorktreeDir(review) ?? '',
                       RUN_STARTED_MS: String(startedAt.getTime()),
                       EXPORT_LIMIT_BYTES: String(REVIEW_READOUT_LIMIT),
                   },
@@ -229,9 +224,9 @@ export async function runReviewSteps(host: StepHost, toRun: ReviewRun, signal?: 
     const { caller, review, session, round = 1 } = toRun;
     if (signal?.aborted) throw new Error('the review was cancelled before it was submitted');
     const startedAt = new Date();
-    const restoreEnv = reviewRestoreEnv(host, caller, review);
-    const run = reviewStepEnv(host, caller, review, session);
-    const worktree = reviewWorktreeDir(host.config, caller, review);
+    const restoreEnv = reviewRestoreEnv(review);
+    const run = reviewStepEnv(host, review, session);
+    const worktree = reviewWorktreeDir(review);
     if (!restoreEnv || !run || !worktree) return failed('the review has no repository to restore a worktree of');
 
     // The reviewer's home on the volume, group-writable so the supervisor's uid can read and remove
@@ -241,7 +236,7 @@ export async function runReviewSteps(host: StepHost, toRun: ReviewRun, signal?: 
         caller,
         stepRequest(review, 'sync', {
             id: 'review-home',
-            argv: ['mkdir', '-p', '-m', '2775', reviewerTreeDir(host.config, caller)],
+            argv: ['mkdir', '-p', '-m', '2775', REVIEWER_TREE_PATH],
             timeoutMs: HOME_STEP_TIMEOUT_MS,
         }),
         signal
@@ -254,7 +249,7 @@ export async function runReviewSteps(host: StepHost, toRun: ReviewRun, signal?: 
         caller,
         stepRequest(review, 'sync', {
             id: 'review-restore',
-            argv: ['node', '-e', gitWorktreeScript],
+            argv: ['node', '-e', taskCheckoutScript],
             env: restoreEnv,
             timeoutMs: SYNC_DEADLINE_MS,
         }),

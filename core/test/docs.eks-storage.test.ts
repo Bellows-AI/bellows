@@ -23,7 +23,7 @@ const limits = read('../../docs/limits.md');
 
 /**
  * Every pod spec this release writes that carries a pod-level `securityContext`: the three chart
- * Deployments, plus the driver module that specs every pod mounting the claim. An `fsGroup` can
+ * Deployments, plus the driver module that specs every pod mounting a task volume. An `fsGroup` can
  * only land in one of these, so these are what the document's claim is checked against.
  */
 const podSpecSources = [
@@ -130,11 +130,16 @@ describe('the workspaces volume prerequisites', () => {
     /**
      * The one claim in the prose that a code change can falsify. Everything else the document says
      * about this repository is structural; this is a fact about four files, so it is asserted
-     * against those four files rather than against the sentence that reports them.
+     * against those four files rather than against the sentence that reports them: only the
+     * driver's pod specs set `fsGroup` (the task volume's), the chart's own pods never do.
      */
-    it('is telling the truth that no pod spec sets fsGroup', () => {
+    it('is telling the truth that only the driver pod specs set fsGroup', () => {
         for (const source of podSpecSources) {
-            expect(read(source), source).not.toContain('fsGroup');
+            if (source.endsWith('driver/src/k8s-podspec.ts')) {
+                expect(read(source), source).toContain('fsGroup');
+            } else {
+                expect(read(source), source).not.toContain('fsGroup');
+            }
         }
     });
 

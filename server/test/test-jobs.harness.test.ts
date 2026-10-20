@@ -21,9 +21,7 @@ describe('the test-jobs harness', () => {
     it('mirrors the origin onto the board host on every .bellows.yaml write', () => {
         const write = SCRIPT.slice(SCRIPT.indexOf('write_bellows() {'), SCRIPT.indexOf('\nwrite_bellows '));
         expect(write).toContain('mirror="$work/workspaces/.origins/$SMOKE_REPO.git"');
-        expect(write).toMatch(
-            /tar -C "\/workspaces\/\$member_path\/\.smoke-origin\.git" -cf - \. \| tar -C "\$mirror" -xf -/
-        );
+        expect(write).toMatch(/tar -C "\/origins\/\$SMOKE_REPO\.git" -cf - \. \| tar -C "\$mirror" -xf -/);
         expect(SCRIPT).toContain('ORG_WORKSPACE_ROOT="$work/workspaces"');
     });
 
@@ -101,8 +99,8 @@ describe('the test-jobs harness', () => {
         expect(seeded).toBeGreaterThan(-1);
         expect(seeded).toBeLessThan(firstTask);
         expect(SCRIPT).toContain("'ready', now())");
-        expect(SCRIPT).toContain('git init -q --bare -b main .smoke-origin.git');
-        expect(SCRIPT.indexOf('git clone -q "$PWD/.smoke-origin.git" "$1"')).toBeLessThan(firstTask);
+        expect(SCRIPT).toContain('git init -q --bare -b main "/origins/$1.git"');
+        expect(SCRIPT.indexOf('docker run -d --name "$ORIGIN_NAME"')).toBeLessThan(firstTask);
     });
 
     it('every task the harness means to queue names the fixture repository', () => {
@@ -120,13 +118,13 @@ describe('the test-jobs harness', () => {
         expect(literal.sort()).toEqual(['{"command":""}', '{"command":"echo hi"}', '{"command":"rm -rf /"}']);
     });
 
-    it('provisions the board-issued member subpath in the named driver volume', () => {
+    it('serves the origin to the runners from a volume it provisions before the first driver', () => {
         expect(SCRIPT).toContain('workspace_path="$(field "$fu_claim" workspacePath)"');
         expect(SCRIPT).toContain('[ "$workspace_path" = "$member_path" ]');
-        expect(SCRIPT).toContain('docker volume create "$VOLUME"');
-        // uid 1000: the user every runner, sync and gate container writes the tree as.
-        expect(SCRIPT).toContain("mkdir -p '/workspaces/$member_path' && chown 1000:1000 '/workspaces/$member_path'");
-        expect(SCRIPT.indexOf('docker volume create "$VOLUME"')).toBeLessThan(
+        expect(SCRIPT).toContain('docker volume create "$ORIGIN_VOLUME"');
+        // uid 1000: the user every runner, sync and gate container writes as, so a publish can push.
+        expect(SCRIPT).toContain('chown 1000:1000 /origins /origins/');
+        expect(SCRIPT.indexOf('docker volume create "$ORIGIN_VOLUME"')).toBeLessThan(
             SCRIPT.indexOf('start_driver "$IMAGE_OK"')
         );
     });

@@ -13,7 +13,7 @@ import { reviewerPlan, runnerPlan } from '../src/runner-plan.js';
 const USER = '44444444-4444-4444-8444-444444444444';
 const SESSION = '33333333-3333-4333-8333-333333333333';
 const MASTER_PROMPT = 'Factory execution contract (factory-master-prompt/v1)\n\n- Mode: standalone';
-const TRANSCRIPTS = `/workspaces/bellows/${USER}/.factory/transcripts/11111111-1111-4111-8111-111111111111`;
+const TRANSCRIPTS = `/task/.factory/transcripts/11111111-1111-4111-8111-111111111111`;
 
 const job = {
     id: '11111111-1111-4111-8111-111111111111',
@@ -136,7 +136,7 @@ describe('the opencode runner plan', () => {
     it('runs a fresh job headless, with no session id anywhere', () => {
         expect(plan(opencodeJob, null)).toEqual({
             envPairs: [
-                ['XDG_DATA_HOME', `/workspaces/bellows/${USER}/.factory/opencode/${opencodeJob.id}`],
+                ['XDG_DATA_HOME', `/task/.factory/opencode/${opencodeJob.id}`],
                 ['NPM_CONFIG_UPDATE_NOTIFIER', 'false'],
             ],
             cliArgs: ['run', '--agent', 'factory', 'fix the failing build'],
@@ -152,7 +152,7 @@ describe('the opencode runner plan', () => {
         const other = { ...opencodeJob, id: '44444444-4444-4444-8444-444444444444' };
         expect(dataHome(followUp)).toBe(dataHome(opencodeJob));
         expect(dataHome(other)).not.toBe(dataHome(opencodeJob));
-        expect(dataHome(other)).toBe(`/workspaces/bellows/${USER}/.factory/opencode/${other.id}`);
+        expect(dataHome(other)).toBe(`/task/.factory/opencode/${other.id}`);
         expect(() => plan({ ...opencodeJob, rootJobId: '../../etc' }, null)).toThrow(/not a uuid/);
     });
 
@@ -165,7 +165,7 @@ describe('the opencode runner plan', () => {
         const session = { id: 'ses_f86188c3dffeZGYO4yZq4atba9', resume: true };
         expect(plan({ ...j, resumeSessionId: session.id }, session)).toEqual({
             envPairs: [
-                ['XDG_DATA_HOME', `/workspaces/bellows/${USER}/.factory/opencode/${opencodeJob.id}`],
+                ['XDG_DATA_HOME', `/task/.factory/opencode/${opencodeJob.id}`],
                 ['NPM_CONFIG_UPDATE_NOTIFIER', 'false'],
                 ['BELLOWS_SESSION_ID', session.id],
                 ...unwritten,
@@ -204,10 +204,10 @@ describe('the opencode runner plan', () => {
 });
 
 // Issue #734: `.bellows.yaml` `environment.cache` names env vars the driver points at one
-// directory per member and repository, on the workspaces volume — the same literal path in the
+// directory per repository, inside the task volume — the same literal path in the
 // runner, the gate env and the setup step, on both executors.
 describe('the per-repo package cache', () => {
-    const CACHE = `/workspaces/bellows/${USER}/.cache/acme/widgets`;
+    const CACHE = `/task/.cache/acme/widgets`;
     const cached = (j: BoardJob, cache: string[] = ['NPM_CONFIG_CACHE', 'PIP_CACHE_DIR']): BoardJob => ({
         ...j,
         repo: 'acme/widgets',

@@ -9,8 +9,7 @@ with the runner. No `get` on secrets is granted and no wildcard.
 What this Role alone does NOT give, stated because it reads as if it did: RBAC cannot scope a verb
 to a name prefix, so `delete` reaches every Secret in the namespace, and `create` on Jobs
 is `read` on every Secret — a pod the driver specs may mount any Secret here, the dashboard's App
-key included. The runners (agent-written code) share this namespace because the workspaces claim
-they mount is namespaced and shared with the dashboard. The fence is driver-admission.yaml: an
+key included. The runners (agent-written code) share this namespace with the dashboard. The fence is driver-admission.yaml: an
 admission policy bound to this ServiceAccount that admits only pod specs referencing the driver's
 own per-attempt Secrets, and deletes only of objects it labelled `factory.job`.
 `configmaps` is the checkout claim that makes the re-claim fence atomic (issue #32): one ConfigMap
@@ -56,6 +55,11 @@ rules:
     - apiGroups: ['']
       resources: ['pods']
       verbs: ['delete', 'list']
+    # The thread's task volume (issue #775): the driver creates one claim per root thread and reads
+    # it back on a later attempt. The admission policy admits only the claim's name, labels and shape.
+    - apiGroups: ['']
+      resources: ['persistentvolumeclaims']
+      verbs: ['create', 'get', 'list', 'delete']
     - apiGroups: ['']
       resources: ['pods/log']
       verbs: ['get']

@@ -14,7 +14,6 @@ import { StepChannelClosed } from '../src/step-control.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import type { PublishResult, ReclaimResult } from '../src/publish.js';
 import { createLoop, type Loop, wait } from '../src/loop.js';
-import { type SyncQueue, type SyncTurn, syncQueue } from '../src/sync-queue.js';
 import { processReclaim, type ReclaimContext } from '../src/loop-reclaim.js';
 import type { GateStack, LoopRuntime } from '../src/loop-types.js';
 import { newJobState, RUN_CONTROL_POLL_MS, watchOutput } from '../src/loop-attempt.js';
@@ -131,7 +130,7 @@ describe('an objective-mode task, ticket to draft publication (issue #550)', () 
         const answers: number[] = [];
         const runner: ReturnType<typeof stubRunner> = stubRunner(
             async (running) => {
-                const key = `bellows/${USER}/.worktrees/${objectiveJob(1).id}`;
+                const key = `${objectiveJob(1).id}/factory`;
                 const control = stack.controls.get(running.gateEnv?.BELLOWS_CONTROL_TOKEN ?? '');
                 if (!control?.publisher) throw new Error('no publisher on the control entry');
                 const gate = async () => adHoc.push((await stack.manager.runGate(key, 'test', 'npm test')).exitCode);
@@ -843,8 +842,6 @@ describe('the poll loop', () => {
     // Issue #666: a sync refusal the script names is deterministic — config, with its message
     // intact; anything unnamed (a conflict, a stray error) stays infrastructure.
     it.each([
-        ['missing_workspace', 'the member workspace /w/bellows/u does not exist — the board creates it', 'config'],
-        ['missing_clone', 'the repository clone /w/bellows/u/r does not exist — the board clones it', 'config'],
         ['branch_unrestorable', 'the task branch factory/x could not be restored (re-queue the task)', 'config'],
         ['missing_base_branch', 'the base branch origin/batch-sandbox does not exist on the remote', 'config'],
         [undefined, 'the task worktree could not be rebased onto origin/main: conflict', 'runner_error'],
@@ -2147,47 +2144,6 @@ describe('the poll loop', () => {
 
         await drive({ ...board, runner });
 
-        expect(board.board.completed).toEqual([]);
-    });
-
-    // Issue #307: lock contention on the shared checkout is infrastructure, not a verdict. The
-    // script's marker (`transient worktree sync:` — another driver holding the checkout's sync
-    // lock, or a fetch that kept losing the refs' locks to a concurrent git) hands the claim back
-    // to the board at once (issue #559): no verdict, no lease wait, and the board refunds the
-    // attempt. The non-transient refusal below keeps reporting `failed`.
-    it('requeues a job when the sync reports transient checkout contention', async () => {
-        const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok(), {
-            sync: {
-                ok: false,
-                reason:
-                    'transient worktree sync: the checkout lock /workspaces/bellows/x/factory/.git/factory-sync.lock ' +
-                    'is still held after 20000ms — a concurrent sync of this clone is running; the claim should be retried',
-            },
-        });
-
-        await drive({ ...board, runner });
-
-        expect(board.board.requeued).toEqual([job(1).id]);
-        expect(board.board.completed).toEqual([]);
-        expect(board.board.suspended).toEqual([]);
-    });
-
-    it('retries a requeue the board did not accept, rather than fall back to the lease', async () => {
-        const board = stubBoard([job(1)]);
-        let refusals = 1;
-        board.board.requeue = async (claimed) => {
-            if (refusals-- > 0) throw new Error('board answered 503');
-            board.board.requeued.push(claimed.id);
-            return 'held';
-        };
-        const runner = stubRunner(async () => ok(), {
-            sync: { ok: false, reason: 'transient worktree sync: the fetch kept losing the refs’ locks' },
-        });
-
-        await drive({ ...board, runner });
-
-        expect(board.board.requeued).toEqual([job(1).id]);
         expect(board.board.completed).toEqual([]);
     });
 
@@ -3757,7 +3713,7 @@ describe('verification gates', () => {
         // checks are still shown as running.
         expect(board.board.gatesReported.length).toBeGreaterThan(0);
         // The environment goes back to its cooldown either way — filed under the task's worktree.
-        expect(stack.stack.released).toEqual([`bellows/${USER}/.worktrees/${gatedJob(1).id}`]);
+        expect(stack.stack.released).toEqual([`${gatedJob(1).id}/factory`]);
         expect(stack.stack.unregistered).toBe(1);
     });
 
@@ -3886,11 +3842,11 @@ describe('verification gates', () => {
         // of leaking, one live container per failed claim until the driver restarts.
         expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
         expect(board.board.completed[0]?.output).toContain('could not be started');
-        expect(stack.stack.released).toEqual([`bellows/${USER}/.worktrees/${gatedJob(1).id}`]);
+        expect(stack.stack.released).toEqual([`${gatedJob(1).id}/factory`]);
     });
 
     // The worktree (issue #35) is the checkout the gates share with the coding agent: the
-    // environment is acquired, and every gate runs, in `<org>/<uuid>/.worktrees/<root id>` —
+    // environment is acquired, and every gate runs, in `<root id>/<repo segment>` —
     // the tree the run edits — never in the pristine clone. The acquire repeats before every
     // gate: the cooldown may have torn the environment down mid-run, and acquire is the revive.
     it('acquires the gate environment under the task worktree key', async () => {
@@ -3902,11 +3858,11 @@ describe('verification gates', () => {
 
         // One acquire in beginGates plus one per declared gate (2 in the fixture).
         expect(stack.stack.acquired).toEqual([
-            `bellows/${USER}/.worktrees/${gatedJob(1).id}`,
-            `bellows/${USER}/.worktrees/${gatedJob(1).id}`,
-            `bellows/${USER}/.worktrees/${gatedJob(1).id}`,
+            `${gatedJob(1).id}/factory`,
+            `${gatedJob(1).id}/factory`,
+            `${gatedJob(1).id}/factory`,
         ]);
-        expect(stack.stack.ran.key).toBe(`bellows/${USER}/.worktrees/${gatedJob(1).id}`);
+        expect(stack.stack.ran.key).toBe(`${gatedJob(1).id}/factory`);
     });
 
     it('registers the ad-hoc token and releases it, and never leaves it registered', async () => {
@@ -3955,7 +3911,7 @@ describe('verification gates', () => {
             ran.push(name);
             return { exitCode: 0, output: `${name} ok` };
         };
-        const key = `bellows/${USER}/.worktrees/${gatedJob(1).id}`;
+        const key = `${gatedJob(1).id}/factory`;
         // The environment was forgotten while the agent kept working.
         const runner = stubRunner(async () => {
             up = false;
@@ -4820,7 +4776,6 @@ describe('the output pump snapshot', () => {
             log: () => {},
             sleep,
             reclaims: new Map(),
-            syncs: syncQueue(),
             report: async () => 'held',
         };
         const state = newJobState();
@@ -5212,7 +5167,7 @@ describe('gates over a run that did not finish cleanly', () => {
         expect(complete.output).toContain(`[driver] gates skipped — ${why}`);
         // Teardown still runs on the skip path.
         expect(stack.stack.unregistered).toBe(1);
-        expect(stack.stack.released).toEqual([`bellows/${USER}/.worktrees/${gatedJob(1).id}`]);
+        expect(stack.stack.released).toEqual([`${gatedJob(1).id}/factory`]);
         expect(runner.servicesReleased).toEqual([gatedJob(1).id]);
     });
 
@@ -6379,196 +6334,6 @@ describe('revision-bound evidence', () => {
         const { completed } = await driveWith({ ...gatedJob(1), policy: { gates: true } }, { publish: stale });
         expect(completed).toMatchObject({ status: 'failed', failureKind: 'policy' });
     });
-});
-
-describe('startup syncs of one clone (issue #559)', () => {
-    const repoJob = (n: number, repo = 'Bellows-AI/factory'): BoardJob => ({ ...job(n), repo });
-
-    /** Makes every sync take `ms`, recording the most syncs in flight at once, per clone and overall. */
-    function timedSyncs(runner: ReturnType<typeof stubRunner>, ms: number) {
-        const inFlight = new Map<string, number>();
-        const peak = new Map<string, number>();
-        const bump = (key: string, by: number) => {
-            const now = (inFlight.get(key) ?? 0) + by;
-            inFlight.set(key, now);
-            peak.set(key, Math.max(peak.get(key) ?? 0, now));
-        };
-        runner.syncCheckout = async (claimed) => {
-            runner.synced.push(claimed);
-            bump(claimed.repo ?? '', 1);
-            bump('*', 1);
-            await new Promise((resolve) => setTimeout(resolve, ms));
-            bump(claimed.repo ?? '', -1);
-            bump('*', -1);
-            return { ok: true, reason: null };
-        };
-        return peak;
-    }
-
-    it('syncs three claims on one clone one at a time, and each reaches its run on the attempt it was claimed with', async () => {
-        const board = stubBoard([repoJob(1), repoJob(2), repoJob(3)]);
-        const ran: BoardJob[] = [];
-        const runner = stubRunner(async (claimed) => {
-            ran.push(claimed);
-            return ok();
-        });
-        const peak = timedSyncs(runner, 20);
-
-        await drive({ ...board, runner }, { DRIVER_CONCURRENCY: '3' });
-
-        expect(peak.get('Bellows-AI/factory')).toBe(1);
-        expect(ran.map((r) => r.id).sort()).toEqual([1, 2, 3].map((n) => job(n).id).sort());
-        expect(ran.every((r) => r.attempts === 1)).toBe(true);
-        expect(board.board.requeued).toEqual([]);
-        expect(board.board.completed.map((c) => c.status)).toEqual(['succeeded', 'succeeded', 'succeeded']);
-    });
-
-    it('syncs different clones side by side', async () => {
-        const board = stubBoard([repoJob(1, 'Bellows-AI/factory'), repoJob(2, 'Bellows-AI/stats')]);
-        const runner = stubRunner(async () => ok());
-        const peak = timedSyncs(runner, 20);
-
-        await drive({ ...board, runner }, { DRIVER_CONCURRENCY: '2' });
-
-        expect(peak.get('*')).toBe(2);
-        expect(board.board.completed).toHaveLength(2);
-    });
-
-    it('hands a sibling’s claim back once it out-waits the queue bound behind a wedged sync', async () => {
-        const board = stubBoard([repoJob(1), repoJob(2)]);
-        let finishFirst: () => void = () => {};
-        const firstSync = new Promise<void>((resolve) => {
-            finishFirst = resolve;
-        });
-        const ran: string[] = [];
-        const runner = stubRunner(async (claimed) => {
-            ran.push(claimed.id);
-            return ok();
-        });
-        runner.syncCheckout = async (claimed) => {
-            runner.synced.push(claimed);
-            await firstSync;
-            return { ok: true, reason: null };
-        };
-
-        const started = drive({ ...board, runner, syncWaitMs: 20 }, { DRIVER_CONCURRENCY: '2' });
-        for (let i = 0; i < 200 && !board.board.requeued.includes(job(2).id); i += 1) await sleep();
-        expect(board.board.requeued).toEqual([job(2).id]);
-        finishFirst();
-        await started;
-
-        // No agent ran for the requeued sibling, and nothing was reported or parked for it.
-        expect(ran).toEqual([job(1).id]);
-        expect(runner.synced.map((s) => s.id)).toEqual([job(1).id]);
-        expect(board.board.suspended).toEqual([]);
-        expect(board.board.completed.map((c) => c.id)).toEqual([job(1).id]);
-    });
-
-    it('keeps the clone’s turn until a failed sync’s writes are over, not just until it answered', async () => {
-        const board = stubBoard([repoJob(1), repoJob(2)]);
-        let writesOver: () => void = () => {};
-        const settled = new Promise<void>((resolve) => {
-            writesOver = resolve;
-        });
-        const runner = stubRunner(async () => ok());
-        runner.syncCheckout = async (claimed) => {
-            runner.synced.push(claimed);
-            return claimed.id === job(1).id
-                ? { ok: false, reason: 'the worktree sync container failed: it exceeded its deadline', settled }
-                : { ok: true, reason: null };
-        };
-
-        const started = drive({ ...board, runner }, { DRIVER_CONCURRENCY: '2' });
-        for (let i = 0; i < 200 && board.board.completed.length === 0; i += 1) await sleep();
-        // Job 1 has its verdict, but its container may still be writing: job 2 has not synced.
-        expect(board.board.completed.map((c) => [c.id, c.status])).toEqual([[job(1).id, 'failed']]);
-        for (let i = 0; i < 20; i += 1) await sleep();
-        expect(runner.synced.map((s) => s.id)).toEqual([job(1).id]);
-        writesOver();
-        await started;
-
-        expect(runner.synced.map((s) => s.id)).toEqual([job(1).id, job(2).id]);
-    });
-
-    it('takes its turn from an injected queue by clone, and gives it back once the sync lands', async () => {
-        const board = stubBoard([repoJob(1)]);
-        const asked: unknown[] = [];
-        const released: unknown[] = [];
-        const syncs: SyncQueue = {
-            async acquire(clone, { holder }): Promise<SyncTurn> {
-                asked.push({ clone, holder });
-                return { release: (syncing) => void released.push(syncing) };
-            },
-        };
-        const runner = stubRunner(async () => ok());
-
-        await drive({ ...board, runner, syncs });
-
-        expect(asked).toEqual([
-            {
-                clone: `/workspaces/bellows/${USER}/factory`,
-                holder: { jobId: job(1).id, leaseToken: job(1).leaseToken },
-            },
-        ]);
-        expect(released).toHaveLength(1);
-        expect(released[0]).toBeInstanceOf(Promise);
-        expect(board.board.completed.map((c) => c.status)).toEqual(['succeeded']);
-    });
-
-    it('requeues, without syncing, when the sync queue cannot be read', async () => {
-        const board = stubBoard([repoJob(1)]);
-        const syncs: SyncQueue = {
-            acquire: async () => Promise.reject(new Error('queue store unreachable')),
-        };
-        const runner = stubRunner(async () => ok());
-
-        await drive({ ...board, runner, syncs });
-
-        expect(runner.synced).toEqual([]);
-        expect(board.board.requeued).toEqual([job(1).id]);
-        expect(board.board.completed).toEqual([]);
-    });
-
-    it.each([
-        ['a Stop', { result: 'held', cancelRequested: true } as HeartbeatVerdict, [job(2).id]],
-        ['a lost lease', 'lost' as HeartbeatVerdict, []],
-        ['a Remove', 'removed' as HeartbeatVerdict, []],
-    ] as const)(
-        'lets %s interrupt a sibling queued behind a long sync, which never syncs',
-        async (_what, verdict, parked) => {
-            const board = stubBoard([repoJob(1), repoJob(2)]);
-            // The verdict reaches the sibling only after a few beats — long after it would have
-            // started its own sync had nothing queued it.
-            let siblingBeats = 0;
-            board.board.heartbeat = async (claimed) => {
-                board.board.beats += 1;
-                if (claimed.id === job(2).id && ++siblingBeats > 3) return verdict;
-                return { result: 'held', cancelRequested: false };
-            };
-            let finishFirst: () => void = () => {};
-            const firstSync = new Promise<void>((resolve) => {
-                finishFirst = resolve;
-            });
-            const runner = stubRunner(async () => ok());
-            runner.syncCheckout = async (claimed) => {
-                runner.synced.push(claimed);
-                await firstSync;
-                return { ok: true, reason: null };
-            };
-
-            const started = drive({ ...board, runner }, { DRIVER_CONCURRENCY: '2' });
-            for (let i = 0; i < 200 && !runner.killed.includes(job(2).id); i += 1) await sleep();
-            // The queued sibling stood down while the first sync still held the clone.
-            expect(runner.killed).toContain(job(2).id);
-            finishFirst();
-            await started;
-
-            expect(runner.synced.map((s) => s.id)).toEqual([job(1).id]);
-            expect(board.board.suspended).toEqual(parked);
-            expect(board.board.requeued).toEqual([]);
-            expect(board.board.completed.map((c) => c.id)).toEqual([job(1).id]);
-        }
-    );
 });
 
 describe('a stop the board cannot take (issue #820)', () => {

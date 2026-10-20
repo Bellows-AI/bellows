@@ -198,12 +198,17 @@ cleanup() {
         # The runner Jobs were created at runtime by the driver, not by the release, so the
         # uninstall leaves them — and their pods — behind. Only this release's: the cluster may
         # host another release in the namespace, and the driver stamps its release label on every
-        # runner Job. They go BEFORE the claims: a runner pod that still mounts the workspaces
+        # runner Job. They go BEFORE the claims: a runner pod that still mounts a
         # claim holds it under pvc-protection, and a waiting claim delete issued first blocks
         # forever on a pod whose delete it never reaches.
         kubectl delete jobs -l "factory.job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1
-        # The repository seed pod mounts the workspaces claim too, if the run died while it ran.
-        kubectl delete pod "$RELEASE-repo-seed" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        # The smoke origin pod and Service, and the task volumes the driver created for this
+        # run's org (labelled factory.task-org, issue #775) — a claim a runner pod still mounts is
+        # held under pvc-protection, so they follow the Jobs above.
+        kubectl delete pod "$RELEASE-origin" fs-seed fs-probe -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
+        kubectl delete service "$RELEASE-origin" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        [ -z "${member:-}" ] ||
+            kubectl delete pvc -l "factory.task-org=$member" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
     fi
     if [ "${state_installed:-}" = '1' ]; then
         helm uninstall "$STATE_RELEASE" -n "$NAMESPACE" >/dev/null 2>&1
@@ -321,6 +326,11 @@ expect_contains     'the driver role manages the checkout claim' "$rbac" \
 expect_contains     'the driver role lists and deletes pods, never creates one' "$rbac" \
     "resources: ['pods']
       verbs: ['delete', 'list']"
+# Issue #775: the driver creates one task volume claim per root thread, reads it back and, from the
+# slices that follow, deletes it.
+expect_contains     'the driver role manages the task volume claims' "$rbac" \
+    "resources: ['persistentvolumeclaims']
+      verbs: ['create', 'get', 'list', 'delete']"
 expect_not_contains 'the driver role creates no Service'    "$rbac" "resources: ['services']"
 expect_not_contains 'the driver role reads no event'        "$rbac" "resources: ['events']"
 # The gate sidecar's in-place resize (issue #773): patch on the resize subresource and no more.
@@ -339,12 +349,14 @@ expect_contains     'the driver role reads the runner vitals' "$rbac" \
       verbs: ['get']"
 expect_not_contains 'the driver role is never a ClusterRole' "$(cat "$work/rendered.yaml")" 'kind: ClusterRole'
 
-# The dashboard writes checkouts into the same claim the runners mount — the state release's, so an
-# app reinstall keeps them — and the app release creates no claim of its own.
+# The dashboard writes checkouts into the state release's claim, so an app reinstall keeps them —
+# and the app release creates no claim of its own. The driver is told how to create a thread's task
+# volume (issue #775), not which claim to mount.
 expect_contains 'the dashboard mounts the workspaces claim' "$(cat "$work/rendered.yaml")" \
     "claimName: $STATE_RELEASE-workspaces"
-expect_contains 'the driver is told that claim name'        "$(cat "$work/rendered.yaml")" \
-    "value: \"$STATE_RELEASE-workspaces\""
+expect_not_contains 'the driver is told no workspaces claim' "$(cat "$work/rendered.yaml")" 'name: WORKSPACE_VOLUME'
+expect_contains 'the driver is told the task volume access mode' "$(cat "$work/rendered.yaml")" \
+    'name: TASK_VOLUME_ACCESS_MODE'
 expect_not_contains 'the app release creates no claim' "$(cat "$work/rendered.yaml")" \
     'kind: PersistentVolumeClaim'
 
@@ -799,9 +811,7 @@ expect_contains 'the admission policy lets a claim update change only factory.re
     "k == 'factory.revoked'"
 expect_contains 'the admission policy denies' "$admission" 'validationActions: [Deny]'
 expect_not_contains 'the admission policy never admits the dashboard Secret' "$admission" "$RELEASE-factory-dashboard"
-expect_contains 'the admission policy scopes workspace mounts to a member subPath' "$admission" \
-    "m.subPath.matches('^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(/[.]factory/reviewer)?\$')"
-expect_contains 'the admission policy refuses subPathExpr on workspace mounts' "$admission" '!has(m.subPathExpr)'
+expect_contains 'the admission policy refuses subPathExpr on task volume mounts' "$admission" '!has(m.subPathExpr)'
 expect_contains 'the admission policy keeps the reviewer to the credentials Secret' "$admission" \
     'a driver-specced reviewer references the credentials Secret alone'
 # A pull secret is for the kubelet only: it may appear under imagePullSecrets, never where a
@@ -859,9 +869,13 @@ expect_contains 'the admission policy restarts only the gate, reviewer and svc- 
 expect_contains 'the admission policy pins the reviewer to its own uid' "$admission" \
     "c.securityContext.runAsUser == 1002"
 expect_contains 'the admission policy lets the reviewer write only its home on the volume' "$admission" \
-    "(m.name == 'workspaces' && m.subPath.endsWith('/.factory/reviewer'))"
-expect_contains 'the admission policy admits the reviewer home subPath beside the member subPath' "$admission" \
-    '(/[.]factory/reviewer)?$'
+    "(m.name == 'task' && has(m.subPath) && m.subPath == '.factory/reviewer')"
+expect_contains 'the admission policy admits a task volume only whole or at the reviewer home' "$admission" \
+    "m.subPath in ['', '.factory/reviewer']"
+expect_contains 'the admission policy names a task volume claim for its thread root and generation' "$admission" \
+    "'factory-task-' + variables.target.metadata.labels['factory.task-root']"
+expect_contains 'the admission policy refuses a ReadWriteMany task volume claim' "$admission" \
+    "a in ['ReadWriteOnce', 'ReadWriteOncePod']"
 # Issue #814: the one capability add admitted, the agent's launch pair, on a runner Job's agent alone.
 expect_contains 'the admission policy admits the launch pair on a runner Job agent alone' "$admission" \
     "request.kind.kind == 'Job' && c.name == 'agent' &&"
@@ -1396,6 +1410,7 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
     --set "driver.executorImages.claudeCode=$STUB_REF" \
     --set "driver.executorImages.opencode=$STUB_REF" \
     --set driver.reapIntervalMs=3000 --set driver.reapGraceMs=1000 \
+    --set "driver.repoCloneBase=git://$RELEASE-origin:9418" \
     --set-string driver.leaseSeconds=120 --set driver.terminationGracePeriodSeconds=70 \
     -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install failed'
@@ -1474,7 +1489,7 @@ await_blocked() { # await_blocked <runner pod> <release file> -> the agent is ru
     # Pod Running and even `go` can precede the agent: observe the stub itself before disrupting it.
     local until=$(($(date +%s) + 60))
     while [ "$(date +%s)" -lt "$until" ]; do
-        # From the supervisor, on the same workspace: the agent container runs as root without
+        # From the supervisor, on the same task volume: the agent container runs as root without
         # DAC_OVERRIDE (issue #814).
         kubectl exec "$1" -c supervisor -n "$NAMESPACE" --request-timeout=10s -- test -f "$2.ready-$1" \
             >/dev/null 2>&1 && return 0
@@ -1484,9 +1499,22 @@ await_blocked() { # await_blocked <runner pod> <release file> -> the agent is ru
     return 1
 }
 
-release_stub() {
-    # The member workspace survives pod deletion, so the replacement agent sees the same release.
-    kubectl exec "deployment/$RELEASE-factory" -c dashboard -n "$NAMESPACE" -- touch "$1" || give_up
+release_stub() { # release_stub <release file> -> touched through a pod that has reached its barrier
+    # The task volume survives pod deletion, so a replacement agent sees the same release — but only
+    # a pod of the thread mounts it, so the release goes through the one standing at this barrier
+    # (its ready marker). Polled: a replacement pod may not have reached the barrier yet.
+    local until=$(($(date +%s) + 120)) pod
+    while [ "$(date +%s)" -lt "$until" ]; do
+        for pod in $(kubectl get pods -n "$NAMESPACE" --request-timeout=10s \
+            -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+            kubectl exec "$pod" -c supervisor -n "$NAMESPACE" --request-timeout=10s -- test -f "$1.ready-$pod" \
+                >/dev/null 2>&1 || continue
+            kubectl exec "$pod" -c supervisor -n "$NAMESPACE" --request-timeout=10s -- touch "$1" \
+                >/dev/null 2>&1 && return 0
+        done
+        sleep 1
+    done
+    give_up
 }
 
 up=""
@@ -1556,20 +1584,18 @@ SQL
 }
 export FACTORY_TOKEN
 
-# The member's checkout (issue #263): POST /api/jobs refuses a create whose repo is not the author's
-# own ready selection. With no GitHub there is nothing to clone, so the fixture is what a finished
-# clone leaves — the ready user_repo row and, in the workspaces claim under the member's
-# `<org>/<user id>` subtree, the clone — with its origin a bare repository beside it, so every
-# startup sync fetches and branches its task worktree with no network. scripts/test-jobs.sh's
-# fixture, on the claim: a one-shot pod of this run mounts the claim root, creates the subtree as
-# root and hands it to uid 1000, then the stub image (git, uid 1000) writes the repositories.
+# The member's selection (issue #263): POST /api/jobs refuses a create whose repo is not the author's
+# own ready selection. With no GitHub there is nothing to clone, so the fixture is the ready
+# user_repo row — and, for the runner's own clone (issue #775), an origin served inside the
+# cluster: a git daemon pod and Service named for REPO_CLONE_BASE (`driver.repoCloneBase` above)
+# whose `<owner>/<name>.git` is a bare repository with one commit, so every task clones and
+# publishes with no network. scripts/test-jobs.sh serves its origin the same way, from a container.
 member_user="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
     psql -qtA -v ON_ERROR_STOP=1 -v "member=$member" \
     postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
 select user_id from org_membership where org_id = :'member';
 SQL
 )"
-member_path="$member/$member_user"
 case "$member_user" in
 ????????-????-????-????-????????????) ;;
 *) bad 'the member has a user id' "$member_user"
@@ -1588,34 +1614,29 @@ SQL
     give_up
 }
 # One line, no double quotes or backslashes: it is interpolated into the JSON override below.
-seed_script="set -e; cd /workspaces/$member_path;
-git init -q --bare -b main .smoke-origin.git;
+origin_script="set -e; mkdir -p /origins/${SMOKE_REPO%%/*}; git init -q --bare -b main /origins/$SMOKE_REPO.git;
 git init -q -b main /tmp/seed;
 git -C /tmp/seed -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q --allow-empty -m init;
-git -C /tmp/seed push -q /workspaces/$member_path/.smoke-origin.git main;
-git clone -q /workspaces/$member_path/.smoke-origin.git ${SMOKE_REPO#*/};
-echo seeded"
-seed_script="$(printf '%s' "$seed_script" | tr '\n' ' ')"
-kubectl run "$RELEASE-repo-seed" -n "$NAMESPACE" --image="$STUB_REF" --restart=Never --command \
+git -C /tmp/seed push -q /origins/$SMOKE_REPO.git main;
+exec git daemon --reuseaddr --base-path=/origins --export-all --enable=receive-pack --listen=0.0.0.0 --port=9418 /origins"
+origin_script="$(printf '%s' "$origin_script" | tr '\n' ' ')"
+kubectl run "$RELEASE-origin" -n "$NAMESPACE" --image="$STUB_REF" --restart=Never --command \
     --overrides="$(
         cat <<EOF
 {"spec":{"automountServiceAccountToken":false,
-"volumes":[{"name":"w","persistentVolumeClaim":{"claimName":"$STATE_RELEASE-workspaces"}}],
-"initContainers":[{"name":"own","image":"alpine:3",
-"command":["sh","-c","mkdir -p /workspaces/$member_path && chown 1000:1000 /workspaces/$member_path"],
-"volumeMounts":[{"name":"w","mountPath":"/workspaces"}]}],
-"containers":[{"name":"seed","image":"$STUB_REF","imagePullPolicy":"IfNotPresent",
-"command":["sh","-c","$seed_script"],
-"volumeMounts":[{"name":"w","mountPath":"/workspaces"}]}]}}
+"volumes":[{"name":"o","emptyDir":{}}],
+"containers":[{"name":"origin","image":"$STUB_REF","imagePullPolicy":"IfNotPresent",
+"command":["sh","-c","$origin_script"],
+"readinessProbe":{"tcpSocket":{"port":9418}},
+"volumeMounts":[{"name":"o","mountPath":"/origins"}]}]}}
 EOF
     )" -- sh >/dev/null 2>&1
-kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s "pod/$RELEASE-repo-seed" \
-    -n "$NAMESPACE" >/dev/null 2>&1
-repo_seeded="$(kubectl logs "$RELEASE-repo-seed" -n "$NAMESPACE" --all-containers 2>&1 || true)"
-kubectl delete pod "$RELEASE-repo-seed" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
+kubectl expose pod "$RELEASE-origin" -n "$NAMESPACE" --port=9418 >/dev/null 2>&1
+kubectl wait --for=condition=Ready --timeout=180s "pod/$RELEASE-origin" -n "$NAMESPACE" >/dev/null 2>&1
+repo_seeded="$(kubectl exec "$RELEASE-origin" -n "$NAMESPACE" -- git ls-remote "git://127.0.0.1:9418/$SMOKE_REPO.git" 2>&1 || true)"
 case "$repo_seeded" in
-*seeded*) ok 'the member checkout is seeded in the workspaces claim' ;;
-*) bad 'the member checkout is seeded in the workspaces claim' "$repo_seeded"
+*refs/heads/main*) ok 'the smoke origin is served inside the cluster' ;;
+*) bad 'the smoke origin is served inside the cluster' "$repo_seeded"
     give_up
     ;;
 esac
@@ -1651,7 +1672,7 @@ SQL
     give_up
 }
 ORG_BODY="{\"command\":\"hello from the org scope\",\"executor\":\"team\",\"executorScope\":\"org\",\"repo\":\"$SMOKE_REPO\"}"
-smoke_release="/workspaces/$member_path/.lane-smoke"
+smoke_release="/task/.lane-smoke"
 SMOKE_COMMAND="hello from the cluster factory-stub-wait-$smoke_release"
 JOB_BODY="{\"command\":\"$SMOKE_COMMAND\",\"executor\":\"claude\",\"repo\":\"$SMOKE_REPO\"}"
 
@@ -1953,19 +1974,48 @@ stolen="$(probe_pod steal "    containers: [{name: c, image: alpine, $HARD_C, en
 expect_contains 'the policy refuses a pod reading the dashboard Secret' "$stolen" 'may read only its own per-attempt Secrets'
 mounted="$(probe_pod mount "    containers: [{name: c, image: alpine, $HARD_C}]
     volumes: [{name: s, secret: {secretName: $RELEASE-factory-dashboard}}]" | as_driver)"
-expect_contains 'the policy refuses a pod mounting the dashboard Secret' "$mounted" 'may mount only the workspaces claim'
+expect_contains 'the policy refuses a pod mounting the dashboard Secret' "$mounted" 'may mount only a task volume claim'
 host="$(probe_pod host "    containers: [{name: c, image: alpine, $HARD_C}]
     volumes: [{name: h, hostPath: {path: /}}]" | as_driver)"
-expect_contains 'the policy refuses a hostPath pod' "$host" 'may mount only the workspaces claim'
-member="$(probe_pod member "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: w, mountPath: /w, subPath: probe/44444444-4444-4444-8444-444444444444}]}]
+expect_contains 'the policy refuses a hostPath pod' "$host" 'may mount only a task volume claim'
+TASK_CLAIM=factory-task-44444444-4444-4444-8444-444444444444-1
+task="$(probe_pod task "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: task, mountPath: /task}]}]
+    volumes: [{name: task, persistentVolumeClaim: {claimName: $TASK_CLAIM}}]" | as_driver)"
+expect_contains 'the policy admits a pod mounting a task volume whole' "$task" 'created (server dry run)'
+reviewer_home="$(probe_pod reviewerhome "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: task, mountPath: /h, subPath: .factory/reviewer}]}]
+    volumes: [{name: task, persistentVolumeClaim: {claimName: $TASK_CLAIM}}]" | as_driver)"
+expect_contains 'the policy admits a pod mounting the reviewer home of a task volume' "$reviewer_home" 'created (server dry run)'
+workspaces="$(probe_pod workspaces "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: w, mountPath: /w}]}]
     volumes: [{name: w, persistentVolumeClaim: {claimName: $STATE_RELEASE-workspaces}}]" | as_driver)"
-expect_contains 'the policy admits a pod mounting a member workspace subPath' "$member" 'created (server dry run)'
-root="$(probe_pod root "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: w, mountPath: /w}]}]
-    volumes: [{name: w, persistentVolumeClaim: {claimName: $STATE_RELEASE-workspaces}}]" | as_driver)"
-expect_contains 'the policy refuses a pod mounting the workspaces claim root' "$root" 'only at a member subPath'
-expr="$(probe_pod expr "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: w, mountPath: /w, subPathExpr: '\$(HOME)'}]}]
-    volumes: [{name: w, persistentVolumeClaim: {claimName: $STATE_RELEASE-workspaces}}]" | as_driver)"
-expect_contains 'the policy refuses a subPathExpr workspace mount' "$expr" 'only at a member subPath'
+expect_contains 'the policy refuses a pod mounting the workspaces claim' "$workspaces" 'may mount only a task volume claim'
+other="$(probe_pod othersub "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: task, mountPath: /w, subPath: other}]}]
+    volumes: [{name: task, persistentVolumeClaim: {claimName: $TASK_CLAIM}}]" | as_driver)"
+expect_contains 'the policy refuses a task volume mounted at any other subPath' "$other" 'only whole or at the reviewer home'
+expr="$(probe_pod expr "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: task, mountPath: /w, subPathExpr: '\$(HOME)'}]}]
+    volumes: [{name: task, persistentVolumeClaim: {claimName: $TASK_CLAIM}}]" | as_driver)"
+expect_contains 'the policy refuses a subPathExpr task volume mount' "$expr" 'only whole or at the reviewer home'
+task_claim() { # task_claim <name> <access mode> — the PersistentVolumeClaim the driver creates
+    cat <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: $1
+    labels: {factory.task-root: 44444444-4444-4444-8444-444444444444, factory.task-generation: "1"}
+spec:
+    accessModes: [$2]
+    resources: {requests: {storage: 1Gi}}
+EOF
+}
+task_ok="$(task_claim "$TASK_CLAIM" ReadWriteOnce | as_driver)"
+expect_contains 'the policy admits a task volume claim' "$task_ok" 'created (server dry run)'
+task_rwx="$(task_claim "$TASK_CLAIM" ReadWriteMany | as_driver)"
+expect_contains 'the policy refuses a ReadWriteMany task volume claim' "$task_rwx" 'is never ReadWriteMany'
+task_name="$(task_claim factory-task-55555555-5555-4555-8555-555555555555-1 ReadWriteOnce | as_driver)"
+expect_contains 'the policy refuses a task volume claim not named for its labelled root' "$task_name" \
+    'named for their labelled thread root and generation'
+task_other="$(task_claim scratch ReadWriteOnce | as_driver)"
+expect_contains 'the policy refuses a claim that is not a task volume' "$task_other" \
+    'named for their labelled thread root and generation'
 deleted="$(kubectl delete secret "$RELEASE-factory-dashboard" --as="$DRIVER_SA" -n "$NAMESPACE" --dry-run=server 2>&1)"
 expect_contains 'the policy refuses deleting an unlabelled Secret' "$deleted" 'only objects labelled factory.job'
 
@@ -2114,72 +2164,78 @@ fi
 if selected_phase workspace; then
 begin_phase workspace
 #
-# The admission probes above prove the driver cannot SPEC a pod that mounts another member's
-# subtree. This proves the kernel will not let a pod that mounted its own subtree REACH one — the
-# other half, and the half a policy cannot give you. `subPath` is a bind mount of one directory
-# into the container's mount namespace: the rest of the volume is not merely unreadable, it is
-# absent, so traversal and symlinks have nothing to resolve against. That is a property worth
-# proving rather than asserting, because the failure mode if it were wrong is silent.
+# The admission probes above prove the driver cannot SPEC a pod that mounts a claim that is not a
+# task volume. This proves a pod that mounted its own thread's task volume (issue #775) cannot
+# REACH another thread's — the other half, and the half a policy cannot give you. Each thread has
+# its own claim, so the other volume is not merely unreadable, it is absent from the pod:
+# traversal and symlinks have nothing to resolve against. That is a property worth proving rather
+# than asserting, because the failure mode if it were wrong is silent.
 #
 # No CNI involvement, no NetworkPolicy: this lane runs on the plain kind cluster.
 echo
-echo '# the workspace boundary'
+echo '# the task volume boundary'
 
-uuid4() { # a legal member-id uuid, fresh per run — two runs never share a subtree
+uuid4() { # a legal thread-root uuid, fresh per run — two runs never share a volume
     printf '%s-%s-4%s-8%s-%s\n' "$(openssl rand -hex 4)" "$(openssl rand -hex 2)" \
         "$(openssl rand -hex 2 | cut -c2-)" "$(openssl rand -hex 2 | cut -c2-)" "$(openssl rand -hex 6)"
 }
-MEMBER_A="probea/$(uuid4)"
-MEMBER_B="probeb/$(uuid4)"
+VOLUME_A="factory-task-$(uuid4)-1"
+VOLUME_B="factory-task-$(uuid4)-1"
+for volume in "$VOLUME_A" "$VOLUME_B"; do
+    kubectl apply -n "$NAMESPACE" -f - >/dev/null 2>&1 <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: $volume
+    labels: {factory.task-org: $member}
+spec:
+    accessModes: [ReadWriteOnce]
+    resources: {requests: {storage: 1Gi}}
+EOF
+done
 
-# The seeder mounts the claim ROOT, which the driver's own identity may not do — it runs as this
-# script's kubeconfig identity, which the policy's matchConditions do not select. That asymmetry
-# is the point: only the dashboard writes checkouts across members, and it is not the driver.
+# The seeder mounts both volumes, which one pod of the driver's could not: it runs as this script's
+# kubeconfig identity, which the policy's matchConditions do not select.
 kubectl run fs-seed -n "$NAMESPACE" --image=alpine:3 --restart=Never --command \
     --overrides="$(
         cat <<EOF
 {"spec":{"automountServiceAccountToken":false,
-"volumes":[{"name":"w","persistentVolumeClaim":{"claimName":"$STATE_RELEASE-workspaces"}}],
+"volumes":[{"name":"a","persistentVolumeClaim":{"claimName":"$VOLUME_A"}},{"name":"b","persistentVolumeClaim":{"claimName":"$VOLUME_B"}}],
 "containers":[{"name":"fs-seed","image":"alpine:3",
-"command":["sh","-c","mkdir -p /all/$MEMBER_A /all/$MEMBER_B && echo mine > /all/$MEMBER_A/secret.txt && echo theirs > /all/$MEMBER_B/secret.txt && echo seeded"],
-"volumeMounts":[{"name":"w","mountPath":"/all"}]}]}}
+"command":["sh","-c","echo mine > /a/secret.txt && echo theirs > /b/secret.txt && echo seeded"],
+"volumeMounts":[{"name":"a","mountPath":"/a"},{"name":"b","mountPath":"/b"}]}]}}
 EOF
     )" -- sh >/dev/null 2>&1
-kubectl wait --for=condition=Ready=false --timeout=120s pod/fs-seed -n "$NAMESPACE" >/dev/null 2>&1 || true
 kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s pod/fs-seed -n "$NAMESPACE" >/dev/null 2>&1
 seeded="$(kubectl logs fs-seed -n "$NAMESPACE" 2>&1 || true)"
-expect_contains 'two member subtrees are seeded through a claim-root mount' "$seeded" 'seeded'
+expect_contains 'two task volumes are seeded through a two-claim mount' "$seeded" 'seeded'
 
-# The probe mounts ONLY member A's subtree, exactly as the driver specs it: subPath, no
-# subPathExpr, target is the subtree's own volume path. Every check prints one `name=verdict`
-# line, so a check that never ran is a missing line rather than a silent pass.
+# The probe mounts ONLY thread A's volume, at /task as the driver specs it. Every check prints a
+# labelled line, so a check that never ran is a missing line rather than a silent pass.
 #
 # One line, single quotes only, no backslashes: the script is interpolated into a JSON override,
 # and a `\n` or a `"` here would have to be JSON-escaped by something. Keeping the script free of
 # both is cheaper than carrying an encoder, and it is why `ls` output is read space-separated
 # (command substitution already collapses it) instead of through `tr`.
-probe_script="cd /workspaces/$MEMBER_A;
+probe_script="cd /task;
 echo own=\$(cat secret.txt 2>/dev/null || echo UNREADABLE);
-echo siblings=\$(ls /workspaces 2>/dev/null);
-echo relative=\$(cat ../../$MEMBER_B/secret.txt 2>/dev/null && echo LEAKED || echo denied);
-echo absolute=\$(cat /workspaces/$MEMBER_B/secret.txt 2>/dev/null && echo LEAKED || echo denied);
+echo files=\$(ls -A /task 2>/dev/null);
+echo found=\$(find / -name secret.txt 2>/dev/null);
+echo relative=\$(cat ../b/secret.txt 2>/dev/null && echo LEAKED || echo denied);
 ln -sf / escape 2>/dev/null;
-echo symlink=\$(cat escape/workspaces/$MEMBER_B/secret.txt 2>/dev/null && echo LEAKED || echo denied);
-ln -sf ../.. up 2>/dev/null;
-echo symlink_up=\$(ls up/$MEMBER_B 2>/dev/null && echo LEAKED || echo denied);
-echo above=\$(ls ../.. 2>/dev/null);
-rm -f escape up"
+echo symlink=\$(cat escape/b/secret.txt 2>/dev/null && echo LEAKED || echo denied);
+rm -f escape"
 probe_script="$(printf '%s' "$probe_script" | tr '\n' ' ')"
 kubectl run fs-probe -n "$NAMESPACE" --image=alpine:3 --restart=Never --command \
     --overrides="$(
         cat <<EOF
 {"spec":{"automountServiceAccountToken":false,
 "securityContext":{"seccompProfile":{"type":"RuntimeDefault"}},
-"volumes":[{"name":"w","persistentVolumeClaim":{"claimName":"$STATE_RELEASE-workspaces"}}],
+"volumes":[{"name":"task","persistentVolumeClaim":{"claimName":"$VOLUME_A"}}],
 "containers":[{"name":"fs-probe","image":"alpine:3",
 "securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}},
 "command":["sh","-c","$probe_script"],
-"volumeMounts":[{"name":"w","mountPath":"/workspaces/$MEMBER_A","subPath":"$MEMBER_A"}]}]}}
+"volumeMounts":[{"name":"task","mountPath":"/task"}]}]}}
 EOF
     )" -- sh >/dev/null 2>&1
 kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s pod/fs-probe -n "$NAMESPACE" >/dev/null 2>&1
@@ -2187,15 +2243,13 @@ probe_out="$(kubectl logs fs-probe -n "$NAMESPACE" 2>&1 || true)"
 
 # The positive control FIRST. Without it every "denied" below could be a pod that failed to start,
 # a wrong path or an empty log — the vacuous pass an isolation test must never be able to report.
-expect_contains 'the probe reads its OWN file through the subPath mount' "$probe_out" 'own=mine'
-expect_contains 'only the probe own org is visible under the mount root' "$probe_out" 'siblings=probea'
-expect_not_contains 'the other member org does not appear beside it' "$probe_out" 'probeb'
-expect_contains 'a relative traversal to another member is denied' "$probe_out" 'relative=denied'
-expect_contains 'an absolute path to another member is denied' "$probe_out" 'absolute=denied'
-expect_contains 'a symlink to / cannot reach another member' "$probe_out" 'symlink=denied'
-expect_contains 'a symlink up out of the subtree cannot reach another member' "$probe_out" 'symlink_up=denied'
+expect_contains 'the probe reads its OWN file on its task volume' "$probe_out" 'own=mine'
+expect_contains 'only the probe own file is on its task volume' "$probe_out" 'files=secret.txt'
+expect_contains 'the only secret the probe can find is its own' "$probe_out" 'found=/task/secret.txt'
+expect_contains 'a relative traversal to another thread is denied' "$probe_out" 'relative=denied'
+expect_contains 'a symlink to / cannot reach another thread' "$probe_out" 'symlink=denied'
 expect_not_contains 'nothing in the probe leaked' "$probe_out" 'LEAKED'
-expect_not_contains 'the volume root is not reachable above the mount' "$probe_out" 'theirs'
+expect_not_contains 'the other thread volume is not reachable' "$probe_out" 'theirs'
 
 kubectl delete pod fs-seed fs-probe -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
 
@@ -2262,22 +2316,8 @@ SQL
 }
 
 advance_origin() { # advance_origin -> success once the origin's main has a new `lane-upstream` commit
-    local script="set -e; git clone -q /workspaces/$member_path/.smoke-origin.git /tmp/up; git -C /tmp/up -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q --allow-empty -m lane-upstream; git -C /tmp/up push -q origin HEAD:main; echo advanced"
-    kubectl run "$RELEASE-origin-advance" -n "$NAMESPACE" --image="$STUB_REF" --restart=Never --command \
-        --overrides="$(
-            cat <<EOF
-{"spec":{"automountServiceAccountToken":false,
-"volumes":[{"name":"w","persistentVolumeClaim":{"claimName":"$STATE_RELEASE-workspaces"}}],
-"containers":[{"name":"advance","image":"$STUB_REF","imagePullPolicy":"IfNotPresent",
-"command":["sh","-c","$script"],
-"volumeMounts":[{"name":"w","mountPath":"/workspaces"}]}]}}
-EOF
-        )" -- sh >/dev/null 2>&1
-    kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s "pod/$RELEASE-origin-advance" \
-        -n "$NAMESPACE" >/dev/null 2>&1
     local out
-    out="$(kubectl logs "$RELEASE-origin-advance" -n "$NAMESPACE" 2>&1 || true)"
-    kubectl delete pod "$RELEASE-origin-advance" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
+    out="$(kubectl exec "$RELEASE-origin" -n "$NAMESPACE" -- sh -c "set -e; rm -rf /tmp/up; git clone -q /origins/$SMOKE_REPO.git /tmp/up; git -C /tmp/up -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q --allow-empty -m lane-upstream; git -C /tmp/up push -q origin HEAD:main; echo advanced" 2>&1 || true)"
     case "$out" in *advanced*) return 0 ;; esac
     return 1
 }
@@ -2286,11 +2326,11 @@ await_job_complete() { # await_job_complete <runner Job name> <seconds>
     kubectl wait --for=condition=complete "job/$1" -n "$NAMESPACE" --timeout="$2s" >/dev/null 2>&1
 }
 
-hard_release="/workspaces/$member_path/.lane-hard"
-drain_release="/workspaces/$member_path/.lane-drain"
-evict_release="/workspaces/$member_path/.lane-evict"
-lost_release="/workspaces/$member_path/.lane-lost"
-final_release="/workspaces/$member_path/.lane-finalizing"
+hard_release="/task/.lane-hard"
+drain_release="/task/.lane-drain"
+evict_release="/task/.lane-evict"
+lost_release="/task/.lane-lost"
+final_release="/task/.lane-finalizing"
 
 # a. The hard kill: a lease expiry. A forced delete is no SIGKILL — the kubelet still
 #    sends SIGTERM and kills ~2s later — so this is no drain only while the 10s handover outlasts
@@ -2594,14 +2634,14 @@ commit_plan() { # commit_plan <label> <.bellows.yaml contents, empty to remove i
     reach="$(printf '%s\n' "$LANE_REACH" | base64 | tr -d '\n')"
     leave="$(printf '%s\n' "$LANE_LEAVE" | base64 | tr -d '\n')"
     # One line, no double quotes or backslashes: it is interpolated into the JSON override below.
-    script="set -e; rm -rf /tmp/plan; git clone -q /workspaces/$member_path/.smoke-origin.git /tmp/plan;
+    script="set -e; rm -rf /tmp/plan; git clone -q git://$RELEASE-origin:9418/$SMOKE_REPO.git /tmp/plan;
 echo $plan | base64 -d > /tmp/plan/.bellows.yaml;
 [ -s /tmp/plan/.bellows.yaml ] || rm -f /tmp/plan/.bellows.yaml;
 mkdir -p /tmp/plan/lane; echo $reach | base64 -d > /tmp/plan/lane/reach.sh; echo $leave | base64 -d > /tmp/plan/lane/leave.sh;
 git -C /tmp/plan add -A;
 git -C /tmp/plan -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q --allow-empty -m lane-plan-$1;
 git -C /tmp/plan push -q origin HEAD:main;
-rm -rf /workspaces/.origins/$SMOKE_REPO.git; cp -a /workspaces/$member_path/.smoke-origin.git /workspaces/.origins/$SMOKE_REPO.git;
+rm -rf /workspaces/.origins/$SMOKE_REPO.git; git clone -q --bare git://$RELEASE-origin:9418/$SMOKE_REPO.git /workspaces/.origins/$SMOKE_REPO.git;
 echo committed"
     script="$(printf '%s' "$script" | tr '\n' ' ')"
     kubectl run "$RELEASE-plan-$1" -n "$NAMESPACE" --image="$STUB_REF" --restart=Never --command \
@@ -2676,7 +2716,7 @@ expect_not_contains 'no service pod or headless Service is created' \
 #    back with its restart count past the baseline, so the driver finds it dead before the gates and
 #    restarts the fleet by the generation bump — one more kubelet restart — and the gates pass.
 begin_phase services-restart
-svc_release="/workspaces/$member_path/.lane-services"
+svc_release="/task/.lane-services"
 restarted="$(queue_job "factory-stub-wait-$svc_release services restart")"
 restart_pod="$(await_runner_pod "$restarted")"
 if [ -z "$restarted" ] || [ -z "$restart_pod" ]; then
@@ -2763,7 +2803,7 @@ expect_contains 'the failure names the gate image' "$(job_output "$ghost_gate")"
 #    the caller is re-claimed, asks the same key again, the review row is re-leased (claim 2), and the
 #    verdict reaches the caller from the new pod.
 begin_phase services-review
-review_idle_release="/workspaces/$member_path/.lane-review-idle"
+review_idle_release="/task/.lane-review-idle"
 commit_plan review 'reviewers:
   - name: audit
     instructions: "Audit the tree. STUB-REVIEW-HOLD-90"
@@ -2932,7 +2972,7 @@ fetch(process.argv[1], { headers })
 
 # a. The cooperative Stop: the agent waits behind a barrier nobody releases, and ends on the Stop.
 begin_phase control-stop
-stop_release="/workspaces/$member_path/.lane-control-stop"
+stop_release="/task/.lane-control-stop"
 stopping="$(queue_job "factory-stub-stop factory-stub-wait-$stop_release stop")"
 stop_pod=''
 [ -n "$stopping" ] && stop_pod="$(await_runner_pod "$stopping")"
@@ -2975,7 +3015,7 @@ timeout_was="$(kubectl get "$DRIVER_DEPLOY" -n "$NAMESPACE" --request-timeout=10
     -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="DRIVER_JOB_TIMEOUT_MS")].value}')"
 kubectl set env "$DRIVER_DEPLOY" -n "$NAMESPACE" "DRIVER_JOB_TIMEOUT_MS=$BUDGET_MS" >/dev/null 2>&1
 kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
-ask_release="/workspaces/$member_path/.lane-control-ask"
+ask_release="/task/.lane-control-ask"
 asking="$(queue_job "factory-stub-ask-40 factory-stub-wait-$ask_release ask")"
 ask_pod=''
 [ -n "$asking" ] && ask_pod="$(await_runner_pod "$asking")"

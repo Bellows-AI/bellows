@@ -1,4 +1,5 @@
 import { JOB_LABEL } from './labels.js';
+import { ensureTaskVolume } from './docker-task-volume.js';
 import { awaitSupervisor, closeEndOf, createGroup, removeGroup, startGroup, supervisorLossOf } from './docker-group.js';
 import { type DockerGateDeps, runDockerGate, runDockerReview } from './docker-gate.js';
 import {
@@ -10,10 +11,9 @@ import {
 } from './docker-teardown.js';
 import { supervisorName } from './docker-mailbox.js';
 import { createKillLedger, type KillLedger } from './kill-ledger.js';
-import { SUPERVISOR_ENV, SUPERVISOR_EXIT } from './supervisor-contract.js';
+import { SUPERVISOR_EXIT } from './supervisor-contract.js';
 import { agentBackstopMs } from './supervisor-plan.js';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
@@ -26,14 +26,13 @@ import {
     orderFinish,
     orderGo,
     releaseSteps,
-    runReclaimStep,
     runSyncStep,
     type StepHost,
     stepHostOf,
     supervisedStepMembers,
 } from './supervised-steps.js';
 import { reviewRunOf } from './review-step.js';
-import { RELEASE_DEADLINE_MS, repoPath, worktreeDir, type ReclaimResult, type SyncResult } from './publish.js';
+import { checkoutDir, type ReclaimResult, type SyncResult } from './publish.js';
 import { groupServices, missingDeclaredServices, serviceContainerName } from './services.js';
 import {
     containerName,
@@ -41,7 +40,6 @@ import {
     parseDockerServiceExit,
     parseDockerServicePs,
     parseDockerStats,
-    toolTreeReleaseArgs,
 } from './docker.js';
 import { envFileBody } from './claim.js';
 import {
@@ -230,6 +228,7 @@ async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession 
     // group's, and a step that awaited (a credential) must not revive the attempt it lost.
     assertJobNotKilled(deps.ledger, job);
     await dockerReclaimFence(deps, job);
+    await ensureTaskVolume(deps, job);
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);
     const startedAt = new Date().toISOString();
@@ -278,8 +277,7 @@ async function dockerSyncCheckout(
     session: RunSession | null = null,
     githubToken?: string
 ): Promise<SyncResult> {
-    const { config } = deps;
-    if (!repoPath(config, job) || !worktreeDir(config, job)) return { ok: true, reason: null }; // nothing synced
+    if (!checkoutDir(job)) return { ok: true, reason: null }; // nothing synced
     try {
         await ensureGroup(deps, job, session);
         return await runSyncStep(stepHostOf(deps), job, githubToken);
@@ -293,51 +291,11 @@ async function dockerSyncCheckout(
 }
 
 /*
- * The terminal reclaim, in a supervisor-only group: the thread has no attempt, so there is no group
- * to ask. The group is a supervisor and nothing else under a lease of its own — it answers to
- * nothing of the thread's attempts. Removing the tree needs nothing the claim held, so no claim env
- * rides it. A job that names no repository never had a tree: "reclaimed, nothing was there".
+ * The terminal reclaim is an acknowledged no-op (issue #775): the thread's tree lives on its own task
+ * volume, which only the reaper may delete, so there is no linked worktree to remove.
  */
-async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<ReclaimResult> {
-    const { config } = deps;
-    if (!repoPath(config, job) || !worktreeDir(config, job)) return { ok: true, removed: false, reason: null };
-    if (!deps.endpoint) {
-        return {
-            ok: false,
-            removed: false,
-            reason: 'this driver has no supervisor endpoint to run the reclaim through',
-        };
-    }
-    const opened = await deps.endpoint.open();
-    // A supervisor alone (#773 D11): no agent, and no gate or service its checkout would bring.
-    const group: BoardJob = {
-        ...job,
-        agent: false,
-        gates: null,
-        services: [],
-        leaseToken: randomUUID(),
-        supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: opened.url, [SUPERVISOR_ENV.controlToken]: opened.token },
-    };
-    try {
-        // Issue #814: the tool uid first gives back what it closed; the reclaim's verdict decides.
-        const release = toolTreeReleaseArgs(config, job);
-        if (release) await deps.execDocker(release, { timeout: RELEASE_DEADLINE_MS }).catch(() => undefined);
-        await createGroup(deps, group, null, { startedAt: new Date().toISOString(), reclaim: true });
-        await startGroup(deps.execDocker, group, null);
-        await awaitGroupUp(deps, group);
-        return await runReclaimStep(stepHostOf(deps), group);
-    } catch (e) {
-        return {
-            ok: false,
-            removed: false,
-            reason: `the worktree reclaim group failed: ${dockerErrorDetail(e).slice(0, ERROR_DETAIL_MAX_CHARS)}`,
-        };
-    } finally {
-        await orderFinish(stepHostOf(deps), group).catch(() => undefined);
-        deps.endpoint.close(opened.token);
-        await dockerKill(deps, group);
-        await removeGroup(deps.execDocker, group);
-    }
+async function dockerReclaimWorktree(): Promise<ReclaimResult> {
+    return { ok: true, removed: false, reason: null };
 }
 
 /**
@@ -696,7 +654,7 @@ export function createDockerRunner(
         syncCheckout: (job, _signal, session, githubToken) =>
             dockerSyncCheckout(deps, job, session ?? null, githubToken),
         finish: (job) => finishGroup(deps, job),
-        reclaimWorktree: (job) => dockerReclaimWorktree(deps, job),
+        reclaimWorktree: dockerReclaimWorktree,
         ...supervisedStepMembers({
             host: stepHostOf(deps),
             hasGroup: (job) => deps.groups.has(job.leaseToken),

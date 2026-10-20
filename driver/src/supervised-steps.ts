@@ -18,21 +18,17 @@ import { parseLastJsonLine } from './json-parse.js';
 import {
     baseBranchOf,
     CREDENTIAL_HELPER,
-    gitWorktreeRemoveScript,
-    gitWorktreeScript,
     probeTreeFingerprint,
     publishCheckout,
     type PublishStep,
-    type ReclaimResult,
-    reclaimUnreadable,
-    repoPath,
-    reviewRootsDir,
+    remoteUrl,
     type RunPublishStep,
     SYNC_DEADLINE_MS,
     type SyncResult,
     syncUnreadable,
+    taskCheckoutScript,
     worktreeBranch,
-    worktreeDir,
+    checkoutDir,
 } from './publish.js';
 import { snapshotTree } from './review-snapshot.js';
 import type { Runner } from './runner.js';
@@ -66,8 +62,6 @@ export const stepHostOf = (deps: { config: DriverConfig; steps?: StepSink }): St
 
 /** One publish step's own bound, the kubelet deadline the aux Jobs carried. */
 const PUBLISH_STEP_TIMEOUT_MS = 600_000;
-/** The terminal reclaim's bound. */
-const RECLAIM_TIMEOUT_MS = 600_000;
 /** The supervisor's own orders answer at once; this only bounds a supervisor that is not there. */
 const ORDER_TIMEOUT_MS = 60_000;
 /** How often an unanswered step is asked again under the same identity before the answer counts lost. */
@@ -210,7 +204,7 @@ export function supervisedStepRunner(
         signal?: AbortSignal | undefined;
     }
 ): RunPublishStep {
-    const repo = worktreeDir(host.config, job);
+    const repo = checkoutDir(job);
     const nonce = randomUUID().slice(0, ID_HASH_CHARS);
     let counter = 0;
     return async (publish: PublishStep) => {
@@ -246,9 +240,9 @@ export function supervisedStepRunner(
  */
 export async function runSyncStep(host: StepHost, job: BoardJob, githubToken?: string): Promise<SyncResult> {
     const { config } = host;
-    const clone = repoPath(config, job);
-    const worktree = worktreeDir(config, job);
-    if (!clone || !worktree) return { ok: true, reason: null }; // nothing synced, nothing to fail either
+    const checkout = checkoutDir(job);
+    const remote = remoteUrl(config, job);
+    if (!checkout || !remote) return { ok: true, reason: null }; // nothing synced, nothing to fail either
     const restore = claimContinuesSession(job);
     const base = baseBranchOf(job);
     const result = await submitStep(
@@ -256,11 +250,11 @@ export async function runSyncStep(host: StepHost, job: BoardJob, githubToken?: s
         job,
         stepRequest(job, 'sync', {
             id: '1',
-            argv: ['node', '-e', gitWorktreeScript],
+            argv: ['node', '-e', taskCheckoutScript],
             env: {
                 ...(restore ? {} : claimStepEnv(job, githubToken)),
-                REPO: clone,
-                WORKTREE: worktree,
+                CHECKOUT: checkout,
+                REMOTE: remote,
                 BRANCH: worktreeBranch(job),
                 // Restore mode: the script's "keep the tree as the task left it, remote untouched" switch.
                 ...(restore ? { RESTORE: '1' } : {}),
@@ -287,40 +281,6 @@ export async function runSyncStep(host: StepHost, job: BoardJob, githubToken?: s
 
 const ERROR_PREVIEW_CHARS = 200;
 
-/** The terminal reclaim as one supervised step: the clone and the worktree by env, no credential. */
-export async function runReclaimStep(host: StepHost, job: BoardJob): Promise<ReclaimResult> {
-    const { config } = host;
-    const clone = repoPath(config, job);
-    const worktree = worktreeDir(config, job);
-    if (!clone || !worktree) return { ok: true, removed: false, reason: null };
-    const result = await submitStep(
-        host,
-        job,
-        stepRequest(job, 'reclaim', {
-            id: '1',
-            argv: ['node', '-e', gitWorktreeRemoveScript],
-            // The thread's review roots go with it: the caller thread owns the cleanup of every review it asked for.
-            env: { REPO: clone, WORKTREE: worktree, REVIEW_ROOTS: reviewRootsDir(config, job) ?? '' },
-            timeoutMs: RECLAIM_TIMEOUT_MS,
-        })
-    );
-    if (result.timedOut) {
-        return {
-            ok: false,
-            removed: false,
-            reason: `the worktree reclaim failed: ${detailOf(result, RECLAIM_TIMEOUT_MS)}`,
-        };
-    }
-    return parseLastJsonLine<ReclaimResult>(result.stdout, () => ({
-        ok: false,
-        removed: false,
-        reason:
-            result.exitCode === 0
-                ? `${reclaimUnreadable.reason}: ${result.stdout.trim().slice(-ERROR_PREVIEW_CHARS)}`
-                : `the worktree reclaim failed: ${detailOf(result, RECLAIM_TIMEOUT_MS)}`,
-    }));
-}
-
 /**
  * One block-helper step (issue #207): an allowlisted, board-owned script, run in the task worktree
  * with its bounded input as a literal. Only a github-writing helper gets the claim env, with the
@@ -342,7 +302,7 @@ export async function runHelperStep(
             message: `no allowlisted helper is registered as "${plan.helperId}"`,
         };
     }
-    const worktree = worktreeDir(host.config, job);
+    const worktree = checkoutDir(job);
     // The receipt's MAC key: with none, a receipt anyone could forge is never kept at all.
     const key = host.config.boardToken;
     const run = () => submitHelper(host, job, { plan, descriptor }, { token, signal });
@@ -364,7 +324,7 @@ async function submitHelper(
             stepRequest(job, 'helper', {
                 id: randomUUID(),
                 argv: ['node', '-e', descriptor.scriptBody],
-                cwd: worktreeDir(host.config, job),
+                cwd: checkoutDir(job),
                 env: {
                     ...(plan.githubWriting ? claimStepEnv(job, token) : {}),
                     HELPER_INPUT: helperInputValue(plan),
@@ -507,20 +467,17 @@ export function supervisedStepMembers(
     return {
         publishGit: async (job, githubToken, options) =>
             publishCheckout(
-                groups.host.config,
                 job,
                 options,
                 supervisedStepRunner(await stepHostFor(groups, job), job, { kind: 'publish', githubToken })
             ),
         probeTree: async (job, signal) =>
             probeTreeFingerprint(
-                groups.host.config,
                 job,
                 supervisedStepRunner(await stepHostFor(groups, job), job, { kind: 'probe', signal })
             ),
         snapshotTree: async (job, key, signal) =>
             snapshotTree(
-                groups.host.config,
                 job,
                 key,
                 supervisedStepRunner(await stepHostFor(groups, job), job, { kind: 'snapshot', signal })

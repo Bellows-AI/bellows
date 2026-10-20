@@ -11,10 +11,10 @@ service sidecars, every aux Job — because `create jobs` would otherwise be `re
     per-attempt ones (factory-job-…-env, docs/kubernetes.md) or the
     runner credentials. The chart's pull secrets only under imagePullSecrets — the kubelet reads
     those, a container never does. The dashboard Secret is none of these.
-  - volumes: the workspaces claim, emptyDir, and such Secrets — no hostPath, no other claim, no
-    projected ServiceAccount token, no CSI driver.
-  - every mount of the workspaces claim carries a subPath of the driver's WORKSPACE_PATH shape
-    (`<org>/<user id>`, driver/src/publish.ts; the reviewer's home adds `/.factory/reviewer`) and no subPathExpr, so no pod mounts the claim root.
+  - volumes: a task volume claim (`factory-task-<root uuid>-<generation>`, issue #775), emptyDir,
+    and such Secrets — no hostPath, no other claim, no projected ServiceAccount token, no CSI driver.
+  - a mount of a task volume carries no subPathExpr and no subPath but the reviewer's home
+    (`.factory/reviewer`).
   - no ServiceAccount token, no other ServiceAccount, no host namespaces, nothing privileged, no
     added capabilities.
   - the executor hardening is REQUIRED, not merely permitted (#382): the RuntimeDefault seccomp
@@ -24,13 +24,14 @@ service sidecars, every aux Job — because `create jobs` would otherwise be `re
   - the task pod's shape (#773): `hostAliases` map only to 127.0.0.1 (a declared service's name),
     and a `svc-` container is only a restartable init container — the restartable ones are the
     `gate`, the `reviewer` and the `svc-` services, nothing else.
-  - the reviewer (#774) runs as uid 1002 and mounts the workspace read-only but for its home
-    (`<org>/<user id>/.factory/reviewer`), and its review mailbox, nothing else.
+  - the reviewer (#774) runs as uid 1002 and mounts the task volume read-only but for its home
+    (`.factory/reviewer`), and its review mailbox, nothing else.
 `-resize` fences the one in-place resize the driver makes (issue #773): a `pods/resize` update of a
 pod it labelled `factory.job` that changes no main container and no init container but `gate` or `reviewer`, one of them.
 `-objects` fences what the driver may create and delete: only objects labelled `factory.job` (the
 label every runner-owned object carries), so the dashboard's Secret and ConfigMaps are out of
-reach; Secrets only under the per-attempt names and only Opaque (a service-account-token Secret
+reach, but for a task volume claim, whose name must repeat its labelled thread root and generation (issue #775), whose
+access mode is never ReadWriteMany and which never names a volume; Secrets only under the per-attempt names and only Opaque (a service-account-token Secret
 would mint credentials); pods only deleted (the re-claim fence's sweep). The one update it
 admits is a checkout claim's revoke (issue #821): the Role's `patch` on configmaps is
 namespace-wide, so an update reaches only a `factory-job-<id>-claim` ConfigMap, keeps its labels
@@ -38,8 +39,8 @@ and data, and changes no annotation but `factory.revoked`.
 
 Limits, stated: the per-attempt Secret names do not carry the release, so in a namespace shared by
 two releases one driver can still reach the other's per-attempt objects — install one release per
-namespace. Admission sees no job, so the workspace subPath is fenced by shape, not by owner: a
-compromised driver can still name another member's `<org>/<user id>` subtree. A mutating sidecar injector (a service mesh) adds volumes and containers this policy refuses on
+namespace. Admission sees no job, so a task volume is fenced by shape, not by owner: a
+compromised driver can still mount another thread's volume by name. A mutating sidecar injector (a service mesh) adds volumes and containers this policy refuses on
 runner pods; exclude the namespace from injection. Seccomp is required here (#382); AppArmor and sysctls
 are still left to Pod Security Admission — label the namespace
 `pod-security.kubernetes.io/enforce: baseline` for those. None of this is kernel or VM isolation:
@@ -53,7 +54,7 @@ it is a smaller share of one shared kernel, not a different one (docs/security.m
 {{- $allowed = append $allowed (include "factory.runnerSecretName" .) }}
 {{- end }}
 {{- $secretName := "^factory-job-[a-z0-9-]+-env$" }}
-{{- $workspaceSubPath := "^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(/[.]factory/reviewer)?$" }}
+{{- $taskClaim := "^factory-task-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[0-9]+$" }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -80,10 +81,10 @@ spec:
           expression: {{ toJson $allowed | quote }}
         - name: pullSecrets
           expression: {{ toJson .Values.imagePullSecrets | quote }}
-        - name: workspaceVolumes
+        - name: taskVolumes
           expression: >-
               has(variables.spec.volumes) ? variables.spec.volumes.filter(v,
-                has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName == {{ include "factory.workspaceClaim" . | squote }}
+                has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName.matches({{ squote $taskClaim }})
               ).map(v, v.name) : []
     validations:
         - expression: "has(variables.spec.automountServiceAccountToken) && variables.spec.automountServiceAccountToken == false"
@@ -102,16 +103,16 @@ spec:
           message: 'a driver-specced pod may not share host namespaces'
         - expression: >-
               !has(variables.spec.volumes) || variables.spec.volumes.all(v,
-                (has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName == {{ include "factory.workspaceClaim" . | squote }}) ||
+                (has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName.matches({{ squote $taskClaim }})) ||
                 has(v.emptyDir) ||
                 (has(v.secret) && has(v.secret.secretName) &&
                   (v.secret.secretName.matches({{ squote $secretName }}) || v.secret.secretName in variables.allowed)))
-          message: 'a driver-specced pod may mount only the workspaces claim, emptyDir, and its own per-attempt Secrets'
+          message: 'a driver-specced pod may mount only a task volume claim, emptyDir, and its own per-attempt Secrets'
         - expression: >-
               variables.containers.all(c, !has(c.volumeMounts) || c.volumeMounts.all(m,
-                !(m.name in variables.workspaceVolumes) ||
-                (!has(m.subPathExpr) && has(m.subPath) && m.subPath.matches({{ squote $workspaceSubPath }}))))
-          message: 'a driver-specced pod may mount the workspaces claim only at a member subPath (<org>/<user id>)'
+                !(m.name in variables.taskVolumes) ||
+                (!has(m.subPathExpr) && (!has(m.subPath) || m.subPath in ['', '.factory/reviewer']))))
+          message: 'a driver-specced pod may mount a task volume only whole or at the reviewer home'
         - expression: >-
               !has(variables.spec.imagePullSecrets) ||
               variables.spec.imagePullSecrets.all(p, has(p.name) && p.name in variables.pullSecrets)
@@ -193,8 +194,8 @@ spec:
         {{/*
         Issue #774. The reviewer is a restartable init container of its own uid (1002,
         driver/src/claim.ts REVIEWER_UID): never the CLI's 1000, the tool's 1001 or any other, and
-        it mounts the member's workspace read-only but for its own home (the member subPath's
-        `.factory/reviewer` directory, read-write), and its review mailbox, nothing else; it reads
+        it mounts the task volume read-only but for its own home (its `.factory/reviewer`
+        directory, read-write), and its review mailbox, nothing else; it reads
         the model credentials Secret (the one the agent reads) and no other, no envFrom.
         */}}
         - expression: >-
@@ -205,10 +206,10 @@ spec:
         - expression: >-
               !has(variables.spec.initContainers) || variables.spec.initContainers.all(c, c.name != 'reviewer' ||
                 !has(c.volumeMounts) || c.volumeMounts.all(m,
-                  (m.name == 'workspaces' && has(m.readOnly) && m.readOnly) ||
-                  (m.name == 'workspaces' && m.subPath.endsWith('/.factory/reviewer')) ||
+                  (m.name == 'task' && has(m.readOnly) && m.readOnly) ||
+                  (m.name == 'task' && has(m.subPath) && m.subPath == '.factory/reviewer') ||
                   m.name == 'ctl-review'))
-          message: 'a driver-specced reviewer mounts its workspace read-only but for its home, and its review mailbox'
+          message: 'a driver-specced reviewer mounts the task volume read-only but for its home, and its review mailbox'
         - expression: >-
               !has(variables.spec.initContainers) || variables.spec.initContainers.all(c, c.name != 'reviewer' ||
                 (!has(c.envFrom) || size(c.envFrom) == 0) &&
@@ -295,6 +296,10 @@ spec:
               resources: ['secrets', 'configmaps']
             - apiGroups: ['']
               apiVersions: ['v1']
+              operations: ['CREATE', 'DELETE']
+              resources: ['persistentvolumeclaims']
+            - apiGroups: ['']
+              apiVersions: ['v1']
               operations: ['DELETE']
               resources: ['pods']
             - apiGroups: ['']
@@ -318,8 +323,25 @@ spec:
         - name: newAnnotations
           expression: "has(object.metadata.annotations) ? object.metadata.annotations : {}"
     validations:
-        - expression: "has(variables.target.metadata.labels) && 'factory.job' in variables.target.metadata.labels"
+        - expression: >-
+              request.kind.kind == 'PersistentVolumeClaim' ||
+              (has(variables.target.metadata.labels) && 'factory.job' in variables.target.metadata.labels)
           message: 'the driver creates and deletes only objects labelled factory.job'
+        - expression: >-
+              request.kind.kind != 'PersistentVolumeClaim' ||
+              (variables.target.metadata.name.matches({{ squote $taskClaim }}) &&
+                has(variables.target.metadata.labels) &&
+                'factory.task-root' in variables.target.metadata.labels &&
+                'factory.task-generation' in variables.target.metadata.labels &&
+                variables.target.metadata.name == 'factory-task-' + variables.target.metadata.labels['factory.task-root'] +
+                  '-' + variables.target.metadata.labels['factory.task-generation'])
+          message: 'the driver creates and deletes only task volume claims named for their labelled thread root and generation'
+        - expression: >-
+              request.kind.kind != 'PersistentVolumeClaim' || request.operation == 'DELETE' ||
+              (object.spec.accessModes.all(a, a in ['ReadWriteOnce', 'ReadWriteOncePod']) &&
+                !has(object.spec.volumeName) && !has(object.spec.dataSource) && !has(object.spec.dataSourceRef){{ with .Values.taskVolume.storageClass }} &&
+                has(object.spec.storageClassName) && object.spec.storageClassName == {{ . | squote }}{{ end }})
+          message: 'a task volume claim is never ReadWriteMany and names no volume or data source, and takes the chart class'
         - expression: >-
               request.operation != 'UPDATE' ||
               (oldObject.metadata.name.matches('^factory-job-[0-9a-f-]+-claim$') &&

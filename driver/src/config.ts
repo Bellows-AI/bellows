@@ -33,13 +33,12 @@ export interface DriverConfig {
     /** Deployment image for each task-selected executor type. CLI choice comes from the claim. */
     executorImages: Readonly<Record<ExecutorType, string>>;
     /**
-     * The docker volume holding the checkouts — a NAME, not a host path. The dashboard writes them
-     * into a named volume precisely so no host directory is involved, and a runner spawned from
-     * inside a container could not resolve a host path anyway.
+     * The task volume a new thread gets (issue #775): kubernetes only, since docker volumes take
+     * no class, mode or size. `storageClass` null is the cluster default.
      */
-    workspaceVolume: string;
-    /** Where that volume is mounted inside the runner. */
-    workspaceMount: string;
+    taskVolume: { storageClass: string | null; accessMode: string; size: string };
+    /** Where a task's checkout is cloned from: `<cloneBase>/<owner>/<name>.git`. */
+    cloneBase: string;
     /**
      * Where a runner's telemetry is pointed, as `OTEL_EXPORTER_OTLP_ENDPOINT`. Defaults to
      * `http://collector:4318` when `RUNNER_OTEL_ENDPOINT` is not set, so the endpoint is always
@@ -314,8 +313,9 @@ const DEFAULTS = {
     boardUrl: 'http://127.0.0.1:8080',
     claudeExecutorImage: 'claude-executor',
     opencodeExecutorImage: 'opencode-executor',
-    workspaceVolume: 'factory-ai_workspaces',
-    workspaceMount: '/workspaces',
+    taskVolumeAccessMode: 'ReadWriteOncePod',
+    taskVolumeSize: '20Gi',
+    cloneBase: 'https://github.com',
     concurrency: 2,
     pollMs: 5_000,
     leaseSeconds: 300,
@@ -644,8 +644,12 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
             [CLAUDE_CODE]: text(env.CLAUDE_EXECUTOR_IMAGE, 'CLAUDE_EXECUTOR_IMAGE', DEFAULTS.claudeExecutorImage),
             [OPENCODE]: text(env.OPENCODE_EXECUTOR_IMAGE, 'OPENCODE_EXECUTOR_IMAGE', DEFAULTS.opencodeExecutorImage),
         },
-        workspaceVolume: text(env.WORKSPACE_VOLUME, 'WORKSPACE_VOLUME', DEFAULTS.workspaceVolume),
-        workspaceMount: text(env.WORKSPACE_MOUNT, 'WORKSPACE_MOUNT', DEFAULTS.workspaceMount),
+        taskVolume: {
+            storageClass: (env.TASK_VOLUME_STORAGE_CLASS ?? '').trim() || null,
+            accessMode: text(env.TASK_VOLUME_ACCESS_MODE, 'TASK_VOLUME_ACCESS_MODE', DEFAULTS.taskVolumeAccessMode),
+            size: text(env.TASK_VOLUME_SIZE, 'TASK_VOLUME_SIZE', DEFAULTS.taskVolumeSize),
+        },
+        cloneBase: text(env.REPO_CLONE_BASE, 'REPO_CLONE_BASE', DEFAULTS.cloneBase).replace(/\/+$/, ''),
         // Empty is unset, like every other optional value here: default to the collector on the
         // compose network, so the endpoint is always provided to the runner.
         otelEndpoint: (env.RUNNER_OTEL_ENDPOINT ?? '').trim() || DEFAULTS.otelEndpoint,

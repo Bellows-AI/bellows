@@ -10,7 +10,7 @@ IMAGE ?= factory-ai
 BAKED_PORT ?= 8081
 # The compose project's network, where the `postgres` service name resolves. Override if the
 # project directory is not `factory-ai` — the same caveat docker-compose.yml carries for
-# WORKSPACE_VOLUME.
+# RUNNER_NETWORK.
 BAKED_NETWORK ?= factory-ai_default
 
 .PHONY: baked baked-build baked-run

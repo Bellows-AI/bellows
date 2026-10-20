@@ -1,32 +1,10 @@
-import { randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
-import { executorImage, type DriverConfig } from './config.js';
+import { executorImage } from './config.js';
 import { jobPath } from './k8s-auxspec.js';
 import { ledgerOf, RunnerKilled } from './k8s-kill.js';
-import {
-    createSuspendedWithSecret,
-    launch,
-    type ObservedClaim,
-    prepare,
-    readClaim,
-    releaseClaimAfterGroupEnd,
-    resumeJob,
-} from './k8s-fence.js';
-import {
-    hash16,
-    jobsPath,
-    runnerJobSpec,
-    runnerName,
-    secretBody,
-    secretName,
-    workspaceMount,
-    type RunnerJobSpec,
-    type RunnerPodContainer,
-} from './k8s-podspec.js';
+import { launch, prepare, releaseClaimAfterGroupEnd } from './k8s-fence.js';
+import { jobsPath, runnerJobSpec, runnerName } from './k8s-podspec.js';
 import { isLease } from './k8s-shapes.js';
-import { containerHardeningField } from './k8s-podfields.js';
-import { GATE_GID, TOOL_UID, workspacePath } from './claim.js';
-import { RELEASE_DEADLINE_MS, toolTreeReleaseBoundedScript, toolTreeReleaseScript, worktreeDir } from './publish.js';
 import {
     asJob,
     asIdentified,
@@ -39,20 +17,16 @@ import {
 } from './k8s-poll.js';
 import { heldUnpullable } from './k8s-held.js';
 import {
-    endRunnerJob,
     GROUP_END_WAIT_MS,
     type GroupRef,
     holderUnconfirmed,
     type IncarnationUids,
-    holderWritersGone,
     markEnding,
     retryUnconfirmed,
-    type TeardownIdentity,
 } from './k8s-teardown.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
-import { MS_PER_SECOND, POLL_MS } from './k8s-transport.js';
+import { POLL_MS } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
-import type { ReclaimResult } from './publish.js';
 import type { RunSession } from './runner.js';
 import { StartupRefused } from './startup-cause.js';
 import {
@@ -61,11 +35,9 @@ import {
     GROUP_UP_WAIT_MS,
     orderFinish,
     releaseSteps,
-    runReclaimStep,
     type StepHost,
     stepHostOf,
 } from './supervised-steps.js';
-import { SUPERVISOR_ENV } from './supervisor-contract.js';
 
 /**
  * The kubernetes task group of one attempt (issue #771): the one Job whose pod holds the supervisor,
@@ -86,14 +58,6 @@ export interface TaskGroup {
     /** The incarnation this runner created: its teardown deletes that one only. */
     uids: IncarnationUids;
 }
-
-/**
- * The group of a thread with no attempt, which a terminal reclaim has to run in: a supervisor and
- * nothing else — no agent, no exporter, no member env — under a name of its own, so it can never
- * answer to the attempt group's. The reclaim is a supervised step like every other; only the group
- * differs. Its deadline is the reclaim's own plus the wind-down, not a run's.
- */
-export const reclaimGroupName = (job: BoardJob): string => `factory-reclaim-${hash16(`${job.id}|${job.leaseToken}`)}`;
 
 /** The attempt's own task group: its runner Job, named by its lease token. */
 export const runnerGroupOf = (job: BoardJob, uids?: IncarnationUids): GroupRef => ({
@@ -145,61 +109,6 @@ export async function holderGroupsOf(deps: K8sDeps, job: BoardJob, holder: strin
         groups.push({ pair: { ...job, leaseToken: labels[LEASE_LABEL]! }, jobName: name, uids: { job: uid } });
     }
     return groups;
-}
-
-/** The bound of a reclaim group: its one step's deadline, and the time to finalize. */
-const RECLAIM_GROUP_SECONDS = 1200;
-
-export function reclaimGroupSpec(config: DriverConfig, job: BoardJob, holder: string): RunnerJobSpec {
-    // A supervisor alone (#773 D11): no agent, and no gate or service sidecar its checkout would bring.
-    const spec = runnerJobSpec(config, { ...job, agent: false, gates: null, services: [] }, null);
-    const worktree = worktreeDir(config, job);
-    const pod = spec.spec.template.spec;
-    // The checkout holder it serves, on the Job and its pods: how what it left is found again.
-    const holderLabel = { [HOLDER_LABEL]: holder };
-    return {
-        ...spec,
-        metadata: {
-            ...spec.metadata,
-            name: reclaimGroupName(job),
-            labels: { ...spec.metadata.labels, ...holderLabel },
-        },
-        spec: {
-            ...spec.spec,
-            activeDeadlineSeconds: RECLAIM_GROUP_SECONDS,
-            template: {
-                ...spec.spec.template,
-                metadata: {
-                    ...spec.spec.template.metadata,
-                    labels: { ...spec.spec.template.metadata.labels, ...holderLabel },
-                },
-                spec: { ...pod, ...(worktree ? { initContainers: [releaseContainer(config, job, worktree)] } : {}) },
-            },
-        },
-    };
-}
-
-/**
- * The tool uid's release of the tree (issue #814), before the supervisor starts and so before the
- * reclaim step: a directory a tool closed with an explicit mode is one the uid-1000 reclaim cannot
- * empty. Hardened like every container, as the tool uid, the tree's path its only input. Bounded by
- * docker's own deadline, well inside the wait for the supervisor, and 0 whatever happened to it: the
- * reclaim's own verdict decides.
- */
-function releaseContainer(config: DriverConfig, job: BoardJob, worktree: string): RunnerPodContainer {
-    const hardened = containerHardeningField().securityContext;
-    return {
-        name: 'release',
-        image: executorImage(config, job.executorType),
-        imagePullPolicy: config.imagePullPolicy,
-        securityContext: { ...hardened, runAsUser: TOOL_UID, runAsGroup: GATE_GID },
-        command: ['sh', '-c', toolTreeReleaseBoundedScript, 'release', toolTreeReleaseScript],
-        env: [
-            { name: 'WORKTREE', value: worktree },
-            { name: 'RELEASE_DEADLINE_SECONDS', value: String(RELEASE_DEADLINE_MS / MS_PER_SECOND) },
-        ],
-        volumeMounts: [workspaceMount(config, workspacePath(job))],
-    };
 }
 
 /** The attempt groups this runner created, by lease token: one per attempt, never shared. */
@@ -330,86 +239,4 @@ export async function finishGroup(deps: K8sDeps, job: BoardJob): Promise<void> {
     // An unread Job is never deleted on that: held, kept, and ended again once it reads (`retryUnconfirmed`).
     const keep = (await jobEndsWithin(deps, runnerName(job), GROUP_END_WAIT_MS)) !== 'running' && known.agent;
     await releaseClaimAfterGroupEnd(deps, job, { groups: [{ ...runnerGroupOf(job, known.uids), keep }] });
-}
-
-/**
- * The terminal reclaim, in a supervisor-only group: the thread has no attempt, so there is no
- * group to ask. The group is a supervisor and nothing else — no agent, no exporter, no member env
- * — under a random lease of its own, labelled with the checkout holder it serves (`HOLDER_LABEL`),
- * so nothing of the thread's attempts answers to it and no other invocation ever shares its names;
- * a retry under the same holder finds what an earlier one left by that label, and waits for any of
- * it still writing. The caller holds the checkout claim for the whole call; the group's
- * end is recorded against that holder, so a group not confirmed ended keeps the claim and answers
- * as a refusal. A group that cannot come up is a refusal, never a throw.
- */
-export async function reclaimInGroup(deps: K8sDeps, job: BoardJob, acquired: ObservedClaim): Promise<ReclaimResult> {
-    if (!deps.endpoint) {
-        return {
-            ok: false,
-            removed: false,
-            reason: 'this driver has no supervisor endpoint to run the reclaim through',
-        };
-    }
-    const holder = job.leaseToken;
-    // A token of this invocation's own: its names are never another invocation's. What an earlier
-    // invocation of this holder left is found by the holder label, and one still writing holds the
-    // reclaim off — never ended here, never deleted by a name.
-    if (!(await holderWritersGone(deps, job, holder))) {
-        return {
-            ok: false,
-            removed: false,
-            reason: 'an earlier reclaim group of this holder is still running',
-        };
-    }
-    const pair: BoardJob = { ...job, leaseToken: randomUUID() };
-    const name = reclaimGroupName(pair);
-    const opened = await deps.endpoint.open();
-    const group: BoardJob = {
-        ...pair,
-        supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: opened.url, [SUPERVISOR_ENV.controlToken]: opened.token },
-    };
-    let result: ReclaimResult;
-    // This invocation's own identity: its random mark and, the moment each create answers, its uids.
-    const identity: TeardownIdentity = { pair: group, jobName: name };
-    try {
-        // The Job suspended first, its Secret after, then the pod (issue #821): a Secret never
-        // exists without a Job to derive it from. A failure is ended below, whatever it left.
-        const noStandDown = () => Promise.resolve();
-        await createSuspendedWithSecret(
-            deps,
-            reclaimGroupSpec(deps.config, group, holder),
-            {
-                job: 'creating the reclaim group',
-                secret: 'creating the reclaim group secret',
-                secretBody: (owner) => secretBody(group, secretName(group), group.supervisorEnv ?? {}, owner),
-            },
-            { identity, standDown: noStandDown }
-        );
-        // The claim must still be the incarnation this invocation took, unrevoked, before anything
-        // runs: a create delayed past its lease may land after the row's other driver retook the
-        // checkout, or after an orphaned-claim reap revoked it and listed this holder's groups.
-        const now = await readClaim(deps, job);
-        if (now?.uid !== acquired.uid || now.holder !== acquired.holder) {
-            throw new Error('the checkout claim this reclaim took was replaced before its group could start');
-        }
-        if (now.revoked)
-            throw new Error('the checkout claim this reclaim took was revoked before its group could start');
-        await resumeJob(deps, name, identity.uids?.job, noStandDown);
-        await awaitSupervisor(deps, group, name);
-        result = await runReclaimStep(stepHostOf(deps), group);
-    } catch (e) {
-        result = { ok: false, removed: false, reason: `the worktree reclaim group failed: ${(e as Error).message}` };
-    }
-    await orderFinish(stepHostOf(deps), group).catch(() => undefined);
-    deps.endpoint.close(opened.token);
-    // The claim is handed back only once nothing of this group can write the tree.
-    // Its own incarnation only, by uid: a late end never reaches a replacement under the same name.
-    if ((await endRunnerJob(deps, identity, holder)) !== 'ended') {
-        return {
-            ...result,
-            ok: false,
-            reason: `the reclaim group ${name} could not be confirmed ended, so the checkout claim is kept`,
-        };
-    }
-    return result;
 }

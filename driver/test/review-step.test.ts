@@ -4,7 +4,7 @@ import type { BoardJob, ReviewClaim } from '../src/board.js';
 import { REVIEWER_HOME } from '../src/claim.js';
 import { claudeExportScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { loadDriverConfig } from '../src/config.js';
-import { reviewRootsDir, reviewWorktreeDir, worktreeDir } from '../src/publish.js';
+import { REVIEW_ROOTS_DIR, reviewWorktreeDir, checkoutDir } from '../src/publish.js';
 import { reviewBudgetMs, reviewRestoreEnv, reviewStepEnv, runReviewSteps } from '../src/review-step.js';
 import type { StepSink } from '../src/step-control.js';
 import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
@@ -44,32 +44,32 @@ const topCaller = {
 
 describe('the reviewer’s restore step', () => {
     it('restores at the snapshot ref in the reviewer worktree, with no token and no credential helper', () => {
-        const env = reviewRestoreEnv(host, topCaller, review);
+        const env = reviewRestoreEnv(review);
         expect(env).toMatchObject({ RESTORE: '1', REVIEW_REF: REF });
-        expect(env?.WORKTREE).toContain(`bellows/${USER}`);
+        expect(env?.REPO).toBe(checkoutDir(review));
+        expect(env?.WORKTREE).toBe(`${REVIEW_ROOTS_DIR}/${ROOT}`);
         expect(env).not.toHaveProperty('CRED_HELPER');
         expect(JSON.stringify(env)).not.toMatch(/TOKEN|jira|ghs_/);
     });
 
-    // The review root is a child of its CALLER's review-roots directory, so the caller thread's reclaim
-    // (runReclaimStep) finds and removes it: no review worktree lives as a sibling of the caller's.
-    it('puts the reviewer worktree under the caller’s review roots directory', () => {
-        const env = reviewRestoreEnv(host, topCaller, review);
-        expect(env?.WORKTREE).toBe(reviewWorktreeDir(host.config, topCaller, review));
-        expect(env?.WORKTREE).toBe(`${reviewRootsDir(host.config, topCaller)}/${ROOT}`);
-        expect(reviewRootsDir(host.config, topCaller)).toBe(`${worktreeDir(host.config, topCaller)}.reviews`);
+    // The review root lives in the task volume's own review-roots directory, beside the checkout it
+    // was linked from: it goes with the volume, and no reclaim has to find it.
+    it('puts the reviewer worktree under the task volume’s review roots directory', () => {
+        const env = reviewRestoreEnv(review);
+        expect(env?.WORKTREE).toBe(reviewWorktreeDir(review));
+        expect(env?.WORKTREE).toBe(`${REVIEW_ROOTS_DIR}/${ROOT}`);
     });
 
     it('is refused for a claim with no repository', () => {
-        expect(reviewRestoreEnv(host, topCaller, { ...review, repo: undefined } as unknown as ReviewClaim)).toBeNull();
+        expect(reviewRestoreEnv({ ...review, repo: undefined } as unknown as ReviewClaim)).toBeNull();
     });
 });
 
 describe('the reviewer’s review step', () => {
     it('carries the grant and its own home, and no publish token or credential helper', () => {
-        const step = reviewStepEnv(host, topCaller, review, { id: 'sess-1', resume: false });
+        const step = reviewStepEnv(host, review, { id: 'sess-1', resume: false });
         expect(step?.env).toMatchObject({ JIRA_TOKEN: 'jira', HOME: REVIEWER_HOME });
-        expect(step?.env.WORKDIR).toContain(`bellows/${USER}`);
+        expect(step?.env.WORKDIR).toBe(`${REVIEW_ROOTS_DIR}/${ROOT}`);
         for (const name of ['CRED_HELPER', 'GITHUB_TOKEN', 'GH_TOKEN', 'PUBLISH_TOKEN', 'BELLOWS_PUBLISH_TOKEN']) {
             expect(step?.env, name).not.toHaveProperty(name);
         }
@@ -83,12 +83,7 @@ describe('the reviewer’s review step', () => {
         'carries the review row’s own board identity on %s',
         (executorType) => {
             const own = { ...review, executorType, leaseToken: 'review-lease' } as unknown as ReviewClaim;
-            const step = reviewStepEnv(
-                host,
-                topCaller,
-                own,
-                executorType === 'opencode' ? null : { id: 'sess-1', resume: false }
-            );
+            const step = reviewStepEnv(host, own, executorType === 'opencode' ? null : { id: 'sess-1', resume: false });
             expect(step?.env).toMatchObject({
                 FACTORY_STATS_URL: host.config.statsUrl,
                 RUNNER_JOB_ID: review.id,
@@ -105,7 +100,7 @@ describe('the reviewer’s review step', () => {
 describe('the reviewer’s question channel', () => {
     it.each(['claude-code', 'opencode'] as const)('is absent from a %s review step', (executorType) => {
         const session = executorType === 'opencode' ? null : { id: 'sess-1', resume: false };
-        const step = reviewStepEnv(host, topCaller, { ...review, executorType }, session);
+        const step = reviewStepEnv(host, { ...review, executorType }, session);
         expect(step).not.toBeNull();
         for (const name of ['FACTORY_CTL_IN', 'FACTORY_CTL_OUT', 'FACTORY_CTL_GO', 'FACTORY_STOP_MARKER']) {
             expect(step?.env, name).not.toHaveProperty(name);
@@ -159,7 +154,7 @@ describe('runReviewSteps', () => {
         expect(restore!.env).not.toHaveProperty('CRED_HELPER');
         expect(run!.timeoutMs).toBe(5 * 60_000);
         expect(run!.cwd).toBe(restore!.env.WORKTREE);
-        expect(run!.cwd).toBe(reviewWorktreeDir(host.config, caller, review));
+        expect(run!.cwd).toBe(reviewWorktreeDir(review));
         expect(run!.env).not.toHaveProperty('CRED_HELPER');
     });
 

@@ -1,8 +1,7 @@
 import type { BoardJob } from './board.js';
 import { containerScript } from './container-scripts.js';
-import type { DriverConfig } from './config.js';
 import { parseLastJsonLine } from './json-parse.js';
-import { type PublishStep, type RunPublishStep, worktreeDir } from './publish.js';
+import { type PublishStep, type RunPublishStep, checkoutDir } from './publish.js';
 
 /**
  * The review snapshot (issue #549): the step that freezes the task worktree's current state under
@@ -28,13 +27,8 @@ export type SnapshotResult = { ok: true; ref: string } | { ok: false; reason: st
  * Freezes the task tree for review `key`. A job with no worktree, or a step that cannot run or
  * answers nothing readable, is a named `ok: false` — never a guess at a ref that may not exist.
  */
-export async function snapshotTree(
-    config: DriverConfig,
-    job: BoardJob,
-    key: string,
-    runStep: RunPublishStep
-): Promise<SnapshotResult> {
-    const repo = worktreeDir(config, job);
+export async function snapshotTree(job: BoardJob, key: string, runStep: RunPublishStep): Promise<SnapshotResult> {
+    const repo = checkoutDir(job);
     if (!repo) return { ok: false, reason: 'this task has no worktree to snapshot' };
     const ref = reviewRefOf(job, key);
     const step: PublishStep = {

@@ -40,7 +40,6 @@ import type {
     RuntimeSample,
 } from '../../src/runner.js';
 import type { StepResult } from '../../src/supervisor-contract.js';
-import type { SyncQueue } from '../../src/sync-queue.js';
 
 export const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -497,8 +496,6 @@ export async function drive(
         runner: Runner;
         gates?: GateStack;
         log?: (message: string) => void;
-        syncs?: SyncQueue;
-        syncWaitMs?: number;
     },
     env = {}
 ) {
@@ -509,8 +506,6 @@ export async function drive(
         sleep,
         ...(deps.gates ? { gates: deps.gates } : {}),
         ...(deps.log ? { log: deps.log } : {}),
-        ...(deps.syncs ? { syncs: deps.syncs } : {}),
-        ...(deps.syncWaitMs === undefined ? {} : { syncWaitMs: deps.syncWaitMs }),
     });
     deps.attach(loop);
     await loop.start();

@@ -6,11 +6,10 @@ import { gitProbeScript } from '../src/publish.js';
 import { git, hasGit, runScript, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**
- * The worktree sync on a claim that names its base (BASE_BRANCH, a batch task's target branch):
- * the task tree is created off and rebased onto `origin/<base>`, never the remote default, while
- * the clone keeps fast-forwarding its own default.
+ * The checkout sync on a claim that names its base (BASE_BRANCH, a batch task's target branch):
+ * the task tree is created off and rebased onto `origin/<base>`, never the remote default.
  */
-describe.skipIf(!hasGit())('the worktree sync script (a named base branch)', () => {
+describe.skipIf(!hasGit())('the task checkout script (a named base branch)', () => {
     const fx = setupWorktreeFixture();
     const BASE = 'batch-sandbox';
 
@@ -29,33 +28,31 @@ describe.skipIf(!hasGit())('the worktree sync script (a named base branch)', () 
 
     const syncOnBase = () => runScript({ ...fx.syncEnv(), BASE_BRANCH: BASE });
 
-    it('creates the worktree off origin/<base>, and the clone still fast-forwards its default', () => {
+    it('creates the checkout off origin/<base>, never the remote default', () => {
         createBase();
         fx.pushToOrigin('NEWS.md', 'upstream news\n', 'main moves on');
 
         expect(syncOnBase()).toMatchObject({ ok: true, reason: null });
 
-        expect(git(fx.worktree(), 'rev-parse', 'HEAD')).toBe(git(fx.clone(), 'rev-parse', `origin/${BASE}`));
-        expect(existsSync(join(fx.worktree(), 'SANDBOX.md'))).toBe(true);
-        expect(existsSync(join(fx.worktree(), 'NEWS.md'))).toBe(false);
-        expect(git(fx.clone(), 'branch', '--show-current')).toBe('main');
-        expect(git(fx.clone(), 'rev-parse', 'HEAD')).toBe(git(fx.clone(), 'rev-parse', 'origin/main'));
+        expect(git(fx.checkout(), 'rev-parse', 'HEAD')).toBe(git(fx.checkout(), 'rev-parse', `origin/${BASE}`));
+        expect(existsSync(join(fx.checkout(), 'SANDBOX.md'))).toBe(true);
+        expect(existsSync(join(fx.checkout(), 'NEWS.md'))).toBe(false);
     });
 
-    it('rebases an existing worktree onto origin/<base>, not the default', () => {
+    it('rebases an existing checkout onto origin/<base>, not the default', () => {
         createBase();
         expect(syncOnBase()).toMatchObject({ ok: true, reason: null });
-        fx.commitIn(fx.worktree(), 'TASK.md', 'task work\n', 'the task commit');
+        fx.commitIn(fx.checkout(), 'TASK.md', 'task work\n', 'the task commit');
         pushBase('MORE.md', 'sandbox moves on');
         fx.pushToOrigin('NEWS.md', 'upstream news\n', 'main moves on');
 
         expect(syncOnBase()).toMatchObject({ ok: true, reason: null });
 
-        expect(git(fx.worktree(), 'log', '--format=%s')).toContain('the task commit');
-        expect(git(fx.worktree(), 'merge-base', 'HEAD', `origin/${BASE}`)).toBe(
-            git(fx.clone(), 'rev-parse', `origin/${BASE}`)
+        expect(git(fx.checkout(), 'log', '--format=%s')).toContain('the task commit');
+        expect(git(fx.checkout(), 'merge-base', 'HEAD', `origin/${BASE}`)).toBe(
+            git(fx.checkout(), 'rev-parse', `origin/${BASE}`)
         );
-        expect(existsSync(join(fx.worktree(), 'NEWS.md'))).toBe(false);
+        expect(existsSync(join(fx.checkout(), 'NEWS.md'))).toBe(false);
     });
 
     it('refuses a base the remote does not have as missing_base_branch', () => {
@@ -63,17 +60,18 @@ describe.skipIf(!hasGit())('the worktree sync script (a named base branch)', () 
 
         expect(result).toMatchObject({ ok: false, kind: 'missing_base_branch' });
         expect(result.reason).toContain(`origin/${BASE}`);
-        expect(existsSync(fx.worktree())).toBe(false);
+        // The clone stays (a retry fetches into it), but no task branch was started off the wrong base.
+        expect(git(fx.checkout(), 'branch', '--list', fx.branch())).toBe('');
     });
 
     it('the publish probe reads the base as the branch to compare against', () => {
         createBase();
         expect(syncOnBase()).toMatchObject({ ok: true, reason: null });
-        fx.commitIn(fx.worktree(), 'TASK.md', 'task work\n', 'the task commit');
+        fx.commitIn(fx.checkout(), 'TASK.md', 'task work\n', 'the task commit');
         const probe = (env: Record<string, string>) =>
             JSON.parse(
                 execFileSync('node', ['-e', gitProbeScript], {
-                    env: { ...process.env, REPO: fx.worktree(), ...env },
+                    env: { ...process.env, REPO: fx.checkout(), ...env },
                     encoding: 'utf8',
                 })
                     .trim()

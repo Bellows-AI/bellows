@@ -123,7 +123,7 @@ COPY --from=skills --chown=node:node . /home/node/.claude/skills/
 # Bind-mounted at runtime. Owned by node so the CLI can write into the checkout.
 #
 # /opt/claude-home is the seed source for a fresh config directory: the transcript store points
-# CLAUDE_CONFIG_DIR at a per-thread directory on the workspaces volume, which starts empty and
+# CLAUDE_CONFIG_DIR at a per-thread directory on the task volume, which starts empty and
 # would hide the baked config, so the entrypoint copies this tree in on first run.
 #
 # A symlink, not the `cp -a` of the finished config this replaces: that copy wrote a second layer
@@ -133,7 +133,7 @@ COPY --from=skills --chown=node:node . /home/node/.claude/skills/
 # `[ -d /opt/claude-home ]` and `cp -a /opt/claude-home/.` both read through it unchanged.
 # Dangling until the COPYs below land, which is fine — nothing dereferences it at build time.
 # Created here, as root: /opt is root-owned, and everything past `USER node` cannot write it.
-RUN mkdir -p /workspace && chown node:node /workspace \
+RUN mkdir -p /workspace /task && chown node:node /workspace /task \
     && ln -s /home/node/.claude /opt/claude-home
 WORKDIR /workspace
 

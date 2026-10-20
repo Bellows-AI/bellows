@@ -8,6 +8,7 @@ import {
     GATE_UID,
     REVIEWER_HOME,
     REVIEWER_TREE_DIR,
+    REVIEWER_TREE_PATH,
     REVIEWER_UID,
     GITHUB_CACHE_DIR,
     GITHUB_CACHE_SIZE,
@@ -15,8 +16,8 @@ import {
     runnerClaimEnv,
     runWorkingDir,
     transcriptDir,
-    workspacePath,
 } from './claim.js';
+import { TASK_MOUNT, TASK_VOLUME, taskInitScript, taskPodVolume } from './task-volume.js';
 import {
     claudeTurnsScript,
     claudeExportScript,
@@ -262,7 +263,7 @@ function supervisorContainer(
             })),
         ],
         volumeMounts: [
-            workspaceMount(config, workspacePath(job)),
+            taskMount(),
             ...mailboxesOf(group.reviewing).map((box) => mailboxMount(box, 'rw')),
             ...serviceRestartMounts(group.services),
         ],
@@ -356,8 +357,8 @@ function gateSidecar(config: DriverConfig, job: BoardJob, image: string): Runner
         securityContext: { ...hardened, runAsUser: GATE_UID, runAsGroup: GATE_GID },
         command: gateLoopArgv(),
         workingDir: MAILBOXES.gate.path,
-        env: gateEnv(config, job).map(([name, value]) => ({ name, value })),
-        volumeMounts: [workspaceMount(config, workspacePath(job)), mailboxMount(MAILBOXES.gate, 'rw')],
+        env: gateEnv(job).map(([name, value]) => ({ name, value })),
+        volumeMounts: [taskMount(), mailboxMount(MAILBOXES.gate, 'rw')],
     };
 }
 
@@ -384,12 +385,30 @@ function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContaine
         workingDir: MAILBOXES.review.path,
         env: [{ name: 'HOME', value: REVIEWER_HOME }, ...credentialsSecretEnv(config)],
         volumeMounts: [
-            { ...workspaceMount(config, workspacePath(job)), readOnly: true },
+            taskMount({ readOnly: true }),
             mailboxMount(MAILBOXES.review, 'rw'),
             // The one place it writes: its HOME, a fixed directory of the member tree (the session
             // state a lost pod's replacement resumes from), mounted over the read-only tree above.
-            { ...workspaceMount(config, `${workspacePath(job)}/${REVIEWER_TREE_DIR}`), mountPath: REVIEWER_HOME },
+            taskMount({ subPath: REVIEWER_TREE_DIR, mountPath: REVIEWER_HOME }),
         ],
+    };
+}
+
+/**
+ * The init container that makes the reviewer's home on a fresh task volume (`scripts/task-init.sh`)
+ * before the reviewer's subPath mount names it: the kubelet would create it root-owned, which the
+ * reviewer's uid cannot write. It runs as the supervisor's uid in the task group, so the directory
+ * is group-writable for the reviewer.
+ */
+function taskInitContainer(config: DriverConfig, job: BoardJob): RunnerPodContainer {
+    return {
+        name: 'task-init',
+        image: executorImage(config, job.executorType),
+        imagePullPolicy: config.imagePullPolicy,
+        ...containerHardeningField(),
+        env: [],
+        command: ['sh', '-c', taskInitScript, 'init', REVIEWER_TREE_PATH],
+        volumeMounts: [taskMount()],
     };
 }
 
@@ -402,7 +421,7 @@ function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContaine
  * mounts the member's workspace (the transcripts, its own cursor files) and the one mailbox it
  * shares with the supervisor.
  */
-function exporterContainer(config: DriverConfig, job: BoardJob, startedAt: string, path: string): RunnerPodContainer {
+function exporterContainer(config: DriverConfig, job: BoardJob, startedAt: string): RunnerPodContainer {
     const { literals, control } = exportEnv(config, job, startedAt);
     return {
         name: EXPORTER_CONTAINER,
@@ -417,10 +436,7 @@ function exporterContainer(config: DriverConfig, job: BoardJob, startedAt: strin
                 valueFrom: { secretKeyRef: { name: secretName(job), key: source } },
             })),
         ],
-        volumeMounts: [
-            { name: 'workspaces', mountPath: `${config.workspaceMount}/${path}`, subPath: path },
-            mailboxMount(MAILBOXES.export, 'rw'),
-        ],
+        volumeMounts: [taskMount(), mailboxMount(MAILBOXES.export, 'rw')],
     };
 }
 
@@ -442,8 +458,8 @@ function agentPart(
     job: BoardJob,
     session: RunSession | null
 ): { container: RunnerPodContainer; volumes: RunnerVolume[] } {
-    const env: EnvVar[] = [{ name: 'WORKDIR', value: runWorkingDir(config, job) }, ...runnerCredentialEnv(config, job)];
-    const { mounts, volumes } = runnerVolumesField(config, job.executorType, workspacePath(job), secretName(job));
+    const env: EnvVar[] = [{ name: 'WORKDIR', value: runWorkingDir(job) }, ...runnerCredentialEnv(config, job)];
+    const { mounts, volumes } = runnerVolumesField(config, job, secretName(job));
 
     // The argv each CLI speaks, and the executor-specific env beside it (opencode's session
     // database path, or claude-code's transcript store and session id) — decided once, for both
@@ -514,15 +530,6 @@ export function runnerJobSpec(
     if (!JOB_ID.test(job.id)) {
         throw new Error(`refusing to run job ${job.id}: a job id must be a uuid`);
     }
-    // The volumeMount's `subPath`: the claim's `<orgId>/<userId>` subtree, asserted before it
-    // becomes part of any pod spec — by the same function, so the same refusal the docker runner
-    // makes before the same value joins its `volume-subpath` (D4 of the mount-scoping design: a
-    // malformed `workspacePath` is refused before any container exists, never mounted somewhere
-    // unintended). Every workspaces mount this file emits carries it, which is what makes
-    // "mounted broader" a shape the spec cannot express: the kubelet fails a pod whose subPath is
-    // missing, loudly, rather than falling back to the whole volume.
-    const path = workspacePath(job);
-
     // WORKDIR is the one literal value: a path, not a credential. Every forwarded credential is a
     // NAME only — the value lives in a Secret the cluster already holds, and `valueFrom` is what
     // keeps it out of the pod spec, which anyone who can `get pods` can read.
@@ -532,7 +539,7 @@ export function runnerJobSpec(
     // expression with docker's (runWorkingDir), because the close-time readout scopes the session
     // scrape by this exact string — a scope key that drifted from the runner's would answer
     // nothing. Asserted from the same line dockerArgs asserts it from.
-    assertWorktreeResolvable(config, job);
+    assertWorktreeResolvable(job);
     // A node that launches no agent (issue #503) still gets its group — the sync, the gates' tree
     // probe and the publish are the supervisor's — but no agent container, and so no member env.
     const agentless = job.agent === false;
@@ -548,12 +555,10 @@ export function runnerJobSpec(
     // supervisor a sidecar that never starts: the gate leads, the services follow as declared.
     const sidecars = [
         ...(gateImage ? [gateSidecar(config, job, gateImage)] : []),
-        ...(reviewing ? [reviewerSidecar(config, job)] : []),
+        ...(reviewing ? [taskInitContainer(config, job), reviewerSidecar(config, job)] : []),
         ...services.map((service) => serviceSidecar(config, job, service)),
     ];
-    const volumes: RunnerVolume[] = agent?.volumes ?? [
-        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
-    ];
+    const volumes: RunnerVolume[] = agent?.volumes ?? [taskPodVolume(job)];
 
     return {
         apiVersion: 'batch/v1',
@@ -608,7 +613,7 @@ export function runnerJobSpec(
                     // The agent's own commands run in this container (issue #382): the runtime's
                     // seccomp profile over the whole pod, every capability dropped and no
                     // escalation back out of the drop on the container below.
-                    securityContext: { ...podHardeningField() },
+                    securityContext: { ...podHardeningField(), fsGroup: GATE_GID },
                     ...pullSecretsField(config),
                     ...schedulingField(config),
                     ...(servicesFields.hostAliases ? { hostAliases: servicesFields.hostAliases } : {}),
@@ -622,7 +627,7 @@ export function runnerJobSpec(
                             reviewing,
                             services,
                         }),
-                        ...(exporting ? [exporterContainer(config, job, startedAt, path)] : []),
+                        ...(exporting ? [exporterContainer(config, job, startedAt)] : []),
                     ],
                     volumes: [...volumes, ...mailboxVolumes(reviewing), ...servicesFields.volumes],
                 },
@@ -749,7 +754,7 @@ export interface AuxJobSpec {
                     command?: string[];
                     /** A handful of literal entries (paths and bounds), never a credential. */
                     env?: EnvVar[];
-                    volumeMounts: { name: string; mountPath: string; subPath: string; readOnly?: boolean }[];
+                    volumeMounts: RunnerMount[];
                 }[];
                 volumes: { name: string; persistentVolumeClaim: { claimName: string } }[];
             };
@@ -819,11 +824,11 @@ export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpe
                     automountServiceAccountToken: false,
                     ...pullSecretsField(config),
                     ...schedulingField(config),
-                    securityContext: { ...podHardeningField() },
+                    securityContext: { ...podHardeningField(), fsGroup: GATE_GID },
                     // One spread covers every aux Job, the same way pullSecretsField above covers
                     // their image pulls.
                     containers: [{ ...resourcesField(config), ...input.container, ...containerHardeningField() }],
-                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
+                    volumes: [taskPodVolume(job)],
                 },
             },
         },
@@ -831,19 +836,15 @@ export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpe
 }
 
 /**
- * One `workspaces` volumeMount, scoped to `subPath` — the subtree every aux Job's container
- * mounts, read-write unless the caller marks it read-only.
+ * The task volume's volumeMount (issue #775), read-write unless the caller marks it read-only; a
+ * `subPath` narrows it to one directory of the volume (the reviewer's home).
  */
-export function workspaceMount(
-    config: DriverConfig,
-    subPath: string,
-    readOnly?: boolean
-): { name: 'workspaces'; mountPath: string; subPath: string; readOnly?: boolean } {
+export function taskMount(options: { readOnly?: boolean; subPath?: string; mountPath?: string } = {}): RunnerMount {
     return {
-        name: 'workspaces',
-        mountPath: `${config.workspaceMount}/${subPath}`,
-        subPath,
-        ...(readOnly ? { readOnly } : {}),
+        name: TASK_VOLUME,
+        mountPath: options.mountPath ?? TASK_MOUNT,
+        ...(options.subPath ? { subPath: options.subPath } : {}),
+        ...(options.readOnly ? { readOnly: true } : {}),
     };
 }
 
@@ -929,12 +930,12 @@ export function claudeTurnsJobSpec(
             // Both travel as env VALUES — the script is static, so nothing board-derived is
             // ever part of its text.
             env: [
-                { name: 'CLAUDE_TRANSCRIPT_DIR', value: transcriptDir(config, job) },
+                { name: 'CLAUDE_TRANSCRIPT_DIR', value: transcriptDir(job) },
                 { name: 'CLAUDE_SESSION_ID', value: sessionId },
                 // The per-run delta bound, exactly as docker passes it.
                 { name: 'RUN_STARTED_AT', value: startedAt },
             ],
-            volumeMounts: [workspaceMount(config, workspacePath(job))],
+            volumeMounts: [taskMount()],
         },
     });
 }
@@ -958,15 +959,15 @@ export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob, star
             // ever part of its text. The directory scope is the run's own working directory
             // (the same string opencode records on the session); the database is the task's own.
             env: [
-                { name: 'OPENCODE_DB', value: opencodeDbPath(config, job) },
-                { name: 'OPENCODE_DIR', value: runWorkingDir(config, job) },
+                { name: 'OPENCODE_DB', value: opencodeDbPath(job) },
+                { name: 'OPENCODE_DIR', value: runWorkingDir(job) },
                 // The per-run delta bound, exactly as docker passes it: a follow-up resumes the
                 // root conversation, and only the cycles this run wrote may count as its turns.
                 { name: 'RUN_STARTED_MS', value: String(Date.parse(startedAt)) },
                 // The per-stream cap of the session export the readout prints ahead of its answer.
                 { name: 'EXPORT_LIMIT_BYTES', value: String(OPENCODE_EXPORT_LIMIT) },
             ],
-            volumeMounts: [workspaceMount(config, workspacePath(job))],
+            volumeMounts: [taskMount()],
         },
     });
 }

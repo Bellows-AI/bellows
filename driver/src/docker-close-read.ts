@@ -21,7 +21,7 @@ import {
 } from './close-read.js';
 import { type DriverConfig, executorImage } from './config.js';
 import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts.js';
-import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
+import { UUID, transcriptDir, opencodeDbPath } from './claim.js';
 import {
     type ExecDocker,
     noSuchObject,
@@ -37,13 +37,8 @@ import { readDockerKills } from './docker-teardown.js';
 import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from './adopt-skeleton.js';
 import type { KillLedger } from './kill-ledger.js';
 import { type FinalReport, finalReportOf, SUPERVISOR_EXIT, SUPERVISOR_WINDDOWN_MS } from './supervisor-contract.js';
-import {
-    containerName,
-    workspacesMountArgs,
-    opencodeSessionReadoutArgs,
-    containerHardeningArgs,
-    CLOSE_READ_DEADLINE_MS,
-} from './docker.js';
+import { containerName, opencodeSessionReadoutArgs, containerHardeningArgs, CLOSE_READ_DEADLINE_MS } from './docker.js';
+import { taskMountArgs } from './task-volume.js';
 import {
     AdoptionBlocked,
     type AdoptedRun,
@@ -74,11 +69,11 @@ export function claudeTurnsArgs(config: DriverConfig, job: BoardJob, sessionId: 
         'run',
         ...containerHardeningArgs(),
         '--rm',
-        ...workspacesMountArgs(config, workspacePath(job)),
+        ...taskMountArgs(job),
         // Both travel as env VALUES — the script (claude-turns.cjs) is static, so nothing
         // board-derived is ever part of its text.
         '-e',
-        `CLAUDE_TRANSCRIPT_DIR=${transcriptDir(config, job)}`,
+        `CLAUDE_TRANSCRIPT_DIR=${transcriptDir(job)}`,
         '-e',
         `CLAUDE_SESSION_ID=${sessionId}`,
         // The run's start as an ISO instant: the transcript carries every cycle the resumed
@@ -103,12 +98,12 @@ export function claudeTurnsArgs(config: DriverConfig, job: BoardJob, sessionId: 
  * one-error-line rule — an answer that parses to no session is "not yet", not a verdict.
  */
 export function opencodeCacheProbeArgs(config: DriverConfig, job: BoardJob): string[] {
-    const db = opencodeDbPath(config, job);
+    const db = opencodeDbPath(job);
     return [
         'run',
         ...containerHardeningArgs(),
         '--rm',
-        ...workspacesMountArgs(config, workspacePath(job)),
+        ...taskMountArgs(job),
         // The database path and the turn count travel as env VALUES — the script
         // (opencode-cache-probe.cjs) is static, and the count comes from this module's constant,
         // so the trigger cannot drift between the probe and the code that judges the turns.

@@ -582,11 +582,6 @@ describe('an attempt faulted at each phase boundary (#828)', () => {
 
     describe('scripted endings', () => {
         cell(
-            'a lock-blocked sync requeues',
-            { at: null, sync: { ok: false, reason: 'transient worktree sync: the checkout lock is held' } },
-            { conclusion: 'requeue', finishes: 1 }
-        );
-        cell(
             'a pre-helper whose supervisor was lost is interrupted',
             { at: null, helperLost: 'pre' },
             { conclusion: 'interrupt:release', finishes: 1 }

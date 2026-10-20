@@ -59,7 +59,7 @@ export function exportEnv(
 ): { literals: [string, string][]; control: { name: string; source: string }[] } {
     return {
         literals: [
-            ['CLAUDE_TRANSCRIPT_DIR', transcriptDir(config, job)],
+            ['CLAUDE_TRANSCRIPT_DIR', transcriptDir(job)],
             ['RUN_STARTED_AT', startedAt],
             ['EXPORT_FLUSH_BYTES', String(EXPORT_FLUSH_BYTES)],
             ['EXPORT_FLUSH_MS', String(EXPORT_FLUSH_MS)],

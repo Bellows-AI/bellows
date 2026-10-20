@@ -4,7 +4,6 @@ import type { AdoptedRun, RunSession, Runner } from './runner.js';
 import type { GateManager, GateServer } from './gates.js';
 import type { JobState } from './loop-attempt.js';
 import type { GateSession } from './loop-gates.js';
-import type { SyncQueue } from './sync-queue.js';
 
 /**
  * The gate machinery, wired once at startup and handed to the loop only when it exists — an
@@ -35,10 +34,6 @@ export interface LoopRuntime {
     log: (message: string) => void;
     sleep: (ms: number) => Promise<void>;
     reclaims: Map<string, Promise<void>>;
-    /** Orders startup syncs of one base clone (`sync-queue.ts`, issue #559). */
-    syncs: SyncQueue;
-    /** Overrides `SYNC_QUEUE_WAIT_MS` — a test seam, never set in production. */
-    syncWaitMs?: number;
     /**
      * Reports a verdict; a verdict-time worktree reclaim it orders waits for `after` — the
      * attempt's teardown (issue #821) — before it removes the tree.

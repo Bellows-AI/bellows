@@ -78,8 +78,8 @@ out of every `kubectl get pods -o yaml` — so only this name is wired through.
 {{- end -}}
 
 {{/*
-The workspaces claim. The dashboard writes checkouts into it and every runner mounts it — the
-kubernetes form of the docker volume the two compose services share by name.
+The workspaces claim. The dashboard writes checkouts into it; no runner mounts it (a runner's
+volume is its thread's task volume, issue #775).
 */}}
 {{- define "factory.workspaceClaim" -}}
 {{- default (printf "%s-workspaces" (include "factory.fullname" .)) .Values.workspaces.existingClaim -}}

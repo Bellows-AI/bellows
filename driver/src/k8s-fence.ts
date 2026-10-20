@@ -3,6 +3,7 @@ import { runnerClaimEnv } from './claim.js';
 import type { DriverConfig } from './config.js';
 import { telemetryConfig, type TelemetryConfig } from './telemetry-config.js';
 import { isSeq, LEASE_LABEL, REVOKED_MARK } from './labels.js';
+import { TASK_ROOT_LABEL, taskRootOf, taskVolumeName, taskVolumeSpec } from './task-volume.js';
 import {
     claimBody,
     claimPath,
@@ -568,6 +569,41 @@ async function standDownOwnJob(deps: K8sDeps, identity: TeardownIdentity): Promi
     await endRunnerJob(deps, identity);
 }
 
+/** The task volumes of a namespace (issue #775). */
+export const taskVolumesPath = (namespace: string): string => `/api/v1/namespaces/${namespace}/persistentvolumeclaims`;
+
+/**
+ * Whether the thread's task volume exists. Only a 404 is proof of absence; a refusal, a transport
+ * failure and a claim that is not this thread's throw, and nothing is created on them.
+ */
+async function taskVolumePresent(deps: K8sDeps, job: BoardJob): Promise<boolean> {
+    const name = taskVolumeName(job);
+    const res = await deps.request('GET', `${taskVolumesPath(deps.config.k8sNamespace)}/${name}`);
+    if (res.status === HTTP_NOT_FOUND) return false;
+    expectOk(res, `reading the task volume of job ${job.id}`);
+    const claim = parse<{ metadata?: { name?: unknown; labels?: Record<string, unknown> } } | null>(res.body);
+    if (claim?.metadata?.name !== name || claim.metadata.labels?.[TASK_ROOT_LABEL] !== taskRootOf(job)) {
+        throw new Error(`the claim ${name} is not the task volume of job ${job.id}`);
+    }
+    return true;
+}
+
+/**
+ * The thread's task volume: adopted when it exists, created on the thread's first attempt. A create
+ * that answers 409 lost a race to another creation of the same name: the volume is read and adopted.
+ * Nothing here ever deletes one.
+ */
+export async function ensureTaskVolume(deps: K8sDeps, job: BoardJob): Promise<void> {
+    if (await taskVolumePresent(deps, job)) return;
+    const created = await deps.request(
+        'POST',
+        taskVolumesPath(deps.config.k8sNamespace),
+        taskVolumeSpec(deps.config, job)
+    );
+    if (created.status === HTTP_CONFLICT && (await taskVolumePresent(deps, job))) return;
+    expectOk(created, `creating the task volume of job ${job.id}`);
+}
+
 /**
  * The runner's arrival: `prepare` takes the checkout claim, sweeps the leftovers of the job's
  * OTHER attempts and runs the pre-create claim
@@ -596,6 +632,9 @@ export async function prepare(deps: K8sDeps, job: BoardJob): Promise<void> {
                 `(${pre.unconfirmed})`
         );
     }
+
+    // The thread's task volume, adopted or created: the pod mounts it by name.
+    await ensureTaskVolume(deps, job);
 }
 
 /**

@@ -44,10 +44,3 @@ export const KILL_MARK_PREFIX = 'factory.kill.';
  * a kill of the agent from the teardown of the whole group.
  */
 export const ROLE_LABEL = 'factory.role';
-
-/**
- * Docker only: a terminal reclaim's supervisor-only group (`dockerReclaimWorktree`), on its
- * containers and mailboxes. Its lease is a token of its own the board never heard of, so the
- * orphan reaper — which would read it as a dead attempt's — leaves every object carrying this alone.
- */
-export const RECLAIM_LABEL = 'factory.reclaim';

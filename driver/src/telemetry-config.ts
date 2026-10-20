@@ -42,7 +42,7 @@ export function claudeManagedSettings(endpoint: string): string {
         },
         // A headless run's permission prompt ends in a deny; these routine commands must not ask.
         permissions: {
-            additionalDirectories: ['/workspaces', '/tmp'],
+            additionalDirectories: ['/task', '/tmp'],
             allow: [
                 'Bash(sed -i *)',
                 'Bash(grep *)',
@@ -61,7 +61,7 @@ export function claudeManagedSettings(endpoint: string): string {
         autoMode: {
             environment: [
                 '$defaults',
-                '**Host containment**: Factory runner — a single-task, ephemeral container or Kubernetes pod with its own git worktree under /workspaces. The Factory driver owns pushing, pull requests and branch moves (its git guard hook enforces that). This is not a developer machine.',
+                '**Host containment**: Factory runner — a single-task, ephemeral container or Kubernetes pod with its own checkout on the task volume at /task. The Factory driver owns pushing, pull requests and branch moves (its git guard hook enforces that). This is not a developer machine.',
                 '**Secrets management**: Factory injects the credentials this task needs (for example a Jira or GitHub token) as environment variables, and they are meant to be used against the service they belong to.',
             ],
             allow: [

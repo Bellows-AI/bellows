@@ -28,7 +28,7 @@ const nextBodyRead = (): Promise<void> =>
  * (issue #773), so the runner below records whose group each gate was asked of.
  */
 
-const KEY = 'bellows/44444444-4444-4444-8444-444444444444/.worktrees/55555555-5555-4555-8555-555555555555';
+const KEY = '55555555-5555-4555-8555-555555555555/factory';
 const config = loadDriverConfig({});
 
 const JOB = (lease: string): BoardJob => ({

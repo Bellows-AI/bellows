@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
-import { holderGroupsOf, reclaimGroupName } from '../src/k8s-group.js';
+import { holderGroupsOf } from '../src/k8s-group.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { StartupRefused } from '../src/startup-cause.js';
+import { taskVolumeServer } from './fixtures/k8s-apiserver.js';
 import { createStepBroker, type StepBroker, type StepSink, type SupervisorEndpoint } from '../src/step-control.js';
 import {
     AGENT_CONTAINER,
@@ -86,7 +87,10 @@ function cluster(
     const gone = new Set<string>();
     const configmaps = `/api/v1/namespaces/${NAMESPACE}/configmaps`;
     const secrets = `/api/v1/namespaces/${NAMESPACE}/secrets`;
+    const serveVolumes = taskVolumeServer(NAMESPACE);
     const request: K8sRequest = async (method: K8sMethod, path: string, body?: unknown) => {
+        const volume = serveVolumes(method, path, body);
+        if (volume) return volume;
         if (path === configmaps && method === 'POST') {
             const claim = body as { metadata: { name: string }; data: { holder: string; claimSeq: string } };
             if (claims.has(claim.metadata.name)) return { status: 409, body: '{}' };
@@ -664,54 +668,21 @@ describe('the lists that decide a delete', () => {
     });
 });
 
-describe('the reclaim of a thread with no attempt', () => {
-    const endpoint: SupervisorEndpoint & { closed: string[] } = {
-        closed: [],
-        open: async () => ({ url: 'http://driver:8130', token: 'reclaim-token' }),
-        close(token) {
-            this.closed.push(token);
-        },
-    };
-
-    it('runs in a supervisor-only group under a lease of its own, then deletes the group and its Secret', async () => {
+describe('the terminal reclaim of a thread (issue #775)', () => {
+    // The thread's tree lives on its own task volume, which only the reaper deletes: the reclaim is an
+    // acknowledged no-op, so it creates no group, no Secret and opens no endpoint.
+    it('acknowledges without creating a group or a Secret, and without a supervisor endpoint', async () => {
         const api = cluster({ ended: true });
-        const s = steps(() => ok('{"ok":true,"removed":true,"reason":null}'));
-        const k8s = runner(api.request, s.sink, endpoint);
+        const s = steps(() => ok('{}'));
 
-        expect(await k8s.reclaimWorktree(job)).toMatchObject({ ok: true, removed: true });
-
-        const [group] = api.created.jobs;
-        expect(api.created.jobs).toHaveLength(1);
-        expect(group!.containers).toEqual(['supervisor']);
-        expect(group!.name).not.toBe(runnerJobName(job));
-        expect(group!.name).toMatch(/^factory-reclaim-/);
-        // Once, by its uid (issue #821): the derived name held nothing before the POST, so nothing
-        // was deleted then — the group itself goes after its step.
-        expect(api.created.deletedJobs).toEqual([group!.name]);
-        expect(kinds(s)).toEqual(['reclaim', 'finish']);
-        expect(s.tokens).toEqual(new Set(['reclaim-token']));
-        expect(endpoint.closed).toEqual(['reclaim-token']);
-        // Its Secret is not the attempt's, and it is deleted with the group.
-        expect(api.created.secrets).toHaveLength(1);
-        expect(api.created.secrets[0]).not.toBe(secretName(job));
-        // Its own Secret, by the uid its create answered, acknowledged before the Job (issue #821) —
-        // the only one: the gates hold none (issue #773); a lease of its own, random per invocation.
-        const [own] = api.created.secrets;
-        expect(api.created.deletedSecrets).toEqual([own]);
-    });
-
-    it('refuses without an endpoint to serve the group from, never by running the reclaim some other way', async () => {
-        const api = cluster();
-        const result = await runner(api.request, steps().sink).reclaimWorktree(job);
-        expect(result).toMatchObject({
-            ok: false,
+        expect(await runner(api.request, s.sink).reclaimWorktree(job)).toEqual({
+            ok: true,
             removed: false,
-            reason: expect.stringContaining('no supervisor endpoint'),
+            reason: null,
         });
-        expect(api.created.jobs).toEqual([]);
-    });
 
-    it('names its group apart from the attempt’s', () => {
-        expect(reclaimGroupName(job)).not.toBe(runnerJobName(job));
+        expect(api.created.jobs).toEqual([]);
+        expect(api.created.secrets).toEqual([]);
+        expect(kinds(s)).toEqual([]);
     });
 });

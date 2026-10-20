@@ -348,6 +348,7 @@ function scenario(name: string, build: Build<K8sRequest>, { writes, allowed }: E
 }
 
 const CLAIM_READ = `GET ${CLAIM}`;
+const TASK_VOLUME_READ = `GET ${API}/persistentvolumeclaims/factory-task-<job>-1`;
 
 scenario(
     'the sync fence sweeping an earlier lease (K-FS)',
@@ -359,6 +360,7 @@ scenario(
             ...secretsOf('old'),
             `DELETE ${BATCH}/jobs/factory-runner-<old-hash>`,
             `DELETE ${API}/pods/factory-runner-<old-hash>-old`,
+            `POST ${API}/persistentvolumeclaims`,
             `POST ${BATCH}/jobs`,
             `POST ${API}/secrets`,
             `PATCH ${BATCH}/jobs/factory-runner-<lease-hash>`,
@@ -366,9 +368,10 @@ scenario(
         allowed: [
             ...[...secretsOf('lease'), `DELETE ${BATCH}/jobs/factory-runner-<lease-hash>`].map((write) => ({
                 write,
-                at: [CLAIM_READ],
+                at: [CLAIM_READ, TASK_VOLUME_READ],
                 why:
-                    'the sync stands down before its group exists and ends it by its own derived names only ' +
+                    'the sync stands down before its group exists and ends it by its own derived names only, ' +
+                    'on the claim verify or on the task volume read that follows it ' +
                     '(`k8s-runner.ts:440-444` → `k8s-group.ts:244-247` → `k8s-teardown.ts:175-190`)',
             })),
             ...secretsOf('old').map((write) => ({

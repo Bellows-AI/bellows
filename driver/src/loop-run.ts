@@ -27,13 +27,12 @@ import {
 import type { AdoptedRecord, AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import type { HelperFailureReport } from './helpers.js';
-import { SYNC_FAILURE_KINDS, TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
+import { SYNC_FAILURE_KINDS, type PublishResult, type SyncResult } from './publish.js';
 import { agentFaults, gatesEligible, ledgerOf, postHelperSkipWhy, skipWhyOf } from './loop-ledger.js';
 import { publishBranch, publishModeOf, publishOptionsOf, report, reportFinish } from './loop-verdict.js';
 import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
 import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
-import { awaitSyncTurn } from './sync-queue.js';
 import { stepLost } from './step-control.js';
 import { restartDeadServices, servicesLost, startServicesStep } from './loop-services.js';
 import { servicePlanRefusal } from './services.js';
@@ -97,14 +96,10 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     const { runner } = rt;
     // An adopted run's tree is its result: nothing rewrites it.
     if (ctx.adopted) return null;
-    const turn = await awaitSyncTurn(ctx);
-    if (turn === STOOD_DOWN || 'halt' in turn) return turn;
     // A starting claim's fetch reaches GitHub; a restore and a repo-less job do not.
     const fetches = Boolean(job.repo) && !claimContinuesSession(job);
     const githubToken = fetches ? await askGithubToken(rt, job, 'the checkout sync') : null;
     const syncing = runner.syncCheckout(job, state.signal, ctx.session, githubToken ?? undefined);
-    // The turn is held until the sync's writes are over (`settled`), however the sync answered.
-    turn.release(syncing.then((synced) => synced.settled).catch(() => {}));
     let syncedOut: { value: SyncResult } | null;
     try {
         syncedOut = await raceStep(state.signal, syncing);
@@ -126,18 +121,6 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
         ctx.treeBefore = synced.fingerprint ?? null;
         handOverConflict(job, synced);
         return null;
-    }
-    if (synced.reason !== null && TRANSIENT_SYNC_REASON.test(synced.reason)) {
-        /*
-         * Lock contention on the shared checkout (issues #307, #559) is infrastructure, not a
-         * verdict: this driver's own syncs of the clone are queued above, so the lock the
-         * script waited out is another driver's (or, on docker, a stood-down sibling's sync
-         * container still finishing), or the fetch kept losing ref locks to a concurrent git. The claim goes straight back to the board, which refunds the
-         * attempt and defers the next claim. The kubernetes checkout claim was already
-         * released inside `syncCheckout` before it answered, the same discipline the
-         * ordinary sync-failure refusal below relies on.
-         */
-        return { halt: 'requeue', log: `checkout sync was lock-blocked, requeueing: ${synced.reason}` };
     }
     // A kind the script named is a refusal no retry fixes: a person acts on it, so it is config.
     const deterministic = synced.kind !== undefined && SYNC_FAILURE_KINDS.includes(synced.kind);
