@@ -16,7 +16,7 @@ import type {
     RuntimeReport,
 } from '../../src/board.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
-import type { ExportRelay } from '../../src/export-control.js';
+import type { CheckpointRelay, ExportRelay } from '../../src/export-control.js';
 import type { ReviewControl } from '../../src/supervised-steps.js';
 import type { GateManager, GateRun, GateRunOptions, GateServer } from '../../src/gates.js';
 import type { HelperResult } from '../../src/helpers.js';
@@ -78,7 +78,6 @@ export interface BoardStub extends Board {
     progressed: { id: string; output: string; runtime: RuntimeReport | null }[];
     suspended: string[];
     /** The pre-run claims the loop handed back for checkout contention (issue #559). */
-    requeued: string[];
     /** The interrupted attempts the loop reported (issue #792). */
     interrupted: ({ id: string } & Interruption)[];
     beats: number;
@@ -148,7 +147,6 @@ export function stubBoard(
         sessions: [],
         progressed: [],
         suspended: [],
-        requeued: [],
         interrupted: [],
         beats: 0,
         gatesReported: [],
@@ -185,10 +183,6 @@ export function stubBoard(
         },
         async suspend(claimed) {
             board.suspended.push(claimed.id);
-            return 'held';
-        },
-        async requeue(claimed) {
-            board.requeued.push(claimed.id);
             return 'held';
         },
         async interrupt(claimed, interruption) {
@@ -589,6 +583,10 @@ export function stubGateStack(
             attachExporter: (token: string, exporter: ExportRelay) => {
                 const control = stack.controls.get(token);
                 if (control) control.exporting.relay = exporter;
+            },
+            attachCheckpoint: (token: string, checkpoint: CheckpointRelay) => {
+                const control = stack.controls.get(token);
+                if (control) control.checkpointing.relay = checkpoint;
             },
             controlPolled: () => options.polled ?? true,
             raiseKill: (token: string) => {

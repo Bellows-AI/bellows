@@ -11,7 +11,7 @@ import {
 } from './docker-teardown.js';
 import { supervisorName } from './docker-mailbox.js';
 import { createKillLedger, type KillLedger } from './kill-ledger.js';
-import { SUPERVISOR_EXIT } from './supervisor-contract.js';
+import { SUPERVISOR_CHECKPOINT_MS, SUPERVISOR_EXIT } from './supervisor-contract.js';
 import { agentBackstopMs } from './supervisor-plan.js';
 import { spawn } from 'node:child_process';
 import { rm, writeFile } from 'node:fs/promises';
@@ -97,8 +97,12 @@ interface GroupState {
     session: RunSession | null;
 }
 
-/** How long `finish` waits for the group's supervisor to exit by itself before it kills the group. */
-const GROUP_END_WAIT_MS = 20_000;
+const GROUP_EXIT_WAIT_MS = 20_000;
+/**
+ * How long `finish` waits for the group's supervisor to exit by itself before it kills the group:
+ * its exit, and the checkpoint it takes at finalize (issue #775) under its own bound.
+ */
+const GROUP_END_WAIT_MS = GROUP_EXIT_WAIT_MS + SUPERVISOR_CHECKPOINT_MS;
 
 /** Everything a docker-runner method needs: the daemon transport, the config, and the per-attempt kill set. */
 interface RunnerDeps {

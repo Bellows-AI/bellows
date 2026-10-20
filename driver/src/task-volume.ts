@@ -12,6 +12,9 @@ import { containerScript } from './container-scripts.js';
 /** Where every container of a task group mounts the task volume. */
 export const TASK_MOUNT = '/task';
 
+/** Where the supervisor's checkpoint script writes its parts on the task volume (issue #775); git-ignored with `.factory/`. */
+export const CHECKPOINT_DIR = `${TASK_MOUNT}/.factory/checkpoint`;
+
 /** The pod volume and the mount name of the task volume. */
 export const TASK_VOLUME = 'task';
 

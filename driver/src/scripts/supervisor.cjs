@@ -56,6 +56,11 @@
 //   SUPERVISOR_ORPHAN_MS      — how long an unanswering driver is served before finalizing (default 90000).
 //   SUPERVISOR_STEP_WAIT_MS   — one `GET /step` long poll (default 15000).
 //   SUPERVISOR_REPORT_MS      — how long a departure's report is redelivered before finalizing (default 60000).
+//   SUPERVISOR_CHECKPOINT_SCRIPT / _CHECKOUT / _BRANCH / _DIR / _OPENCODE_DB — the checkpoint the finalize stage
+//                               takes (issue #775): scripts/checkpoint.cjs by content, the task tree and branch it
+//                               works on, the directory it writes in, the OpenCode database to snapshot. Absent
+//                               the script, the checkout, the branch or the directory: no checkpoint.
+//   SUPERVISOR_CHECKPOINT_MS  — the one wall-clock bound over the checkpoint's script, chunks, retries and manifest (default 120000).
 //   SUPERVISOR_GATE           — `1` when a gate container serves the gate mailbox; absent, a gate step is refused.
 //   SUPERVISOR_REVIEWER       — `1` when a reviewer container serves the review mailbox; absent, a review step is refused.
 //   SUPERVISOR_GATE_LOST_MS   — a gate loop heartbeat older than this is a lost gate container (default 30000).
@@ -196,6 +201,9 @@ const DEFAULT_AGENT_START_MS = 600_000;
 const DEFAULT_ORPHAN_MS = 90_000;
 const DEFAULT_STEP_WAIT_MS = 15_000;
 const DEFAULT_REPORT_MS = 60_000;
+const DEFAULT_CHECKPOINT_MS = 120_000;
+const CHECKPOINT_CHUNK_BYTES = 1_048_576;
+const CHECKPOINT_UPLOAD_FAILED = 'upload_failed';
 const DEFAULT_GATE_LOST_MS = 30_000;
 const DEFAULT_GATE_CANCEL_MS = 10_000;
 
@@ -261,6 +269,16 @@ const writeAtomic = (file, text) => {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** The checkpoint this attempt takes at finalize, or null when the driver configured none. */
+function checkpointOf(env) {
+    const script = env.SUPERVISOR_CHECKPOINT_SCRIPT;
+    const checkout = env.SUPERVISOR_CHECKPOINT_CHECKOUT;
+    const branch = env.SUPERVISOR_CHECKPOINT_BRANCH;
+    const dir = env.SUPERVISOR_CHECKPOINT_DIR;
+    if (!script || !checkout || !branch || !dir) return null;
+    return { script, checkout, branch, dir, opencodeDb: env.SUPERVISOR_CHECKPOINT_OPENCODE_DB || '' };
+}
+
 function settingsOf(env) {
     const root = env.FACTORY_CTL_ROOT || '/factory';
     return {
@@ -286,6 +304,8 @@ function settingsOf(env) {
         orphanMs: positive(env, 'SUPERVISOR_ORPHAN_MS', DEFAULT_ORPHAN_MS),
         stepWaitMs: positive(env, 'SUPERVISOR_STEP_WAIT_MS', DEFAULT_STEP_WAIT_MS),
         reportMs: positive(env, 'SUPERVISOR_REPORT_MS', DEFAULT_REPORT_MS),
+        checkpointMs: positive(env, 'SUPERVISOR_CHECKPOINT_MS', DEFAULT_CHECKPOINT_MS),
+        checkpoint: checkpointOf(env),
         gate: env.SUPERVISOR_GATE === '1',
         review: env.SUPERVISOR_REVIEWER === '1',
         gateLostMs: positive(env, 'SUPERVISOR_GATE_LOST_MS', DEFAULT_GATE_LOST_MS),
@@ -329,13 +349,13 @@ function filesOf({ dirs }) {
  * returns at all — whatever the status — is the driver being there (`run.contactedAt`), which the
  * orphan bound reads. `holdMs` is the long poll's own wait on top of the usual timeout.
  */
-async function call(settings, method, route, { body, holdMs = 0, abort = null, onContact = null } = {}) {
+async function call(settings, method, route, { body, bytes, holdMs = 0, abort = null, onContact = null } = {}) {
     try {
         const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS + holdMs);
         const response = await fetch(`${settings.url}${route}`, {
             method,
             headers: { authorization: `Bearer ${settings.token}` },
-            body: body ? JSON.stringify(body) : undefined,
+            body: bytes ?? (body ? JSON.stringify(body) : undefined),
             signal: abort ? AbortSignal.any([timeout, abort]) : timeout,
         });
         if (onContact) onContact();
@@ -1265,6 +1285,119 @@ function openReviewMailbox(run) {
 }
 
 /**
+ * One checkpoint call, repeated while the driver cannot take it (no answer, a 5xx: the board was out
+ * of reach) until `abort` — the stage's absolute deadline, or the end of the run — fires. Any other
+ * answer is final: the board said what it thinks of these bytes.
+ */
+async function putCheckpoint(run, route, options, abort) {
+    for (let tries = 1; ; tries += 1) {
+        const answer = await ask(run, 'PUT', route, { ...options, abort });
+        if (answer && answer.status < HTTP_SERVER_ERROR) return answer;
+        if (abort.aborted || orphaned(run)) return answer;
+        await sleep(Math.min(run.settings.tickMs * tries, run.settings.controlMs));
+    }
+}
+
+/** The header line, then each part's bytes, as the stream's consecutive chunks. */
+function* checkpointChunks(header, parts) {
+    const line = Buffer.from(`${JSON.stringify(header)}\n`);
+    yield line;
+    for (const part of parts) {
+        const fd = fs.openSync(part.path, 'r');
+        try {
+            for (;;) {
+                const buffer = Buffer.allocUnsafe(CHECKPOINT_CHUNK_BYTES);
+                const read = fs.readSync(fd, buffer, 0, CHECKPOINT_CHUNK_BYTES, null);
+                if (read === 0) break;
+                yield buffer.subarray(0, read);
+            }
+        } finally {
+            fs.closeSync(fd);
+        }
+    }
+}
+
+/** Puts the stream's chunks in order; how it ended: the cause it stopped short for, or null when every chunk is stored. */
+async function uploadCheckpoint(run, verdict, abort) {
+    let offset = 0;
+    for (const bytes of checkpointChunks(verdict.header, verdict.parts)) {
+        beat(run);
+        const answer = await putCheckpoint(run, `/checkpoint/chunk?offset=${offset}`, { bytes }, abort);
+        if (answer && answer.status === HTTP_PAYLOAD_TOO_LARGE) {
+            const cause = answer.json && typeof answer.json.cause === 'string' ? answer.json.cause : null;
+            return { state: 'truncated', cause: cause ?? CHECKPOINT_UPLOAD_FAILED };
+        }
+        if (!answer || answer.status !== HTTP_OK) return { state: 'partial', cause: CHECKPOINT_UPLOAD_FAILED };
+        offset += bytes.length;
+    }
+    // Nothing missing but what the script cut itself: above its cap no bytes are uploaded at all.
+    return verdict.state === 'truncated'
+        ? { state: 'truncated', cause: verdict.cause }
+        : { state: 'complete', cause: null };
+}
+
+/**
+ * finalize, after the publish and before the report is final (issue #775): commits the whole task
+ * tree through `scripts/checkpoint.cjs`, uploads what it made through the driver's checkpoint routes
+ * and closes the stream. Every step is bounded by ONE wall-clock deadline and by the end of the run;
+ * nothing here changes the attempt's outcome — a checkpoint that could not be taken or uploaded
+ * leaves the stream without a `complete` manifest, which is what a reader and the volume's
+ * retention rule look at. The directory it wrote in is removed whatever happened.
+ */
+async function checkpointStage(run) {
+    const { checkpoint, checkpointMs, url } = run.settings;
+    if (!checkpoint || !url || orphaned(run)) return;
+    const abort = AbortSignal.any([run.abort.signal, AbortSignal.timeout(checkpointMs)]);
+    const startedAt = new Date(run.now()).toISOString();
+    try {
+        const made = await spawnStep(run, {
+            argv: ['node', '-e', checkpoint.script],
+            env: {
+                CHECKOUT: checkpoint.checkout,
+                BRANCH: checkpoint.branch,
+                OUT_DIR: checkpoint.dir,
+                ...(checkpoint.opencodeDb ? { OPENCODE_DB: checkpoint.opencodeDb } : {}),
+            },
+            timeoutMs: checkpointMs,
+        });
+        const verdict = lastJson(made.result.stdout);
+        if (!verdict || verdict.ok !== true) {
+            run.log(`checkpoint: not taken: ${verdict?.reason ?? `the script ended ${made.result.exitCode}`}`);
+            return;
+        }
+        if (verdict.state === 'none') return;
+        const ended = await uploadCheckpoint(run, verdict, abort);
+        const manifest = {
+            state: ended.state,
+            terminalCause: ended.cause,
+            startedAt,
+            finishedAt: new Date(run.now()).toISOString(),
+        };
+        const closed = await putCheckpoint(run, '/checkpoint/manifest', { body: manifest }, abort);
+        run.log(
+            `checkpoint: ${ended.state}${ended.cause ? ` (${ended.cause})` : ''}, manifest ${closed ? closed.status : 'unanswered'}`
+        );
+    } catch (error) {
+        run.log(`checkpoint: failed: ${error?.message ?? error}`);
+    } finally {
+        fs.rmSync(checkpoint.dir, { recursive: true, force: true });
+    }
+}
+
+/** The last line of `text` that is a JSON object, or null. */
+function lastJson(text) {
+    for (const line of text.trim().split('\n').reverse()) {
+        try {
+            const value = JSON.parse(line);
+            if (value && typeof value === 'object') return value;
+        } catch {
+            // Not the verdict: noise before it.
+        }
+    }
+    return null;
+}
+
+/**
  * Runs the supervisor to its report. Returns the exit status; `now` and `log` are test seams.
  * Never throws for the attempt's own failures: those are the outcome. A bug throws, and the
  * caller exits 70, which the driver reads as a lost supervisor — an infrastructure loss.
@@ -1315,6 +1448,7 @@ async function supervise(env = process.env, log = (line) => process.stdout.write
     run.inflight?.interrupt();
     for (const lane of LANES) run.lanes[lane].stopped = true;
     if (run.machine.stage === 'publish') run.machine.enter('finalize');
+    await checkpointStage(run);
     run.abort.abort();
     await stepping;
     await Promise.all(LANES.flatMap((lane) => [...run.lanes[lane].answers]));

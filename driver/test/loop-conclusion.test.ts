@@ -17,7 +17,6 @@ const VERDICT: EndDecision = {
 interface Answers {
     suspend?: LeaseState | (() => never);
     interrupt?: LeaseState | 'exhausted' | (() => never);
-    requeue?: () => never;
     stage?: LeaseState | 'lost' | 'conflict' | 'removed' | (() => never);
     complete?: LeaseState | (() => never);
 }
@@ -65,10 +64,6 @@ function attempt(answers: Answers = {}, { fenced = false, launched = false } = {
                     calls.push('interrupt');
                     return answer(answers.interrupt, 'held');
                 },
-                requeue: async () => {
-                    calls.push('requeue');
-                    return answer(answers.requeue, 'held');
-                },
                 stageConclusion: async () => {
                     calls.push('stage');
                     return answer(answers.stage, 'held');
@@ -111,7 +106,6 @@ describe('end lands the board call before it destroys anything (issue #828)', ()
         ['a verdict', VERDICT, ['stage', 'complete']],
         ['a park', { kind: 'park', phase: 'setup' }, ['suspend']],
         ['an interrupt', { kind: 'interrupt', reason: 'the pod was evicted', exitCode: null }, ['interrupt']],
-        ['a requeue', { kind: 'requeue', log: 'the checkout lock is held' }, ['requeue']],
         ['a leave before the launch', { kind: 'leave', log: 'left' }, []],
         ['a lost lease', { kind: 'none', log: 'lost' }, []],
     ] satisfies readonly (readonly [string, EndDecision, string[]])[])(
@@ -336,17 +330,6 @@ describe('end retains the runner a board call did not reach', () => {
         expect(calls).not.toContain('finish');
         expect(calls).not.toContain('services');
         expect(calls).toContain('control.close');
-    });
-
-    it('keeps it when the requeue never lands', async () => {
-        const { ctx, calls } = attempt({ requeue: unavailable }, { fenced: true });
-
-        await end(ctx, { kind: 'requeue', log: 'the checkout lock is held' });
-
-        expect(calls).not.toContain('finish');
-        expect(calls).not.toContain('services');
-        // The claim stays with the runner too: the next claim adopts or sweeps both.
-        expect(calls).not.toContain('fence');
     });
 
     it('keeps it when the interruption never lands, and leaves the attempt to the lease', async () => {

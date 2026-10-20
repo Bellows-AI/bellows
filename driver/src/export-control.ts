@@ -16,6 +16,10 @@ export const EXPORT_PATH = '/export';
 export const EXPORT_CHUNK_PATH = `${EXPORT_PATH}/chunk`;
 export const EXPORT_MANIFEST_PATH = `${EXPORT_PATH}/manifest`;
 export const EXPORT_STATE_PATH = `${EXPORT_PATH}/state`;
+/** The checkpoint routes (issue #775): the supervisor's own, at finalize — not the exporter's. */
+export const CHECKPOINT_PATH = '/checkpoint';
+export const CHECKPOINT_CHUNK_PATH = `${CHECKPOINT_PATH}/chunk`;
+export const CHECKPOINT_MANIFEST_PATH = `${CHECKPOINT_PATH}/manifest`;
 
 const BYTES_PER_KIB = 1024;
 const BYTES_PER_MIB = BYTES_PER_KIB * BYTES_PER_KIB;
@@ -59,6 +63,25 @@ export interface ExportRelay {
     report(report: ExportReport): void;
 }
 
+/** The checkpoint stream's closing record, as the supervisor proposes it: the claim sequence is the loop's own. */
+export interface CheckpointManifestRequest {
+    state: 'complete' | 'partial' | 'truncated';
+    terminalCause: string | null;
+    startedAt: string;
+    finishedAt: string;
+}
+
+/** What the loop does with the supervisor's checkpoint calls: forward to the board's `checkpoint` stream. */
+export interface CheckpointRelay {
+    putChunk(offset: number, bytes: Uint8Array): Promise<ChunkAnswer>;
+    finalize(manifest: CheckpointManifestRequest): Promise<'stored' | 'duplicate' | 'conflict' | 'rejected'>;
+}
+
+/** One token's checkpoint state: the relay, null until the loop attaches it. */
+export interface CheckpointSlot {
+    relay: CheckpointRelay | null;
+}
+
 /** One token's export state: the relay, null on a run with no exporter. */
 export interface ExportSlot {
     relay: ExportRelay | null;
@@ -91,6 +114,14 @@ const relayFailed = (e: unknown): ExportAnswer => ({
     body: { error: e instanceof Error ? e.message : String(e) },
 });
 
+/** A manifest answer on the wire. */
+const manifestAnswer = (result: 'stored' | 'duplicate' | 'conflict' | 'rejected'): ExportAnswer =>
+    result === 'conflict'
+        ? { status: HTTP_CONFLICT, body: { result } }
+        : result === 'rejected'
+          ? { status: HTTP_BAD_REQUEST, body: { result } }
+          : { status: HTTP_OK, body: { result } };
+
 async function serveChunk(relay: ExportRelay, request: IncomingMessage, open: () => boolean): Promise<ExportAnswer> {
     const query = new URL(request.url ?? '', 'http://control').searchParams;
     const session = query.get('session') ?? '';
@@ -114,17 +145,7 @@ async function serveManifest(relay: ExportRelay, request: IncomingMessage, open:
     if (terminalCause !== null && typeof terminalCause !== 'string') return BAD_REQUEST;
     if (!open()) return GONE;
     const manifest = { session, state, terminalCause, startedAt, finishedAt } as ExportManifestRequest;
-    return relay
-        .finalize(manifest)
-        .then(
-            (result) =>
-                result === 'conflict'
-                    ? { status: HTTP_CONFLICT, body: { result } }
-                    : result === 'rejected'
-                      ? { status: HTTP_BAD_REQUEST, body: { result } }
-                      : { status: HTTP_OK, body: { result } },
-            relayFailed
-        );
+    return relay.finalize(manifest).then(manifestAnswer, relayFailed);
 }
 
 async function serveState(relay: ExportRelay, request: IncomingMessage, open: () => boolean): Promise<ExportAnswer> {
@@ -138,6 +159,60 @@ async function serveState(relay: ExportRelay, request: IncomingMessage, open: ()
     if (!open()) return GONE;
     relay.report({ pendingBytes, oldestUnackedMs, spoolFull, done });
     return { status: HTTP_OK, body: {} };
+}
+
+const checkpointManifestOf = (body: Record<string, unknown>): CheckpointManifestRequest | null => {
+    const { state, terminalCause, startedAt, finishedAt } = body;
+    if (typeof state !== 'string' || !MANIFEST_STATES.includes(state)) return null;
+    if (typeof startedAt !== 'string' || typeof finishedAt !== 'string') return null;
+    if (terminalCause !== null && typeof terminalCause !== 'string') return null;
+    return { state, terminalCause, startedAt, finishedAt } as CheckpointManifestRequest;
+};
+
+/**
+ * Serves one checkpoint request once the supervisor's token is known: `PUT /checkpoint/chunk?offset=`
+ * (the raw bytes) and `PUT /checkpoint/manifest`. Answers as the export routes do, so the supervisor
+ * retries the same statuses; a body cut short by a dropped connection relays nothing.
+ */
+export async function serveCheckpoint(
+    slot: CheckpointSlot,
+    request: IncomingMessage,
+    open: () => boolean
+): Promise<ExportAnswer> {
+    const { relay } = slot;
+    if (!relay) return { status: HTTP_BAD_REQUEST, body: { error: 'this attempt checkpoints nothing' } };
+    const [path, search = ''] = (request.url ?? '').split('?');
+    if (request.method !== 'PUT') return BAD_REQUEST;
+    if (path === CHECKPOINT_CHUNK_PATH) return serveCheckpointChunk(relay, { request, search }, open);
+    if (path === CHECKPOINT_MANIFEST_PATH) return serveCheckpointManifest(relay, request, open);
+    return BAD_REQUEST;
+}
+
+async function serveCheckpointChunk(
+    relay: CheckpointRelay,
+    { request, search }: { request: IncomingMessage; search: string },
+    open: () => boolean
+): Promise<ExportAnswer> {
+    const offset = Number(new URLSearchParams(search).get('offset') ?? Number.NaN);
+    if (!count(offset)) return BAD_REQUEST;
+    const bytes = await readBodyBytes(request, EXPORT_CHUNK_BODY_LIMIT);
+    if (bytes === null) return TOO_LARGE;
+    if (!open()) return GONE;
+    return relay.putChunk(offset, bytes).then(chunkAnswer, relayFailed);
+}
+
+async function serveCheckpointManifest(
+    relay: CheckpointRelay,
+    request: IncomingMessage,
+    open: () => boolean
+): Promise<ExportAnswer> {
+    const raw = await readBody(request, EXPORT_JSON_BODY_LIMIT);
+    if (raw === null) return TOO_LARGE;
+    const body = parseJsonObject(raw);
+    const manifest = body && checkpointManifestOf(body);
+    if (!manifest) return BAD_REQUEST;
+    if (!open()) return GONE;
+    return relay.finalize(manifest).then(manifestAnswer, relayFailed);
 }
 
 /**

@@ -30,6 +30,9 @@ export const claudeExportScript = script('claude-export.cjs');
 /** The task supervisor, the trusted container of a run's pod: see scripts/supervisor.cjs. */
 export const supervisorScript = script('supervisor.cjs');
 
+/** The attempt's checkpoint at finalize (issue #775): see scripts/checkpoint.cjs. */
+export const checkpointScript = script('checkpoint.cjs');
+
 /** The live cache probe: see scripts/opencode-cache-probe.cjs. */
 export const opencodeCacheProbeScript = script('opencode-cache-probe.cjs');
 

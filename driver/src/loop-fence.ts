@@ -142,9 +142,8 @@ export function standDown(ctx: AttemptCtx, phase: string, beforePark?: () => Pro
 }
 
 /**
- * A setup conclusion as the ending it decides: a fault or a conclusion lands its verdict, a requeue
- * hands the pre-run claim back, an interrupt hands the attempt back as an interruption, a leave
- * leaves it to the lease (issue #469).
+ * A setup conclusion as the ending it decides: a fault or a conclusion lands its verdict, an
+ * interrupt hands the attempt back as an interruption, a leave leaves it to the lease (issue #469).
  */
 export function setupDecision(halt: SetupHalt): EndDecision {
     switch (halt.halt) {

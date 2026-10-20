@@ -111,9 +111,6 @@ export type VerdictBody = Parameters<Board['complete']>[1];
  * - `interrupt` — a refusal this driver makes while alive (a services start the daemon or cluster
  *   refused, issue #822): handed back as an interruption carrying `reason` (`interruptDecision`),
  *   left to the lease only when that does not land. No verdict.
- * - `requeue` — checkout contention another driver or a concurrent git caused (issue #559): the
- *   pre-run claim goes back to the board at once, its attempt refunded and its next claim
- *   deferred. No verdict — no agent ran.
  * - `concluded` — the job really is done (a pre-run helper's `control: 'conclude'`, issue #230),
  *   reported `succeeded` with no agent, no gates, no post-helper and no publish.
  */
@@ -121,7 +118,6 @@ export type SetupHalt =
     | { halt: 'fault'; log: string; verdict: VerdictBody }
     | { halt: 'leave'; log: string }
     | { halt: 'interrupt'; reason: string }
-    | { halt: 'requeue'; log: string }
     | { halt: 'concluded'; log: string; verdict: VerdictBody };
 
 /**
@@ -148,7 +144,6 @@ export interface AdoptedRecord {
  * - `verdict` — stage, then report (`log` said first, when there is one).
  * - `park` — a stopped attempt: the pump drained, `beforePark` run, then suspended.
  * - `interrupt` — handed back to the board as an interruption, released.
- * - `requeue` — a pre-run claim handed back at once (issue #559).
  * - `leave` — left to the lease; the runner of an attempt that launched stays for the next claim.
  * - `none` — the board has already moved on (a lost lease, a removed thread, a handover).
  */
@@ -156,7 +151,6 @@ export type EndDecision =
     | { kind: 'verdict'; verdict: VerdictBody; log?: string }
     | { kind: 'park'; phase: string; beforePark?: () => Promise<void> }
     | { kind: 'interrupt'; reason: string; exitCode: number | null }
-    | { kind: 'requeue'; log: string }
     | { kind: 'leave'; log: string }
     | { kind: 'none'; log: string };
 

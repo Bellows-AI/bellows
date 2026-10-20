@@ -1,12 +1,16 @@
 import type { BoardJob } from './board.js';
-import { runTimeoutMs } from './claim.js';
+import { opencodeDbPath, runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
-import { GATE_IMAGE, checkoutKey } from './publish.js';
+import { checkpointScript } from './container-scripts.js';
+import { OPENCODE } from './executors.js';
+import { GATE_IMAGE, checkoutDir, checkoutKey, worktreeBranch } from './publish.js';
+import { CHECKPOINT_DIR } from './task-volume.js';
 import {
     AGENT_IN,
     AGENT_OUT,
     GO_MARKER,
     RUN_CONTROL_POLL_MS,
+    SUPERVISOR_CHECKPOINT_MS,
     SUPERVISOR_DRAIN_MS,
     SUPERVISOR_ENV,
     SUPERVISOR_ORPHAN_LEASE_SHARE,
@@ -62,6 +66,28 @@ export function supervisorLiterals(
         ...(group.agentless ? ([[SUPERVISOR_ENV.agentless, '1']] as [string, string][]) : []),
         ...(group.gated ? ([[SUPERVISOR_ENV.gate, '1']] as [string, string][]) : []),
         ...(group.reviewing ? ([[SUPERVISOR_ENV.reviewer, '1']] as [string, string][]) : []),
+        ...(group.agentless ? [] : checkpointLiterals(job)),
+    ];
+}
+
+/**
+ * What the supervisor's finalize stage needs to checkpoint the task (issue #775): the script by
+ * content, the tree and branch it works on, a directory on the volume, and — for opencode — the
+ * session database. None for a job with no repository (no tree to carry) or without a control
+ * endpoint (nowhere to upload to).
+ */
+function checkpointLiterals(job: BoardJob): [string, string][] {
+    const checkout = checkoutDir(job);
+    if (!checkout || supervisorControlNames(job).length === 0) return [];
+    return [
+        [SUPERVISOR_ENV.checkpointScript, checkpointScript],
+        [SUPERVISOR_ENV.checkpointCheckout, checkout],
+        [SUPERVISOR_ENV.checkpointBranch, worktreeBranch(job)],
+        [SUPERVISOR_ENV.checkpointDir, CHECKPOINT_DIR],
+        ...(job.executorType === OPENCODE
+            ? ([[SUPERVISOR_ENV.checkpointOpencodeDb, opencodeDbPath(job)]] as [string, string][])
+            : []),
+        [SUPERVISOR_ENV.checkpointMs, String(SUPERVISOR_CHECKPOINT_MS)],
     ];
 }
 

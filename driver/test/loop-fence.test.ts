@@ -18,7 +18,6 @@ const FAULT: SetupHalt = {
     verdict: { status: 'failed', exitCode: null, output: 'nope', failureKind: 'runner_error' },
 };
 const LEAVE: SetupHalt = { halt: 'leave', log: 'checkout sync threw, leaving it to the lease' };
-const REQUEUE: SetupHalt = { halt: 'requeue', log: 'checkout sync was lock-blocked, requeueing' };
 const CONCLUDED: SetupHalt = {
     halt: 'concluded',
     log: 'pre-run helper "lint" concluded the job without launching the agent',
@@ -52,10 +51,6 @@ function fencedAttempt(fenced = true): { ctx: AttemptCtx; calls: string[]; lines
                 suspend: async () => {
                     calls.push('suspend');
                     return 'ok' as LeaseState;
-                },
-                requeue: async (requeued: BoardJob) => {
-                    calls.push(`requeue:${requeued.id}`);
-                    return 'held' as LeaseState;
                 },
                 interrupt: async (interrupted: BoardJob) => {
                     calls.push(`interrupt:${interrupted.id}`);
@@ -214,22 +209,15 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         expect(lines[0]).toContain('parking anyway: artifact upload refused');
     });
 
-    it.each([
-        ['a leave', LEAVE, null],
-        ['a requeue', REQUEUE, 'requeue:job-1'],
-    ] satisfies readonly (readonly [string, SetupHalt, string | null])[])(
-        'concludes %s with the board told before the claim goes back',
-        async (_what, halt, reported) => {
-            const { ctx, calls, lines } = fencedAttempt();
+    it('concludes a leave with the board told nothing before the claim goes back', async () => {
+        const { ctx, calls, lines } = fencedAttempt();
 
-            await end(ctx, setupDecision(halt));
+        await end(ctx, setupDecision(LEAVE));
 
-            // A `leave` reports nothing at all; a `requeue` hands the claim back instead of
-            // reporting (issue #559).
-            expect(calls).toEqual(['log', ...(reported === null ? [] : [reported]), ...TEARDOWN]);
-            expect(lines.join('\n')).toContain(halt.log);
-        }
-    );
+        // A `leave` reports nothing at all: the lease decides.
+        expect(calls).toEqual(['log', ...TEARDOWN]);
+        expect(lines.join('\n')).toContain(LEAVE.log);
+    });
 
     // Issue #821 (D1): a verdict is staged under the lease, then completed, and only then does the
     // attempt give the claim back and tear its group down — the heartbeat stops between the two.
@@ -296,13 +284,10 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         expect(filesMatching(/\bstate\.(phase|ending)\s*=[^=]/)).toEqual(['loop-phase.ts']);
     });
 
-    it('tells the board of an interruption, a suspension or a requeue from end() alone, but for the adoption record', () => {
+    it('tells the board of an interruption or a suspension from end() alone, but for the adoption record', () => {
         // The adoption record (loop-adopt.ts) is the earlier claim's interruption, written by
         // runPhases under this claim's lease with no ending of this attempt.
-        expect(filesMatching(/\bboard\s*\.(interrupt|suspend|requeue)\(/)).toEqual([
-            'loop-adopt.ts',
-            'loop-conclusion.ts',
-        ]);
+        expect(filesMatching(/\bboard\s*\.(interrupt|suspend)\(/)).toEqual(['loop-adopt.ts', 'loop-conclusion.ts']);
     });
 
     it('defines both fences once, and no other loop file does', () => {

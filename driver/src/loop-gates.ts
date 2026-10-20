@@ -11,7 +11,7 @@ import { askGithubToken } from './loop-github.js';
 import { createPublishRelay } from './loop-publish.js';
 import { createQuestionRelay } from './loop-questions.js';
 import { createReviewRelay } from './loop-review.js';
-import { attachTranscriptExport } from './loop-export.js';
+import { attachCheckpoint, attachTranscriptExport } from './loop-export.js';
 import type { LoopRuntime } from './loop-types.js';
 import { checkoutKey } from './publish.js';
 
@@ -217,6 +217,7 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
         gates.server.grantAgent(token, agentToken);
         gates.server.grantExporter(token, exporterToken);
         attachTranscriptExport({ rt, job, state }, token);
+        attachCheckpoint({ rt, job }, token);
         const url = gates.advertiseUrl(port);
         job.gateEnv = { ...job.gateEnv, [CONTROL_URL_ENV]: url, [CONTROL_TOKEN_ENV]: agentToken };
         job.supervisorEnv = {

@@ -1,7 +1,7 @@
 import type { AskedQuestion } from './board.js';
 import type { PublishRelay, PublishSlot } from './publish-control.js';
 import type { ReviewRelay, ReviewSlot } from './review-control.js';
-import type { ExportRelay, ExportSlot } from './export-control.js';
+import type { CheckpointSlot, ExportRelay, ExportSlot } from './export-control.js';
 import { parseJsonObject } from './json-parse.js';
 import { QUESTION_ID, validateQuestionReport } from './question-validation.js';
 
@@ -60,6 +60,8 @@ export interface ControlEntry {
     reviewing: ReviewSlot;
     /** The transcript-export routes' relay (`export-control.ts`); none on a run with no exporter. */
     exporting: ExportSlot;
+    /** The checkpoint routes' relay (`export-control.ts`), the supervisor's finalize stage; null until the loop attaches it. */
+    checkpointing: CheckpointSlot;
 }
 
 export const newControl = (
@@ -79,6 +81,7 @@ export const newControl = (
     reviewer,
     reviewing: { running: false },
     exporting: { relay: exporter },
+    checkpointing: { relay: null },
 });
 
 export interface QuestionAnswer {

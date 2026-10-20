@@ -39,6 +39,7 @@ import {
     type StepHost,
     stepHostOf,
 } from './supervised-steps.js';
+import { SUPERVISOR_CHECKPOINT_MS } from './supervisor-contract.js';
 
 /**
  * The kubernetes task group of one attempt (issue #771): the one Job whose pod holds the supervisor,
@@ -247,6 +248,8 @@ export async function finishGroup(deps: K8sDeps, job: BoardJob): Promise<void> {
     await orderFinish(stepHostOf(deps), job).catch(() => undefined);
     // A supervisor-only group ran no agent: its Job is no run to adopt, and ends destructively.
     // An unread Job is never deleted on that: held, kept, and ended again once it reads (`retryUnconfirmed`).
-    const keep = (await jobEndsWithin(deps, runnerName(job), GROUP_END_WAIT_MS)) !== 'running' && known.agent;
+    // The supervisor's exit, after the checkpoint it takes at finalize (issue #775) under its own bound.
+    const ends = await jobEndsWithin(deps, runnerName(job), GROUP_END_WAIT_MS + SUPERVISOR_CHECKPOINT_MS);
+    const keep = ends !== 'running' && known.agent;
     await releaseClaimAfterGroupEnd(deps, job, { groups: [{ ...runnerGroupOf(job, known.uids), keep }] });
 }

@@ -556,12 +556,6 @@ export interface Board {
     /** Parks the job: its container is gone, but it is not finished and keeps its session. */
     suspend(job: BoardJob): Promise<LeaseState>;
     /**
-     * Hands a pre-run claim back after checkout contention (issue #559): the board requeues it with
-     * its attempt refunded and its next claim deferred — or settles it stopped when a Stop got
-     * there first. `lost` when the lease is no longer this attempt's.
-     */
-    requeue(job: BoardJob): Promise<LeaseState>;
-    /**
      * Records an attempt the infrastructure interrupted (issue #792), with its attempt refunded:
      * `release` hands the claim back claimable at once, else this claim adopted the attempt
      * `claimSeq` names and keeps its lease. `exhausted` once the job's interruption budget is
@@ -947,12 +941,6 @@ export function createBoard({
 
         async suspend(job) {
             const response = await post(`/api/jobs/${job.id}/suspend`, { leaseToken: job.leaseToken });
-            return response.status === HTTP_CONFLICT ? 'lost' : 'held';
-        },
-
-        async requeue(job) {
-            // 404: the thread was removed behind the requeue — nothing left to hand back.
-            const response = await post(`/api/jobs/${job.id}/requeue`, { leaseToken: job.leaseToken }, true);
             return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
 

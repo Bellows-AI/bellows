@@ -35,7 +35,13 @@ export const UPLOAD_CAUSE = {
 export const NO_SESSION = 'none';
 
 /** `transcript` is the normalized stream; `transcript-raw` is the executor's own records, verbatim. */
-export const ARTIFACT_STREAM = { log: 'log', transcript: 'transcript', rawTranscript: 'transcript-raw' } as const;
+export const ARTIFACT_STREAM = {
+    log: 'log',
+    transcript: 'transcript',
+    rawTranscript: 'transcript-raw',
+    /** The attempt's checkpoint (issue #775): a header line, a git bundle and the OpenCode snapshot, binary. */
+    checkpoint: 'checkpoint',
+} as const;
 
 /** Cuts `bytes` into chunks of about `max` bytes, ending at a newline where one allows. Offsets are the cut points. */
 export function cutChunks(bytes: Uint8Array, max = CHUNK_BYTES): { offset: number; body: Uint8Array }[] {
