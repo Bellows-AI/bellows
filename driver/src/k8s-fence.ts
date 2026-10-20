@@ -51,6 +51,7 @@ import {
     refusal,
     REPLACE_WAIT_MS,
     boundedBy,
+    waitOf,
     withSignal,
 } from './k8s-transport.js';
 import { pollFor } from './poll.js';
@@ -520,42 +521,40 @@ async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[]): Promise<v
  */
 export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, signal: AbortSignal): Promise<void> {
     let unmet = `the fence of job ${job.id} could not confirm the checkout empty`;
-    const done = await pollFor<true>(
-        { ms: REPLACE_WAIT_MS, everyMs: POLL_MS, sleep: (ms) => deps.sleep(ms), signal },
-        async (deadline) => {
-            // Every request of the round, the deletes included, ends by the bound and refuses once
-            // the attempt is killed.
-            const round = boundedBy(withSignal(deps, signal), deadline);
-            const { fleets, conclusive } = await probeLeftoverFleets(round, job);
-            // Inconclusive: keep polling within the same bound, deleting nothing — a kind that proved
-            // nothing may be the Job listing that spares the adopted run's pods (#869).
-            if (!conclusive) {
-                unmet = `the fence of job ${job.id} could not confirm the checkout empty`;
-                return;
-            }
-            // Every kind answered and none has anything of this job's — the checkout is free.
-            if (fleets.length === 0) return true;
-            const verified = await verifyClaimHeldForSweep(round, job);
-            if (verified === 'lost') {
-                throw new Error(
-                    `job ${job.id} stands down: the checkout claim was taken over while the job label still answered`
-                );
-            }
-            if (verified === 'unknown') {
-                unmet = `the checkout claim of job ${job.id} could not be confirmed before fencing`;
-                return;
-            }
-            if (!(await deleteLeftoverSecrets(round, job, fleets))) {
-                unmet = `the leftover secrets of job ${job.id} could not be deleted`;
-                return;
-            }
-            await deleteSweepFleets(round, fleets);
-            // No delete's answer is proof the checkout is free — a 409 on a uid precondition is
-            // another incarnation under the name (issue #821): only a fresh, conclusive empty list
-            // lets it go.
-            unmet = `the leftover objects of job ${job.id} never disappeared after their delete`;
+    const live = withSignal(deps, signal);
+    const done = await pollFor<true>({ ...waitOf(live, REPLACE_WAIT_MS), everyMs: POLL_MS }, async (deadline) => {
+        // Every request of the round, the deletes included, ends by the bound and refuses once
+        // the attempt is killed.
+        const round = boundedBy(live, deadline);
+        const { fleets, conclusive } = await probeLeftoverFleets(round, job);
+        // Inconclusive: keep polling within the same bound, deleting nothing — a kind that proved
+        // nothing may be the Job listing that spares the adopted run's pods (#869).
+        if (!conclusive) {
+            unmet = `the fence of job ${job.id} could not confirm the checkout empty`;
+            return;
         }
-    );
+        // Every kind answered and none has anything of this job's — the checkout is free.
+        if (fleets.length === 0) return true;
+        const verified = await verifyClaimHeldForSweep(round, job);
+        if (verified === 'lost') {
+            throw new Error(
+                `job ${job.id} stands down: the checkout claim was taken over while the job label still answered`
+            );
+        }
+        if (verified === 'unknown') {
+            unmet = `the checkout claim of job ${job.id} could not be confirmed before fencing`;
+            return;
+        }
+        if (!(await deleteLeftoverSecrets(round, job, fleets))) {
+            unmet = `the leftover secrets of job ${job.id} could not be deleted`;
+            return;
+        }
+        await deleteSweepFleets(round, fleets);
+        // No delete's answer is proof the checkout is free — a 409 on a uid precondition is
+        // another incarnation under the name (issue #821): only a fresh, conclusive empty list
+        // lets it go.
+        unmet = `the leftover objects of job ${job.id} never disappeared after their delete`;
+    });
     if (done === undefined) throw new Error(`${unmet} (${REPLACE_WAIT_MS}ms)`);
 }
 

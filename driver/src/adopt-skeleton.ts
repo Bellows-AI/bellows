@@ -7,7 +7,7 @@ import {
     Inconclusive,
     type RunOutcome,
 } from './runner.js';
-import { pollFor, type Sleep } from './poll.js';
+import { type Bound, pollFor, type Sleep } from './poll.js';
 import { type EndEvidence, settleEnd } from './termination.js';
 
 /** An earlier run of this job as an executor lists it: the attempt it ran as and what orders and recognizes it. */
@@ -42,7 +42,8 @@ export interface EarlierRead {
 export interface AdoptPrimitives<F extends EarlierRun> {
     /** The listing is tried this often, `retryMs` apart, before the attempt stands down; docker's pace. */
     pacing?: { attempts: number; retryMs: number; sleep: Sleep };
-    list(job: BoardJob): Promise<F[]>;
+    /** `bound`: the deadline and stand-down of the paced wait the listing runs in; its requests end by both. */
+    list(job: BoardJob, bound: Bound): Promise<F[]>;
     /** Whether a candidate (newest first) is a run to adopt at all; null skips it. Default: it is. */
     admit?(found: F, job: BoardJob): Promise<F | null>;
     /** Before anything is read or deleted: kubernetes takes the checkout claim, docker has none. */
@@ -78,9 +79,9 @@ async function listed<F extends EarlierRun>(
 ): Promise<F[]> {
     const { attempts = 1, retryMs = 0, sleep } = p.pacing ?? {};
     let failure: unknown;
-    const attempt = async (): Promise<F[] | undefined> => {
+    const attempt = async (deadline: number): Promise<F[] | undefined> => {
         try {
-            return await p.list(job);
+            return await p.list(job, { deadline, signal });
         } catch (e) {
             failure = e;
         }
@@ -96,7 +97,7 @@ async function listed<F extends EarlierRun>(
               },
               attempt
           )
-        : await attempt();
+        : await attempt(Infinity);
     if (found) return found;
     throw blockedUnless(failure, LISTING);
 }

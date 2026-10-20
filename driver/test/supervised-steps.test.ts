@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { Bound } from '../src/poll.js';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { runTimeoutMs } from '../src/claim.js';
@@ -519,10 +520,58 @@ describe('the supervised-step members both executors share', () => {
 });
 
 describe('the services’ generations over the supervisor (issue #773 D9)', () => {
+    /** A sink whose steps never answer: only the signal of the call ends one. */
+    const hanging = () => {
+        const base = sink().host;
+        return {
+            ...base,
+            sink: {
+                ...base.sink,
+                submit: (_token: string, _step: StepRequest, signal?: AbortSignal) =>
+                    new Promise<StepResult>((_resolve, reject) =>
+                        signal?.addEventListener('abort', () => reject(new Error('the step was cancelled')))
+                    ),
+            },
+        };
+    };
+
+    it('ends at the absolute deadline of the wait it runs in (#869)', async () => {
+        const call = runServiceGenerationStep(
+            hanging(),
+            job,
+            { mode: 'bump', names: ['db'] },
+            { deadline: Date.now() + 30 }
+        );
+
+        await expect(call).rejects.toThrow('the step was cancelled');
+    });
+
+    it('ends on the kill of the wait it runs in (#869)', async () => {
+        const kill = new AbortController();
+        const call = runServiceGenerationStep(
+            hanging(),
+            job,
+            { mode: 'acked', names: ['db'] },
+            { deadline: Date.now() + 600_000, signal: kill.signal }
+        );
+        kill.abort();
+
+        await expect(call).rejects.toThrow('the step was cancelled');
+    });
+
+    it('is refused outright once the deadline has passed (#869)', async () => {
+        const s = sink();
+
+        await expect(
+            runServiceGenerationStep(s.host, job, { mode: 'bump', names: ['db'] }, { deadline: Date.now() - 1 })
+        ).rejects.toThrow(/out of time/);
+        expect(s.submitted).toEqual([]);
+    });
+
     it('reads or bumps the generations as a `restart` step of its own, a fresh one every call', async () => {
         const s = sink();
-        expect(await runServiceGenerationStep(s.host, job, 'acked', ['db', 'cache'])).toEqual(ok());
-        await runServiceGenerationStep(s.host, job, 'bump', ['db', 'cache']);
+        expect(await runServiceGenerationStep(s.host, job, { mode: 'acked', names: ['db', 'cache'] })).toEqual(ok());
+        await runServiceGenerationStep(s.host, job, { mode: 'bump', names: ['db', 'cache'] });
         const [read, bump] = s.submitted;
         expect(read).toMatchObject({ kind: 'restart', argv: serviceRestartArgv('acked', ['db', 'cache']), env: {} });
         expect(bump).toMatchObject({ kind: 'restart', argv: serviceRestartArgv('bump', ['db', 'cache']) });
@@ -657,6 +706,16 @@ describe('awaitFirstContact', () => {
         );
         expect(slept).toEqual([GROUP_UP_POLL_MS, GROUP_UP_POLL_MS]);
         expect(probe).toHaveBeenCalledTimes(2);
+    });
+
+    it('hands each probe the deadline and the kill of the wait, for its requests to end by (#869)', async () => {
+        const { sleep } = noSleep();
+        const kill = new AbortController();
+        const probe = vi.fn(async (_bound: Bound) => undefined);
+
+        await awaitFirstContact(hostOf([false, true]).host, withToken, { sleep, signal: kill.signal, probe });
+
+        expect(probe).toHaveBeenCalledWith({ deadline: expect.any(Number), signal: kill.signal });
     });
 
     it('ends on elapsed time, probe time included, not on a count of polls', async () => {

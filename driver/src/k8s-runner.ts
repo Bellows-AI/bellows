@@ -66,6 +66,8 @@ import {
     boundedBy,
     POLL_MS,
     refusal,
+    waitOf,
+    withSignal,
 } from './k8s-transport.js';
 import { abortableSleep, pollFor, type Sleep } from './poll.js';
 import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
@@ -192,9 +194,11 @@ async function attachOpencodeOutcome(
     startedAt: string,
     outcome: RunOutcome
 ): Promise<void> {
+    const live = withSignal(deps, ledgerOf(deps).signal(job));
     const { scraped, reason } = await readOpencodeWithRetries(
-        (deadline) => scrapeOpencodeSession(deps, job, startedAt, deadline),
-        deps.sleep
+        (deadline) => scrapeOpencodeSession(live, job, startedAt, deadline),
+        deps.sleep,
+        live.signal
     );
     mergeOpencodeOutcome(outcome, scraped, reason);
 }
@@ -257,7 +261,7 @@ async function killRunner(deps: K8sDeps, job: BoardJob): Promise<void> {
  */
 export async function stopAgent(deps: K8sDeps, job: BoardJob): Promise<void> {
     const ended = await pollFor<'ended' | 'unread'>(
-        { ms: KILL_WINDDOWN_MS, everyMs: POLL_MS, sleep: (ms) => deps.sleep(ms) },
+        { ...waitOf(deps, KILL_WINDDOWN_MS), everyMs: POLL_MS },
         async (deadline) => {
             const read = await readJobStatus(
                 boundedBy(deps, deadline),

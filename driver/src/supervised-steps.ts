@@ -15,7 +15,7 @@ import {
     parseHelperOutput,
 } from './helpers.js';
 import { parseLastJsonLine } from './json-parse.js';
-import { pollFor, type Sleep } from './poll.js';
+import { type Bound, pollFor, type Sleep, timeLeft } from './poll.js';
 import {
     baseBranchOf,
     CREDENTIAL_HELPER,
@@ -124,7 +124,7 @@ export const GROUP_UP_POLL_MS = 2_000;
 export async function awaitFirstContact(
     host: Pick<StepHost, 'sink'>,
     job: BoardJob,
-    opts: { sleep: Sleep; signal: AbortSignal; probe?: () => Promise<void> }
+    opts: { sleep: Sleep; signal: AbortSignal; probe?: (bound: Bound) => Promise<void> }
 ): Promise<boolean> {
     const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
     if (!token) return true;
@@ -132,11 +132,11 @@ export async function awaitFirstContact(
     const { signal } = opts;
     const found = await pollFor(
         { ms: GROUP_UP_WAIT_MS, everyMs: GROUP_UP_POLL_MS, sleep: opts.sleep, signal, abandoned: killed },
-        async () => {
+        async (deadline) => {
             if (signal.aborted) throw killed();
             if (host.sink.contacted(token)) return true;
             try {
-                await opts.probe?.();
+                await opts.probe?.({ deadline, signal });
             } catch (e) {
                 if (signal.aborted) throw killed();
                 throw e;
@@ -441,18 +441,24 @@ const SERVICE_STEP_TIMEOUT_MS = 30_000;
 export const runServiceGenerationStep = (
     host: Pick<StepHost, 'sink'>,
     job: BoardJob,
-    mode: 'acked' | 'bump',
-    names: readonly string[]
-): Promise<StepResult> =>
-    submitStep(
+    { mode, names }: { mode: 'acked' | 'bump'; names: readonly string[] },
+    bound?: Bound
+): Promise<StepResult> => {
+    // Inside a wait, the step ends at its deadline and on its kill, and is not even sent past it.
+    const left = bound ? Math.min(SERVICE_STEP_TIMEOUT_MS, timeLeft(bound.deadline)) : SERVICE_STEP_TIMEOUT_MS;
+    if (left === 0)
+        return Promise.reject(new Error("the services' generation step was refused: its wait is out of time"));
+    const ends = [
+        ...(bound?.signal ? [bound.signal] : []),
+        ...(bound && Number.isFinite(bound.deadline) ? [AbortSignal.timeout(timeLeft(bound.deadline))] : []),
+    ];
+    return submitStep(
         host,
         job,
-        request(job, 'restart', {
-            id: randomUUID(),
-            argv: serviceRestartArgv(mode, names),
-            timeoutMs: SERVICE_STEP_TIMEOUT_MS,
-        })
+        request(job, 'restart', { id: randomUUID(), argv: serviceRestartArgv(mode, names), timeoutMs: left }),
+        ends.length > 0 ? AbortSignal.any(ends) : undefined
     );
+};
 
 /**
  * `go`: releases the attempt's agent, whose entrypoint waits for it, and hands the supervisor the

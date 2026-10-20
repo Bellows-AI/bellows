@@ -4,7 +4,7 @@ import { groupsOf, stepHostFor } from './k8s-group.js';
 import { runnerName } from './k8s-podspec.js';
 import { asServicePod } from './k8s-pod-shapes.js';
 import { podsOf } from './k8s-poll.js';
-import { boundedBy, HTTP_ERROR_STATUS, livePodOfItems } from './k8s-transport.js';
+import { boundedBy, boundOf, HTTP_ERROR_STATUS, livePodOfItems, waitOf, withSignal } from './k8s-transport.js';
 import type { K8sContainerStatus, K8sDeps, K8sPod } from './k8s-transport.js';
 import {
     type DeadService,
@@ -15,7 +15,7 @@ import {
     SERVICE_RESTART_TIMEOUT_MS,
     SERVICE_RESTART_TIMEOUT_S,
 } from './runner.js';
-import { pollFor } from './poll.js';
+import { type Bound, pollFor } from './poll.js';
 import { awaitServicesRunning, ServicesNotRunning, stoodDown } from './service-restart.js';
 import { groupServices, type ServiceSpec } from './services.js';
 import { runServiceGenerationStep, type StepHost, stepHostOf } from './supervised-steps.js';
@@ -122,8 +122,8 @@ export function forgetServices(deps: K8sDeps, job: BoardJob): void {
  * `restart` step in its `acked` mode). A lost supervisor is thrown as it is (`stepLost`); any other
  * answer it cannot give is a read that failed.
  */
-async function unacked(host: StepHost, job: BoardJob, names: readonly string[]): Promise<Set<string>> {
-    const read = await runServiceGenerationStep(host, job, 'acked', names);
+async function unacked(host: StepHost, job: BoardJob, names: readonly string[], bound: Bound): Promise<Set<string>> {
+    const read = await runServiceGenerationStep(host, job, { mode: 'acked', names }, bound);
     if (read.exitCode === 0) return new Set();
     if (read.exitCode === SERVICE_NOT_ACKED_EXIT) return new Set(read.stdout.split('\n').filter(Boolean));
     throw new Error(`the services' acknowledgements could not be read: ${(read.stderr || read.stdout).trim()}`);
@@ -139,7 +139,8 @@ async function readyListing(
     const statuses = await readSidecars(deps, job);
     last.statuses = statuses;
     const running = statuses.filter(({ state }) => state === 'running').map(({ name }) => name);
-    const waiting = running.length === statuses.length ? await unacked(host, job, running) : new Set(running);
+    const waiting =
+        running.length === statuses.length ? await unacked(host, job, running, boundOf(deps)) : new Set(running);
     return statuses.map(({ name, image, state, restartCount, ending }) => ({
         name,
         image,
@@ -166,7 +167,7 @@ export async function startServiceFleet(
     const last = { statuses: [] as SidecarStatus[] };
     await awaitServicesRunning(
         specs,
-        (deadline) => readyListing(boundedBy(deps, deadline), host, job, last),
+        (deadline) => readyListing(boundedBy(withSignal(deps, signal), deadline), host, job, last),
         deps.sleep,
         {
             signal,
@@ -229,21 +230,18 @@ async function bumpWhenAcked(
     const host = stepHostOf(deps);
     let readError: Error | null = null;
     let unackedNames: string[] = [];
+    const live = withSignal(deps, signal);
     const counts = await pollFor<SidecarStatus[]>(
-        {
-            ms: SERVICE_RESTART_TIMEOUT_MS,
-            everyMs: SERVICE_READY_POLL_MS,
-            sleep: deps.sleep,
-            signal,
-            abandoned: stoodDown,
-        },
+        { ...waitOf(live, SERVICE_RESTART_TIMEOUT_MS), everyMs: SERVICE_READY_POLL_MS, abandoned: stoodDown },
         async (deadline) => {
             readError = null;
-            const counts = await readSidecars(boundedBy(deps, deadline), job).catch((e: Error) => {
+            const counts = await readSidecars(boundedBy(live, deadline), job).catch((e: Error) => {
                 readError = e;
                 return null;
             });
-            const bumped = counts ? await runServiceGenerationStep(host, job, 'bump', names) : null;
+            const bumped = counts
+                ? await runServiceGenerationStep(host, job, { mode: 'bump', names }, { deadline, signal })
+                : null;
             if (counts && bumped?.exitCode === 0) return counts;
             if (bumped && bumped.exitCode !== SERVICE_NOT_ACKED_EXIT) {
                 throw new Error(
@@ -280,7 +278,7 @@ export async function restartServiceFleet(deps: K8sDeps, job: BoardJob, signal: 
     await awaitServicesRunning(
         specs,
         async (deadline) =>
-            (await readyListing(boundedBy(deps, deadline), host, job, last)).map((listed, at) => {
+            (await readyListing(boundedBy(withSignal(deps, signal), deadline), host, job, last)).map((listed, at) => {
                 const now = last.statuses[at]!;
                 const was = before.get(now.name) ?? 0;
                 // Not yet restarted, or still on its way back: neither is the answer yet.

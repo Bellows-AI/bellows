@@ -188,21 +188,32 @@ const OPENCODE_SESSION_READOUT_RETRY_DELAY_MS = 500;
 
 export async function readOpencodeWithRetries(
     readOnce: (deadline: number) => Promise<OpencodeRunOutcome>,
-    sleep: Sleep
+    sleep: Sleep,
+    signal?: AbortSignal
 ): Promise<{ scraped: OpencodeRunOutcome; reason: string | null }> {
     let scraped = opencodeReadFailed(null);
     let reason: string | null = null;
     let attempts = 0;
-    // The attempts are counted, the whole read is bounded on the clock: at the bound the latest answer stands.
-    await pollFor<true>(
-        { ms: CLOSE_READ_DEADLINE_MS, everyMs: OPENCODE_SESSION_READOUT_RETRY_DELAY_MS, sleep },
-        async (deadline) => {
-            scraped = await readOnce(deadline);
-            reason = scraped.error ?? reason;
-            attempts += 1;
-            return scraped.sessionId || attempts >= OPENCODE_SESSION_READOUT_RETRIES ? true : undefined;
-        }
-    );
+    // The attempts are counted, the whole read is bounded on the clock: at the bound — or the kill
+    // of the attempt (`signal`) — the latest answer stands.
+    try {
+        await pollFor<true>(
+            {
+                ms: CLOSE_READ_DEADLINE_MS,
+                everyMs: OPENCODE_SESSION_READOUT_RETRY_DELAY_MS,
+                sleep,
+                ...(signal ? { signal } : {}),
+            },
+            async (deadline) => {
+                scraped = await readOnce(deadline);
+                reason = scraped.error ?? reason;
+                attempts += 1;
+                return scraped.sessionId || attempts >= OPENCODE_SESSION_READOUT_RETRIES ? true : undefined;
+            }
+        );
+    } catch (e) {
+        if (!signal?.aborted) throw e;
+    }
     return { scraped, reason };
 }
 

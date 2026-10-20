@@ -22,7 +22,15 @@ import {
 import { type DriverConfig, executorImage } from './config.js';
 import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts.js';
 import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
-import { type ExecDocker, noSuchObject, readDocker, tabRows, type Spawn, readUtf8 } from './docker-runner-support.js';
+import {
+    boundedExec,
+    type ExecDocker,
+    noSuchObject,
+    readDocker,
+    tabRows,
+    type Spawn,
+    readUtf8,
+} from './docker-runner-support.js';
 import { abortableSleep, type Sleep, timeLeft } from './poll.js';
 import { supervisorLossOf, waitSupervisorExit } from './docker-group.js';
 import { supervisorName } from './docker-mailbox.js';
@@ -118,6 +126,8 @@ export interface CloseReadContext {
     config: DriverConfig;
     job: BoardJob;
     startedAt: string;
+    /** The attempt's kill: it ends the readout's retries, which then stand on their latest answer. */
+    signal?: AbortSignal;
 }
 
 /**
@@ -136,7 +146,7 @@ async function applyOpencodeCloseRead(outcome: RunOutcome, ctx: CloseReadContext
                 (read) => parseOpencodeRunOutcome(read.stdout),
                 (err: Error) => opencodeReadFailed(`the readout container failed: ${err.message}`)
             );
-    const { scraped, reason } = await readOpencodeWithRetries(readOnce, abortableSleep);
+    const { scraped, reason } = await readOpencodeWithRetries(readOnce, abortableSleep, ctx.signal);
     mergeOpencodeOutcome(outcome, scraped, reason);
 }
 
@@ -350,7 +360,7 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
         // A daemon that could not say is no "nothing to adopt": a fresh run's fence would remove a
         // finalizing group unread once it answers again (#824).
         pacing: { attempts: DISCOVERY_ATTEMPTS, retryMs: DISCOVERY_RETRY_MS, sleep: deps.sleep },
-        list: (job) => exitedRunners(execDocker, job),
+        list: (job, bound) => exitedRunners(boundedExec(execDocker, bound), job),
         begin: async () => undefined,
         // The agent's exit is not the run's end: its supervisor may still be draining the exporter and
         // finalizing (the dead driver never waited for it). Waited out, bounded — never swept unread —

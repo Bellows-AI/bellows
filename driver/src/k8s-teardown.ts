@@ -4,7 +4,7 @@ import { secretName } from './k8s-podspec.js';
 import { asPod } from './k8s-pod-shapes.js';
 import { asJob, jobOutcome, type ReadJobObject, readTyped, readTypedList } from './k8s-poll.js';
 import { pollFor } from './poll.js';
-import { boundedBy, HTTP_CONFLICT, HTTP_NOT_FOUND, is2xx, POLL_MS } from './k8s-transport.js';
+import { boundedBy, HTTP_CONFLICT, HTTP_NOT_FOUND, is2xx, POLL_MS, waitOf } from './k8s-transport.js';
 import type { K8sDeps, K8sPod, K8sResponse } from './k8s-transport.js';
 import type { Read } from './runner.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
@@ -145,7 +145,7 @@ const readGroupJob = (deps: K8sDeps, jobName: string): Promise<Read<ReadJobObjec
 /** Polls, bounded by `GROUP_END_WAIT_MS`, until the Job is over and no live writer pod is listed. */
 export async function confirmEnded(deps: K8sDeps, { pair, jobName, keep = false, uids }: GroupRef): Promise<GroupEnd> {
     const ended = await pollFor<GroupEnd>(
-        { ms: GROUP_END_WAIT_MS, everyMs: POLL_MS, sleep: (ms) => deps.sleep(ms) },
+        { ...waitOf(deps, GROUP_END_WAIT_MS), everyMs: POLL_MS },
         async (deadline) => {
             const round = boundedBy(deps, deadline);
             const read = await readGroupJob(round, jobName);

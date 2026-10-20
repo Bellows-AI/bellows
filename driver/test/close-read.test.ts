@@ -56,6 +56,22 @@ describe('the opencode session readout retry', () => {
         expect(reason).toBe('try 2 timed out');
     });
 
+    it('stands on its latest answer at once when the attempt is killed, with no further try', async () => {
+        const kill = new AbortController();
+        let reads = 0;
+        const readOnce = async (): Promise<OpencodeRunOutcome> => {
+            reads += 1;
+            kill.abort();
+            return opencodeReadFailed('the readout container failed');
+        };
+
+        const { scraped, reason } = await readOpencodeWithRetries(readOnce, async () => {}, kill.signal);
+
+        expect(reads).toBe(1);
+        expect(scraped.sessionId).toBeNull();
+        expect(reason).toBe('the readout container failed');
+    });
+
     it('takes a session answered on the first try, without waiting', async () => {
         const { outcome, reads, sleeps } = await readAndMerge([SESSION_LINE]);
 

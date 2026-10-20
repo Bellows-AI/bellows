@@ -10,11 +10,19 @@ import { loadDriverConfig } from '../src/config.js';
 import { awaitFinalized } from '../src/k8s-adopt.js';
 import { jobPath } from '../src/k8s-auxspec.js';
 import { jobEndsWithin } from '../src/k8s-group.js';
-import { readJobPodVerdict, readVerdict } from '../src/k8s-poll.js';
+import {
+    auxVerdict,
+    pollJobToTerminal,
+    pollRunnerJobUntilTerminal,
+    readJobPodVerdict,
+    readVerdict,
+} from '../src/k8s-poll.js';
+import { ledgerOf } from '../src/k8s-kill.js';
 import { runnerName } from '../src/k8s-podspec.js';
 import { stopAgent } from '../src/k8s-runner.js';
 import { confirmEnded, GROUP_END_WAIT_MS } from '../src/k8s-teardown.js';
 import {
+    boundedBy,
     LOG_READ_MS,
     POLL_MAX_CONSECUTIVE_FAILURES,
     POLL_MS,
@@ -55,6 +63,7 @@ interface Seen {
     method: string;
     path: string;
     timeoutMs: number | undefined;
+    signal: AbortSignal | undefined;
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -67,18 +76,20 @@ function clockWorld(
     let now = 7_000_000;
     vi.spyOn(Date, 'now').mockImplementation(() => now);
     const seen: Seen[] = [];
+    const slept: { ms: number; signal: AbortSignal | undefined }[] = [];
     const deps: K8sDeps = {
         request: async (method, path, _body, options?: K8sRequestOptions) => {
-            seen.push({ method, path, timeoutMs: options?.timeoutMs });
+            seen.push({ method, path, timeoutMs: options?.timeoutMs, signal: options?.signal });
             now += stepMs;
             return answer(method, path, seen);
         },
-        sleep: async (ms) => {
+        sleep: async (ms, signal) => {
+            slept.push({ ms, signal });
             now += ms;
         },
         config: loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: NS }),
     };
-    return { deps, seen, elapsed: () => now - 7_000_000 };
+    return { deps, seen, slept, elapsed: () => now - 7_000_000, now: () => now };
 }
 
 const running = async () => ({ status: 200, body: RUNNING });
@@ -147,6 +158,67 @@ describe('a full pod log read (#869)', () => {
         const gone = await read(logWorld(async () => ({ status: 404, body: '{"kind":"Status"}' })));
 
         expect(gone).toMatchObject({ output: '', truncated: false });
+    });
+});
+
+describe('a wait nested in a bounded round (#869)', () => {
+    const OUTER_MS = 10_000;
+
+    it('readVerdict retries and sleeps no longer than the round it runs in', async () => {
+        const world = clockWorld(1, unavailable);
+        const round = boundedBy(world.deps, world.now() + OUTER_MS);
+
+        await expect(readVerdict(round, RUNNER_JOB, 'reading the job')).rejects.toThrow();
+
+        expect(world.elapsed()).toBeLessThanOrEqual(OUTER_MS);
+    });
+
+    it('pollJobToTerminal ends with the round it runs in, though its own wait is longer', async () => {
+        const world = clockWorld(1, running);
+        const round = boundedBy(world.deps, world.now() + OUTER_MS);
+        const messages = { what: 'the job', notFound: () => 'gone', errorStatus: () => 'refused', failed: 'failed' };
+
+        await expect(pollJobToTerminal(round, runnerName(job), messages)).rejects.toThrow();
+
+        expect(world.elapsed()).toBeLessThanOrEqual(OUTER_MS);
+    });
+
+    it('auxVerdict hands the kill to every request and every pause, and retries no longer than its round', async () => {
+        const kill = new AbortController();
+        const world = clockWorld(1, running);
+
+        await expect(
+            auxVerdict(boundedBy(world.deps, world.now() + OUTER_MS), runnerName(job), kill.signal)
+        ).rejects.toThrow();
+
+        expect(world.seen.length).toBeGreaterThan(0);
+        expect(world.seen.every((s) => s.signal !== undefined)).toBe(true);
+        expect(world.slept.every((s) => s.signal !== undefined)).toBe(true);
+        expect(world.elapsed()).toBeLessThanOrEqual(OUTER_MS);
+    });
+
+    it('the sweep and the finalizing wait pause on the kill signal, so a kill cuts the pause', async () => {
+        const world = clockWorld(1, running);
+        const kill = new AbortController();
+
+        await awaitFinalized(world.deps, job, kill.signal);
+
+        expect(world.slept.length).toBeGreaterThan(0);
+        expect(world.slept.every((s) => s.signal !== undefined)).toBe(true);
+    });
+
+    it('the runner status poll gives every request the kill signal', async () => {
+        const kill = (): void => ledgerOf(world.deps).note(job, 'hard');
+        const world = clockWorld(1, async (_method, _path, seen) => {
+            if (seen.length >= 3) kill();
+            return { status: 200, body: RUNNING };
+        });
+        ledgerOf(world.deps);
+
+        await expect(pollRunnerJobUntilTerminal(world.deps, job)).rejects.toThrow();
+
+        expect(world.seen.length).toBeGreaterThan(0);
+        expect(world.seen.every((s) => s.signal !== undefined)).toBe(true);
     });
 });
 
@@ -243,6 +315,19 @@ describe('awaitFinalized', () => {
 });
 
 describe('adoptEarlierRun listing', () => {
+    it('hands every listing the deadline and the stand-down of its paced wait (#869)', async () => {
+        const stand = new AbortController();
+        const list = vi.fn(async () => []);
+        const p = {
+            pacing: { attempts: 3, retryMs: 2_000, sleep: async () => {} },
+            list,
+        } as unknown as AdoptPrimitives<never>;
+
+        expect(await adoptEarlierRun(p, new Map(), job, stand.signal)).toBeNull();
+
+        expect(list).toHaveBeenCalledWith(job, { deadline: expect.any(Number), signal: stand.signal });
+    });
+
     it('stands down at the wall-clock bound of its paced listing when each listing is slow', async () => {
         let now = 9_000_000;
         vi.spyOn(Date, 'now').mockImplementation(() => now);

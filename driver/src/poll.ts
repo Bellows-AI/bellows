@@ -9,6 +9,12 @@ export const abortableSleep: Sleep = (ms, signal) => delay(ms, undefined, signal
 /** Milliseconds left until the absolute `deadline` (epoch ms); 0 once past, which a request refuses. */
 export const timeLeft = (deadline: number): number => Math.max(0, deadline - Date.now());
 
+/** What a nested step is held to: the absolute `deadline` of the wait it runs in and that wait's kill `signal`. */
+export interface Bound {
+    deadline: number;
+    signal?: AbortSignal | undefined;
+}
+
 /**
  * Runs `step` every `everyMs` until it answers a defined value, and answers `undefined` at the
  * bound, after at least one step. Bounded by elapsed wall-clock time, step time included, not a
@@ -38,7 +44,8 @@ export async function pollFor<T>(
         // The pause after the last poll would only delay the answer.
         if ((polls + 1) * everyMs >= ms) return undefined;
         try {
-            await sleep(everyMs, signal);
+            // Never past the deadline: the pause is cut where the wait ends.
+            await sleep(Math.min(everyMs, timeLeft(deadline)), signal);
         } catch (e) {
             if (signal?.aborted) throw abandoned();
             throw e;

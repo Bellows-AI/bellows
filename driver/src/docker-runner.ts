@@ -636,7 +636,11 @@ async function dockerRun(
                         const { exitCode, output, timedOut: lostTimedOut, started } = settled;
                         return { exitCode, output, timedOut: lostTimedOut, started, infraLoss: end.infraLoss };
                     }
-                    return applyCloseTimeReadout(settled, { execDocker, config, job, startedAt }, session);
+                    return applyCloseTimeReadout(
+                        settled,
+                        { execDocker, config, job, startedAt, signal: deps.ledger.signal(job) },
+                        session
+                    );
                 })
                 .then(resolve, reject);
         });

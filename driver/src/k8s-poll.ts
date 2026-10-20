@@ -27,6 +27,8 @@ import {
     POLL_MS,
     readAnswer,
     refusal,
+    waitOf,
+    withSignal,
 } from './k8s-transport.js';
 import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse } from './k8s-transport.js';
 import { heldWords, startupCauseOf, StartupRefused } from './startup-cause.js';
@@ -71,25 +73,22 @@ export async function readVerdict(
 ): Promise<K8sResponse> {
     let last: { error: unknown } | { response: K8sResponse } | undefined;
     let failures = 0;
-    const answered = await pollFor<K8sResponse>(
-        { ms, everyMs: POLL_MS, sleep: (wait) => deps.sleep(wait) },
-        async (deadline) => {
-            try {
-                const response = await boundedBy(deps, deadline).request('GET', path);
-                if (
-                    response.status !== HTTP_TOO_MANY_REQUESTS &&
-                    response.status < HTTP_SERVER_ERROR_STATUS &&
-                    !isMalformedRequest400(response.status, response.body)
-                ) {
-                    return response;
-                }
-                last = { response };
-            } catch (error) {
-                last = { error };
+    const answered = await pollFor<K8sResponse>({ ...waitOf(deps, ms), everyMs: POLL_MS }, async (deadline) => {
+        try {
+            const response = await boundedBy(deps, deadline).request('GET', path);
+            if (
+                response.status !== HTTP_TOO_MANY_REQUESTS &&
+                response.status < HTTP_SERVER_ERROR_STATUS &&
+                !isMalformedRequest400(response.status, response.body)
+            ) {
+                return response;
             }
-            failures += 1;
+            last = { response };
+        } catch (error) {
+            last = { error };
         }
-    );
+        failures += 1;
+    });
     if (answered) return answered;
     if (last && 'error' in last) throw last.error;
     throw new Error(
@@ -374,7 +373,7 @@ export async function pollJobToTerminal(
 ): Promise<string | null> {
     const seen = { container: false };
     const verdict = await pollFor<{ answer: string | null }>(
-        { ms: CLOSE_READ_DEADLINE_MS, everyMs: POLL_MS, sleep: (ms) => deps.sleep(ms) },
+        { ...waitOf(deps, CLOSE_READ_DEADLINE_MS), everyMs: POLL_MS },
         async (deadline) => {
             const bounded = boundedBy(deps, deadline);
             const result = await readJobStatus(bounded, jobName, messages.what);
@@ -525,16 +524,15 @@ export async function auxVerdict(
     jobName: string,
     signal?: AbortSignal
 ): Promise<{ exitCode: number | null; output: string }> {
+    const live = withSignal(deps, signal);
     const verdict = await pollFor<{ exitCode: number | null; output: string }>(
         {
-            ms: CLOSE_READ_DEADLINE_MS,
+            ...waitOf(live, CLOSE_READ_DEADLINE_MS),
             everyMs: POLL_MS,
-            sleep: deps.sleep,
-            ...(signal ? { signal } : {}),
             abandoned: () => new Error(`the job ${jobName} was cancelled`),
         },
         async (deadline) => {
-            const bounded = boundedBy(deps, deadline);
+            const bounded = boundedBy(live, deadline);
             const result = await readJobStatus(bounded, jobName, `reading the job ${jobName}`);
             if (result.kind === 'notFound') throw new Error(`the job ${jobName} no longer exists`);
             if (result.kind === 'error') throw new Error(refusal(result, `reading the job ${jobName}`)!);
@@ -636,16 +634,12 @@ export async function pollRunnerJobUntilTerminal(
     const terminal = { timedOut: false, jobSucceeded: false };
     // No bound of its own, on purpose: the kubelet's activeDeadlineSeconds and the run deadline
     // (run-deadline.ts, whose kill aborts the ledger signal) bound it.
+    // Every request and pause of the poll ends on the kill, not at the next poll.
+    const live = withSignal(deps, ledgerOf(deps).signal(job));
     const polled = await pollFor<{ timedOut: boolean; jobSucceeded: boolean }>(
-        {
-            ms: Infinity,
-            everyMs: POLL_MS,
-            sleep: deps.sleep,
-            signal: ledgerOf(deps).signal(job),
-            abandoned: () => new RunnerKilled(runnerName(job)),
-        },
+        { ...waitOf(live, Infinity), everyMs: POLL_MS, abandoned: () => new RunnerKilled(runnerName(job)) },
         async () => {
-            const result = await readUnlessKilled(deps, job);
+            const result = await readUnlessKilled(live, job);
             if (result.kind === 'notFound') {
                 // Gone without this driver deleting it — fenced away or removed by hand. Its verdict can
                 // never arrive, so waiting longer is holding a slot for nothing.
@@ -658,8 +652,8 @@ export async function pollRunnerJobUntilTerminal(
             // The task group outlives the agent: its supervisor's report — the agent is over and the
             // exporter drained — is the end of the run, with the Job still serving the attempt's steps.
             if (over?.()) return terminal;
-            if (!seen.container) seen.container = await runStartSeen(deps, job, image);
-            if (onOutput) pod = await tailRunnerOutput(deps, job, pod, onOutput);
+            if (!seen.container) seen.container = await runStartSeen(live, job, image);
+            if (onOutput) pod = await tailRunnerOutput(live, job, pod, onOutput);
         }
     );
     return polled!;

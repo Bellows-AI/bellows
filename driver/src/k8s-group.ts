@@ -50,7 +50,7 @@ import {
     type TeardownIdentity,
 } from './k8s-teardown.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
-import { boundedBy, MS_PER_SECOND, POLL_MS } from './k8s-transport.js';
+import { boundedBy, MS_PER_SECOND, POLL_MS, waitOf, withSignal } from './k8s-transport.js';
 import { pollFor } from './poll.js';
 import type { K8sDeps } from './k8s-transport.js';
 import type { ReclaimResult } from './publish.js';
@@ -223,8 +223,8 @@ async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): P
     const contacted = await awaitFirstContact(stepHostOf(deps), job, {
         sleep: deps.sleep,
         signal: ledgerOf(deps).signal(job),
-        probe: async () => {
-            const pull = await readImagePullStatus(deps, jobName);
+        probe: async ({ deadline, signal }) => {
+            const pull = await readImagePullStatus(withSignal(boundedBy(deps, deadline), signal), jobName);
             const refused = startRefusalOf(image, pull, true);
             if (refused) throw refused;
             if (pull.blocked) seen.unproven = heldUnpullable(image, pull, pull.blocked);
@@ -294,7 +294,7 @@ type JobEnd = 'ended' | 'running' | 'unread';
  */
 export async function jobEndsWithin(deps: K8sDeps, name: string, ms: number): Promise<JobEnd> {
     let last: JobEnd = 'running';
-    const ended = await pollFor<true>({ ms, everyMs: POLL_MS, sleep: (wait) => deps.sleep(wait) }, async (deadline) => {
+    const ended = await pollFor<true>({ ...waitOf(deps, ms), everyMs: POLL_MS }, async (deadline) => {
         const read = await readTyped(
             boundedBy(deps, deadline),
             jobPath(deps.config.k8sNamespace, name),

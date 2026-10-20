@@ -106,7 +106,7 @@ describe('the close-time readouts an adoption performs', () => {
 
         expect(injected.scrape).toHaveBeenCalledTimes(1);
         expect(injected.scrape).toHaveBeenCalledWith(
-            deps,
+            expect.objectContaining({ config: deps.config, signal: expect.any(AbortSignal) }),
             expect.objectContaining({ id: job.id, leaseToken: job.leaseToken }),
             SESSION,
             START
@@ -129,7 +129,7 @@ describe('the close-time readouts an adoption performs', () => {
 
         expect(injected.attach).toHaveBeenCalledTimes(1);
         expect(injected.attach).toHaveBeenCalledWith(
-            deps,
+            expect.objectContaining({ config: deps.config, signal: expect.any(AbortSignal) }),
             expect.objectContaining({ id: job.id, leaseToken: job.leaseToken }),
             START,
             expect.objectContaining({ exitCode: 0 })

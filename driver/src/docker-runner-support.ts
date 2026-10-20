@@ -26,7 +26,7 @@ import {
     serviceRunArgs,
 } from './services.js';
 import { supervisorName } from './docker-mailbox.js';
-import { abortableSleep, type Sleep, timeLeft } from './poll.js';
+import { abortableSleep, type Bound, type Sleep, timeLeft } from './poll.js';
 import { awaitServicesRunning, throwIfStoodDown } from './service-restart.js';
 import { type HeldContainer, heldWords, type StartupCause, startupCauseOf, StartupRefused } from './startup-cause.js';
 
@@ -88,6 +88,20 @@ export function untilStandDown(execDocker: ExecDocker, signal?: AbortSignal): Ex
             ...options,
             signal: options?.signal ? AbortSignal.any([signal, options.signal]) : signal,
         });
+    };
+}
+
+/**
+ * `execDocker` held to a wait (#869): refusing every call once the absolute `bound.deadline` has
+ * passed, ending each by it, and killing the one in flight when `bound.signal` aborts. The docker
+ * twin of `withSignal(boundedBy(deps, deadline), signal)`.
+ */
+export function boundedExec(execDocker: ExecDocker, { deadline, signal }: Bound): ExecDocker {
+    const standing = untilStandDown(execDocker, signal);
+    return async (args, options) => {
+        const left = Math.min(timeLeft(deadline), options?.timeout ?? Infinity);
+        if (left === 0) throw new Error('the call was refused: its wait is out of time');
+        return standing(args, { ...options, ...(Number.isFinite(left) ? { timeout: left } : {}) });
     };
 }
 
@@ -514,9 +528,7 @@ export async function startJobServices(
 
 /** The attempt's service fleet as the readiness wait reads it. */
 const listJobServices = (job: BoardJob, execDocker: ExecDocker) => async (deadline: number) => {
-    const timeout = timeLeft(deadline);
-    if (timeout === 0) throw new Error('listing the attempt services: out of time');
-    const listed = parseDockerServicePs((await execDocker(servicePsArgs(job), { timeout })).stdout);
+    const listed = parseDockerServicePs((await boundedExec(execDocker, { deadline })(servicePsArgs(job))).stdout);
     if (listed === null) throw new Error('listing the attempt services: the daemon answered what is not the listing');
     return listed;
 };

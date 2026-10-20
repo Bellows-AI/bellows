@@ -13,7 +13,7 @@ import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import type { TaskGroup } from './k8s-group.js';
 import type { TeardownIdentity } from './k8s-teardown.js';
 import { parseJsonObject } from './json-parse.js';
-import { type Sleep, timeLeft } from './poll.js';
+import { type Bound, type Sleep, timeLeft } from './poll.js';
 
 /**
  * The kubernetes executor's shared low-level vocabulary: the wire types (`K8sResponse`,
@@ -266,6 +266,7 @@ export function withSignal(deps: K8sDeps, signal?: AbortSignal): K8sDeps {
     if (!signal) return deps;
     return {
         ...deps,
+        signal: deps.signal ? AbortSignal.any([deps.signal, signal]) : signal,
         request: async (method, path, body, options) => {
             if (signal.aborted) throw abandoned();
             return deps.request(method, path, body, {
@@ -281,15 +282,33 @@ export function withSignal(deps: K8sDeps, signal?: AbortSignal): K8sDeps {
  * past: a multi-request round cannot outlive the bound its poll was given.
  */
 export function boundedBy(deps: K8sDeps, deadline: number): K8sDeps {
+    const bound = Math.min(deps.deadline ?? Infinity, deadline);
     return {
         ...deps,
+        deadline: bound,
         request: async (method, path, body, options) => {
-            const timeoutMs = Math.min(timeLeft(deadline), options?.timeoutMs ?? Infinity);
+            const timeoutMs = Math.min(timeLeft(bound), options?.timeoutMs ?? Infinity);
             if (timeoutMs === 0) throw new Error('the call was refused: its wait is out of time');
             return deps.request(method, path, body, { ...options, timeoutMs });
         },
     };
 }
+
+/**
+ * The wait a nested poll runs `ms` long in `deps`: no longer than the round it runs in has left
+ * (`boundedBy`), pausing through `deps.sleep` and ending on the signal `withSignal` gave it. The one
+ * place a poll takes the bounds of the wait around it, so a nested retry cannot outlive its caller.
+ */
+export function waitOf(deps: K8sDeps, ms: number): { ms: number; sleep: Sleep; signal?: AbortSignal } {
+    return {
+        ms: Math.min(ms, deps.deadline === undefined ? Infinity : timeLeft(deps.deadline)),
+        sleep: deps.sleep,
+        ...(deps.signal ? { signal: deps.signal } : {}),
+    };
+}
+
+/** The bound of the round `deps` runs in, for a step that is not a request (a supervised step): its deadline and kill. */
+export const boundOf = (deps: K8sDeps): Bound => ({ deadline: deps.deadline ?? Infinity, signal: deps.signal });
 
 /**
  * Every k8s-executor function's transport bundle, in one parameter — the same `RunnerDeps`
@@ -301,6 +320,10 @@ export interface K8sDeps {
     request: K8sRequest;
     sleep: Sleep;
     config: DriverConfig;
+    /** Set by `boundedBy`: the absolute time (epoch ms) every request and nested wait of these deps ends by. */
+    deadline?: number;
+    /** Set by `withSignal`: the kill every request and nested wait of these deps ends on. */
+    signal?: AbortSignal;
     /**
      * The board's lease lookup (`Board.leases`): what lets the fence take over a checkout claim
      * that carries no claim sequence (`takeOverStaleClaim`). Absent, such a claim is stood down on.
