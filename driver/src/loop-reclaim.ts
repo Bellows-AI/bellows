@@ -261,6 +261,28 @@ async function ackSettledReclaim(ctx: ReclaimContext, reclaim: Reclaim): Promise
 }
 
 /**
+ * One removal under the row's renewed lease: the outcome, or null when the lease is no longer held
+ * or the removal threw (logged, the row left to its lease) — the caller returns without an ack.
+ */
+async function removeUnderLease(
+    ctx: ReclaimContext,
+    reclaim: Reclaim,
+    removed: BoardJob,
+    onThrow: (message: string) => void
+): Promise<ReclaimResult | null> {
+    try {
+        const renewed = await whileReclaimRenewed(ctx, reclaim, () => ctx.runner.reclaimWorktree(removed));
+        return renewed.held ? renewed.value : null;
+    } catch (e) {
+        onThrow((e as Error).message);
+        return null;
+    }
+}
+
+/** What a refused removal looks like to the failure log, so an unchanged refusal is logged once. */
+const refusalDigest = (outcome: ReclaimResult): string => `${outcome.reason ?? ''}|${outcome.heldClaim?.name ?? ''}`;
+
+/**
  * Removes one claimed reclaim row's tree and acks it, so the row stops being offered. The
  * tree is reclaimed with the same runner call a terminal thread's report() uses, fed the job
  * `reclaimJob` synthesises from the row.
@@ -277,21 +299,15 @@ async function ackSettledReclaim(ctx: ReclaimContext, reclaim: Reclaim): Promise
  */
 export async function processReclaim(ctx: ReclaimContext, reclaim: Reclaim): Promise<void> {
     const removed = reclaimJob(reclaim);
-    const remove = () => whileReclaimRenewed(ctx, reclaim, () => ctx.runner.reclaimWorktree(removed));
-    let outcome: ReclaimResult;
-    try {
-        const renewed = await remove();
-        if (!renewed.held) return;
-        outcome = renewed.value;
-    } catch (e) {
+    let outcome = await removeUnderLease(ctx, reclaim, removed, (m) =>
         logReclaimFailure(
             ctx,
             reclaim,
-            `throw: ${(e as Error).message}`,
-            `reclaim ${reclaim.id}: the worktree reclaim threw, leaving it to the lease: ${(e as Error).message}`
-        );
-        return;
-    }
+            `throw: ${m}`,
+            `reclaim ${reclaim.id}: the worktree reclaim threw, leaving it to the lease: ${m}`
+        )
+    );
+    if (!outcome) return;
     if (
         !outcome.ok &&
         outcome.heldClaim &&
@@ -299,26 +315,22 @@ export async function processReclaim(ctx: ReclaimContext, reclaim: Reclaim): Pro
         !ctx.inFlightReclaim(reclaim.rootJobId) &&
         (await clearOrphanedClaim(ctx, reclaim, removed, outcome.heldClaim))
     ) {
-        try {
-            const renewed = await remove();
-            if (!renewed.held) return;
-            outcome = renewed.value;
-        } catch (e) {
+        outcome = await removeUnderLease(ctx, reclaim, removed, (m) =>
             logReclaimFailure(
                 ctx,
                 reclaim,
-                `retry throw: ${(e as Error).message}`,
+                `retry throw: ${m}`,
                 `reclaim ${reclaim.id}: the retry after the orphaned-claim reap threw, ` +
-                    `leaving it to the lease: ${(e as Error).message}`
-            );
-            return;
-        }
+                    `leaving it to the lease: ${m}`
+            )
+        );
+        if (!outcome) return;
     }
     if (!outcome.ok) {
         logReclaimFailure(
             ctx,
             reclaim,
-            `${outcome.reason ?? ''}|${outcome.heldClaim?.name ?? ''}`,
+            refusalDigest(outcome),
             `reclaim ${reclaim.id}: the task worktree could not be reclaimed: ${outcome.reason}`
         );
         return;
