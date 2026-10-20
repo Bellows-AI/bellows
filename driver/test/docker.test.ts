@@ -3937,6 +3937,8 @@ describe('publishing the produced work', () => {
         expect(reclaim?.env).toEqual({
             REPO: `/workspaces/bellows/${USER}/factory`,
             WORKTREE: `/workspaces/bellows/${USER}/.worktrees/${job.id}`,
+            // The thread's review roots go with it (issue #774).
+            REVIEW_ROOTS: `/workspaces/bellows/${USER}/.worktrees/${job.id}.reviews`,
         });
         // Under the token its own endpoint opened — not the attempt's — and ended with the group.
         expect(supervised.submitted.every((entry) => entry.token === RECLAIM_TOKEN)).toBe(true);

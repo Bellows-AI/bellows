@@ -1,8 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob, ReviewClaim } from '../src/board.js';
-import { REVIEWER_HOME, reviewerTreeDir } from '../src/claim.js';
+import { REVIEWER_HOME } from '../src/claim.js';
 import { claudeExportScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { loadDriverConfig } from '../src/config.js';
+import { reviewRootsDir, reviewWorktreeDir, worktreeDir } from '../src/publish.js';
 import { reviewBudgetMs, reviewRestoreEnv, reviewStepEnv, runReviewSteps } from '../src/review-step.js';
 import type { StepSink } from '../src/step-control.js';
 import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
@@ -15,6 +17,7 @@ import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js'
 
 const USER = '44444444-4444-4444-8444-444444444444';
 const ROOT = '55555555-5555-4555-8555-555555555555';
+const CALLER_ROOT = '88888888-8888-4888-8888-888888888888';
 const REF = `refs/factory/review/${ROOT}/sec-1`;
 const host = { config: loadDriverConfig({}) };
 
@@ -33,23 +36,38 @@ const review = {
     reviewRun: { profile: 'security', ref: REF, timeoutMinutes: 5 },
 } as unknown as ReviewClaim;
 
+const topCaller = {
+    ...review,
+    id: '77777777-7777-4777-8777-777777777777',
+    rootJobId: CALLER_ROOT,
+} as unknown as BoardJob;
+
 describe('the reviewer’s restore step', () => {
     it('restores at the snapshot ref in the reviewer worktree, with no token and no credential helper', () => {
-        const env = reviewRestoreEnv(host, review);
+        const env = reviewRestoreEnv(host, topCaller, review);
         expect(env).toMatchObject({ RESTORE: '1', REVIEW_REF: REF });
         expect(env?.WORKTREE).toContain(`bellows/${USER}`);
         expect(env).not.toHaveProperty('CRED_HELPER');
         expect(JSON.stringify(env)).not.toMatch(/TOKEN|jira|ghs_/);
     });
 
+    // The review root is a child of its CALLER's review-roots directory, so the caller thread's reclaim
+    // (runReclaimStep) finds and removes it: no review worktree lives as a sibling of the caller's.
+    it('puts the reviewer worktree under the caller’s review roots directory', () => {
+        const env = reviewRestoreEnv(host, topCaller, review);
+        expect(env?.WORKTREE).toBe(reviewWorktreeDir(host.config, topCaller, review));
+        expect(env?.WORKTREE).toBe(`${reviewRootsDir(host.config, topCaller)}/${ROOT}`);
+        expect(reviewRootsDir(host.config, topCaller)).toBe(`${worktreeDir(host.config, topCaller)}.reviews`);
+    });
+
     it('is refused for a claim with no repository', () => {
-        expect(reviewRestoreEnv(host, { ...review, repo: undefined } as unknown as ReviewClaim)).toBeNull();
+        expect(reviewRestoreEnv(host, topCaller, { ...review, repo: undefined } as unknown as ReviewClaim)).toBeNull();
     });
 });
 
 describe('the reviewer’s review step', () => {
     it('carries the grant and its own home, and no publish token or credential helper', () => {
-        const step = reviewStepEnv(host, review, { id: 'sess-1', resume: false });
+        const step = reviewStepEnv(host, topCaller, review, { id: 'sess-1', resume: false });
         expect(step?.env).toMatchObject({ JIRA_TOKEN: 'jira', HOME: REVIEWER_HOME });
         expect(step?.env.WORKDIR).toContain(`bellows/${USER}`);
         for (const name of ['CRED_HELPER', 'GITHUB_TOKEN', 'GH_TOKEN', 'PUBLISH_TOKEN', 'BELLOWS_PUBLISH_TOKEN']) {
@@ -58,6 +76,27 @@ describe('the reviewer’s review step', () => {
         expect(step?.env.FACTORY_TRANSCRIPT_DIR).toBe(`${REVIEWER_HOME}/transcripts/${ROOT}`);
         expect(step?.argv.length).toBeGreaterThan(0);
     });
+
+    // The existing branch reporter and the usage attribution key on the run's OWN board identity:
+    // the review row's id and lease token and the board's URL — never the caller's.
+    it.each(['claude-code', 'opencode'] as const)(
+        'carries the review row’s own board identity on %s',
+        (executorType) => {
+            const own = { ...review, executorType, leaseToken: 'review-lease' } as unknown as ReviewClaim;
+            const step = reviewStepEnv(
+                host,
+                topCaller,
+                own,
+                executorType === 'opencode' ? null : { id: 'sess-1', resume: false }
+            );
+            expect(step?.env).toMatchObject({
+                FACTORY_STATS_URL: host.config.statsUrl,
+                RUNNER_JOB_ID: review.id,
+                RUNNER_LEASE_TOKEN: 'review-lease',
+            });
+            expect(JSON.stringify(step?.env)).not.toContain(topCaller.id);
+        }
+    );
 });
 
 // The reviewer has no control channel: its container mounts neither `in` nor `out` and its step
@@ -66,7 +105,7 @@ describe('the reviewer’s review step', () => {
 describe('the reviewer’s question channel', () => {
     it.each(['claude-code', 'opencode'] as const)('is absent from a %s review step', (executorType) => {
         const session = executorType === 'opencode' ? null : { id: 'sess-1', resume: false };
-        const step = reviewStepEnv(host, { ...review, executorType }, session);
+        const step = reviewStepEnv(host, topCaller, { ...review, executorType }, session);
         expect(step).not.toBeNull();
         for (const name of ['FACTORY_CTL_IN', 'FACTORY_CTL_OUT', 'FACTORY_CTL_GO', 'FACTORY_STOP_MARKER']) {
             expect(step?.env, name).not.toHaveProperty(name);
@@ -120,6 +159,7 @@ describe('runReviewSteps', () => {
         expect(restore!.env).not.toHaveProperty('CRED_HELPER');
         expect(run!.timeoutMs).toBe(5 * 60_000);
         expect(run!.cwd).toBe(restore!.env.WORKTREE);
+        expect(run!.cwd).toBe(reviewWorktreeDir(host.config, caller, review));
         expect(run!.env).not.toHaveProperty('CRED_HELPER');
     });
 
@@ -181,12 +221,16 @@ describe('the reviewer’s close-time export step', () => {
         const { steps, host: stepHost } = sinkOf(reviewed(0));
         const result = await runReviewSteps(stepHost, { caller, review, session, exporter: exporter() });
         expect(result).toMatchObject({ exitCode: 0, stdout: 'verdict' });
-        expect(steps.map((step) => step.kind)).toEqual(['sync', 'sync', 'review', 'sync']);
+        // The reviewer's store is private to the reviewer uid (the entrypoints narrow it to 0700), so
+        // the export is served by the reviewer container itself — a `review` step — never by the
+        // supervisor's uid, which cannot read it.
+        expect(steps.map((step) => step.kind)).toEqual(['sync', 'sync', 'review', 'review']);
         const exportStep = steps[3]!;
         expect(exportStep.id).toMatch(/review-export$/);
+        expect(exportStep.cwd).toBe(REVIEWER_HOME);
         expect(exportStep.argv).toEqual(['node', '-e', claudeExportScript]);
         expect(exportStep.env).toMatchObject({
-            CLAUDE_TRANSCRIPT_DIR: `${reviewerTreeDir(host.config, caller)}/transcripts/${ROOT}`,
+            CLAUDE_TRANSCRIPT_DIR: `${REVIEWER_HOME}/transcripts/${ROOT}`,
             BELLOWS_CONTROL_URL: 'http://driver:8130',
             BELLOWS_CONTROL_TOKEN: 'review-export',
             EXPORT_ONCE: 'complete',
@@ -211,10 +255,10 @@ describe('the reviewer’s close-time export step', () => {
         const given = exporter();
         await runReviewSteps(stepHost, { caller, review: opencode, session: null, exporter: given });
         const exportStep = steps[3]!;
+        expect(exportStep.kind).toBe('review');
+        expect(exportStep.cwd).toBe(REVIEWER_HOME);
         expect(exportStep.argv).toEqual(['node', '-e', opencodeReadoutScript]);
-        expect(exportStep.env).toMatchObject({
-            OPENCODE_DB: `${reviewerTreeDir(host.config, caller)}/data/opencode/opencode.db`,
-        });
+        expect(exportStep.env).toMatchObject({ OPENCODE_DB: `${REVIEWER_HOME}/data/opencode/opencode.db` });
         expect(exportStep.env.OPENCODE_DIR).toBe(steps[1]!.env.WORKTREE);
         expect(given.readout).toHaveBeenCalledWith('{"session":"ses_1"}');
     });
@@ -229,5 +273,19 @@ describe('the reviewer’s close-time export step', () => {
         const { steps, host: stepHost } = sinkOf(() => ({ exitCode: 0, stdout: '{"ok":false,"reason":"gone"}' }));
         await runReviewSteps(stepHost, { caller, review, session, exporter: exporter() });
         expect(steps).toHaveLength(2);
+    });
+});
+
+// Why the export is the reviewer container's step: both real entrypoints narrow the reviewer's session
+// store to its own uid, so the supervisor's uid (group 1000) cannot read what a review wrote. If an
+// entrypoint ever relaxes that, this pin is where to revisit the choice.
+describe('the reviewer’s stores, as the real entrypoints leave them', () => {
+    const read = (path: string): string => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
+
+    it.each([
+        ['docker/claude-executor/entrypoint.sh', /chmod 0700 "\$CLAUDE_CONFIG_DIR"/],
+        ['docker/opencode-executor/entrypoint.sh', /chmod 0700 "\$XDG_DATA_HOME"/],
+    ])('%s narrows the store to the running uid', (path, narrowing) => {
+        expect(read(path)).toMatch(narrowing);
     });
 });

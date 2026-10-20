@@ -405,6 +405,25 @@ export function worktreeDir(config: DriverConfig, job: BoardJob): string | null 
     return rel ? `${config.workspaceMount}/${rel}` : null;
 }
 
+/** The suffix of a thread's review roots directory, a sibling of the thread's worktree (issue #774). */
+const REVIEW_ROOTS_SUFFIX = '.reviews';
+
+/**
+ * The directory that holds every review root of one caller thread: `<worktree>.reviews`, beside the
+ * caller's tree and never inside it, so the caller's terminal reclaim removes them with it.
+ */
+export function reviewRootsDir(config: DriverConfig, caller: BoardJob): string | null {
+    const base = worktreeDir(config, caller);
+    return base ? `${base}${REVIEW_ROOTS_SUFFIX}` : null;
+}
+
+/** One review's worktree: `<caller worktree>.reviews/<review root id>`, or null when it has no place on the volume. */
+export function reviewWorktreeDir(config: DriverConfig, caller: BoardJob, review: BoardJob): string | null {
+    const roots = reviewRootsDir(config, caller);
+    const root = review.rootJobId ?? review.id;
+    return roots && UUID.test(root) ? `${roots}/${root}` : null;
+}
+
 /**
  * The branch the task worktree runs on: `factory/<thread root id>`. Created at
  * `origin/<default>` on the first sync; rebased onto it on every later one. A branch per thread,

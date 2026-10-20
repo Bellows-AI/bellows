@@ -5,8 +5,10 @@ import { applyHeartbeatVerdict, down, type JobState, newReviewStop } from './loo
 import type { LoopRuntime } from './loop-types.js';
 import type { ReviewRelay, ReviewVerdict } from './review-control.js';
 import { OUTPUT_LIMIT, tailBytes } from './runner.js';
+import { reviewBudgetMs } from './review-step.js';
 import { pickSession } from './runner-plan.js';
 import { stepLost } from './step-control.js';
+import type { ReviewExporter } from './supervised-steps.js';
 import type { StepResult } from './supervisor-contract.js';
 
 /**
@@ -82,6 +84,19 @@ const MS_PER_SECOND = 1_000;
 const EXIT_TIMEOUT = 124;
 /** What the supervisor answers a step the driver cancelled. */
 const EXIT_CANCELLED = 130;
+/** How many times a request the reviewer container lost is run (the first included) before the row is failed. */
+const MAX_RUNS = 3;
+
+/**
+ * Why a review's supervision was told to stop. Only an EXPLICIT stop settles the row failed: the
+ * board's cancel on the review row, or the caller's own stop. An infrastructure event (a
+ * handover, a lost lease of the caller or of the review, a lost supervisor) leaves the row to be
+ * re-leased by the caller that is claimed again and asks the same key.
+ */
+interface StopCause {
+    /** The board raised `cancelRequested` on the review row. */
+    boardCancel: boolean;
+}
 
 /**
  * Supervises one review the board leased to this driver, in the caller's task group (issue #774):
@@ -100,11 +115,15 @@ export function superviseReview(
     const { caller, review, key } = supervision;
     if (state.reviews.has(key)) return;
     const { stop, release } = newReviewStop(state);
-    const settled = superviseOne(rt, caller, review, stop).finally(() => {
+    const cause: StopCause = { boardCancel: false };
+    const settled = superviseOne(rt, state, { caller, review, stop, cause }).finally(() => {
         release();
         state.reviews.delete(key);
     });
-    state.reviews.set(key, { cancel: () => stop.abort(), settled });
+    state.reviews.set(key, {
+        cancel: () => stop.abort(),
+        settled,
+    });
 }
 
 /** Ends every review the attempt still supervises and waits for their rows to settle and their reviewers to be released. */
@@ -116,32 +135,22 @@ export async function cancelReviews(state: JobState): Promise<void> {
 
 async function superviseOne(
     rt: LoopRuntime,
-    caller: BoardJob,
-    review: ReviewClaim,
-    stop: AbortController
+    state: JobState,
+    supervision: { caller: BoardJob; review: ReviewClaim; stop: AbortController; cause: StopCause }
 ): Promise<void> {
-    const { runner, board, log } = rt;
+    const { caller, review, stop, cause } = supervision;
+    const { runner, log } = rt;
     let over = (): void => {};
     const ended = new Promise<void>((resolve) => {
         over = resolve;
     });
-    const beating = beatReview(rt, review, stop, ended);
+    const beating = beatReview(rt, supervision, ended);
     let result: StepResult | null = null;
     let lost = false;
     const exporting = openReviewExport(rt, caller, review);
     try {
         await runner.resizeReviewer(caller, 'run').catch(() => false);
-        const session = pickSession(review, review.executorType);
-        // A fresh session is recorded before it runs, so a re-leased review resumes it.
-        if (session && !session.resume) {
-            await board.session(review, session.id).catch((e: Error) => {
-                log(`review ${review.id}: the session was not recorded: ${e.message}`);
-            });
-        }
-        result = await runner.runReview(caller, review, session, {
-            signal: stop.signal,
-            ...(exporting ? { exporter: exporting.exporter } : {}),
-        });
+        result = await runUntilAnswered(rt, supervision, exporting?.exporter);
     } catch (e) {
         // A lost supervisor is no verdict on the review; anything else that stopped it ends the row.
         lost = stepLost(e);
@@ -153,19 +162,65 @@ async function superviseOne(
         await beating;
         await runner.resizeReviewer(caller, 'idle').catch(() => false);
     }
-    // A lost supervisor ended the step, not the caller's cancel: no verdict, the lease re-leases the row.
-    await settleReview(rt, review, result, stop.signal.aborted && !lost);
+    // The row is settled by an explicit stop alone; a lost supervisor or an infrastructure stand-down
+    // (a handover, a lost lease) leaves it to the lease, to be re-leased and resumed.
+    await settleReview(rt, review, result, !lost && stoppedExplicitly(state, stop, cause));
+}
+
+/**
+ * Whether the stop that aborted this review was an explicit one, never an infrastructure event. The
+ * caller's finish is not one: it follows a verdict (the board stops the caller's reviews with it) or
+ * an interruption (a lost pod), and either way the row is the lease's or the board's to settle.
+ */
+function stoppedExplicitly(state: JobState, stop: AbortController, cause: StopCause): boolean {
+    if (!stop.signal.aborted) return false;
+    return cause.boardCancel || (state.stopped && !state.handedOver && !state.lost);
+}
+
+/**
+ * Runs the review step until it answers. A request the reviewer container lost (an answer with no exit
+ * code: it restarted mid-request) is run again as a new step, on a session valid for the run, within
+ * the review's budget; the answer that stays is the last run's, and a request lost on every run is
+ * failed with that said, so the caller is never left waiting on a review nothing supervises.
+ */
+async function runUntilAnswered(
+    rt: LoopRuntime,
+    supervision: { caller: BoardJob; review: ReviewClaim; stop: AbortController },
+    exporter: ReviewExporter | undefined
+): Promise<StepResult> {
+    const { caller, review, stop } = supervision;
+    const startedAt = Date.now();
+    const budgetMs = reviewBudgetMs(rt.config, review);
+    for (let round = 1; ; round += 1) {
+        const session = pickSession(review, review.executorType);
+        // A fresh session is recorded before it runs, so a re-leased review resumes it.
+        if (session && !session.resume) {
+            await rt.board.session(review, session.id).catch((e: Error) => {
+                rt.log(`review ${review.id}: the session was not recorded: ${e.message}`);
+            });
+        }
+        const final = round >= MAX_RUNS || Date.now() - startedAt >= budgetMs;
+        const result = await rt.runner.runReview(caller, review, session, {
+            signal: stop.signal,
+            ...(exporter ? { exporter } : {}),
+            round,
+            final,
+        });
+        if (result.exitCode !== null || stop.signal.aborted) return result;
+        rt.log(`review ${review.id}: the reviewer container lost the request (run ${round})`);
+        if (final) return failedStep(`the reviewer container lost the review request ${round} times: ${result.stderr}`);
+    }
 }
 
 const failedStep = (reason: string): StepResult => ({ exitCode: 1, stdout: '', stderr: reason, timedOut: false });
 
-/** Heartbeats the review row under its own lease; only an explicit lost/removed or a cancel request ends the review. */
+/** Heartbeats the review row under its own lease; a refused lease or a cancel request ends the review, only the cancel settles it. */
 async function beatReview(
     rt: LoopRuntime,
-    review: ReviewClaim,
-    stop: AbortController,
+    supervision: { review: ReviewClaim; stop: AbortController; cause: StopCause },
     ended: Promise<void>
 ): Promise<void> {
+    const { review, stop, cause } = supervision;
     const every = Math.max(MIN_BEAT_MS, Math.floor((rt.config.leaseSeconds * MS_PER_SECOND) / BEAT_DIVISOR));
     let over = false;
     void ended.then(() => {
@@ -180,7 +235,11 @@ async function beatReview(
             return null;
         });
         if (verdict === null) continue;
-        if (verdict === 'lost' || verdict === 'removed' || verdict.cancelRequested) stop.abort();
+        if (verdict === 'lost' || verdict === 'removed') stop.abort();
+        else if (verdict.cancelRequested) {
+            cause.boardCancel = true;
+            stop.abort();
+        }
     }
 }
 

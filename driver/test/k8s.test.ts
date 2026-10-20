@@ -1230,7 +1230,7 @@ describe('the worktree sync', () => {
         await k8s.finish(reviewing);
 
         expect(completed).toEqual([expect.objectContaining({ status: 'succeeded' })]);
-        // setup and gate, the services' start, the review (home, restore, run, export), the finish.
+        // setup and gate, the services' start, the review (home, restore, run, and the export the reviewer container runs), the finish.
         expect(kindsOf(steps)).toEqual([
             'sync',
             'gate',
@@ -1241,7 +1241,7 @@ describe('the worktree sync', () => {
             'sync',
             'sync',
             'review',
-            'sync',
+            'review',
             'finish',
         ]);
         // The session readout Jobs of the close are split to issue #882 and are the only exception.
@@ -1741,7 +1741,12 @@ describe('the worktree reclaim', () => {
         const step = steps.submitted.find((s) => s.kind === 'reclaim')!;
         expect(step.argv).toEqual(['node', '-e', gitWorktreeRemoveScript]);
         // No BRANCH, no credential-helper code, no claim env: reclaim authenticates nothing.
-        expect(step.env).toEqual({ REPO: `/workspaces/bellows/${USER}/factory`, WORKTREE });
+        expect(step.env).toEqual({
+            REPO: `/workspaces/bellows/${USER}/factory`,
+            WORKTREE,
+            // The thread's review roots go with it (issue #774).
+            REVIEW_ROOTS: `${WORKTREE}.reviews`,
+        });
         expect(steps.tokens).toEqual(new Set([RECLAIM_TOKEN]));
     });
 

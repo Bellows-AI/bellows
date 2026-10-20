@@ -26,6 +26,7 @@ import {
     type ReclaimResult,
     reclaimUnreadable,
     repoPath,
+    reviewRootsDir,
     type RunPublishStep,
     SYNC_DEADLINE_MS,
     type SyncResult,
@@ -262,7 +263,8 @@ export async function runReclaimStep(host: StepHost, job: BoardJob): Promise<Rec
         stepRequest(job, 'reclaim', {
             id: '1',
             argv: ['node', '-e', gitWorktreeRemoveScript],
-            env: { REPO: clone, WORKTREE: worktree },
+            // The thread's review roots go with it: the caller thread owns the cleanup of every review it asked for.
+            env: { REPO: clone, WORKTREE: worktree, REVIEW_ROOTS: reviewRootsDir(config, job) ?? '' },
             timeoutMs: RECLAIM_TIMEOUT_MS,
         })
     );
@@ -514,4 +516,11 @@ export interface ReviewExporter {
 export interface ReviewControl {
     signal?: AbortSignal;
     exporter?: ReviewExporter;
+    /**
+     * Which run of this lease the review is (1, the default): a request the reviewer container lost is
+     * asked again as a new step, since the ledger answers a repeated step id with its first answer.
+     */
+    round?: number;
+    /** False while the driver would run again an answer that carries no exit: nothing is exported for a round it discards. */
+    final?: boolean;
 }

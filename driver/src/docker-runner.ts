@@ -28,6 +28,7 @@ import {
     stepHostOf,
     supervisedStepMembers,
 } from './supervised-steps.js';
+import { reviewRunOf } from './review-step.js';
 import { RELEASE_DEADLINE_MS, repoPath, worktreeDir, type ReclaimResult, type SyncResult } from './publish.js';
 import { groupServices, missingDeclaredServices, serviceContainerName } from './services.js';
 import {
@@ -678,11 +679,7 @@ export function createDockerRunner(
         resizeGate: async () => false, // no in-place resize: the gate container keeps its GATE_* sizing
         resizeReviewer: async () => false, // likewise the reviewer container: it keeps its RUNNER_* sizing
         runReview: (caller, review, session, control) =>
-            runDockerReview(
-                gateDeps(deps, caller),
-                { caller, review, session, ...(control?.exporter ? { exporter: control.exporter } : {}) },
-                control?.signal
-            ),
+            runDockerReview(gateDeps(deps, caller), reviewRunOf(caller, review, session, control), control?.signal),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
         restartServices: (job, signal) => restartJobServices(job, execDocker, signal),

@@ -192,20 +192,46 @@ describe('a review the board leased in-band (issue #774)', () => {
         expect(t.runner.reviewed.map((r) => r.review.id)).toEqual([REVIEW.id, job(3).id]);
     });
 
-    it('cancels the step when the heartbeat is refused (409), and settles the row failed', async () => {
+    // Class: infrastructure loss is not cancellation. A review row is settled failed only by an
+    // EXPLICIT stop (the board's cancelRequested on the review, or the caller's own stop/finish);
+    // a refused lease, a handover or a lost caller lease leaves the row to be re-leased.
+    it('cancels the step but settles nothing when the heartbeat says the review lease is lost', async () => {
         const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
         t.board.heartbeat = async () => 'lost';
         t.start();
         await t.settled();
-        expect(t.board.completed).toEqual([
-            {
-                id: REVIEW.id,
-                status: 'failed',
-                exitCode: null,
-                output: 'the review was cancelled',
-                failureKind: 'runner_error',
-            },
-        ]);
+        expect(t.runner.reviewed).toHaveLength(1);
+        expect(t.board.completed).toEqual([]);
+    });
+
+    it('leaves the review to be re-leased when the driver hands the caller over (abortNow)', async () => {
+        const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
+        t.start();
+        await until(() => t.runner.reviewed.length === 1);
+        t.state.handedOver = true;
+        t.state.lost = true;
+        t.state.abortNow();
+        await t.settled();
+        expect(t.board.completed).toEqual([]);
+        expect(t.runner.reviewerResized).toEqual(['run', 'idle']);
+    });
+
+    it('leaves the review to be re-leased when the caller loses its lease and its finish cancels reviews', async () => {
+        const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
+        t.start();
+        await until(() => t.runner.reviewed.length === 1);
+        t.state.lost = true;
+        await cancelReviews(t.state);
+        expect(t.board.completed).toEqual([]);
+    });
+
+    it('leaves the review to be re-leased when a handed-over attempt’s finish cancels reviews', async () => {
+        const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
+        t.start();
+        await until(() => t.runner.reviewed.length === 1);
+        t.state.handedOver = true;
+        await cancelReviews(t.state);
+        expect(t.board.completed).toEqual([]);
     });
 
     it('cancels the step when the board raises cancelRequested on the review row', async () => {
@@ -285,10 +311,21 @@ describe('a review the board leased in-band (issue #774)', () => {
         });
     });
 
-    it('is cancelled by the caller’s finish: the step is aborted, the row settled, the reviewer idled', async () => {
+    it('ends the step when the caller finishes, leaving the row to the board and its lease, the reviewer idled', async () => {
         const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
         t.start();
         await until(() => t.runner.reviewed.length === 1);
+        await cancelReviews(t.state);
+        expect(t.board.completed).toEqual([]);
+        expect(t.runner.reviewerResized).toEqual(['run', 'idle']);
+        expect(t.state.reviews.size).toBe(0);
+    });
+
+    it('settles the row failed when the caller was stopped and its finish ends the review', async () => {
+        const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
+        t.start();
+        await until(() => t.runner.reviewed.length === 1);
+        t.state.stopped = true;
         await cancelReviews(t.state);
         expect(t.board.completed).toEqual([
             {
@@ -299,17 +336,67 @@ describe('a review the board leased in-band (issue #774)', () => {
                 failureKind: 'runner_error',
             },
         ]);
-        expect(t.runner.reviewerResized).toEqual(['run', 'idle']);
-        expect(t.state.reviews.size).toBe(0);
     });
 
-    it('is cancelled by the caller standing down', async () => {
+    it('is cancelled by the caller’s explicit stop standing it down', async () => {
         const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
         t.start();
         await until(() => t.runner.reviewed.length === 1);
+        t.state.stopped = true;
         t.state.abortNow();
         await t.settled();
         expect(t.board.completed[0]).toMatchObject({ id: REVIEW.id, status: 'failed' });
+    });
+});
+
+// Class: a step answer with no exit code (the reviewer container restarted mid-request) must not
+// leave the review running unsupervised: it is re-run, within the review's budget, and a request
+// that keeps getting lost ends the row failed so the caller is never wedged behind it.
+describe('a review request the reviewer container lost', () => {
+    const LOST = () => STEP({ exitCode: null, stdout: '', stderr: 'the review container lost the request' });
+
+    it('is run again, on a fresh session, and the second answer settles the row', async () => {
+        let calls = 0;
+        const t = supervising({ runReview: async () => (++calls === 1 ? LOST() : STEP()) });
+        t.start();
+        await t.settled();
+        expect(t.runner.reviewed).toHaveLength(2);
+        expect(new Set(t.runner.reviewed.map((r) => r.session?.id)).size).toBe(2);
+        expect(t.board.sessions.map((r) => r.sessionId)).toEqual(t.runner.reviewed.map((r) => r.session!.id));
+        expect(t.board.completed).toEqual([
+            { id: REVIEW.id, status: 'succeeded', exitCode: 0, output: 'the review text' },
+        ]);
+    });
+
+    it('resumes the session a re-leased review recorded', async () => {
+        let calls = 0;
+        const t = supervising({ runReview: async () => (++calls === 1 ? LOST() : STEP()) });
+        t.start({ ...REVIEW, resumeSessionId: 'sess-prev' } as ReviewClaim);
+        await t.settled();
+        expect(t.runner.reviewed.map((r) => r.session)).toEqual([
+            { id: 'sess-prev', resume: true },
+            { id: 'sess-prev', resume: true },
+        ]);
+    });
+
+    it('ends the row failed once the request was lost on every try, so the caller is not wedged', async () => {
+        const t = supervising({ runReview: async () => LOST() });
+        t.start();
+        await t.settled();
+        expect(t.runner.reviewed).toHaveLength(3);
+        expect(t.board.completed).toHaveLength(1);
+        expect(t.board.completed[0]).toMatchObject({ id: REVIEW.id, status: 'failed', failureKind: 'runner_error' });
+        expect(t.board.completed[0]!.output).toMatch(/lost/);
+    });
+
+    it('is not run again once the review was cancelled', async () => {
+        const t = supervising({
+            runReview: (_c, _r, _s, { signal }) => untilAborted(signal, LOST()),
+        });
+        t.start();
+        await until(() => t.runner.reviewed.length === 1);
+        await cancelReviews(t.state);
+        expect(t.runner.reviewed).toHaveLength(1);
     });
 });
 
@@ -478,6 +565,8 @@ describe('the export of a review’s transcript', () => {
         const streams = t.board.artifactChunks.map((chunk) => `${chunk.id}:${chunk.claimSeq}:${chunk.stream}`);
         expect(streams.length).toBeGreaterThan(0);
         for (const stream of streams) expect(stream.startsWith(`${REVIEW.id}:3:`)).toBe(true);
+        // opencode mints its own session id: the readout is where it is discovered, and the review row records it.
+        expect(t.board.sessions).toEqual([{ id: REVIEW.id, sessionId: 'ses_1' }]);
     });
 
     it('is not offered when the caller has no control channel', async () => {
