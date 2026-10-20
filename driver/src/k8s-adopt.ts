@@ -29,6 +29,7 @@ import {
     timedOutOf,
 } from './k8s-poll.js';
 import { boundedBy, containerStatusOf, HTTP_ERROR_STATUS, POLL_MS, waitOf, withSignal } from './k8s-transport.js';
+import { anyOf } from './poll.js';
 import { pollFor } from './poll.js';
 import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse } from './k8s-transport.js';
 import { CLAIM_SEQ_MARK, COMMAND_MARK, isCommandMark, isSeq, LEASE_LABEL, SESSION_MARK } from './labels.js';
@@ -299,29 +300,27 @@ export function adoptFinishedRunner(
 ): Promise<AdoptedRun | null> {
     // This attempt continues the run it reads: its sweeps keep it (issue #821).
     deps.adopted ??= new Map();
-    return adoptEarlierRun(k8sAdoption(deps, reads), deps.adopted, job, signal);
+    // The supplied stand-down and the attempt's kill end every request and pause of the adoption.
+    return adoptEarlierRun(k8sAdoption(deps, reads), deps.adopted, job, anyOf(signal, ledgerOf(deps).signal(job)));
 }
 
 /** What differs in kubernetes' adoption: the Job listing, the checkout claim, the pod reads, the sweep. */
-/** `deps` ending on the kill of the adopting attempt: every request and pause of its reads. */
-const standingDeps = (deps: K8sDeps, job: BoardJob): K8sDeps => withSignal(deps, ledgerOf(deps).signal(job));
-
 function k8sAdoption(deps: K8sDeps, reads: CloseReads): AdoptPrimitives<EarlierRunner> {
     return {
         list: async (job, { deadline, signal }) =>
             (await listEarlierRunners(withSignal(boundedBy(deps, deadline), signal), job))
                 .map((item) => earlierRunnerOf(job, item))
                 .filter((found): found is EarlierRunner => found !== null),
-        admit: (found) => admitted(deps, found),
-        begin: (job) => acquireClaim(deps, job),
-        awaitEnd: async (found, job, signal) => {
+        admit: (found, _job, signal) => admitted(withSignal(deps, signal), found),
+        begin: (job, signal) => acquireClaim(withSignal(deps, signal), job),
+        awaitEnd: async (found, _job, signal) => {
             if (found.finished) return found;
-            const ended = await awaitFinalized(deps, found.prior, signal ?? ledgerOf(deps).signal(job));
+            const ended = await awaitFinalized(deps, found.prior, anyOf(signal));
             return ended && { ...found, status: { ...found.status, ...ended.status }, kills: ended.kills };
         },
-        read: async (found, job) => {
+        read: async (found, _job, signal) => {
             const { prior, status, kills } = found;
-            const live = standingDeps(deps, job);
+            const live = withSignal(deps, signal);
             const { report, neverRan } = await readFinalReport(live, prior);
             const verdict = await readRunnerVerdict(live, prior, (status.succeeded ?? 0) >= 1, {
                 report,
@@ -348,11 +347,11 @@ function k8sAdoption(deps: K8sDeps, reads: CloseReads): AdoptPrimitives<EarlierR
             };
         },
         // Before anything is deleted after a wait: the checkout claim is still this attempt's.
-        confirmOwnership: async (found, job) => {
-            if (!found.finished) await assertClaimStillHeld(standingDeps(deps, job), job);
+        confirmOwnership: async (found, job, signal) => {
+            if (!found.finished) await assertClaimStillHeld(withSignal(deps, signal), job);
         },
-        closeReadout: async (outcome, { prior, session }, job, startedAt) => {
-            const live = standingDeps(deps, job);
+        closeReadout: async (outcome, { prior, session }, job, { startedAt, signal }) => {
+            const live = withSignal(deps, signal);
             if (job.executorType === OPENCODE) await reads.attachOpencodeOutcome(live, prior, startedAt, outcome);
             if (job.executorType === CLAUDE_CODE && session) {
                 mergeClaudeCloseRead(outcome, await reads.scrapeClaudeCloseRead(live, prior, session, startedAt));

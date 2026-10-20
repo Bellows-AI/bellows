@@ -428,8 +428,10 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     // left to answer the probe, the publish or the `finish` the loop still sends.
     if (watch.report === null) releaseSteps(host, job);
     const { jobSucceeded } = polled;
+    // The reads after the Job ended stand on the attempt's kill too.
+    const live = withSignal(deps, ledgerOf(deps).signal(job));
     const { exitCode, output, fullLog, logTruncated, vanished, unfinalized, supervisorDeadline } =
-        await readRunnerVerdict(deps, job, jobSucceeded, { report: watch.report });
+        await readRunnerVerdict(live, job, jobSucceeded, { report: watch.report });
     // The run budget ends the agent through the supervisor (its report, then its exit 124), the
     // kubelet's deadline only a supervisor that stopped doing so: either is the timeout's verdict.
     // A deadline kill deletes the pod too: that is the timeout's verdict, never a loss.
@@ -448,11 +450,11 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
 
     if (job.executorType === OPENCODE) {
         // The session export rides the same readout, one consistent snapshot with its figures.
-        await attachOpencodeOutcome(deps, job, startedAt, outcome);
+        await attachOpencodeOutcome(live, job, startedAt, outcome);
     }
 
     if (job.executorType === CLAUDE_CODE && session) {
-        const read = await scrapeClaudeCloseRead(deps, job, session.id, startedAt);
+        const read = await scrapeClaudeCloseRead(live, job, session.id, startedAt);
         mergeClaudeCloseRead(outcome, read);
     }
     return outcome;

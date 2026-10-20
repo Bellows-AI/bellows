@@ -147,6 +147,22 @@ const job: BoardJob = {
 };
 
 const ok = (stdout = ''): StepResult => ({ exitCode: 0, stdout, stderr: '', timedOut: false });
+
+/** A daemon call that never answers and rejects only when its own `signal` aborts (#869). */
+const hangsUntilAborted = (options?: { signal?: AbortSignal }): Promise<never> =>
+    new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+    });
+
+/** Whether `pending` ended within a moment: a wait that ignores the kill signal stays pending. */
+const endsSoon = (pending: Promise<unknown>): Promise<boolean> =>
+    Promise.race([
+        pending.then(
+            () => true,
+            () => true
+        ),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100)),
+    ]);
 const FINALIZED: SupervisorReport = {
     id: 'report-1',
     outcome: null,
@@ -2621,11 +2637,11 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
      */
     const readyWhileStarting = (exec: unknown): Parameters<typeof createDockerRunner>[2] => {
         const seen: string[][] = [];
-        const inner = exec as (args: string[]) => Promise<{ stdout: string }>;
-        return (async (args: string[]) => {
+        const inner = exec as (args: string[], options?: object) => Promise<{ stdout: string }>;
+        return (async (args: string[], options?: object) => {
             seen.push(args);
             if (startingServices > 0 && args[0] === 'ps' && args.includes('{{json .}}')) return runningServicesPs(seen);
-            return inner(args);
+            return inner(args, options);
         }) as Parameters<typeof createDockerRunner>[2];
     };
     const bareServicesRunner = (exec: ReturnType<typeof daemon>, fn: typeof spawn) =>
@@ -2820,13 +2836,22 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         });
         return { exec, polls: () => polls };
     };
-    const startWith = (exec: ReturnType<typeof readinessDaemon>['exec']) =>
-        startJobServices(job, loadDriverConfig({ RUNNER_SERVICES: '1' }), {
-            execDocker: exec as unknown as (args: string[]) => Promise<{ stdout: string; stderr: string }>,
-            ledger: { was: () => ({ stopped: false, hard: false }) },
-            serviceTeardown: async () => {},
-            sleep: async () => {},
-        });
+    const startWith = (
+        exec: ReturnType<typeof readinessDaemon>['exec'],
+        signal?: AbortSignal,
+        kill: AbortSignal = new AbortController().signal
+    ) =>
+        startJobServices(
+            job,
+            loadDriverConfig({ RUNNER_SERVICES: '1' }),
+            {
+                execDocker: exec as unknown as (args: string[]) => Promise<{ stdout: string; stderr: string }>,
+                ledger: { was: () => ({ stopped: false, hard: false }), signal: () => kill },
+                serviceTeardown: async () => {},
+                sleep: async () => {},
+            },
+            signal
+        );
 
     it('startServices answers only once every service runs', async () => {
         const d = readinessDaemon(['created', 'running']);
@@ -2838,6 +2863,22 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const d = readinessDaemon(['exited']);
         await expect(startWith(d.exec)).rejects.toBeInstanceOf(ServicesNotRunning);
     });
+
+    // #869: the listing the readiness wait reads ends on the supplied stand-down and on the attempt's kill.
+    it.each(['the supplied stand-down', 'the attempt’s kill'])(
+        'startServices ends a pending listing on %s',
+        async (who) => {
+            const stand = new AbortController();
+            const kill = new AbortController();
+            const hang = vitest.fn((args: string[], options?: { signal?: AbortSignal }) =>
+                args[0] === 'ps' && args.includes('{{json .}}') ? hangsUntilAborted(options) : daemon()(args)
+            );
+            const pending = startWith(hang as never, stand.signal, kill.signal);
+            await vitest.waitFor(() => expect(hang.mock.calls.some((call) => call[0]![0] === 'ps')).toBe(true));
+            (who === 'the supplied stand-down' ? stand : kill).abort();
+            expect(await endsSoon(pending)).toBe(true);
+        }
+    );
 
     // Review (PR 737): the loop starts the services before the gate environment's setup, so run()
     // must neither start them again nor fence them away; the runner joins their namespace.
@@ -3750,6 +3791,25 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const calls = exec.mock.calls.slice(before).map((call) => call[0]);
         expect(calls.at(-1)).toEqual(['rm', '-f', serviceContainerName(job, 'stub')]);
         expect(calls.some((a) => a[0] === 'ps')).toBe(false);
+    });
+
+    it('restartServices ends a pending readiness listing on the stand-down (#869)', async () => {
+        const base = daemon();
+        const exec = vitest.fn(async (args: string[], options?: { signal?: AbortSignal }) =>
+            args[0] === 'ps' && args.includes('{{json .}}') ? hangsUntilAborted(options) : base(args)
+        ) as unknown as ReturnType<typeof daemon>;
+        const runner = servicesRunner(exec, spawnRecording('', 0).fn);
+        await runner.run(job, { id: SESSION, resume: false });
+        const stand = new AbortController();
+        const before = exec.mock.calls.length;
+
+        const pending = runner.restartServices(job, stand.signal);
+        await vitest.waitFor(() =>
+            expect(exec.mock.calls.slice(before).some((call) => call[0]![0] === 'ps')).toBe(true)
+        );
+        stand.abort();
+        expect(await endsSoon(pending)).toBe(true);
+        await runner.releaseServices(job);
     });
 
     it('restartServices throws when the daemon refuses the service again (issue #560)', async () => {
@@ -5462,6 +5522,49 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const read = calls.findIndex((args) => args[0] === 'logs');
         expect(read).toBeGreaterThanOrEqual(0);
         expect(calls.findIndex((args) => args[0] === 'rm')).toBeGreaterThan(read);
+    });
+
+    // #869: the supplied stand-down ends every read of the adoption — the evidence, the log stream and the
+    // close-time readout — never a daemon call or a child that outlives the abandoned attempt.
+    it.each([
+        ['the kill-record read', (args: string[]) => args[0] === 'volume' && args[1] === 'inspect'],
+        ['the supervisor report read', (args: string[]) => args[0] === 'logs' && args.includes(supervisorName(job))],
+        ['the exited runner inspect', (args: string[]) => args[0] === 'inspect'],
+        ['the close-time session readout', (args: string[]) => args[0] === 'run'],
+    ])('ends %s on the supplied signal', async (_name, hang) => {
+        const { exec: base, logs } = daemon(listing());
+        let hung = false;
+        const exec = (args: string[], options?: { signal?: AbortSignal }) => {
+            if (!hang(args)) return base(args);
+            hung = true;
+            return hangsUntilAborted(options);
+        };
+        const stop = new AbortController();
+
+        const adopting = dockerRunner(exec, { spawn: logs }).adopt(adopter, stop.signal);
+        await vitest.waitFor(() => expect(hung).toBe(true));
+        stop.abort();
+        expect(await endsSoon(adopting)).toBe(true);
+    });
+
+    it('ends the runner log stream on the supplied signal', async () => {
+        const { exec, calls } = daemon(listing());
+        let streamed: AbortSignal | undefined;
+        const logs = ((_command: string, args: string[], options?: { signal?: AbortSignal }) => {
+            calls.push(args);
+            streamed = options?.signal;
+            const child = new EventEmitter() as ChildProcess;
+            child.stdout = new EventEmitter() as Readable;
+            child.stderr = new EventEmitter() as Readable;
+            options?.signal?.addEventListener('abort', () => child.emit('error', new Error('aborted')));
+            return child;
+        }) as unknown as typeof spawn;
+        const stop = new AbortController();
+
+        const adopting = dockerRunner(exec, { spawn: logs }).adopt(adopter, stop.signal);
+        await vitest.waitFor(() => expect(streamed).toBeDefined());
+        stop.abort();
+        expect(await endsSoon(adopting)).toBe(true);
     });
 
     // The supervisor outlives the agent to finalize: the next claim waits for it rather than

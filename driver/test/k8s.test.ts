@@ -2813,6 +2813,33 @@ describe('the kubernetes runner and the task supervisor', () => {
 });
 
 describe('the kubernetes runner', () => {
+    // #869: the reads after the Job ended stand on the attempt's kill, not on their own patience.
+    it('ends the verdict reads of a finished Job when the attempt is killed', async () => {
+        const { request } = fakeRequest();
+        let hung = false;
+        const hanging: K8sRequest = (method, path, body, options) => {
+            if (!path.includes('/log') || options?.signal === undefined) return request(method, path, body, options);
+            hung = true;
+            return new Promise((_resolve, reject) => {
+                options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+            });
+        };
+        const live = runner(hanging);
+
+        const running = live.run(job, { id: SESSION, resume: false });
+        await vi.waitFor(() => expect(hung).toBe(true));
+        await live.kill(job);
+
+        const ended = await Promise.race([
+            running.then(
+                () => true,
+                () => true
+            ),
+            new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 200)),
+        ]);
+        expect(ended).toBe(true);
+    });
+
     it('sweeps the job label, then creates the job in the configured namespace and reports success', async () => {
         const { request, calls } = fakeRequest();
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });

@@ -503,4 +503,49 @@ describe('prepare and launch around the Job POST', () => {
         expect(reads).toBe(1);
         expect(deletes(calls).some((call) => call.path.startsWith(jobPath(NS, runnerName(job))))).toBe(true);
     });
+
+    // #869: the claim acquisition, the Job creation and its resume end on the attempt's kill too.
+    const hangingOn = (deps: K8sDeps, hang: (method: string, path: string) => boolean): K8sDeps => ({
+        ...deps,
+        request: (method, path, body, options) =>
+            hang(method, path)
+                ? new Promise((_resolve, reject) => {
+                      options?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+                  })
+                : deps.request(method, path, body, options),
+    });
+    const endsSoon = (pending: Promise<unknown>): Promise<boolean> =>
+        Promise.race([
+            pending.then(
+                () => true,
+                () => true
+            ),
+            new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100)),
+        ]);
+
+    it('ends the claim acquisition of prepare when the attempt is killed', async () => {
+        const kill = new AbortController();
+        const { deps } = world();
+        const pending = prepare(
+            hangingOn(deps, (method, path) => method === 'POST' && path.endsWith('/configmaps')),
+            job,
+            kill.signal
+        );
+        kill.abort();
+        expect(await endsSoon(pending)).toBe(true);
+    });
+
+    it('ends the Job creation of launch when the attempt is killed', async () => {
+        const kill = new AbortController();
+        const { deps } = world();
+        await prepare(deps, job, new AbortController().signal);
+        const pending = launch(
+            hangingOn(deps, (method, path) => method === 'POST' && path === jobsPath(NS)),
+            job,
+            spec(),
+            kill.signal
+        );
+        kill.abort();
+        expect(await endsSoon(pending)).toBe(true);
+    });
 });

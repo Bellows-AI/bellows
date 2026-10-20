@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { abortableSleep, type Sleep } from './poll.js';
+import { abortableSleep, anyOf, type Sleep } from './poll.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import {
     attachSteps,
@@ -719,15 +719,11 @@ export function createDockerRunner(
             runDockerReview(gateDeps(deps, caller), reviewRunOf(caller, review, session, control), control?.signal),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
-        restartServices: (job, signal) => restartJobServices(job, execDocker, signal),
+        restartServices: (job, signal) => restartJobServices(job, execDocker, anyOf(signal, ledger.signal(job))),
         startServices: (job, signal) => dockerStartServices(deps, job, signal),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
         adopt: (job, signal) =>
-            dockerAdopt(
-                { ...deps, fence: (fenced) => dockerReclaimFence(deps, fenced, signal ?? ledger.signal(fenced)) },
-                job,
-                signal
-            ),
+            dockerAdopt({ ...deps, fence: (fenced, stand) => dockerReclaimFence(deps, fenced, stand) }, job, signal),
         stopAgent: (job) => dockerStopAgent(deps, job),
         recordKill: (job, kill) => ledger.record(job, kill),
     };

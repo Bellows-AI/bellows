@@ -6,6 +6,10 @@ export type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 /** The real pause: `node:timers/promises`, which rejects the moment `signal` aborts. */
 export const abortableSleep: Sleep = (ms, signal) => delay(ms, undefined, signal ? { signal } : {});
 
+/** One signal that aborts when any of `signals` does; the undefined ones are ignored (none at all never aborts). */
+export const anyOf = (...signals: (AbortSignal | undefined)[]): AbortSignal =>
+    AbortSignal.any(signals.filter((signal): signal is AbortSignal => signal !== undefined));
+
 /** Milliseconds left until the absolute `deadline` (epoch ms); 0 once past, which a request refuses. */
 export const timeLeft = (deadline: number): number => Math.max(0, deadline - Date.now());
 

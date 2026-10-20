@@ -262,3 +262,59 @@ describe('the sweep after the read', () => {
         expect(order.some((path) => path.startsWith(jobPath(NS, priorName)))).toBe(false);
     });
 });
+
+describe('the supplied stand-down ends every step of an adoption (#869)', () => {
+    /** `deps` whose requests for `hang` never answer but reject once their own signal aborts. */
+    const hangingOn = (deps: K8sDeps, hang: (method: string, path: string) => boolean, hit: () => void): K8sDeps => ({
+        ...deps,
+        request: (method, path, body, options) => {
+            if (!hang(method, path)) return deps.request(method, path, body, options);
+            hit();
+            return new Promise((_resolve, reject) => {
+                options?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+            });
+        },
+    });
+    const settledOrPending = (pending: Promise<unknown>): Promise<'settled' | 'pending'> =>
+        Promise.race([
+            pending.then(
+                () => 'settled' as const,
+                () => 'settled' as const
+            ),
+            new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 100)),
+        ]);
+
+    it.each([
+        ['the admission pod read', (_method: string, path: string) => path.includes('/pods')],
+        ['the supervisor log read', (_method: string, path: string) => supervisorLogPath(path)],
+    ])('ends %s on the supplied signal', async (_name, hang) => {
+        const { deps } = world([runnerItem()]);
+        const stop = new AbortController();
+        let hung = false;
+        const pending = adoptFinishedRunner(
+            hangingOn(deps, hang, () => (hung = true)),
+            adopter,
+            reads(),
+            stop.signal
+        );
+        await vi.waitFor(() => expect(hung).toBe(true));
+        stop.abort();
+        expect(await settledOrPending(pending)).toBe('settled');
+    });
+
+    it('hands the close-time scrape a signal the supplied stand-down ends', async () => {
+        const { deps } = world([runnerItem()]);
+        const injected = reads();
+        injected.scrape.mockImplementation(
+            (live: K8sDeps) =>
+                new Promise((_resolve, reject) => {
+                    live.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+                })
+        );
+        const stop = new AbortController();
+        const pending = adoptFinishedRunner(deps, adopter, injected, stop.signal);
+        await vi.waitFor(() => expect(injected.scrape).toHaveBeenCalled());
+        stop.abort();
+        expect(await settledOrPending(pending)).toBe('settled');
+    });
+});

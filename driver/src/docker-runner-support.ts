@@ -26,7 +26,7 @@ import {
     serviceRunArgs,
 } from './services.js';
 import { supervisorName } from './docker-mailbox.js';
-import { abortableSleep, type Bound, type Sleep, timeLeft } from './poll.js';
+import { abortableSleep, anyOf, type Bound, type Sleep, timeLeft } from './poll.js';
 import { awaitServicesRunning, throwIfStoodDown } from './service-restart.js';
 import { type HeldContainer, heldWords, type StartupCause, startupCauseOf, StartupRefused } from './startup-cause.js';
 
@@ -507,19 +507,21 @@ export async function startJobServices(
     config: DriverConfig,
     deps: {
         execDocker: ExecDocker;
-        ledger: Pick<KillLedger, 'was'>;
+        ledger: Pick<KillLedger, 'was' | 'signal'>;
         serviceTeardown: (job: BoardJob) => Promise<void>;
         sleep?: Sleep;
     },
     signal?: AbortSignal
 ): Promise<RunOutcome | null> {
     if (!(await setupJobServices(job, config, deps))) return null;
+    // The supplied stand-down and the attempt's kill end the readiness wait and its listings alike.
+    const stand = anyOf(signal, deps.ledger.signal(job));
     await awaitServicesRunning(
         declaredServiceSpecs(job),
-        listJobServices(job, deps.execDocker),
+        listJobServices(job, deps.execDocker, stand),
         deps.sleep ?? abortableSleep,
         {
-            signal,
+            signal: stand,
             after: 'the start',
         }
     );
@@ -527,8 +529,10 @@ export async function startJobServices(
 }
 
 /** The attempt's service fleet as the readiness wait reads it. */
-const listJobServices = (job: BoardJob, execDocker: ExecDocker) => async (deadline: number) => {
-    const listed = parseDockerServicePs((await boundedExec(execDocker, { deadline })(servicePsArgs(job))).stdout);
+const listJobServices = (job: BoardJob, execDocker: ExecDocker, signal?: AbortSignal) => async (deadline: number) => {
+    const listed = parseDockerServicePs(
+        (await boundedExec(execDocker, { deadline, signal })(servicePsArgs(job))).stdout
+    );
     if (listed === null) throw new Error('listing the attempt services: the daemon answered what is not the listing');
     return listed;
 };
@@ -571,7 +575,7 @@ export async function restartJobServices(
                 throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
             }
         }
-        await awaitServicesRunning(specs, listJobServices(job, execDocker), sleep, { signal });
+        await awaitServicesRunning(specs, listJobServices(job, execDocker, signal), sleep, { signal });
     } catch (e) {
         if (signal.aborted) for (const spec of specs) await remove(spec.name);
         throw e;

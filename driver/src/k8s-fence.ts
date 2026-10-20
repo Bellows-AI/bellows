@@ -576,7 +576,7 @@ async function standDownOwnJob(deps: K8sDeps, identity: TeardownIdentity): Promi
  */
 export async function prepare(deps: K8sDeps, job: BoardJob, signal: AbortSignal): Promise<void> {
     // Step one: TAKE THE CHECKOUT.
-    await acquireClaim(deps, job);
+    await acquireClaim(withSignal(deps, signal), job);
 
     // Step two: the sweep. See sweepClaimedFleets for the invariants it upholds.
     await sweepClaimedFleets(deps, job, signal);
@@ -673,8 +673,10 @@ export async function launch(
     // no other invocation can create it again, so its teardown may fall back to the name.
     const identity: TeardownIdentity = { pair: job, jobName: runnerName(job) };
     const standDown = () => standDownOwnJob(deps, identity);
+    // Creating and resuming end on the stand-down; its teardown (`standDown`) stays on `deps`, uncancelled.
+    const live = withSignal(deps, signal);
     await createSuspendedWithSecret(
-        deps,
+        live,
         spec,
         {
             job: 'creating the runner job',
@@ -686,7 +688,7 @@ export async function launch(
 
     // Step five: the claim must STILL be ours once the Job exists — the second half of the
     // bracket the pre-create verify opened. See docs/kubernetes.md for the full race analysis.
-    const held = claimVerdict(await readClaimObject(withSignal(deps, signal), job), job);
+    const held = claimVerdict(await readClaimObject(live, job), job);
     if (held === 'taken') {
         await standDown();
         throw new Error(`job ${job.id} stands down: the checkout claim was taken over before the runner could start`);
@@ -701,6 +703,6 @@ export async function launch(
         );
     }
     // Step six: the pod starts, under a verified claim with its Secret in place.
-    await resumeJob(deps, spec.metadata.name, identity.uids?.job, standDown);
+    await resumeJob(live, spec.metadata.name, identity.uids?.job, standDown);
     return identity.uids!;
 }
