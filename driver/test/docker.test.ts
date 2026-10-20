@@ -6451,7 +6451,7 @@ describe('the docker runner and the gates', () => {
     // worktree, the executor in the reviewer container — made on demand like a gate's.
     it('runs a review as steps of the caller’s group, made on demand, with the reviewer container in it', async () => {
         const daemon = recording();
-        const supervised = fakeSteps(() => ok());
+        const supervised = fakeSteps((step) => (step.kind === 'review' ? ok() : ok('{"ok":true,"reason":null}')));
         const runner = dockerRunner(daemon.exec, { steps: supervised.sink });
         const caller: BoardJob = { ...job, repo: 'Bellows-AI/factory', reviewerProfiles: ['security'] };
         const review = {
