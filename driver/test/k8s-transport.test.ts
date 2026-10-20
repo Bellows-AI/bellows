@@ -361,6 +361,17 @@ describe('the in-cluster kubernetes transport', () => {
         expect(transport.calls[1]?.options.timeout).toBe(30_000);
     });
 
+    it('lets a pod log transfer run to the own timeout of its call, past the default a request gets', async () => {
+        const transport = fakeTransport([{}, {}]);
+        const request = inClusterRequest({ env: CLUSTER_ENV, readFile: CREDENTIALS, request: transport.request });
+
+        await request('GET', '/api/v1/namespaces/factory/pods/p/log', undefined, { timeoutMs: 90_000 });
+        await request('GET', '/api/v1/namespaces/factory/pods/p/log?tailLines=5');
+
+        expect(transport.calls[0]?.options.timeout).toBe(90_000);
+        expect(transport.calls[1]?.options.timeout).toBe(30_000);
+    });
+
     it('takes a patch media type from its options', async () => {
         const transport = fakeTransport([{}]);
         const request = inClusterRequest({ env: CLUSTER_ENV, readFile: CREDENTIALS, request: transport.request });

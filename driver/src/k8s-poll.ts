@@ -22,6 +22,7 @@ import {
     isRecord,
     livePodOfItems,
     LOG_TAIL_LINES,
+    LOG_READ_MS,
     POLL_MAX_CONSECUTIVE_FAILURES,
     POLL_MS,
     readAnswer,
@@ -62,11 +63,16 @@ export function jobOutcome(status: K8sJobStatus): 'succeeded' | 'failed' | 'pend
  * Go's `net/http`, transient by nature, retried like a 5xx — a genuine JSON `Status` 400 is an
  * API refusal and returns immediately.
  */
-export async function readVerdict(deps: K8sDeps, path: string, what: string): Promise<K8sResponse> {
+export async function readVerdict(
+    deps: K8sDeps,
+    path: string,
+    what: string,
+    ms = POLL_MAX_CONSECUTIVE_FAILURES * POLL_MS
+): Promise<K8sResponse> {
     let last: { error: unknown } | { response: K8sResponse } | undefined;
     let failures = 0;
     const answered = await pollFor<K8sResponse>(
-        { ms: POLL_MAX_CONSECUTIVE_FAILURES * POLL_MS, everyMs: POLL_MS, sleep: (ms) => deps.sleep(ms) },
+        { ms, everyMs: POLL_MS, sleep: (wait) => deps.sleep(wait) },
         async (deadline) => {
             try {
                 const response = await boundedBy(deps, deadline).request('GET', path);
@@ -91,6 +97,10 @@ export async function readVerdict(deps: K8sDeps, path: string, what: string): Pr
             `${last?.response.body.slice(0, ERROR_PREVIEW_CHARS)}`
     );
 }
+
+/** `readVerdict` for a whole pod log: the time a full transfer needs (`LOG_READ_MS`), not a request's. */
+export const readLogVerdict = (deps: K8sDeps, path: string, what: string): Promise<K8sResponse> =>
+    readVerdict(deps, path, what, LOG_READ_MS);
 
 /** The answer of a typed read whose object the apiserver confirmed absent (404). */
 export const ABSENT = Symbol('absent');
@@ -421,15 +431,24 @@ export async function readJobPodVerdict(
         output = log.body;
         truncated = log.truncated === true;
     } else if (pod?.metadata?.name) {
-        let log: K8sResponse;
+        let log: K8sResponse | undefined;
         try {
-            log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name, tail, container));
+            log = await deps.request(
+                'GET',
+                podLogPath(deps.config.k8sNamespace, pod.metadata.name, tail, container),
+                undefined,
+                { timeoutMs: LOG_READ_MS }
+            );
         } catch {
-            log = { status: 0, body: '' };
+            // Incomplete below: the transfer failed, which is not an empty log.
         }
-        if (log.status < HTTP_ERROR_STATUS) {
+        if (log && log.status < HTTP_ERROR_STATUS) {
             output = log.body;
             truncated = log.truncated === true;
+        } else {
+            // A log that failed to transfer is incomplete, never empty and whole; only a pod the
+            // apiserver says is gone, or a container it says never started, has no output to lose.
+            truncated = !(log && logIsNone(log));
         }
     }
     return { exitCode, output, truncated, pods };
@@ -437,6 +456,10 @@ export async function readJobPodVerdict(
 
 /** A pod log refusal that says its container never started, in the kubelet's own words — never any 400. */
 export const neverStartedLog = (body: string): boolean => /is waiting to start|is not available/i.test(body);
+
+/** A log answer that says there is none to read: the pod is gone (404) or its container never started. */
+export const logIsNone = (log: K8sResponse): boolean =>
+    log.status === HTTP_NOT_FOUND || (log.status === HTTP_BAD_REQUEST && neverStartedLog(log.body));
 
 /**
  * The runner's own pod, as an adoption reads it (#824): the live one, else the one being deleted —
@@ -456,11 +479,11 @@ async function readPodLog(deps: K8sDeps, path: string): Promise<K8sResponse> {
     const what = 'reading the runner pod log';
     let log: K8sResponse;
     try {
-        log = await readVerdict(deps, path, what);
+        log = await readLogVerdict(deps, path, what);
     } catch (e) {
         throw new Inconclusive(`${what}: ${(e as Error).message}`);
     }
-    if (log.status === HTTP_NOT_FOUND || (log.status === HTTP_BAD_REQUEST && neverStartedLog(log.body))) {
+    if (logIsNone(log)) {
         return { status: log.status, body: '' };
     }
     if (log.status >= HTTP_ERROR_STATUS) throw new Inconclusive(`${what} answered ${log.status}`);

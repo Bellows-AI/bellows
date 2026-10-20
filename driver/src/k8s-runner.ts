@@ -43,6 +43,7 @@ import {
     readJobStatus,
     readRunnerVerdict,
     readTyped,
+    readLogVerdict,
     readVerdict,
 } from './k8s-poll.js';
 import {
@@ -140,7 +141,7 @@ async function scrapeOpencodeSession(
         const read = podsOf(pods, 'listing the session readout pods');
         const pod = read.kind === 'value' ? livePodOfItems(read.value) : undefined;
         if (!pod?.metadata?.name) return fail('the session readout left no pod to read its output from');
-        const log = await readVerdict(
+        const log = await readLogVerdict(
             bounded,
             podLogPath(deps.config.k8sNamespace, pod.metadata.name, null),
             'reading the session readout log'

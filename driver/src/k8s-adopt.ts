@@ -20,23 +20,15 @@ import {
     ABSENT,
     asJob,
     jobOutcome,
-    neverStartedLog,
+    logIsNone,
     readList,
     readObject,
     readRunnerVerdict,
-    readVerdict,
+    readLogVerdict,
     runnerPodOf,
     timedOutOf,
 } from './k8s-poll.js';
-import {
-    boundedBy,
-    containerStatusOf,
-    HTTP_BAD_REQUEST,
-    HTTP_ERROR_STATUS,
-    HTTP_NOT_FOUND,
-    POLL_MS,
-    withSignal,
-} from './k8s-transport.js';
+import { boundedBy, containerStatusOf, HTTP_ERROR_STATUS, POLL_MS, withSignal } from './k8s-transport.js';
 import { pollFor } from './poll.js';
 import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse } from './k8s-transport.js';
 import { CLAIM_SEQ_MARK, COMMAND_MARK, isCommandMark, isSeq, LEASE_LABEL, SESSION_MARK } from './labels.js';
@@ -272,7 +264,7 @@ async function readFinalReport(
         const pod = runnerPodOf(listed === ABSENT ? [] : listed);
         const neverRan = supervisorNeverRan(pod);
         if (!pod?.metadata?.name || neverRan) return { report: null, neverRan };
-        log = await readVerdict(
+        log = await readLogVerdict(
             deps,
             podLogPath(ns, pod.metadata.name, undefined, SUPERVISOR_CONTAINER),
             'reading the earlier supervisor log'
@@ -280,7 +272,7 @@ async function readFinalReport(
     } catch (e) {
         throw new AdoptionBlocked(`the earlier supervisor's report could not be read: ${(e as Error).message}`);
     }
-    if (log.status === HTTP_NOT_FOUND || (log.status === HTTP_BAD_REQUEST && neverStartedLog(log.body))) {
+    if (logIsNone(log)) {
         return { report: null, neverRan: null };
     }
     if (log.status >= HTTP_ERROR_STATUS) {

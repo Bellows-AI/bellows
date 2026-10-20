@@ -10,12 +10,18 @@ import { loadDriverConfig } from '../src/config.js';
 import { awaitFinalized } from '../src/k8s-adopt.js';
 import { jobPath } from '../src/k8s-auxspec.js';
 import { jobEndsWithin } from '../src/k8s-group.js';
-import { readVerdict } from '../src/k8s-poll.js';
+import { readJobPodVerdict, readVerdict } from '../src/k8s-poll.js';
 import { runnerName } from '../src/k8s-podspec.js';
 import { stopAgent } from '../src/k8s-runner.js';
 import { confirmEnded, GROUP_END_WAIT_MS } from '../src/k8s-teardown.js';
-import { POLL_MAX_CONSECUTIVE_FAILURES, POLL_MS, type K8sDeps, type K8sRequestOptions } from '../src/k8s-transport.js';
-import { AdoptionBlocked } from '../src/runner.js';
+import {
+    LOG_READ_MS,
+    POLL_MAX_CONSECUTIVE_FAILURES,
+    POLL_MS,
+    type K8sDeps,
+    type K8sRequestOptions,
+} from '../src/k8s-transport.js';
+import { AdoptionBlocked, Inconclusive } from '../src/runner.js';
 import { KILL_WINDDOWN_MS, SUPERVISOR_WINDDOWN_MS } from '../src/supervisor-contract.js';
 
 const NS = 'factory';
@@ -92,6 +98,55 @@ describe('readVerdict', () => {
         expect(world.seen.every((s) => (s.timeoutMs ?? Infinity) <= POLL_MAX_CONSECUTIVE_FAILURES * POLL_MS)).toBe(
             true
         );
+    });
+});
+
+describe('a full pod log read (#869)', () => {
+    const pods = JSON.stringify({ items: [{ metadata: { name: 'pod-1', uid: 'pod-uid' } }] });
+    const logWorld = (log: () => Promise<{ status: number; body: string }>) =>
+        clockWorld(1, async (_method, path) =>
+            path.endsWith('/log') || path.includes('/log?') ? log() : { status: 200, body: pods }
+        );
+    const read = (world: ReturnType<typeof clockWorld>, strict = false) =>
+        readJobPodVerdict(world.deps, 'a-job', { succeeded: true, tail: null, strict }, 'reading the pods');
+
+    it('is given the time of a full transfer, not the 30s of a request', async () => {
+        const world = logWorld(async () => ({ status: 200, body: 'whole log' }));
+
+        expect((await read(world)).output).toBe('whole log');
+        expect((await read(world, true)).output).toBe('whole log');
+
+        const logs = world.seen.filter((s) => s.path.includes('/log'));
+        expect(logs).toHaveLength(2);
+        expect(logs.every((s) => (s.timeoutMs ?? 0) > 30_000)).toBe(true);
+    });
+
+    it('is flagged truncated, never empty and complete, when its transfer failed', async () => {
+        const dropped = await read(
+            logWorld(async () => {
+                throw new Error('the API server did not answer within 120000ms');
+            })
+        );
+        const refused = await read(logWorld(async () => ({ status: 500, body: 'boom' })));
+
+        expect(dropped).toMatchObject({ output: '', truncated: true });
+        expect(refused).toMatchObject({ output: '', truncated: true });
+    });
+
+    it('is inconclusive for a strict adoption, bounded by the deadline of a log read', async () => {
+        const world = logWorld(async () => {
+            throw new Error('the API server did not answer');
+        });
+
+        await expect(read(world, true)).rejects.toBeInstanceOf(Inconclusive);
+
+        expect(world.elapsed()).toBeLessThanOrEqual(LOG_READ_MS + POLL_MS);
+    });
+
+    it('stays complete and empty for a pod the apiserver says is gone', async () => {
+        const gone = await read(logWorld(async () => ({ status: 404, body: '{"kind":"Status"}' })));
+
+        expect(gone).toMatchObject({ output: '', truncated: false });
     });
 });
 

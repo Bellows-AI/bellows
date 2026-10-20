@@ -65,6 +65,17 @@ export const REPLACE_WAIT_MS = REPLACE_MAX_POLLS * POLL_MS;
  */
 const REQUEST_TIMEOUT_MS = 30_000;
 
+/**
+ * What a full pod log transfer is given: it streams for as long as the log is long, so unlike every
+ * other answer it is not cut at REQUEST_TIMEOUT_MS — the caller's own `timeoutMs` (a deadline) is
+ * its bound. A log read that cannot finish inside it is incomplete, never empty and complete.
+ */
+export const LOG_READ_MS = 120_000;
+
+/** The time one call is given: a request's default, shortened by its own `timeoutMs`; a log's own alone. */
+const callTimeoutMs = (log: boolean, own: number | undefined): number =>
+    log ? (own ?? REQUEST_TIMEOUT_MS) : Math.min(REQUEST_TIMEOUT_MS, own ?? REQUEST_TIMEOUT_MS);
+
 /** The tail of the runner's output the board is told about — bounded in lines and, below, in bytes. */
 export const LOG_TAIL_LINES = 1_000;
 
@@ -426,7 +437,8 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
             // The socket idles out at the deadline, and an absolute timer ends the call at it: a
             // response that trickles bytes, or stalls open, never resets the first and is cut by
             // the second.
-            const timeoutMs = Math.min(REQUEST_TIMEOUT_MS, options?.timeoutMs ?? REQUEST_TIMEOUT_MS);
+            const sliding = POD_LOG_PATH.test(path);
+            const timeoutMs = callTimeoutMs(sliding, options?.timeoutMs);
             let settled = false;
             let timer: ReturnType<typeof setTimeout> | undefined;
             const onAbort = () => fail(abandoned());
@@ -463,7 +475,7 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
                 (res) =>
                     collectBody(
                         res,
-                        POD_LOG_PATH.test(path),
+                        sliding,
                         (response, prefix) => {
                             // The diagnosis line (issue #308): method, path, status and the API's own
                             // words — the body IS the diagnosis.
