@@ -10,19 +10,19 @@ codes, query parameters and error codes are read there, never restated here.
 | Personal and org access tokens | `server/src/routes/tokens.ts` | `server/test/auth.tokens.test.ts` |
 | Liveness and readiness probes | `server/src/routes/health.ts` | `server/test/routes.health.test.ts` |
 | Packaged release version (`/api/version`, open) | `server/src/routes/version.ts`, `server/src/version.ts` | `server/test/routes.version.test.ts`, `server/test/auth.enforcement.test.ts` |
-| Skill discovery (`GET /api/skills`): name, description, declared requirements with env names, never the instructions | `server/src/routes/skills.ts`, `server/src/skills.ts` | `server/test/skills.test.ts` |
+| Skill discovery (`GET /api/skills`; never the instructions) | `server/src/routes/skills.ts`, `server/src/skills.ts` | `server/test/skills.test.ts` |
 | Dashboard payload (`/api/stats`) | `server/src/routes/stats.ts` | `server/test/routes.stats.get.test.ts` |
 | OTLP ingest, `/api/sessions/branch` | `server/src/routes/ingest.ts` | `server/test/routes.ingest.test.ts` |
-| Jobs: create, claim, worker reports (a `failureCause` only beside a `gate`/`publish`/`helper` `failureKind`, else `BAD_FAILURE_KIND`; `setupMs` a non-negative integer, else `BAD_SETUP_MS`; `POST /:id/conclusion` stages the body `complete` takes, and a settle the staged one refuses is `409 CONCLUSION_CONFLICT`), actions (`done` with `force` closes a live batch's thread: 200, or 202 while it settles; [batches.md](batches.md)), reclaims (ack `{ token }` and renew `{ token, leaseSeconds }` under the acquisition's token: `409 LEASE_LOST` for another acquisition's, `404` once gone); `GET /api/jobs/:id?waitFor=terminal` answers the explicit wait result (`terminal`, `parked`, `timeout`) with the thread identity beside the row | `server/src/routes/jobs.ts` and `job-*.ts` | `server/test/routes.jobs.test.ts`, `server/test/routes.job-conclusion.test.ts` |
-| `Idempotency-Key` header on `POST /api/jobs`, `/:id/follow-up`, `/:id/retry` (`400 BAD_IDEMPOTENCY_KEY`, `409 IDEMPOTENCY_KEY_REUSED`; a replay is the same `201` plus `Idempotency-Replayed: true`) | `server/src/routes/job-idempotency.ts` | `server/test/routes.jobs.test.ts`, `server/test-db/cli.scripting.test.ts` |
-| `GET /api/jobs/:id/activity` answers one run's time buckets with `tokens` by type (`input`, `output`, `cacheRead`, `cacheCreation`) and `totals` (null when nothing was measured); the stored `agentTurns` rides on every job row, null when unmeasured | `server/src/routes/job-handlers-actions.ts`, `server/src/telemetry/run-activity.ts` | `server/test/routes.jobs.test.ts`, `server/test/run-activity.test.ts` |
-| Artifact reads: `GET /api/jobs/:id/artifacts` (streams and states) and `/artifacts/read` (cursor-paged chunks across attempts, sessions and streams) | `server/src/routes/job-handlers-artifacts.ts`, `server/src/artifacts/artifact-read.ts` | `server/test/routes.artifacts-read.test.ts`, `server/test-db/artifact-read.test.ts` |
-| Agent questions: `POST /api/jobs/:id/question` (worker; no expiry), `questions/:questionId/answer` (member); heartbeat `answeredQuestions` | `server/src/routes/job-handlers-questions.ts`, `job-handlers-worker.ts` | `server/test/routes.jobs.test.ts`, `server/test/auth.enforcement.test.ts` |
-| Named reviewers: `POST /api/jobs/:id/review`, `review-read` (worker, lease-fenced; `409 UNKNOWN_REVIEWER`, `409 REVIEW_UNSUPPORTED`, `409 REVIEW_RUNNING`, `400 INVALID_REVIEW`, `404 REVIEW_NOT_FOUND`) | `server/src/routes/job-handlers-reviews.ts` | `server/test/routes.jobs.test.ts`, `server/test/auth.enforcement.test.ts` |
-| Task read model (`/api/tasks`; each item carries the task `id` and its `headRunId`) | `server/src/routes/tasks.ts` | `server/test/routes.tasks.test.ts` |
-| Managed connections: `GET/POST /api/connections`, `DELETE /api/connections/:id`, and the runner's `ANY /api/jobs/:id/connectors/jira/*` proxy | `server/src/routes/connections.ts`, `connector-jira.ts` | `server/test/routes.connections.test.ts`, `server/test/routes.connector-jira.test.ts` |
-| The runner's GitHub token: `POST /api/jobs/:id/credentials/github` (attempt pair only; `403 CONNECTION_NOT_AUTHORIZED`, `409 GITHUB_UNAVAILABLE`, `502 UNAVAILABLE`; [connections.md](connections.md)) | `server/src/routes/github-credential.ts` | `server/test/routes.github-credential.test.ts`, `server/test-db/github-credential.test.ts` |
-| Batches: `/api/batches` create, list (`?task=<thread id>` narrows to the batches that thread backs; each summary carries `expiredAt`), read (`status` is `draft`, `running`, `completed`, `cancelled` or `expired`), `PUT` whole draft, `validate`, `start`, `?waitFor=terminal`, `cancel`, `tasks/:key/retry`, `tasks/:key/accept`, `GET :id/report` (observation, `manualRetries`, `remaining`, `unavailable`; [batches.md](batches.md)) | `server/src/routes/batches.ts`, `batch-handlers.ts` | `server/test/routes.batches.test.ts`, `server/test/auth.enforcement.test.ts` |
+| Jobs: create, claim, worker reports, `POST /:id/conclusion`, actions, reclaims, `GET /:id?waitFor=terminal` ([batches.md](batches.md) for `done` with `force`) | `server/src/routes/jobs.ts` and `job-*.ts` | `server/test/routes.jobs.test.ts`, `server/test/routes.job-conclusion.test.ts` |
+| `Idempotency-Key` header on `POST /api/jobs`, `/:id/follow-up`, `/:id/retry` | `server/src/routes/job-idempotency.ts` | `server/test/routes.jobs.test.ts`, `server/test-db/cli.scripting.test.ts` |
+| Run activity (`GET /api/jobs/:id/activity`) | `server/src/routes/job-handlers-actions.ts`, `server/src/telemetry/run-activity.ts` | `server/test/routes.jobs.test.ts`, `server/test/run-activity.test.ts` |
+| Artifact reads: `GET /api/jobs/:id/artifacts`, `/artifacts/read` | `server/src/routes/job-handlers-artifacts.ts`, `server/src/artifacts/artifact-read.ts` | `server/test/routes.artifacts-read.test.ts`, `server/test-db/artifact-read.test.ts` |
+| Agent questions: `POST /api/jobs/:id/question` (worker), `questions/:questionId/answer` (member) | `server/src/routes/job-handlers-questions.ts`, `job-handlers-worker.ts` | `server/test/routes.jobs.test.ts`, `server/test/auth.enforcement.test.ts` |
+| Named reviewers: `POST /api/jobs/:id/review`, `review-read` (worker, lease-fenced) | `server/src/routes/job-handlers-reviews.ts` | `server/test/routes.jobs.test.ts`, `server/test/auth.enforcement.test.ts` |
+| Task read model (`/api/tasks`) | `server/src/routes/tasks.ts` | `server/test/routes.tasks.test.ts` |
+| Managed connections and the runner's Jira proxy ([connections.md](connections.md)) | `server/src/routes/connections.ts`, `connector-jira.ts` | `server/test/routes.connections.test.ts`, `server/test/routes.connector-jira.test.ts` |
+| The runner's GitHub token: `POST /api/jobs/:id/credentials/github` ([connections.md](connections.md)) | `server/src/routes/github-credential.ts` | `server/test/routes.github-credential.test.ts`, `server/test-db/github-credential.test.ts` |
+| Batches: `/api/batches` ([batches.md](batches.md)) | `server/src/routes/batches.ts`, `batch-handlers.ts` | `server/test/routes.batches.test.ts`, `server/test/auth.enforcement.test.ts` |
 | Repo picker (`/api/repos`) | `server/src/routes/repos.ts` | `server/test/routes.repos.test.ts` |
 | Runner env in three scopes | `server/src/routes/env.ts` | `server/test/routes.env.test.ts` |
 | Workspace, checkouts, personal executors (incl. `DELETE /executors/:id`, `POST /executors/:id/suspension`) | `server/src/routes/workspace.ts`, `workspace-purge.ts` | `server/test/routes.workspace.test.ts`, `server/test/routes.executor-lifecycle.test.ts` |
@@ -37,31 +37,20 @@ and by the `lint/no-shared-literals.grit` plugin.
 
 ## Invariants
 
-- Artifact upload is `PUT /api/jobs/:id/artifact/chunk` (raw bytes) and `/manifest`: worker routes
-  authorized by the claim sequence the request names (1 through the row's current one, else
-  `400 BAD_CLAIM_SEQ`), never by the lease, and they write nothing on `job`.
-  `server/src/routes/job-handlers-artifacts.ts`, `server/test/routes.artifacts.test.ts`,
+- Artifact upload (`PUT /api/jobs/:id/artifact/chunk`, `/manifest`) is authorized by the claim sequence the
+  request names, never by the lease, and writes nothing on `job`. `server/src/routes/job-handlers-artifacts.ts`,
+  `server/test/routes.artifacts.test.ts`.
+- Artifact reads resolve through the caller's org, so another org's job is `404`; a removed job answers its
+  indexed streams as `deleted`. `server/test/routes.artifacts-read.test.ts`, `server/test-db/artifact-read.test.ts`.
+- Transcript exports never reach token metrics; where a session has both, the `session_source` view keeps OTEL.
+  `server/test-db/artifact-read.test.ts`.
+- A route is authenticated unless `requirementFor` (`server/src/auth/plugin.ts`) deliberately exempts it.
   `server/test/auth.enforcement.test.ts`.
-- Artifacts are read over HTTP: `GET /api/jobs/:id/artifacts` lists a job's streams and
-  `/artifacts/read` pages their chunks (whole chunks; `cursor`, `limit` bytes; `stream`, `attempt`, `session`,
-  `executor` narrow). Every stream carries a `state` (`complete`, `partial`, `truncated`, `deleted`) and a cause;
-  a removed job answers its indexed streams as `deleted`. Both resolve through the caller's org, so another
-  org's job is `404`. `GET /api/jobs/:id/log` and `/transcript` no longer
-  exist. `server/test/routes.artifacts-read.test.ts`, `server/test-db/artifact-read.test.ts`.
-- Transcript exports never reach token metrics: they are artifacts, and where a session has both, the
-  `session_source` view keeps OTEL. `server/test-db/artifact-read.test.ts`.
-- A route is authenticated unless `requirementFor` (`server/src/auth/plugin.ts`) deliberately
-  exempts it — new paths fall through to the walled default. `server/test/auth.enforcement.test.ts`.
-- `GET /api/auth/me` answers `200 { authenticated: false }` anonymously, never `401`: it is what
-  tells the SPA it is signed out. A present bearer is still the credential there: a `fat_` answers
-  its user, a bad one is `401`, an `oat_` `403`. `server/test/auth.oauth.me.test.ts`,
-  `server/test/auth.tokens.test.ts`.
-- The job routes register only when `buildApp` is given a job store, the workspace routes only with
-  a `userRepos` store; an absent workspace *root* removes neither. `server/src/app.ts`.
-- The organization is the credential's, never a request field — `?org=` only selects among the
-  caller's memberships, refused before the range is parsed
-  (`server/test/routes.stats.organization.test.ts`). See [organizations.md](organizations.md).
-- A stale read is still a `200` carrying its staleness (`/api/stats`, `/api/repos`): an empty
-  payload and an unreachable GitHub must not look alike.
-- Lease-guarded worker routes answer `409 LEASE_LOST`; only `heartbeat`'s is a kill order
-  ([jobs.md](jobs.md)).
+- `GET /api/auth/me` answers `200 { authenticated: false }` anonymously, never `401`; a present bearer is
+  still the credential there. `server/test/auth.oauth.me.test.ts`, `server/test/auth.tokens.test.ts`.
+- Job routes register only when `buildApp` is given a job store, workspace routes only with a `userRepos`
+  store. `server/src/app.ts`.
+- The organization is the credential's, never a request field; `?org=` only selects among the caller's
+  memberships. `server/test/routes.stats.organization.test.ts`, [organizations.md](organizations.md).
+- A stale read is still a `200` carrying its staleness (`/api/stats`, `/api/repos`).
+- Lease-guarded worker routes answer `409 LEASE_LOST`; only `heartbeat`'s is a kill order ([jobs.md](jobs.md)).

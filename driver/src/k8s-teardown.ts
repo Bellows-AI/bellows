@@ -1,8 +1,10 @@
 import type { BoardJob } from './board.js';
 import { jobPath, podsPath, secretsPath } from './k8s-auxspec.js';
 import { secretName } from './k8s-podspec.js';
-import { HTTP_CONFLICT, HTTP_NOT_FOUND, is2xx, parse, POLL_MS } from './k8s-transport.js';
-import type { K8sDeps, K8sResponse } from './k8s-transport.js';
+import { asJob, asPod, jobOutcome, type ReadJobObject, readTyped, readTypedList } from './k8s-poll.js';
+import { HTTP_CONFLICT, HTTP_NOT_FOUND, is2xx, POLL_MS } from './k8s-transport.js';
+import type { K8sDeps, K8sPod, K8sResponse } from './k8s-transport.js';
+import type { Read } from './runner.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
 
 /**
@@ -89,41 +91,33 @@ export interface IncarnationUids {
  */
 export type GroupEnd = 'ended' | 'held' | 'superseded';
 
-/** One GET, or null for an answer that proves nothing — a transport rejection or a non-2xx, non-404 status. */
-async function readConclusive(deps: K8sDeps, path: string): Promise<K8sResponse | null> {
-    try {
-        const read = await deps.request('GET', path);
-        if (read.status === HTTP_NOT_FOUND) return read;
-        return is2xx(read.status) ? read : null;
-    } catch {
-        return null;
-    }
-}
-
 /** A pod that ran to its end — `Succeeded` or `Failed` — writes nothing any more. */
 const FINISHED_PHASES: readonly string[] = ['Succeeded', 'Failed'];
 
 /** Whether the Job reads gone or, for a kept one, terminal: no runner of it is left to write. */
-function jobOver(read: K8sResponse, keep: boolean): boolean {
-    if (read.status === HTTP_NOT_FOUND) return true;
-    if (!keep) return false;
-    const status = parse<{ status?: { succeeded?: number; failed?: number } }>(read.body).status;
-    return (status?.succeeded ?? 0) >= 1 || (status?.failed ?? 0) >= 1;
+function jobOver(read: Read<ReadJobObject>, keep: boolean): boolean {
+    if (read.kind === 'absent') return true;
+    return keep && read.kind === 'value' && jobOutcome(read.value.status) !== 'pending';
 }
 
-/** Whether no live writer pod is listed (null: the list proves nothing). A list answering 404 is empty, as the fence reads one. */
-async function noLiveWriter(deps: K8sDeps, pair: BoardJob): Promise<boolean | null> {
-    const pods = await readConclusive(deps, writerPodsPath(deps.config.k8sNamespace, pair));
-    if (pods === null) return null;
-    if (pods.status === HTTP_NOT_FOUND) return true;
-    const items = parse<{ items?: { status?: { phase?: string } }[] }>(pods.body).items ?? [];
-    return items.every((pod) => FINISHED_PHASES.includes(pod.status?.phase ?? ''));
+/**
+ * Whether no live pod is listed at `path` (null: the list proves nothing — a transport failure, a
+ * refusal, a body that is no list of named pods). A list answering 404 is empty, as the fence reads one.
+ */
+async function noLivePod(deps: K8sDeps, path: string, what: string): Promise<boolean | null> {
+    const pods = await readTypedList<K8sPod>(deps, path, what, { entry: asPod, once: true });
+    if (pods.kind === 'inconclusive') return null;
+    return pods.kind === 'absent' || pods.value.every((pod) => FINISHED_PHASES.includes(pod.status?.phase ?? ''));
 }
+
+/** Whether no live writer pod is listed (null: the list proves nothing). */
+const noLiveWriter = (deps: K8sDeps, pair: BoardJob): Promise<boolean | null> =>
+    noLivePod(deps, writerPodsPath(deps.config.k8sNamespace, pair), 'listing the writer pods');
 
 /** Whether a read Job is another incarnation than the one this caller created. */
-const anotherIncarnation = (read: K8sResponse, uids: IncarnationUids | undefined): boolean => {
-    if (uids === undefined || read.status === HTTP_NOT_FOUND) return false;
-    const uid = parse<{ metadata?: { uid?: string } }>(read.body).metadata?.uid;
+const anotherIncarnation = (read: Read<ReadJobObject>, uids: IncarnationUids | undefined): boolean => {
+    if (uids === undefined || read.kind !== 'value') return false;
+    const uid = read.value.metadata?.uid;
     return uid !== undefined && uid !== uids.job;
 };
 
@@ -136,20 +130,23 @@ export const holderPodsPath = (namespace: string, job: BoardJob, holder: string)
 
 /** Whether no live pod of a reclaim group serving `holder` is listed; an unreadable list proves nothing (false). */
 export async function holderWritersGone(deps: K8sDeps, job: BoardJob, holder: string): Promise<boolean> {
-    const pods = await readConclusive(deps, holderPodsPath(deps.config.k8sNamespace, job, holder));
-    if (pods === null) return false;
-    if (pods.status === HTTP_NOT_FOUND) return true;
-    const items = parse<{ items?: { status?: { phase?: string } }[] }>(pods.body).items ?? [];
-    return items.every((pod) => FINISHED_PHASES.includes(pod.status?.phase ?? ''));
+    return (
+        (await noLivePod(deps, holderPodsPath(deps.config.k8sNamespace, job, holder), 'listing the holder pods')) ===
+        true
+    );
 }
+
+/** One group Job read, once: the Job, its confirmed absence, or an answer that proves nothing. */
+const readGroupJob = (deps: K8sDeps, jobName: string): Promise<Read<ReadJobObject>> =>
+    readTyped(deps, jobPath(deps.config.k8sNamespace, jobName), 'reading the group Job', { shape: asJob, once: true });
 
 /** Polls, bounded by `GROUP_END_WAIT_MS`, until the Job is over and no live writer pod is listed. */
 async function confirmEnded(deps: K8sDeps, { pair, jobName, keep = false, uids }: GroupRef): Promise<GroupEnd> {
     const polls = Math.ceil(GROUP_END_WAIT_MS / POLL_MS);
     for (let poll = 0; poll < polls; poll += 1) {
         if (poll > 0) await deps.sleep(POLL_MS);
-        const read = await readConclusive(deps, jobPath(deps.config.k8sNamespace, jobName));
-        if (read === null) return 'held';
+        const read = await readGroupJob(deps, jobName);
+        if (read.kind === 'inconclusive') return 'held';
         // A replacement under the same name: its pods share the labels, and none of it is ours.
         if (anotherIncarnation(read, uids)) return 'superseded';
         if (!jobOver(read, keep)) continue;
@@ -250,13 +247,17 @@ export function holderUnconfirmed(deps: K8sDeps, holder: string): boolean {
 }
 
 /**
- * Ends every unconfirmed group of `holder` again — destructively, a kept one too: it did not end
- * the first time. True once none is left unconfirmed.
+ * Ends every unconfirmed group of `holder` again, each Job read first (#869): one gone or ended is
+ * ended with `keep` — its run is adoptable, and was never reason to delete; one read still pending
+ * did not end the first time and is ended destructively; one that cannot be read stays unconfirmed
+ * and held, for the next call. True once none is left unconfirmed.
  */
 export async function retryUnconfirmed(deps: K8sDeps, holder: string): Promise<boolean> {
-    // The recorded identity as-is — its uid fences included — only no longer kept.
+    // The recorded identity as-is — its uid fences included.
     for (const identity of [...(deps.unconfirmed?.get(holder)?.values() ?? [])]) {
-        await endRunnerJob(deps, { ...identity, keep: false }, holder);
+        const read = await readGroupJob(deps, identity.jobName);
+        if (read.kind === 'inconclusive') continue;
+        await endRunnerJob(deps, { ...identity, keep: jobOver(read, true) }, holder);
     }
     return !holderUnconfirmed(deps, holder);
 }

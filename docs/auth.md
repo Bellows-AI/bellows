@@ -20,42 +20,35 @@ posture: [security.md](security.md) · routes and codes: [api.md](api.md).
 
 ## Invariants
 
-- **Installation access IS membership.** `signIn` upserts one `organization` and one
-  `org_membership` per SELECTED installation and deletes memberships outside it, in one pass; no
-  invite, no auto-join. `server/src/auth/store.ts`, `server/test-db/auth-store.test.ts`.
-- **Every credential's reach is a live `org_membership` join** — `findSession`,
-  `findPersonalToken`, `findOrgToken` — so a removed membership ends sessions and both token kinds
-  on the next request. `server/src/auth/store.ts`, `server/test-db/auth-store.access-tokens.test.ts`.
-- **An org's first materialized membership lands `admin`**, and demoting the last admin is refused
-  in the statement (`409 LAST_ADMIN`). `server/src/auth/store.ts`, `server/test/routes.org-members.test.ts`.
-- **`github_user_id` is the identity; `github_login` is a label** nothing keys on. `server/src/auth/store.ts`.
-- **Only the sha-256 is stored** — sessions, both token kinds, the pending sign-in row. And the
-  cookie is `SameSite=Lax`, never `Strict`: the callback is a cross-site top-level GET, so
-  `Strict` withholds the state cookie and every login fails. `server/src/auth/session.ts`,
-  `server/src/auth/access-token.ts`, `server/test/auth.session.test.ts`.
-- **Three credential kinds, one per request, no fall-through.** A bearer on a session route wins
-  over the cookie and a bad one is a 401; a worker token is refused on human routes and vice
-  versa; an `oat_` reaches only `ORG_TOKEN_ROUTES` and is `403` off it, since no person stands
-  behind it. `server/src/auth/plugin.ts`, `server/test/auth.enforcement.test.ts`.
-- **`AUTH_MODE=none` synthesises a caller rather than skipping the hook**, so `job.created_by` is
-  always populated. It refuses a non-loopback `HOST` unless `AUTH_ALLOW_PUBLIC_BIND=1`;
-  `docker-compose.yml` pins `AUTH_MODE: github` as a literal `.env` cannot win, and
-  `charts/factory/` has no open mode. `server/src/config.ts`, `server/src/db/migrate.ts` (`LOCAL_LOGIN`).
-- **An idempotency key is scoped to org, caller and operation, and a replay re-passes the route's
-  credential and the follow-up/retry author check** — a stored result never answers another
-  caller, another org, or a parent that changed hands. `server/src/db/job-store-idempotency.ts`,
-  `server/src/db/job-store-actions.ts`, `server/test-db/job-store.idempotency.test.ts`.
-- **The worker credential is one deployment-wide shared secret**, `JOB_BOARD_TOKEN` (fatal in github mode when
-  missing or under 32 characters), so a claim names no org and is offered every org's queue. `server/src/config.ts`.
-- **`POST /api/sessions/branch` demands an org-bound credential in github mode** — the runner's
-  `x-factory-job-id` + `x-factory-job-lease-token` pair, or a `fat_` token; the deployment-wide
-  ingest token does not open it (CWE-862); with the pair, an `opencode` report also sets that live attempt's
-  session, through the lease-guarded session write. `server/src/routes/ingest.ts`,
-  `server/test/auth.enforcement.test.ts`, `server/test/routes.ingest.test.ts`.
+- **Installation access IS membership.** `signIn` upserts one `organization` and `org_membership` per SELECTED
+  installation and deletes memberships outside it; no invite, no auto-join. `server/src/auth/store.ts`,
+  `server/test-db/auth-store.test.ts`.
+- **Every credential's reach is a live `org_membership` join** (`findSession`, `findPersonalToken`,
+  `findOrgToken`), so a removed membership ends sessions and both token kinds on the next request.
+  `server/test-db/auth-store.access-tokens.test.ts`.
+- **An org's first membership lands `admin`**; demoting the last admin is `409 LAST_ADMIN`.
+  `server/test/routes.org-members.test.ts`.
+- **`github_user_id` is the identity; `github_login` is a label** nothing keys on.
+- **Only the sha-256 is stored** (sessions, both token kinds, the pending sign-in row), and the cookie is
+  `SameSite=Lax`: the callback is a cross-site top-level GET. `server/src/auth/session.ts`,
+  `server/test/auth.session.test.ts`.
+- **Three credential kinds, one per request, no fall-through.** A bearer on a session route wins over the
+  cookie; a worker token is refused on human routes and vice versa; an `oat_` reaches only `ORG_TOKEN_ROUTES`
+  and is `403` off it. `server/src/auth/plugin.ts`, `server/test/auth.enforcement.test.ts`.
+- **`AUTH_MODE=none` synthesises a caller rather than skipping the hook**; it refuses a non-loopback `HOST`
+  unless `AUTH_ALLOW_PUBLIC_BIND=1`, and `docker-compose.yml` pins `github`. `server/src/config.ts`,
+  `server/src/db/migrate.ts` (`LOCAL_LOGIN`), `server/test/config.auth.test.ts`.
+- **An idempotency key is scoped to org, caller and operation**, and a replay re-passes the route's credential
+  and author check. `server/src/db/job-store-idempotency.ts`, `server/test-db/job-store.idempotency.test.ts`.
+- **The worker credential is one deployment-wide secret**, `JOB_BOARD_TOKEN` (fatal in github mode when missing
+  or under 32 characters), so a claim is offered every org's queue. `server/src/config.ts`.
+- **`POST /api/sessions/branch` demands an org-bound credential in github mode** (the runner's lease pair or a
+  `fat_` token); the ingest token does not open it. `server/src/routes/ingest.ts`,
+  `server/test/routes.ingest.test.ts`.
 
 ## Stated limits
 
-- Membership is not a sandbox: every member sees every repo the installation reports and may
-  queue a command an agent runs ([security.md](security.md)).
-- Org `member_removed` events fire for organization installations only; a user-account
-  installation's removal is caught one sign-in late by the selection sweep.
+- Membership is not a sandbox: every member sees every repo the installation reports and may queue a command an
+  agent runs ([security.md](security.md)).
+- Org `member_removed` events fire for organization installations only; a user-account removal is caught one
+  sign-in late by the selection sweep.

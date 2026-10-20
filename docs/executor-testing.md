@@ -25,12 +25,10 @@ Which lane proves what for the board/driver/runner/telemetry control plane, list
   control on every denial target**: each target must answer `reachable` before the policy and
   `denied` after, so a target nothing listens on fails the lane loudly.
 - **Platform-parity cases are not duplicates.** When a contract is encoded in both docker argv and
-  Kubernetes object specs, both pins stay. Consolidate only when setup, branch and expected failure
-  are identical.
+  Kubernetes object specs, both pins stay; consolidate only when setup, branch and expected failure are identical.
+  A new slow boundary test must close a missing boundary; build large git histories with `git fast-import`.
 - **The focused coverage gate excludes `driver/src/index.ts`, `driver/src/scripts/` and the
   Postgres telemetry store** (`vitest.executors.config.ts`); the script suites and `test:db` cover them.
-- **A new slow boundary test must close a missing boundary, not repeat a covered branch.** Build
-  large git histories with `git fast-import` rather than real commits.
 
 ## What no lane covers
 

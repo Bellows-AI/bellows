@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { containerName } from '../src/docker.js';
 import { serviceContainerName } from '../src/services.js';
@@ -20,10 +21,14 @@ const NEW_LEASE = '55555555-5555-4555-8555-555555555555';
 
 const job = { id: JOB, leaseToken: LEASE } as BoardJob;
 
+/** A container id as `docker ps` prints it: 12 lowercase hex characters. */
+const hexId = (seed: string): string => createHash('sha256').update(seed).digest('hex').slice(0, 12);
+
 /** One `docker ps --format '{{json .}}'` line for a service container. */
 const psLine = (fields: { id: string; jobId: string; lease: string; created: string; service?: string }) =>
     JSON.stringify({
         ID: fields.id,
+        Names: 'factory-svc',
         Labels: `factory.job=${fields.jobId},factory.lease=${fields.lease},factory.service=${fields.service ?? 'postgres'}`,
         CreatedAt: fields.created,
         State: 'running',
@@ -65,9 +70,27 @@ describe("parseDockerCreatedAt — docker's own timestamp spelling", () => {
         expect(parseDockerCreatedAt('2026-09-14 12:30:00 +0200 CEST')).toBe(Date.parse('2026-09-14T10:30:00Z'));
     });
 
-    it('answers 0 for anything it cannot read — eligible, never a crash', () => {
-        expect(parseDockerCreatedAt('')).toBe(0);
-        expect(parseDockerCreatedAt('yesterday, probably')).toBe(0);
+    it("reads Go's numeric zone names, which tzdata prints when a zone has no letter abbreviation", () => {
+        expect(parseDockerCreatedAt('2026-09-14 10:00:00 -0300 -03')).toBe(Date.parse('2026-09-14T13:00:00Z'));
+        expect(parseDockerCreatedAt('2026-09-14 10:00:00 +0400 +04')).toBe(Date.parse('2026-09-14T06:00:00Z'));
+    });
+
+    it('answers null for anything it cannot read — never the epoch, which would end a grace window (#869)', () => {
+        expect(parseDockerCreatedAt('')).toBeNull();
+        expect(parseDockerCreatedAt('yesterday, probably')).toBeNull();
+    });
+});
+
+describe('parseDockerCreatedAt — the calendar must be real (#869)', () => {
+    it.each([
+        '2026-02-31 10:00:00 +0000 UTC',
+        '2026-09-14 25:00:00 +0000 UTC',
+        '2026-09-14 10:61:00 +0000 UTC',
+        '2026-13-01 10:00:00 +0000 UTC',
+        '2026-09-14 10:00:00 +2575 UTC',
+        '0',
+    ])('answers null for %s', (raw) => {
+        expect(parseDockerCreatedAt(raw)).toBeNull();
     });
 });
 
@@ -76,9 +99,9 @@ describe('the docker reaper arm: scan', () => {
         const { execDocker, calls } = router([
             [
                 PS_ARGS[0]!,
-                psLine({ id: 'c1', jobId: JOB, lease: LEASE, created: '2026-09-01 00:00:00 +0000 UTC' }),
+                psLine({ id: hexId('c1'), jobId: JOB, lease: LEASE, created: '2026-09-01 00:00:00 +0000 UTC' }),
                 psLine({
-                    id: 'c2',
+                    id: hexId('c2'),
                     jobId: JOB2,
                     lease: LEASE2,
                     created: '2026-09-02 00:00:00 +0000 UTC',
@@ -86,12 +109,18 @@ describe('the docker reaper arm: scan', () => {
                 }),
                 // A runner container: job+lease but no service label — the fence's territory.
                 JSON.stringify({
-                    ID: 'runner',
+                    ID: hexId('runner'),
+                    Names: 'factory-runner',
                     Labels: `factory.job=${JOB},factory.lease=${LEASE}`,
                     CreatedAt: '2026-09-01 00:00:00 +0000 UTC',
                 }),
                 // Unlabelled junk.
-                JSON.stringify({ ID: 'junk', Labels: '', CreatedAt: '2026-09-01 00:00:00 +0000 UTC' }),
+                JSON.stringify({
+                    ID: hexId('junk'),
+                    Names: 'junk',
+                    Labels: '',
+                    CreatedAt: '2026-09-01 00:00:00 +0000 UTC',
+                }),
             ],
         ]);
         const arm = createDockerReaper(execDocker);
@@ -119,13 +148,13 @@ describe('the docker reaper arm: scan', () => {
                 jobId: JOB,
                 leaseToken: LEASE,
                 createdAtMs: Date.parse('2026-09-01T00:00:00Z'),
-                objects: [{ kind: 'container', name: 'c1' }],
+                objects: [{ kind: 'container', name: hexId('c1') }],
             },
             {
                 jobId: JOB2,
                 leaseToken: LEASE2,
                 createdAtMs: Date.parse('2026-09-02T00:00:00Z'),
-                objects: [{ kind: 'container', name: 'c2' }],
+                objects: [{ kind: 'container', name: hexId('c2') }],
             },
         ]);
     });
@@ -147,6 +176,7 @@ describe('the docker reaper arm: a group’s gate container (issue #773)', () =>
             ID: id,
             Names: `factory-gate-${JOB}-${lease}`,
             Labels: `factory.role=gate,factory.job=${JOB},factory.lease=${lease}`,
+            State: 'running',
             CreatedAt: OLD,
         });
 
@@ -175,12 +205,12 @@ describe('the docker reaper arm: a group’s gate container (issue #773)', () =>
     };
 
     it('removes the gate container of a job the board no longer knows, with its group', async () => {
-        const { removed } = await sweep([gateLine('orphan', LEASE)], []);
-        expect(removed).toEqual(['orphan']);
+        const { removed } = await sweep([gateLine(hexId('orphan'), LEASE)], []);
+        expect(removed).toEqual([hexId('orphan')]);
     });
 
     it('keeps the gate container of the live lease', async () => {
-        const { removed } = await sweep([gateLine('live', LEASE)], [{ id: JOB, leaseToken: LEASE }]);
+        const { removed } = await sweep([gateLine(hexId('live'), LEASE)], [{ id: JOB, leaseToken: LEASE }]);
         expect(removed).toEqual([]);
     });
 
@@ -275,7 +305,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         return {
             containers: [
                 roleLine({
-                    id: `sup-${lease}`,
+                    id: hexId(`sup-${lease}`),
                     name: `factory-supervisor-${JOB}-${lease}`,
                     jobId: JOB,
                     lease,
@@ -284,7 +314,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
                     reclaim,
                 }),
                 roleLine({
-                    id: `agent-${lease}`,
+                    id: hexId(`agent-${lease}`),
                     name: containerName(named),
                     jobId: JOB,
                     lease,
@@ -312,8 +342,8 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
                 leaseToken: LEASE,
                 createdAtMs: Date.parse('2026-09-01T00:00:00Z'),
                 objects: [
-                    { kind: 'container', name: `sup-${LEASE}`, runner: true },
-                    { kind: 'container', name: `agent-${LEASE}`, unread: true, runner: true },
+                    { kind: 'container', name: hexId(`sup-${LEASE}`), runner: true },
+                    { kind: 'container', name: hexId(`agent-${LEASE}`), unread: true, runner: true },
                     { kind: 'volume', name: `factory-in-${JOB}-${LEASE}` },
                     { kind: 'volume', name: `factory-kill-timeout-${JOB}-${LEASE}` },
                 ],
@@ -342,6 +372,107 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         await expect(createDockerReaper(execDocker).scan()).resolves.toEqual([]);
     });
 
+    it.each(['0', '2026-02-31T00:00:00Z', '2026-09-01', '2026-09-01 00:00:00 +0000 UTC', ''])(
+        'answers nothing when a volume reports the creation time %j (#869)',
+        async (createdAt) => {
+            const g = group();
+            const { execDocker: base } = daemon(g.containers, g.volumes);
+            const execDocker: ExecDocker = async (args) =>
+                args[0] === 'volume' && args[1] === 'inspect' ? { stdout: createdAt } : base(args);
+
+            await expect(createDockerReaper(execDocker).scan()).resolves.toEqual([]);
+        }
+    );
+
+    it.each(['2026-09-01T00:00:00Z', '2026-09-01T02:00:00.5+02:00'])(
+        'reads the RFC3339 volume creation time %s',
+        async (createdAt) => {
+            const g = group();
+            const { execDocker: base } = daemon(g.containers, g.volumes);
+            const execDocker: ExecDocker = async (args) =>
+                args[0] === 'volume' && args[1] === 'inspect' ? { stdout: createdAt } : base(args);
+
+            expect(await createDockerReaper(execDocker).scan()).not.toEqual([]);
+        }
+    );
+
+    it('reaps nothing when one in-scope row has a creation time it cannot read (#869)', async () => {
+        const g = group(LEASE, 'exited');
+        const corrupt = roleLine({
+            id: hexId('corrupt'),
+            name: 'factory-exporter',
+            jobId: JOB,
+            lease: LEASE,
+            role: 'exporter',
+            state: 'running',
+        }).replace(OLD, 'yesterday, probably');
+        const { execDocker } = daemon([...g.containers, corrupt], g.volumes);
+        const removed: string[] = [];
+        const recording: ExecDocker = async (args) => {
+            if (
+                args[0] === 'rm' ||
+                (args[0] === 'volume' && args[1] === 'rm') ||
+                (args[0] === 'network' && args[1] === 'rm')
+            )
+                removed.push(args[args.length - 1]!);
+            return execDocker(args);
+        };
+
+        await expect(createDockerReaper(recording).scan()).resolves.toEqual([]);
+        await createReaper({
+            board: { leases: async () => [{ id: JOB, leaseToken: null, status: 'succeeded' }] as never },
+            arm: createDockerReaper(recording),
+            intervalMs: 0,
+            graceMs: 0,
+            log: () => undefined,
+        }).sweep();
+        expect(removed).toEqual([]);
+    });
+
+    it.each([
+        ['a row that is not JSON', '<html>502 Bad Gateway</html>'],
+        ['a row with no container id', JSON.stringify({ Names: 'x', Labels: '', CreatedAt: '' })],
+        ['a row whose id is no container id', JSON.stringify({ ID: 'null', Names: 'x', Labels: '' })],
+        ['a row with an empty name', JSON.stringify({ ID: 'a1a1a1a1a1a1', Names: '', Labels: '', CreatedAt: '' })],
+        ['a row whose name is no name', JSON.stringify({ ID: 'a1a1a1a1a1a1', Names: '<html>', Labels: '' })],
+        [
+            'a row whose lease label is no lease',
+            JSON.stringify({
+                ID: 'a1a1a1a1a1a1',
+                Names: 'x',
+                Labels: `factory.role=agent,factory.job=${JOB},factory.lease=corrupt`,
+                State: 'exited',
+                CreatedAt: '2026-09-01 00:00:00 +0000 UTC',
+            }),
+        ],
+        [
+            'a role row with no state',
+            JSON.stringify({
+                ID: 'a1a1a1a1a1a1',
+                Names: 'x',
+                Labels: `factory.role=agent,factory.job=${JOB},factory.lease=${LEASE}`,
+                CreatedAt: '2026-09-01 00:00:00 +0000 UTC',
+            }),
+        ],
+    ])('answers nothing at all for %s, in scope or not', async (_what, row) => {
+        const g = group();
+        const { execDocker } = daemon([...g.containers, row], g.volumes);
+
+        await expect(createDockerReaper(execDocker).scan()).resolves.toEqual([]);
+    });
+
+    it.each([
+        ['an empty creation time', ''],
+        ['a creation time that is no date', 'yesterday, probably'],
+    ])('answers nothing at all for a volume inspect answering %s', async (_what, answer) => {
+        const g = group();
+        const { execDocker } = daemon(g.containers, g.volumes);
+        const garbled: ExecDocker = async (args) =>
+            args[0] === 'volume' && args[1] === 'inspect' ? { stdout: answer } : execDocker(args);
+
+        await expect(createDockerReaper(garbled).scan()).resolves.toEqual([]);
+    });
+
     it('tolerates a volume removed between the list and its inspect, still reaping the rest', async () => {
         const g = group(LEASE, 'exited');
         const gone = `factory-in-${JOB}-${LEASE}`;
@@ -356,8 +487,8 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         const [only] = await createDockerReaper(racing).scan();
 
         expect(only?.objects).toEqual([
-            { kind: 'container', name: `sup-${LEASE}`, runner: true },
-            { kind: 'container', name: `agent-${LEASE}`, unread: true, runner: true },
+            { kind: 'container', name: hexId(`sup-${LEASE}`), runner: true },
+            { kind: 'container', name: hexId(`agent-${LEASE}`), unread: true, runner: true },
             { kind: 'volume', name: `factory-kill-timeout-${JOB}-${LEASE}` },
         ]);
     });
@@ -379,7 +510,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
                 createdAtMs: 0,
                 objects: [
                     { kind: 'volume', name: `factory-in-${JOB}-${LEASE}` },
-                    { kind: 'container', name: `sup-${LEASE}` },
+                    { kind: 'container', name: hexId(`sup-${LEASE}`) },
                 ],
             },
             'gone'
@@ -387,7 +518,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
 
         const removals = calls.filter((args) => args[0] === 'rm' || (args[0] === 'volume' && args[1] === 'rm'));
         expect(removals).toEqual([
-            ['rm', '-f', `sup-${LEASE}`],
+            ['rm', '-f', hexId(`sup-${LEASE}`)],
             ['volume', 'rm', '-f', `factory-in-${JOB}-${LEASE}`],
         ]);
     });
@@ -419,7 +550,11 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
 
         // The job is terminal: every group of it goes, the unread runner too.
         expect(await sweep([{ id: JOB, leaseToken: null, status: 'succeeded' }])).toEqual(
-            expect.arrayContaining([`sup-${LEASE}`, `agent-${LEASE}`, `factory-kill-timeout-${JOB}-${LEASE}`])
+            expect.arrayContaining([
+                hexId(`sup-${LEASE}`),
+                hexId(`agent-${LEASE}`),
+                `factory-kill-timeout-${JOB}-${LEASE}`,
+            ])
         );
         // Live under NEW_LEASE: no task group of the job is reaped (issue #821) — the superseded
         // LEASE group is the replacement fence's to sweep, the unread LEASE2 group keeps its kill
@@ -437,7 +572,7 @@ describe('the docker reaper arm: a live job’s task group is the fence’s (#82
     const OLD = '2026-09-01 00:00:00 +0000 UTC';
     const containers = [
         JSON.stringify({
-            ID: 'agent-old',
+            ID: hexId('agent-old'),
             Names: containerName({ id: JOB, leaseToken: LEASE } as BoardJob),
             Labels: `factory.job=${JOB},factory.lease=${LEASE},factory.role=agent`,
             CreatedAt: OLD,
@@ -467,6 +602,6 @@ describe('the docker reaper arm: a live job’s task group is the fence’s (#82
     });
 
     it('reaps it once the job is terminal', async () => {
-        expect(await sweep({ leaseToken: null, status: 'succeeded' })).toEqual(['agent-old']);
+        expect(await sweep({ leaseToken: null, status: 'succeeded' })).toEqual([hexId('agent-old')]);
     });
 });

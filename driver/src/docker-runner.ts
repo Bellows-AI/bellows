@@ -60,6 +60,8 @@ import {
     createRunnerContainer,
     dockerErrorDetail,
     dockerRunVerdict,
+    CONTAINER_ID,
+    DOCKER_NAME,
     LEASE_FORMAT,
     listOtherAttemptsOrThrow,
     type ClosedState,
@@ -167,7 +169,7 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal?: Abor
         execDocker,
         ['ps', '-a', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', LEASE_FORMAT('ID')],
         `the re-claim fence could not list the leftover containers of job ${job.id}`,
-        kept
+        { ...kept, grammar: CONTAINER_ID }
     );
     await removeEachTolerantly(
         execDocker,
@@ -182,7 +184,7 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal?: Abor
         execDocker,
         ['volume', 'ls', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', LEASE_FORMAT('Name')],
         `the re-claim fence could not list the leftover control volumes of job ${job.id}`,
-        kept
+        { ...kept, grammar: DOCKER_NAME }
     );
     await removeEachTolerantly(
         execDocker,

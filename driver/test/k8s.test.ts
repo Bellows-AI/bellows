@@ -1041,6 +1041,8 @@ const boardLease =
 
 /** A lease token distinct from the fixture job's, for the attempt that reclaimed a job. */
 const NEW_TOKEN = '99999999-9999-4999-8999-999999999999';
+/** Another attempt's lease: a claim's holder is always a lease token. */
+const OTHER_HOLDER = '77777777-7777-4777-8777-777777777777';
 
 /** The run start both close-time readouts bound their turn counts to. */
 const START = '2026-08-20T06:00:00.000Z';
@@ -1608,6 +1610,43 @@ describe('the worktree sync', () => {
         expect(calls.some((call) => call.method === 'POST' && call.path.includes('/secrets'))).toBe(false);
         expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(false);
         expect(steps.submitted).toEqual([]);
+    });
+
+    // #869: a claim the takeover cannot name a holder of proves nothing about its age; it is never deleted on.
+    it.each([
+        ['no holder', { claimSeq: '1' }],
+        ['an empty holder', { holder: '', claimSeq: '1' }],
+        ['a holder that is no lease', { holder: 'someone-else', claimSeq: '1' }],
+        ['an empty claim sequence', { holder: OTHER_HOLDER, claimSeq: '' }],
+        ['a claim sequence beyond the safe integers', { holder: OTHER_HOLDER, claimSeq: '9'.repeat(400) }],
+    ])('never takes over a claim with %s', async (_name, data) => {
+        const calls: Call[] = [];
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 409, body: '{"reason":"AlreadyExists"}' });
+            }
+            if (path === claimPathFor(job.id) && method === 'GET') {
+                return Promise.resolve({ status: 200, body: JSON.stringify({ metadata: { uid: 'u' }, data }) });
+            }
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+        await expect(sync({ ...repoJob, claimSeq: 2 }, fakeSteps(), request)).rejects.toThrow();
+        expect(calls.some((call) => call.method === 'DELETE')).toBe(false);
+    });
+
+    it('never takes over a claim whose claim sequence is not a number, even when the board proves the lease', async () => {
+        const { request, calls } = fakeRequest();
+        await request('POST', configmapsPath, {
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: { name: `factory-job-${repoJob.id}-claim` },
+            data: { holder: NEW_TOKEN, claimSeq: 'corrupt' },
+        });
+        await expect(
+            runner(request, {}, boardLease(repoJob)).syncCheckout(repoJob, undefined, SESSION_OF)
+        ).rejects.toThrow(/reading the checkout claim answered an unexpected shape/);
+        expect(calls.some((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id))).toBe(false);
     });
 
     /*
@@ -3023,7 +3062,10 @@ describe('the kubernetes runner', () => {
                 // the NEW Job's own status poll. The fixture carries no creationTimestamp —
                 // the fence classifies nothing, so it reads none.
                 return lists === 1
-                    ? { status: 200, body: JSON.stringify({ items: [{ metadata: { name: leftover } }] }) }
+                    ? {
+                          status: 200,
+                          body: JSON.stringify({ items: [{ metadata: { name: leftover, uid: `uid-${leftover}` } }] }),
+                      }
                     : { status: 200, body: JSON.stringify({ items: [] }) };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) return { status: 200, body: '{}' };
@@ -3062,7 +3104,7 @@ describe('the kubernetes runner', () => {
     // fixture carries no timestamp for it to read.
     it('gives up when a deletable leftover job never disappears', async () => {
         const leftover = {
-            metadata: { name: 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner' },
+            metadata: { name: 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner', uid: 'uid-old' },
         };
         const { request } = routed((method, path) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
@@ -3076,6 +3118,34 @@ describe('the kubernetes runner', () => {
         });
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/never disappeared/);
+    });
+
+    // Issue #869: a leftover listing with an entry that names nothing proves nothing about what is
+    // left. The sweep neither reads it as free nor deletes beside it; it waits out its bound.
+    it.each([
+        ['an empty entry', {}],
+        ['an entry named by a number', { metadata: { name: 5 } }],
+        ['an entry with no uid', { metadata: { name: 'leftover-runner' } }],
+        ['an entry with an empty uid', { metadata: { name: 'leftover-runner', uid: '' } }],
+        [
+            'an entry whose lease label is no lease',
+            { metadata: { name: 'leftover-runner', uid: 'u', labels: { 'factory.lease': 'corrupt' } } },
+        ],
+    ])('does not create beside a leftover listing that carries %s', async (_name, entry) => {
+        const { request, calls } = routed((method, path) => {
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return { status: 200, body: JSON.stringify({ items: [entry] }) };
+            }
+        });
+
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /could not confirm the checkout empty/
+        );
+
+        expect(calls.filter((call) => call.method === 'DELETE' && call.path.startsWith(jobsPath(namespace)))).toEqual(
+            []
+        );
+        expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(false);
     });
 
     /*
@@ -3109,7 +3179,9 @@ describe('the kubernetes runner', () => {
                 return {
                     status: 200,
                     body: JSON.stringify({
-                        items: replacementAlive ? [{ metadata: { name: newerJobName } }] : [],
+                        items: replacementAlive
+                            ? [{ metadata: { name: newerJobName, uid: `uid-${newerJobName}` } }]
+                            : [],
                     }),
                 };
             }
@@ -3343,7 +3415,9 @@ describe('the kubernetes runner', () => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 return {
                     status: 200,
-                    body: JSON.stringify({ items: [...liveJobs].map((name) => ({ metadata: { name } })) }),
+                    body: JSON.stringify({
+                        items: [...liveJobs].map((name) => ({ metadata: { name, uid: `uid-${name}` } })),
+                    }),
                 };
             }
             if (method === 'POST' && path === jobsPath(namespace)) {
@@ -3457,8 +3531,12 @@ describe('the kubernetes runner', () => {
         const now = Date.now();
         const oldName = 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner';
         const freshName = 'factory-job-11111111-1111-4111-8111-111111111111-newlease-runner';
-        const oldJob = { metadata: { name: oldName, creationTimestamp: new Date(now - 10 * 60_000).toISOString() } };
-        const freshJob = { metadata: { name: freshName, creationTimestamp: new Date(now).toISOString() } };
+        const oldJob = {
+            metadata: { name: oldName, uid: 'uid-old', creationTimestamp: new Date(now - 10 * 60_000).toISOString() },
+        };
+        const freshJob = {
+            metadata: { name: freshName, uid: 'uid-fresh', creationTimestamp: new Date(now).toISOString() },
+        };
         let old = true;
         let fresh = true;
         const { request, calls } = routed((method, path) => {
@@ -3494,10 +3572,12 @@ describe('the kubernetes runner', () => {
         expect(calls).toContainEqual({
             method: 'DELETE',
             path: `${jobPath(namespace, oldName)}?propagationPolicy=Foreground`,
+            body: { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid: 'uid-old' } },
         });
         expect(calls).toContainEqual({
             method: 'DELETE',
             path: `${jobPath(namespace, freshName)}?propagationPolicy=Foreground`,
+            body: { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid: 'uid-fresh' } },
         });
         // Claim, LIST ×2 (finds both in jobs; pods empty), claim confirmed ours, two deletes,
         // LIST ×2 (clean), claim re-verified before the create, create, claim verified again,
@@ -3535,7 +3615,15 @@ describe('the kubernetes runner', () => {
                     status: 200,
                     body: JSON.stringify({
                         items: predecessorAlive
-                            ? [{ metadata: { name: predecessor, creationTimestamp: new Date().toISOString() } }]
+                            ? [
+                                  {
+                                      metadata: {
+                                          name: predecessor,
+                                          uid: `uid-${predecessor}`,
+                                          creationTimestamp: new Date().toISOString(),
+                                      },
+                                  },
+                              ]
                             : [],
                     }),
                 };
@@ -3565,6 +3653,7 @@ describe('the kubernetes runner', () => {
         expect(calls).toContainEqual({
             method: 'DELETE',
             path: `${jobPath(namespace, predecessor)}?propagationPolicy=Foreground`,
+            body: { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid: `uid-${predecessor}` } },
         });
         // ...and only once the claim is confirmed ours and the selector answers nothing does
         // this attempt create its own Job: claim, LIST ×2 (finds the predecessor in jobs; pods
@@ -3700,7 +3789,7 @@ describe('the kubernetes runner', () => {
                 // A hand-made claim: a holder, but no attempt field at all.
                 serve('POST', configmapsPath, {
                     metadata: { name: `factory-job-${job.id}-claim` },
-                    data: { holder: 'someone-else' },
+                    data: { holder: OTHER_HOLDER },
                 });
             }
             if (isJobDelete(method, path)) return noAnswer(method, path);
@@ -3800,7 +3889,7 @@ describe('the kubernetes runner', () => {
                 // An older holder by attempt number, but a body with no uid on it.
                 return {
                     status: 200,
-                    body: JSON.stringify({ data: { holder: 'someone-else', claimSeq: '0' } }),
+                    body: JSON.stringify({ data: { holder: OTHER_HOLDER, claimSeq: '0' } }),
                 };
             }
             if (isJobDelete(method, path)) return noAnswer(method, path);
@@ -4160,7 +4249,9 @@ describe('the kubernetes runner', () => {
                 lists += 1;
                 return {
                     status: 200,
-                    body: JSON.stringify({ items: lists <= 2 ? [{ metadata: { name: leftover } }] : [] }),
+                    body: JSON.stringify({
+                        items: lists <= 2 ? [{ metadata: { name: leftover, uid: `uid-${leftover}` } }] : [],
+                    }),
                 };
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
@@ -4234,7 +4325,7 @@ describe('the kubernetes runner', () => {
     // HTTP failures and transport exceptions take separate branches, but have the same bound and
     // cleanup contract: the run leaves the group to the loop's `finish`, which the loop calls on
     // every exit and which reaps the attempt's Secrets first — but a Job its driver cannot read is
-    // no confirmed end, so the checkout claim is kept (issue #821). One table keeps that contract
+    // no confirmed end, so the checkout claim is kept (issue #821) and the Job is not deleted (#869). One table keeps that contract
     // in one place instead of duplicating the whole attempt fixture.
     it.each(['http', 'transport'] as const)(
         'abandons after consecutive %s polling failures, reaps the attempt Secret on finish and keeps the unconfirmed claim',
@@ -4273,7 +4364,8 @@ describe('the kubernetes runner', () => {
                 (call) => call.method === 'DELETE' && call.path?.startsWith(jobPath(namespace, runnerJobName(envJob)))
             );
             expect(secretReap).toBeGreaterThan(secretCreate);
-            expect(jobDelete).toBeGreaterThan(secretReap);
+            // A Job that never read is no evidence it ended: it is kept for a later read, never deleted (#869).
+            expect(jobDelete).toBe(-1);
             expect(claimDeleted()).toBe(false);
         }
     );
@@ -6345,9 +6437,9 @@ describe('runnerLossOf (issue #560)', () => {
         expect(runnerLossOf([])).toBe(
             'the runner pod was deleted before it exited (evicted, drained or its node removed)'
         );
-        expect(runnerLossOf([{ ...exited(137), metadata: { name: 'p', deletionTimestamp: 'now' } }])).toBe(
-            'the runner pod was deleted before it exited (evicted, drained or its node removed)'
-        );
+        expect(
+            runnerLossOf([{ ...exited(137), metadata: { name: 'p', deletionTimestamp: '2026-01-01T00:00:00Z' } }])
+        ).toBe('the runner pod was deleted before it exited (evicted, drained or its node removed)');
     });
 });
 
@@ -6362,6 +6454,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
     const priorItem = (status: Record<string, unknown>, seq = '1', name = priorName, lease = job.leaseToken) => ({
         metadata: {
             name,
+            uid: `uid-${name}`,
             labels: { 'factory.job': job.id, 'factory.lease': lease },
             annotations: {
                 'factory.claim-seq': seq,
@@ -6505,7 +6598,10 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
     });
 
     it('never adopts a runner that is still running, and deletes nothing', async () => {
-        const { request, calls } = withRunners([priorItem({ active: 1 })]);
+        // The agent is running, as the pod of a run that has not ended says (the default pod list shows it exited).
+        const { request, calls } = withRunners([priorItem({ active: 1 })], {
+            pods: runnerPods({ running: {} }, { running: {} }),
+        });
 
         expect(await runner(request).adopt(adopter)).toBeNull();
         expect(calls.some((call) => call.method === 'DELETE')).toBe(false);
@@ -6514,11 +6610,17 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
     it('never adopts a runner the platform took away, leaving it to the launch sweep', async () => {
         const { request, calls } = withRunners([priorItem({ failed: 1 })], {
+            job: jobAnswer({ failed: 1 }),
             pods: {
                 status: 200,
                 body: JSON.stringify({
                     // Deleted under the run: its containers killed, the pod over.
-                    items: [{ metadata: { name: podName, deletionTimestamp: 'now' }, status: { phase: 'Failed' } }],
+                    items: [
+                        {
+                            metadata: { name: podName, deletionTimestamp: '2026-01-01T00:00:00Z' },
+                            status: { phase: 'Failed' },
+                        },
+                    ],
                 }),
             },
         });
@@ -6534,6 +6636,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
     // A regression guard: the group's agent never ran, so its completed-looking end is no run to adopt.
     it('never adopts a group whose supervisor lost its driver before the agent was released', async () => {
         const { request, calls } = withRunners([priorItem({ failed: 1 })], {
+            job: jobAnswer({ failed: 1 }),
             pods: {
                 status: 200,
                 body: JSON.stringify({
@@ -6664,7 +6767,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
     const FINALIZED = runnerPods({ terminated: { exitCode: 0 } }, { terminated: { exitCode: 0 } });
     const jobAnswer = (status: Record<string, unknown>): K8sResponse => ({
         status: 200,
-        body: JSON.stringify({ metadata: { name: priorName }, status }),
+        body: JSON.stringify({ metadata: { name: priorName, uid: `uid-${priorName}` }, status }),
     });
     const STILL_FINALIZING = jobAnswer({ active: 1 });
     const reportLog = (report: Record<string, unknown>): K8sResponse => ({
@@ -6783,6 +6886,108 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         expect((await request('GET', claimPathFor(job.id))).status).toBe(404);
     });
 
+    // #869: a status read that is no Job's — a corrupt count, no uid to tell the incarnation by — is not "still running".
+    it.each([
+        ['a corrupt count', jobAnswer({ failed: 'junk' })],
+        ['no uid', { status: 200, body: JSON.stringify({ metadata: { name: priorName }, status: { active: 1 } }) }],
+        ['no status', { status: 200, body: JSON.stringify({ metadata: { name: priorName, uid: 'u' } }) }],
+    ])('stands down, deleting nothing, when the finalizing runner reads with %s', async (_name, answer) => {
+        const { request, calls } = earlier({ statuses: [answer] });
+
+        await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(deletedPrior(calls)).toBe(false);
+    });
+
+    // An older claim's runner, its discovery fields as given: `seq` its claim sequence, `lease` its lease label.
+    const pooledPrior = (seq: string, lease: string = job.leaseToken) =>
+        priorItem({ succeeded: 1 }, seq, priorName, lease);
+
+    /** The runner listing's `prior`, its metadata edited: a lease label, or an annotation, replaced or (undefined) removed. */
+    const editedPrior = (edit: { lease?: string | null; annotations?: Record<string, string | undefined> }) => {
+        const base = pooledPrior('1');
+        const labels: Record<string, string> = { ...base.metadata.labels };
+        if (edit.lease === null) delete labels['factory.lease'];
+        const annotations: Record<string, string | undefined> = { ...base.metadata.annotations, ...edit.annotations };
+        for (const key of Object.keys(annotations)) if (annotations[key] === undefined) delete annotations[key];
+        return { ...base, metadata: { ...base.metadata, labels, annotations } };
+    };
+
+    // A valid command mark that is another command's: that run is not ours (a handover edited the command), not unreadable.
+    it('skips a runner whose command mark is another valid mark, claiming nothing', async () => {
+        const { request, calls } = earlier();
+        const other = editedPrior({ annotations: { 'factory.command': '0123456789abcdef' } });
+        const listed: K8sRequest = (method, path, body) =>
+            method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)
+                ? Promise.resolve({ status: 200, body: JSON.stringify({ items: [other] }) })
+                : request(method, path, body);
+
+        expect(await runner(listed).adopt(adopter)).toBeNull();
+
+        expect(claimedAt(calls)).toBe(-1);
+        expect(deletedPrior(calls)).toBe(false);
+    });
+
+    // Issue #869: an earlier-runner listing with an entry that names nothing is no list to adopt from.
+    it.each([
+        ['an empty entry', {}],
+        ['an entry named by a number', { metadata: { name: 5 } }],
+        ['a runner whose claim sequence is corrupt', pooledPrior('corrupt')],
+        ['a runner whose claim sequence is empty', pooledPrior('')],
+        ['a runner whose claim sequence overflows the safe integers', pooledPrior('9'.repeat(400))],
+        ['a runner with no claim sequence', editedPrior({ annotations: { 'factory.claim-seq': undefined } })],
+        ['a runner with no lease label', editedPrior({ lease: null })],
+        ['a runner whose command mark is unreadable', editedPrior({ annotations: { 'factory.command': 'zz' } })],
+        ['a runner with no command mark', editedPrior({ annotations: { 'factory.command': undefined } })],
+        ['a runner with no spec', { ...pooledPrior('1'), spec: undefined }],
+        [
+            'a runner whose container has no name',
+            { ...pooledPrior('1'), spec: { template: { spec: { containers: [{}] } } } },
+        ],
+        ['a runner whose lease label is no lease', pooledPrior('1', 'corrupt')],
+        ['a runner whose Job conditions are no list', priorItem({ failed: 1, conditions: 'Failed' })],
+    ])('stands down, claiming nothing, when the earlier runners are listed with %s', async (_name, entry) => {
+        const { request, calls } = earlier();
+        const listed: K8sRequest = (method, path, body) =>
+            method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)
+                ? Promise.resolve({ status: 200, body: JSON.stringify({ items: [entry] }) })
+                : request(method, path, body);
+
+        await expect(runner(listed).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(claimedAt(calls)).toBe(-1);
+        expect(deletedPrior(calls)).toBe(false);
+    });
+
+    // #869: a runner pod whose phase or container statuses are not what the apiserver writes says nothing of its agent.
+    it.each([
+        ['a phase that is no string', { phase: 5 }],
+        ['container statuses that are no list', { phase: 'Running', containerStatuses: 'x' }],
+        ['a container status with no name', { phase: 'Running', containerStatuses: [{ state: { running: {} } }] }],
+        [
+            'a terminated state with a fractional exit code',
+            {
+                phase: 'Running',
+                containerStatuses: [{ name: AGENT_CONTAINER, state: { terminated: { exitCode: 1.5 } } }],
+            },
+        ],
+        [
+            'a state that is no record',
+            { phase: 'Running', containerStatuses: [{ name: AGENT_CONTAINER, state: 'terminated' }] },
+        ],
+        ['conditions that are no list', { phase: 'Running', conditions: 'DisruptionTarget' }],
+        ['a condition with no type', { phase: 'Running', conditions: [{ status: 'True' }] }],
+    ])('stands down, claiming nothing, when the runner pods are listed with %s', async (_name, status) => {
+        const { request, calls } = earlier({
+            pods: { status: 200, body: JSON.stringify({ items: [{ metadata: { name: podName }, status }] }) },
+        });
+
+        await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(claimedAt(calls)).toBe(-1);
+        expect(deletedPrior(calls)).toBe(false);
+    });
+
     // Failure injection: a pod list that cannot be read cannot tell an exited agent from a running one.
     it('stands down, claiming nothing, when it cannot read whether the agent of a running Job ended', async () => {
         const { request, calls } = earlier({ pods: { status: 503, body: 'unavailable' } });
@@ -6811,7 +7016,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
             pods: runnerPods(
                 { terminated: { exitCode: 0 } },
                 { terminated: { exitCode: 137 } },
-                { deletionTimestamp: 'now' }
+                { deletionTimestamp: '2026-01-01T00:00:00Z' }
             ),
         });
 
@@ -7090,7 +7295,10 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
                 {
                     status: 200,
                     body: JSON.stringify({
-                        metadata: { annotations: { 'factory.kill.artifact_spool_full': '2000000000 bytes' } },
+                        metadata: {
+                            uid: `uid-${priorName}`,
+                            annotations: { 'factory.kill.artifact_spool_full': '2000000000 bytes' },
+                        },
                         status: { succeeded: 1 },
                     }),
                 },
@@ -7293,7 +7501,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
     // running — the group a claim must wait out, never sweep (#824).
     it('waits out a supervisor finalizing on a terminating pod, then adopts its run', async () => {
         let ended = false;
-        const terminating = { deletionTimestamp: 'now' };
+        const terminating = { deletionTimestamp: '2026-01-01T00:00:00Z' };
         const { request, calls } = earlier({
             statuses: [STILL_FINALIZING, jobAnswer({ succeeded: 1 })],
             pods: () =>
@@ -7324,7 +7532,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
             pods: runnerPods(
                 { terminated: { exitCode: 137 } },
                 { terminated: { exitCode: 0 } },
-                { deletionTimestamp: 'now' }
+                { deletionTimestamp: '2026-01-01T00:00:00Z' }
             ),
             supervisorLog: reportLog({
                 outcome: 'failed',
@@ -7443,7 +7651,7 @@ describe('how a started run ends, on kubernetes (the conformance table)', () => 
             ],
         }),
     });
-    const ACTIVE = { status: 200, body: JSON.stringify({ status: { active: 1 } }) };
+    const ACTIVE = { status: 200, body: JSON.stringify({ metadata: { uid: 'job-uid-1' }, status: { active: 1 } }) };
     const GONE = { status: 404, body: '{"kind":"Status"}' };
 
     /** A Stop that lands while the run polls: the loop's kill deletes the runner Job. */
@@ -7505,9 +7713,15 @@ describe('how a started run ends, on kubernetes (the conformance table)', () => 
         'a runner the platform took away after the budget ended its agent': vanishedAfterBudget,
         'a supervisor that ended without finalizing, nothing initiating it': () =>
             runner(
-                routed(onlyRunner({ status: 200, body: JSON.stringify({ status: { failed: 1 } }) }), {
-                    pods: podWith(70),
-                }).request
+                routed(
+                    onlyRunner({
+                        status: 200,
+                        body: JSON.stringify({ metadata: { uid: 'job-uid-1' }, status: { failed: 1 } }),
+                    }),
+                    {
+                        pods: podWith(70),
+                    }
+                ).request
             ).run(job, session),
         'a supervisor that reported, then crashed before the verdict read': reportedThenCrashed,
     };
@@ -7573,7 +7787,7 @@ describe('acknowledged Secret-first teardown (#821 D16)', () => {
                 return { status: 500, body: 'unavailable' };
             }
             if (method === 'GET' && path === jobAt && faults.jobLingers) {
-                return { status: 200, body: JSON.stringify({ status: {} }) };
+                return { status: 200, body: JSON.stringify({ metadata: { uid: 'job-uid-1' }, status: {} }) };
             }
             if (method === 'GET' && faults.writerPods && isWriterPodList(path)) {
                 return { status: 200, body: JSON.stringify({ items: faults.writerPods }) };
@@ -7608,7 +7822,7 @@ describe('acknowledged Secret-first teardown (#821 D16)', () => {
         // A group whose Job does not end by itself within the bound: the one `finish` ends destructively.
         finish: {
             ...runnerGroup,
-            overrides: { job: { status: 200, body: JSON.stringify({ status: {} }) } },
+            overrides: { job: { status: 200, body: JSON.stringify({ metadata: { uid: 'job-uid-1' }, status: {} }) } },
             async drive(request) {
                 const r = build(request);
                 await r.syncCheckout(repoJob, undefined, SESSION_OF);
@@ -7852,6 +8066,7 @@ describe('claims of an unconfirmed group (#821)', () => {
     it('refuses a reclaim retried under the same holder while its earlier group is held, and runs once it ends', async () => {
         // Refused for the first reclaim group's own Secret alone, once it exists.
         let refuse = true;
+        let groupDeleted = false;
         let first: { name: string; secret: string } | null = null;
         const { request, calls } = routed((method, path, body) => {
             const meta = (body as { metadata?: { name?: string; labels?: Record<string, string> } } | undefined)
@@ -7866,6 +8081,12 @@ describe('claims of an unconfirmed group (#821)', () => {
                     name: meta.name,
                     secret: `${secretsBase}/${secretName({ ...repoJob, leaseToken: meta.labels?.['factory.lease'] ?? '' })}`,
                 };
+            }
+            if (first && method === 'DELETE' && path.startsWith(`${jobPath(namespace, first.name)}?`))
+                groupDeleted = true;
+            // The held group's Job was suspended, not finished: it reads pending until it is deleted.
+            if (first && method === 'GET' && path === jobPath(namespace, first.name) && !groupDeleted) {
+                return { status: 200, body: JSON.stringify({ metadata: { uid: 'job-uid-1' }, status: {} }) };
             }
             return refuse && first && method === 'DELETE' && path === first.secret
                 ? { status: 500, body: 'unavailable' }
@@ -7948,7 +8169,11 @@ describe('claims of an unconfirmed group (#821)', () => {
         const OLD = '55555555-5555-4555-8555-555555555555';
         const old = { ...repoJob, leaseToken: OLD };
         const leftover = {
-            metadata: { name: runnerJobName(old), labels: { 'factory.job': repoJob.id, 'factory.lease': OLD } },
+            metadata: {
+                name: runnerJobName(old),
+                uid: `uid-${runnerJobName(old)}`,
+                labels: { 'factory.job': repoJob.id, 'factory.lease': OLD },
+            },
         };
         let listed = [leftover];
         let refusals = 1;
@@ -8026,6 +8251,7 @@ describe('claims of an unconfirmed group (#821)', () => {
         const prior = {
             metadata: {
                 name: runnerJobName(job),
+                uid: `uid-${runnerJobName(job)}`,
                 labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken },
                 annotations: {
                     'factory.claim-seq': '1',
@@ -8065,6 +8291,7 @@ describe('claims of an unconfirmed group (#821)', () => {
         const prior = {
             metadata: {
                 name: runnerJobName(job),
+                uid: `uid-${runnerJobName(job)}`,
                 labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken },
                 annotations: {
                     'factory.claim-seq': '1',
@@ -8104,6 +8331,7 @@ describe('finishing a group that ended by itself (#821)', () => {
     const finished = {
         metadata: {
             name: runnerJobName(repoJob),
+            uid: `uid-${runnerJobName(repoJob)}`,
             labels: { 'factory.job': repoJob.id, 'factory.lease': repoJob.leaseToken },
             annotations: {
                 'factory.claim-seq': '1',
@@ -8192,7 +8420,7 @@ describe('finishing a group that ended by itself (#821)', () => {
 
     it('deletes the Job of a group that did not end within the bound, Secrets first', async () => {
         const { request, calls } = routed(() => undefined, {
-            job: { status: 200, body: JSON.stringify({ status: {} }) },
+            job: { status: 200, body: JSON.stringify({ metadata: { uid: 'job-uid-1' }, status: {} }) },
         });
         const r = build(request);
         await r.syncCheckout(repoJob, undefined, SESSION_OF);
@@ -8288,7 +8516,14 @@ describe('finish retries a teardown left unconfirmed (#821)', () => {
     it('ends a killed group whose Secret delete was refused at the next finish, and only then gives the claim back', async () => {
         const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
         let refusals = 1;
+        let groupDeleted = false;
+        const groupPath = jobPath(namespace, runnerJobName(repoJob));
         const { request, calls } = routed((method, path) => {
+            if (method === 'DELETE' && path.startsWith(`${groupPath}?`)) groupDeleted = true;
+            // The held group's Job was suspended, not finished: it reads pending until it is deleted.
+            if (method === 'GET' && path === groupPath && !groupDeleted) {
+                return { status: 200, body: JSON.stringify({ metadata: { uid: 'job-uid-1' }, status: {} }) };
+            }
             if (
                 method === 'DELETE' &&
                 path === `/api/v1/namespaces/${namespace}/secrets/${secretName(repoJob)}` &&
@@ -8385,6 +8620,7 @@ describe('Secrets owned by their Job, and only agent runs adopted (#821)', () =>
     const runnerItem = (lease: string, seq: string, containers: string[]) => ({
         metadata: {
             name: runnerJobName({ ...job, leaseToken: lease }),
+            uid: `uid-${runnerJobName({ ...job, leaseToken: lease })}`,
             labels: { 'factory.job': job.id, 'factory.lease': lease },
             annotations: {
                 'factory.claim-seq': seq,
@@ -8470,6 +8706,7 @@ describe('a finished run is kept only for the claim that adopted it (#821)', () 
     const finishedOld = {
         metadata: {
             name: oldName,
+            uid: `uid-${oldName}`,
             labels: { 'factory.job': job.id, 'factory.lease': OLD },
             annotations: {
                 'factory.claim-seq': '1',
@@ -8511,6 +8748,107 @@ describe('a finished run is kept only for the claim that adopted it (#821)', () 
         const deleted = calls.findIndex((call) => call.method === 'DELETE' && call.path.startsWith(`${oldAt}?`));
         expect(deleted).toBeGreaterThanOrEqual(0);
         expect(syncAt()).toBeGreaterThan(deleted);
+    });
+
+    // #869: the sweep spares the adopted Job only on evidence it is the run it read; a listing that
+    // shows that Job without its spec or lease is no evidence, and nothing is deleted on it.
+    it.each([
+        ['no spec', { ...finishedOld, spec: undefined }],
+        [
+            'no lease label',
+            { ...finishedOld, metadata: { ...finishedOld.metadata, labels: { 'factory.job': job.id } } },
+        ],
+        ['no status', { ...finishedOld, status: undefined }],
+        ['an empty status', { ...finishedOld, status: {} }],
+        ['no containers', { ...finishedOld, spec: { template: { spec: { containers: [] } } } }],
+    ])('deletes nothing and never syncs when the adopted run is listed with %s', async (_name, listing) => {
+        let listed: unknown[] = [finishedOld];
+        const { request, calls } = routed((method, path) =>
+            method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)
+                ? { status: 200, body: JSON.stringify({ items: listed }) }
+                : undefined
+        );
+        const steps = fakeSteps(() => stepOk('{"ok":true,"reason":null}\n'));
+        const r = supervisedRunner(config, request, async () => {}, { steps: steps.sink });
+        expect(await r.adopt(repoJob)).toMatchObject({ claimSeq: 1 });
+        listed = [listing];
+
+        await expect(r.syncCheckout(repoJob, undefined, { id: SESSION, resume: false })).rejects.toThrow();
+
+        expect(calls.some((call) => call.method === 'DELETE' && call.path.startsWith(`${oldAt}?`))).toBe(false);
+        expect(steps.submitted.filter((step) => step.kind === 'sync')).toEqual([]);
+    });
+
+    // #869: a round whose Job listing proves nothing spares nothing, so it deletes nothing: the
+    // adopted run's pod is never swept for want of the Job read that would have spared it.
+    it.each([
+        ['a 503', { status: 503, body: 'unavailable' }],
+        ['an empty object', { status: 200, body: '{}' }],
+        ['truncated JSON', { status: 200, body: '{"items":[' }],
+        [
+            'the adopted Job with an empty status',
+            { status: 200, body: JSON.stringify({ items: [{ ...finishedOld, status: {} }] }) },
+        ],
+    ])('never deletes a pod of the adopted run when the sweep reads the Jobs as %s', async (_name, jobs) => {
+        const pod = {
+            metadata: {
+                name: `${oldName}-pod`,
+                uid: `uid-${oldName}-pod`,
+                labels: { 'factory.job': job.id, 'factory.lease': OLD, 'job-name': oldName },
+            },
+        };
+        let sweeping = false;
+        const { request, calls } = routed((method, path) => {
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return sweeping ? jobs : { status: 200, body: JSON.stringify({ items: [finishedOld] }) };
+            }
+            if (sweeping && method === 'GET' && path.includes('/pods?')) {
+                return { status: 200, body: JSON.stringify({ items: [pod] }) };
+            }
+        });
+        const steps = fakeSteps(() => stepOk('{"ok":true,"reason":null}\n'));
+        const r = supervisedRunner(config, request, async () => {}, { steps: steps.sink });
+        expect(await r.adopt(repoJob)).toMatchObject({ claimSeq: 1 });
+        sweeping = true;
+
+        await expect(r.syncCheckout(repoJob, undefined, { id: SESSION, resume: false })).rejects.toThrow();
+
+        expect(calls.some((call) => call.method === 'GET' && call.path.includes('/pods?'))).toBe(true);
+        // Nothing of the adopted run — its Job or its pod — is deleted.
+        const deleted = calls.filter((call) => call.method === 'DELETE').map((call) => call.path);
+        expect(deleted.filter((path) => path.includes(oldName))).toEqual([]);
+        expect(steps.submitted.filter((step) => step.kind === 'sync')).toEqual([]);
+    });
+
+    // #869: a pod of the kept run is spared by its lease, never by its `job-name` label alone — a
+    // pod listed without that label is still the adopted run's; one listed with neither cannot say
+    // whose it is, and that round deletes nothing.
+    it.each([
+        ['its job-name label', { 'factory.job': job.id, 'factory.lease': OLD }],
+        ['its job-name or lease label', { 'factory.job': job.id }],
+    ])('never deletes a pod of the adopted run listed without %s', async (_name, labels) => {
+        const pod = { metadata: { name: `${oldName}-pod`, uid: `uid-${oldName}-pod`, labels } };
+        // The leftover pod is listed to the sweep only: the adoption read its run before it.
+        let sweeping = false;
+        const { request, calls } = routed((method, path) => {
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return { status: 200, body: JSON.stringify({ items: [finishedOld] }) };
+            }
+            if (sweeping && method === 'GET' && path.includes('/pods?')) {
+                return { status: 200, body: JSON.stringify({ items: [pod] }) };
+            }
+        });
+        const steps = fakeSteps(() => stepOk('{"ok":true,"reason":null}\n'));
+        const r = supervisedRunner(config, request, async () => {}, { steps: steps.sink });
+        expect(await r.adopt(repoJob)).toMatchObject({ claimSeq: 1 });
+        sweeping = true;
+
+        await r.syncCheckout(repoJob, undefined, { id: SESSION, resume: false }).catch(() => undefined);
+
+        expect(calls.some((call) => call.method === 'GET' && call.path.includes('/pods?'))).toBe(true);
+        expect(calls.some((call) => call.method === 'DELETE' && call.path.includes(`/pods/${oldName}-pod`))).toBe(
+            false
+        );
     });
 
     it('never syncs while that finished run cannot be deleted', async () => {
@@ -8668,8 +9006,9 @@ describe('teardown ownership in time and incarnation (#821)', () => {
                 return { status: 200, body: '{}' };
             }
             if (isJobs && method === 'GET') {
+                // Pending: a Job whose end went unconfirmed was suspended, never finished, and its pods still run.
                 return current
-                    ? { status: 200, body: JSON.stringify({ metadata: { uid: current }, status: { succeeded: 1 } }) }
+                    ? { status: 200, body: JSON.stringify({ metadata: { uid: current }, status: {} }) }
                     : { status: 404, body: '{}' };
             }
             return { status: 404, body: '{}' };
@@ -9092,6 +9431,7 @@ describe('teardown ownership in time and incarnation (#821)', () => {
         const prior = {
             metadata: {
                 name: runnerJobName(job),
+                uid: `uid-${runnerJobName(job)}`,
                 labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken },
                 annotations: {
                     'factory.claim-seq': '1',
@@ -9106,6 +9446,7 @@ describe('teardown ownership in time and incarnation (#821)', () => {
             {
                 metadata: {
                     name: 'factory-svc-left',
+                    uid: 'uid-svc-left',
                     labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken },
                 },
             },
@@ -9138,6 +9479,7 @@ describe('teardown ownership in time and incarnation (#821)', () => {
         const runnerItem = (lease: string, seq: string, status: Record<string, unknown>) => ({
             metadata: {
                 name: runnerJobName({ ...job, leaseToken: lease }),
+                uid: `uid-${runnerJobName({ ...job, leaseToken: lease })}`,
                 labels: { 'factory.job': job.id, 'factory.lease': lease },
                 annotations: {
                     'factory.claim-seq': seq,

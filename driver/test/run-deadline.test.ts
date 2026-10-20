@@ -109,7 +109,7 @@ describe('the docker runner kill timer', () => {
             calls.push(args);
             // The kill resolves its container through the attempt's own lease label.
             if (args[0] === 'ps' && args.some((a) => a.startsWith('label=factory.lease'))) {
-                return { stdout: 'runner-1\n' };
+                return { stdout: 'a0a0a0a0a001\n' };
             }
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
@@ -153,7 +153,7 @@ describe('the docker runner kill timer', () => {
         const exec = vi.fn(async (args: string[]) => {
             calls.push(args);
             if (args[0] === 'ps' && args.some((a) => a.startsWith('label=factory.lease'))) {
-                return { stdout: 'runner-1\n' };
+                return { stdout: 'a0a0a0a0a001\n' };
             }
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;

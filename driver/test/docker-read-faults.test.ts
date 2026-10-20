@@ -5,11 +5,12 @@
  * `fixtures/read-faults.ts`; each scenario's world is "something there", so every read that guards
  * a delete or a verdict answers non-empty when clean.
  *
- * Today's violations are pinned `it.fails` with their exact line set, read from an unpinned run:
- * typed reads (#869 PR A and B) flip them.
+ * The destructive paths read typed (#869 PR A): a cell that holds is a plain test. What stays pinned
+ * `it.fails` with its exact line set, read from an unpinned run, is the verdict paths (D-DS), which
+ * typed reads (#869 PR B) flip.
  */
 import type { ChildProcess, spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { Readable } from 'node:stream';
 import { describe, expect } from 'vitest';
@@ -77,9 +78,12 @@ const either =
         }
     };
 
+/** A container id as the daemon prints it: 64 lowercase hex characters. */
+const containerId = (): string => randomBytes(32).toString('hex');
+
 /** The three members of an attempt's group, each a fresh container id named by its role. */
 function groupOf(alias: Alias): { agent: string; supervisor: string; exporter: string; listing: string } {
-    const [agent, supervisor, exporter] = [randomUUID(), randomUUID(), randomUUID()] as const;
+    const [agent, supervisor, exporter] = [containerId(), containerId(), containerId()] as const;
     alias(agent, 'agent');
     alias(supervisor, 'supervisor');
     alias(exporter, 'exporter');
@@ -111,7 +115,7 @@ const hardKill: Build<ExecDocker> = async (tap, alias) => {
 const serviceTeardown: Build<ExecDocker> = async (tap, alias) => {
     const job = freshJob();
     aliasPair(alias, job, 'lease');
-    const service = randomUUID();
+    const service = containerId();
     alias(service, 'service');
     const { exec } = routedDocker(
         either(writes, (args) =>
@@ -157,7 +161,7 @@ const adoptExited: Build<ExecDocker> = async (tap, alias) => {
     alias(older, 'older');
     const session = randomUUID();
     alias(session, 'session');
-    const [read, exporter, olderRunner] = [randomUUID(), randomUUID(), randomUUID()];
+    const [read, exporter, olderRunner] = [containerId(), containerId(), containerId()];
     alias(read, 'runner');
     alias(exporter, 'exporter');
     alias(olderRunner, 'older-runner');
@@ -197,8 +201,8 @@ const psRow = (pair: BoardJob, id: string, fields: { label: string; name?: strin
 
 /** A daemon holding one attempt's service container, its exited runner group and its mailbox, all created at `created`. */
 function reaperDaemon(pair: BoardJob, alias: Alias, created: { ps: string; volume: string }): ExecDocker {
-    const service = randomUUID();
-    const [agent, supervisor] = [randomUUID(), randomUUID()];
+    const service = containerId();
+    const [agent, supervisor] = [containerId(), containerId()];
     const mailbox = `factory-ctl-${pair.id}-${pair.leaseToken}`;
     alias(service, 'service');
     alias(agent, 'agent');
@@ -283,22 +287,8 @@ const deadService: Build<ExecDocker> = async (tap, alias) => {
     };
 };
 
-const GROUP_PS = 'ps -aq --filter label=factory.job=<job> --filter label=factory.lease=<lease>';
-const SERVICE_PS = `${GROUP_PS} --filter label=factory.service`;
-const AGENT_PS =
-    'ps -q --filter label=factory.job=<job> --filter label=factory.lease=<lease> --filter label=factory.role=agent';
-const HTML = '<html><body>502 Bad Gateway</body></html>';
-
 /** A scenario's pins, by fault: one line per documented violation. */
 type Pins = Partial<Record<DockerFault, RegExp[]>>;
-const pinsFor = (faults: readonly DockerFault[], lines: (fault: DockerFault) => string[]): Pins =>
-    Object.fromEntries(faults.map((fault) => [fault, lines(fault).map(pin)]));
-
-/**
- * The service teardown (`dockerServiceTeardown`) every kill and stop ends in: a listing that is no
- * list of ids becomes the ids it removes (`docker-teardown.ts:139`, :154).
- */
-const teardownGarbage = [`DELETE after garbage at ${SERVICE_PS}: rm -f ${HTML}`];
 
 /** One scenario: its world, the writes its clean run makes, and — for the stop — the escalation it may make. */
 interface World {
@@ -321,33 +311,16 @@ function scenario(name: string, { build, writes, escalation, allowed }: World, p
 scenario(
     'the hard kill of a group of three (D-K)',
     { build: hardKill, writes: ['kill <agent>', 'kill <supervisor>', 'kill <exporter>'] },
-    {
-        // A refused group listing reads as no group (`docker-teardown.ts`): nothing is killed.
-        // Garbage becomes a kill target.
-        garbage: [`DELETE after garbage at ${GROUP_PS}: kill ${HTML}`, ...teardownGarbage].map(pin),
-    }
+    {}
 );
 
-scenario(
-    'the service teardown of a service (D-ST)',
-    { build: serviceTeardown, writes: ['rm -f <service>'] },
-    // Garbage becomes a removal target (`docker-teardown.ts`).
-    { garbage: teardownGarbage.map(pin) }
-);
+scenario('the service teardown of a service (D-ST)', { build: serviceTeardown, writes: ['rm -f <service>'] }, {});
 
 scenario(
     'the supervised stop of a finalized group (D-SA)',
     { build: stopAgent, writes: [], escalation: STOP_ESCALATION },
-    {
-        // The stopAgent exception covers the escalation's kills of the real members only: a garbage
-        // agent listing is a literal kill target (`docker-teardown.ts:234`).
-        garbage: [`DELETE after garbage at ${AGENT_PS}: kill ${HTML}`, ...teardownGarbage].map(pin),
-    }
+    {}
 );
-
-/** The adoption's fence listings (`listOtherAttemptsOrThrow`), each by job label, id or name and lease. */
-const fenceList = (what: string, format: string) =>
-    `${what} --filter label=factory.job=<job> --format {{.${format}}}\t{{.Label "factory.lease"}}`;
 
 scenario(
     'an adoption of an exited earlier runner (D-AD)',
@@ -360,38 +333,12 @@ scenario(
             'volume rm -f factory-ctl-<job>-<older>',
         ],
     },
-    {
-        garbage: [
-            // A listing of no runner reads as none to adopt (`docker-close-read.ts:229` → :307).
-            `VERDICT after garbage at ps -a --filter label=factory.job=<job> --filter status=exited --format {{.Names}}\t{{.Label "factory.lease"}}\t{{.Label "factory.claim-seq"}}\t{{.Label "factory.session"}}\t{{.Label "factory.command"}}: no-earlier-run`,
-            // A line with no lease field reads as another attempt's leftover (`docker-runner-support.ts:182-183`).
-            `DELETE after garbage at ${fenceList('ps -a', 'ID')}: rm -f ${HTML}`,
-            `DELETE after garbage at ${fenceList('volume ls', 'Name')}: volume rm -f ${HTML}`,
-        ].map(pin),
-    }
+    {}
 );
 
-scenario(
-    'the reaper on a superseded lease with an unread runner (D-RP1)',
-    { build: reaperSuperseded, writes: [] },
-    // A role listing of no rows (`docker-reaper.ts`) loses the group its runner spare
-    // (`reaper.ts`): reaped, its service first.
-    {
-        garbage: [
-            pin(`DELETE after garbage at ps -a --filter label=factory.role --format {{json .}}: rm -f <service>`),
-        ],
-    }
-);
+scenario('the reaper on a superseded lease with an unread runner (D-RP1)', { build: reaperSuperseded, writes: [] }, {});
 
-scenario(
-    'the reaper on a gone job inside its grace (D-RP2)',
-    { build: reaperGone, writes: [] },
-    // An unparsable creation time dates the volume to the epoch (`docker-reaper.ts`): the
-    // group reads as out of its grace and is reaped.
-    pinsFor(['empty', 'garbage'], (fault) => [
-        `DELETE after ${fault} at volume inspect --format {{.CreatedAt}} factory-ctl-<job>-<lease>: rm -f <service>`,
-    ])
-);
+scenario('the reaper on a gone job inside its grace (D-RP2)', { build: reaperGone, writes: [] }, {});
 
 scenario(
     'the dead-service probe of a running service (D-DS)',

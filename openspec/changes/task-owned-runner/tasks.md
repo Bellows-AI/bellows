@@ -66,16 +66,17 @@ halves in the same change. Unchecked items are not implemented. `→` names hard
 
 ## Phase 3 — remove EFS
 
-- [ ] 12. (#775) Task-owned PVC → 7, 0.3. Driver creates one explicitly managed PVC per root thread
-  (RWOP on EBS, RWO on kind), not pod-owned; reaper never deletes it before artifacts are
-  acknowledged; claim sequence still fences writers. Docker: one named volume per root.
-- [ ] 13. (#776) Independent checkout and restore → 12. Replace member clone + linked worktree
-  (`git-worktree*.cjs`) with a per-task clone (partial clone to cap clone time); retry and
-  follow-up semantics preserved; restore from completed checkpoint manifests only.
-- [ ] 14. (#777) Server leaves the filesystem → 6, 13. Delete `workspace/{reconcile,provision,purge,facts}`
+- [ ] 12–13. (#775) Task-owned PVC, independent checkout and restore → 7, 0.3. Driver creates one
+  explicitly managed PVC per root thread (RWOP on EBS, RWO on kind), not pod-owned; reaper never
+  deletes it before artifacts and the checkpoint are acknowledged; claim sequence still fences
+  writers. Docker: one named volume per root. Replace member clone + linked worktree
+  (`git-worktree*.cjs`) with a per-task clone on that volume (partial clone to cap clone time); the
+  task pod no longer mounts the shared claim; retry and follow-up semantics preserved; checkpoint
+  at finalize; restore from completed checkpoint manifests only.
+- [ ] 14. (#777) Server leaves the filesystem → 6, 12–13. Delete `workspace/{reconcile,provision,purge,facts}`
   filesystem code, `ORG_WORKSPACE_ROOT`, the API mount and their routes; facts become metadata.
   UI changes run `npm run verify:ui`.
-- [ ] 15. (#778) Chart and docs → 12–14. Drop the RWX workspaces PVC and EFS steps; EBS storage class;
+- [ ] 15. (#778) Chart and docs → 12–13, 14. Drop the RWX workspaces PVC and EFS steps; EBS storage class;
   update `docs/kubernetes.md`, `docs/workspace.md`, `docs/eks-runbook.md` table rows and the
   pinned prose in `k8s-docs` / `docs.eks-storage` tests in the same change.
 

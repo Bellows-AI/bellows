@@ -7,6 +7,7 @@ import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { createReaper, type OrphanGroup } from '../src/reaper.js';
+import { AGENT_CONTAINER, SUPERVISOR_CONTAINER } from '../src/supervisor-contract.js';
 
 /**
  * The kubernetes reaper arm, offline: the request function is injected (the way every k8s suite
@@ -47,7 +48,12 @@ const router = (
 
 /** A leftover aux Job of one attempt (a readout), as the job+lease selector lists it. */
 const auxJob = (name: string, jobId: string, lease: string, created: string) => ({
-    metadata: { name, labels: { [JOB_LABEL]: jobId, [LEASE_LABEL]: lease }, creationTimestamp: created },
+    metadata: {
+        name,
+        uid: `uid-${name}`,
+        labels: { [JOB_LABEL]: jobId, [LEASE_LABEL]: lease },
+        creationTimestamp: created,
+    },
 });
 
 const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: NAMESPACE });
@@ -109,20 +115,27 @@ describe('the kubernetes reaper arm: scan', () => {
                 // the attempt's objects began to exist, not from the youngest of them.
                 createdAtMs: Date.parse('2026-09-01T00:00:00Z'),
                 objects: [
-                    { kind: 'job', name: 'factory-ocread-new' },
-                    { kind: 'job', name: 'factory-cturns-old' },
+                    { kind: 'job', name: 'factory-ocread-new', uid: 'uid-factory-ocread-new' },
+                    { kind: 'job', name: 'factory-cturns-old', uid: 'uid-factory-cturns-old' },
                 ],
             },
         ]);
     });
 
-    it('skips rows missing either label, and objects the API has not named', async () => {
+    it('dates a row by an RFC3339 timestamp with a fraction and an offset', async () => {
+        const items = [auxJob('p', JOB, LEASE, '2026-09-01T02:00:00.5+02:00')];
+        const { request } = router([['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items }) }]]);
+        const groups = await createKubernetesReaper({ config, request }).scan();
+        expect(groups.map((g) => g.createdAtMs)).toEqual([Date.parse('2026-09-01T00:00:00.500Z')]);
+    });
+
+    it('skips rows missing either label', async () => {
         const jobs = JSON.stringify({
             items: [
                 auxJob('good', JOB, LEASE, '2026-09-01T00:00:00Z'),
                 // Unlabelled junk never becomes somebody's orphan.
-                { metadata: { name: 'junk', creationTimestamp: '2026-09-01T00:00:00Z' } },
-                { metadata: { labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE } } },
+                { metadata: { name: 'junk', uid: 'uid-junk' } },
+                { metadata: { name: 'half', uid: 'uid-half', labels: { [JOB_LABEL]: JOB } } },
             ],
         });
         const { request } = router([['GET', LIST_JOBS, { status: 200, body: jobs }]]);
@@ -132,9 +145,87 @@ describe('the kubernetes reaper arm: scan', () => {
                 jobId: JOB,
                 leaseToken: LEASE,
                 createdAtMs: Date.parse('2026-09-01T00:00:00Z'),
-                objects: [{ kind: 'job', name: 'good' }],
+                objects: [{ kind: 'job', name: 'good', uid: 'uid-good' }],
             },
         ]);
+    });
+
+    it.each([
+        [
+            'an in-scope Job with no creationTimestamp',
+            { metadata: { name: 'x', labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE } } },
+        ],
+        ['an in-scope Job with an unparsable creationTimestamp', auxJob('x', JOB, LEASE, 'not-a-date')],
+        ['an in-scope Job dated "0"', auxJob('x', JOB, LEASE, '0')],
+        ['an in-scope Job dated on a day the calendar lacks', auxJob('x', JOB, LEASE, '2026-02-31T00:00:00Z')],
+        ['an in-scope Job dated with no time', auxJob('x', JOB, LEASE, '2026-09-01')],
+        ['an in-scope Job dated in docker’s spelling', auxJob('x', JOB, LEASE, '2026-09-01 00:00:00 +0000 UTC')],
+        ['an item no one named', { metadata: { labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE } } }],
+        ['an empty item', {}],
+        ['an item named by a number', { metadata: { name: 5 } }],
+        [
+            'an item with no uid',
+            {
+                metadata: {
+                    name: 'x',
+                    labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE },
+                    creationTimestamp: '2026-09-01T00:00:00Z',
+                },
+            },
+        ],
+        [
+            'an item with an empty uid',
+            {
+                metadata: {
+                    name: 'x',
+                    uid: '',
+                    labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE },
+                    creationTimestamp: '2026-09-01T00:00:00Z',
+                },
+            },
+        ],
+        // #869 round 2: a job, lease or holder label that is present but no uuid would become the attempt identity.
+        ['an in-scope Job whose lease label is no lease', auxJob('x', JOB, 'corrupt', '2026-09-01T00:00:00Z')],
+        ['an in-scope Job whose lease label is empty', auxJob('x', JOB, '', '2026-09-01T00:00:00Z')],
+        ['an in-scope Job whose job label is no job id', auxJob('x', 'corrupt', LEASE, '2026-09-01T00:00:00Z')],
+        [
+            'a Job whose holder label is no lease',
+            {
+                metadata: {
+                    name: 'x',
+                    uid: 'uid-x',
+                    labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE, 'factory.holder': 'corrupt' },
+                    creationTimestamp: '2026-09-01T00:00:00Z',
+                },
+            },
+        ],
+    ])('answers nothing when a listed row is malformed — %s', async (_name, row) => {
+        // A row that cannot be dated or named proves nothing about the rest: a group dated from the
+        // other rows could read as out of its grace (#869).
+        const items = [auxJob('good', JOB, LEASE, '2026-09-01T00:00:00Z'), row];
+        const { request } = router([['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items }) }]]);
+        await expect(createKubernetesReaper({ config, request }).scan()).resolves.toEqual([]);
+    });
+
+    // #869 round 2: a Job named as a runner whose spec is unreadable cannot be said to run no agent.
+    it.each([
+        ['no spec', undefined],
+        ['a spec with no pod template', {}],
+        ['a container with no name', { template: { spec: { containers: [{}] } } }],
+        ['a suspend that is no boolean', { suspend: 'yes', template: { spec: { containers: [{ name: 'agent' }] } } }],
+    ])('answers nothing when a listed runner Job has %s', async (_name, spec) => {
+        const runnerJob = {
+            metadata: {
+                name: runnerJobName({ id: JOB, leaseToken: LEASE } as BoardJob),
+                uid: 'uid-runner',
+                labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE },
+                creationTimestamp: '2026-09-01T00:00:00Z',
+            },
+            ...(spec === undefined ? {} : { spec }),
+            status: { succeeded: 1 },
+        };
+        const { request } = router([['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: [runnerJob] }) }]]);
+        await expect(createKubernetesReaper({ config, request }).scan()).resolves.toEqual([]);
     });
 
     it('answers nothing when the Jobs cannot be read — inconclusive reaps nothing', async () => {
@@ -267,6 +358,7 @@ describe('the kubernetes reaper arm: an unread finished runner', () => {
     const finishedRunner = {
         metadata: {
             name: runnerJob,
+            uid: 'uid-1',
             labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE },
             creationTimestamp: '2026-10-01T00:00:00Z',
         },
@@ -281,10 +373,12 @@ describe('the kubernetes reaper arm: an unread finished runner', () => {
     it('marks a finished runner Job unread on the scan, and a running one not', async () => {
         const running = { ...finishedRunner, status: { active: 1 } };
         const arm = createKubernetesReaper({ config, request: router(lists([finishedRunner])).request });
-        expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, unread: true, runner: true }]);
+        expect((await arm.scan())[0]!.objects).toEqual([
+            { kind: 'job', name: runnerJob, uid: 'uid-1', unread: true, runner: true },
+        ]);
 
         const live = createKubernetesReaper({ config, request: router(lists([running])).request });
-        expect((await live.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, runner: true }]);
+        expect((await live.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, uid: 'uid-1', runner: true }]);
     });
 
     // A supervisor-only group's Job (an agentless node, the group an adoption made) ran no agent:
@@ -295,7 +389,7 @@ describe('the kubernetes reaper arm: an unread finished runner', () => {
             spec: { template: { spec: { containers: [{ name: 'supervisor' }] } } },
         };
         const arm = createKubernetesReaper({ config, request: router(lists([supervisorOnly])).request });
-        expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, runner: true }]);
+        expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, uid: 'uid-1', runner: true }]);
     });
 
     it('never deletes an unread finished runner of a job that is still live', async () => {
@@ -330,6 +424,7 @@ describe('paused runner recovery after a driver restart', () => {
     const pausedJob = {
         metadata: {
             name,
+            uid: 'uid-1',
             labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE },
             creationTimestamp: '2026-09-01T00:00:00Z',
             annotations: { 'bellows.ai/paused-deadline': JSON.stringify({ deadline: 60, at: 1 }) },
@@ -410,10 +505,15 @@ describe('the kubernetes reaper arm: suspended runners and confirmed claims (#82
     const suspendedRunner = {
         metadata: {
             name: runnerJob,
+            uid: 'uid-1',
             labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE },
             creationTimestamp: '2026-10-01T00:00:00Z',
         },
-        spec: { suspend: true },
+        // A runner Job as the apiserver holds it: its pod template names the supervisor and the agent.
+        spec: {
+            suspend: true,
+            template: { spec: { containers: [{ name: SUPERVISOR_CONTAINER }, { name: AGENT_CONTAINER }] } },
+        },
         status: { failed: 1 },
     };
     const lists = (jobs: unknown[]): readonly (readonly [K8sMethod, string, K8sResponse])[] => [
@@ -437,7 +537,7 @@ describe('the kubernetes reaper arm: suspended runners and confirmed claims (#82
 
     it('never marks a suspended runner Job unread', async () => {
         const arm = createKubernetesReaper({ config, request: router(lists([suspendedRunner])).request });
-        expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, runner: true }]);
+        expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, uid: 'uid-1', runner: true }]);
     });
 
     it('reaps a suspended runner of a terminal job Secret first, then the Job', async () => {
@@ -543,6 +643,7 @@ describe('the kubernetes reaper arm: a live job’s runner Job is the fence’s 
     const running = {
         metadata: {
             name: runnerJob,
+            uid: 'uid-1',
             labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE },
             creationTimestamp: '2026-10-01T00:00:00Z',
         },

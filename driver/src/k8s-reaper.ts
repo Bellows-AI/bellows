@@ -4,20 +4,20 @@ import {
     HTTP_CONFLICT,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
-    is2xx,
     JOB_ID,
-    parse,
     wait,
     type K8sDeps,
     type K8sRequest,
-    type K8sResponse,
 } from './k8s-transport.js';
 import { claimPath, secretsPath } from './k8s-auxspec.js';
-import { releaseClaimAfterGroupEnd } from './k8s-fence.js';
+import { readClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
 import { holderGroupsOf } from './k8s-group.js';
+import { asIdentified, readTypedList } from './k8s-poll.js';
 import { finishedAgentRun, jobsPath, type ListedRunnerJob, runnerJobName, secretName } from './k8s-podspec.js';
+import { isLease, runnerSpecReadable } from './k8s-shapes.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
 import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict } from './reaper.js';
+import { parseRfc3339 } from './timestamps.js';
 
 /**
  * The kubernetes half of the orphan reaper (issue #301): enumerate the Jobs the driver's crashed
@@ -56,9 +56,9 @@ const basePathOf = (config: DriverConfig): Record<OrphanObject['kind'], string> 
 const attemptPair = (jobId: string, leaseToken: string): BoardJob => ({ id: jobId, leaseToken }) as BoardJob;
 
 interface ListedItem extends ListedRunnerJob {
-    metadata?: {
-        name?: string;
-        uid?: string;
+    metadata: {
+        name: string;
+        uid: string;
         labels?: Record<string, string>;
         creationTimestamp?: string;
     };
@@ -72,16 +72,39 @@ interface ListedItem extends ListedRunnerJob {
 const unreadRunner = (item: ListedItem, jobId: string, leaseToken: string): boolean =>
     JOB_ID.test(jobId) && JOB_ID.test(leaseToken) && finishedAgentRun(item, attemptPair(jobId, leaseToken));
 
-/** One label-selector collection GET, parsed into the fields the grouping needs. */
-const listBySelector = async (request: K8sRequest, path: string): Promise<ListedItem[] | null> => {
-    let response: K8sResponse;
-    try {
-        response = await request('GET', path);
-    } catch {
-        return null;
-    }
-    if (!is2xx(response.status)) return null;
-    return parse<{ items?: ListedItem[] }>(response.body).items ?? [];
+/**
+ * One listed item as far as the scan reads it (#869): an item carrying the job and the lease label
+ * is in scope, and must be dated; any job, lease or holder label it carries must be a uuid — a
+ * corrupt one would become an attempt identity the grouping files it under, and the group's board
+ * lookup would condemn a live attempt's objects. A Job named as the runner of its pair must have a
+ * readable spec (`unreadRunner` decides on it). An item that is not this makes the whole list
+ * inconclusive, and the scan answers nothing rather than a group built from the rest. An item out of
+ * scope is skipped later.
+ */
+const asListedItem =
+    (kind: OrphanObject['kind']) =>
+    (value: unknown): ListedItem | null => {
+        const item = asIdentified<ListedItem>(value);
+        if (item === null) return null;
+        const labels = item.metadata.labels;
+        const [jobId, leaseToken, holder] = [JOB_LABEL, LEASE_LABEL, HOLDER_LABEL].map((label) => labels?.[label]);
+        if ([jobId, leaseToken, holder].some((label) => label !== undefined && !isLease(label))) return null;
+        if (jobId === undefined || leaseToken === undefined) return item;
+        const created = item.metadata.creationTimestamp;
+        if (created === undefined || parseRfc3339(created) === null) return null;
+        return kind !== 'job' || runnerSpecReadable(item, attemptPair(jobId, leaseToken)) ? item : null;
+    };
+
+/** One label-selector collection GET, parsed into the fields the grouping needs; null when it proves nothing. */
+const listBySelector = async (
+    deps: K8sDeps,
+    path: string,
+    what: string,
+    kind: OrphanObject['kind']
+): Promise<ListedItem[] | null> => {
+    const read = await readTypedList(deps, path, what, { entry: asListedItem(kind), once: true });
+    if (read.kind === 'inconclusive') return null;
+    return read.kind === 'absent' ? [] : read.value;
 };
 
 /** Select attempt Jobs within this release; never sweep another release. */
@@ -102,13 +125,13 @@ const groupKeyOf = (
     object: OrphanObject;
     createdAtMs: number;
 } | null => {
-    const name = item.metadata?.name;
-    const jobId = item.metadata?.labels?.[JOB_LABEL];
-    const leaseToken = item.metadata?.labels?.[LEASE_LABEL];
-    const created = item.metadata?.creationTimestamp;
+    const { name, uid } = item.metadata;
+    const jobId = item.metadata.labels?.[JOB_LABEL];
+    const leaseToken = item.metadata.labels?.[LEASE_LABEL];
+    const created = item.metadata.creationTimestamp;
     if (!name || !jobId || !leaseToken || created === undefined) return null;
-    const createdAtMs = Date.parse(created);
-    if (Number.isNaN(createdAtMs)) return null;
+    const createdAtMs = parseRfc3339(created);
+    if (createdAtMs === null) return null;
     const isRunner =
         kind === 'job' &&
         JOB_ID.test(jobId) &&
@@ -121,7 +144,7 @@ const groupKeyOf = (
         // A live job's runner Job, running or not, is its next claim's fence's (issue #821).
         ...(isRunner ? { runner: true as const } : {}),
         // The incarnation listed: its delete names that one only.
-        ...(item.metadata?.uid ? { uid: item.metadata.uid } : {}),
+        uid,
         // The checkout holder a reclaim group serves: whose claim its reap may act on.
         ...(item.metadata?.labels?.[HOLDER_LABEL] ? { holder: item.metadata.labels[HOLDER_LABEL] } : {}),
     };
@@ -147,10 +170,13 @@ const mergeIntoGroups = (
     }
 };
 
-const scan = async (config: DriverConfig, request: K8sRequest): Promise<OrphanGroup[]> => {
+const scan = async (deps: K8sDeps): Promise<OrphanGroup[]> => {
+    const { config } = deps;
     const jobs = await listBySelector(
-        request,
-        `${jobsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(selectorFor(config))}`
+        deps,
+        `${jobsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(selectorFor(config))}`,
+        'listing the jobs',
+        'job'
     );
     if (jobs === null) return [];
     const groups = new Map<string, OrphanGroup>();
@@ -213,20 +239,6 @@ const reapDerivedSecrets = async (
     return true;
 };
 
-/** The claim of the group's job as it reads now — the incarnation the claim reap may act on — or null. */
-const observedClaim = async (deps: K8sDeps, job: BoardJob): Promise<{ uid: string; holder: string } | null> => {
-    try {
-        const read = await deps.request('GET', claimPath(deps.config.k8sNamespace, job));
-        if (!is2xx(read.status)) return null;
-        const claim = parse<{ metadata?: { uid?: string }; data?: { holder?: string } }>(read.body);
-        const uid = claim.metadata?.uid;
-        const holder = claim.data?.holder;
-        return uid && holder ? { uid, holder } : null;
-    } catch {
-        return null;
-    }
-};
-
 const reap = async (deps: K8sDeps, group: OrphanGroup, verdict: ReapVerdict): Promise<readonly string[]> => {
     const { config, request } = deps;
     const paths = basePathOf(config);
@@ -252,7 +264,7 @@ const reap = async (deps: K8sDeps, group: OrphanGroup, verdict: ReapVerdict): Pr
     // from a round that only cleaned Secrets.
     if (!uuidScoped(group) || verdict !== 'gone' || failed) return removed;
     const job = attemptPair(group.jobId, group.leaseToken);
-    const observed = await observedClaim(deps, job);
+    const observed = await readClaim(deps, job);
     if (observed === null || !JOB_ID.test(observed.holder)) return removed;
     // Only the condemned attempt's own claim — held by its lease, or by the reclaim whose derived
     // token it is: a holder that is neither is a replacement's (the task reopened since the board
@@ -284,7 +296,7 @@ export function createKubernetesReaper({
 }): ReaperArm {
     const deps: K8sDeps = { config, request, sleep };
     return {
-        scan: () => scan(config, request),
+        scan: () => scan(deps),
         reap: (group, verdict) => reap(deps, group, verdict),
     };
 }
