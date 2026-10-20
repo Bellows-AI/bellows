@@ -5123,6 +5123,55 @@ describe('a group whose supervisor is gone releases its step channel', () => {
         if (pulled && pulled !== 'closed') broker.settle(CONTROL_TOKEN, pulled.id, pulled.invocation, ok('{}'));
         await again;
     });
+
+    it('ends the first-contact wait at once when a kill lands while the group is being made', async () => {
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let gated = false;
+        const exec = async (args: string[]) => {
+            // The first call that makes or starts the group is held; the kill lands behind it.
+            if (!gated && (args[0] === 'create' || args[0] === 'run' || args[0] === 'start')) {
+                gated = true;
+                await gate;
+            }
+            return { stdout: '' };
+        };
+        let sleeps = 0;
+        const runner = dockerRunner(exec as never, {
+            steps: createStepBroker(),
+            sleep: async () => {
+                sleeps += 1;
+            },
+        });
+        const probing = runner.probeTree(repoJob);
+        while (!gated) await new Promise((resolve) => setTimeout(resolve, 1));
+        await runner.kill(repoJob);
+        const sleptBeforeRelease = sleeps;
+        release();
+        await expect(probing).rejects.toThrow(/killed while its task group came up/);
+        expect(sleeps - sleptBeforeRelease).toBeLessThanOrEqual(2);
+    });
+
+    it('ends the wait of a group made again at once when it is killed again', async () => {
+        let sleeps = 0;
+        const runner = dockerRunner(emptyDaemon, {
+            steps: createStepBroker(),
+            sleep: async () => {
+                sleeps += 1;
+                await new Promise((resolve) => setTimeout(resolve, 5));
+            },
+        });
+        await runner.kill(repoJob);
+        const again = runner.probeTree(repoJob);
+        // The first kill must not mask the second: the wait of the recreated group ends on it.
+        while (sleeps < 1) await new Promise((resolve) => setTimeout(resolve, 1));
+        const sleptBefore = sleeps;
+        await runner.kill(repoJob);
+        await expect(again).rejects.toThrow(/killed while its task group came up/);
+        expect(sleeps - sleptBefore).toBeLessThanOrEqual(2);
+    });
 });
 
 /*

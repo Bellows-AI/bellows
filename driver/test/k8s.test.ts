@@ -7513,7 +7513,8 @@ describe('what a closed run leaves for the next claim, on kubernetes (the retent
         let closed = false;
         let deleted = false;
         const { request } = routed((method, path) => {
-            if (closed && method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) deleted = true;
+            // The runner Job is tracked from before the run starts: closing the run must never delete it.
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/${priorName}`)) deleted = true;
             if (closed && method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 return { status: 200, body: JSON.stringify({ items: deleted ? [] : [prior] }) };
             }
@@ -7522,6 +7523,7 @@ describe('what a closed run leaves for the next claim, on kubernetes (the retent
         const first = runner(request);
         await first.run(job, { id: SESSION, resume: false });
         closed = true;
+        expect(deleted).toBe(false);
 
         const adopted = await runner(request).adopt(adopter);
         expect(adopted ? 'adoptable' : 'gone').toBe(expected);

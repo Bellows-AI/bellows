@@ -199,12 +199,9 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal?: Abor
 
 /** Waits for the supervisor of a started group to pull; a plain error at the bound, no proof of why. */
 async function awaitGroupUp(deps: RunnerDeps, job: BoardJob): Promise<void> {
-    // A kill recorded before this group was made is an earlier group's (a step after a kill makes the
-    // group again, and `run` refuses a killed job itself): only one landing during the wait ends it.
-    const killedBefore = deps.ledger.was(job).stopped;
     const up = await awaitFirstContact(stepHostOf(deps), job, {
         sleep: deps.sleep,
-        stopped: () => !killedBefore && deps.ledger.was(job).stopped,
+        stopped: () => deps.ledger.was(job).stopped,
     });
     if (!up) {
         throw new Error(`the task supervisor ${supervisorName(job)} never came up within ${GROUP_UP_WAIT_MS}ms`);
@@ -228,6 +225,9 @@ async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession 
         }
         return known;
     }
+    // A kill recorded before this group was made is an earlier group's: forgotten, so only a kill
+    // landing from here on ends this group's wait (as kubernetes' ensureGroup does).
+    deps.ledger.forget(job);
     await dockerReclaimFence(deps, job);
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);
@@ -438,6 +438,8 @@ async function dockerRun(
      * created here when no sync preceded the run. A group the daemon refuses is infrastructure,
      * thrown like a refused exporter was: never a run that silently loses its record.
      */
+    // A group made fresh forgets the kill an earlier group of this attempt recorded, so a killed job is refused first.
+    assertJobNotKilled(ledger, job);
     const { startedAt } = await ensureGroup(deps, job, session);
 
     /*
