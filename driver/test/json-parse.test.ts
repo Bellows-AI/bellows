@@ -15,8 +15,10 @@ describe('parseLastJsonLine', () => {
         expect(parseLastJsonLine('', fallback)).toBe('fallback');
     });
 
-    it('answers a JSON null as null, not the fallback', () => {
-        expect(parseLastJsonLine('null', fallback)).toBeNull();
+    it('answers the fallback for a last line that parses to anything but an object', () => {
+        for (const line of ['null', '[]', '[{"a":1}]', '1', '"s"', 'true']) {
+            expect(parseLastJsonLine(line, fallback)).toBe('fallback');
+        }
     });
 });
 

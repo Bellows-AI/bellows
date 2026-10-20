@@ -15,6 +15,7 @@ import {
     parseHelperOutput,
 } from './helpers.js';
 import { parseLastJsonLine } from './json-parse.js';
+import { type Bound, pollFor, type Sleep, timeLeft } from './poll.js';
 import {
     baseBranchOf,
     CREDENTIAL_HELPER,
@@ -118,32 +119,34 @@ export const GROUP_UP_POLL_MS = 2_000;
 /**
  * Waits until the attempt's supervisor has pulled from the driver at least once, on either executor.
  * Bounded by elapsed time, probe time included, not a count of polls; false at the bound, which is
- * the caller's to classify. A driver kill (`stopped`) ends the wait at once and wins over everything
+ * the caller's to classify. A driver kill (an aborted `signal`) ends the wait at once and wins over everything
  * else: over a contact, over the bound, and over whatever the `probe` threw.
  */
 export async function awaitFirstContact(
     host: Pick<StepHost, 'sink'>,
     job: BoardJob,
-    opts: { sleep: (ms: number) => Promise<void>; stopped: () => boolean; probe?: () => Promise<void> }
+    opts: { sleep: Sleep; signal: AbortSignal; probe?: (bound: Bound) => Promise<void> }
 ): Promise<boolean> {
     const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
     if (!token) return true;
     const killed = (): Error => new Error(`job ${job.id}: killed while its task group came up`);
-    const started = Date.now();
-    for (let polls = 0; Math.max(polls * GROUP_UP_POLL_MS, Date.now() - started) < GROUP_UP_WAIT_MS; polls += 1) {
-        if (opts.stopped()) throw killed();
-        if (host.sink.contacted(token)) return true;
-        try {
-            await opts.probe?.();
-        } catch (e) {
-            if (opts.stopped()) throw killed();
-            throw e;
+    const { signal } = opts;
+    const found = await pollFor(
+        { ms: GROUP_UP_WAIT_MS, everyMs: GROUP_UP_POLL_MS, sleep: opts.sleep, signal, abandoned: killed },
+        async (deadline) => {
+            if (signal.aborted) throw killed();
+            if (host.sink.contacted(token)) return true;
+            try {
+                await opts.probe?.({ deadline, signal });
+            } catch (e) {
+                if (signal.aborted) throw killed();
+                throw e;
+            }
+            if (signal.aborted) throw killed();
         }
-        if (opts.stopped()) throw killed();
-        await opts.sleep(GROUP_UP_POLL_MS);
-    }
-    if (opts.stopped()) throw killed();
-    return false;
+    );
+    if (signal.aborted) throw killed();
+    return found ?? false;
 }
 
 /**
@@ -438,18 +441,24 @@ const SERVICE_STEP_TIMEOUT_MS = 30_000;
 export const runServiceGenerationStep = (
     host: Pick<StepHost, 'sink'>,
     job: BoardJob,
-    mode: 'acked' | 'bump',
-    names: readonly string[]
-): Promise<StepResult> =>
-    submitStep(
+    { mode, names }: { mode: 'acked' | 'bump'; names: readonly string[] },
+    bound?: Bound
+): Promise<StepResult> => {
+    // Inside a wait, the step ends at its deadline and on its kill, and is not even sent past it.
+    const left = bound ? Math.min(SERVICE_STEP_TIMEOUT_MS, timeLeft(bound.deadline)) : SERVICE_STEP_TIMEOUT_MS;
+    if (left === 0)
+        return Promise.reject(new Error("the services' generation step was refused: its wait is out of time"));
+    const ends = [
+        ...(bound?.signal ? [bound.signal] : []),
+        ...(bound && Number.isFinite(bound.deadline) ? [AbortSignal.timeout(timeLeft(bound.deadline))] : []),
+    ];
+    return submitStep(
         host,
         job,
-        stepRequest(job, 'restart', {
-            id: randomUUID(),
-            argv: serviceRestartArgv(mode, names),
-            timeoutMs: SERVICE_STEP_TIMEOUT_MS,
-        })
+        stepRequest(job, 'restart', { id: randomUUID(), argv: serviceRestartArgv(mode, names), timeoutMs: left }),
+        ends.length > 0 ? AbortSignal.any(ends) : undefined
     );
+};
 
 /**
  * `go`: releases the attempt's agent, whose entrypoint waits for it, and hands the supervisor the

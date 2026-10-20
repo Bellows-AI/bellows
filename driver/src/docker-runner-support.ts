@@ -5,7 +5,6 @@
  * setup, the runner's create and verdict, and the killed-job guards around the env-file write.
  */
 
-import { setTimeout as delay } from 'node:timers/promises';
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import type { KillLedger } from './kill-ledger.js';
 import { execFile, type spawn } from 'node:child_process';
@@ -18,7 +17,7 @@ import type { DriverConfig } from './config.js';
 import { containerName, dockerArgs, parseDockerServicePs } from './docker.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import { telemetryConfig, telemetryConfigTar, telemetryCopyTarget } from './telemetry-config.js';
-import type { Read, RunOutcome, RunSession } from './runner.js';
+import { type Read, type RunOutcome, type RunSession, SERVICE_RESTART_TIMEOUT_MS } from './runner.js';
 import {
     declaredServiceSpecs,
     groupServices,
@@ -27,6 +26,7 @@ import {
     serviceRunArgs,
 } from './services.js';
 import { supervisorName } from './docker-mailbox.js';
+import { abortableSleep, anyOf, type Bound, type Sleep, timeLeft } from './poll.js';
 import { awaitServicesRunning, throwIfStoodDown } from './service-restart.js';
 import { type HeldContainer, heldWords, type StartupCause, startupCauseOf, StartupRefused } from './startup-cause.js';
 
@@ -76,20 +76,50 @@ export function readUtf8(stream: Readable | null | undefined, onText: (text: str
  * runner's verdict open forever when the daemon stalls. An aborted `signal` kills it the same way.
  * `input` is written to the CLI's stdin — the archive a `docker cp -` reads.
  */
-/** A pause that a stand-down cuts short: rejects once `signal` aborts. */
-export type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
-
-/** `execDocker` refusing every call once `signal` aborts; `execDocker` itself without one. */
+/**
+ * `execDocker` refusing every call once `signal` aborts and killing the one in flight when it does;
+ * `execDocker` itself without one.
+ */
 export function untilStandDown(execDocker: ExecDocker, signal?: AbortSignal): ExecDocker {
     if (!signal) return execDocker;
     return async (args, options) => {
         if (signal.aborted) throw new Error('the call was abandoned: the attempt stood down');
-        return execDocker(args, options);
+        return execDocker(args, {
+            ...options,
+            signal: options?.signal ? AbortSignal.any([signal, options.signal]) : signal,
+        });
     };
 }
 
-/** The real pause: `node:timers/promises`, which rejects the moment `signal` aborts. */
-export const abortableSleep: Sleep = (ms, signal) => delay(ms, undefined, signal ? { signal } : {});
+/**
+ * How long one command of an attempt may run before its process is killed: the ceiling of a stalled
+ * daemon, not a tuned budget — a service creation may pull its image. Long-running children (the
+ * attached run, a log stream) end on the kill signal and their own deadline instead.
+ */
+export const ATTEMPT_COMMAND_TIMEOUT_MS = 600_000;
+
+/**
+ * `execDocker` for an attempt's own commands (#869): each ends by `ATTEMPT_COMMAND_TIMEOUT_MS`
+ * unless it names its own bound, and by `signal`, the attempt's kill. Teardown is not made with it.
+ */
+export function attemptExec(execDocker: ExecDocker, signal: AbortSignal): ExecDocker {
+    const standing = untilStandDown(execDocker, signal);
+    return (args, options) => standing(args, { ...options, timeout: options?.timeout ?? ATTEMPT_COMMAND_TIMEOUT_MS });
+}
+
+/**
+ * `execDocker` held to a wait (#869): refusing every call once the absolute `bound.deadline` has
+ * passed, ending each by it, and killing the one in flight when `bound.signal` aborts. The docker
+ * twin of `withSignal(boundedBy(deps, deadline), signal)`.
+ */
+export function boundedExec(execDocker: ExecDocker, { deadline, signal }: Bound): ExecDocker {
+    const standing = untilStandDown(execDocker, signal);
+    return async (args, options) => {
+        const left = Math.min(timeLeft(deadline), options?.timeout ?? Infinity);
+        if (left === 0) throw new Error('the call was refused: its wait is out of time');
+        return standing(args, { ...options, ...(Number.isFinite(left) ? { timeout: left } : {}) });
+    };
+}
 
 export type ExecDocker = (
     args: string[],
@@ -354,6 +384,8 @@ export async function dockerRunVerdict(
     code: number | null,
     ctx: {
         execDocker: ExecDocker;
+        /** Removes the container of a start that never ran; uncancelled, where `execDocker` ends with the attempt. */
+        teardown?: ExecDocker;
         job: BoardJob;
         output: string;
         timedOut: boolean;
@@ -377,7 +409,7 @@ export async function dockerRunVerdict(
             : { started: true, neverRan: false, infraLoss: null };
     // A container that never ran is litter to remove now; one that ran is the evidence a replacement
     // claim adopts the run from, so it stays until the attempt's end (`finishGroup`).
-    if (!started) await ctx.execDocker(['rm', '-f', containerName(ctx.job)]).catch(() => undefined);
+    if (!started) await (ctx.teardown ?? ctx.execDocker)(['rm', '-f', containerName(ctx.job)]).catch(() => undefined);
     // A startup cause only on proof the container never ran — the refused create's own stderr, or the
     // daemon's answer — when what printed is the daemon's, never the agent's own words (#824 D11).
     const startupCause = started
@@ -439,12 +471,12 @@ export interface RunnerFiles {
  * the container is ready to start.
  */
 export async function createRunnerContainer(
-    deps: { config: DriverConfig; execDocker: ExecDocker },
+    deps: { config: DriverConfig; execDocker: ExecDocker; teardown?: ExecDocker },
     job: BoardJob,
     session: RunSession | null,
     options: { envFile?: string }
 ): Promise<RunOutcome | null> {
-    const { config, execDocker } = deps;
+    const { config, execDocker, teardown } = deps;
     try {
         await execDocker(dockerArgs(config, job, session, options));
         const telemetry = telemetryConfig(job.executorType, config.otelEndpoint);
@@ -456,6 +488,7 @@ export async function createRunnerContainer(
         const refused = startupRefusalOf(error);
         return dockerRunVerdict(CONTAINER_GONE, {
             execDocker,
+            ...(teardown ? { teardown } : {}),
             job,
             output: dockerErrorDetail(error),
             timedOut: false,
@@ -493,19 +526,21 @@ export async function startJobServices(
     config: DriverConfig,
     deps: {
         execDocker: ExecDocker;
-        ledger: Pick<KillLedger, 'was'>;
+        ledger: Pick<KillLedger, 'was' | 'signal'>;
         serviceTeardown: (job: BoardJob) => Promise<void>;
-        sleep?: (ms: number) => Promise<void>;
+        sleep?: Sleep;
     },
     signal?: AbortSignal
 ): Promise<RunOutcome | null> {
     if (!(await setupJobServices(job, config, deps))) return null;
+    // The supplied stand-down and the attempt's kill end the readiness wait and its listings alike.
+    const stand = anyOf(signal, deps.ledger.signal(job));
     await awaitServicesRunning(
         declaredServiceSpecs(job),
-        listJobServices(job, deps.execDocker),
-        deps.sleep ?? serviceWait,
+        listJobServices(job, deps.execDocker, stand),
+        deps.sleep ?? abortableSleep,
         {
-            signal,
+            signal: stand,
             after: 'the start',
         }
     );
@@ -513,8 +548,13 @@ export async function startJobServices(
 }
 
 /** The attempt's service fleet as the readiness wait reads it. */
-const listJobServices = (job: BoardJob, execDocker: ExecDocker) => async () =>
-    parseDockerServicePs((await execDocker(servicePsArgs(job))).stdout);
+const listJobServices = (job: BoardJob, execDocker: ExecDocker, signal?: AbortSignal) => async (deadline: number) => {
+    const listed = parseDockerServicePs(
+        (await boundedExec(execDocker, { deadline, signal })(servicePsArgs(job))).stdout
+    );
+    if (listed === null) throw new Error('listing the attempt services: the daemon answered what is not the listing');
+    return listed;
+};
 
 /** The attempt's service fleet, exited ones included: the job and lease label pair, service key required. */
 export const servicePsArgs = (job: BoardJob): string[] => [
@@ -530,9 +570,6 @@ export const servicePsArgs = (job: BoardJob): string[] => [
     '{{json .}}',
 ];
 
-/** The wait between re-listings of a restarting fleet. */
-const serviceWait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 /**
  * The pre-gate restart (issues #560, #773): EVERY recorded service's container removed and run
  * again into the same network namespace — its group supervisor's, whose hosts file still names it —
@@ -543,23 +580,30 @@ export async function restartJobServices(
     job: BoardJob,
     execDocker: ExecDocker,
     signal: AbortSignal,
-    sleep: (ms: number) => Promise<void> = serviceWait
+    sleep: Sleep = abortableSleep
 ): Promise<void> {
     const specs = declaredServiceSpecs(job);
-    const remove = (name: string) => execDocker(['rm', '-f', serviceContainerName(job, name)]).catch(() => undefined);
+    const remove = (exec: ExecDocker, name: string) =>
+        exec(['rm', '-f', serviceContainerName(job, name)]).catch(() => undefined);
+    // One absolute deadline for the removals, the runs and the readiness wait; the stand-down's own removals stay off it.
+    const deadline = Date.now() + SERVICE_RESTART_TIMEOUT_MS;
+    const bounded = boundedExec(execDocker, { deadline, signal });
     try {
         for (const spec of specs) {
             throwIfStoodDown(signal);
-            await remove(spec.name);
+            await remove(bounded, spec.name);
             try {
-                await execDocker(serviceRunArgs(job, spec, supervisorName(job)));
+                await bounded(serviceRunArgs(job, spec, supervisorName(job)));
             } catch (e) {
                 throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
             }
         }
-        await awaitServicesRunning(specs, listJobServices(job, execDocker), sleep, { signal });
+        await awaitServicesRunning(specs, listJobServices(job, execDocker, signal), sleep, {
+            signal,
+            timeoutMs: timeLeft(deadline),
+        });
     } catch (e) {
-        if (signal.aborted) for (const spec of specs) await remove(spec.name);
+        if (signal.aborted) for (const spec of specs) await remove(execDocker, spec.name);
         throw e;
     }
 }

@@ -5,9 +5,7 @@
  * `fixtures/read-faults.ts`; each scenario's world is "something there", so every read that guards
  * a delete or a verdict answers non-empty when clean.
  *
- * The destructive paths read typed (#869 PR A): a cell that holds is a plain test. What stays pinned
- * `it.fails` with its exact line set, read from an unpinned run, is the verdict paths (D-DS), which
- * typed reads (#869 PR B) flip.
+ * Every path reads typed (#869): a cell that holds is a plain test, and nothing is pinned.
  */
 import type { ChildProcess, spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -35,7 +33,6 @@ import {
     faultCell,
     freshJob,
     guardScenario,
-    pin,
     quietSteps,
     replayDocker,
 } from './fixtures/read-faults.js';
@@ -340,15 +337,4 @@ scenario('the reaper on a superseded lease with an unread runner (D-RP1)', { bui
 
 scenario('the reaper on a gone job inside its grace (D-RP2)', { build: reaperGone, writes: [] }, {});
 
-scenario(
-    'the dead-service probe of a running service (D-DS)',
-    { build: deadService, writes: [] },
-    {
-        // A listing of no rows reads as every declared service removed (`docker-runner.ts:352-354`).
-        garbage: [
-            pin(
-                `VERDICT after garbage at ps -a --filter label=factory.job=<job> --filter label=factory.lease=<lease> --filter label=factory.service --format {{json .}}: dead db`
-            ),
-        ],
-    }
-);
+scenario('the dead-service probe of a running service (D-DS)', { build: deadService, writes: [] }, {});

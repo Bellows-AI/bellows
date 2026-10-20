@@ -23,7 +23,8 @@ import {
     secretName,
     type RunnerJobSpec,
 } from './k8s-podspec.js';
-import { asIdentified, jobOutcome, readTyped, readTypedList } from './k8s-poll.js';
+import { asIdentified } from './k8s-pod-shapes.js';
+import { jobOutcome, readTyped, readTypedList } from './k8s-poll.js';
 import { isLease, nonEmpty, optionalTimestamp, stringsOnly, validRunnerSpec } from './k8s-shapes.js';
 import type { Read } from './runner.js';
 import {
@@ -45,12 +46,16 @@ import {
     is2xx,
     isRecord,
     JOB_ID,
-    parse,
+    readAnswer,
     POLL_MS,
     refusal,
-    REPLACE_MAX_POLLS,
+    REPLACE_WAIT_MS,
+    boundedBy,
+    waitOf,
+    withSignal,
 } from './k8s-transport.js';
-import type { K8sClaim, K8sDeps } from './k8s-transport.js';
+import { pollFor } from './poll.js';
+import type { K8sClaim, K8sDeps, K8sResponse } from './k8s-transport.js';
 
 /**
  * The re-claim fence: taking the checkout claim, sweeping a superseded attempt's leftovers, and
@@ -469,17 +474,7 @@ async function verifyClaimHeldForSweep(deps: K8sDeps, job: BoardJob): Promise<'o
  * deleted (issue #821): a Secret has no owner, and once its Job is gone nothing can derive its name
  * again. False when any one delete failed; the round then deletes nothing.
  */
-/** Thrown by a sweep whose attempt stood down (`signal`): nothing more is deleted. */
-const sweepAbandoned = (signal?: AbortSignal): void => {
-    if (signal?.aborted) throw new Error('the sweep was abandoned: the attempt stood down');
-};
-
-async function deleteLeftoverSecrets(
-    deps: K8sDeps,
-    job: BoardJob,
-    fleets: SweepFleet[],
-    signal?: AbortSignal
-): Promise<boolean> {
+async function deleteLeftoverSecrets(deps: K8sDeps, job: BoardJob, fleets: SweepFleet[]): Promise<boolean> {
     const leases = new Set(fleets.flatMap((fleet) => fleet.leases).filter((lease) => JOB_ID.test(lease)));
     const adopted = deps.adopted?.get(job.leaseToken);
     for (const lease of leases) {
@@ -487,17 +482,15 @@ async function deleteLeftoverSecrets(
         // The adopted run's lease keeps its Job listed: its Secrets stay derivable from it, and
         // their cleanup is never what holds a recovered run back (issue #821).
         if (adopted !== undefined && runnerName(pair) === adopted) continue;
-        sweepAbandoned(signal);
         if ((await deleteSecretAcked(deps, secretName(pair))) === 'failed') return false;
     }
     return true;
 }
 
 /** Deletes every named leftover of one sweep pass; the next pass's list is what says they are gone. */
-async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[], signal?: AbortSignal): Promise<void> {
+async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[]): Promise<void> {
     for (const fleet of fleets) {
         for (const [leftover, uid] of fleet.uids) {
-            sweepAbandoned(signal);
             // The incarnation listed, by its uid: never one created under the name since.
             const target = `${fleet.basePath}/${leftover}?propagationPolicy=Foreground`;
             const response = await deps.request('DELETE', target, {
@@ -526,37 +519,43 @@ async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[], signal?: A
  * every deleting round: a stale attempt whose claim was taken over mid-sweep STANDS DOWN having
  * deleted nothing.
  */
-export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, waits = 0, signal?: AbortSignal): Promise<void> {
-    const nextRound = async (giveUpMessage: string): Promise<void> => {
-        if (waits + 1 > REPLACE_MAX_POLLS) {
-            throw new Error(`${giveUpMessage} (${REPLACE_MAX_POLLS} polls)`);
+export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, signal: AbortSignal): Promise<void> {
+    let unmet = `the fence of job ${job.id} could not confirm the checkout empty`;
+    const live = withSignal(deps, signal);
+    const done = await pollFor<true>({ ...waitOf(live, REPLACE_WAIT_MS), everyMs: POLL_MS }, async (deadline) => {
+        // Every request of the round, the deletes included, ends by the bound and refuses once
+        // the attempt is killed.
+        const round = boundedBy(live, deadline);
+        const { fleets, conclusive } = await probeLeftoverFleets(round, job);
+        // Inconclusive: keep polling within the same bound, deleting nothing — a kind that proved
+        // nothing may be the Job listing that spares the adopted run's pods (#869).
+        if (!conclusive) {
+            unmet = `the fence of job ${job.id} could not confirm the checkout empty`;
+            return;
         }
-        await deps.sleep(POLL_MS);
-        return sweepClaimedFleets(deps, job, waits + 1, signal);
-    };
-
-    const { fleets, conclusive } = await probeLeftoverFleets(deps, job);
-    // Inconclusive: keep polling within the same bound, deleting nothing — a kind that proved
-    // nothing may be the Job listing that spares the adopted run's pods (#869).
-    if (!conclusive) return nextRound(`the fence of job ${job.id} could not confirm the checkout empty`);
-    // Every kind answered and none has anything of this job's — the checkout is free.
-    if (fleets.length === 0) return;
-    const verified = await verifyClaimHeldForSweep(deps, job);
-    if (verified === 'lost') {
-        throw new Error(
-            `job ${job.id} stands down: the checkout claim was taken over while the job label still answered`
-        );
-    }
-    if (verified === 'unknown') {
-        return nextRound(`the checkout claim of job ${job.id} could not be confirmed before fencing`);
-    }
-    if (!(await deleteLeftoverSecrets(deps, job, fleets, signal))) {
-        return nextRound(`the leftover secrets of job ${job.id} could not be deleted`);
-    }
-    await deleteSweepFleets(deps, fleets, signal);
-    // No delete's answer is proof the checkout is free — a 409 on a uid precondition is another
-    // incarnation under the name (issue #821): only a fresh, conclusive empty list lets it go.
-    return nextRound(`the leftover objects of job ${job.id} never disappeared after their delete`);
+        // Every kind answered and none has anything of this job's — the checkout is free.
+        if (fleets.length === 0) return true;
+        const verified = await verifyClaimHeldForSweep(round, job);
+        if (verified === 'lost') {
+            throw new Error(
+                `job ${job.id} stands down: the checkout claim was taken over while the job label still answered`
+            );
+        }
+        if (verified === 'unknown') {
+            unmet = `the checkout claim of job ${job.id} could not be confirmed before fencing`;
+            return;
+        }
+        if (!(await deleteLeftoverSecrets(round, job, fleets))) {
+            unmet = `the leftover secrets of job ${job.id} could not be deleted`;
+            return;
+        }
+        await deleteSweepFleets(round, fleets);
+        // No delete's answer is proof the checkout is free — a 409 on a uid precondition is
+        // another incarnation under the name (issue #821): only a fresh, conclusive empty list
+        // lets it go.
+        unmet = `the leftover objects of job ${job.id} never disappeared after their delete`;
+    });
+    if (done === undefined) throw new Error(`${unmet} (${REPLACE_WAIT_MS}ms)`);
 }
 
 /**
@@ -575,16 +574,16 @@ async function standDownOwnJob(deps: K8sDeps, identity: TeardownIdentity): Promi
  * only then resumes the Job. A Secret therefore never exists without a Job the fence and the reaper
  * can derive its name from (issue #821), and no pod starts before the claim is verified.
  */
-export async function prepare(deps: K8sDeps, job: BoardJob): Promise<void> {
+export async function prepare(deps: K8sDeps, job: BoardJob, signal: AbortSignal): Promise<void> {
     // Step one: TAKE THE CHECKOUT.
-    await acquireClaim(deps, job);
+    await acquireClaim(withSignal(deps, signal), job);
 
     // Step two: the sweep. See sweepClaimedFleets for the invariants it upholds.
-    await sweepClaimedFleets(deps, job);
+    await sweepClaimedFleets(deps, job, signal);
 
     // Step three: the claim must STILL be ours immediately before the Job POST — the first half
     // of the bracket that fences the POST from both sides.
-    const pre = claimVerdict(await readClaimObject(deps, job), job);
+    const pre = claimVerdict(await readClaimObject(withSignal(deps, signal), job), job);
     if (pre === 'taken') {
         throw new Error(
             `job ${job.id} stands down: the checkout claim was taken over before the runner job was created`
@@ -596,6 +595,15 @@ export async function prepare(deps: K8sDeps, job: BoardJob): Promise<void> {
                 `(${pre.unconfirmed})`
         );
     }
+}
+
+/** The `metadata.uid` a create answered, typed: no body, a non-JSON one or one with no uid throws. */
+function uidOf(response: K8sResponse, what: string): string {
+    const read = readAnswer(response, what, (value) =>
+        isRecord(value) && isRecord(value.metadata) && nonEmpty(value.metadata.uid) ? value.metadata.uid : null
+    );
+    if (read.kind !== 'value') throw new Error(`${what} answered no uid`);
+    return read.value;
 }
 
 /**
@@ -617,8 +625,7 @@ export async function createSuspendedWithSecret(
         expectOk(created, what.job);
         // The Secret is owned by the Job's uid: collected with it, even if this driver never ends it.
         // Recorded the moment it answers: every teardown after this names that incarnation.
-        const uid = parse<{ metadata?: { uid?: string } }>(created.body).metadata?.uid;
-        if (!uid) throw new Error(`${what.job} answered no uid for the Job`);
+        const uid = uidOf(created, what.job);
         identity.uids = { job: uid };
         const stored = await deps.request(
             'POST',
@@ -626,8 +633,7 @@ export async function createSuspendedWithSecret(
             what.secretBody({ name: spec.metadata.name, uid })
         );
         expectOk(stored, what.secret);
-        const secret = parse<{ metadata?: { uid?: string } }>(stored.body).metadata?.uid;
-        if (secret) identity.uids = { job: uid, secret };
+        identity.uids = { job: uid, secret: uidOf(stored, what.secret) };
     } catch (e) {
         await standDown();
         throw e;
@@ -657,13 +663,20 @@ export async function resumeJob(
 }
 
 // Step four: this attempt's Job, under its own attempt-scoped name, suspended, then its Secret.
-export async function launch(deps: K8sDeps, job: BoardJob, spec: RunnerJobSpec): Promise<IncarnationUids> {
+export async function launch(
+    deps: K8sDeps,
+    job: BoardJob,
+    spec: RunnerJobSpec,
+    signal: AbortSignal
+): Promise<IncarnationUids> {
     // The runner's name hashes this claim's own lease token, which no other claim is ever handed:
     // no other invocation can create it again, so its teardown may fall back to the name.
     const identity: TeardownIdentity = { pair: job, jobName: runnerName(job) };
     const standDown = () => standDownOwnJob(deps, identity);
+    // Creating and resuming end on the stand-down; its teardown (`standDown`) stays on `deps`, uncancelled.
+    const live = withSignal(deps, signal);
     await createSuspendedWithSecret(
-        deps,
+        live,
         spec,
         {
             job: 'creating the runner job',
@@ -675,7 +688,7 @@ export async function launch(deps: K8sDeps, job: BoardJob, spec: RunnerJobSpec):
 
     // Step five: the claim must STILL be ours once the Job exists — the second half of the
     // bracket the pre-create verify opened. See docs/kubernetes.md for the full race analysis.
-    const held = claimVerdict(await readClaimObject(deps, job), job);
+    const held = claimVerdict(await readClaimObject(live, job), job);
     if (held === 'taken') {
         await standDown();
         throw new Error(`job ${job.id} stands down: the checkout claim was taken over before the runner could start`);
@@ -690,6 +703,6 @@ export async function launch(deps: K8sDeps, job: BoardJob, spec: RunnerJobSpec):
         );
     }
     // Step six: the pod starts, under a verified claim with its Secret in place.
-    await resumeJob(deps, spec.metadata.name, identity.uids?.job, standDown);
+    await resumeJob(live, spec.metadata.name, identity.uids?.job, standDown);
     return identity.uids!;
 }

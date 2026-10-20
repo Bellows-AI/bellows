@@ -5,9 +5,7 @@
  * engine and its rules are `fixtures/read-faults.ts`; each scenario's world is "something there",
  * so every read that guards a delete or a verdict answers non-empty when clean.
  *
- * The destructive paths read typed (#869 PR A): a cell that holds is a plain test. What stays pinned
- * `it.fails` with its exact line set, read from an unpinned run, is the verdict paths (K-V1, K-D1),
- * which typed reads (#869 PR B) flip. The stopAgent and kill of a kubernetes runner
+ * Every path reads typed (#869): a cell that holds is a plain test, and nothing is pinned. The stopAgent and kill of a kubernetes runner
  * (`k8s-runner.ts`) are not replayed here — their docker twins are.
  */
 import { randomUUID } from 'node:crypto';
@@ -33,7 +31,6 @@ import {
     guardScenario,
     K8S_FAULTS,
     type K8sFault,
-    pin,
     quietSteps,
     replayK8s,
 } from './fixtures/read-faults.js';
@@ -323,14 +320,9 @@ const ADOPTED_WRITES = [
     `DELETE ${BATCH}/jobs/factory-cturns-<prior-hash>`,
     ...secretsOf('prior'),
 ];
-const NULL_READ = (field: string) => `Cannot read properties of null (reading '${field}')`;
 
 /** A scenario's pins, by fault: one line per documented violation. */
 type Pins = Partial<Record<K8sFault, RegExp[]>>;
-/** The faults a body that parses to no list (`{}`, a `Status`, cut JSON) or to `null` stands for. */
-const GARBAGE: readonly K8sFault[] = ['empty-object', 'status', 'truncated'];
-const pinsFor = (faults: readonly K8sFault[], lines: (fault: K8sFault) => string[]): Pins =>
-    Object.fromEntries(faults.map((fault) => [fault, lines(fault).map(pin)]));
 
 /** What a scenario's clean run writes, and the writes a faulted run may add because the code authorizes them on its own. */
 interface Expected {
@@ -436,36 +428,11 @@ scenario(
     {}
 );
 
-/** The run's own runner pod list and Job status read. */
-const RUN_PODS = `GET ${API}/pods?labelSelector=job-name=factory-runner-<lease-hash>`;
-const LOST = 'infra-loss: the runner pod was deleted before it exited (evicted, drained or its node removed)';
-
 scenario(
     'a run whose agent failed under a live pod (K-V1)',
     runVerdict,
     { writes: [`POST ${BATCH}/jobs`, `DELETE ${BATCH}/jobs/factory-cturns-<lease-hash>`] },
-    {
-        // No list read as no pod (`k8s-poll.ts:371`): the run reads as taken away (`k8s-poll.ts:635`,
-        // `k8s-runner.ts:382`).
-        ...pinsFor(GARBAGE, (fault) => [`VERDICT after ${fault} at ${RUN_PODS}: ${LOST}`]),
-        null: [
-            `CRASH after null at ${RUN_PODS}: ${NULL_READ('items')}`,
-            // `readJobStatus` (`k8s-poll.ts:262`).
-            `CRASH after null at GET ${BATCH}/jobs/factory-runner-<lease-hash>: ${NULL_READ('status')}`,
-        ].map(pin),
-    }
+    {}
 );
 
-/** The dead-service probe's read of the task pod, whose sidecars the declared services are. */
-const SERVICE_PODS = `GET ${API}/pods?labelSelector=job-name=factory-runner-<lease-hash>`;
-
-scenario(
-    'the dead-service probe of a running service (K-D1)',
-    deadService,
-    { writes: [] },
-    {
-        // A pod list that names no task pod is `Inconclusive` (`k8s-services.ts` `taskPod`): dead is
-        // never inferred from it. Only a body of `null` crashes the list read itself.
-        null: [pin(`CRASH after null at ${SERVICE_PODS}: ${NULL_READ('items')}`)],
-    }
-);
+scenario('the dead-service probe of a running service (K-D1)', deadService, { writes: [] }, {});

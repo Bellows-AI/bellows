@@ -14,8 +14,9 @@ import {
     readAnswer,
     refusalDiagnosis,
 } from '../src/k8s-transport.js';
-import { asJob, asNamed, readTypedList } from '../src/k8s-poll.js';
-import type { K8sDeps } from '../src/k8s-transport.js';
+import { asNamed } from '../src/k8s-pod-shapes.js';
+import { asJob, readTypedList } from '../src/k8s-poll.js';
+import { withSignal, type K8sDeps, type K8sRequest } from '../src/k8s-transport.js';
 
 const METRICS_PATH = '/apis/metrics.k8s.io/v1beta1/namespaces/factory/pods/runner-1';
 const LOG_PATH = '/api/v1/namespaces/factory/pods/runner-1/log?tailLines=1000';
@@ -192,13 +193,22 @@ interface TransportCall {
 const OK_STATUS = 200;
 
 function fakeTransport(
-    plans: { status?: number; chunks?: string[]; timeout?: boolean; headers?: Record<string, string> }[]
+    plans: {
+        status?: number;
+        chunks?: string[];
+        timeout?: boolean;
+        hang?: boolean;
+        headers?: Record<string, string>;
+        /** After the headers and `chunks`: no end (`stall`), a byte every few ms (`trickle`), or a broken response. */
+        after?: 'stall' | 'trickle' | 'error' | 'aborted' | 'close';
+    }[]
 ) {
     const calls: TransportCall[] = [];
     const request = ((options: RequestOptions, respond: (response: EventEmitter) => void) => {
         const plan = plans[calls.length] ?? {};
         const req = new EventEmitter();
         const call = { options, writes: [] as string[], request: req };
+        let trickle: ReturnType<typeof setInterval> | undefined;
         calls.push(call);
         Object.assign(req, {
             write(chunk: string) {
@@ -206,6 +216,7 @@ function fakeTransport(
                 return true;
             },
             end() {
+                if (plan.hang) return req;
                 if (plan.timeout) {
                     queueMicrotask(() => req.emit('timeout'));
                     return req;
@@ -219,11 +230,17 @@ function fakeTransport(
                 respond(response);
                 queueMicrotask(() => {
                     for (const chunk of plan.chunks ?? []) response.emit('data', chunk);
-                    response.emit('end');
+                    if (plan.after === 'trickle') {
+                        trickle = setInterval(() => response.emit('data', 'x'), 5);
+                    } else if (plan.after === 'error') response.emit('error', new Error('read ECONNRESET'));
+                    else if (plan.after === 'aborted') response.emit('aborted');
+                    else if (plan.after === 'close') response.emit('close');
+                    else if (plan.after !== 'stall') response.emit('end');
                 });
                 return req;
             },
             destroy(error: Error) {
+                clearInterval(trickle);
                 queueMicrotask(() => req.emit('error', error));
                 return req;
             },
@@ -331,6 +348,78 @@ describe('the in-cluster kubernetes transport', () => {
 
         await expect(request('GET', '/version')).rejects.toThrow(/API server did not answer within/);
     });
+
+    it('bounds the socket by the smaller of the default and the own timeout of a call, and hands the signal on', async () => {
+        const transport = fakeTransport([{}, {}]);
+        const request = inClusterRequest({ env: CLUSTER_ENV, readFile: CREDENTIALS, request: transport.request });
+        const controller = new AbortController();
+
+        await request('GET', '/version', undefined, { timeoutMs: 1_000, signal: controller.signal });
+        await request('GET', '/version', undefined, { timeoutMs: 90_000 });
+
+        expect(transport.calls[0]?.options).toMatchObject({ timeout: 1_000, signal: controller.signal });
+        expect(transport.calls[1]?.options.timeout).toBe(30_000);
+    });
+
+    it('lets a pod log transfer run to the own timeout of its call, past the default a request gets', async () => {
+        const transport = fakeTransport([{}, {}]);
+        const request = inClusterRequest({ env: CLUSTER_ENV, readFile: CREDENTIALS, request: transport.request });
+
+        await request('GET', '/api/v1/namespaces/factory/pods/p/log', undefined, { timeoutMs: 90_000 });
+        await request('GET', '/api/v1/namespaces/factory/pods/p/log?tailLines=5');
+
+        expect(transport.calls[0]?.options.timeout).toBe(90_000);
+        expect(transport.calls[1]?.options.timeout).toBe(30_000);
+    });
+
+    it('takes a patch media type from its options', async () => {
+        const transport = fakeTransport([{}]);
+        const request = inClusterRequest({ env: CLUSTER_ENV, readFile: CREDENTIALS, request: transport.request });
+
+        await request('PATCH', '/x', {}, { contentType: 'application/strategic-merge-patch+json' });
+
+        expect(transport.calls[0]?.options.headers).toMatchObject({
+            'content-type': 'application/strategic-merge-patch+json',
+        });
+    });
+
+    it('rejects at once for a signal already aborted, and when the signal aborts a call in flight', async () => {
+        const transport = fakeTransport([{ hang: true }, { hang: true }]);
+        const request = inClusterRequest({ env: CLUSTER_ENV, readFile: CREDENTIALS, request: transport.request });
+        const done = AbortSignal.abort();
+        await expect(request('GET', '/version', undefined, { signal: done })).rejects.toThrow(/abandoned|abort/i);
+
+        const controller = new AbortController();
+        const pending = request('GET', '/version', undefined, { signal: controller.signal });
+        controller.abort();
+        await expect(pending).rejects.toThrow(/abandoned|abort/i);
+    });
+
+    it('rejects at the deadline for a response that keeps trickling bytes', async () => {
+        const transport = fakeTransport([{ chunks: ['a'], after: 'trickle' }]);
+        const request = inClusterRequest({ env: CLUSTER_ENV, readFile: CREDENTIALS, request: transport.request });
+        const started = Date.now();
+
+        await expect(request('GET', '/version', undefined, { timeoutMs: 60 })).rejects.toThrow(/within 60ms/);
+
+        expect(Date.now() - started).toBeLessThan(1_000);
+    });
+
+    it('rejects at the deadline for a stalled-open response, though destroy never answers', async () => {
+        const transport = fakeTransport([{ chunks: ['a'], after: 'stall' }]);
+        const request = inClusterRequest({ env: CLUSTER_ENV, readFile: CREDENTIALS, request: transport.request });
+        await expect(request('GET', '/version', undefined, { timeoutMs: 60 })).rejects.toThrow(/within 60ms/);
+    });
+
+    it.each(['error', 'aborted', 'close'] as const)(
+        'rejects a response that breaks after headers and part of the body (%s)',
+        async (after) => {
+            const transport = fakeTransport([{ chunks: ['{"ite'], after }]);
+            const request = inClusterRequest({ env: CLUSTER_ENV, readFile: CREDENTIALS, request: transport.request });
+
+            await expect(request('GET', '/version')).rejects.toThrow(/ECONNRESET|aborted|closed/i);
+        }
+    );
 
     it('answers a pod log its stream buffer cut as the tail alone, flagged truncated', async () => {
         const OVERSIZED_MULTIPLIER = 3;
@@ -481,5 +570,29 @@ describe('the in-cluster kubernetes transport', () => {
         expect(logs[1]).toContain('500');
         expect(logs[1]).toContain(oversized.slice(0, DIAGNOSIS_BODY_CHARS));
         expect(logs[1]).not.toContain(oversized.slice(0, DIAGNOSIS_BODY_CHARS + 1));
+    });
+});
+
+describe('withSignal', () => {
+    it('hands the signal into each request, and refuses every call once it aborts', async () => {
+        const seen: (AbortSignal | undefined)[] = [];
+        const request: K8sRequest = async (_method, _path, _body, options) => {
+            seen.push(options?.signal);
+            return { status: 200, body: '' };
+        };
+        const controller = new AbortController();
+        const deps = withSignal({ request } as unknown as K8sDeps, controller.signal);
+
+        await deps.request('GET', '/version');
+        controller.abort();
+
+        expect(seen[0]?.aborted).toBe(true);
+        await expect(deps.request('GET', '/version')).rejects.toThrow(/abandoned/);
+        expect(seen).toHaveLength(1);
+    });
+
+    it('is the deps themselves without a signal', () => {
+        const deps = { request: vi.fn() } as unknown as K8sDeps;
+        expect(withSignal(deps)).toBe(deps);
     });
 });

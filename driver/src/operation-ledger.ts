@@ -44,8 +44,7 @@ export async function readLedger(at: LedgerAt, op: string): Promise<Record<strin
         if (stepLost(e)) throw e;
         return null;
     });
-    const record = parseLastJsonLine<unknown>(read?.stdout ?? '', () => ({}));
-    return typeof record === 'object' && record !== null ? (record as Record<string, unknown>) : {};
+    return parseLastJsonLine<Record<string, unknown>>(read?.stdout ?? '', () => ({}));
 }
 
 /** Records how far an operation got, with `data` merged into its record; a failed write throws. */

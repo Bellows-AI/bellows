@@ -27,9 +27,9 @@ import { isLease } from './k8s-shapes.js';
 import { containerHardeningField } from './k8s-podfields.js';
 import { GATE_GID, TOOL_UID, workspacePath } from './claim.js';
 import { RELEASE_DEADLINE_MS, toolTreeReleaseBoundedScript, toolTreeReleaseScript, worktreeDir } from './publish.js';
+import { asIdentified } from './k8s-pod-shapes.js';
 import {
     asJob,
-    asIdentified,
     jobOutcome,
     type PodStartState,
     readImagePullStatus,
@@ -50,7 +50,8 @@ import {
     type TeardownIdentity,
 } from './k8s-teardown.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
-import { MS_PER_SECOND, POLL_MS } from './k8s-transport.js';
+import { boundedBy, MS_PER_SECOND, POLL_MS, waitOf, withSignal } from './k8s-transport.js';
+import { pollFor } from './poll.js';
 import type { K8sDeps } from './k8s-transport.js';
 import type { ReclaimResult } from './publish.js';
 import type { RunSession } from './runner.js';
@@ -221,9 +222,9 @@ async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): P
     const seen: { last: PodStartState; unproven: string | null } = { last: 'unread', unproven: null };
     const contacted = await awaitFirstContact(stepHostOf(deps), job, {
         sleep: deps.sleep,
-        stopped: () => ledgerOf(deps).was(job).stopped,
-        probe: async () => {
-            const pull = await readImagePullStatus(deps, jobName);
+        signal: ledgerOf(deps).signal(job),
+        probe: async ({ deadline, signal }) => {
+            const pull = await readImagePullStatus(withSignal(boundedBy(deps, deadline), signal), jobName);
             const refused = startRefusalOf(image, pull, true);
             if (refused) throw refused;
             if (pull.blocked) seen.unproven = heldUnpullable(image, pull, pull.blocked);
@@ -254,11 +255,12 @@ export async function ensureGroup(deps: K8sDeps, job: BoardJob, session: RunSess
     // A lease the ledger says was stopped gets no group: a step that awaited (a credential) must not
     // revive the attempt a kill already ended, before the fence, a Secret or the Job.
     if (ledgerOf(deps).was(job).stopped) throw new RunnerKilled(runnerName(job));
-    await prepare(deps, job);
+    const kill = ledgerOf(deps).signal(job);
+    await prepare(deps, job, kill);
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);
     const startedAt = new Date().toISOString();
-    const uids = await launch(deps, job, runnerJobSpec(deps.config, job, session, startedAt));
+    const uids = await launch(deps, job, runnerJobSpec(deps.config, job, session, startedAt), kill);
     const group: TaskGroup = { startedAt, session, agent: job.agent !== false, uids };
     groupsOf(deps).set(job.leaseToken, group);
     await awaitSupervisor(deps, job, runnerName(job));
@@ -291,19 +293,22 @@ type JobEnd = 'ended' | 'running' | 'unread';
  * takes as well as the polls. A read that proves nothing is no evidence of either: it waits on and,
  * as the last word, answers `unread`.
  */
-async function jobEndsWithin(deps: K8sDeps, name: string, ms: number): Promise<JobEnd> {
-    const started = Date.now();
+export async function jobEndsWithin(deps: K8sDeps, name: string, ms: number): Promise<JobEnd> {
     let last: JobEnd = 'running';
-    for (let polls = 0; Math.max(polls * POLL_MS, Date.now() - started) < ms; polls += 1) {
-        const read = await readTyped(deps, jobPath(deps.config.k8sNamespace, name), 'reading the task group', {
-            shape: asJob,
-        });
-        if (read.kind === 'absent') return 'ended';
-        if (read.kind === 'value' && jobOutcome(read.value.status) !== 'pending') return 'ended';
+    const ended = await pollFor<true>({ ...waitOf(deps, ms), everyMs: POLL_MS }, async (deadline) => {
+        const read = await readTyped(
+            boundedBy(deps, deadline),
+            jobPath(deps.config.k8sNamespace, name),
+            'reading the task group',
+            {
+                shape: asJob,
+            }
+        );
+        if (read.kind === 'absent') return true;
+        if (read.kind === 'value' && jobOutcome(read.value.status) !== 'pending') return true;
         last = read.kind === 'value' ? 'running' : 'unread';
-        await deps.sleep(POLL_MS);
-    }
-    return last;
+    });
+    return ended ? 'ended' : last;
 }
 
 /**

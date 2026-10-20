@@ -7,9 +7,8 @@ import {
     Inconclusive,
     type RunOutcome,
 } from './runner.js';
+import { type Bound, pollFor, type Sleep } from './poll.js';
 import { type EndEvidence, settleEnd } from './termination.js';
-
-type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 
 /** An earlier run of this job as an executor lists it: the attempt it ran as and what orders and recognizes it. */
 export interface EarlierRun {
@@ -43,17 +42,23 @@ export interface EarlierRead {
 export interface AdoptPrimitives<F extends EarlierRun> {
     /** The listing is tried this often, `retryMs` apart, before the attempt stands down; docker's pace. */
     pacing?: { attempts: number; retryMs: number; sleep: Sleep };
-    list(job: BoardJob): Promise<F[]>;
+    /** `bound`: the deadline and stand-down of the paced wait the listing runs in; its requests end by both. */
+    list(job: BoardJob, bound: Bound): Promise<F[]>;
     /** Whether a candidate (newest first) is a run to adopt at all; null skips it. Default: it is. */
-    admit?(found: F, job: BoardJob): Promise<F | null>;
+    admit?(found: F, job: BoardJob, signal: AbortSignal | undefined): Promise<F | null>;
     /** Before anything is read or deleted: kubernetes takes the checkout claim, docker has none. */
-    begin(job: BoardJob): Promise<void>;
+    begin(job: BoardJob, signal: AbortSignal | undefined): Promise<void>;
     /** Waits out a supervisor still finalizing; null when the run is gone or still running. */
     awaitEnd(found: F, job: BoardJob, signal: AbortSignal | undefined): Promise<F | null>;
-    read(found: F, job: BoardJob): Promise<EarlierRead>;
+    read(found: F, job: BoardJob, signal: AbortSignal | undefined): Promise<EarlierRead>;
     /** After the wait and the reads, before the run is kept or anything swept: the claim is still this attempt's. */
-    confirmOwnership(found: F, job: BoardJob): Promise<void>;
-    closeReadout(outcome: RunOutcome, found: F, job: BoardJob, startedAt: string): Promise<void>;
+    confirmOwnership(found: F, job: BoardJob, signal: AbortSignal | undefined): Promise<void>;
+    closeReadout(
+        outcome: RunOutcome,
+        found: F,
+        job: BoardJob,
+        read: { startedAt: string; signal: AbortSignal | undefined }
+    ): Promise<void>;
     /** The value the `adopted` map keeps: the run a sweep of this attempt spares. */
     recordKey(found: F): string;
     /** Takes away what older attempts left (never the run read). */
@@ -78,19 +83,28 @@ async function listed<F extends EarlierRun>(
     signal: AbortSignal | undefined
 ): Promise<F[]> {
     const { attempts = 1, retryMs = 0, sleep } = p.pacing ?? {};
-    for (let attempt = 1; ; attempt += 1) {
+    let failure: unknown;
+    const attempt = async (deadline: number): Promise<F[] | undefined> => {
         try {
-            return await p.list(job);
+            return await p.list(job, { deadline, signal });
         } catch (e) {
-            if (attempt >= attempts || !sleep) throw blockedUnless(e, LISTING);
+            failure = e;
         }
-        try {
-            await sleep(retryMs, signal);
-        } catch {
-            throw adoptionAbandoned();
-        }
-        if (signal?.aborted) throw adoptionAbandoned();
-    }
+    };
+    const found = sleep
+        ? await pollFor(
+              {
+                  ms: attempts * retryMs,
+                  everyMs: retryMs,
+                  sleep,
+                  ...(signal && { signal }),
+                  abandoned: adoptionAbandoned,
+              },
+              attempt
+          )
+        : await attempt(Infinity);
+    if (found) return found;
+    throw blockedUnless(failure, LISTING);
 }
 
 /** The newest earlier run of a claim before `job`'s, of the same command, that the executor admits. */
@@ -104,7 +118,7 @@ async function newestEarlier<F extends EarlierRun>(
             .filter((f) => f.claimSeq < job.claimSeq && f.commandMark === commandMark(job.command))
             .sort((a, b) => b.claimSeq - a.claimSeq);
         for (const candidate of candidates) {
-            const found = p.admit ? await p.admit(candidate, job) : candidate;
+            const found = p.admit ? await p.admit(candidate, job, signal) : candidate;
             if (found) return found;
         }
         return null;
@@ -132,13 +146,13 @@ export async function adoptEarlierRun<F extends EarlierRun>(
     try {
         // A takeover of a stale claim deletes it: never once the attempt stood down.
         if (signal?.aborted) throw adoptionAbandoned();
-        await p.begin(job);
+        await p.begin(job, signal);
         const found = await p.awaitEnd(first, job, signal);
         if (!found) {
             rolledBack = true;
             return await giveBack(p, job);
         }
-        const { end, body } = await p.read(found, job);
+        const { end, body } = await p.read(found, job, signal);
         const { timedOut, infraLoss, fields } = settleEnd(end);
         if (infraLoss) {
             rolledBack = true;
@@ -146,11 +160,11 @@ export async function adoptEarlierRun<F extends EarlierRun>(
         }
         const { startedAt, ...read } = await body();
         const outcome: RunOutcome = { ...read, timedOut, started: true, ...fields };
-        await p.closeReadout(outcome, found, job, startedAt);
+        await p.closeReadout(outcome, found, job, { startedAt, signal });
         if (found.session && !outcome.sessionId) outcome.sessionId = found.session;
         // Nothing is deleted once the attempt stood down, whatever the run it read.
         if (signal?.aborted) throw adoptionAbandoned();
-        await p.confirmOwnership(found, job);
+        await p.confirmOwnership(found, job, signal);
         adopted.set(job.leaseToken, p.recordKey(found));
         await p.sweep(found, job, signal);
         return { outcome, claimSeq: found.claimSeq };

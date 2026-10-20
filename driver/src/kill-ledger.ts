@@ -12,6 +12,8 @@ export interface KillLedger {
     note(job: BoardJob, kind: 'stopped' | 'hard'): void;
     was(job: BoardJob): { stopped: boolean; hard: boolean };
     forget(job: BoardJob): void;
+    /** Aborts when this driver ends the attempt (`note`, either kind); fresh again after `forget`. */
+    signal(job: BoardJob): AbortSignal;
     record(job: BoardJob, kill: KillRecord): Promise<void>;
 }
 
@@ -23,16 +25,27 @@ export interface KillPrimitives {
 export function createKillLedger({ write }: KillPrimitives): KillLedger {
     const stopped = new Set<BoardJob['leaseToken']>();
     const hard = new Set<BoardJob['leaseToken']>();
+    const controllers = new Map<BoardJob['leaseToken'], AbortController>();
+    const controllerOf = (job: BoardJob): AbortController => {
+        const known = controllers.get(job.leaseToken);
+        if (known) return known;
+        const fresh = new AbortController();
+        controllers.set(job.leaseToken, fresh);
+        return fresh;
+    };
     return {
         note: (job, kind) => {
             stopped.add(job.leaseToken);
+            controllerOf(job).abort();
             if (kind === 'hard') hard.add(job.leaseToken);
         },
         was: (job) => ({ stopped: stopped.has(job.leaseToken), hard: hard.has(job.leaseToken) }),
         forget: (job) => {
             stopped.delete(job.leaseToken);
             hard.delete(job.leaseToken);
+            controllers.delete(job.leaseToken);
         },
+        signal: (job) => controllerOf(job).signal,
         record: write,
     };
 }

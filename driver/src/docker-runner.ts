@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
+import { abortableSleep, anyOf, type Sleep } from './poll.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import {
     attachSteps,
@@ -51,6 +52,7 @@ import {
     reportTail,
     SERVICE_LOG_TAIL_LINES,
     type DeadService,
+    Inconclusive,
     type RunOutcome,
     type Runner,
     type RunSession,
@@ -68,6 +70,7 @@ import {
     DOCKER_NAME,
     LEASE_FORMAT,
     listOtherAttemptsOrThrow,
+    readDocker,
     type ClosedState,
     removeEachTolerantly,
     run,
@@ -75,9 +78,7 @@ import {
     servicePsArgs,
     startJobServices,
     type RunnerFiles,
-    abortableSleep,
-    type Sleep,
-    untilStandDown,
+    attemptExec,
     type Spawn,
     type ExecDocker,
     readUtf8,
@@ -164,9 +165,9 @@ interface RunnerDeps {
  * The one tolerated shape is docker's already-gone answer on a removal: a container exiting
  * between the ps and its rm is the fence succeeding, not failing.
  */
-async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal?: AbortSignal): Promise<void> {
+async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal: AbortSignal): Promise<void> {
     // An adoption's fence stops at its attempt's stand-down: no call of it is made after (#824).
-    const execDocker = untilStandDown(deps.execDocker, signal);
+    const execDocker = attemptExec(deps.execDocker, signal);
     // The run this attempt adopted is kept, as kubernetes keeps its Job, for a later claim (issue #821).
     const kept = { leaseToken: job.leaseToken, spared: deps.adopted.get(job.leaseToken) };
     const containerIds = await listOtherAttemptsOrThrow(
@@ -198,11 +199,15 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal?: Abor
     );
 }
 
+/** The daemon seam of one attempt: ends with its kill and a deadline per command (#869). */
+const attemptExecOf = (deps: RunnerDeps, job: BoardJob): ExecDocker =>
+    attemptExec(deps.execDocker, deps.ledger.signal(job));
+
 /** Waits for the supervisor of a started group to pull; a plain error at the bound, no proof of why. */
 async function awaitGroupUp(deps: RunnerDeps, job: BoardJob): Promise<void> {
     const up = await awaitFirstContact(stepHostOf(deps), job, {
         sleep: deps.sleep,
-        stopped: () => deps.ledger.was(job).stopped,
+        signal: deps.ledger.signal(job),
     });
     if (!up) {
         throw new Error(`the task supervisor ${supervisorName(job)} never came up within ${GROUP_UP_WAIT_MS}ms`);
@@ -229,13 +234,21 @@ async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession 
     // A lease the ledger says was stopped gets no group: its kill is this attempt's, not an earlier
     // group's, and a step that awaited (a credential) must not revive the attempt it lost.
     assertJobNotKilled(deps.ledger, job);
-    await dockerReclaimFence(deps, job);
+    await dockerReclaimFence(deps, job, deps.ledger.signal(job));
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);
     const startedAt = new Date().toISOString();
-    await createGroup(deps, job, session, { startedAt });
+    const execDocker = attemptExecOf(deps, job);
     try {
-        await startGroup(deps.execDocker, job, session);
+        await createGroup({ ...deps, execDocker, teardown: deps.execDocker }, job, session, { startedAt });
+        await startGroup(execDocker, job, session);
+    } catch (e) {
+        await removeGroup(deps.execDocker, job);
+        // A call the kill cut short is the kill's, not the daemon's refusal.
+        assertJobNotKilled(deps.ledger, job);
+        throw e;
+    }
+    try {
         await awaitGroupUp(deps, job);
     } catch (e) {
         await removeGroup(deps.execDocker, job);
@@ -364,7 +377,11 @@ async function dockerStartServices(deps: RunnerDeps, job: BoardJob, signal?: Abo
     return startJobServices(
         job,
         deps.config,
-        { ...deps, serviceTeardown: (j) => dockerServiceTeardown(deps, j) },
+        {
+            ...deps,
+            execDocker: attemptExec(deps.execDocker, anyOf(signal, deps.ledger.signal(job))),
+            serviceTeardown: (j) => dockerServiceTeardown(deps, j),
+        },
         signal
     );
 }
@@ -377,7 +394,8 @@ async function dockerStartServices(deps: RunnerDeps, job: BoardJob, signal?: Abo
 // teardown tears down with and requiring the `factory.service` key, so the runner and
 // gate containers never answer it; a failed read costs the fleet, not the sample.
 async function dockerSampleRuntime(deps: RunnerDeps, job: BoardJob): Promise<Omit<RuntimeSample, 'sampledAt'> | null> {
-    const { config, execDocker } = deps;
+    const { config } = deps;
+    const execDocker = attemptExecOf(deps, job);
     const read = await execDocker(['stats', '--no-stream', '--format', '{{json .}}', containerName(job)]).catch(
         () => null
     );
@@ -397,11 +415,15 @@ async function dockerSampleRuntime(deps: RunnerDeps, job: BoardJob): Promise<Omi
  * costs its detail, never the finding.
  */
 async function dockerDeadServices(deps: RunnerDeps, job: BoardJob): Promise<DeadService[]> {
-    const { config, execDocker } = deps;
+    const { config } = deps;
+    const execDocker = attemptExecOf(deps, job);
     if (!config.servicesEnabled) return [];
-    const found = await execDocker(servicePsArgs(job));
+    const found = await readDocker(execDocker, servicePsArgs(job), 'listing the attempt services', {
+        parse: parseDockerServicePs,
+    });
+    if (found.kind !== 'value') throw new Inconclusive(found.kind === 'inconclusive' ? found.reason : 'absent');
+    const listed = found.value;
     const out: DeadService[] = [];
-    const listed = parseDockerServicePs(found.stdout);
     // A declared service with no container at all — removed by hand — is dead too: no exit or log to read.
     for (const gone of missingDeclaredServices(job, listed)) {
         out.push({ ...gone, exitCode: null, reason: 'container removed', logTail: '' });
@@ -426,7 +448,9 @@ async function dockerRun(
     session: RunSession | null,
     onOutput?: (tail: string) => void
 ): Promise<RunOutcome> {
-    const { config, execDocker, files, spawnFn, ledger } = deps;
+    const { config, files, spawnFn, ledger } = deps;
+    const execDocker = attemptExecOf(deps, job); // ends with the kill; the cleanup (`teardown`) does not
+    const teardown = deps.execDocker;
     // No entry-time clearing of the killed set: a fresh claim carries a fresh lease
     // token that was never recorded, so nothing recorded for an earlier attempt can
     // reach this one — and clearing by id would revive exactly the dead attempt the
@@ -476,16 +500,17 @@ async function dockerRun(
     // The run's start instant (the group's, which the exporter and both close-time turn reads key
     // on): a follow-up resumes its session's conversation, so the delta each read reports is
     // bounded to what THIS run wrote.
-    const refused = await createRunnerContainer(deps, job, session, file ? { envFile: file } : {});
-    if (refused) {
+    const created = { config, execDocker, teardown };
+    const refused = await createRunnerContainer(created, job, session, file ? { envFile: file } : {});
+    if (refused && !ledger.was(job).stopped) {
         if (file) await files.rm(file).catch(() => undefined);
         return refused;
     }
     // The create and the copy are awaits too: a lease lost behind them must not reach the start.
     // The created container is this attempt's leftover to remove, the group and the env file with it.
     if (ledger.was(job).stopped) {
-        await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
-        await removeGroup(execDocker, job);
+        await teardown(['rm', '-f', containerName(job)]).catch(() => undefined);
+        await removeGroup(teardown, job);
         deps.groups.delete(job.leaseToken);
         await assertNotKilledAfterEnvWrite({ ledger, job, files }, file);
     }
@@ -498,7 +523,7 @@ async function dockerRun(
     try {
         await orderGo(host, job);
     } catch (e) {
-        await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
+        await teardown(['rm', '-f', containerName(job)]).catch(() => undefined);
         if (file) await files.rm(file).catch(() => undefined);
         throw e;
     }
@@ -510,6 +535,7 @@ async function dockerRun(
         const verdict = (code: number | null): Promise<RunOutcome> =>
             dockerRunVerdict(code, {
                 execDocker,
+                teardown,
                 job,
                 output,
                 timedOut,
@@ -633,7 +659,11 @@ async function dockerRun(
                         const { exitCode, output, timedOut: lostTimedOut, started } = settled;
                         return { exitCode, output, timedOut: lostTimedOut, started, infraLoss: end.infraLoss };
                     }
-                    return applyCloseTimeReadout(settled, { execDocker, config, job, startedAt }, session);
+                    return applyCloseTimeReadout(
+                        settled,
+                        { execDocker, config, job, startedAt, signal: deps.ledger.signal(job) },
+                        session
+                    );
                 })
                 .then(resolve, reject);
         });
@@ -711,11 +741,11 @@ export function createDockerRunner(
             runDockerReview(gateDeps(deps, caller), reviewRunOf(caller, review, session, control), control?.signal),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
-        restartServices: (job, signal) => restartJobServices(job, execDocker, signal),
+        restartServices: (job, signal) => restartJobServices(job, execDocker, anyOf(signal, ledger.signal(job))),
         startServices: (job, signal) => dockerStartServices(deps, job, signal),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
         adopt: (job, signal) =>
-            dockerAdopt({ ...deps, fence: (fenced) => dockerReclaimFence(deps, fenced, signal) }, job, signal),
+            dockerAdopt({ ...deps, fence: (fenced, stand) => dockerReclaimFence(deps, fenced, stand) }, job, signal),
         stopAgent: (job) => dockerStopAgent(deps, job),
         recordKill: (job, kill) => ledger.record(job, kill),
     };

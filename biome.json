@@ -33,7 +33,8 @@
     "plugins": [
         "./lint/no-shared-literals.grit",
         "./lint/no-inline-container-scripts.grit",
-        "./lint/no-cross-package-imports.grit"
+        "./lint/no-cross-package-imports.grit",
+        "./lint/no-silent-empty-read.grit"
     ],
     "assist": {
         "enabled": false

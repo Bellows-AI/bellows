@@ -139,6 +139,20 @@ async function rmdir(p, attempt = 1) {
 }
 
 /**
+ * Whether a path is there: false ONLY on ENOENT/ENOTDIR. Any other error (EACCES, EIO, ...) means
+ * the path could not be read, which is no evidence of absence — it throws, never answers "absent".
+ */
+function present(p) {
+    try {
+        fs.statSync(p);
+        return true;
+    } catch (e) {
+        if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return false;
+        throw new Error('unreadable ' + p + ': ' + (e.code || e.message));
+    }
+}
+
+/**
  * The .git entry at a path, or null only when the entry is genuinely absent: ENOENT (nothing
  * there) or ENOTDIR (a parent of the path is not a directory). lstat, never existsSync — a
  * dangling .git symlink IS an entry (somebody's broken git tree), and reading it as "no .git"
@@ -203,8 +217,8 @@ async function reclaimWithoutClone(tree, wtExists) {
 }
 
 async function reclaim(tree) {
-    const wtExists = fs.existsSync(tree);
-    if (!fs.existsSync(repo)) return reclaimWithoutClone(tree, wtExists);
+    const wtExists = present(tree);
+    if (!present(repo)) return reclaimWithoutClone(tree, wtExists);
     const registered =
         wtExists &&
         git('worktree', 'list', '--porcelain')

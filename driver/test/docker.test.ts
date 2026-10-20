@@ -47,9 +47,19 @@ import {
     parseOpencodeRunOutcome,
     readsAgentTurns,
 } from '../src/close-read.js';
-import { ARTIFACT_LIMIT, commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
+import {
+    ARTIFACT_LIMIT,
+    CLOSE_READ_DEADLINE_MS,
+    commandMark,
+    Inconclusive,
+    OPENCODE_EXPORT_LIMIT,
+    SERVICE_LOG_TAIL_LINES,
+    SERVICE_RESTART_TIMEOUT_MS,
+} from '../src/runner.js';
 import { claudeTurnsScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { createDockerRunner } from '../src/docker-runner.js';
+import { ATTEMPT_COMMAND_TIMEOUT_MS } from '../src/docker-runner-support.js';
+import { untilStandDown } from '../src/docker-runner-support.js';
 import {
     exporterCreateArgs,
     exporterName,
@@ -140,6 +150,28 @@ const job: BoardJob = {
 };
 
 const ok = (stdout = ''): StepResult => ({ exitCode: 0, stdout, stderr: '', timedOut: false });
+
+/** A daemon call that never answers and rejects only when its own `signal` aborts (#869). */
+const hangsUntilAborted = (options?: { signal?: AbortSignal }): Promise<never> =>
+    new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+    });
+
+/** A daemon call that never answers: it fails only at its own `timeout`, as execFile kills a stalled child (#869). */
+const hangsUntilTimeout = (options?: { timeout?: number }): Promise<never> =>
+    new Promise((_resolve, reject) => {
+        if (options?.timeout !== undefined) setTimeout(() => reject(new Error('timed out')), options.timeout);
+    });
+
+/** Whether `pending` ended within a moment: a wait that ignores the kill signal stays pending. */
+const endsSoon = (pending: Promise<unknown>): Promise<boolean> =>
+    Promise.race([
+        pending.then(
+            () => true,
+            () => true
+        ),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100)),
+    ]);
 const FINALIZED: SupervisorReport = {
     id: 'report-1',
     outcome: null,
@@ -2324,6 +2356,15 @@ describe('the docker runner', () => {
         );
     });
 
+    it('rejects Inconclusive when the fleet listing has a malformed row', async () => {
+        const garbage = vitest.fn(() => Promise.resolve({ stdout: '<html>\n' })) as unknown as (
+            args: string[]
+        ) => Promise<{ stdout: string }>;
+        await expect(
+            dockerRunner(garbage, { spawn: spawnChild('done\n', '', 0) }).deadServices(job)
+        ).rejects.toBeInstanceOf(Inconclusive);
+    });
+
     it('answers no dead services without asking the daemon when services are off', async () => {
         const exec = vitest.fn(() => Promise.resolve({ stdout: '' }));
         const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('done\n', '', 0) });
@@ -2364,8 +2405,8 @@ describe('the docker runner', () => {
             expect(parseDockerStats('{"CPUPerc":"93.00%","MemUsage":"? / 8GiB"}')).toBeNull();
         });
 
-        it('throws on a null last line, and takes null for valid JSON followed by a non-JSON last line', () => {
-            expect(() => parseDockerStats('null')).toThrow(TypeError);
+        it('takes null for a null last line, and for valid JSON followed by a non-JSON last line', () => {
+            expect(parseDockerStats('null')).toBeNull();
             expect(parseDockerStats('{"CPUPerc":"93.00%","MemUsage":"544MiB / 7.754GiB"}\nnoise')).toBeNull();
         });
     });
@@ -2387,16 +2428,15 @@ describe('the docker runner', () => {
             ]);
         });
 
-        it('skips rows without the service label, an image or a state, and garbage lines', () => {
-            const unlabeled = psLine({ name: 'db', image: 'postgres:16', state: 'running' }).replace(
-                /factory\.service=db,?/,
-                ''
-            );
-            expect(
-                parseDockerServicePs(
-                    `${unlabeled}not json\n${psLine({ name: 'ok', image: '', state: 'running' })}${psLine({ name: 'ok2', image: 'redis:7', state: '' })}`
-                )
-            ).toEqual([]);
+        it('answers null when any row lacks the service label, an image or a state, or is not a record', () => {
+            const good = psLine({ name: 'db', image: 'postgres:16', state: 'running' });
+            const unlabeled = good.replace(/factory\.service=db,?/, '');
+            expect(parseDockerServicePs(unlabeled)).toBeNull();
+            expect(parseDockerServicePs(`${good}<html>\n`)).toBeNull();
+            expect(parseDockerServicePs(`${good}not json\n`)).toBeNull();
+            expect(parseDockerServicePs(`${good}[]\n`)).toBeNull();
+            expect(parseDockerServicePs(`${good}${psLine({ name: 'ok', image: '', state: 'running' })}`)).toBeNull();
+            expect(parseDockerServicePs(`${good}${psLine({ name: 'ok2', image: 'redis:7', state: '' })}`)).toBeNull();
         });
 
         it('answers empty for empty output', () => {
@@ -2606,11 +2646,11 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
      */
     const readyWhileStarting = (exec: unknown): Parameters<typeof createDockerRunner>[2] => {
         const seen: string[][] = [];
-        const inner = exec as (args: string[]) => Promise<{ stdout: string }>;
-        return (async (args: string[]) => {
+        const inner = exec as (args: string[], options?: object) => Promise<{ stdout: string }>;
+        return (async (args: string[], options?: object) => {
             seen.push(args);
             if (startingServices > 0 && args[0] === 'ps' && args.includes('{{json .}}')) return runningServicesPs(seen);
-            return inner(args);
+            return inner(args, options);
         }) as Parameters<typeof createDockerRunner>[2];
     };
     const bareServicesRunner = (exec: ReturnType<typeof daemon>, fn: typeof spawn) =>
@@ -2805,13 +2845,22 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         });
         return { exec, polls: () => polls };
     };
-    const startWith = (exec: ReturnType<typeof readinessDaemon>['exec']) =>
-        startJobServices(job, loadDriverConfig({ RUNNER_SERVICES: '1' }), {
-            execDocker: exec as unknown as (args: string[]) => Promise<{ stdout: string; stderr: string }>,
-            ledger: { was: () => ({ stopped: false, hard: false }) },
-            serviceTeardown: async () => {},
-            sleep: async () => {},
-        });
+    const startWith = (
+        exec: ReturnType<typeof readinessDaemon>['exec'],
+        signal?: AbortSignal,
+        kill: AbortSignal = new AbortController().signal
+    ) =>
+        startJobServices(
+            job,
+            loadDriverConfig({ RUNNER_SERVICES: '1' }),
+            {
+                execDocker: exec as unknown as (args: string[]) => Promise<{ stdout: string; stderr: string }>,
+                ledger: { was: () => ({ stopped: false, hard: false }), signal: () => kill },
+                serviceTeardown: async () => {},
+                sleep: async () => {},
+            },
+            signal
+        );
 
     it('startServices answers only once every service runs', async () => {
         const d = readinessDaemon(['created', 'running']);
@@ -2823,6 +2872,22 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const d = readinessDaemon(['exited']);
         await expect(startWith(d.exec)).rejects.toBeInstanceOf(ServicesNotRunning);
     });
+
+    // #869: the listing the readiness wait reads ends on the supplied stand-down and on the attempt's kill.
+    it.each(['the supplied stand-down', 'the attempt’s kill'])(
+        'startServices ends a pending listing on %s',
+        async (who) => {
+            const stand = new AbortController();
+            const kill = new AbortController();
+            const hang = vitest.fn((args: string[], options?: { signal?: AbortSignal }) =>
+                args[0] === 'ps' && args.includes('{{json .}}') ? hangsUntilAborted(options) : daemon()(args)
+            );
+            const pending = startWith(hang as never, stand.signal, kill.signal);
+            await vitest.waitFor(() => expect(hang.mock.calls.some((call) => call[0]![0] === 'ps')).toBe(true));
+            (who === 'the supplied stand-down' ? stand : kill).abort();
+            expect(await endsSoon(pending)).toBe(true);
+        }
+    );
 
     // Review (PR 737): the loop starts the services before the gate environment's setup, so run()
     // must neither start them again nor fence them away; the runner joins their namespace.
@@ -2939,6 +3004,24 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const calls = exec.mock.calls.map((call) => call[0]);
         expect(calls.filter((a) => isServiceRun(a))).toHaveLength(1);
         expect(seen).toHaveLength(0);
+    });
+
+    it('removes nothing when the job is killed while the fence is still listing the leftovers', async () => {
+        const handle: { kill: ((j: BoardJob) => Promise<void>) | null } = { kill: null };
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'ps' && args.includes('-a')) {
+                await handle.kill!(job);
+                return { stdout: psListing(args, 'c0ffee000001') };
+            }
+            return { stdout: '' };
+        });
+        const { fn } = spawnRecording('ran\n', 0);
+        const runner = servicesRunner(exec, fn);
+        handle.kill = runner.kill;
+
+        await expect(runner.run(job, { id: SESSION, resume: false })).rejects.toThrow();
+
+        expect(exec.mock.calls.map((call) => call[0]).filter((a) => a.includes('c0ffee000001'))).toEqual([]);
     });
 
     // The two-attempt race: A loses its lease mid-setup and B claims the same job id before A
@@ -3717,6 +3800,135 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const calls = exec.mock.calls.slice(before).map((call) => call[0]);
         expect(calls.at(-1)).toEqual(['rm', '-f', serviceContainerName(job, 'stub')]);
         expect(calls.some((a) => a[0] === 'ps')).toBe(false);
+    });
+
+    it('restartServices ends a pending readiness listing on the stand-down (#869)', async () => {
+        const base = daemon();
+        const exec = vitest.fn(async (args: string[], options?: { signal?: AbortSignal }) =>
+            args[0] === 'ps' && args.includes('{{json .}}') ? hangsUntilAborted(options) : base(args)
+        ) as unknown as ReturnType<typeof daemon>;
+        const runner = servicesRunner(exec, spawnRecording('', 0).fn);
+        await runner.run(job, { id: SESSION, resume: false });
+        const stand = new AbortController();
+        const before = exec.mock.calls.length;
+
+        const pending = runner.restartServices(job, stand.signal);
+        await vitest.waitFor(() =>
+            expect(exec.mock.calls.slice(before).some((call) => call[0]![0] === 'ps')).toBe(true)
+        );
+        stand.abort();
+        expect(await endsSoon(pending)).toBe(true);
+        await runner.releaseServices(job);
+    });
+
+    it.each(['rm', 'run'])('restartServices ends a stalled %s by the restart’s deadline (#869)', async (stalled) => {
+        const base = daemon();
+        let stall = false;
+        const exec = vitest.fn(async (args: string[], options?: { timeout?: number }) =>
+            stall && args[0] === stalled && (stalled === 'rm' || isServiceRun(args))
+                ? hangsUntilTimeout(options)
+                : base(args)
+        ) as unknown as ReturnType<typeof daemon>;
+        const runner = servicesRunner(exec, spawnRecording('', 0).fn);
+        await runner.run(job, { id: SESSION, resume: false });
+        stall = true;
+        vitest.useFakeTimers();
+        try {
+            let ended = false;
+            const restarting = runner.restartServices(job, new AbortController().signal);
+            restarting.then(
+                () => (ended = true),
+                () => (ended = true)
+            );
+
+            await vitest.advanceTimersByTimeAsync(SERVICE_RESTART_TIMEOUT_MS + 1_000);
+
+            expect(ended).toBe(true);
+        } finally {
+            vitest.useRealTimers();
+        }
+        stall = false;
+        await runner.releaseServices(job);
+    });
+
+    // #869: the first call of each kind an attempt makes stalls; none holds the attempt past its command deadline.
+    it.each([
+        ['the re-claim fence listing', (args: string[]) => args[0] === 'ps' && args.includes('--format')],
+        ['the group create', (args: string[]) => args[0] === 'create'],
+        ['the group start', (args: string[]) => args[0] === 'start'],
+        ['the service creation', (args: string[]) => isServiceRun(args)],
+    ])('ends a stalled %s by the attempt’s command deadline (#869)', async (_name, hang) => {
+        const base = daemon();
+        let stalled = false;
+        const exec = vitest.fn(async (args: string[], options?: { timeout?: number }) => {
+            if (!stalled && hang(args)) {
+                stalled = true;
+                return hangsUntilTimeout(options);
+            }
+            return base(args);
+        }) as unknown as ReturnType<typeof daemon>;
+        const runner = servicesRunner(exec, spawnRecording('', 0).fn);
+        vitest.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        try {
+            let ended = false;
+            const running = runner.run(job, { id: SESSION, resume: false });
+            running.then(
+                () => (ended = true),
+                () => (ended = true)
+            );
+            // The calls before the stalled one touch the disk: let the run reach it.
+            while (!stalled) await new Promise((resolve) => setImmediate(resolve));
+
+            await vitest.advanceTimersByTimeAsync(ATTEMPT_COMMAND_TIMEOUT_MS + 1_000);
+            // What follows the refusal touches the disk.
+            for (let polls = 0; polls < 200 && !ended; polls += 1)
+                await new Promise((resolve) => setImmediate(resolve));
+
+            expect(ended).toBe(true);
+        } finally {
+            vitest.useRealTimers();
+        }
+    });
+
+    it('ends a stalled vitals sample by the attempt’s command deadline (#869)', async () => {
+        const exec = vitest.fn((_args: string[], options?: { timeout?: number }) =>
+            hangsUntilTimeout(options)
+        ) as unknown as ReturnType<typeof daemon>;
+        vitest.useFakeTimers();
+        try {
+            let ended = false;
+            const sampling = servicesRunner(exec, spawnRecording('', 0).fn).sampleRuntime(job);
+            sampling.then(
+                () => (ended = true),
+                () => (ended = true)
+            );
+
+            // The stats read, then the fleet read: each ends by its own deadline.
+            await vitest.advanceTimersByTimeAsync(2 * ATTEMPT_COMMAND_TIMEOUT_MS + 1_000);
+
+            expect(ended).toBe(true);
+        } finally {
+            vitest.useRealTimers();
+        }
+    });
+
+    it('ends a stalled group create when the attempt is killed (#869)', async () => {
+        const base = daemon();
+        let stalled = false;
+        const exec = vitest.fn(async (args: string[], options?: { signal?: AbortSignal }) => {
+            if (!stalled && args[0] === 'create') {
+                stalled = true;
+                return hangsUntilAborted(options);
+            }
+            return base(args);
+        }) as unknown as ReturnType<typeof daemon>;
+        const runner = servicesRunner(exec, spawnRecording('', 0).fn);
+
+        const running = runner.run(job, { id: SESSION, resume: false });
+        await vitest.waitFor(() => expect(stalled).toBe(true));
+        await runner.kill(job);
+
+        expect(await endsSoon(running)).toBe(true);
     });
 
     it('restartServices throws when the daemon refuses the service again (issue #560)', async () => {
@@ -5147,7 +5359,7 @@ describe('a group whose supervisor is gone releases its step channel', () => {
         await runner.kill(repoJob);
         const sleptBeforeRelease = sleeps;
         release();
-        await expect(probing).rejects.toThrow(/killed while its task group came up/);
+        await expect(probing).rejects.toThrow(/killed while (setting up services|its task group came up)/);
         expect(sleeps - sleptBeforeRelease).toBeLessThanOrEqual(2);
     });
 
@@ -5429,6 +5641,101 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const read = calls.findIndex((args) => args[0] === 'logs');
         expect(read).toBeGreaterThanOrEqual(0);
         expect(calls.findIndex((args) => args[0] === 'rm')).toBeGreaterThan(read);
+    });
+
+    // #869: the supplied stand-down ends every read of the adoption — the evidence, the log stream and the
+    // close-time readout — never a daemon call or a child that outlives the abandoned attempt.
+    it.each([
+        ['the kill-record read', (args: string[]) => args[0] === 'volume' && args[1] === 'inspect'],
+        ['the supervisor report read', (args: string[]) => args[0] === 'logs' && args.includes(supervisorName(job))],
+        ['the exited runner inspect', (args: string[]) => args[0] === 'inspect'],
+        ['the close-time session readout', (args: string[]) => args[0] === 'run'],
+    ])('ends %s on the supplied signal', async (_name, hang) => {
+        const { exec: base, logs } = daemon(listing());
+        let hung = false;
+        const exec = (args: string[], options?: { signal?: AbortSignal }) => {
+            if (!hang(args)) return base(args);
+            hung = true;
+            return hangsUntilAborted(options);
+        };
+        const stop = new AbortController();
+
+        const adopting = dockerRunner(exec, { spawn: logs }).adopt(adopter, stop.signal);
+        await vitest.waitFor(() => expect(hung).toBe(true));
+        stop.abort();
+        expect(await endsSoon(adopting)).toBe(true);
+    });
+
+    // #869: every read of the adoption ends by ONE absolute deadline; a stalled daemon holds none of them.
+    it.each([
+        ['the kill-record read', (args: string[]) => args[0] === 'volume' && args[1] === 'inspect'],
+        ['the supervisor report read', (args: string[]) => args[0] === 'logs' && args.includes(supervisorName(job))],
+        ['the exited runner inspect', (args: string[]) => args[0] === 'inspect'],
+    ])('ends %s by the adoption’s deadline', async (_name, hang) => {
+        vitest.useFakeTimers();
+        try {
+            const { exec: base, logs } = daemon(listing());
+            const exec = (args: string[], options?: { timeout?: number }) =>
+                hang(args) ? hangsUntilTimeout(options) : base(args);
+            let ended = false;
+            const adopting = dockerRunner(exec, { spawn: logs }).adopt(adopter);
+            adopting.then(
+                () => (ended = true),
+                () => (ended = true)
+            );
+
+            await vitest.advanceTimersByTimeAsync(CLOSE_READ_DEADLINE_MS + 1_000);
+
+            expect(ended).toBe(true);
+        } finally {
+            vitest.useRealTimers();
+        }
+    });
+
+    it('kills the runner log stream at the adoption’s deadline', async () => {
+        vitest.useFakeTimers();
+        try {
+            const { exec } = daemon(listing());
+            const logs = ((_command: string, _args: string[], options?: { signal?: AbortSignal }) => {
+                const child = new EventEmitter() as ChildProcess;
+                child.stdout = new EventEmitter() as Readable;
+                child.stderr = new EventEmitter() as Readable;
+                options?.signal?.addEventListener('abort', () => child.emit('error', new Error('aborted')));
+                return child;
+            }) as unknown as typeof spawn;
+            let ended = false;
+            const adopting = dockerRunner(exec, { spawn: logs }).adopt(adopter);
+            adopting.then(
+                () => (ended = true),
+                () => (ended = true)
+            );
+
+            await vitest.advanceTimersByTimeAsync(CLOSE_READ_DEADLINE_MS + 1_000);
+
+            expect(ended).toBe(true);
+        } finally {
+            vitest.useRealTimers();
+        }
+    });
+
+    it('ends the runner log stream on the supplied signal', async () => {
+        const { exec, calls } = daemon(listing());
+        let streamed: AbortSignal | undefined;
+        const logs = ((_command: string, args: string[], options?: { signal?: AbortSignal }) => {
+            calls.push(args);
+            streamed = options?.signal;
+            const child = new EventEmitter() as ChildProcess;
+            child.stdout = new EventEmitter() as Readable;
+            child.stderr = new EventEmitter() as Readable;
+            options?.signal?.addEventListener('abort', () => child.emit('error', new Error('aborted')));
+            return child;
+        }) as unknown as typeof spawn;
+        const stop = new AbortController();
+
+        const adopting = dockerRunner(exec, { spawn: logs }).adopt(adopter, stop.signal);
+        await vitest.waitFor(() => expect(streamed).toBeDefined());
+        stop.abort();
+        expect(await endsSoon(adopting)).toBe(true);
     });
 
     // The supervisor outlives the agent to finalize: the next claim waits for it rather than
@@ -6418,7 +6725,7 @@ describe('the docker runner and the gates', () => {
     // worktree, the executor in the reviewer container — made on demand like a gate's.
     it('runs a review as steps of the caller’s group, made on demand, with the reviewer container in it', async () => {
         const daemon = recording();
-        const supervised = fakeSteps(() => ok());
+        const supervised = fakeSteps((step) => (step.kind === 'review' ? ok() : ok('{"ok":true,"reason":null}')));
         const runner = dockerRunner(daemon.exec, { steps: supervised.sink });
         const caller: BoardJob = { ...job, repo: 'Bellows-AI/factory', reviewerProfiles: ['security'] };
         const review = {
@@ -6449,5 +6756,37 @@ describe('the docker runner and the gates', () => {
         const runner = dockerRunner(daemon.exec, { env: { RUNNER_SERVICES: '0' }, steps: fakeSteps().sink });
         expect(await runner.resizeGate(gated, 'verify')).toBe(false);
         expect(daemon.calls).toEqual([]);
+    });
+});
+
+describe('untilStandDown', () => {
+    it('hands its signal into the exec already in flight, so the stand-down kills it', async () => {
+        const controller = new AbortController();
+        let seen: AbortSignal | undefined;
+        const exec = untilStandDown(async (_args, options) => {
+            seen = options?.signal;
+            return { stdout: '' };
+        }, controller.signal);
+
+        await exec(['ps']);
+        expect(seen?.aborted).toBe(false);
+        controller.abort();
+
+        expect(seen?.aborted).toBe(true);
+        await expect(exec(['ps'])).rejects.toThrow(/abandoned/);
+    });
+
+    it('keeps a signal the call brought as well', async () => {
+        const own = new AbortController();
+        let seen: AbortSignal | undefined;
+        const exec = untilStandDown(async (_args, options) => {
+            seen = options?.signal;
+            return { stdout: '' };
+        }, new AbortController().signal);
+
+        await exec(['ps'], { signal: own.signal, timeout: 5 });
+        own.abort();
+
+        expect(seen?.aborted).toBe(true);
     });
 });

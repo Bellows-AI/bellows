@@ -1,0 +1,67 @@
+language js
+
+// An unconfirmed read never licenses a delete or a negative verdict (AGENTS.md). A docker or
+// Kubernetes read that fails, times out or answers garbage is inconclusive: it throws, or it
+// returns an explicit Inconclusive, and the caller leaves the run alone. Collapsing the failure
+// into `null`, `[]` or `undefined` turns "could not read" into "nothing there", which the next
+// line then sweeps, deletes or reports as an ended run.
+//
+// Three shapes are refused, in the driver's docker and Kubernetes code:
+//   1. `<read>.catch(() => null | [] | undefined)` where the read is `execDocker(…)` or a
+//      `.request('GET', …)`.
+//   2. `try { … execDocker(…) | .request(…) … } catch { return null | [] | undefined }`.
+//   3. `JSON.parse(x) as T` — a cast that vouches for an answer nobody shape-checked.
+// Removals (`'rm'`) and kills are not reads and are never matched, and `undefined` only counts when
+// the answer is bound (`const x = await …catch(() => undefined)`): a bare `await …catch(() =>
+// undefined)` discards the result.
+//
+// The carve-outs are the reads whose absence is the correct answer, each named by the exact call
+// it protects and pinned in core/test/biome.test.ts: the docker sample (`'stats'`, `servicePsArgs`),
+// the service log tail (`'GET'` on a pod log), the cache watch (`opencodeCacheProbeArgs`), the
+// metrics sample (`sampleRuntime`), the daemon's own State fallback (`closedStateOf`) and the
+// Status-object shape check (`readStatus`). Paths are an `or` of whole regexes, never `(a|b)`: Grit binds a regex
+// group to a variable, so an alternation group does not compile, and a plugin that does not compile
+// reports at `info` and matches nothing.
+or {
+    `$read.catch(() => $empty)` where {
+        $empty <: or { `null`, `[]` },
+        $read <: contains or { `execDocker($...)`, `$_.execDocker($...)`, `$_.request('GET', $...)` },
+        $read <: not contains or { `'rm'`, `'kill'` },
+        $read <: not contains or { `'stats'`, `servicePsArgs($...)`, `opencodeCacheProbeArgs($...)`, `$_.request('GET', path)` },
+        $filename <: or { r".*/driver/src/.*" },
+        register_diagnostic(
+            span = $empty,
+            message = "A failed read must stay inconclusive, not become an empty answer (AGENTS.md, lint/no-silent-empty-read.grit)."
+        )
+    },
+    `const $_ = await $read.catch(() => undefined)` where {
+        $read <: contains or { `execDocker($...)`, `$_.execDocker($...)`, `$_.request('GET', $...)` },
+        $read <: not contains or { `'rm'`, `'kill'` },
+        $filename <: or { r".*/driver/src/.*" },
+        register_diagnostic(
+            span = $read,
+            message = "A failed read must stay inconclusive, not become an empty answer (AGENTS.md, lint/no-silent-empty-read.grit)."
+        )
+    },
+    `try { $body } catch { $handler }` where {
+        $body <: contains or { `execDocker($...)`, `$_.execDocker($...)`, `$_.request($...)` },
+        $handler <: contains `return $empty`,
+        $empty <: or { `null`, `[]`, `undefined` },
+        $filename <: or { r".*/driver/src/.*" },
+        not $filename <: or { r".*/driver/src/scripts/.*" },
+        not $body <: contains `$_.request('GET', jobPodsPath($...))`,
+        register_diagnostic(
+            span = $empty,
+            message = "A failed read must stay inconclusive, not become an empty answer (AGENTS.md, lint/no-silent-empty-read.grit)."
+        )
+    },
+    `JSON.parse($v) as $t` where {
+        $filename <: or { r".*/driver/src/k8s-.*", r".*/driver/src/docker-.*" },
+        not $t <: r".*kind[?]: unknown.*",
+        not $t <: r".*Status[?]: string.*",
+        register_diagnostic(
+            span = $t,
+            message = "JSON.parse(...) as T vouches for an unchecked answer; shape-check it and stay inconclusive otherwise."
+        )
+    }
+}

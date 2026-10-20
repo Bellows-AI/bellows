@@ -1,0 +1,239 @@
+/**
+ * `runJob` driven directly, with no claim loop around it: the module's own contracts — the order in
+ * which claim refusals are decided, how a checkout sync's answer becomes a verdict, a requeue or a
+ * fault, and what each way a run can end leaves on the board. The claim loop's behavior end to end
+ * is `loop.test.ts`; the phase-boundary faults are `loop-phase-faults.test.ts`.
+ */
+import { describe, expect, it } from 'vitest';
+import type { BoardJob } from '../src/board.js';
+import { runJob } from '../src/loop-run.js';
+import type { SyncResult } from '../src/publish.js';
+import type { RunOutcome } from '../src/runner.js';
+import { StartupRefused } from '../src/startup-cause.js';
+import { gatedJob, job, ok, stubBoard, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
+
+type RunnerOptions = NonNullable<Parameters<typeof stubRunner>[1]>;
+
+/** One attempt of `claimed` through `runJob`, with every call recorded. */
+async function attempt(
+    claimed: BoardJob,
+    options: RunnerOptions = {},
+    run: (claimed: BoardJob) => Promise<RunOutcome> = async () => ok()
+) {
+    const board = stubBoard([]).board;
+    const runner = stubRunner(run, options);
+    const logs: string[] = [];
+    const rt = stubRuntime(board, runner, { log: (m) => logs.push(m) });
+    await runJob(rt, claimed);
+    return { board, runner, logs };
+}
+
+const nothingLaunched = (r: Awaited<ReturnType<typeof attempt>>) => {
+    expect(r.board.beats).toBe(0);
+    expect(r.runner.synced).toEqual([]);
+    expect(r.board.sessions).toEqual([]);
+    expect(r.board.githubAsks).toEqual([]);
+};
+
+describe('the claim refusals, decided before anything launches', () => {
+    it('fails an executor selection as config, launching nothing', async () => {
+        const r = await attempt({ ...job(1), executorRefusal: 'executor "x" is archived' });
+
+        expect(r.board.completed).toHaveLength(1);
+        expect(r.board.completed[0]).toMatchObject({
+            status: 'failed',
+            failureKind: 'config',
+            output: 'executor "x" is archived',
+        });
+        nothingLaunched(r);
+    });
+
+    it('writes exactly one setup>ended attempt-transition line for a refusal, with no JobState behind it', async () => {
+        for (const refused of [{ skillRefusal: 'skill "s" is gone' }, { masterPrompt: '' }]) {
+            const claimed = { ...job(1), ...refused };
+            const r = await attempt(claimed);
+
+            const lines = r.logs.filter((m) => m.includes('"event":"attempt-transition"')).map((m) => JSON.parse(m));
+            expect(lines).toEqual([
+                {
+                    event: 'attempt-transition',
+                    job: claimed.id,
+                    claimSeq: claimed.claimSeq,
+                    from: 'setup',
+                    to: 'ended',
+                    ending: null,
+                    at: expect.any(Number),
+                },
+            ]);
+        }
+    });
+
+    it('names a deleted executor when the claim carries none', async () => {
+        const r = await attempt({ ...job(1), executorType: null });
+
+        expect(r.board.completed[0]).toMatchObject({ failureKind: 'config' });
+        expect(r.board.completed[0]?.output).toContain('no longer exists');
+        nothingLaunched(r);
+    });
+
+    it('fails a skill refusal as config', async () => {
+        const r = await attempt({ ...job(1), skillRefusal: 'skill "s" is gone' });
+
+        expect(r.board.completed[0]).toMatchObject({ failureKind: 'config', output: 'skill "s" is gone' });
+        nothingLaunched(r);
+    });
+
+    it('fails a plan refusal as config', async () => {
+        const r = await attempt({ ...job(1), planRefusal: '.bellows.yaml line 3: unknown key' });
+
+        expect(r.board.completed[0]).toMatchObject({ failureKind: 'config' });
+        expect(r.board.completed[0]?.output).toContain('unknown key');
+        nothingLaunched(r);
+    });
+
+    it('fails a master prompt the board broke as runner_error, not config', async () => {
+        const r = await attempt({ ...job(1), masterPrompt: '' });
+
+        expect(r.board.completed).toHaveLength(1);
+        expect(r.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+        nothingLaunched(r);
+    });
+
+    it('decides the executor first, then the skills, then the plan, then the prompt', async () => {
+        const all = {
+            ...job(1),
+            executorRefusal: 'E',
+            skillRefusal: 'S',
+            planRefusal: 'P',
+            masterPrompt: '',
+        };
+        const outputs: (string | undefined)[] = [];
+        for (const claimed of [
+            all,
+            { ...all, executorRefusal: null },
+            { ...all, executorRefusal: null, skillRefusal: null },
+        ]) {
+            outputs.push((await attempt(claimed)).board.completed[0]?.output);
+        }
+        const last = await attempt({ ...all, executorRefusal: null, skillRefusal: null, planRefusal: null });
+
+        expect(outputs).toEqual(['E', 'S', 'P']);
+        expect(last.board.completed[0]?.failureKind).toBe('runner_error');
+    });
+});
+
+describe('the checkout sync answer', () => {
+    const refused = (over: Partial<SyncResult>): SyncResult => ({ ok: false, reason: 'boom', ...over });
+
+    it('hands lock contention back as a requeue, with no verdict', async () => {
+        const r = await attempt(job(1), { sync: refused({ reason: 'transient worktree sync: lock busy' }) });
+
+        expect(r.board.requeued).toEqual([job(1).id]);
+        expect(r.board.completed).toEqual([]);
+    });
+
+    it('fails a kind the script named as config', async () => {
+        const r = await attempt(job(1), { sync: refused({ kind: 'missing_clone' }) });
+
+        expect(r.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
+        expect(r.board.completed[0]?.output).toContain('boom');
+        expect(r.runner.synced).toHaveLength(1);
+    });
+
+    it('fails a refusal with no kind as runner_error', async () => {
+        const r = await attempt(job(1), { sync: refused({}) });
+
+        expect(r.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+    });
+
+    it.each([
+        ['a repo on a starting claim', { ...job(1), repo: 'org/repo' }, 1],
+        ['no repo', job(1), 0],
+        ['a follow-up restoring its tree', { ...job(1), repo: 'org/repo', followUp: true }, 0],
+    ])('asks GitHub for the sync token for %s', async (_label, claimed, asks) => {
+        // A refused sync ends the attempt there, so the sync's is the only ask the board sees.
+        const r = await attempt(claimed, { sync: { ok: false, reason: 'boom' } });
+
+        expect(r.board.githubAsks).toHaveLength(asks);
+        expect(r.runner.synced).toHaveLength(1);
+    });
+});
+
+describe('the plan check', () => {
+    it('refuses a package cache the driver will not set, as config', async () => {
+        const claimed = { ...job(1), repo: null, gates: { image: 'node:24', gates: [], cache: ['npm'] } } as BoardJob;
+        const r = await attempt(claimed);
+
+        expect(r.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
+        expect(r.board.completed[0]?.output).toContain('will not run');
+        expect(r.runner.synced).toHaveLength(1);
+    });
+
+    it('refuses declared gates when the driver has no gate environment, as runner_error', async () => {
+        const r = await attempt(gatedJob(1));
+
+        expect(r.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+        expect(r.board.completed[0]?.output).toContain('GATE_*');
+    });
+});
+
+describe('how a run ends', () => {
+    it('hands a run that never started back as an interruption: no verdict, no gates', async () => {
+        const r = await attempt(job(1), {}, async () => ok({ started: false, output: 'daemon refused' }));
+
+        expect(r.board.interrupted).toHaveLength(1);
+        expect(r.board.interrupted[0]?.reason).toContain('never started');
+        expect(r.board.completed).toEqual([]);
+        expect(r.board.gatesReported).toEqual([]);
+    });
+
+    it('reports a throw from a run on a non-final attempt as nothing: left to the lease', async () => {
+        const r = await attempt(job(1), {}, async () => {
+            throw new Error('apiserver said 401');
+        });
+
+        expect(r.board.completed).toEqual([]);
+        expect(r.board.interrupted).toEqual([]);
+        expect(r.logs.some((m) => m.includes('could not run: apiserver said 401'))).toBe(true);
+    });
+
+    it('fails a throw from the last attempt as runner_error, saying the driver could not run it', async () => {
+        const r = await attempt({ ...job(1), lastAttempt: true }, {}, async () => {
+            throw new Error('apiserver said 401');
+        });
+
+        expect(r.board.completed).toHaveLength(1);
+        expect(r.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+        expect(r.board.completed[0]?.output).toContain('[driver] could not run');
+    });
+
+    it('interrupts a transient start refusal thrown by the run', async () => {
+        const r = await attempt(job(1), {}, async () => {
+            throw new StartupRefused('registry unreachable', 'transient');
+        });
+
+        expect(r.board.interrupted).toHaveLength(1);
+        expect(r.board.interrupted[0]?.reason).toContain('registry unreachable');
+        expect(r.board.completed).toEqual([]);
+    });
+});
+
+describe('the sync turn, held across the token ask', () => {
+    it('releases the turn it was granted when the board cannot issue the checkout token', async () => {
+        const board = stubBoard([]).board;
+        board.githubCredential = async () => {
+            throw new Error('board unreachable');
+        };
+        let released = 0;
+        const syncs = { acquire: async () => ({ release: () => void released++ }) };
+        const rt = stubRuntime(
+            board,
+            stubRunner(async () => ok()),
+            { syncs }
+        );
+
+        await runJob(rt, { ...job(1), repo: 'Example-Org/example' }).catch(() => {});
+
+        expect(released).toBe(1);
+    });
+});

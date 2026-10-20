@@ -6,8 +6,8 @@ import { AdoptionBlocked, type AdoptedRun } from './runner.js';
 
 /**
  * Adopts the finished runner an earlier claim left behind (issue #792) — before the sync, which
- * would rewrite the tree that run left. A read that fails is no verdict: the attempt runs the job
- * itself, and its launch sweeps what is left. The earlier attempt is recorded as an interruption
+ * would rewrite the tree that run left. A read that fails is no verdict: the attempt is left to its
+ * lease, and the next claim adopts what survived. The earlier attempt is recorded as an interruption
  * under this claim's lease, best-effort (`recordAdopted`): the step answers it as data and
  * performs nothing, and the verdict does not wait on it.
  */
@@ -19,11 +19,11 @@ export async function adoptStep(ctx: AttemptCtx): Promise<SetupConclusion | Adop
     try {
         adoptedOut = await raceStep(state.signal, adopting);
     } catch (e) {
-        // A read run that could not be secured is no reason to run afresh over its tree (issue #821).
-        if (e instanceof AdoptionBlocked)
-            return { halt: 'leave', log: `could not adopt the finished runner, leaving it to the lease: ${e.message}` };
-        rt.log(`job ${job.id}: could not adopt an earlier runner, running the job: ${(e as Error).message}`);
-        return null;
+        // A read run that could not be secured (issue #821), or an earlier run that could not be read at
+        // all, is no reason to run afresh over its tree: an unconfirmed read never licenses the sweep.
+        const why =
+            e instanceof AdoptionBlocked ? 'could not adopt the finished runner' : 'could not read an earlier runner';
+        return { halt: 'leave', log: `${why}, leaving it to the lease: ${(e as Error).message}` };
     }
     if (adoptedOut === null) {
         releaseAbandonedAdoption(rt, job, adopting);

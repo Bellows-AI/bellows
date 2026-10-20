@@ -1,42 +1,36 @@
 import type { BoardJob } from './board.js';
 import { executorImage } from './config.js';
-import { ARTIFACT_LIMIT, Inconclusive, reportTail, tailKept } from './runner.js';
+import { ARTIFACT_LIMIT, CLOSE_READ_DEADLINE_MS, Inconclusive, reportTail, tailKept } from './runner.js';
 import type { Read } from './runner.js';
 import { jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
-import {
-    isCount,
-    nonEmpty,
-    optionalStrings,
-    optionalTimestamp,
-    stringsOnly,
-    validContainerStatuses,
-    validPodConditions,
-} from './k8s-shapes.js';
+import { pollFor } from './poll.js';
+import { nonEmpty, stringsOnly } from './k8s-shapes.js';
+import { asPod, asStartupPod, validCounters } from './k8s-pod-shapes.js';
 import { ledgerOf, RunnerKilled, vanishedRunner } from './k8s-kill.js';
 import { runnerName } from './k8s-podspec.js';
 import {
     containerFailure,
     containerStatusOf,
     ERROR_PREVIEW_CHARS,
-    expectOk,
     HTTP_BAD_REQUEST,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
-    HTTP_OK_STATUS,
     HTTP_SERVER_ERROR_STATUS,
+    boundedBy,
     HTTP_TOO_MANY_REQUESTS,
     isMalformedRequest400,
     isRecord,
-    livePod,
     livePodOfItems,
     LOG_TAIL_LINES,
-    parse,
+    LOG_READ_MS,
     POLL_MAX_CONSECUTIVE_FAILURES,
     POLL_MS,
     readAnswer,
     refusal,
+    waitOf,
+    withSignal,
 } from './k8s-transport.js';
-import type { K8sDeps, K8sJobStatus, K8sPod, K8sPodList, K8sResponse } from './k8s-transport.js';
+import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse } from './k8s-transport.js';
 import { heldWords, startupCauseOf, StartupRefused } from './startup-cause.js';
 import { type HeldImage, heldOf, heldUnpullable, unpullableImage } from './k8s-held.js';
 import {
@@ -71,87 +65,44 @@ export function jobOutcome(status: K8sJobStatus): 'succeeded' | 'failed' | 'pend
  * Go's `net/http`, transient by nature, retried like a 5xx — a genuine JSON `Status` 400 is an
  * API refusal and returns immediately.
  */
-export async function readVerdict(deps: K8sDeps, path: string, what: string, failures = 0): Promise<K8sResponse> {
-    let response: K8sResponse;
-    try {
-        response = await deps.request('GET', path);
-    } catch (e) {
-        if (failures + 1 > POLL_MAX_CONSECUTIVE_FAILURES) throw e;
-        await deps.sleep(POLL_MS);
-        return readVerdict(deps, path, what, failures + 1);
-    }
-    if (
-        response.status !== HTTP_TOO_MANY_REQUESTS &&
-        response.status < HTTP_SERVER_ERROR_STATUS &&
-        !isMalformedRequest400(response.status, response.body)
-    ) {
-        return response;
-    }
-    if (failures + 1 > POLL_MAX_CONSECUTIVE_FAILURES) {
-        throw new Error(
-            `${what} answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row: ` +
-                `${response.body.slice(0, ERROR_PREVIEW_CHARS)}`
-        );
-    }
-    await deps.sleep(POLL_MS);
-    return readVerdict(deps, path, what, failures + 1);
+export async function readVerdict(
+    deps: K8sDeps,
+    path: string,
+    what: string,
+    ms = POLL_MAX_CONSECUTIVE_FAILURES * POLL_MS
+): Promise<K8sResponse> {
+    let last: { error: unknown } | { response: K8sResponse } | undefined;
+    let failures = 0;
+    const answered = await pollFor<K8sResponse>({ ...waitOf(deps, ms), everyMs: POLL_MS }, async (deadline) => {
+        try {
+            const response = await boundedBy(deps, deadline).request('GET', path);
+            if (
+                response.status !== HTTP_TOO_MANY_REQUESTS &&
+                response.status < HTTP_SERVER_ERROR_STATUS &&
+                !isMalformedRequest400(response.status, response.body)
+            ) {
+                return response;
+            }
+            last = { response };
+        } catch (error) {
+            last = { error };
+        }
+        failures += 1;
+    });
+    if (answered) return answered;
+    if (last && 'error' in last) throw last.error;
+    throw new Error(
+        `${what} answered ${last?.response.status} ${failures} times in a row: ` +
+            `${last?.response.body.slice(0, ERROR_PREVIEW_CHARS)}`
+    );
 }
+
+/** `readVerdict` for a whole pod log: the time a full transfer needs (`LOG_READ_MS`), not a request's. */
+export const readLogVerdict = (deps: K8sDeps, path: string, what: string): Promise<K8sResponse> =>
+    readVerdict(deps, path, what, LOG_READ_MS);
 
 /** The answer of a typed read whose object the apiserver confirmed absent (404). */
 export const ABSENT = Symbol('absent');
-
-/**
- * A listed or read object that names itself, as far as a decision on it reads (#869): a `metadata`
- * with a non-empty string `name`; `uid` a non-empty string, `labels` and `annotations` string maps
- * and `creationTimestamp` an RFC 3339 time when present; a `status`, when present, a record whose Job
- * counters are counts. One entry that is not this makes the whole read inconclusive; only a
- * well-formed entry out of scope is skipped by its caller.
- */
-export function asNamed<T>(value: unknown): T | null {
-    if (!isRecord(value) || !isRecord(value.metadata)) return null;
-    const { name, uid, labels, annotations, creationTimestamp } = value.metadata;
-    if (!nonEmpty(name) || (uid !== undefined && !nonEmpty(uid)) || !optionalTimestamp(creationTimestamp)) return null;
-    if (labels !== undefined && !stringsOnly(labels)) return null;
-    if (annotations !== undefined && !stringsOnly(annotations)) return null;
-    if (value.status !== undefined && (!isRecord(value.status) || !validCounters(value.status))) return null;
-    return value as T;
-}
-
-/**
- * `asNamed` for a listing a delete is decided on (#869): the entry also carries a non-empty `uid`,
- * which the apiserver always sets and the delete's precondition names. An entry without one makes
- * the whole read inconclusive — it is never deleted unconditionally.
- */
-export function asIdentified<T>(value: unknown): T | null {
-    const item = asNamed<{ metadata: { uid?: string } }>(value);
-    return item && nonEmpty(item.metadata.uid) ? (value as T) : null;
-}
-
-/**
- * A listed or read pod (#869): named, with its deletion time, phase, words, conditions and every
- * container status — named, with a typed state — in the grammar `k8s-shapes.ts` gives them. A pod
- * with no `status` yet is a pod that has not started: no container evidence, which every consumer
- * reads as "nothing seen".
- */
-export const asPod = (value: unknown): K8sPod | null => {
-    const pod = asNamed<K8sPod & { metadata: { deletionTimestamp?: unknown } }>(value);
-    if (pod === null || !optionalTimestamp(pod.metadata.deletionTimestamp)) return null;
-    const { status } = pod;
-    if (status === undefined) return pod;
-    const { phase, reason, message, containerStatuses, conditions } = status;
-    if (!optionalStrings(phase, reason, message) || !validPodConditions(conditions)) return null;
-    return validContainerStatuses(containerStatuses) ? pod : null;
-};
-
-/**
- * A Job's `succeeded`, `failed` and `active` counts, each a non-negative integer when present, and
- * its `conditions` a list of typed records when present (#869).
- */
-const validCounters = (status: Record<string, unknown>): boolean =>
-    (status.conditions === undefined ||
-        (Array.isArray(status.conditions) &&
-            status.conditions.every((c) => isRecord(c) && typeof c.type === 'string'))) &&
-    ['succeeded', 'failed', 'active'].every((field) => status[field] === undefined || isCount(status[field]));
 
 /**
  * A read Job: an identifiable object (`metadata.uid`, which the apiserver always sets and a
@@ -170,6 +121,10 @@ export const asJob = (value: unknown): ReadJobObject | null => {
     const { annotations } = value.metadata;
     return annotations === undefined || stringsOnly(annotations) ? (value as unknown as ReadJobObject) : null;
 };
+
+/** A Job as a verdict read needs it: a record with a `status` record of valid counts; its identity is not asked. */
+const asJobStatus = (value: unknown): K8sJobStatus | null =>
+    isRecord(value) && isRecord(value.status) && validCounters(value.status) ? (value.status as K8sJobStatus) : null;
 
 /**
  * One GET as a typed read (#869): the value `shape` makes of the body, `absent` on a 404, or
@@ -192,6 +147,15 @@ export async function readTyped<T>(
     return readAnswer(response, what, shape);
 }
 
+/** The list shape: every entry `entry` accepts, or null for a body with no list or any entry it refuses. */
+const listOf =
+    <T>(entry: (value: unknown) => T | null) =>
+    (body: unknown): T[] | null => {
+        if (!isRecord(body) || !Array.isArray(body.items)) return null;
+        const items = body.items.map(entry);
+        return items.every((item) => item !== null) ? (items as T[]) : null;
+    };
+
 /** `readTyped` of a list: every entry `entry` accepts, or inconclusive for a body with no list or any entry it refuses. */
 export function readTypedList<T>(
     deps: K8sDeps,
@@ -199,13 +163,12 @@ export function readTypedList<T>(
     what: string,
     { entry, once = false }: { entry: (value: unknown) => T | null; once?: boolean }
 ): Promise<Read<T[]>> {
-    const shape = (body: unknown): T[] | null => {
-        if (!isRecord(body) || !Array.isArray(body.items)) return null;
-        const items = body.items.map(entry);
-        return items.every((item) => item !== null) ? (items as T[]) : null;
-    };
-    return readTyped(deps, path, what, { shape, once });
+    return readTyped(deps, path, what, { shape: listOf(entry), once });
 }
+
+/** A pod list already fetched, read as a typed answer (#869): the pods `entry` accepts, else absent or inconclusive. */
+export const podsOf = (response: K8sResponse, what: string, entry: (value: unknown) => K8sPod | null = asPod) =>
+    readAnswer(response, what, listOf(entry));
 
 /** `readTyped` on the throwing channel (#824): `ABSENT` on a 404, an `Inconclusive` throw for a read that proves nothing. */
 export async function readObject<T>(
@@ -265,12 +228,12 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
     const pods = await deps
         .request('GET', jobPodsPath(deps.config.k8sNamespace, jobName))
         .catch(() => ({ status: 0, body: '' }));
-    const list = pods.status === HTTP_OK_STATUS ? parse<K8sPodList>(pods.body) : null;
-    const items = Array.isArray(list?.items) ? list.items : null;
+    const read = podsOf(pods, `listing the pods of ${jobName}`, asStartupPod);
+    const items = read.kind === 'value' ? read.value : null;
     // Every container of the pod, not the first: the runner pod holds the agent, the supervisor and
     // the exporter, and any one of them blocked on its image holds the whole run. The init list is
     // read first (#773 D10): a sidecar held on its image keeps every main container initializing.
-    const pod = livePod(pods.body);
+    const pod = items === null ? undefined : livePodOfItems(items);
     const status = pod?.status;
     const containers = status?.containerStatuses ?? [];
     const holder = [...(status?.initContainerStatuses ?? []), ...containers].find((c) =>
@@ -350,7 +313,9 @@ export async function readJobStatus(deps: K8sDeps, jobName: string, what: string
     const response = await readVerdict(deps, jobPath(deps.config.k8sNamespace, jobName), what);
     if (response.status === HTTP_NOT_FOUND) return { kind: 'notFound' };
     if (response.status >= HTTP_ERROR_STATUS) return { kind: 'error', status: response.status, body: response.body };
-    const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
+    const read = readAnswer(response, what, asJobStatus);
+    if (read.kind !== 'value') throw new Inconclusive(read.kind === 'inconclusive' ? read.reason : `${what}: absent`);
+    const status = read.value;
     const outcome = jobOutcome(status);
     return outcome === 'pending' ? { kind: 'pending' } : { kind: 'terminal', outcome, status };
 }
@@ -407,23 +372,23 @@ export async function pollJobToTerminal(
     image: string | null = null
 ): Promise<string | null> {
     const seen = { container: false };
-    const pollPending = async (): Promise<string | null> => {
-        if (!seen.container && image !== null) {
-            const failure = await executorImageWatch(deps, jobName, image, seen);
-            if (failure) return failure;
+    const verdict = await pollFor<{ answer: string | null }>(
+        { ...waitOf(deps, CLOSE_READ_DEADLINE_MS), everyMs: POLL_MS },
+        async (deadline) => {
+            const bounded = boundedBy(deps, deadline);
+            const result = await readJobStatus(bounded, jobName, messages.what);
+            if (result.kind === 'notFound') return { answer: messages.notFound(jobName) };
+            if (result.kind === 'error') return { answer: messages.errorStatus(result.status, result.body) };
+            if (result.kind === 'pending') {
+                if (seen.container || image === null) return;
+                const failure = await executorImageWatch(bounded, jobName, image, seen);
+                return failure ? { answer: failure } : undefined;
+            }
+            return { answer: result.outcome === 'failed' ? messages.failed : null };
         }
-        await deps.sleep(POLL_MS);
-        return poll();
-    };
-    const poll = async (): Promise<string | null> => {
-        const result = await readJobStatus(deps, jobName, messages.what);
-        if (result.kind === 'notFound') return messages.notFound(jobName);
-        if (result.kind === 'error') return messages.errorStatus(result.status, result.body);
-        if (result.kind === 'pending') return pollPending();
-        if (result.outcome === 'failed') return messages.failed;
-        return null;
-    };
-    return poll();
+    );
+    if (!verdict) throw new Inconclusive(`${messages.what} reached no verdict in ${CLOSE_READ_DEADLINE_MS}ms`);
+    return verdict.answer;
 }
 
 /**
@@ -452,15 +417,8 @@ export async function readJobPodVerdict(
     what: string
 ): Promise<{ exitCode: number | null; output: string; truncated: boolean; pods: K8sPod[] }> {
     const podsPath = jobPodsPath(deps.config.k8sNamespace, jobName);
-    let pods: K8sPod[];
-    if (strict) {
-        const listed = await readList(deps, podsPath, what, { entry: asPod });
-        pods = listed === ABSENT ? [] : listed;
-    } else {
-        const podsResponse = await readVerdict(deps, podsPath, what);
-        expectOk(podsResponse, what);
-        pods = parse<K8sPodList>(podsResponse.body).items ?? [];
-    }
+    const listed = await readList(deps, podsPath, what, { entry: asPod });
+    const pods = listed === ABSENT ? [] : listed;
     const pod = strict ? runnerPodOf(pods) : livePodOfItems(pods);
     // `container` names the one whose verdict this is when the pod holds several (the runner pod's
     // agent); an aux pod's only container is read by position, as ever.
@@ -472,15 +430,24 @@ export async function readJobPodVerdict(
         output = log.body;
         truncated = log.truncated === true;
     } else if (pod?.metadata?.name) {
-        let log: K8sResponse;
+        let log: K8sResponse | undefined;
         try {
-            log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name, tail, container));
+            log = await deps.request(
+                'GET',
+                podLogPath(deps.config.k8sNamespace, pod.metadata.name, tail, container),
+                undefined,
+                { timeoutMs: LOG_READ_MS }
+            );
         } catch {
-            log = { status: 0, body: '' };
+            // Incomplete below: the transfer failed, which is not an empty log.
         }
-        if (log.status < HTTP_ERROR_STATUS) {
+        if (log && log.status < HTTP_ERROR_STATUS) {
             output = log.body;
             truncated = log.truncated === true;
+        } else {
+            // A log that failed to transfer is incomplete, never empty and whole; only a pod the
+            // apiserver says is gone, or a container it says never started, has no output to lose.
+            truncated = !(log && logIsNone(log));
         }
     }
     return { exitCode, output, truncated, pods };
@@ -488,6 +455,10 @@ export async function readJobPodVerdict(
 
 /** A pod log refusal that says its container never started, in the kubelet's own words — never any 400. */
 export const neverStartedLog = (body: string): boolean => /is waiting to start|is not available/i.test(body);
+
+/** A log answer that says there is none to read: the pod is gone (404) or its container never started. */
+export const logIsNone = (log: K8sResponse): boolean =>
+    log.status === HTTP_NOT_FOUND || (log.status === HTTP_BAD_REQUEST && neverStartedLog(log.body));
 
 /**
  * The runner's own pod, as an adoption reads it (#824): the live one, else the one being deleted —
@@ -507,11 +478,11 @@ async function readPodLog(deps: K8sDeps, path: string): Promise<K8sResponse> {
     const what = 'reading the runner pod log';
     let log: K8sResponse;
     try {
-        log = await readVerdict(deps, path, what);
+        log = await readLogVerdict(deps, path, what);
     } catch (e) {
         throw new Inconclusive(`${what}: ${(e as Error).message}`);
     }
-    if (log.status === HTTP_NOT_FOUND || (log.status === HTTP_BAD_REQUEST && neverStartedLog(log.body))) {
+    if (logIsNone(log)) {
         return { status: log.status, body: '' };
     }
     if (log.status >= HTTP_ERROR_STATUS) throw new Inconclusive(`${what} answered ${log.status}`);
@@ -553,22 +524,29 @@ export async function auxVerdict(
     jobName: string,
     signal?: AbortSignal
 ): Promise<{ exitCode: number | null; output: string }> {
-    if (signal?.aborted) throw new Error(`the job ${jobName} was cancelled`);
-    const result = await readJobStatus(deps, jobName, `reading the job ${jobName}`);
-    if (result.kind === 'notFound') {
-        throw new Error(`the job ${jobName} no longer exists`);
-    }
-    if (result.kind === 'error') throw new Error(refusal(result, `reading the job ${jobName}`)!);
-    if (result.kind === 'pending') {
-        await deps.sleep(POLL_MS);
-        return auxVerdict(deps, jobName, signal);
-    }
-    return readJobPodVerdict(
-        deps,
-        jobName,
-        { succeeded: result.outcome === 'succeeded' },
-        `listing the pods of ${jobName}`
+    const live = withSignal(deps, signal);
+    const verdict = await pollFor<{ exitCode: number | null; output: string }>(
+        {
+            ...waitOf(live, CLOSE_READ_DEADLINE_MS),
+            everyMs: POLL_MS,
+            abandoned: () => new Error(`the job ${jobName} was cancelled`),
+        },
+        async (deadline) => {
+            const bounded = boundedBy(live, deadline);
+            const result = await readJobStatus(bounded, jobName, `reading the job ${jobName}`);
+            if (result.kind === 'notFound') throw new Error(`the job ${jobName} no longer exists`);
+            if (result.kind === 'error') throw new Error(refusal(result, `reading the job ${jobName}`)!);
+            if (result.kind === 'pending') return;
+            return readJobPodVerdict(
+                bounded,
+                jobName,
+                { succeeded: result.outcome === 'succeeded' },
+                `listing the pods of ${jobName}`
+            );
+        }
     );
+    if (!verdict) throw new Inconclusive(`the job ${jobName} reached no verdict in ${CLOSE_READ_DEADLINE_MS}ms`);
+    return verdict;
 }
 
 /**
@@ -588,7 +566,8 @@ async function tailRunnerOutput(
             const pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, runnerName(job)));
             // Skipping terminating pods for the same reason the final read does: a replaced
             // attempt's pod carries the same label, and its log is not this run's output.
-            resolvedPodName = livePod(pods.body)?.metadata?.name ?? null;
+            const read = podsOf(pods, 'listing the runner pods');
+            resolvedPodName = (read.kind === 'value' && livePodOfItems(read.value)?.metadata?.name) || null;
         } catch {
             // Not scheduled yet, or the API server blinked. The next poll looks again.
         }
@@ -651,26 +630,33 @@ export async function pollRunnerJobUntilTerminal(
     const podName = watch.podName ?? null;
     const image = executorImage(deps.config, job.executorType);
     const seen = { container: false };
-    const poll = async (pod: string | null): Promise<{ timedOut: boolean; jobSucceeded: boolean }> => {
-        const result = await readUnlessKilled(deps, job);
-        if (result.kind === 'notFound') {
-            // Gone without this driver deleting it — fenced away or removed by hand. Its verdict can
-            // never arrive, so waiting longer is holding a slot for nothing.
-            throw vanishedRunner(deps, job);
+    let pod = podName;
+    const terminal = { timedOut: false, jobSucceeded: false };
+    // No bound of its own, on purpose: the kubelet's activeDeadlineSeconds and the run deadline
+    // (run-deadline.ts, whose kill aborts the ledger signal) bound it.
+    // Every request and pause of the poll ends on the kill, not at the next poll.
+    const live = withSignal(deps, ledgerOf(deps).signal(job));
+    const polled = await pollFor<{ timedOut: boolean; jobSucceeded: boolean }>(
+        { ...waitOf(live, Infinity), everyMs: POLL_MS, abandoned: () => new RunnerKilled(runnerName(job)) },
+        async () => {
+            const result = await readUnlessKilled(live, job);
+            if (result.kind === 'notFound') {
+                // Gone without this driver deleting it — fenced away or removed by hand. Its verdict can
+                // never arrive, so waiting longer is holding a slot for nothing.
+                throw vanishedRunner(deps, job);
+            }
+            if (result.kind === 'error') throw new Error(refusal(result, 'reading the runner job')!);
+            if (result.kind === 'terminal') {
+                return { timedOut: timedOutOf(result.status), jobSucceeded: result.outcome === 'succeeded' };
+            }
+            // The task group outlives the agent: its supervisor's report — the agent is over and the
+            // exporter drained — is the end of the run, with the Job still serving the attempt's steps.
+            if (over?.()) return terminal;
+            if (!seen.container) seen.container = await runStartSeen(live, job, image);
+            if (onOutput) pod = await tailRunnerOutput(live, job, pod, onOutput);
         }
-        if (result.kind === 'error') throw new Error(refusal(result, 'reading the runner job')!);
-        if (result.kind === 'terminal') {
-            return { timedOut: timedOutOf(result.status), jobSucceeded: result.outcome === 'succeeded' };
-        }
-        // The task group outlives the agent: its supervisor's report — the agent is over and the
-        // exporter drained — is the end of the run, with the Job still serving the attempt's steps.
-        if (over?.()) return { timedOut: false, jobSucceeded: false };
-        if (!seen.container) seen.container = await runStartSeen(deps, job, image);
-        const nextPodName = onOutput ? await tailRunnerOutput(deps, job, pod, onOutput) : pod;
-        await deps.sleep(POLL_MS);
-        return poll(nextPodName);
-    };
-    return poll(podName);
+    );
+    return polled!;
 }
 
 /**

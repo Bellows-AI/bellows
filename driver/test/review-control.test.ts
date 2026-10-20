@@ -129,6 +129,8 @@ describe('the control server: POST /review and GET /review/:key', () => {
 
     it.each([
         ['a body that is not JSON', 'nope'],
+        ['a JSON null', null],
+        ['a JSON array', []],
         ['no key', { profile: 'security' }],
         ['a key with a bad character', { key: 'a b', profile: 'security' }],
         ['a key over 64 characters', { key: 'k'.repeat(65), profile: 'security' }],

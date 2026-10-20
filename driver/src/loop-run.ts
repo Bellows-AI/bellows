@@ -1,20 +1,22 @@
 import type { BoardJob, VerdictEvidence } from './board.js';
 import { uploadRunArtifacts } from './artifact-upload.js';
-import { claimContinuesSession, repoCacheProblem } from './claim.js';
+import { repoCacheProblem } from './claim.js';
 import { pickSession } from './runner-plan.js';
 import { evidenceDecision, evidencePolicyActive, type GatesOutcome, gatesEvidenceOf } from './evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from './runner.js';
 import { adoptStep, recordAdopted } from './loop-adopt.js';
-import { askGithubToken } from './loop-github.js';
+import { askGithubToken, checkoutToken } from './loop-github.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
 import { beginGates, openRunControl, probeDeadServices, runDeclaredGates, sizeGateForVerify } from './loop-gates.js';
 import { drainTranscriptExport } from './loop-export.js';
-import { lostOf, transition } from './loop-phase.js';
+import { lostOf, logRefusal, transition, transitionLine } from './loop-phase.js';
 import { heartbeat, newJobState, raceStep, registerLive, stopIfDraining, watchOutput } from './loop-attempt.js';
 import { attemptQuiesce, abandonOnHandover, end, endIfDown } from './loop-conclusion.js';
 import type { GateRunNote } from './timeout-note.js';
 import {
+    faultHalt,
+    syncFailureHalt,
     handBackFence,
     handOverConflict,
     interruptDecision,
@@ -27,7 +29,7 @@ import {
 import type { AdoptedRecord, AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import type { HelperFailureReport } from './helpers.js';
-import { SYNC_FAILURE_KINDS, TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
+import type { PublishResult, SyncResult } from './publish.js';
 import { agentFaults, gatesEligible, ledgerOf, postHelperSkipWhy, skipWhyOf } from './loop-ledger.js';
 import { publishBranch, publishModeOf, publishOptionsOf, report, reportFinish } from './loop-verdict.js';
 import { OPENCODE } from './executors.js';
@@ -38,14 +40,11 @@ import { stepLost } from './step-control.js';
 import { restartDeadServices, servicesLost, startServicesStep } from './loop-services.js';
 import { servicePlanRefusal } from './services.js';
 
-/** The refusal reason for an executor selection this loop cannot run, or null when it can. */
-function executorRefusalReason(_rt: LoopRuntime, job: BoardJob): string | null {
-    if (job.executorRefusal) return job.executorRefusal;
-    if (job.executorType === null) {
-        return 'The selected executor no longer exists. Choose a configured executor and start a new task.';
-    }
-    return null;
-}
+/** How the attempt's log line names the session it runs under. */
+const sessionNote = (session: RunSession | null): string =>
+    session
+        ? `${session.resume ? 'resuming' : 'starting as'} session ${session.id}`
+        : 'starting (headless opencode run: no session id)';
 
 /**
  * Reported while the lease is still live, BEFORE the park or the verdict — a follow-up can only
@@ -99,10 +98,8 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     if (ctx.adopted) return null;
     const turn = await awaitSyncTurn(ctx);
     if (turn === STOOD_DOWN || 'halt' in turn) return turn;
-    // A starting claim's fetch reaches GitHub; a restore and a repo-less job do not.
-    const fetches = Boolean(job.repo) && !claimContinuesSession(job);
-    const githubToken = fetches ? await askGithubToken(rt, job, 'the checkout sync') : null;
-    const syncing = runner.syncCheckout(job, state.signal, ctx.session, githubToken ?? undefined);
+    const githubToken = await checkoutToken(rt, job, turn);
+    const syncing = runner.syncCheckout(job, state.signal, ctx.session, githubToken);
     // The turn is held until the sync's writes are over (`settled`), however the sync answered.
     turn.release(syncing.then((synced) => synced.settled).catch(() => {}));
     let syncedOut: { value: SyncResult } | null;
@@ -127,30 +124,7 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
         handOverConflict(job, synced);
         return null;
     }
-    if (synced.reason !== null && TRANSIENT_SYNC_REASON.test(synced.reason)) {
-        /*
-         * Lock contention on the shared checkout (issues #307, #559) is infrastructure, not a
-         * verdict: this driver's own syncs of the clone are queued above, so the lock the
-         * script waited out is another driver's (or, on docker, a stood-down sibling's sync
-         * container still finishing), or the fetch kept losing ref locks to a concurrent git. The claim goes straight back to the board, which refunds the
-         * attempt and defers the next claim. The kubernetes checkout claim was already
-         * released inside `syncCheckout` before it answered, the same discipline the
-         * ordinary sync-failure refusal below relies on.
-         */
-        return { halt: 'requeue', log: `checkout sync was lock-blocked, requeueing: ${synced.reason}` };
-    }
-    // A kind the script named is a refusal no retry fixes: a person acts on it, so it is config.
-    const deterministic = synced.kind !== undefined && SYNC_FAILURE_KINDS.includes(synced.kind);
-    return {
-        halt: 'fault',
-        log: `checkout sync failed: ${synced.reason}`,
-        verdict: {
-            status: 'failed',
-            exitCode: null,
-            output: `The checkout could not be synced with the remote before the run: ${synced.reason}`,
-            failureKind: deterministic ? 'config' : 'runner_error',
-        },
-    };
+    return syncFailureHalt(synced);
 }
 
 /**
@@ -163,30 +137,20 @@ async function checkPlanStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
     // The declaration may name a package cache the driver will not set (issue #734).
     const cacheProblem = repoCacheProblem(job);
     if (cacheProblem) {
-        return {
-            halt: 'fault',
-            log: 'its declared package cache is refused, failing',
-            verdict: {
-                status: 'failed',
-                exitCode: null,
-                output: `This job's .bellows.yaml declares a gate environment this driver will not run: ${cacheProblem}`,
-                failureKind: 'config',
-            },
-        };
+        return faultHalt(
+            'its declared package cache is refused, failing',
+            `This job's .bellows.yaml declares a gate environment this driver will not run: ${cacheProblem}`,
+            'config'
+        );
     }
 
     if (job.gates?.gates?.length && !rt.gates) {
         const why = 'this driver was started with no gate environment configured';
-        return {
-            halt: 'fault',
-            log: 'declares gates this driver cannot run, failing',
-            verdict: {
-                status: 'failed',
-                exitCode: null,
-                output: `This job declares verification gates in .bellows.yaml, and ${why}. Re-queue it against a driver built with the GATE_* configuration set.`,
-                failureKind: 'runner_error',
-            },
-        };
+        return faultHalt(
+            'declares gates this driver cannot run, failing',
+            `This job declares verification gates in .bellows.yaml, and ${why}. Re-queue it against a driver built with the GATE_* configuration set.`,
+            'runner_error'
+        );
     }
     return null;
 }
@@ -204,16 +168,11 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
     } catch (e) {
         // The setup's supervisor was lost (issue #773): the attempt's loss, never a config verdict.
         if (stepLost(e)) return { halt: 'interrupt', reason: gateLossReason(e) };
-        return {
-            halt: 'fault',
-            log: `gate environment failed, failing with a reason: ${(e as Error).message}`,
-            verdict: {
-                status: 'failed',
-                exitCode: null,
-                output: `The gate environment declared in .bellows.yaml could not be started: ${(e as Error).message}`,
-                failureKind: 'runner_error',
-            },
-        };
+        return faultHalt(
+            `gate environment failed, failing with a reason: ${(e as Error).message}`,
+            `The gate environment declared in .bellows.yaml could not be started: ${(e as Error).message}`,
+            'runner_error'
+        );
     }
 }
 
@@ -382,8 +341,7 @@ async function launchRun(
 
 /** The run itself: spawn, and resolve to what to report (or nothing). */
 async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseDone | RunPhaseResult> {
-    const { rt, job, state } = ctx;
-    const { log } = rt;
+    const { state } = ctx;
     const { session, gateSession, executorType, pump } = inputs;
     const outcome = await launchRun(ctx, session, pump.push);
     if (outcome === null) return { done: true };
@@ -411,15 +369,39 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // would not refuse it. Best-effort throughout; a failed upload leaves the stream without a
     // complete manifest, never a failed run.
     await reportRunTail(ctx, executorType, outcome);
-    // The session minted and reported before the spawn never ran — no transcript exists under it,
-    // so a follow-up resuming it would find no conversation. A resumed session is the parent's
-    // and stays.
-    if (outcome.refused && session && !session.resume && !ctx.adopted) {
-        await rt.board
-            .session(job, null)
-            .catch((e: Error) => log(`job ${job.id}: could not clear the unused session: ${e.message}`));
-    }
+    await clearUnusedSession(ctx, session, outcome);
 
+    const verified = await verifyRun(ctx, gateSession, outcome);
+    if (verified === STOOD_DOWN) return { done: true };
+    return { done: false, outcome, ...verified, endedAt };
+}
+
+/**
+ * The session minted and reported before the spawn never ran — no transcript exists under it, so a
+ * follow-up resuming it would find no conversation. A resumed session is the parent's and stays.
+ */
+async function clearUnusedSession(ctx: AttemptCtx, session: RunSession | null, outcome: RunOutcome): Promise<void> {
+    const { rt, job } = ctx;
+    if (!outcome.refused || !session || session.resume || ctx.adopted) return;
+    await rt.board
+        .session(job, null)
+        .catch((e: Error) => rt.log(`job ${job.id}: could not clear the unused session: ${e.message}`));
+}
+
+/** What verifying a run found beyond the gates phase itself. */
+type VerifiedRun = GatesPhase & Pick<RunPhaseResult, 'treeChanged' | 'evidence'>;
+
+/**
+/**
+ * Runs the declared gates over a finished run and gathers what the verdict is built from, answering
+ * STOOD_DOWN when a stand-down landed at any of the three points between.
+ */
+async function verifyRun(
+    ctx: AttemptCtx,
+    gateSession: GateSession | null,
+    outcome: RunOutcome
+): Promise<VerifiedRun | typeof STOOD_DOWN> {
+    const { job, state } = ctx;
     /*
      * The gates run HERE: after the agent has finished talking and before the verdict, with the
      * heartbeat still beating — settle() has deliberately NOT been called yet, because a test
@@ -432,20 +414,35 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // report) must not read as the agent's progress. Under an evidence policy it is read gated or
     // not: it is the revision the evidence is bound to.
     const treeAfter = gating || evidencePolicyActive(job) ? await probeTreeNow(ctx) : null;
-    if (await endIfDown(ctx, 'its gates')) return { done: true };
+    if (await endIfDown(ctx, 'its gates')) return STOOD_DOWN;
     const gated = await gatesOrLoss(ctx, gating, outcome);
-    if (gated === STOOD_DOWN) return { done: true };
-    // A cancelled gate answers no failure, so a stand-down during the gates lands here too.
-    const treeChanged =
-        gated.failure && ctx.treeBefore !== null && treeAfter !== null ? treeAfter !== ctx.treeBefore : null;
-    if (await endIfDown(ctx, 'its gates')) return { done: true };
-
-    const evidence = evidencePolicyActive(job)
-        ? { treeBefore: ctx.treeBefore, treeAfter, gates: gatesOutcomeOf(Boolean(gating?.declared.length), gated) }
-        : null;
-    return { done: false, outcome, ...gated, endedAt, treeChanged, evidence };
+    if (gated === STOOD_DOWN) return STOOD_DOWN;
+    if (await endIfDown(ctx, 'its gates')) return STOOD_DOWN;
+    return {
+        ...gated,
+        treeChanged: treeChangedOf(ctx, gated, treeAfter),
+        evidence: evidenceOf(ctx, gating, gated, treeAfter),
+    };
 }
 
+/**
+ * Whether the failed gate's tree differs from the synced one; null when unmeasured. A cancelled
+ * gate answers no failure, so a stand-down during the gates lands here too.
+ */
+function treeChangedOf(ctx: AttemptCtx, gated: GatesPhase, treeAfter: string | null): boolean | null {
+    return gated.failure && ctx.treeBefore !== null && treeAfter !== null ? treeAfter !== ctx.treeBefore : null;
+}
+
+/** The revision-bound evidence record of a verified run; null when no policy is configured. */
+function evidenceOf(
+    ctx: AttemptCtx,
+    gating: GateSession | null,
+    gated: GatesPhase,
+    treeAfter: string | null
+): VerdictEvidence | null {
+    if (!evidencePolicyActive(ctx.job)) return null;
+    return { treeBefore: ctx.treeBefore, treeAfter, gates: gatesOutcomeOf(Boolean(gating?.declared.length), gated) };
+}
 /** How the declared gates ended for the evidence record: `none` when none were declared to run. */
 function gatesOutcomeOf(declared: boolean, gated: GatesPhase): GatesOutcome {
     if (!declared) return 'none';
@@ -640,18 +637,36 @@ function gateHistory(rt: LoopRuntime, gateSession: GateSession | null): readonly
  * service, no gate environment, no agent.
  */
 async function failOnClaimRefusal(rt: LoopRuntime, job: BoardJob): Promise<boolean> {
-    const executorRefusal = executorRefusalReason(rt, job);
-    const [reason, failureKind, what] = executorRefusal
-        ? ([executorRefusal, 'config', 'executor selection'] as const)
-        : job.skillRefusal
-          ? ([job.skillRefusal, 'config', 'selected skills'] as const)
-          : ([job.planRefusal ?? servicePlanRefusal(rt.config, job), 'config', 'execution plan'] as const);
-    if (!reason) return false;
-    rt.log(`job ${job.id}: ${what} is not runnable, failing`);
+    const refusal = claimRefusalOf(rt, job);
+    if (!refusal) return false;
+    const [reason, failureKind, what] = refusal;
+    logRefusal(rt.log, job, `job ${job.id}: ${what} is not runnable, failing`);
     await report(rt, job, { status: 'failed', exitCode: null, output: reason, failureKind }).catch((e: Error) =>
         rt.log(`job ${job.id}: could not report the ${what} failure: ${e.message}`)
     );
     return true;
+}
+
+/**
+ * The first refusal the claim carries, in order: the executor selection, the selected skills, the
+ * plan, then the master prompt. The board always renders a master prompt for every agent claim
+ * (server/src/db/master-prompt.ts); a missing, oversized or malformed one is a contract violation,
+ * never a reason to run the agent with no Factory execution context. Checked before any setup —
+ * including a helper-only node's pre-helper, which might otherwise conclude the job without ever
+ * spawning an agent. The plan and the prompt are only read when nothing before them refused.
+ */
+function claimRefusalOf(rt: LoopRuntime, job: BoardJob): readonly [string, 'config' | 'runner_error', string] | null {
+    const executorRefusal =
+        job.executorRefusal ||
+        (job.executorType === null
+            ? 'The selected executor no longer exists. Choose a configured executor and start a new task.'
+            : null);
+    if (executorRefusal) return [executorRefusal, 'config', 'executor selection'];
+    if (job.skillRefusal) return [job.skillRefusal, 'config', 'selected skills'];
+    const planRefusal = job.planRefusal ?? servicePlanRefusal(rt.config, job);
+    if (planRefusal) return [planRefusal, 'config', 'execution plan'];
+    const promptRefusal = masterPromptRefusalReason(job);
+    return promptRefusal ? [promptRefusal, 'runner_error', 'master prompt'] : null;
 }
 
 /**
@@ -666,26 +681,8 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     const executorType = job.executorType;
     if (await failOnClaimRefusal(rt, job)) return;
 
-    // The board always renders a master prompt for every agent claim (server/src/db/master-prompt.ts);
-    // a missing, oversized or malformed one is a contract violation, never a reason to run the
-    // agent with no Factory execution context. Checked before any setup — including a helper-only
-    // node's pre-helper, which might otherwise conclude the job without ever spawning an agent —
-    // because the board cannot know ahead of a run whether a pre-helper will conclude it.
-    const promptRefusal = masterPromptRefusalReason(job);
-    if (promptRefusal) {
-        log(`job ${job.id}: master prompt is not runnable, failing`);
-        await report(rt, job, {
-            status: 'failed',
-            exitCode: null,
-            output: promptRefusal,
-            failureKind: 'runner_error',
-        }).catch((e: Error) => log(`job ${job.id}: could not report the master-prompt failure: ${e.message}`));
-        return;
-    }
-
     const state = newJobState();
-    state.trace = (t) =>
-        log(JSON.stringify({ event: 'attempt-transition', job: job.id, claimSeq: job.claimSeq, ...t }));
+    state.trace = (t) => log(transitionLine(job, t));
     // In flight for a drain's handover (`loop.ts`) until it settles.
     const over = registerLive(rt, job, state);
     const beating = heartbeat(rt, job, state);
@@ -704,12 +701,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     const quiesce = attemptQuiesce(rt, job, state, beating);
     const ctx: AttemptCtx = { rt, job, state, quiesce, fenced: false, treeBefore: null, session };
     try {
-        log(
-            `job ${job.id}: attempt ${job.attempts} ` +
-                (session
-                    ? `${session.resume ? 'resuming' : 'starting as'} session ${session.id}`
-                    : 'starting (headless opencode run: no session id)')
-        );
+        log(`job ${job.id}: attempt ${job.attempts} ${sessionNote(session)}`);
 
         const gateSession = await runPhases(ctx);
         if (gateSession === STOOD_DOWN) return;

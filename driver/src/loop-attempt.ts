@@ -390,6 +390,17 @@ async function deliverVerdictAnswers(
     }
 }
 
+/**
+ * The control endpoint a stop can be raised on cooperatively: only when a poller has actually read it,
+ * otherwise nothing would ever hear it. A pending question is a runner in contact however it got there:
+ * its POST counts as a poll.
+ */
+function drainableControl(rt: LoopRuntime, state: JobState): string | null {
+    const server = rt.gates?.server;
+    if (!state.running || state.control === null) return null;
+    return server?.controlPolled(state.control) || server?.hasPendingQuestion(state.control) ? state.control : null;
+}
+
 /** Folds one heartbeat verdict into the attempt's state, and kills the runner when it stands down. */
 export async function applyHeartbeatVerdict(
     rt: LoopRuntime,
@@ -412,16 +423,8 @@ export async function applyHeartbeatVerdict(
         // While the agent runs, with a control endpoint to raise the stop on: cooperative.
         // Everywhere else (setup, the gates and later phases, a driver with no endpoint) the stop
         // is today's immediate stand-down.
-        // Only when a poller has actually read the endpoint: otherwise nothing would ever hear it.
-        // A pending question is a runner in contact however it got there: its POST counts as a poll.
-        const server = rt.gates?.server;
-        if (
-            state.running &&
-            state.control !== null &&
-            (server?.controlPolled(state.control) || server?.hasPendingQuestion(state.control))
-        ) {
-            return startDraining(rt, job, state, state.control);
-        }
+        const control = drainableControl(rt, state);
+        if (control !== null) return startDraining(rt, job, state, control);
         recordEnding(state, 'stop');
         log(`job ${job.id}: stop requested, killing the runner`);
     }

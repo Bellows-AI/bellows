@@ -8,7 +8,8 @@
 
 import type { BoardJob } from './board.js';
 import { UUID } from './claim.js';
-import type { RunOutcome, RunSession } from './runner.js';
+import { pollFor, type Sleep } from './poll.js';
+import { CLOSE_READ_DEADLINE_MS, type RunOutcome, type RunSession } from './runner.js';
 import { CLAUDE_CODE } from './executors.js';
 import { parseLastJsonLine } from './json-parse.js';
 
@@ -186,15 +187,32 @@ const OPENCODE_SESSION_READOUT_RETRIES = 3;
 const OPENCODE_SESSION_READOUT_RETRY_DELAY_MS = 500;
 
 export async function readOpencodeWithRetries(
-    readOnce: () => Promise<OpencodeRunOutcome>,
-    sleep: (ms: number) => Promise<void>
+    readOnce: (deadline: number) => Promise<OpencodeRunOutcome>,
+    sleep: Sleep,
+    signal?: AbortSignal
 ): Promise<{ scraped: OpencodeRunOutcome; reason: string | null }> {
     let scraped = opencodeReadFailed(null);
     let reason: string | null = null;
-    for (let attempt = 0; attempt < OPENCODE_SESSION_READOUT_RETRIES && !scraped.sessionId; attempt += 1) {
-        if (attempt > 0) await sleep(OPENCODE_SESSION_READOUT_RETRY_DELAY_MS);
-        scraped = await readOnce();
-        reason = scraped.error ?? reason;
+    let attempts = 0;
+    // The attempts are counted, the whole read is bounded on the clock: at the bound — or the kill
+    // of the attempt (`signal`) — the latest answer stands.
+    try {
+        await pollFor<true>(
+            {
+                ms: CLOSE_READ_DEADLINE_MS,
+                everyMs: OPENCODE_SESSION_READOUT_RETRY_DELAY_MS,
+                sleep,
+                ...(signal ? { signal } : {}),
+            },
+            async (deadline) => {
+                scraped = await readOnce(deadline);
+                reason = scraped.error ?? reason;
+                attempts += 1;
+                return scraped.sessionId || attempts >= OPENCODE_SESSION_READOUT_RETRIES ? true : undefined;
+            }
+        );
+    } catch (e) {
+        if (!signal?.aborted) throw e;
     }
     return { scraped, reason };
 }

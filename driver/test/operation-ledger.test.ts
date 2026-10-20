@@ -23,8 +23,8 @@ describe('readLedger', () => {
         expect(await readLedger(at({ stdout: '' }), 'publish')).toEqual({});
     });
 
-    it('takes an array record as it is', async () => {
-        expect(await readLedger(at({ stdout: '[1]' }), 'publish')).toEqual([1]);
+    it('reads an array record as never recorded', async () => {
+        expect(await readLedger(at({ stdout: '[1]' }), 'publish')).toEqual({});
     });
 
     it('reads a failed step as never recorded, and rethrows a lost supervisor', async () => {

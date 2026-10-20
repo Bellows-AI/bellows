@@ -1,0 +1,59 @@
+import { setTimeout as delay } from 'node:timers/promises';
+
+/** A pause that a stand-down cuts short: rejects once `signal` aborts. */
+export type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
+
+/** The real pause: `node:timers/promises`, which rejects the moment `signal` aborts. */
+export const abortableSleep: Sleep = (ms, signal) => delay(ms, undefined, signal ? { signal } : {});
+
+/** One signal that aborts when any of `signals` does; the undefined ones are ignored (none at all never aborts). */
+export const anyOf = (...signals: (AbortSignal | undefined)[]): AbortSignal =>
+    AbortSignal.any(signals.filter((signal): signal is AbortSignal => signal !== undefined));
+
+/** Milliseconds left until the absolute `deadline` (epoch ms); 0 once past, which a request refuses. */
+export const timeLeft = (deadline: number): number => Math.max(0, deadline - Date.now());
+
+/** What a nested step is held to: the absolute `deadline` of the wait it runs in and that wait's kill `signal`. */
+export interface Bound {
+    deadline: number;
+    signal?: AbortSignal | undefined;
+}
+
+/**
+ * Runs `step` every `everyMs` until it answers a defined value, and answers `undefined` at the
+ * bound, after at least one step. Bounded by elapsed wall-clock time, step time included, not a
+ * count of polls. The step gets the absolute `deadline` so every nested request it makes can be bounded by `timeLeft`.
+ * An aborted `signal` ends the wait before the next step or during the sleep with `abandoned()`.
+ */
+export async function pollFor<T>(
+    opts: {
+        ms: number;
+        everyMs: number;
+        sleep: Sleep;
+        signal?: AbortSignal;
+        abandoned?: () => Error;
+    },
+    step: (deadline: number) => Promise<T | undefined>
+): Promise<T | undefined> {
+    const { ms, everyMs, sleep, signal } = opts;
+    const abandoned = opts.abandoned ?? ((): Error => new Error('the wait was abandoned: its signal aborted'));
+    const started = Date.now();
+    const deadline = started + ms;
+    // The first poll always runs, even with no budget: an `undefined` answer follows a read (#869),
+    // and a step whose requests the spent `deadline` refuses reports the read as unconfirmed.
+    for (let polls = 0; polls === 0 || Math.max(polls * everyMs, Date.now() - started) < ms; polls += 1) {
+        if (signal?.aborted) throw abandoned();
+        const found = await step(deadline);
+        if (found !== undefined) return found;
+        // The pause after the last poll would only delay the answer.
+        if ((polls + 1) * everyMs >= ms) return undefined;
+        try {
+            // Never past the deadline: the pause is cut where the wait ends.
+            await sleep(Math.min(everyMs, timeLeft(deadline)), signal);
+        } catch (e) {
+            if (signal?.aborted) throw abandoned();
+            throw e;
+        }
+    }
+    return undefined;
+}
