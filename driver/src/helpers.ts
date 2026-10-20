@@ -190,12 +190,14 @@ export function parseHelperOutput(descriptor: HelperDescriptor, stdout: string):
             message: `the helper's output exceeded its ${descriptor.outputCapBytes}-byte bound`,
         };
     }
-    const parsed = parseLastJsonLine<unknown>(stdout, () => undefined);
-    if (parsed === undefined) {
+    // JSON that is not an object (`null`, an array) speaks another protocol: a wrong version, not garbage.
+    const o = parseLastJsonLine<Record<string, unknown> | null | undefined>(stdout, () =>
+        lastLineIsJson(stdout) ? null : undefined
+    );
+    if (o === undefined) {
         return { ok: false, reason: 'malformed_output', message: 'the helper answered nothing readable as JSON' };
     }
-    const o = parsed as Record<string, unknown>;
-    if (o.schema !== descriptor.schema || o.version !== descriptor.version) {
+    if (o === null || o.schema !== descriptor.schema || o.version !== descriptor.version) {
         return {
             ok: false,
             reason: 'wrong_version',
@@ -209,6 +211,16 @@ export function parseHelperOutput(descriptor: HelperDescriptor, stdout: string):
         return { ok: false, reason, message: typeof o.error === 'string' ? o.error : 'the helper reported failure' };
     }
     return succeedWithControl(o.output ?? null, o.control);
+}
+
+/** Whether the output's last line is valid JSON at all, whatever its shape. */
+function lastLineIsJson(stdout: string): boolean {
+    try {
+        JSON.parse(stdout.trim().split('\n').filter(Boolean).pop() ?? '');
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /**
