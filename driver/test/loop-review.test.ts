@@ -116,7 +116,9 @@ const untilAborted = (signal: AbortSignal | undefined, answer: StepResult) =>
 
 function supervising(
     options: Parameters<typeof stubRunner>[1] = {},
-    boardOptions: Parameters<typeof stubBoard>[1] = {}
+    boardOptions: Parameters<typeof stubBoard>[1] = {},
+    withGates: ReturnType<typeof stubGateStack> | null = null,
+    caller: BoardJob = job(1)
 ) {
     const board = stubBoard([], boardOptions);
     const runner = stubRunner(async () => ok(), options);
@@ -128,9 +130,9 @@ function supervising(
         config: config(),
         log: (m: string) => logs.push(m),
         sleep,
+        ...(withGates ? { gates: withGates.gates } : {}),
     } as unknown as LoopRuntime;
-    const start = (review: ReviewClaim = REVIEW, key = 'sec-1') =>
-        superviseReview(rt, state, { caller: job(1), review, key });
+    const start = (review: ReviewClaim = REVIEW, key = 'sec-1') => superviseReview(rt, state, { caller, review, key });
     const settled = () => state.reviews.get('sec-1')?.settled ?? Promise.resolve();
     return { board: board.board, runner, state, rt, logs, start, settled };
 }
@@ -191,7 +193,7 @@ describe('a review the board leased in-band (issue #774)', () => {
     });
 
     it('cancels the step when the heartbeat is refused (409), and settles the row failed', async () => {
-        const t = supervising({ runReview: (_c, _r, _s, signal) => untilAborted(signal, STEP({ exitCode: 130 })) });
+        const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
         t.board.heartbeat = async () => 'lost';
         t.start();
         await t.settled();
@@ -207,7 +209,7 @@ describe('a review the board leased in-band (issue #774)', () => {
     });
 
     it('cancels the step when the board raises cancelRequested on the review row', async () => {
-        const t = supervising({ runReview: (_c, _r, _s, signal) => untilAborted(signal, STEP({ exitCode: 130 })) });
+        const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
         t.board.heartbeat = async () => ({ result: 'held', cancelRequested: true }) as HeartbeatVerdict;
         t.start();
         await t.settled();
@@ -217,7 +219,7 @@ describe('a review the board leased in-band (issue #774)', () => {
     it('retries a heartbeat that errors: the review keeps running', async () => {
         let beats = 0;
         const t = supervising({
-            runReview: async (_c, _r, _s, signal) => {
+            runReview: async (_c, _r, _s, { signal }) => {
                 await until(() => beats >= 3);
                 expect(signal?.aborted).toBe(false);
                 return STEP();
@@ -271,7 +273,7 @@ describe('a review the board leased in-band (issue #774)', () => {
     });
 
     it('is cancelled by the caller’s finish: the step is aborted, the row settled, the reviewer idled', async () => {
-        const t = supervising({ runReview: (_c, _r, _s, signal) => untilAborted(signal, STEP({ exitCode: 130 })) });
+        const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
         t.start();
         await until(() => t.runner.reviewed.length === 1);
         await cancelReviews(t.state);
@@ -289,7 +291,7 @@ describe('a review the board leased in-band (issue #774)', () => {
     });
 
     it('is cancelled by the caller standing down', async () => {
-        const t = supervising({ runReview: (_c, _r, _s, signal) => untilAborted(signal, STEP({ exitCode: 130 })) });
+        const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
         t.start();
         await until(() => t.runner.reviewed.length === 1);
         t.state.abortNow();
@@ -367,5 +369,117 @@ describe('concurrency 1: a caller that waits on its review', () => {
 
         expect(board.board.completed.find((c) => c.id === caller.id)?.status).toBe('succeeded');
         expect(runner.reviewed.map((r) => r.review.id)).toEqual([REVIEW.id]);
+    });
+});
+
+// Issue #774 (B5): the review's close-time export is a step of the caller's group, but its bytes and
+// its manifest ride the REVIEW row's identity (its id and claim sequence), never the caller's.
+describe('the export of a review’s transcript', () => {
+    const CALLER = {
+        ...job(1),
+        supervisorEnv: {
+            [SUPERVISOR_ENV.controlUrl]: 'http://driver:9099',
+            [SUPERVISOR_ENV.controlToken]: 'caller-control',
+            [SUPERVISOR_ENV.exportToken]: 'caller-export',
+        },
+    } as BoardJob;
+    const REVIEW_ROW = { ...REVIEW, claimSeq: 3 } as ReviewClaim;
+
+    it('opens an exporter token bound to the review row for the step, and closes it after', async () => {
+        const stack = stubGateStack({}, { control: true });
+        let seen: string | undefined;
+        const t = supervising(
+            {
+                runReview: async (_c, _r, _s, { exporter }) => {
+                    seen = exporter?.token;
+                    const relay = stack.stack.boundExporters.get(seen ?? '');
+                    await relay?.putChunk('sess-1', 0, new TextEncoder().encode('{"n":0}\n'));
+                    await relay?.finalize({
+                        session: 'sess-1',
+                        state: 'complete',
+                        terminalCause: null,
+                        startedAt: 'a',
+                        finishedAt: 'b',
+                    });
+                    return STEP();
+                },
+            },
+            {},
+            stack,
+            CALLER
+        );
+        t.start(REVIEW_ROW);
+        await t.settled();
+        expect(seen).toBeTruthy();
+        expect([
+            CALLER.supervisorEnv![SUPERVISOR_ENV.controlToken],
+            CALLER.supervisorEnv![SUPERVISOR_ENV.exportToken],
+        ]).not.toContain(seen);
+        // The chunk and the manifest are the review row's, under its own claim sequence.
+        expect(t.board.artifactChunks).toEqual([
+            { id: REVIEW.id, claimSeq: 3, stream: 'transcript', offset: 0, text: '{"n":0}\n' },
+        ]);
+        expect(t.board.artifactManifests).toEqual([
+            { id: REVIEW.id, claimSeq: 3, stream: 'transcript', state: 'complete' },
+        ]);
+        expect(stack.stack.boundExporters.size).toBe(0);
+    });
+
+    it('is closed even when the review step is lost', async () => {
+        const stack = stubGateStack({}, { control: true });
+        const t = supervising(
+            {
+                runReview: async () => {
+                    expect(stack.stack.boundExporters.size).toBe(1);
+                    throw new StepChannelClosed('gone');
+                },
+            },
+            {},
+            stack,
+            CALLER
+        );
+        t.start(REVIEW_ROW);
+        await t.settled();
+        expect(stack.stack.boundExporters.size).toBe(0);
+    });
+
+    it('uploads an opencode review’s readout under the review row', async () => {
+        const stack = stubGateStack({}, { control: true });
+        const readout = [
+            '{"stream":"normalized","kind":"message","text":"hi"}',
+            JSON.stringify({ id: 'ses_1', finish: 'stop' }),
+        ].join('\n');
+        const t = supervising(
+            {
+                runReview: async (_c, _r, _s, { exporter }) => {
+                    await exporter?.readout(readout);
+                    return STEP();
+                },
+            },
+            {},
+            stack,
+            CALLER
+        );
+        t.start({ ...REVIEW_ROW, executorType: 'opencode' } as ReviewClaim);
+        await t.settled();
+        const streams = t.board.artifactChunks.map((chunk) => `${chunk.id}:${chunk.claimSeq}:${chunk.stream}`);
+        expect(streams.length).toBeGreaterThan(0);
+        for (const stream of streams) expect(stream.startsWith(`${REVIEW.id}:3:`)).toBe(true);
+    });
+
+    it('is not offered when the caller has no control channel', async () => {
+        let offered: unknown = 'unset';
+        const t = supervising(
+            {
+                runReview: async (_c, _r, _s, { exporter }) => {
+                    offered = exporter;
+                    return STEP();
+                },
+            },
+            {}
+        );
+        t.start();
+        await t.settled();
+        expect(offered).toBeUndefined();
     });
 });

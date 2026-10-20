@@ -1,8 +1,11 @@
-import type { ArtifactStreamRef, BoardJob } from './board.js';
-import { ARTIFACT_STREAM } from './artifact-upload.js';
+import { randomUUID } from 'node:crypto';
+import type { ArtifactStreamRef, BoardJob, ReviewClaim } from './board.js';
+import { ARTIFACT_STREAM, uploadRunArtifacts } from './artifact-upload.js';
+import { mergeOpencodeOutcome, parseOpencodeRunOutcome } from './close-read.js';
 import { CLAUDE_CODE } from './executors.js';
 import type { ExportRelay } from './export-control.js';
 import type { RunOutcome } from './runner.js';
+import { controlTokenOf, type ReviewExporter } from './supervised-steps.js';
 import { killAgent } from './loop-attempt.js';
 import type { AttemptCtx, LoopRuntime } from './loop-types.js';
 import { EXPORT_PRODUCER, EXPORT_SCHEMA_VERSION, SPOOL_FULL_CAUSE } from './transcript-export.js';
@@ -44,7 +47,7 @@ const refOf = (job: BoardJob, session: string): ArtifactStreamRef => ({
 });
 
 /** The relay behind the control token's export routes: board calls plus the run's bookkeeping. */
-export function createExportRelay(rt: LoopRuntime, job: BoardJob, run: ExportRun, control: string): ExportRelay {
+export function createExportRelay(rt: LoopRuntime, job: BoardJob, run: ExportRun, control: string | null): ExportRelay {
     return {
         putChunk: (session, offset, bytes) => rt.board.putArtifactChunk(job, refOf(job, session), offset, bytes),
         finalize: (manifest) =>
@@ -66,8 +69,11 @@ export function createExportRelay(rt: LoopRuntime, job: BoardJob, run: ExportRun
                 rt.log(
                     `job ${job.id}: ${SPOOL_FULL_CAUSE}: ${report.pendingBytes} bytes unacknowledged, stopping the run`
                 );
-                const kill = { reason: SPOOL_FULL_CAUSE, detail: `${report.pendingBytes} bytes` } as const;
-                void killAgent(rt, job, control, kill).catch(() => undefined);
+                // A review's relay (no `control`) has no agent to stop: its bytes stay on the volume.
+                if (control !== null) {
+                    const kill = { reason: SPOOL_FULL_CAUSE, detail: `${report.pendingBytes} bytes` } as const;
+                    void killAgent(rt, job, control, kill).catch(() => undefined);
+                }
             }
             if (report.done) run.done = true;
         },
@@ -100,4 +106,31 @@ export function drainTranscriptExport(ctx: AttemptCtx, outcome: RunOutcome): voi
     run.drained = true;
     if (run.spoolFull) outcome.artifactSpoolFull = `${run.vitals?.pendingBytes ?? 0} bytes`;
     if (!run.done) rt.log(`job ${job.id}: the transcript exporter did not report done; its bytes remain on the volume`);
+}
+
+/**
+ * The close-time export of one in-band review (issue #774, amendment B5): an exporter token on the
+ * CALLER's control channel, bound to a relay that sends under the REVIEW row's identity (its id and
+ * claim sequence), so the reviewer's transcript and totals belong to the review row and never to the
+ * caller's attempt. A claude-code review streams through the token; an opencode review's readout is
+ * parsed and uploaded here. Null where the caller has no control channel to ride. `close` revokes the token.
+ */
+export function openReviewExport(
+    rt: LoopRuntime,
+    caller: BoardJob,
+    review: ReviewClaim
+): { exporter: ReviewExporter; close: () => void } | null {
+    if (!rt.gates || !caller.supervisorEnv) return null;
+    const owner = controlTokenOf(caller);
+    const token = randomUUID();
+    rt.gates.server.grantExporter(owner, token, createExportRelay(rt, review, newExportRun(), null));
+    const exporter: ReviewExporter = {
+        token,
+        async readout(stdout) {
+            const outcome = {} as RunOutcome;
+            mergeOpencodeOutcome(outcome, parseOpencodeRunOutcome(stdout, true), null);
+            await uploadRunArtifacts({ board: rt.board, job: review, executorType: review.executorType, outcome }, rt);
+        },
+    };
+    return { exporter, close: () => rt.gates?.server.revokeExporter(token) };
 }

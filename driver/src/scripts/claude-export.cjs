@@ -17,6 +17,8 @@
 //   EXPORT_RECORD_MAX_BYTES — a record above this is cut and its stream marked truncated.
 //   FACTORY_EXPORT_DIR     — the directory only the supervisor and this exporter mount: the supervisor's
 //                            `drain.json` and `supervisor.alive` in, this exporter's `status.json` out.
+//   EXPORT_ONCE            — 'complete' or 'partial': the one-shot mode, with EXPORT_ONCE_CAUSE as the
+//                            terminal cause. No FACTORY_EXPORT_DIR is read or written in it.
 //   EXPORT_SUPERVISOR_LOST_MS — a supervisor heartbeat older than this drains the exporter by itself,
 //                            partial with cause `supervisor_lost`: the bytes stay on the volume either way.
 //   EXPORT_POLL_MS, EXPORT_GIVEUP_MS — the tick, and how long a dead endpoint is tolerated.
@@ -71,6 +73,9 @@ const positive = (name, fallback) => {
 };
 const DIR = process.env.CLAUDE_TRANSCRIPT_DIR;
 const EXPORT_DIR = process.env.FACTORY_EXPORT_DIR;
+// One-shot mode (a review's close-time export, issue #774): no mailbox and no drain order. The
+// closing state and cause come from the env, and the exporter drains what is there, closes and exits.
+const ONCE = process.env.EXPORT_ONCE;
 const CONTROL_URL = process.env.BELLOWS_CONTROL_URL;
 const TOKEN = process.env.BELLOWS_CONTROL_TOKEN;
 const STARTED_MS = Date.parse(process.env.RUN_STARTED_AT ?? '');
@@ -534,12 +539,22 @@ const pollDrain = () => {
     }
 };
 
+// One-shot mode: the closing is ordered by the env from the first tick.
+const orderOnce = () => {
+    if (!ONCE) return;
+    progress.drain = {
+        state: ONCE === 'complete' ? 'complete' : 'partial',
+        cause: process.env.EXPORT_ONCE_CAUSE || null,
+    };
+};
+
 const main = async () => {
-    if (!DIR || !CONTROL_URL || !TOKEN || !EXPORT_DIR) {
+    if (!DIR || !CONTROL_URL || !TOKEN || (!EXPORT_DIR && !ONCE)) {
         throw new Error(
             'CLAUDE_TRANSCRIPT_DIR, FACTORY_EXPORT_DIR, BELLOWS_CONTROL_URL and BELLOWS_CONTROL_TOKEN are required'
         );
     }
+    orderOnce();
     for (;;) {
         await tick();
         pollDrain();

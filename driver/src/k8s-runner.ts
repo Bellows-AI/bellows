@@ -603,7 +603,12 @@ export function createKubernetesRunner(
         runGate: (job, gate, signal) => runGateInGroup(deps, job, gate, signal),
         resizeGate: (job, phase) => resizeGateSidecar(deps, job, phase),
         resizeReviewer: (job, phase) => resizeReviewerSidecar(deps, job, phase),
-        runReview: (caller, review, session, signal) => runReviewInGroup(deps, { caller, review, session }, signal),
+        runReview: (caller, review, session, control) =>
+            runReviewInGroup(
+                deps,
+                { caller, review, session, ...(control?.exporter ? { exporter: control.exporter } : {}) },
+                control?.signal
+            ),
         syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
             syncCheckout(deps, job, session ?? null, githubToken),
         finish: (job: BoardJob) => finishGroup(deps, job),

@@ -1,5 +1,6 @@
 import type { BoardJob, ReviewAnswer, ReviewClaim } from './board.js';
 import { withBoardRetry } from './board-retry.js';
+import { openReviewExport } from './loop-export.js';
 import { applyHeartbeatVerdict, down, type JobState, newReviewStop } from './loop-attempt.js';
 import type { LoopRuntime } from './loop-types.js';
 import type { ReviewRelay, ReviewVerdict } from './review-control.js';
@@ -126,6 +127,7 @@ async function superviseOne(
     });
     const beating = beatReview(rt, review, stop, ended);
     let result: StepResult | null = null;
+    const exporting = openReviewExport(rt, caller, review);
     try {
         await runner.resizeReviewer(caller, 'run').catch(() => false);
         const session = pickSession(review, review.executorType);
@@ -135,12 +137,16 @@ async function superviseOne(
                 log(`review ${review.id}: the session was not recorded: ${e.message}`);
             });
         }
-        result = await runner.runReview(caller, review, session, stop.signal);
+        result = await runner.runReview(caller, review, session, {
+            signal: stop.signal,
+            ...(exporting ? { exporter: exporting.exporter } : {}),
+        });
     } catch (e) {
         // A lost supervisor is no verdict on the review; anything else that stopped it ends the row.
         if (!stepLost(e) && !stop.signal.aborted) result = failedStep((e as Error).message);
         else log(`review ${review.id}: the review step ended without an answer: ${(e as Error).message}`);
     } finally {
+        exporting?.close();
         over();
         await beating;
         await runner.resizeReviewer(caller, 'idle').catch(() => false);

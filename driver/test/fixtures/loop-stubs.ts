@@ -18,6 +18,7 @@ import type {
 } from '../../src/board.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
 import type { ExportRelay } from '../../src/export-control.js';
+import type { ReviewControl } from '../../src/supervised-steps.js';
 import type { GateManager, GateRun, GateRunOptions, GateServer } from '../../src/gates.js';
 import type { HelperResult } from '../../src/helpers.js';
 import { createLoop, type Loop } from '../../src/loop.js';
@@ -300,7 +301,7 @@ export function stubRunner(
             caller: BoardJob,
             review: ReviewClaim,
             session: RunSession | null,
-            signal?: AbortSignal
+            control: ReviewControl
         ) => Promise<StepResult>;
         /** A finished runner of an earlier claim to adopt (issue #792); absent finds none. */
         adopt?: (job: BoardJob, signal?: AbortSignal) => Promise<AdoptedRun | null>;
@@ -448,11 +449,11 @@ export function stubRunner(
             caller: BoardJob,
             review: ReviewClaim,
             session: RunSession | null,
-            signal?: AbortSignal
+            control: ReviewControl = {}
         ): Promise<StepResult> {
             runner.reviewed.push({ caller, review, session });
             if (!options.runReview) throw new Error('no review scripted');
-            return options.runReview(caller, review, session, signal);
+            return options.runReview(caller, review, session, control);
         },
         ...(options.reapOrphanedClaim
             ? {
@@ -525,6 +526,8 @@ export function stubGateStack(
         controlOpened: [] as string[],
         /** Each exporter token granted, beside the supervisor token it belongs to. */
         exportersGranted: [] as [string, string][],
+        /** The review-bound exporter tokens open right now, by token (issue #774). */
+        boundExporters: new Map<string, ExportRelay>(),
         stopsRaised: [] as string[],
         killsRaised: [] as string[],
         deadNotes: [] as [string, string | null][],
@@ -583,8 +586,12 @@ export function stubGateStack(
                 const control = stack.controls.get(token);
                 if (control) stack.controls.set(agentToken, control);
             },
-            grantExporter: (token: string, exporterToken: string) => {
-                stack.exportersGranted.push([token, exporterToken]);
+            grantExporter: (token: string, exporterToken: string, exporter?: ExportRelay) => {
+                if (exporter) stack.boundExporters.set(exporterToken, exporter);
+                else stack.exportersGranted.push([token, exporterToken]);
+            },
+            revokeExporter: (exporterToken: string) => {
+                stack.boundExporters.delete(exporterToken);
             },
             attachExporter: (token: string, exporter: ExportRelay) => {
                 const control = stack.controls.get(token);

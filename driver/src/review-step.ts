@@ -1,5 +1,15 @@
 import type { BoardJob, ReviewClaim } from './board.js';
-import { REVIEWER_HOME, reviewerTreeDir, runnerClaimEnv } from './claim.js';
+import {
+    CONTROL_TOKEN_ENV,
+    CONTROL_URL_ENV,
+    REVIEWER_DATA,
+    REVIEWER_HOME,
+    reviewerTranscriptName,
+    reviewerTreeDir,
+    runnerClaimEnv,
+} from './claim.js';
+import { claudeExportScript, opencodeReadoutScript } from './container-scripts.js';
+import { CLAUDE_CODE } from './executors.js';
 import { parseLastJsonLine } from './json-parse.js';
 import {
     gitWorktreeScript,
@@ -10,9 +20,17 @@ import {
     worktreeDir,
 } from './publish.js';
 import { reviewerPlan } from './runner-plan.js';
-import type { RunSession } from './runner.js';
-import { controlTokenOf, detailOf, type StepHost, stepRequest, submitStep } from './supervised-steps.js';
-import type { StepResult } from './supervisor-contract.js';
+import { OPENCODE_EXPORT_LIMIT, type RunSession } from './runner.js';
+import {
+    controlTokenOf,
+    detailOf,
+    type ReviewExporter,
+    type StepHost,
+    stepRequest,
+    submitStep,
+} from './supervised-steps.js';
+import { EXPORT_FLUSH_BYTES, EXPORT_FLUSH_MS, EXPORT_SPOOL_MAX_BYTES } from './transcript-export.js';
+import { type StepResult, SUPERVISOR_ENV } from './supervisor-contract.js';
 
 /**
  * One named reviewer's run as supervised steps of its CALLER's task group (issue #774): the
@@ -84,11 +102,88 @@ export function reviewStepEnv(
     };
 }
 
-/** One review to run: the caller whose group hosts it, the review's own claim and the session it runs. */
+/** One review to run: the caller whose group hosts it, the review's own claim, the session it runs and its export. */
 export interface ReviewRun {
     caller: BoardJob;
     review: ReviewClaim;
     session: RunSession | null;
+    exporter?: ReviewExporter;
+}
+
+const EXPORT_STEP_TIMEOUT_MS = 180_000;
+const EXIT_TIMEOUT = 124;
+const EXIT_CANCELLED = 130;
+/** The opencode readout's export, per stream: the step's stdout is capped at 1 MiB, tail kept. */
+const READOUT_SHARES = 4;
+const REVIEW_READOUT_LIMIT = OPENCODE_EXPORT_LIMIT / READOUT_SHARES;
+
+/** How the manifest closes: `complete` for a review that ran to its end, else `partial` with the cause. */
+function exportClosing(result: StepResult): { state: 'complete' | 'partial'; cause: string | null } {
+    if (result.exitCode === 0 && !result.timedOut) return { state: 'complete', cause: null };
+    if (result.timedOut || result.exitCode === EXIT_TIMEOUT) return { state: 'partial', cause: 'review_timeout' };
+    return { state: 'partial', cause: result.exitCode === EXIT_CANCELLED ? 'review_cancelled' : 'review_failed' };
+}
+
+/**
+ * The review's close-time export (amendment B5): one more supervised step of the caller's group,
+ * run once the review has ended however it ended. A claude-code review runs the transcript exporter
+ * in its one-shot mode over the reviewer's own store, under the review row's exporter token; an
+ * opencode review runs the session readout over the reviewer's own database and hands its stdout to
+ * the exporter. Nothing here can change the review's verdict, and a failed export leaves the bytes
+ * on the volume.
+ */
+async function exportReview(host: StepHost, toRun: ReviewRun, result: StepResult, startedAt: Date): Promise<void> {
+    const { caller, review, session, exporter } = toRun;
+    if (!exporter) return;
+    const home = reviewerTreeDir(host.config, caller);
+    const step =
+        review.executorType === CLAUDE_CODE
+            ? claudeExportRequest(toRun, home, result, startedAt)
+            : {
+                  argv: ['node', '-e', opencodeReadoutScript],
+                  env: {
+                      OPENCODE_DB: `${home}/${REVIEWER_DATA}/opencode/opencode.db`,
+                      OPENCODE_DIR: worktreeDir(host.config, review) ?? '',
+                      RUN_STARTED_MS: String(startedAt.getTime()),
+                      EXPORT_LIMIT_BYTES: String(REVIEW_READOUT_LIMIT),
+                  },
+              };
+    if (step === null || (review.executorType === CLAUDE_CODE && session === null)) return;
+    try {
+        const answered = await submitStep(
+            host,
+            caller,
+            stepRequest(review, 'sync', { id: 'review-export', ...step, timeoutMs: EXPORT_STEP_TIMEOUT_MS })
+        );
+        if (review.executorType !== CLAUDE_CODE && answered.exitCode === 0) await exporter.readout(answered.stdout);
+    } catch {
+        // An export is never a verdict: a lost step or a refused readout leaves the files where they are.
+    }
+}
+
+function claudeExportRequest(
+    { caller, review, exporter }: ReviewRun,
+    home: string,
+    result: StepResult,
+    startedAt: Date
+): { argv: string[]; env: Record<string, string> } | null {
+    const controlUrl = caller.supervisorEnv?.[SUPERVISOR_ENV.controlUrl];
+    if (!controlUrl || !exporter) return null;
+    const { state, cause } = exportClosing(result);
+    return {
+        argv: ['node', '-e', claudeExportScript],
+        env: {
+            CLAUDE_TRANSCRIPT_DIR: `${home}/${reviewerTranscriptName(review)}`,
+            RUN_STARTED_AT: startedAt.toISOString(),
+            EXPORT_FLUSH_BYTES: String(EXPORT_FLUSH_BYTES),
+            EXPORT_FLUSH_MS: String(EXPORT_FLUSH_MS),
+            EXPORT_SPOOL_MAX_BYTES: String(EXPORT_SPOOL_MAX_BYTES),
+            EXPORT_ONCE: state,
+            ...(cause ? { EXPORT_ONCE_CAUSE: cause } : {}),
+            [CONTROL_URL_ENV]: controlUrl,
+            [CONTROL_TOKEN_ENV]: exporter.token,
+        },
+    };
 }
 
 /**
@@ -100,6 +195,7 @@ export interface ReviewRun {
 export async function runReviewSteps(host: StepHost, toRun: ReviewRun, signal?: AbortSignal): Promise<StepResult> {
     const { caller, review, session } = toRun;
     if (signal?.aborted) throw new Error('the review was cancelled before it was submitted');
+    const startedAt = new Date();
     const restoreEnv = reviewRestoreEnv(host, review);
     const run = reviewStepEnv(host, review, session);
     const worktree = worktreeDir(host.config, review);
@@ -149,9 +245,12 @@ export async function runReviewSteps(host: StepHost, toRun: ReviewRun, signal?: 
     const token = controlTokenOf(caller);
     const cancel = (): void => host.sink.cancel(token, step.id);
     signal?.addEventListener('abort', cancel, { once: true });
+    let result: StepResult;
     try {
-        return await submitStep(host, caller, step, signal);
+        result = await submitStep(host, caller, step, signal);
     } finally {
         signal?.removeEventListener('abort', cancel);
     }
+    await exportReview(host, toRun, result, startedAt);
+    return result;
 }

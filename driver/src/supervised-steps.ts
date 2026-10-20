@@ -498,3 +498,20 @@ export function supervisedStepMembers(
         },
     };
 }
+
+/**
+ * What a review's close-time export step is given (issue #774): the exporter token the caller's
+ * control channel opened for THIS review row (bound to the row's lease and identity, never the
+ * caller's own), and where an opencode review's readout goes — the driver parses and uploads it
+ * under the row, since the opencode readout is a read, not a stream.
+ */
+export interface ReviewExporter {
+    token: string;
+    readout(stdout: string): Promise<void>;
+}
+
+/** What stands beside a review run: the signal that cancels it and the export of its transcript. */
+export interface ReviewControl {
+    signal?: AbortSignal;
+    exporter?: ReviewExporter;
+}

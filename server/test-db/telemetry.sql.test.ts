@@ -509,6 +509,34 @@ describe.skipIf(!enabled)('task attribution', () => {
         expect(input.sessions[0]?.taskKey).toBe(rootId);
     });
 
+    // Issue #774 (B5): an in-band review row carries its OWN session id, so the reviewer's tokens are
+    // a session of the review row's — they are never summed into the caller's session, whatever
+    // thread (task) both belong to.
+    it('keeps a reviewer’s tokens on its review row’s session, apart from the caller’s', async () => {
+        const userId = await member('review-author');
+        const rootId = await job({ session: 'caller-s', createdBy: userId });
+        const reviewId = randomUUID();
+        await sql`
+            insert into job (org_id, id, command, status, root_job_id, created_by, session_id, created_at,
+                             review_of, review_key, review_profile, review_spec, review_revision, review_ref)
+            values (${ORG}, ${reviewId}, 'review', 'succeeded', ${rootId}, ${userId}, 'reviewer-s', now(),
+                    ${rootId}, 'sec-1', 'security', '{}'::jsonb, 'head:abc', 'refs/factory/review/x/sec-1')
+        `;
+        for (const [session, tokens] of [
+            ['caller-s', 10],
+            ['reviewer-s', 7],
+        ] as const) {
+            await branch({ session, branch: 'feat/a', from: '2026-08-01T10:00:00Z', to: '2026-08-01T11:00:00Z' });
+            await point({ session, field: 'tokens_input', value: tokens, time: '2026-08-01T10:30:00Z' });
+        }
+
+        const { input } = await fetchOrg();
+        const tokensOf = (session: string) => input.sessions.find((s) => s.sessionId === session)?.tokens.input;
+        expect(tokensOf('caller-s')).toBe(10);
+        expect(tokensOf('reviewer-s')).toBe(7);
+        expect(input.sessions.map((s) => s.taskKey)).toEqual([rootId, rootId]);
+    });
+
     it('keeps a session with no matching job row task-less, exactly as it is member-less', async () => {
         await seedSession('task-3');
         const { input } = await fetchOrg();

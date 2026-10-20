@@ -677,8 +677,12 @@ export function createDockerRunner(
         runGate: (job, gate, signal) => runDockerGate(gateDeps(deps, job), job, gate, signal),
         resizeGate: async () => false, // no in-place resize: the gate container keeps its GATE_* sizing
         resizeReviewer: async () => false, // likewise the reviewer container: it keeps its RUNNER_* sizing
-        runReview: (caller, review, session, signal) =>
-            runDockerReview(gateDeps(deps, caller), { caller, review, session }, signal),
+        runReview: (caller, review, session, control) =>
+            runDockerReview(
+                gateDeps(deps, caller),
+                { caller, review, session, ...(control?.exporter ? { exporter: control.exporter } : {}) },
+                control?.signal
+            ),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
         restartServices: (job, signal) => restartJobServices(job, execDocker, signal),

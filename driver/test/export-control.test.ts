@@ -187,3 +187,33 @@ describe('the exporter token of the control channel', () => {
         expect((await call('GET', '/control', undefined, TOKEN)).status).toBe(200);
     });
 });
+
+// Issue #774 (B5): a review's close-time export step runs in the CALLER's group but under the
+// review row's identity — its own exporter token, bound to the review's relay.
+describe('a review-bound exporter token', () => {
+    const REVIEW_EXPORTER = 'review-export';
+
+    it('relays to the review’s relay and never to the caller’s, and is revoked on its own', async () => {
+        openExporting();
+        const review: typeof seen = { chunks: [], reports: [] };
+        channel.grantExporter(TOKEN, REVIEW_EXPORTER, relayInto(review));
+
+        const put = (token: string) => call('PUT', '/export/chunk?session=abc&offset=0', new Uint8Array([1, 2]), token);
+        expect((await put(REVIEW_EXPORTER)).status).toBe(200);
+        expect(review.chunks).toEqual([['abc', 0, 2]]);
+        expect(seen.chunks).toEqual([]);
+        expect((await put(EXPORTER)).status).toBe(200);
+        expect(seen.chunks).toEqual([['abc', 0, 2]]);
+
+        channel.revokeExporter(REVIEW_EXPORTER);
+        expect((await put(REVIEW_EXPORTER)).status).toBe(401);
+        expect((await put(EXPORTER)).status).toBe(200);
+    });
+
+    it('closes with the caller’s attempt', async () => {
+        openExporting();
+        channel.grantExporter(TOKEN, REVIEW_EXPORTER, relayInto({ chunks: [], reports: [] }));
+        channel.close(TOKEN);
+        expect((await call('POST', '/export/state', STATE, REVIEW_EXPORTER)).status).toBe(401);
+    });
+});

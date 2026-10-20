@@ -45,6 +45,17 @@ const BREADCRUMB = '.factory-workspace.json';
 const REVIEWER_TREE_PARENT = '.factory';
 const REVIEWER_TREE_LEAF = 'reviewer';
 
+/**
+ * The in-pod reviewer's home (issue #774) inside a member's directory: a subPath mount the kubelet
+ * would create root-owned, and docker would refuse, were it missing. Made group-writable here, by
+ * sign-in and by every claim that declares reviewers, so no task depends on a page having been
+ * opened. driver/src/claim.ts names the same path.
+ */
+export function ensureReviewerHome(memberDir: string): void {
+    mkdirShared(join(memberDir, REVIEWER_TREE_PARENT));
+    mkdirShared(join(memberDir, REVIEWER_TREE_PARENT, REVIEWER_TREE_LEAF));
+}
+
 export function ensureUserWorkspace(options: ProvisionOptions): string | null {
     const { root, orgId, userId, login, githubUserId, log = () => {} } = options;
     if (!root) return null;
@@ -60,10 +71,7 @@ export function ensureUserWorkspace(options: ProvisionOptions): string | null {
      * rename is only visible at sign-in anyway.
      */
     const created = mkdirShared(dir);
-    // The in-pod reviewer's home (issue #774) is a subPath mount the kubelet would create root-owned
-    // were it missing; made here, group-writable, before any pod names it. driver/src/claim.ts.
-    mkdirShared(join(dir, REVIEWER_TREE_PARENT));
-    mkdirShared(join(dir, REVIEWER_TREE_PARENT, REVIEWER_TREE_LEAF));
+    ensureReviewerHome(dir);
     if (created !== undefined || options.rewriteBreadcrumb) {
         writeFileSync(
             join(dir, BREADCRUMB),

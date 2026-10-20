@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob, ReviewClaim } from '../src/board.js';
-import { REVIEWER_HOME } from '../src/claim.js';
+import { REVIEWER_HOME, reviewerTreeDir } from '../src/claim.js';
+import { claudeExportScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { loadDriverConfig } from '../src/config.js';
 import { reviewBudgetMs, reviewRestoreEnv, reviewStepEnv, runReviewSteps } from '../src/review-step.js';
 import type { StepSink } from '../src/step-control.js';
@@ -142,5 +143,91 @@ describe('runReviewSteps', () => {
         });
         await runReviewSteps(stepHost, { caller, review, session: { id: 'sess-1', resume: false } }, stop.signal);
         expect(cancelled).toHaveLength(1);
+    });
+});
+
+// Issue #774 (B5): after the review the caller's supervisor runs one more step, the review's
+// transcript export, under the REVIEW row's own exporter token — never the caller's control or
+// export token — and whatever it answers never changes the review's verdict.
+describe('the reviewer’s close-time export step', () => {
+    const caller = {
+        ...review,
+        id: '77777777-7777-4777-8777-777777777777',
+        supervisorEnv: {
+            [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130',
+            [SUPERVISOR_ENV.controlToken]: 'caller-control',
+            [SUPERVISOR_ENV.exportToken]: 'caller-export',
+        },
+    } as unknown as BoardJob;
+    const RESTORED = '{"ok":true,"reason":null}';
+    const session = { id: 'sess-1', resume: false };
+
+    function sinkOf(answer: (step: StepRequest) => { exitCode: number | null; stdout: string }) {
+        const steps: StepRequest[] = [];
+        const sink = {
+            submit: async (_token: string, step: StepRequest) => {
+                steps.push(step);
+                return { ...answer(step), stderr: '', timedOut: false };
+            },
+            cancel: () => undefined,
+        } as unknown as StepSink;
+        return { steps, host: { config: host.config, sink } };
+    }
+    const reviewed = (exitCode: number) => (step: StepRequest) =>
+        step.kind === 'review' ? { exitCode, stdout: 'verdict' } : { exitCode: 0, stdout: RESTORED };
+    const exporter = () => ({ token: 'review-export', readout: vi.fn(async () => undefined) });
+
+    it('exports a claude-code transcript from the reviewer’s store under the review’s token', async () => {
+        const { steps, host: stepHost } = sinkOf(reviewed(0));
+        const result = await runReviewSteps(stepHost, { caller, review, session, exporter: exporter() });
+        expect(result).toMatchObject({ exitCode: 0, stdout: 'verdict' });
+        expect(steps.map((step) => step.kind)).toEqual(['sync', 'sync', 'review', 'sync']);
+        const exportStep = steps[3]!;
+        expect(exportStep.id).toMatch(/review-export$/);
+        expect(exportStep.argv).toEqual(['node', '-e', claudeExportScript]);
+        expect(exportStep.env).toMatchObject({
+            CLAUDE_TRANSCRIPT_DIR: `${reviewerTreeDir(host.config, caller)}/transcripts/${ROOT}`,
+            BELLOWS_CONTROL_URL: 'http://driver:8130',
+            BELLOWS_CONTROL_TOKEN: 'review-export',
+            EXPORT_ONCE: 'complete',
+        });
+        expect(JSON.stringify(exportStep)).not.toMatch(/caller-control|caller-export/);
+    });
+
+    it('closes a failed review’s stream partial, with the cause, and leaves the verdict alone', async () => {
+        const { steps, host: stepHost } = sinkOf((step) =>
+            step.id.endsWith('review-export') ? { exitCode: 1, stdout: '' } : reviewed(2)(step)
+        );
+        const result = await runReviewSteps(stepHost, { caller, review, session, exporter: exporter() });
+        expect(result).toMatchObject({ exitCode: 2, stdout: 'verdict' });
+        expect(steps[3]!.env).toMatchObject({ EXPORT_ONCE: 'partial', EXPORT_ONCE_CAUSE: 'review_failed' });
+    });
+
+    it('hands an opencode review’s readout to the exporter, from the reviewer’s own database', async () => {
+        const opencode = { ...review, executorType: 'opencode' } as unknown as ReviewClaim;
+        const { steps, host: stepHost } = sinkOf((step) =>
+            step.id.endsWith('review-export') ? { exitCode: 0, stdout: '{"session":"ses_1"}' } : reviewed(0)(step)
+        );
+        const given = exporter();
+        await runReviewSteps(stepHost, { caller, review: opencode, session: null, exporter: given });
+        const exportStep = steps[3]!;
+        expect(exportStep.argv).toEqual(['node', '-e', opencodeReadoutScript]);
+        expect(exportStep.env).toMatchObject({
+            OPENCODE_DB: `${reviewerTreeDir(host.config, caller)}/data/opencode/opencode.db`,
+        });
+        expect(exportStep.env.OPENCODE_DIR).toBe(steps[1]!.env.WORKTREE);
+        expect(given.readout).toHaveBeenCalledWith('{"session":"ses_1"}');
+    });
+
+    it('runs no export step without an exporter', async () => {
+        const plain = sinkOf(reviewed(0));
+        await runReviewSteps(plain.host, { caller, review, session });
+        expect(plain.steps.map((step) => step.kind)).toEqual(['sync', 'sync', 'review']);
+    });
+
+    it('is not run when the restore failed, so no review ran', async () => {
+        const { steps, host: stepHost } = sinkOf(() => ({ exitCode: 0, stdout: '{"ok":false,"reason":"gone"}' }));
+        await runReviewSteps(stepHost, { caller, review, session, exporter: exporter() });
+        expect(steps).toHaveLength(2);
     });
 });
