@@ -323,11 +323,15 @@ spec:
           expression: "has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {}"
         - name: newAnnotations
           expression: "has(object.metadata.annotations) ? object.metadata.annotations : {}"
-        # Read only under a Secret UPDATE: the owner and the type before and after.
+        # Read only under a Secret UPDATE: the owner and the finalizers before and after.
         - name: oldOwners
           expression: "has(oldObject.metadata.ownerReferences) ? oldObject.metadata.ownerReferences : []"
         - name: newOwners
           expression: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+        - name: oldFinalizers
+          expression: "has(oldObject.metadata.finalizers) ? oldObject.metadata.finalizers : []"
+        - name: newFinalizers
+          expression: "has(object.metadata.finalizers) ? object.metadata.finalizers : []"
     validations:
         - expression: "has(variables.target.metadata.labels) && 'factory.job' in variables.target.metadata.labels"
           message: 'the driver creates and deletes only objects labelled factory.job'
@@ -354,6 +358,9 @@ spec:
               (has(object.metadata.labels) && object.metadata.labels == oldObject.metadata.labels &&
                 (has(object.type) ? object.type : '') == (has(oldObject.type) ? oldObject.type : '') &&
                 variables.newOwners == variables.oldOwners &&
+                variables.newFinalizers == variables.oldFinalizers &&
+                variables.newAnnotations == variables.oldAnnotations &&
+                (!has(object.immutable) || !object.immutable) &&
                 has(object.data) &&
                 object.data.all(k, k == 'binding.json' ||
                   (has(oldObject.data) && k in oldObject.data && oldObject.data[k] == object.data[k])) &&

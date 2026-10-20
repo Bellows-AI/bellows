@@ -2011,6 +2011,16 @@ other_key="$(as_driver_secret "$PROBE_ENV" '{"data":{"KEEP":"eA=="}}')"
 expect_contains 'the policy refuses a Secret patch of another key' "$other_key" 'changes only its binding'
 relabelled_secret="$(as_driver_secret "$PROBE_ENV" '{"metadata":{"labels":{"factory.lease":"thief"}}}')"
 expect_contains 'the policy refuses relabelling an attempt Secret' "$relabelled_secret" 'changes only its binding'
+retyped_secret="$(as_driver_secret "$PROBE_ENV" '{"type":"kubernetes.io/basic-auth"}')"
+expect_contains 'the policy refuses retyping an attempt Secret' "$retyped_secret" 'changes only its binding'
+reowned_secret="$(as_driver_secret "$PROBE_ENV" '{"metadata":{"ownerReferences":[{"apiVersion":"v1","kind":"ConfigMap","name":"thief","uid":"00000000-0000-0000-0000-000000000000"}]}}')"
+expect_contains 'the policy refuses re-owning an attempt Secret' "$reowned_secret" 'changes only its binding'
+dropped_key="$(as_driver_secret "$PROBE_ENV" '{"data":{"KEEP":null}}')"
+expect_contains 'the policy refuses deleting an existing Secret data key' "$dropped_key" 'changes only its binding'
+immutable_secret="$(as_driver_secret "$PROBE_ENV" '{"immutable":true}')"
+expect_contains 'the policy refuses freezing an attempt Secret' "$immutable_secret" 'changes only its binding'
+finalized_secret="$(as_driver_secret "$PROBE_ENV" '{"metadata":{"finalizers":["factory/probe"]}}')"
+expect_contains 'the policy refuses adding a finalizer to an attempt Secret' "$finalized_secret" 'changes only its binding'
 dashboard_patch="$(as_driver_secret "$RELEASE-factory-dashboard" '{"data":{"binding.json":"e30="}}')"
 expect_contains 'the policy refuses patching the dashboard Secret' "$dashboard_patch" 'only objects labelled factory.job'
 kubectl delete secret "$PROBE_ENV" -n "$NAMESPACE" >/dev/null

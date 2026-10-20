@@ -326,6 +326,12 @@ describe('the admission policy admits the holder binding (#829)', () => {
         expect(objects).toContain('variables.newOwners == variables.oldOwners');
     });
 
+    it('also pins immutable, finalizers and annotations on a Secret update', () => {
+        expect(objects).toContain('(!has(object.immutable) || !object.immutable)');
+        expect(objects).toContain('variables.newFinalizers == variables.oldFinalizers');
+        expect(objects).toContain('variables.newAnnotations == variables.oldAnnotations');
+    });
+
     it('guards the claim-update rules to ConfigMaps', () => {
         expect(objects).toContain("request.kind.kind != 'ConfigMap' || request.operation != 'UPDATE'");
         expect(objects).toContain('the driver updates only checkout claims and attempt Secret bindings');
