@@ -10,7 +10,7 @@ import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
 import { beginGates, openRunControl, probeDeadServices, runDeclaredGates, sizeGateForVerify } from './loop-gates.js';
 import { drainTranscriptExport } from './loop-export.js';
-import { lostOf, transition } from './loop-phase.js';
+import { lostOf, logRefusal, transition, transitionLine } from './loop-phase.js';
 import { heartbeat, newJobState, raceStep, registerLive, stopIfDraining, watchOutput } from './loop-attempt.js';
 import { attemptQuiesce, abandonOnHandover, end, endIfDown } from './loop-conclusion.js';
 import type { GateRunNote } from './timeout-note.js';
@@ -656,7 +656,7 @@ async function failOnClaimRefusal(rt: LoopRuntime, job: BoardJob): Promise<boole
           ? ([job.skillRefusal, 'config', 'selected skills'] as const)
           : ([job.planRefusal ?? servicePlanRefusal(rt.config, job), 'config', 'execution plan'] as const);
     if (!reason) return false;
-    rt.log(`job ${job.id}: ${what} is not runnable, failing`);
+    logRefusal(rt.log, job, `job ${job.id}: ${what} is not runnable, failing`);
     await report(rt, job, { status: 'failed', exitCode: null, output: reason, failureKind }).catch((e: Error) =>
         rt.log(`job ${job.id}: could not report the ${what} failure: ${e.message}`)
     );
@@ -682,7 +682,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     // because the board cannot know ahead of a run whether a pre-helper will conclude it.
     const promptRefusal = masterPromptRefusalReason(job);
     if (promptRefusal) {
-        log(`job ${job.id}: master prompt is not runnable, failing`);
+        logRefusal(log, job, `job ${job.id}: master prompt is not runnable, failing`);
         await report(rt, job, {
             status: 'failed',
             exitCode: null,
@@ -693,8 +693,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     }
 
     const state = newJobState();
-    state.trace = (t) =>
-        log(JSON.stringify({ event: 'attempt-transition', job: job.id, claimSeq: job.claimSeq, ...t }));
+    state.trace = (t) => log(transitionLine(job, t));
     // In flight for a drain's handover (`loop.ts`) until it settles.
     const over = registerLive(rt, job, state);
     const beating = heartbeat(rt, job, state);

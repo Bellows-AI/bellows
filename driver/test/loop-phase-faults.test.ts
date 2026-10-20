@@ -129,6 +129,35 @@ function conclusionsOf(timeline: readonly string[]): Exclude<Conclusion, 'none'>
     return out;
 }
 
+const PHASES = ['setup', 'launched', 'concluding', 'ended'];
+
+/** I7: the `attempt-transition` lines move forward only, end in exactly one `>ended`, and carry at most one ending. */
+function transitionViolations(logs: readonly string[]): string[] {
+    const lines = logs.flatMap((line) => {
+        try {
+            const parsed = JSON.parse(line) as { event?: string; from: string; to: string };
+            return parsed.event === 'attempt-transition' ? [parsed] : [];
+        } catch {
+            return [];
+        }
+    });
+    const v: string[] = [];
+    const changes = lines.filter((l) => l.from !== l.to);
+    const endings = lines.filter((l) => l.from === l.to);
+    let at = 'setup';
+    for (const l of changes) {
+        if (l.from !== at) v.push(`I7: ${l.from}>${l.to} does not continue from ${at}`);
+        if (PHASES.indexOf(l.to) <= PHASES.indexOf(l.from)) v.push(`I7: ${l.from}>${l.to} does not move forward`);
+        at = l.to;
+    }
+    const ended = changes.filter((l) => l.to === 'ended');
+    if (ended.length !== 1 || changes.at(-1)?.to !== 'ended') {
+        v.push(`I7: ${ended.length} ...>ended lines, last change ${changes.at(-1)?.to ?? 'none'} (expected one, last)`);
+    }
+    if (endings.length > 1) v.push(`I7: ${endings.length} ending lines (expected at most one)`);
+    return v;
+}
+
 /** The violated invariants of one observed attempt, each a line naming its invariant; empty when it held. */
 function violationsOf(run: Observed, expected: Expected): string[] {
     const { timeline } = run;
@@ -166,6 +195,8 @@ function violationsOf(run: Observed, expected: Expected): string[] {
     const finishAt = first('runner.finish');
     const closeAt = first('control.close');
     if (finishAt >= 0 && closeAt >= 0 && closeAt < finishAt) v.push('I5: runner.finish after control.close');
+
+    v.push(...transitionViolations(run.logs));
     return v;
 }
 

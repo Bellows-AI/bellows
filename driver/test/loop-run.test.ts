@@ -48,6 +48,26 @@ describe('the claim refusals, decided before anything launches', () => {
         nothingLaunched(r);
     });
 
+    it('writes exactly one setup>ended attempt-transition line for a refusal, with no JobState behind it', async () => {
+        for (const refused of [{ skillRefusal: 'skill "s" is gone' }, { masterPrompt: '' }]) {
+            const claimed = { ...job(1), ...refused };
+            const r = await attempt(claimed);
+
+            const lines = r.logs.filter((m) => m.includes('"event":"attempt-transition"')).map((m) => JSON.parse(m));
+            expect(lines).toEqual([
+                {
+                    event: 'attempt-transition',
+                    job: claimed.id,
+                    claimSeq: claimed.claimSeq,
+                    from: 'setup',
+                    to: 'ended',
+                    ending: null,
+                    at: expect.any(Number),
+                },
+            ]);
+        }
+    });
+
     it('names a deleted executor when the claim carries none', async () => {
         const r = await attempt({ ...job(1), executorType: null });
 

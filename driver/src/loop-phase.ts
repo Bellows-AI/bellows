@@ -29,6 +29,16 @@ export interface PhaseState {
     trace: (transition: AttemptTransition) => void;
 }
 
+/** The one structured log line for a transition; every writer of the attempt path uses it. */
+export const transitionLine = (job: { id: string; claimSeq: number }, t: AttemptTransition): string =>
+    JSON.stringify({ event: 'attempt-transition', job: job.id, claimSeq: job.claimSeq, ...t });
+
+/** Logs a claim refused before any attempt state exists, then its whole path: one setup>ended line. */
+export function logRefusal(log: (line: string) => void, job: { id: string; claimSeq: number }, message: string): void {
+    log(message);
+    log(transitionLine(job, { from: 'setup', to: 'ended', ending: null, at: Date.now() }));
+}
+
 const ORDER: readonly AttemptPhase[] = ['setup', 'launched', 'concluding', 'ended'];
 
 /** Records how the attempt ended; answers whether this call was the one that did (first wins). */
