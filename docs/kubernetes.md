@@ -50,8 +50,9 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
   until its lease or the group's orphan bound ends, the wait outlasting both. A finished one is adoptable until
   its Job's one-hour `ttlSecondsAfterFinished`. `driver/src/k8s-adopt.ts`, `driver/src/docker-close-read.ts`.
 - Stated limit: why a driver ended a run is recorded on the attempt only where it outlives the kill — a hard-kill
-  fallback deletes the Job and its record, a refused record is none — and such a run is redone in its tree and
-  session. `driver/src/termination.ts`, `driver/src/k8s-adopt.ts`, `driver/src/docker-close-read.ts`.
+  deletes the Job, its record, its Secrets and its claim before `end` reaches the board, a refused record is
+  none — and such a run is redone in its tree and session. `driver/src/termination.ts`,
+  `driver/src/k8s-runner.ts` (`killRunner`), `driver/src/k8s-adopt.ts`, `driver/src/docker-close-read.ts`.
 - Stated limit: a verdict neither staged nor completed within one lease leaves its group and checkout claim to the
   next claim: its agent outcome is adopted, but the gates and the post-processing run again, and an attempt with no
   budget left can retire `dead` before it is adopted. `driver/src/loop-conclusion.ts` (`end`).

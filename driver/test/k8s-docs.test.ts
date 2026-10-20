@@ -172,6 +172,9 @@ describe('the executor isolation record (#382)', () => {
         expect(kubernetesDocs).toContain(
             'Stated limit: why a driver ended a run is recorded on the attempt only where'
         );
+        expect(kubernetesDocs).toContain(
+            'deletes the Job, its record, its Secrets and its claim before `end` reaches the board'
+        );
         expect(kubernetesDocs).toContain('`ttlSecondsAfterFinished`');
     });
 
