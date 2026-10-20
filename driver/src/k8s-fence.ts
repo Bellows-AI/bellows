@@ -250,10 +250,8 @@ export async function readClaim(deps: K8sDeps, job: BoardJob): Promise<ReadClaim
 /**
  * Revokes the claim incarnation an orphaned-claim reap observed (issue #821): a merge patch adding
  * `REVOKED_MARK` under the reaping acquisition's token, preconditioned on the observed uid, so it
- * can only ever mark the incarnation read. A reclaim verifies its claim unrevoked before its group
- * starts (`reclaimInGroup`), so once this answers true no group of the holder created after the
- * reaper's list can run. True only on a 2xx; a refusal or a throw revokes nothing, and the reap
- * acts on nothing.
+ * can only ever mark the incarnation read. True only on a 2xx; a refusal or a throw revokes
+ * nothing, and the reap acts on nothing.
  */
 export async function revokeClaim(deps: K8sDeps, job: BoardJob, observed: ObservedClaim): Promise<boolean> {
     try {
