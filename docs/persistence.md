@@ -10,20 +10,15 @@ the in-memory stores in `server/test/helpers*.ts`.
 | Schema (ingest and views: [telemetry.md](telemetry.md)) | `server/migrations/*.sql` | `server/test-db/telemetry.sql.test.ts`, the `job-store.*` suites |
 | Read cache warm-up and degradation | `server/src/stats-service.ts` | `server/test/routes.stats.get.test.ts` |
 | Job and thread reads and writes | `server/src/db/job-store*.ts` | `server/test-db/job-store.*.test.ts` |
-| Agent questions persist until answered or their run closes, stamped with the asking claim's `claim_seq` that the per-claim cap counts by (migrations 050, 074) | `server/migrations/050_job_question.sql`, `server/migrations/074_job_question_claim_seq.sql`, `server/src/db/job-store-questions.ts` | `server/test-db/job-store.questions.test.ts` |
-| Named-profile reviews, a job row of its own thread linked by `review_of` and unique per caller and key, plus the profiles stamped on the caller (migration 056) | `server/migrations/056_job_review.sql`, `server/src/db/job-store-reviews.ts` | `server/test-db/job-store.reviews.test.ts` |
-| The never-refunded claim sequence the kubernetes checkout claim orders by (migration 057) | `server/migrations/057_job_claim_seq.sql`, `server/src/db/job-store-claim.ts` | `server/test-db/job-store.requeue.test.ts` |
-| Idempotency keys, stamped on the `job` row a create, follow-up or retry inserted and unique per org, caller and operation (migration 058) | `server/migrations/058_job_idempotency.sql`, `server/src/db/job-store-idempotency.ts` | `server/test-db/job-store.idempotency.test.ts` |
-| Batch plans: draft, frozen target/stage/task rows, idempotency records, immutability triggers (migration 059; [batches.md](batches.md)) | `server/migrations/059_batches.sql`, `server/src/db/batch-store.ts` | `server/test-db/batch-store.test.ts` |
-| Batch runtime: attempts, unique scheduling decisions, cancel/complete stamps (migration 060; [batches.md](batches.md)) | `server/migrations/060_batch_runtime.sql`, `server/src/db/batch-store-schedule.ts` | `server/test-db/batch-dispatch.test.ts` |
-| Batch recovery: frozen budgets and deadline, `expired_at`, task attention, recovery attempt kinds (migration 062; [batches.md](batches.md)) | `server/migrations/062_batch_recovery.sql` | `server/test-db/batch-dispatch.test.ts` |
-| Batch PR observation: one leased row per task, bound to PR and attempt (migration 063; [batches.md](batches.md)) | `server/migrations/063_batch_pr_observation.sql` | `server/test-db/batch-pr-observation.test.ts` |
-| Batch merge intents (one request per target slot) and stage verification (migration 064; [batches.md](batches.md)) | `server/migrations/064_batch_merge.sql` | `server/test-db/batch-merge.test.ts` |
-| Batch recovery evidence: `job.failure_cause`, the `repair` decision kind, the `closed` attention (migration 065; [batches.md](batches.md)) | `server/migrations/065_batch_recovery_evidence.sql` | `server/test-db/job-store.test.ts`, `server/test-db/batch-dispatch.test.ts`, `server/test-db/batch-pr-observation.test.ts` |
-| Artifact index: insert-only chunk rows unique on `(stream, offset)` with length and sha256, write-once manifests with state and terminal cause; `job_artifact` is dropped (migration 070; [configuration.md](configuration.md)) | `server/migrations/070_artifact_index.sql`, `server/src/artifacts/artifact-store.ts` | `server/test-db/artifact-store.test.ts` |
-| Settle receipts, one per attempt keyed by `(org_id, job_id, lease_token)` with the operation, request sha256 and answer (migration 072) | `server/migrations/072_job_settle_receipts.sql`, `server/src/db/job-store-receipts.ts` | `server/test-db/job-store.receipts.test.ts` |
-| Reclaim ownership: `task_reclaim.claim_token`, one per acquisition, and the `task_reclaim_ack` receipt keyed by `(org_id, reclaim_id)` that answers an identical ack replay (migration 075) | `server/migrations/075_task_reclaim_ownership.sql`, `server/src/db/job-store-reclaims.ts` | `server/test-db/job-store.stop-remove.test.ts`, `server/test-db/job-store.receipts.test.ts` |
-| Staged conclusions, one immutable per attempt keyed by `(org_id, job_id, lease_token)` with the claim sequence, the complete input and its sha256 (the receipt's), and the policy and reviewers snapshotted at the stage (migration 076) | `server/migrations/076_job_conclusions.sql`, `server/src/db/job-store-conclusions.ts` | `server/test-db/job-store.conclusions.test.ts` |
+| Agent questions, stamped with the asking claim's `claim_seq` (050, 074) | `server/migrations/050_job_question.sql`, `server/migrations/074_job_question_claim_seq.sql`, `server/src/db/job-store-questions.ts` | `server/test-db/job-store.questions.test.ts` |
+| Named-profile reviews (056) | `server/migrations/056_job_review.sql`, `server/src/db/job-store-reviews.ts` | `server/test-db/job-store.reviews.test.ts` |
+| Claim sequence, never refunded (057) | `server/migrations/057_job_claim_seq.sql`, `server/src/db/job-store-claim.ts` | `server/test-db/job-store.requeue.test.ts` |
+| Idempotency keys on the `job` row (058) | `server/migrations/058_job_idempotency.sql`, `server/src/db/job-store-idempotency.ts` | `server/test-db/job-store.idempotency.test.ts` |
+| Batch plans and runtime (059, 060, 062–065; [batches.md](batches.md)) | `server/migrations/059_batches.sql`, `server/migrations/06[0-5]_*.sql`, `server/src/db/batch-store*.ts` | `server/test-db/batch-store.test.ts`, `server/test-db/batch-dispatch.test.ts`, `server/test-db/batch-pr-observation.test.ts`, `server/test-db/batch-merge.test.ts` |
+| Artifact index and manifests (070; [configuration.md](configuration.md)) | `server/migrations/070_artifact_index.sql`, `server/src/artifacts/artifact-store.ts` | `server/test-db/artifact-store.test.ts` |
+| Settle receipts per attempt (072) | `server/migrations/072_job_settle_receipts.sql`, `server/src/db/job-store-receipts.ts` | `server/test-db/job-store.receipts.test.ts` |
+| Reclaim ownership and ack receipts (075) | `server/migrations/075_task_reclaim_ownership.sql`, `server/src/db/job-store-reclaims.ts` | `server/test-db/job-store.stop-remove.test.ts`, `server/test-db/job-store.receipts.test.ts` |
+| Staged conclusions, immutable per attempt (076) | `server/migrations/076_job_conclusions.sql`, `server/src/db/job-store-conclusions.ts` | `server/test-db/job-store.conclusions.test.ts` |
 | Database-name guards | `server/src/config.ts`, `server/src/seed/cli.ts` | `server/test/config.persistence.test.ts` |
 | db-suite harness: name guard, migrate, truncate and reseed per test; shared fixtures and generated ids | `server/test-db/harness.ts`, `server/test-db/fixtures.ts`, `server/test-db/batch-fixtures.ts` | `server/test/test-db.harness.test.ts`, `server/test/test-db.fixtures.test.ts` |
 
@@ -51,18 +46,12 @@ the in-memory stores in `server/test/helpers*.ts`.
 - **`migrate()` also seeds the `AUTH_MODE=none` org and its stand-in account, and reaps expired
   sessions, at boot only.** Those parts are TypeScript beside the `.sql` runner because a `.sql`
   file cannot see the config; the read path checks `expires_at` regardless.
-- **Synthetic data reaches a database only through `npm run seed`, into a disposable one.** Both
-  halves matter: the seeding CLI refuses any name not ending `_seed`/`_synthetic`/`_demo`/`_e2e`/
-  `_test`, and `loadConfig` refuses a disposable name for a fetching (App-mode) process — the
-  `none` arm is exempt by construction, which is how seed and `verify:ui` run
-  ([configuration.md](configuration.md)).
-- **Every stored read is scoped by the repo list and by `org_id`**, or it renders another
-  organization's or another repo's sessions as this dashboard's.
-- A data directory initialised by `timescale/timescaledb` cannot start under `postgres:17` — it exits
-  with "could not access file \"timescaledb\"" and compose crash-loops; `docker compose down -v`
+- **Synthetic data reaches a database only through `npm run seed`, into a disposable one:** the seeding CLI refuses
+  any name not ending `_seed`/`_synthetic`/`_demo`/`_e2e`/`_test`, and `loadConfig` refuses a disposable name for a
+  fetching (App-mode) process ([configuration.md](configuration.md)). `server/test/config.persistence.test.ts`.
+- A data directory initialised by `timescale/timescaledb` cannot start under `postgres:17`; `docker compose down -v`
   discards it. On a local cluster: `make reset`, or `helm uninstall factory-state` then
-  `kubectl delete pvc -l app.kubernetes.io/instance=factory-state,app.kubernetes.io/component=postgres`
-  in that order (pvc-protection holds a claim its pod still mounts). The component label keeps the
-  delete off the `factory-state-workspaces` checkouts claim.
+  `kubectl delete pvc -l app.kubernetes.io/instance=factory-state,app.kubernetes.io/component=postgres` in that order
+  (the component label keeps the delete off the `factory-state-workspaces` checkouts claim).
 - **Stated limit:** the SQL, the views and the migration runner have no coverage in `npm test`; they
   are covered by `npm run test:db`, which refuses any database not named `*_test`.
