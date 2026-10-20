@@ -186,7 +186,14 @@ describe('the executor isolation record (#382)', () => {
             'one whose agent exited is waited out (`finalizeWaitMs`, `driver/src/supervisor-plan.ts`) and adopted with its logged report'
         );
         expect(prose(kubernetesDocs)).toContain(
-            "a lost driver still alive steps into it until it learns its lease was lost, then hangs up on the group's tokens (`depart`), the wait outlasting that learning (one heartbeat) and the group's `takeoverBoundMs`, whatever the lease"
+            "a lost driver still alive steps into it until it learns its lease was lost, then hangs up on the group's tokens (`depart`), the wait outlasting that learning (one heartbeat) and the group's `takeoverBoundMs`."
+        );
+    });
+
+    // Issue #829: a driver the board cannot reach never learns its lease was lost.
+    it('states that a cut-off driver keeps contact past the adopter’s finalize wait', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            "Stated limit: a driver cut off from the board but still reachable by its supervisor never learns its lease was lost (`beat()` swallows failed heartbeats), so it keeps contact past the adopter's finalize wait; the adopter then sweeps and redoes the run (kubernetes) or is blocked until the supervisor ends (docker). `driver/src/loop-attempt.ts`."
         );
     });
 

@@ -51,9 +51,13 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
   the job redone in its session and tree, an interruption inside the budget; one whose agent exited is waited
   out (`finalizeWaitMs`, `driver/src/supervisor-plan.ts`) and adopted with its logged report, and a lost driver
   still alive steps into it until it learns its lease was lost, then hangs up on the group's tokens (`depart`),
-  the wait outlasting that learning (one heartbeat) and the group's `takeoverBoundMs`, whatever the lease.
+  the wait outlasting that learning (one heartbeat) and the group's `takeoverBoundMs`.
   A finished one is adoptable until its Job's one-hour `ttlSecondsAfterFinished`.
   `driver/src/k8s-adopt.ts`, `driver/src/docker-close-read.ts`.
+- Stated limit: a driver cut off from the board but still reachable by its supervisor never learns its lease was
+  lost (`beat()` swallows failed heartbeats), so it keeps contact past the adopter's finalize wait; the adopter
+  then sweeps and redoes the run (kubernetes) or is blocked until the supervisor ends (docker).
+  `driver/src/loop-attempt.ts`.
 - Stated limit: a rebind reaches a live supervisor only once the kubelet refreshes the attempt Secret's volume —
   up to its sync period (default one minute) plus its cache delay; docker's write is seen on the supervisor's next
   control poll. `driver/src/k8s-binding.ts`.
