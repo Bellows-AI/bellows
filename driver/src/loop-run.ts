@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob, VerdictEvidence } from './board.js';
 import { uploadRunArtifacts } from './artifact-upload.js';
-import { claimRestoresTree, repoCacheProblem } from './claim.js';
+import { repoCacheProblem } from './claim.js';
 import { evidenceDecision, evidencePolicyActive, type GatesOutcome, gatesEvidenceOf } from './evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from './runner.js';
 import { adoptStep, recordAdopted } from './loop-adopt.js';
-import { askGithubToken } from './loop-github.js';
+import { askGithubToken, checkoutToken } from './loop-github.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
 import { beginGates, openRunControl, probeDeadServices, runDeclaredGates, sizeGateForVerify } from './loop-gates.js';
@@ -16,6 +16,7 @@ import { attemptQuiesce, abandonOnHandover, end, endIfDown } from './loop-conclu
 import type { GateRunNote } from './timeout-note.js';
 import {
     faultHalt,
+    syncFailureHalt,
     handBackFence,
     handOverConflict,
     interruptDecision,
@@ -28,7 +29,7 @@ import {
 import type { AdoptedRecord, AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import type { HelperFailureReport } from './helpers.js';
-import { SYNC_FAILURE_KINDS, TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
+import type { PublishResult, SyncResult } from './publish.js';
 import { agentFaults, gatesEligible, ledgerOf, postHelperSkipWhy, skipWhyOf } from './loop-ledger.js';
 import { publishBranch, publishModeOf, publishOptionsOf, report, reportFinish } from './loop-verdict.js';
 import { OPENCODE } from './executors.js';
@@ -106,17 +107,8 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     if (ctx.adopted) return null;
     const turn = await awaitSyncTurn(ctx);
     if (turn === STOOD_DOWN || 'halt' in turn) return turn;
-    // A starting claim's fetch reaches GitHub; a restore, a reviewer's tree and a repo-less job do not.
-    const fetches = Boolean(job.repo) && !job.reviewRun && !claimRestoresTree(job);
-    let githubToken: string | null = null;
-    try {
-        if (fetches) githubToken = await askGithubToken(rt, job, 'the checkout sync');
-    } catch (e) {
-        // The turn was granted and no sync will hold it: hand it on before the throw ends the attempt.
-        turn.release(Promise.resolve());
-        throw e;
-    }
-    const syncing = runner.syncCheckout(job, state.signal, ctx.session, githubToken ?? undefined);
+    const githubToken = await checkoutToken(rt, job, turn);
+    const syncing = runner.syncCheckout(job, state.signal, ctx.session, githubToken);
     // The turn is held until the sync's writes are over (`settled`), however the sync answered.
     turn.release(syncing.then((synced) => synced.settled).catch(() => {}));
     let syncedOut: { value: SyncResult } | null;
@@ -141,25 +133,7 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
         handOverConflict(job, synced);
         return null;
     }
-    if (synced.reason !== null && TRANSIENT_SYNC_REASON.test(synced.reason)) {
-        /*
-         * Lock contention on the shared checkout (issues #307, #559) is infrastructure, not a
-         * verdict: this driver's own syncs of the clone are queued above, so the lock the
-         * script waited out is another driver's (or, on docker, a stood-down sibling's sync
-         * container still finishing), or the fetch kept losing ref locks to a concurrent git. The claim goes straight back to the board, which refunds the
-         * attempt and defers the next claim. The kubernetes checkout claim was already
-         * released inside `syncCheckout` before it answered, the same discipline the
-         * ordinary sync-failure refusal below relies on.
-         */
-        return { halt: 'requeue', log: `checkout sync was lock-blocked, requeueing: ${synced.reason}` };
-    }
-    // A kind the script named is a refusal no retry fixes: a person acts on it, so it is config.
-    const deterministic = synced.kind !== undefined && SYNC_FAILURE_KINDS.includes(synced.kind);
-    return faultHalt(
-        `checkout sync failed: ${synced.reason}`,
-        `The checkout could not be synced with the remote before the run: ${synced.reason}`,
-        deterministic ? 'config' : 'runner_error'
-    );
+    return syncFailureHalt(synced);
 }
 
 /**

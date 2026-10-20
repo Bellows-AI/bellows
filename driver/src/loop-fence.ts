@@ -9,7 +9,7 @@ import { down } from './loop-attempt.js';
 import { lostOf } from './loop-phase.js';
 import type { BoardJob } from './board.js';
 import type { RunOutcome } from './runner.js';
-import { withConflictContext, type SyncResult } from './publish.js';
+import { SYNC_FAILURE_KINDS, TRANSIENT_SYNC_REASON, withConflictContext, type SyncResult } from './publish.js';
 import type { AttemptCtx, EndDecision, LoopRuntime, SetupHalt, VerdictBody } from './loop-types.js';
 import { type StartupCause, StartupRefused, transientStartup } from './startup-cause.js';
 
@@ -215,5 +215,27 @@ function leaveConclusion(
         `[driver] ${reason} (attempt ${job.attempts} of ${job.maxAttempts})`,
         'runner_error',
         exitCode
+    );
+}
+
+/** The halt a failed checkout sync ends the attempt with: lock contention requeues, anything else is a fault. */
+export function syncFailureHalt(synced: SyncResult): SetupHalt {
+    if (synced.reason !== null && TRANSIENT_SYNC_REASON.test(synced.reason)) {
+        /*
+         * Lock contention on the shared checkout (issues #307, #559) is infrastructure, not a verdict: this
+         * driver's own syncs of the clone are queued above, so the lock the script waited out is another
+         * driver's (or, on docker, a stood-down sibling's sync container still finishing), or the fetch kept
+         * losing ref locks to a concurrent git. The claim goes straight back to the board, which refunds the
+         * attempt and defers the next claim. The kubernetes checkout claim was already released inside
+         * `syncCheckout` before it answered, the same discipline the sync-failure refusal below relies on.
+         */
+        return { halt: 'requeue', log: `checkout sync was lock-blocked, requeueing: ${synced.reason}` };
+    }
+    // A kind the script named is a refusal no retry fixes: a person acts on it, so it is config.
+    const deterministic = synced.kind !== undefined && SYNC_FAILURE_KINDS.includes(synced.kind);
+    return faultHalt(
+        `checkout sync failed: ${synced.reason}`,
+        `The checkout could not be synced with the remote before the run: ${synced.reason}`,
+        deterministic ? 'config' : 'runner_error'
     );
 }
