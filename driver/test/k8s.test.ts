@@ -4827,9 +4827,9 @@ describe('the kubernetes runner and the gates', () => {
         const base = fakeRequest();
         const patches: { path: string; body: unknown; contentType: string | undefined }[] = [];
         const order: string[] = [];
-        const request: K8sRequest = (method, path, body, contentType) => {
+        const request: K8sRequest = (method, path, body, options) => {
             if (method === 'PATCH' && path.endsWith('/resize')) {
-                patches.push({ path, body, contentType });
+                patches.push({ path, body, contentType: options?.contentType });
                 order.push('resize');
                 return Promise.resolve(resize);
             }

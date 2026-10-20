@@ -75,12 +75,18 @@ export function readUtf8(stream: Readable | null | undefined, onText: (text: str
  * runner's verdict open forever when the daemon stalls. An aborted `signal` kills it the same way.
  * `input` is written to the CLI's stdin — the archive a `docker cp -` reads.
  */
-/** `execDocker` refusing every call once `signal` aborts; `execDocker` itself without one. */
+/**
+ * `execDocker` refusing every call once `signal` aborts and killing the one in flight when it does;
+ * `execDocker` itself without one.
+ */
 export function untilStandDown(execDocker: ExecDocker, signal?: AbortSignal): ExecDocker {
     if (!signal) return execDocker;
     return async (args, options) => {
         if (signal.aborted) throw new Error('the call was abandoned: the attempt stood down');
-        return execDocker(args, options);
+        return execDocker(args, {
+            ...options,
+            signal: options?.signal ? AbortSignal.any([signal, options.signal]) : signal,
+        });
     };
 }
 

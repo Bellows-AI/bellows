@@ -221,16 +221,45 @@ export function postRefusal(res: K8sResponse, what: string, ...tolerate: number[
 export type K8sMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /**
- * One API call. A PATCH is a JSON merge patch unless `contentType` names another patch type — the
- * gate resize's strategic merge patch (issue #773), which merges `initContainers` by name where a
- * merge patch would replace the whole list.
+ * What one call may bring: `contentType`, `signal` and `timeoutMs`. A PATCH is a JSON merge patch
+ * unless `contentType` names another patch type — the gate resize's strategic merge patch (issue
+ * #773), which merges `initContainers` by name where a merge patch would replace the whole list.
+ * An aborted `signal` ends the call at once, and `timeoutMs` shortens (never lengthens) the
+ * transport's own deadline: the call rejects by then, whatever the connection is doing.
  */
+export interface K8sRequestOptions {
+    contentType?: string;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+}
+
+/** One API call. */
 export type K8sRequest = (
     method: K8sMethod,
     path: string,
     body?: unknown,
-    contentType?: string
+    options?: K8sRequestOptions
 ) => Promise<K8sResponse>;
+
+const abandoned = (): Error => new Error('the call was abandoned: its signal aborted');
+
+/**
+ * `deps` refusing every call once `signal` aborts and handing the signal to each request in flight:
+ * the k8s twin of `untilStandDown`. Without a signal, `deps` itself.
+ */
+export function withSignal(deps: K8sDeps, signal?: AbortSignal): K8sDeps {
+    if (!signal) return deps;
+    return {
+        ...deps,
+        request: async (method, path, body, options) => {
+            if (signal.aborted) throw abandoned();
+            return deps.request(method, path, body, {
+                ...options,
+                signal: options?.signal ? AbortSignal.any([signal, options.signal]) : signal,
+            });
+        },
+    };
+}
 
 /**
  * Every k8s-executor function's transport bundle, in one parameter — the same `RunnerDeps`
@@ -296,7 +325,8 @@ const STREAM_BUFFER_TAIL = ARTIFACT_LIMIT;
 function collectBody(
     res: IncomingMessage,
     sliding: boolean,
-    done: (response: K8sResponse, prefix: string) => void
+    done: (response: K8sResponse, prefix: string) => void,
+    fail: (error: Error) => void
 ): void {
     let text = '';
     let prefix = '';
@@ -310,7 +340,15 @@ function collectBody(
             truncated = true;
         }
     });
+    // A body cut short is never an answer: a reset, an abort or a close before the end rejects.
+    let ended = false;
+    res.on('error', fail);
+    res.on('aborted', () => fail(new Error('the API server aborted the response')));
+    res.on('close', () => {
+        if (!ended) fail(new Error('the API server closed the response before its end'));
+    });
     res.on('end', () => {
+        ended = true;
         const status = res.statusCode ?? 0;
         // A cut refusal carries the prefix ahead of the tail so its start survives classification;
         // a cut log is its tail alone, flagged — never a stitched body that reads as the whole log.
@@ -359,8 +397,33 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
     // handshake per poll tick and buys the elimination of the reuse race by construction.
     const agent = deps.agent ?? new Agent({ keepAlive: false });
 
-    return (method, path, body, contentType) =>
+    return (method, path, body, options) =>
         new Promise<K8sResponse>((resolve, reject) => {
+            const { signal, contentType } = options ?? {};
+            if (signal?.aborted) {
+                reject(abandoned());
+                return;
+            }
+            // The socket idles out at the deadline, and an absolute timer ends the call at it: a
+            // response that trickles bytes, or stalls open, never resets the first and is cut by
+            // the second.
+            const timeoutMs = Math.min(REQUEST_TIMEOUT_MS, options?.timeoutMs ?? REQUEST_TIMEOUT_MS);
+            let settled = false;
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const onAbort = () => fail(abandoned());
+            // Exactly one settle: the first of an answer, a failure, the deadline and an abort.
+            const settle = (outcome: () => void) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                signal?.removeEventListener('abort', onAbort);
+                outcome();
+            };
+            const fail = (error: Error) => {
+                if (settled) return;
+                settle(() => reject(error));
+                req.destroy(error);
+            };
             const req = request(
                 {
                     host,
@@ -369,7 +432,8 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
                     path,
                     ca,
                     agent,
-                    timeout: REQUEST_TIMEOUT_MS,
+                    timeout: timeoutMs,
+                    ...(signal ? { signal } : {}),
                     headers: {
                         // Read per call: a rotated ServiceAccount token must not be remembered.
                         authorization: `Bearer ${readFile(`${serviceAccountDir}/token`, 'utf8').trim()}`,
@@ -378,20 +442,26 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
                     },
                 },
                 (res) =>
-                    collectBody(res, POD_LOG_PATH.test(path), (response, prefix) => {
-                        // The diagnosis line (issue #308): method, path, status and the API's own
-                        // words — the body IS the diagnosis.
-                        const diagnosis = refusalDiagnosis(method, path, response.status, prefix);
-                        if (diagnosis !== null) log(diagnosis);
-                        resolve(response);
-                    })
+                    collectBody(
+                        res,
+                        POD_LOG_PATH.test(path),
+                        (response, prefix) => {
+                            // The diagnosis line (issue #308): method, path, status and the API's own
+                            // words — the body IS the diagnosis.
+                            const diagnosis = refusalDiagnosis(method, path, response.status, prefix);
+                            if (diagnosis !== null) log(diagnosis);
+                            settle(() => resolve(response));
+                        },
+                        fail
+                    )
             );
+            const deadline = () => new Error(`the API server did not answer within ${timeoutMs}ms`);
+            timer = setTimeout(() => fail(deadline()), timeoutMs);
+            signal?.addEventListener('abort', onAbort, { once: true });
             // A half-open connection would otherwise hold the run forever — and the loop would
             // renew the lease around a runner nobody can observe or finish.
-            req.on('timeout', () => {
-                req.destroy(new Error(`the API server did not answer within ${REQUEST_TIMEOUT_MS}ms`));
-            });
-            req.on('error', reject);
+            req.on('timeout', () => fail(deadline()));
+            req.on('error', fail);
             if (body !== undefined) req.write(JSON.stringify(body));
             req.end();
         });

@@ -56,6 +56,7 @@ import {
 } from '../src/runner.js';
 import { claudeTurnsScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { createDockerRunner } from '../src/docker-runner.js';
+import { untilStandDown } from '../src/docker-runner-support.js';
 import {
     exporterCreateArgs,
     exporterName,
@@ -6430,5 +6431,37 @@ describe('the docker runner and the gates', () => {
         const runner = dockerRunner(daemon.exec, { env: { RUNNER_SERVICES: '0' }, steps: fakeSteps().sink });
         expect(await runner.resizeGate(gated, 'verify')).toBe(false);
         expect(daemon.calls).toEqual([]);
+    });
+});
+
+describe('untilStandDown', () => {
+    it('hands its signal into the exec already in flight, so the stand-down kills it', async () => {
+        const controller = new AbortController();
+        let seen: AbortSignal | undefined;
+        const exec = untilStandDown(async (_args, options) => {
+            seen = options?.signal;
+            return { stdout: '' };
+        }, controller.signal);
+
+        await exec(['ps']);
+        expect(seen?.aborted).toBe(false);
+        controller.abort();
+
+        expect(seen?.aborted).toBe(true);
+        await expect(exec(['ps'])).rejects.toThrow(/abandoned/);
+    });
+
+    it('keeps a signal the call brought as well', async () => {
+        const own = new AbortController();
+        let seen: AbortSignal | undefined;
+        const exec = untilStandDown(async (_args, options) => {
+            seen = options?.signal;
+            return { stdout: '' };
+        }, new AbortController().signal);
+
+        await exec(['ps'], { signal: own.signal, timeout: 5 });
+        own.abort();
+
+        expect(seen?.aborted).toBe(true);
     });
 });

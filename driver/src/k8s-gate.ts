@@ -49,7 +49,13 @@ export async function resizeGateSidecar(deps: K8sDeps, job: BoardJob, phase: Gat
             },
         };
         const path = `/api/v1/namespaces/${namespace}/pods/${encodeURIComponent(pod)}/resize`;
-        return ok((await deps.request('PATCH', path, patch, STRATEGIC_MERGE_PATCH_CONTENT_TYPE)).status);
+        return ok(
+            (
+                await deps.request('PATCH', path, patch, {
+                    contentType: STRATEGIC_MERGE_PATCH_CONTENT_TYPE,
+                })
+            ).status
+        );
     } catch {
         return false;
     }
