@@ -59,8 +59,16 @@ import {
 import { claimName, jobPath, podLogPath } from '../src/k8s-auxspec.js';
 import { KUBELET_RESTART_NOTE, sidecarStatuses } from '../src/k8s-services.js';
 import { reclaimGroupSpec } from '../src/k8s-group.js';
-import { GATE_GID, GATE_UID, GITHUB_CACHE_DIR, REVIEWER_HOME, REVIEWER_UID, TOOL_UID } from '../src/claim.js';
-import { REVIEWER_HOME_VOLUME, reviewerRequests } from '../src/k8s-podfields.js';
+import {
+    GATE_GID,
+    GATE_UID,
+    GITHUB_CACHE_DIR,
+    REVIEWER_HOME,
+    REVIEWER_TREE_DIR,
+    REVIEWER_UID,
+    TOOL_UID,
+} from '../src/claim.js';
+import { reviewerRequests } from '../src/k8s-podfields.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
 import { throughTransport } from './fixtures/k8s-transport-bridge.js';
@@ -4643,10 +4651,13 @@ describe('the reviewer sidecar (issue #774)', () => {
                 readOnly: true,
             },
             { name: MAILBOXES.review.name, mountPath: MAILBOXES.review.path },
-            { name: REVIEWER_HOME_VOLUME, mountPath: REVIEWER_HOME },
+            {
+                name: 'workspaces',
+                mountPath: REVIEWER_HOME,
+                subPath: `bellows/${USER}/${REVIEWER_TREE_DIR}`,
+            },
         ]);
         expect(podOf(reviewing).volumes).toContainEqual({ name: MAILBOXES.review.name, emptyDir: {} });
-        expect(podOf(reviewing).volumes).toContainEqual({ name: REVIEWER_HOME_VOLUME, emptyDir: {} });
     });
 
     it('the agent mounts none of the reviewer’s mounts, and the exporter and gate neither', () => {
@@ -4654,7 +4665,7 @@ describe('the reviewer sidecar (issue #774)', () => {
         for (const name of ['agent', 'exporter']) {
             const mounts = JSON.stringify(pod.containers.find((container) => container.name === name)?.volumeMounts);
             expect(mounts, name).not.toContain(MAILBOXES.review.name);
-            expect(mounts, name).not.toContain(REVIEWER_HOME_VOLUME);
+            expect(mounts, name).not.toContain(REVIEWER_TREE_DIR);
         }
         const gate = pod.initContainers?.find((container) => container.name === 'gate');
         expect(JSON.stringify(gate?.volumeMounts)).not.toContain(MAILBOXES.review.name);
@@ -4675,6 +4686,27 @@ describe('the reviewer sidecar (issue #774)', () => {
         expect(text).not.toMatch(/GITHUB_TOKEN|GH_TOKEN|PUBLISH|BELLOWS_|credential/i);
         expect(text).not.toContain(GITHUB_CACHE_DIR);
         expect(reviewer.env).toEqual([{ name: 'HOME', value: REVIEWER_HOME }]);
+    });
+
+    it('the reviewer reads the same model credentials as the agent from the credentials Secret, and no other Secret', () => {
+        const config = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            K8S_NAMESPACE: namespace,
+            RUNNER_CREDENTIALS_SECRET: 'model-credentials',
+            RUNNER_ENV: 'MODEL_KEY,OTHER_KEY',
+        });
+        const pod = podOf({ ...reviewing, env: { SOME_TOKEN: 'claim-secret' } }, config);
+        const reviewer = pod.initContainers?.find((container) => container.name === REVIEWER_CONTAINER);
+        const ref = (name: string) => ({
+            name,
+            valueFrom: { secretKeyRef: { name: 'model-credentials', key: name, optional: true } },
+        });
+        expect(reviewer?.env).toEqual([{ name: 'HOME', value: REVIEWER_HOME }, ref('MODEL_KEY'), ref('OTHER_KEY')]);
+        const agentEnv = pod.containers.find((container) => container.name === 'agent')?.env ?? [];
+        expect(agentEnv).toContainEqual(ref('MODEL_KEY'));
+        expect(agentEnv).toContainEqual(ref('OTHER_KEY'));
+        expect(JSON.stringify(reviewer)).not.toContain(secretName(reviewing));
+        expect(JSON.stringify(reviewer)).not.toContain('envFrom');
     });
 
     it('sizes the reviewer idle-low at creation, with the runner’s limits', () => {

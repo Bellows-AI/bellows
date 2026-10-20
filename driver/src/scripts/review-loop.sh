@@ -16,6 +16,9 @@
 # review left behind outlives it into the answer or the next request. NEVER run this outside its
 # container: that kill reaches every process of the user that runs it
 # (driver/test/scripts-review-loop.test.ts pins the bytes instead).
+# What a review writes into its home on the task volume is group-writable, so the supervisor's uid
+# (the same group) can read and remove it.
+umask 002
 box=${FACTORY_REVIEW_DIR:-/factory/review}
 
 beat() {

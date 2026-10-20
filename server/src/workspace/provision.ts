@@ -42,6 +42,8 @@ export interface ProvisionOptions {
  * something resolves against is a second source of truth for the thing app_user.id already is.
  */
 const BREADCRUMB = '.factory-workspace.json';
+const REVIEWER_TREE_PARENT = '.factory';
+const REVIEWER_TREE_LEAF = 'reviewer';
 
 export function ensureUserWorkspace(options: ProvisionOptions): string | null {
     const { root, orgId, userId, login, githubUserId, log = () => {} } = options;
@@ -58,6 +60,10 @@ export function ensureUserWorkspace(options: ProvisionOptions): string | null {
      * rename is only visible at sign-in anyway.
      */
     const created = mkdirShared(dir);
+    // The in-pod reviewer's home (issue #774) is a subPath mount the kubelet would create root-owned
+    // were it missing; made here, group-writable, before any pod names it. driver/src/claim.ts.
+    mkdirShared(join(dir, REVIEWER_TREE_PARENT));
+    mkdirShared(join(dir, REVIEWER_TREE_PARENT, REVIEWER_TREE_LEAF));
     if (created !== undefined || options.rewriteBreadcrumb) {
         writeFileSync(
             join(dir, BREADCRUMB),

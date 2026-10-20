@@ -1,9 +1,12 @@
-import type { BoardJob, ReviewAnswer } from './board.js';
+import type { BoardJob, ReviewAnswer, ReviewClaim } from './board.js';
 import { withBoardRetry } from './board-retry.js';
-import { applyHeartbeatVerdict, down, type JobState } from './loop-attempt.js';
+import { applyHeartbeatVerdict, down, type JobState, newReviewStop } from './loop-attempt.js';
 import type { LoopRuntime } from './loop-types.js';
-import type { QuestionRelay } from './question-control.js';
 import type { ReviewRelay, ReviewVerdict } from './review-control.js';
+import { OUTPUT_LIMIT, tailBytes } from './runner.js';
+import { pickSession } from './runner-plan.js';
+import { stepLost } from './step-control.js';
+import type { StepResult } from './supervisor-contract.js';
 
 /**
  * The agent's named-reviewer invocation (issue #549): `POST /review` and `GET /review/<key>` on the
@@ -19,6 +22,8 @@ import type { ReviewRelay, ReviewVerdict } from './review-control.js';
  *   claimed, runs the review as a thread of its own with only that profile's grants, and answers
  *   the thread's review evidence — which this relay adopts as `job.review`, so the end-of-run
  *   publish and the draft publish judge the review that actually ran, not the claim-time state.
+ *   A review the board just created or re-leased comes back with its CLAIM (issue #774), and this
+ *   driver supervises it (`superviseReview`) in the caller's own task group — no queue, no slot.
  *
  * Fenced like the publish relay: a stood-down or finished attempt asks for nothing. A Stop that is
  * only draining refuses too — a review is new work, and the agent was told to finish.
@@ -45,12 +50,6 @@ export function createReviewRelay(rt: LoopRuntime, job: BoardJob, state: JobStat
     };
 }
 
-/**
- * What a reviewer's own control channel does with a question: refuses it. A reviewer has a caller
- * to answer to and no member to ask — and a question nobody relays would wait out the whole budget.
- */
-export const reviewerQuestionRelay: QuestionRelay = { ask: async () => 'refused' };
-
 /** One board round trip, read as a verdict; the lease verdicts stand the attempt down like a heartbeat's. */
 async function verdictOf(
     rt: LoopRuntime,
@@ -70,7 +69,145 @@ async function verdictOf(
         await applyHeartbeatVerdict(rt, job, state, answer.result);
         return 'gone';
     }
+    if (answer.claim) superviseReview(rt, state, { caller: job, review: answer.claim, key: answer.review.key });
     // The thread's review evidence as the policy reads it now: what the publish decisions judge.
     job.review = answer.review.evidence;
     return { review: answer.review, created: answer.created };
+}
+
+const MIN_BEAT_MS = 1_000;
+const BEAT_DIVISOR = 3;
+const MS_PER_SECOND = 1_000;
+const EXIT_TIMEOUT = 124;
+/** What the supervisor answers a step the driver cancelled. */
+const EXIT_CANCELLED = 130;
+
+/**
+ * Supervises one review the board leased to this driver, in the caller's task group (issue #774):
+ * the reviewer container is sized up, the review runs as supervised steps (restore, then the
+ * executor), the review row is heartbeat under its OWN lease, and the row is completed with the
+ * step's output — a timeout fails the row (`timeout`), never the caller. Tracked in the caller's
+ * `state` by key: a key already supervised starts nothing (a retried request whose answer was lost
+ * gets the same claim back), and the caller's stop, stand-down or finish cancels it. Not awaited:
+ * the caller's agent reads the verdict through the relay.
+ */
+export function superviseReview(
+    rt: LoopRuntime,
+    state: JobState,
+    supervision: { caller: BoardJob; review: ReviewClaim; key: string }
+): void {
+    const { caller, review, key } = supervision;
+    if (state.reviews.has(key)) return;
+    const { stop, release } = newReviewStop(state);
+    const settled = superviseOne(rt, caller, review, stop).finally(() => {
+        release();
+        state.reviews.delete(key);
+    });
+    state.reviews.set(key, { cancel: () => stop.abort(), settled });
+}
+
+/** Ends every review the attempt still supervises and waits for their rows to settle and their reviewers to be released. */
+export async function cancelReviews(state: JobState): Promise<void> {
+    const open = [...state.reviews.values()];
+    for (const supervision of open) supervision.cancel();
+    await Promise.all(open.map((supervision) => supervision.settled));
+}
+
+async function superviseOne(
+    rt: LoopRuntime,
+    caller: BoardJob,
+    review: ReviewClaim,
+    stop: AbortController
+): Promise<void> {
+    const { runner, board, log } = rt;
+    let over = (): void => {};
+    const ended = new Promise<void>((resolve) => {
+        over = resolve;
+    });
+    const beating = beatReview(rt, review, stop, ended);
+    let result: StepResult | null = null;
+    try {
+        await runner.resizeReviewer(caller, 'run').catch(() => false);
+        const session = pickSession(review, review.executorType);
+        // A fresh session is recorded before it runs, so a re-leased review resumes it.
+        if (session && !session.resume) {
+            await board.session(review, session.id).catch((e: Error) => {
+                log(`review ${review.id}: the session was not recorded: ${e.message}`);
+            });
+        }
+        result = await runner.runReview(caller, review, session, stop.signal);
+    } catch (e) {
+        // A lost supervisor is no verdict on the review; anything else that stopped it ends the row.
+        if (!stepLost(e) && !stop.signal.aborted) result = failedStep((e as Error).message);
+        else log(`review ${review.id}: the review step ended without an answer: ${(e as Error).message}`);
+    } finally {
+        over();
+        await beating;
+        await runner.resizeReviewer(caller, 'idle').catch(() => false);
+    }
+    await settleReview(rt, review, result, stop.signal.aborted);
+}
+
+const failedStep = (reason: string): StepResult => ({ exitCode: 1, stdout: '', stderr: reason, timedOut: false });
+
+/** Heartbeats the review row under its own lease; only an explicit lost/removed or a cancel request ends the review. */
+async function beatReview(
+    rt: LoopRuntime,
+    review: ReviewClaim,
+    stop: AbortController,
+    ended: Promise<void>
+): Promise<void> {
+    const every = Math.max(MIN_BEAT_MS, Math.floor((rt.config.leaseSeconds * MS_PER_SECOND) / BEAT_DIVISOR));
+    let over = false;
+    void ended.then(() => {
+        over = true;
+    });
+    while (!over) {
+        await Promise.race([rt.sleep(every), ended]);
+        if (over) return;
+        const verdict = await rt.board.heartbeat(review).catch((e: Error) => {
+            // A beat that errors or times out is retried on the next one, within the lease.
+            rt.log(`review ${review.id}: the heartbeat failed: ${e.message}`);
+            return null;
+        });
+        if (verdict === null) continue;
+        if (verdict === 'lost' || verdict === 'removed' || verdict.cancelRequested) stop.abort();
+    }
+}
+
+/**
+ * Completes the review row with the step's answer, or nothing: a lost step (no exit code) is no
+ * verdict, and a cancelled review settles the row failed so it does not wait out its lease.
+ */
+async function settleReview(
+    rt: LoopRuntime,
+    review: ReviewClaim,
+    result: StepResult | null,
+    cancelled: boolean
+): Promise<void> {
+    const body = completionOf(result, cancelled);
+    if (body === null) return;
+    await withBoardRetry(rt, `review ${review.id}: the review verdict was not accepted`, () =>
+        rt.board.complete(review, body)
+    ).catch((e: Error) => rt.log(`review ${review.id}: the review could not be settled: ${e.message}`));
+}
+
+function completionOf(
+    result: StepResult | null,
+    cancelled: boolean
+): Parameters<LoopRuntime['board']['complete']>[1] | null {
+    // An answer that landed before the cancel stands; a cancelled review, or one that answered the cancel, ends the row failed.
+    const answered = result !== null && result.exitCode !== null && result.exitCode !== EXIT_CANCELLED;
+    if (!answered) {
+        return cancelled
+            ? { status: 'failed', exitCode: null, output: 'the review was cancelled', failureKind: 'runner_error' }
+            : null;
+    }
+    const output = tailBytes(`${result.stdout}${result.stderr}`.trim(), OUTPUT_LIMIT);
+    if (result.timedOut || result.exitCode === EXIT_TIMEOUT) {
+        return { status: 'failed', exitCode: EXIT_TIMEOUT, output, failureKind: 'timeout' };
+    }
+    if (result.exitCode !== 0)
+        return { status: 'failed', exitCode: result.exitCode, output, failureKind: 'runner_error' };
+    return { status: 'succeeded', exitCode: 0, output: tailBytes(result.stdout, OUTPUT_LIMIT) };
 }

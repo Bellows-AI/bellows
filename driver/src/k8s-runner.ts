@@ -52,7 +52,7 @@ import {
     startServiceFleet,
 } from './k8s-services.js';
 import { groupServices } from './services.js';
-import { resizeGateSidecar, resizeReviewerSidecar, runGateInGroup } from './k8s-gate.js';
+import { resizeGateSidecar, resizeReviewerSidecar, runGateInGroup, runReviewInGroup } from './k8s-gate.js';
 import {
     answerPreview,
     expectOk,
@@ -603,6 +603,7 @@ export function createKubernetesRunner(
         runGate: (job, gate, signal) => runGateInGroup(deps, job, gate, signal),
         resizeGate: (job, phase) => resizeGateSidecar(deps, job, phase),
         resizeReviewer: (job, phase) => resizeReviewerSidecar(deps, job, phase),
+        runReview: (caller, review, session, signal) => runReviewInGroup(deps, { caller, review, session }, signal),
         syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
             syncCheckout(deps, job, session ?? null, githubToken),
         finish: (job: BoardJob) => finishGroup(deps, job),

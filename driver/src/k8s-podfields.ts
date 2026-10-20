@@ -87,9 +87,6 @@ export function gateResourcesField(config: DriverConfig): { resources: PodResour
 /** What the reviewer container asks for while no review runs (issue #774): a sleeping loop, no more. */
 const REVIEWER_IDLE_REQUESTS = { cpu: '50m', memory: '64Mi' } as const;
 
-/** The reviewer's emptyDir home volume: its session state, private to it and gone with the pod. */
-export const REVIEWER_HOME_VOLUME = 'reviewer-home';
-
 /**
  * The reviewer container's requests at one phase (issue #774): `idle` while no review runs, `run`
  * the runner's own requests (RUNNER_*) for the review — a reviewer is an agent. A slot with no

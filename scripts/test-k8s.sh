@@ -800,8 +800,10 @@ expect_contains 'the admission policy lets a claim update change only factory.re
 expect_contains 'the admission policy denies' "$admission" 'validationActions: [Deny]'
 expect_not_contains 'the admission policy never admits the dashboard Secret' "$admission" "$RELEASE-factory-dashboard"
 expect_contains 'the admission policy scopes workspace mounts to a member subPath' "$admission" \
-    "m.subPath.matches('^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\$')"
+    "m.subPath.matches('^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(/[.]factory/reviewer)?\$')"
 expect_contains 'the admission policy refuses subPathExpr on workspace mounts' "$admission" '!has(m.subPathExpr)'
+expect_contains 'the admission policy keeps the reviewer to the credentials Secret' "$admission" \
+    'a driver-specced reviewer references the credentials Secret alone'
 # A pull secret is for the kubelet only: it may appear under imagePullSecrets, never where a
 # container can read it (volumes, env, envFrom).
 pulled="$(gh_render --set 'imagePullSecrets={probe-regcred}' |
@@ -856,6 +858,10 @@ expect_contains 'the admission policy restarts only the gate, reviewer and svc- 
     "(c.name == 'gate' || c.name == 'reviewer' || c.name.startsWith('svc-'))"
 expect_contains 'the admission policy pins the reviewer to its own uid' "$admission" \
     "c.securityContext.runAsUser == 1002"
+expect_contains 'the admission policy lets the reviewer write only its home on the volume' "$admission" \
+    "(m.name == 'workspaces' && m.subPath.endsWith('/.factory/reviewer'))"
+expect_contains 'the admission policy admits the reviewer home subPath beside the member subPath' "$admission" \
+    '(/[.]factory/reviewer)?$'
 # Issue #814: the one capability add admitted, the agent's launch pair, on a runner Job's agent alone.
 expect_contains 'the admission policy admits the launch pair on a runner Job agent alone' "$admission" \
     "request.kind.kind == 'Job' && c.name == 'agent' &&"

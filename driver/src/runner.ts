@@ -6,7 +6,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { BoardJob, ServiceStatus } from './board.js';
+import type { BoardJob, ReviewClaim, ServiceStatus } from './board.js';
 import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
 import type { PublishOptions, PublishResult, SyncResult, ReclaimResult } from './publish.js';
 import type { SnapshotResult } from './review-snapshot.js';
@@ -438,6 +438,20 @@ export interface Runner {
      * own requests (`run`) while one runs. Best-effort, as `resizeGate`; docker answers false.
      */
     resizeReviewer(job: BoardJob, phase: ReviewerSizing): Promise<boolean>;
+    /**
+     * Runs one named reviewer's review in the CALLER's task group (issue #774): the reviewer's home,
+     * its worktree restored at the snapshot ref, and the executor run in the group's reviewer
+     * container, as supervised steps over the caller's control channel. `session` resumes the
+     * review's own session (a re-leased review). The answer is the review step's result; a setup
+     * that failed answers a failed result, a lost supervisor rejects (`stepLost`) — no verdict —
+     * and an abort of `signal` cancels the review through the step channel.
+     */
+    runReview(
+        caller: BoardJob,
+        review: ReviewClaim,
+        session: RunSession | null,
+        signal?: AbortSignal
+    ): Promise<StepResult>;
 }
 
 /** The two sizes a gate container is resized between: low while the agent runs, the gate requests for verify. */

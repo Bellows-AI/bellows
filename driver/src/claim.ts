@@ -42,12 +42,17 @@ export const GATE_GID = 1000;
 export const TOOL_UID = 1001;
 /**
  * The uid the task pod's reviewer container runs as (issue #774), in group GATE_GID: distinct from the
- * CLI's, the tool's and the gate's, so no one of them can signal a review mid-run, and the reviewer's
- * emptyDir home and mailbox stay its own. Its HOME is an emptyDir of its own, so a review's session
- * state is never on the task volume (which it mounts read-only).
+ * CLI's, the tool's and the gate's, so no one of them can signal a review mid-run. Its HOME is the
+ * one directory of the task volume it may write (`REVIEWER_TREE_DIR`), group-writable so the
+ * supervisor's uid reads and removes what a review left; the rest of the tree it mounts read-only.
  */
 export const REVIEWER_UID = 1002;
 export const REVIEWER_HOME = '/home/reviewer';
+/** The member-tree directory the reviewer's HOME is mounted from: a fixed subPath, never one per review. */
+export const REVIEWER_TREE_DIR = '.factory/reviewer';
+/** That directory as the supervisor and the other containers of the pod see it. */
+export const reviewerTreeDir = (config: Pick<DriverConfig, 'workspaceMount'>, job: BoardJob): string =>
+    `${config.workspaceMount}/${workspacePath(job)}/${REVIEWER_TREE_DIR}`;
 /**
  * The capabilities the agent container starts with (issue #814), as root, every other one dropped:
  * what the tool broker needs to start each command as TOOL_UID. factory-launch drops both, and root,
@@ -372,18 +377,6 @@ export function runnerClaimEnv(job: BoardJob): Record<string, string> {
  */
 export const claimContinuesSession = (job: BoardJob): boolean => job.followUp || job.resumeSessionId !== null;
 
-const MS_PER_MINUTE = 60_000;
-
-/**
- * How long this run may last. The operator's `DRIVER_JOB_TIMEOUT_MS`, except for a named reviewer
- * (issue #549), whose profile grants its own budget — never more than the operator's ceiling. The
- * docker kill timer, the kubernetes `activeDeadlineSeconds` and the timeout note all read it here,
- * so the two executors cannot disagree about a reviewer's budget.
- */
-/** The run budget before setup took its share: the operator's, or a named reviewer's own. */
-export const runBudgetMs = (config: { jobTimeoutMs: number }, job: BoardJob): number =>
-    job.reviewRun ? Math.min(config.jobTimeoutMs, job.reviewRun.timeoutMinutes * MS_PER_MINUTE) : config.jobTimeoutMs;
-
 /** The runner's deadline never reaches zero, even when setup used up its whole share. */
 const MIN_RUN_TIMEOUT_MS = 1_000;
 
@@ -392,21 +385,14 @@ const MIN_RUN_TIMEOUT_MS = 1_000;
  * (`job.setupMs`, issue #733): setup counts against the run deadline, not the gate budget.
  */
 export const runTimeoutMs = (config: { jobTimeoutMs: number }, job: BoardJob): number =>
-    Math.max(MIN_RUN_TIMEOUT_MS, runBudgetMs(config, job) - (job.setupMs ?? 0));
+    Math.max(MIN_RUN_TIMEOUT_MS, config.jobTimeoutMs - (job.setupMs ?? 0));
 
 /**
  * The pre-agent `environment.setup` timeout (issue #733): the gate budget, but never more than half
  * the run budget, so a hung install always leaves the agent a reserve.
  */
-export const setupTimeoutMs = (config: { jobTimeoutMs: number; gateTimeoutMs: number }, job: BoardJob): number =>
-    Math.min(config.gateTimeoutMs, Math.floor(runBudgetMs(config, job) / 2));
-
-/**
- * Whether the startup git work RESTORES (no fetch, no rebase) rather than syncs with the remote: a
- * continuation, or a named reviewer's start (issue #549), whose tree is created at the snapshot ref
- * the caller's run froze — nothing it needs is on the remote, and it holds no credential to fetch with.
- */
-export const claimRestoresTree = (job: BoardJob): boolean => claimContinuesSession(job) || job.reviewRun !== undefined;
+export const setupTimeoutMs = (config: { jobTimeoutMs: number; gateTimeoutMs: number }): number =>
+    Math.min(config.gateTimeoutMs, Math.floor(config.jobTimeoutMs / 2));
 
 /**
  * One `NAME=value` line, refusing a newline in either half: the file is line-structured and docker

@@ -207,6 +207,7 @@ export const STEP_KINDS = [
     'publish',
     'helper',
     'gate',
+    'review',
     'restart',
     'go',
     'finish',
@@ -341,6 +342,7 @@ export const SUPERVISOR_ENV = {
     exports: 'SUPERVISOR_EXPORTS',
     agentless: 'SUPERVISOR_AGENTLESS',
     gate: 'SUPERVISOR_GATE',
+    reviewer: 'SUPERVISOR_REVIEWER',
 } as const;
 
 /** The names that carry the supervisor's and the exporter's credentials: the agent container never receives one. */

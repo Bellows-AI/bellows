@@ -677,6 +677,13 @@ export function createDockerRunner(
         runGate: (job, gate, signal) => runDockerGate(gateDeps(deps, job), job, gate, signal),
         resizeGate: async () => false, // no in-place resize: the gate container keeps its GATE_* sizing
         resizeReviewer: async () => false, // likewise the reviewer container
+        // The docker counterpart of the in-group reviewer is its own change (issue #774): until it lands, a review fails here.
+        runReview: async () => ({
+            exitCode: 1,
+            stdout: '',
+            stderr: 'the docker executor does not run a reviewer in the task group yet',
+            timedOut: false,
+        }),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
         restartServices: (job, signal) => restartJobServices(job, execDocker, signal),

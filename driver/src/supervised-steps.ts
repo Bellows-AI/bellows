@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
-import { claimEnv, claimRestoresTree, runTimeoutMs } from './claim.js';
+import { claimEnv, claimContinuesSession, runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
 import { serviceRestartArgv } from './container-scripts.js';
 import { withHelperReceipt } from './helper-receipts.js';
@@ -132,14 +132,14 @@ export async function submitStep(
 }
 
 /** What a failed step says, in the tool's own words: the stderr and stdout, else the exit. */
-const detailOf = (result: StepResult, timeoutMs: number): string => {
+export const detailOf = (result: StepResult, timeoutMs: number): string => {
     if (result.timedOut) return `the step exceeded its ${timeoutMs}ms deadline`;
     return (
         `${result.stderr}${result.stdout}`.trim() || `the step exited ${result.exitCode ?? 'without a readable code'}`
     );
 };
 
-const request = (
+export const stepRequest = (
     job: BoardJob,
     kind: StepKind,
     parts: { id: string; argv?: string[]; cwd?: string | null; env?: Record<string, string>; timeoutMs: number }
@@ -182,7 +182,7 @@ export function supervisedStepRunner(
         const result = await submitStep(
             host,
             job,
-            request(job, options.kind, {
+            stepRequest(job, options.kind, {
                 id,
                 argv: [publish.entrypoint, ...publish.args],
                 cwd: publish.inRepo ? repo : null,
@@ -212,12 +212,12 @@ export async function runSyncStep(host: StepHost, job: BoardJob, githubToken?: s
     const clone = repoPath(config, job);
     const worktree = worktreeDir(config, job);
     if (!clone || !worktree) return { ok: true, reason: null }; // nothing synced, nothing to fail either
-    const restore = claimRestoresTree(job);
+    const restore = claimContinuesSession(job);
     const base = baseBranchOf(job);
     const result = await submitStep(
         host,
         job,
-        request(job, 'sync', {
+        stepRequest(job, 'sync', {
             id: '1',
             argv: ['node', '-e', gitWorktreeScript],
             env: {
@@ -227,8 +227,6 @@ export async function runSyncStep(host: StepHost, job: BoardJob, githubToken?: s
                 BRANCH: worktreeBranch(job),
                 // Restore mode: the script's "keep the tree as the task left it, remote untouched" switch.
                 ...(restore ? { RESTORE: '1' } : {}),
-                // A named reviewer's tree starts at the snapshot ref its caller froze (issue #549).
-                ...(job.reviewRun ? { REVIEW_REF: job.reviewRun.ref } : {}),
                 ...(base ? { BASE_BRANCH: base } : {}),
                 // The fetch's credential helper CODE, only beside a token: a public repo with none
                 // keeps its plain unauthenticated fetch, which a helper answering an empty password
@@ -261,7 +259,7 @@ export async function runReclaimStep(host: StepHost, job: BoardJob): Promise<Rec
     const result = await submitStep(
         host,
         job,
-        request(job, 'reclaim', {
+        stepRequest(job, 'reclaim', {
             id: '1',
             argv: ['node', '-e', gitWorktreeRemoveScript],
             env: { REPO: clone, WORKTREE: worktree },
@@ -325,7 +323,7 @@ async function submitHelper(
         const result = await submitStep(
             host,
             job,
-            request(job, 'helper', {
+            stepRequest(job, 'helper', {
                 id: randomUUID(),
                 argv: ['node', '-e', descriptor.scriptBody],
                 cwd: worktreeDir(host.config, job),
@@ -374,7 +372,7 @@ export async function runGateStep(
 ): Promise<StepResult> {
     if (signal?.aborted) throw new Error('the gate was cancelled before it was submitted');
     const token = controlTokenOf(job);
-    const step = request(job, 'gate', {
+    const step = stepRequest(job, 'gate', {
         id: randomUUID(),
         argv: [gate.command],
         cwd: gate.cwd,
@@ -408,7 +406,7 @@ export const runServiceGenerationStep = (
     submitStep(
         host,
         job,
-        request(job, 'restart', {
+        stepRequest(job, 'restart', {
             id: randomUUID(),
             argv: serviceRestartArgv(mode, names),
             timeoutMs: SERVICE_STEP_TIMEOUT_MS,
@@ -424,7 +422,7 @@ export const orderGo = (host: StepHost, job: BoardJob): Promise<StepResult> =>
     submitStep(
         host,
         job,
-        request(job, 'go', {
+        stepRequest(job, 'go', {
             id: '1',
             env: { BUDGET_MS: String(runTimeoutMs(host.config, job)) },
             timeoutMs: ORDER_TIMEOUT_MS,
@@ -433,7 +431,7 @@ export const orderGo = (host: StepHost, job: BoardJob): Promise<StepResult> =>
 
 /** `finish`: ends the attempt's group; the supervisor finalizes and exits. */
 export const orderFinish = (host: StepHost, job: BoardJob): Promise<StepResult> =>
-    submitStep(host, job, request(job, 'finish', { id: '1', timeoutMs: ORDER_TIMEOUT_MS }));
+    submitStep(host, job, stepRequest(job, 'finish', { id: '1', timeoutMs: ORDER_TIMEOUT_MS }));
 
 /** What an executor lends the shared supervised-step members: its host, its groups, its own error words. */
 export interface SupervisedGroups {

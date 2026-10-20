@@ -5,6 +5,7 @@ import { gateRequests, reviewerRequests } from './k8s-podfields.js';
 import { stepHostFor } from './k8s-group.js';
 import { runnerName } from './k8s-podspec.js';
 import { HTTP_ERROR_STATUS, HTTP_OK_STATUS, type K8sDeps, livePod } from './k8s-transport.js';
+import { type ReviewRun, runReviewSteps } from './review-step.js';
 import type { GateSizing, ReviewerSizing } from './runner.js';
 import { type GateStepRequest, runGateStep } from './supervised-steps.js';
 import { GATE_CONTAINER, REVIEWER_CONTAINER, type StepResult } from './supervisor-contract.js';
@@ -24,6 +25,11 @@ export async function runGateInGroup(
     signal?: AbortSignal
 ): Promise<StepResult> {
     return runGateStep(await stepHostFor(deps, job), job, gate, signal);
+}
+
+/** One review in the caller's group, made on demand like a gate's (issue #774). */
+export async function runReviewInGroup(deps: K8sDeps, run: ReviewRun, signal?: AbortSignal): Promise<StepResult> {
+    return runReviewSteps(await stepHostFor(deps, run.caller), run, signal);
 }
 
 const ok = (status: number): boolean => status >= HTTP_OK_STATUS && status < HTTP_ERROR_STATUS;

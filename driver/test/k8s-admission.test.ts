@@ -8,7 +8,6 @@ import { runnerJobSpec, secretName } from '../src/k8s-podspec.js';
 import { reclaimGroupSpec } from '../src/k8s-group.js';
 import { WORKSPACE_PATH } from '../src/publish.js';
 import { SERVICE_ADDRESS } from '../src/services.js';
-import { REVIEWER_HOME_VOLUME } from '../src/k8s-podfields.js';
 import {
     AGENT_CONTAINER,
     GATE_CONTAINER,
@@ -287,10 +286,13 @@ describe('the admission policy fences the task pod shape (#773)', () => {
         expect(pods).toContain(`c.securityContext.runAsUser == ${REVIEWER_UID}`);
         expect(pods).toContain('a driver-specced reviewer runs as its own uid');
         expect(pods).toContain(
-            'a driver-specced reviewer mounts its workspace read-only, its review mailbox and its home'
+            'a driver-specced reviewer mounts its workspace read-only but for its home, and its review mailbox'
+        );
+        expect(pods).toContain(
+            'a driver-specced reviewer references the credentials Secret alone: no envFrom, never the attempt Secret'
         );
         expect(pods).toContain(MAILBOXES.review.name);
-        expect(pods).toContain(REVIEWER_HOME_VOLUME);
+        expect(pods).toContain('.factory/reviewer');
         expect(REVIEWER_UID).not.toBe(TOOL_UID);
         expect(REVIEWER_UID).not.toBe(GATE_UID);
     });

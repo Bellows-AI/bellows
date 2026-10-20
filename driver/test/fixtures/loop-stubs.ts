@@ -13,6 +13,7 @@ import type {
     QuestionVerdict,
     Reclaim,
     ReclaimRenewal,
+    ReviewClaim,
     RuntimeReport,
 } from '../../src/board.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
@@ -31,6 +32,7 @@ import type {
     AdoptedRun,
     DeadService,
     GateSizing,
+    ReviewerSizing,
     RunOutcome,
     RunSession,
     Runner,
@@ -293,6 +295,13 @@ export function stubRunner(
         deadServices?: () => Promise<DeadService[]>;
         /** The pre-gate fleet restart (issue #560); every call is recorded in `restartedServices`. */
         restartServices?: (signal: AbortSignal) => Promise<void>;
+        /** One review step's answer (issue #774); absent throws. */
+        runReview?: (
+            caller: BoardJob,
+            review: ReviewClaim,
+            session: RunSession | null,
+            signal?: AbortSignal
+        ) => Promise<StepResult>;
         /** A finished runner of an earlier claim to adopt (issue #792); absent finds none. */
         adopt?: (job: BoardJob, signal?: AbortSignal) => Promise<AdoptedRun | null>;
     } = {}
@@ -318,6 +327,10 @@ export function stubRunner(
     paused: { id: string; paused: boolean }[];
     /** Every gate resize the loop asked for (issue #773), in order. */
     resized: GateSizing[];
+    /** Every reviewer resize (issue #774), in order. */
+    reviewerResized: ReviewerSizing[];
+    /** Every review the loop ran in a caller's group (issue #774). */
+    reviewed: { caller: BoardJob; review: BoardJob; session: RunSession | null }[];
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
@@ -424,8 +437,22 @@ export function stubRunner(
             runner.resized.push(phase);
             return true;
         },
-        async resizeReviewer() {
+        reviewerResized: [] as ReviewerSizing[],
+        async resizeReviewer(_job: BoardJob, phase: ReviewerSizing) {
+            runner.reviewerResized.push(phase);
             return false;
+        },
+        /** Every review the loop ran in a caller's group (issue #774), replaced by a test that scripts one. */
+        reviewed: [] as { caller: BoardJob; review: BoardJob; session: RunSession | null }[],
+        async runReview(
+            caller: BoardJob,
+            review: ReviewClaim,
+            session: RunSession | null,
+            signal?: AbortSignal
+        ): Promise<StepResult> {
+            runner.reviewed.push({ caller, review, session });
+            if (!options.runReview) throw new Error('no review scripted');
+            return options.runReview(caller, review, session, signal);
         },
         ...(options.reapOrphanedClaim
             ? {

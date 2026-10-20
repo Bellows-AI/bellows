@@ -7,6 +7,7 @@ import {
     gateEnv,
     GATE_UID,
     REVIEWER_HOME,
+    REVIEWER_TREE_DIR,
     REVIEWER_UID,
     GITHUB_CACHE_DIR,
     GITHUB_CACHE_SIZE,
@@ -54,7 +55,6 @@ import {
     gateResourcesField,
     mailboxesOf,
     mailboxMount,
-    REVIEWER_HOME_VOLUME,
     reviewerResourcesField,
     mailboxVolumes,
     podHardeningField,
@@ -153,14 +153,10 @@ export interface RunnerJobSpec {
 }
 
 /**
- * The board's stacked environment plus every credential the pod carries by reference: the
- * bring-your-own credentials Secret, the claim env + minted gate credentials (the per-attempt
- * Secret `runnerJobSpec`'s caller creates), the telemetry/board URLs, and the runner's own
- * branch-ingest attempt pair. Pulled out of `runnerJobSpec` purely to keep that function's
- * complexity readable — every value here is a NAME or a literal path/URL, never a credential
- * value, the same rule the whole file is pinned on.
+ * The model credentials by reference: each `passEnv` name read from the bring-your-own credentials
+ * Secret. The agent container and the reviewer sidecar (issue #774) carry this and no other Secret.
  */
-function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
+export function credentialsSecretEnv(config: DriverConfig): EnvVar[] {
     const env: EnvVar[] = [];
     if (config.credentialsSecret) {
         for (const name of config.passEnv) {
@@ -180,6 +176,19 @@ function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
             });
         }
     }
+    return env;
+}
+
+/**
+ * The board's stacked environment plus every credential the pod carries by reference: the
+ * bring-your-own credentials Secret, the claim env + minted gate credentials (the per-attempt
+ * Secret `runnerJobSpec`'s caller creates), the telemetry/board URLs, and the runner's own
+ * branch-ingest attempt pair. Pulled out of `runnerJobSpec` purely to keep that function's
+ * complexity readable — every value here is a NAME or a literal path/URL, never a credential
+ * value, the same rule the whole file is pinned on.
+ */
+function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
+    const env: EnvVar[] = credentialsSecretEnv(config);
     // The board's stacked environment plus the loop's minted gate credentials, same discipline:
     // names in the pod spec, values in the per-attempt Secret (created before the Job — see
     // create()). claimEnv has already dropped the reserved names, and the BELLOWS_* gate names
@@ -357,10 +366,10 @@ function gateSidecar(config: DriverConfig, job: BoardJob, image: string): Runner
  * supervisor for the whole group, running the review loop over the review mailbox only the two of
  * them mount (`scripts/review-loop.sh`). It runs as REVIEWER_UID — not the CLI's, the tool's or the
  * gate's — so none of them can signal a review, and it holds nothing a publication needs: no
- * publish token, no credential helper, no Secret reference, no claim env. Each request carries the
+ * publish token, no credential helper, no claim env and no Secret reference but the model credentials Secret the agent also reads. Each request carries the
  * review's own environment and is gone before the review starts. Its tree is the member's subtree,
- * read-only (the shared clone and the review's worktree are in it), and its session state is its
- * own emptyDir home. Sized idle (`reviewerResourcesField`) and resized in place for a review.
+ * read-only (the shared clone and the review's worktree are in it), but for its HOME, a fixed
+ * directory of that tree it mounts read-write (`REVIEWER_TREE_DIR`). Sized idle (`reviewerResourcesField`) and resized in place for a review.
  */
 function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContainer {
     const hardened = containerHardeningField().securityContext;
@@ -373,11 +382,13 @@ function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContaine
         securityContext: { ...hardened, runAsUser: REVIEWER_UID, runAsGroup: GATE_GID },
         command: reviewLoopArgv(),
         workingDir: MAILBOXES.review.path,
-        env: [{ name: 'HOME', value: REVIEWER_HOME }],
+        env: [{ name: 'HOME', value: REVIEWER_HOME }, ...credentialsSecretEnv(config)],
         volumeMounts: [
             { ...workspaceMount(config, workspacePath(job)), readOnly: true },
             mailboxMount(MAILBOXES.review, 'rw'),
-            { name: REVIEWER_HOME_VOLUME, mountPath: REVIEWER_HOME },
+            // The one place it writes: its HOME, a fixed directory of the member tree (the session
+            // state a lost pod's replacement resumes from), mounted over the read-only tree above.
+            { ...workspaceMount(config, `${workspacePath(job)}/${REVIEWER_TREE_DIR}`), mountPath: REVIEWER_HOME },
         ],
     };
 }
@@ -613,12 +624,7 @@ export function runnerJobSpec(
                         }),
                         ...(exporting ? [exporterContainer(config, job, startedAt, path)] : []),
                     ],
-                    volumes: [
-                        ...volumes,
-                        ...mailboxVolumes(reviewing),
-                        ...(reviewing ? [{ name: REVIEWER_HOME_VOLUME, emptyDir: {} }] : []),
-                        ...servicesFields.volumes,
-                    ],
+                    volumes: [...volumes, ...mailboxVolumes(reviewing), ...servicesFields.volumes],
                 },
             },
         },

@@ -35,6 +35,7 @@ const IMPLEMENTED_BY: Record<keyof Runner, 'both' | 'kubernetes'> = {
     runGate: 'both',
     resizeGate: 'both',
     resizeReviewer: 'both',
+    runReview: 'both',
     releaseFence: 'kubernetes',
     reapOrphanedClaim: 'kubernetes',
 };
